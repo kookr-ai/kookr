@@ -1,0 +1,3 @@
+{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[
+  {"number":7777,"state":"MERGED","title":"old","mergedAt":"2024-01-01T00:00:00Z","url":"https://github.com/testowner/testrepo/pull/7777"}
+]}}}}}

@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 12: Focus-Mode Adaptive</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #12151b;
+    --bg-panel: #171b24;
+    --bg-card: #1d2230;
+    --bg-card-hover: #242a3a;
+    --bg-input: #202738;
+    --bg-terminal: #0d1017;
+    --border: #282f40;
+    --border-dim: #212838;
+    --text: #bac2d0;
+    --text-secondary: #748094;
+    --text-bright: #dce1ec;
+    --text-muted: #4c566e;
+    --green: #3cb878;
+    --amber: #d4a03c;
+    --red: #d05050;
+    --blue: #5a96e4;
+    --purple: #9580d0;
+    --teal: #38b0a4;
+    --amber-bg: rgba(212,160,60,0.05);
+    --amber-border: rgba(212,160,60,0.16);
+    --green-bg: rgba(60,184,120,0.04);
+    --green-border: rgba(60,184,120,0.12);
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 11.5px;
+  }
+
+  /* ─── Top bar ─── */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 18px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); height: 38px; flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 16px; }
+  .logo { font-family: 'JetBrains Mono', monospace; color: var(--teal);
+    font-weight: 700; font-size: 13px; letter-spacing: 1px; }
+  .topbar-stats { display: flex; gap: 4px; }
+  .stat-chip {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 11px; padding: 2px 8px; border-radius: 4px;
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    color: var(--text-secondary);
+  }
+  .stat-chip .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .stat-chip .dot.amber { background: var(--amber); }
+  .stat-chip .dot.green { background: var(--green); }
+  .stat-chip .dot.gray { background: var(--text-muted); }
+  .stat-chip .val { font-weight: 600; color: var(--text-bright); }
+  .topbar-right { display: flex; gap: 8px; align-items: center; }
+  .btn-launch {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 4px 14px; border-radius: 5px;
+    font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  /* Mode toggle */
+  .mode-toggle {
+    display: flex;
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    border-radius: 5px;
+    overflow: hidden;
+  }
+  .mode-btn {
+    background: none; border: none;
+    color: var(--text-muted); font-family: inherit;
+    font-size: 11px; padding: 3px 10px; cursor: pointer;
+  }
+  .mode-btn.active { background: var(--teal); color: #0a0e12; font-weight: 600; }
+
+  .main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ─── Collapsible sidebar ─── */
+  .sidebar {
+    width: 52px; /* Collapsed: icons only */
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0;
+    transition: width 0.2s;
+  }
+  .sidebar.expanded { width: 260px; }
+
+  .sb-toggle {
+    padding: 10px 0;
+    text-align: center;
+    border-bottom: 1px solid var(--border-dim);
+    cursor: pointer;
+  }
+  .sb-toggle-icon {
+    font-size: 14px; color: var(--text-muted);
+  }
+
+  /* Collapsed: icon-only items */
+  .sb-collapsed-list { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; align-items: center; }
+  .sb-icon-item {
+    width: 36px; height: 36px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; position: relative;
+  }
+  .sb-icon-item:hover { background: var(--bg-card); }
+  .sb-icon-item.selected { background: var(--bg-card); }
+  .sb-icon-item.alert-icon-item { }
+  .sb-icon-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .sb-icon-dot.running { background: var(--green); }
+  .sb-icon-dot.stuck { background: var(--amber); animation: pulse 2s ease-in-out infinite; }
+  .sb-icon-dot.completed { background: var(--text-muted); }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+  .sb-icon-badge {
+    position: absolute; top: 2px; right: 2px;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--amber); border: 2px solid var(--bg-panel);
+  }
+  .sb-icon-label {
+    font-size: 9px; color: var(--text-muted); margin-top: 1px;
+    font-weight: 600;
+  }
+
+  /* Expanded items (hidden by default in this mockup) */
+  .sb-expanded { display: none; }
+  .sidebar.expanded .sb-expanded { display: block; }
+  .sidebar.expanded .sb-collapsed-list { display: none; }
+
+  .sb-label { padding: 10px 14px 4px; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.7px; }
+  .sb-label.alert { color: var(--amber); }
+  .sb-label.normal { color: var(--text-muted); }
+  .agent-list { flex: 1; overflow-y: auto; padding: 0 6px; }
+  .sb-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 6px; cursor: pointer;
+    margin: 1px 0; border-left: 3px solid transparent;
+  }
+  .sb-item:hover { background: var(--bg-card); }
+  .sb-item.selected { background: var(--bg-card); border-left-color: var(--teal); }
+  .sb-item.alert-item { border-left-color: var(--amber); }
+  .sb-item.alert-item.selected { background: var(--amber-bg); }
+  .sb-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .sb-dot.running { background: var(--green); }
+  .sb-dot.stuck { background: var(--amber); animation: pulse 2s ease-in-out infinite; }
+  .sb-dot.completed { background: var(--text-muted); }
+  .sb-info { flex: 1; min-width: 0; }
+  .sb-name { font-size: 12.5px; font-weight: 600; color: var(--text-bright);
+    display: flex; align-items: center; justify-content: space-between; }
+  .sb-badge { font-size: 9.5px; font-weight: 600; padding: 1px 6px; border-radius: 6px; }
+  .sb-badge.stuck { background: rgba(212,160,60,0.15); color: var(--amber); }
+  .sb-badge.running { background: rgba(60,184,120,0.1); color: var(--green); }
+  .sb-task { font-size: 11.5px; color: var(--text-secondary); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .sb-meta { display: flex; gap: 8px; font-size: 10.5px; color: var(--text-muted); margin-top: 2px; }
+
+  /* ─── Center ─── */
+  .center { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+
+  /* Context strip: compact horizontal overview (visible in focus mode) */
+  .context-strip {
+    display: flex; gap: 4px; padding: 6px 18px;
+    border-bottom: 1px solid var(--border-dim); flex-shrink: 0;
+    overflow-x: auto;
+  }
+  .ctx-chip {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 10px; border-radius: 5px;
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    font-size: 11px; cursor: pointer; white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .ctx-chip:hover { background: var(--bg-card-hover); }
+  .ctx-chip.selected { border-color: var(--teal); background: var(--bg-card-hover); }
+  .ctx-chip.alert { border-color: var(--amber-border); }
+  .ctx-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .ctx-dot.running { background: var(--green); }
+  .ctx-dot.stuck { background: var(--amber); }
+  .ctx-dot.completed { background: var(--text-muted); }
+  .ctx-name { font-weight: 600; color: var(--text-bright); }
+  .ctx-status { color: var(--text-muted); }
+
+  /* Pinned alert */
+  .pinned-alert {
+    background: var(--amber-bg); border-bottom: 1px solid var(--amber-border);
+    padding: 10px 20px; flex-shrink: 0; display: flex; gap: 12px; align-items: flex-start;
+  }
+  .alert-icon {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: var(--amber); color: #12151b;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 800; flex-shrink: 0;
+  }
+  .alert-content { flex: 1; }
+  .alert-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .alert-title { font-size: 12.5px; font-weight: 700; color: var(--amber); }
+  .alert-agent { font-size: 11px; color: var(--text-secondary); margin-left: 8px; }
+  .alert-actions { display: flex; gap: 4px; }
+  .btn-xs {
+    background: var(--bg-card); border: 1px solid var(--border);
+    color: var(--text-secondary); padding: 3px 10px; border-radius: 4px;
+    font-family: inherit; font-size: 10.5px; cursor: pointer;
+  }
+  .btn-xs:hover { color: var(--text-bright); }
+  .alert-body { font-size: 13px; line-height: 1.65; color: var(--text); }
+  .alert-body code { background: rgba(90,150,228,0.1); color: var(--blue); padding: 1px 5px; border-radius: 3px; }
+
+  /* Split view */
+  .split-view { flex: 1; display: flex; overflow: hidden; }
+  .split-col { flex: 1; overflow-y: auto; padding: 10px 18px; }
+  .split-col.terminal-bg { background: var(--bg-terminal); padding: 10px 16px; }
+  .split-divider { width: 1px; background: var(--border); flex-shrink: 0; }
+
+  .col-title {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.6px; color: var(--text-muted); margin-bottom: 8px;
+  }
+  .act-row {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 5px 0; position: relative;
+  }
+  .act-row:not(:last-child)::after {
+    content: ''; position: absolute;
+    left: 10px; top: 26px; bottom: -5px;
+    width: 1px; background: var(--border-dim);
+  }
+  .act-dot {
+    width: 20px; height: 20px; border-radius: 50%;
+    border: 2px solid var(--border); background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700; flex-shrink: 0; z-index: 1;
+  }
+  .act-dot.tool { border-color: var(--blue); color: var(--blue); }
+  .act-dot.edit { border-color: var(--purple); color: var(--purple); }
+  .act-dot.error { border-color: var(--red); color: var(--red); }
+  .act-dot.read { border-color: var(--text-secondary); color: var(--text-secondary); }
+  .act-body { flex: 1; padding-top: 1px; }
+  .act-label { font-size: 12.5px; color: var(--text); }
+  .act-label code { background: var(--bg-card); color: var(--teal); padding: 1px 4px; border-radius: 3px; }
+  .act-time { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+  .act-error { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--red); opacity: 0.8; margin-top: 2px; }
+  .repeat-pill {
+    display: inline-block; background: rgba(212,160,60,0.12);
+    color: var(--amber); font-size: 9.5px; font-weight: 700;
+    padding: 0 6px; border-radius: 6px; margin-left: 4px;
+  }
+
+  .terminal-pane {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 11.5px; line-height: 1.7; color: var(--text-secondary);
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .terminal-pane .prompt { color: var(--green); }
+  .terminal-pane .cmd { color: var(--text-bright); }
+  .terminal-pane .err { color: var(--red); }
+  .terminal-pane .dim { color: var(--text-muted); }
+  .terminal-pane .file { color: var(--blue); }
+  .terminal-pane .pass { color: var(--green); }
+
+  /* Input area */
+  .input-area {
+    padding: 8px 20px 10px; border-top: 1px solid var(--border);
+    background: var(--bg-panel); flex-shrink: 0;
+  }
+  .input-hints {
+    font-size: 10px; color: var(--text-muted); margin-bottom: 4px;
+    display: flex; justify-content: space-between;
+  }
+  .input-hints kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 4px; border-radius: 2px;
+    font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--text-secondary);
+  }
+  .input-row { display: flex; gap: 8px; }
+  .input-field {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border);
+    color: var(--text-bright); padding: 8px 12px; border-radius: 6px;
+    font-family: inherit; font-size: 13px; outline: none;
+  }
+  .input-field:focus { border-color: var(--teal); }
+  .input-field::placeholder { color: var(--text-muted); }
+  .btn-send {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 0 18px; border-radius: 6px;
+    font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 18px; background: var(--bg-panel);
+    border-top: 1px solid var(--border); height: 24px; flex-shrink: 0;
+    font-size: 10.5px; color: var(--text-muted);
+  }
+  .statusbar-left, .statusbar-right { display: flex; gap: 12px; }
+  .statusbar kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 3px; border-radius: 2px;
+    font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+    <div class="topbar-stats">
+      <div class="stat-chip"><span class="dot amber"></span><span class="val">1</span> stuck</div>
+      <div class="stat-chip"><span class="dot green"></span><span class="val">2</span> running</div>
+      <div class="stat-chip"><span class="dot gray"></span><span class="val">1</span> done</div>
+      <div class="stat-chip"><span class="val">$0.98</span></div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="mode-toggle">
+      <button class="mode-btn active">Focus</button>
+      <button class="mode-btn">Full</button>
+    </div>
+    <button class="btn-launch">+ Launch Agent</button>
+  </div>
+</div>
+
+<div class="main">
+  <!-- Collapsed sidebar in focus mode: icon-only, shows dots -->
+  <div class="sidebar">
+    <div class="sb-toggle">
+      <span class="sb-toggle-icon">&rsaquo;</span>
+    </div>
+    <div class="sb-collapsed-list">
+      <div class="sb-icon-item selected alert-icon-item" title="Agent #3 — Stuck">
+        <span class="sb-icon-dot stuck"></span>
+        <span class="sb-icon-badge"></span>
+      </div>
+      <div class="sb-icon-item" title="Agent #1 — Running">
+        <span class="sb-icon-dot running"></span>
+      </div>
+      <div class="sb-icon-item" title="Agent #4 — Running">
+        <span class="sb-icon-dot running"></span>
+      </div>
+      <div class="sb-icon-item" title="Agent #2 — Done">
+        <span class="sb-icon-dot completed"></span>
+      </div>
+    </div>
+
+    <!-- Expanded view (hidden in focus mode) -->
+    <div class="sb-expanded">
+      <div class="sb-label alert">Attention</div>
+      <div class="agent-list">
+        <div class="sb-item alert-item selected">
+          <span class="sb-dot stuck"></span>
+          <div class="sb-info">
+            <div class="sb-name">Agent #3 <span class="sb-badge stuck">Stuck</span></div>
+            <div class="sb-task">Fix auth bug in login.ts</div>
+            <div class="sb-meta"><span>12m</span><span>$0.42</span></div>
+          </div>
+        </div>
+        <div class="sb-label normal">Running</div>
+        <div class="sb-item">
+          <span class="sb-dot running"></span>
+          <div class="sb-info">
+            <div class="sb-name">Agent #1 <span class="sb-badge running">Running</span></div>
+            <div class="sb-task">Add pagination to /users</div>
+          </div>
+        </div>
+        <div class="sb-item">
+          <span class="sb-dot running"></span>
+          <div class="sb-info">
+            <div class="sb-name">Agent #4 <span class="sb-badge running">Running</span></div>
+            <div class="sb-task">Write tests for utils.ts</div>
+          </div>
+        </div>
+        <div class="sb-label normal">Done</div>
+        <div class="sb-item">
+          <span class="sb-dot completed"></span>
+          <div class="sb-info">
+            <div class="sb-name">Agent #2</div>
+            <div class="sb-task">Update README</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="center">
+    <!-- Context strip: quick agent switcher in focus mode -->
+    <div class="context-strip">
+      <div class="ctx-chip selected alert">
+        <span class="ctx-dot stuck"></span>
+        <span class="ctx-name">#3</span>
+        <span class="ctx-status">Stuck 12m</span>
+      </div>
+      <div class="ctx-chip">
+        <span class="ctx-dot running"></span>
+        <span class="ctx-name">#1</span>
+        <span class="ctx-status">Running 8m</span>
+      </div>
+      <div class="ctx-chip">
+        <span class="ctx-dot running"></span>
+        <span class="ctx-name">#4</span>
+        <span class="ctx-status">Running 3m</span>
+      </div>
+      <div class="ctx-chip">
+        <span class="ctx-dot completed"></span>
+        <span class="ctx-name">#2</span>
+        <span class="ctx-status">Done</span>
+      </div>
+    </div>
+
+    <div class="pinned-alert">
+      <div class="alert-icon">!</div>
+      <div class="alert-content">
+        <div class="alert-top">
+          <div>
+            <span class="alert-title">Stuck: same test 12x without progress</span>
+            <span class="alert-agent">Agent #3 — Fix auth bug in login.ts</span>
+          </div>
+          <div class="alert-actions">
+            <button class="btn-xs">Skip</button>
+            <button class="btn-xs">Snooze</button>
+            <button class="btn-xs">Attach</button>
+          </div>
+        </div>
+        <div class="alert-body">
+          Running <code>npm test</code> 12 times with <code>TypeError: token.verify is not a function</code>.
+          Editing <code>auth.ts:42</code> without trying a different import.
+          Function is in <code>@auth/jwt</code>, not <code>@auth/core</code>.
+        </div>
+      </div>
+    </div>
+
+    <div class="split-view">
+      <div class="split-col">
+        <div class="col-title">Activity Timeline</div>
+        <div class="act-row">
+          <div class="act-dot read">R</div>
+          <div class="act-body">
+            <div class="act-label">Read <code>src/auth.ts</code></div>
+            <div class="act-time">12:04 PM</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot edit">E</div>
+          <div class="act-body">
+            <div class="act-label">Edit <code>src/auth.ts</code> :42</div>
+            <div class="act-time">12:05 PM</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot error">!</div>
+          <div class="act-body">
+            <div class="act-label">Bash: <code>npm test</code> <span class="repeat-pill">x3</span></div>
+            <div class="act-time">12:05 PM</div>
+            <div class="act-error">TypeError: token.verify is not a function</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot edit">E</div>
+          <div class="act-body">
+            <div class="act-label">Edit <code>src/auth.ts</code> :42 — reverted</div>
+            <div class="act-time">12:07 PM</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot error">!</div>
+          <div class="act-body">
+            <div class="act-label">Bash: <code>npm test</code> <span class="repeat-pill">x9</span></div>
+            <div class="act-time">12:10 PM</div>
+            <div class="act-error">TypeError: token.verify is not a function</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot edit">E</div>
+          <div class="act-body">
+            <div class="act-label">Edit <code>src/auth.ts</code> :42</div>
+            <div class="act-time">12:13 PM</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot error">!</div>
+          <div class="act-body">
+            <div class="act-label">Bash: <code>npm test</code> <span class="repeat-pill">x12</span></div>
+            <div class="act-time">12:14 PM</div>
+            <div class="act-error">TypeError: token.verify is not a function</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="split-divider"></div>
+
+      <div class="split-col terminal-bg">
+        <div class="col-title" style="color:var(--text-muted);">Terminal (capture-pane)</div>
+        <div class="terminal-pane"><span class="dim">~/git/myapp</span>
+<span class="prompt">$</span> <span class="cmd">npm test</span>
+
+<span class="dim">&gt; myapp@1.0.0 test</span>
+<span class="dim">&gt; vitest run</span>
+
+ <span class="pass">PASS</span>  src/utils.test.ts
+ <span class="pass">PASS</span>  src/db.test.ts
+ <span class="err">FAIL</span>  src/auth.test.ts
+  Auth module
+    <span class="err">x token verification</span>
+      <span class="err">TypeError: token.verify is not a function</span>
+
+      <span class="dim">at Object.&lt;anonymous&gt;</span> (<span class="file">src/auth.ts:42:18</span>)
+      <span class="dim">at Object.&lt;anonymous&gt;</span> (<span class="file">src/auth.test.ts:15:5</span>)
+
+Tests:  <span class="err">1 failed</span>, <span class="pass">4 passed</span>, 5 total
+Time:   1.23s
+
+<span class="prompt">$</span> <span class="dim">_</span></div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-hints">
+        <span>Respond to Agent #3</span>
+        <span><kbd>Ctrl+Enter</kbd> send &nbsp; <kbd>Ctrl+N</kbd> next &nbsp; <kbd>Ctrl+B</kbd> sidebar &nbsp; <kbd>Ctrl+T</kbd> terminal</span>
+      </div>
+      <div class="input-row">
+        <input class="input-field" type="text" placeholder="Try importing from @auth/jwt instead..." />
+        <button class="btn-send">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="statusbar">
+  <div class="statusbar-left">
+    <span>4 agents</span><span>1 stuck</span><span>$0.98</span><span>Focus mode</span>
+  </div>
+  <div class="statusbar-right">
+    <span><kbd>Ctrl+N</kbd> next</span>
+    <span><kbd>Ctrl+Enter</kbd> send</span>
+    <span><kbd>←→</kbd> agents</span>
+    <span><kbd>Ctrl+B</kbd> sidebar</span>
+  </div>
+</div>
+
+</body>
+</html>

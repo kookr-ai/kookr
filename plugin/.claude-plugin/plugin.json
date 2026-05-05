@@ -1,0 +1,21 @@
+{
+  "name": "kookr-toolkit",
+  "version": "0.2.0",
+  "description": "Curated skills and review subagents for AI-assisted development. Code patterns (TypeScript, async, error handling, DI, DDD), workflow (TDD, git commit hygiene, token efficiency), OSS contribution (PR critic, reviewer distillation, fork manager), and 15 review subagents (boundary-critic, design-minimalist, failure-mode-analyst, etc.) used by Kookr for iterative RFC review and pre-PR quality gates.",
+  "author": {
+    "name": "Jean Ibarz",
+    "email": "ibarz.jean@gmail.com"
+  },
+  "homepage": "https://github.com/kookr-ai/kookr",
+  "repository": "https://github.com/kookr-ai/kookr",
+  "license": "MIT",
+  "keywords": [
+    "kookr",
+    "skills",
+    "review",
+    "subagents",
+    "tdd",
+    "oss-contribution",
+    "rfc"
+  ]
+}

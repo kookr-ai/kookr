@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 5: Terminal × Clean Hybrid</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0c0f14;
+    --bg-panel: #11151c;
+    --bg-card: #171c25;
+    --bg-card-hover: #1d2330;
+    --bg-input: #1a2029;
+    --border: #252d3a;
+    --border-subtle: #1e2636;
+    --text: #c8cfd8;
+    --text-secondary: #7d8694;
+    --text-bright: #edf0f5;
+    --text-muted: #505a68;
+    --green: #34d058;
+    --amber: #e8a317;
+    --red: #f05050;
+    --blue: #4fa3f7;
+    --purple: #b48afe;
+    --cyan: #2fc4d0;
+    --amber-glow: rgba(232,163,23,0.08);
+    --amber-border: rgba(232,163,23,0.25);
+  }
+  body {
+    /* Sans-serif for prose readability, monospace only for code */
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    font-size: 13.5px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, .mono {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 12.5px;
+  }
+
+  /* ─── Top bar ─── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    height: 44px;
+    flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 16px; }
+  .logo {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--cyan);
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+  .logo-ver {
+    color: var(--text-muted);
+    font-weight: 400;
+    font-size: 11px;
+    letter-spacing: 0;
+    margin-left: 6px;
+  }
+  .topbar-center {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .tab-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 12.5px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .tab-btn.active { background: var(--bg-card); color: var(--text-bright); font-weight: 500; }
+  .topbar-right { display: flex; align-items: center; gap: 10px; }
+  .attention-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--amber-glow);
+    border: 1px solid var(--amber-border);
+    color: var(--amber);
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 14px;
+  }
+  .attention-pill-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--amber);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 4px var(--amber); }
+    50% { opacity: 0.4; box-shadow: none; }
+  }
+  .btn-launch {
+    background: var(--cyan);
+    color: #000;
+    border: none;
+    padding: 5px 14px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.2px;
+  }
+
+  /* ─── Main layout ─── */
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ─── Sidebar ─── */
+  .sidebar {
+    width: 280px;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  .sidebar-search {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .search-input {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text);
+    padding: 7px 12px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12.5px;
+    outline: none;
+  }
+  .search-input::placeholder { color: var(--text-muted); }
+  .search-input:focus { border-color: var(--cyan); }
+
+  /* Grouped sections like P2 */
+  .section-label {
+    padding: 14px 16px 6px;
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .section-label.attention { color: var(--amber); }
+  .section-label.working { color: var(--text-muted); }
+  .section-label.done { color: var(--text-muted); }
+  .section-count {
+    font-size: 10px;
+    font-weight: 600;
+    background: var(--bg-card);
+    padding: 1px 7px;
+    border-radius: 8px;
+    color: var(--text-secondary);
+  }
+
+  .agent-list { flex: 1; overflow-y: auto; }
+  .agent-item {
+    padding: 10px 16px;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: background 0.12s;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .agent-item:hover { background: var(--bg-card); }
+  .agent-item.selected {
+    background: var(--bg-card);
+    border-left-color: var(--cyan);
+  }
+  .agent-item.alert {
+    border-left-color: var(--amber);
+    background: var(--amber-glow);
+  }
+  .agent-item.alert.selected {
+    border-left-color: var(--amber);
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 5px;
+  }
+  .status-dot.running { background: var(--green); box-shadow: 0 0 5px rgba(52,208,88,0.4); }
+  .status-dot.stuck { background: var(--amber); box-shadow: 0 0 5px rgba(232,163,23,0.4); animation: pulse 2s infinite; }
+  .status-dot.completed { background: var(--text-muted); }
+  .agent-info { flex: 1; min-width: 0; }
+  .agent-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-bright);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .agent-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 8px;
+  }
+  .agent-badge.stuck { background: rgba(232,163,23,0.15); color: var(--amber); }
+  .agent-badge.running { background: rgba(52,208,88,0.1); color: var(--green); }
+  .agent-task {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .agent-meta {
+    display: flex;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 3px;
+  }
+
+  /* ─── Detail panel ─── */
+  .detail {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Detail header — breathable spacing */
+  .detail-header {
+    padding: 18px 24px 14px;
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+  .detail-header-left {}
+  .detail-title {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--text-bright);
+  }
+  .detail-subtitle {
+    display: flex;
+    gap: 16px;
+    margin-top: 5px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .detail-subtitle code { color: var(--blue); }
+  .detail-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .btn-sm {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 5px 12px;
+    border-radius: 5px;
+    font-family: inherit;
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .btn-sm:hover { color: var(--text-bright); background: var(--bg-card-hover); }
+
+  /* ─── Insight card — collapsible, not a banner ─── */
+  .insight-section {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .insight-card {
+    background: var(--amber-glow);
+    border: 1px solid var(--amber-border);
+    border-radius: 10px;
+    padding: 14px 18px;
+  }
+  .insight-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .insight-icon {
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--amber);
+    color: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .insight-title {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--amber);
+  }
+  .insight-collapse {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .insight-body {
+    /* Sans-serif for readability — key fix from feedback */
+    font-size: 13.5px;
+    line-height: 1.7;
+    color: var(--text);
+  }
+  .insight-body code {
+    background: rgba(79,163,247,0.1);
+    color: var(--blue);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* ─── Activity feed — more breathing room than P1 ─── */
+  .activity {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 24px;
+  }
+  .activity-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 7px 0;
+    position: relative;
+  }
+  /* Subtle vertical connector line */
+  .activity-item:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 15px;
+    top: 30px;
+    bottom: -7px;
+    width: 1px;
+    background: var(--border-subtle);
+  }
+  .activity-dot {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    flex-shrink: 0;
+    z-index: 1;
+    background: var(--bg);
+    color: var(--text-muted);
+  }
+  .activity-dot.tool { border-color: var(--blue); color: var(--blue); }
+  .activity-dot.edit { border-color: var(--purple); color: var(--purple); }
+  .activity-dot.error { border-color: var(--red); color: var(--red); }
+  .activity-dot.read { border-color: var(--text-secondary); color: var(--text-secondary); }
+
+  .activity-content { flex: 1; padding-top: 1px; }
+  .activity-label {
+    font-size: 13px;
+    color: var(--text);
+  }
+  .activity-label code {
+    background: var(--bg-card);
+    color: var(--cyan);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .activity-time {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 1px;
+  }
+  .activity-error {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: var(--red);
+    margin-top: 3px;
+    opacity: 0.85;
+  }
+  .repeat-badge {
+    display: inline-block;
+    background: rgba(232,163,23,0.15);
+    color: var(--amber);
+    padding: 0 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 700;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  /* ─── Input area ─── */
+  .input-area {
+    padding: 12px 24px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-panel);
+  }
+  .input-hint {
+    font-size: 10.5px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .input-hint kbd {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    padding: 0 4px;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+  .input-row {
+    display: flex;
+    gap: 8px;
+  }
+  .input-field {
+    flex: 1;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text-bright);
+    padding: 10px 14px;
+    border-radius: 7px;
+    font-family: inherit;
+    font-size: 13.5px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .input-field:focus { border-color: var(--cyan); }
+  .input-field::placeholder { color: var(--text-muted); }
+  .btn-send {
+    background: var(--cyan);
+    color: #000;
+    border: none;
+    padding: 0 20px;
+    border-radius: 7px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* ─── Status bar ─── */
+  .statusbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    height: 28px;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .statusbar-left, .statusbar-right { display: flex; gap: 14px; align-items: center; }
+  .statusbar kbd {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    padding: 0 4px;
+    border-radius: 2px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="logo">KOOKR<span class="logo-ver">v1.0</span></div>
+  </div>
+  <div class="topbar-center">
+    <button class="tab-btn active">Agents</button>
+    <button class="tab-btn">Tasks</button>
+  </div>
+  <div class="topbar-right">
+    <div class="attention-pill">
+      <span class="attention-pill-dot"></span>
+      1 needs attention
+    </div>
+    <button class="btn-launch">+ Launch Agent</button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="sidebar">
+    <div class="sidebar-search">
+      <input class="search-input" type="text" placeholder="Filter agents..." />
+    </div>
+
+    <div class="section-label attention">
+      Needs Attention
+      <span class="section-count">1</span>
+    </div>
+    <div class="agent-list">
+      <div class="agent-item alert selected">
+        <span class="status-dot stuck"></span>
+        <div class="agent-info">
+          <div class="agent-name">
+            Agent #3
+            <span class="agent-badge stuck">Stuck</span>
+          </div>
+          <div class="agent-task">Fix auth bug in login.ts</div>
+          <div class="agent-meta">
+            <span>Claude Code</span>
+            <span>12m</span>
+            <span>$0.42</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-label working">
+        Working
+        <span class="section-count">2</span>
+      </div>
+
+      <div class="agent-item">
+        <span class="status-dot running"></span>
+        <div class="agent-info">
+          <div class="agent-name">
+            Agent #1
+            <span class="agent-badge running">Running</span>
+          </div>
+          <div class="agent-task">Add pagination to /users endpoint</div>
+          <div class="agent-meta">
+            <span>Claude Code</span>
+            <span>8m</span>
+            <span>$0.18</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="agent-item">
+        <span class="status-dot running"></span>
+        <div class="agent-info">
+          <div class="agent-name">
+            Agent #4
+            <span class="agent-badge running">Running</span>
+          </div>
+          <div class="agent-task">Write unit tests for utils.ts</div>
+          <div class="agent-meta">
+            <span>Claude Code</span>
+            <span>3m</span>
+            <span>$0.07</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-label done">
+        Completed
+        <span class="section-count">1</span>
+      </div>
+
+      <div class="agent-item">
+        <span class="status-dot completed"></span>
+        <div class="agent-info">
+          <div class="agent-name">Agent #2</div>
+          <div class="agent-task">Update README with API docs</div>
+          <div class="agent-meta">
+            <span>Done</span>
+            <span>$0.31</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="detail">
+    <div class="detail-header">
+      <div class="detail-header-left">
+        <div class="detail-title">Agent #3 — Fix auth bug in login.ts</div>
+        <div class="detail-subtitle">
+          <span>Claude Code</span>
+          <span><code>~/git/myapp</code></span>
+          <span>Running 12m</span>
+          <span>$0.42</span>
+        </div>
+      </div>
+      <div class="detail-actions">
+        <button class="btn-sm">Skip</button>
+        <button class="btn-sm">Snooze</button>
+        <button class="btn-sm">Attach</button>
+      </div>
+    </div>
+
+    <div class="insight-section">
+      <div class="insight-card">
+        <div class="insight-header">
+          <span class="insight-icon">!</span>
+          <span class="insight-title">Supervisor Insight</span>
+          <button class="insight-collapse">Collapse</button>
+        </div>
+        <div class="insight-body">
+          Agent #3 has run <code>npm test</code> 12 times with the same error:
+          <code>TypeError: token.verify is not a function</code>. It keeps editing
+          <code>auth.ts</code> line 42 but hasn't tried changing the import path.
+          The function exists in <code>@auth/jwt</code>, not <code>@auth/core</code>.
+        </div>
+      </div>
+    </div>
+
+    <div class="activity">
+      <div class="activity-item">
+        <div class="activity-dot read">R</div>
+        <div class="activity-content">
+          <div class="activity-label">Read <code>src/auth.ts</code></div>
+          <div class="activity-time">12:04 PM</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="activity-dot edit">E</div>
+        <div class="activity-content">
+          <div class="activity-label">Edit <code>src/auth.ts</code> line 42 — changed import path</div>
+          <div class="activity-time">12:05 PM</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="activity-dot error">!</div>
+        <div class="activity-content">
+          <div class="activity-label">Bash: <code>npm test</code> <span class="repeat-badge">x3</span></div>
+          <div class="activity-time">12:05 PM</div>
+          <div class="activity-error">TypeError: token.verify is not a function</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="activity-dot edit">E</div>
+        <div class="activity-content">
+          <div class="activity-label">Edit <code>src/auth.ts</code> line 42 — reverted change</div>
+          <div class="activity-time">12:07 PM</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="activity-dot error">!</div>
+        <div class="activity-content">
+          <div class="activity-label">Bash: <code>npm test</code> <span class="repeat-badge">x9</span></div>
+          <div class="activity-time">12:10 PM</div>
+          <div class="activity-error">TypeError: token.verify is not a function</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="activity-dot edit">E</div>
+        <div class="activity-content">
+          <div class="activity-label">Edit <code>src/auth.ts</code> line 42 — same change as 12:05</div>
+          <div class="activity-time">12:13 PM</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="activity-dot error">!</div>
+        <div class="activity-content">
+          <div class="activity-label">Bash: <code>npm test</code> <span class="repeat-badge">x12</span></div>
+          <div class="activity-time">12:14 PM</div>
+          <div class="activity-error">TypeError: token.verify is not a function</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-hint">
+        <span>Respond to agent — sent as keystrokes to terminal</span>
+        <span><kbd>Ctrl+Enter</kbd> send &nbsp; <kbd>Ctrl+N</kbd> next</span>
+      </div>
+      <div class="input-row">
+        <input class="input-field" type="text" placeholder="Try importing from @auth/jwt instead of @auth/core..." />
+        <button class="btn-send">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="statusbar">
+  <div class="statusbar-left">
+    <span>4 agents</span>
+    <span>1 stuck</span>
+    <span>1 completed</span>
+    <span>Total: $0.98</span>
+  </div>
+  <div class="statusbar-right">
+    <span><kbd>Ctrl+N</kbd> next</span>
+    <span><kbd>Ctrl+Enter</kbd> send</span>
+    <span><kbd>↑↓</kbd> agents</span>
+    <span><kbd>Ctrl+L</kbd> launch</span>
+  </div>
+</div>
+
+</body>
+</html>

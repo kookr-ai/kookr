@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 31: Command-Driven Triage</title>
+<!--
+  Design rationale:
+  P23's keyboard-first command palette merged with P26's triage loop.
+  Minimal chrome — maximum screen for conversation and terminal.
+
+  Key ideas:
+  - Ultra-slim sidebar (200px) with numbered shortcuts (1-5)
+  - Ctrl+K command palette for all actions (switch agent, launch, snooze, etc.)
+  - Full-width conversation + terminal split (no wasted space)
+  - P26 Send & Next + queue dots as primary interaction
+  - Supervisor explanation as a pinned "system message" in conversation
+  - No separate alert banner — the explanation IS the conversation context
+  - Designed for keyboard-only operation: every action has a shortcut
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0f1117;
+    --bg-panel: #151820;
+    --bg-card: #1b1f2e;
+    --bg-card-hover: #21263a;
+    --bg-input: #1c2134;
+    --bg-terminal: #0a0c12;
+    --border: #262d42;
+    --border-dim: #1d2338;
+    --text: #b2bace;
+    --text-secondary: #6b778e;
+    --text-bright: #dfe4f0;
+    --text-muted: #3f4a62;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --purple: #a78bfa;
+    --teal: #2dd4bf;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    height: 100vh; display: flex; flex-direction: column;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11.5px; }
+
+  /* Minimal top bar */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 12px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); height: 36px; flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 12px; }
+  .logo { font-family: 'JetBrains Mono', monospace; color: var(--teal);
+    font-weight: 700; font-size: 12px; letter-spacing: 1.5px; }
+  .queue-info { display: flex; align-items: center; gap: 6px; }
+  .queue-dots { display: flex; gap: 3px; }
+  .queue-dot { width: 7px; height: 7px; border-radius: 50%; }
+  .queue-dot.current { background: var(--amber); box-shadow: 0 0 5px rgba(251,191,36,0.4); }
+  .queue-dot.waiting { background: var(--text-muted); }
+  .queue-dot.ok { background: var(--green); opacity: 0.5; }
+  .queue-text { font-size: 10.5px; color: var(--text-muted); }
+  .topbar-right { display: flex; align-items: center; gap: 10px; }
+  .topbar-stat { font-size: 10.5px; color: var(--text-muted); }
+  .topbar-stat .n { font-weight: 700; }
+  .topbar-stat .n.warn { color: var(--amber); }
+  .topbar-stat .n.ok { color: var(--green); }
+  .cmd-hint {
+    font-size: 10.5px; color: var(--text-muted); display: flex; align-items: center; gap: 4px;
+  }
+  .cmd-hint kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 1px 5px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+  }
+
+  .main { flex: 1; display: flex; overflow: hidden; }
+
+  /* Ultra-slim sidebar */
+  .sidebar {
+    width: 200px; background: var(--bg-panel);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .sidebar-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+
+  .sb-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; cursor: pointer; border-left: 3px solid transparent;
+    transition: background 0.1s;
+  }
+  .sb-item:hover { background: var(--bg-card); }
+  .sb-item.active { background: var(--bg-card); border-left-color: var(--teal); }
+  .sb-item.attention { border-left-color: var(--amber); }
+  .sb-item.error { border-left-color: var(--red); }
+  .sb-shortcut {
+    width: 18px; height: 18px; border-radius: 3px;
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+    color: var(--text-muted); flex-shrink: 0;
+  }
+  .sb-item.active .sb-shortcut { border-color: var(--teal); color: var(--teal); }
+  .sb-item.attention .sb-shortcut { border-color: var(--amber); color: var(--amber); }
+  .sb-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .sb-dot.running { background: var(--green); }
+  .sb-dot.stuck { background: var(--amber); animation: pulse 2s ease-in-out infinite; }
+  .sb-dot.err { background: var(--red); }
+  .sb-dot.done { background: var(--text-muted); }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+  .sb-name {
+    font-size: 11.5px; font-weight: 600; color: var(--text-bright);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;
+  }
+  .sb-cost { font-size: 9.5px; color: var(--text-muted); flex-shrink: 0; }
+
+  /* Content: conversation + terminal split */
+  .content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  .content-strip {
+    padding: 6px 16px; border-bottom: 1px solid var(--border-dim);
+    display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    font-size: 11px; color: var(--text-muted);
+  }
+  .content-strip-left { display: flex; align-items: center; gap: 8px; }
+  .content-strip h2 { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+  .status-badge { font-size: 9.5px; padding: 2px 6px; border-radius: 3px; font-weight: 600; }
+  .status-badge.stuck { background: rgba(251,191,36,0.1); color: var(--amber); }
+
+  .content-split { flex: 1; display: flex; overflow: hidden; }
+
+  /* Conversation */
+  .conversation-col { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .conversation {
+    flex: 1; overflow-y: auto; padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+
+  /* Supervisor explanation as system message (pinned to top) */
+  .msg-system {
+    padding: 10px 14px; border-radius: 6px; font-size: 12.5px; line-height: 1.6;
+    background: rgba(251,191,36,0.06); border: 1px solid rgba(251,191,36,0.18);
+    color: var(--amber);
+  }
+  .msg-system .label { font-size: 10px; font-weight: 700; color: var(--amber); margin-bottom: 4px; letter-spacing: 0.4px; }
+  .msg-system code { background: rgba(251,191,36,0.1); padding: 1px 4px; border-radius: 2px; }
+
+  .msg { padding: 10px 14px; border-radius: 6px; font-size: 12.5px; line-height: 1.6; }
+  .msg.agent { background: var(--bg-card); border: 1px solid var(--border-dim); }
+  .msg.tool {
+    background: var(--bg-terminal); border: 1px solid var(--border-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text-secondary); white-space: pre-wrap;
+  }
+  .msg .label { font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .msg code { background: var(--bg-terminal); padding: 1px 4px; border-radius: 2px; }
+  .repeat-pill {
+    display: inline-block; background: rgba(251,191,36,0.12);
+    color: var(--amber); font-size: 9.5px; font-weight: 700;
+    padding: 0 6px; border-radius: 6px; margin-left: 4px;
+  }
+
+  /* Terminal side panel */
+  .terminal-col {
+    width: 380px; background: var(--bg-terminal);
+    border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .terminal-header {
+    padding: 6px 12px; background: var(--bg-panel); border-bottom: 1px solid var(--border-dim);
+    font-size: 11px; color: var(--text-secondary);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .terminal-header-left { display: flex; align-items: center; gap: 6px; }
+  .terminal-header-left .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .terminal-content {
+    flex: 1; padding: 10px 12px; font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px; color: var(--green); line-height: 1.6;
+    white-space: pre-wrap; overflow-y: auto;
+  }
+  .terminal-content .err { color: var(--red); }
+  .terminal-content .dim { color: var(--text-muted); }
+  .terminal-content .file { color: var(--blue); }
+  .terminal-content .pass { color: var(--green); }
+
+  /* Response area */
+  .response-area {
+    padding: 10px 16px; border-top: 1px solid var(--border);
+    background: var(--bg-panel); flex-shrink: 0;
+  }
+  .response-row { display: flex; gap: 8px; align-items: center; }
+  .response-area input {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border-dim);
+    border-radius: 8px; padding: 11px 14px; color: var(--text-bright);
+    font-family: inherit; font-size: 14px; outline: none;
+  }
+  .response-area input:focus { border-color: var(--teal); box-shadow: 0 0 0 2px rgba(45,212,191,0.12); }
+  .response-area input::placeholder { color: var(--text-muted); }
+  .btn-primary {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 11px 20px; border-radius: 8px; font-weight: 700; cursor: pointer;
+    font-size: 13px; white-space: nowrap;
+  }
+  .btn-secondary {
+    background: none; border: 1px solid var(--border-dim); color: var(--text-secondary);
+    padding: 11px 14px; border-radius: 8px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  .response-hint { margin-top: 5px; font-size: 10px; color: var(--text-muted); }
+  .response-hint kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 4px; border-radius: 2px; font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  }
+
+  /* Command palette overlay */
+  .cmd-palette {
+    display: none; position: fixed; inset: 0;
+    background: rgba(10,12,18,0.75); z-index: 100;
+    justify-content: center; padding-top: 120px;
+  }
+  .cmd-box {
+    width: 520px; background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+    overflow: hidden;
+  }
+  .cmd-input {
+    width: 100%; background: none; border: none; border-bottom: 1px solid var(--border-dim);
+    padding: 14px 18px; color: var(--text-bright); font-family: inherit;
+    font-size: 15px; outline: none;
+  }
+  .cmd-input::placeholder { color: var(--text-muted); }
+  .cmd-results { max-height: 280px; overflow-y: auto; }
+  .cmd-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 18px; cursor: pointer;
+  }
+  .cmd-item:hover, .cmd-item.selected { background: var(--bg-card); }
+  .cmd-item-icon { font-size: 14px; width: 20px; text-align: center; }
+  .cmd-item-label { font-size: 13px; color: var(--text-bright); flex: 1; }
+  .cmd-item-shortcut { font-size: 10.5px; color: var(--text-muted); }
+  .cmd-item-shortcut kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 1px 5px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+  }
+
+  /* Sent overlay */
+  .sent-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(10,12,18,0.8);
+    z-index: 100; justify-content: center; align-items: center;
+  }
+  .sent-card {
+    background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px 32px; text-align: center;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+  }
+  .sent-check { font-size: 32px; color: var(--green); margin-bottom: 8px; }
+  .sent-text { font-size: 14px; color: var(--text-bright); margin-bottom: 4px; }
+  .sent-next { font-size: 12px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+    <div class="queue-info">
+      <div class="queue-dots">
+        <div class="queue-dot current"></div>
+        <div class="queue-dot waiting"></div>
+        <div class="queue-dot ok"></div>
+        <div class="queue-dot ok"></div>
+        <div class="queue-dot ok"></div>
+      </div>
+      <span class="queue-text">1 of 2 need attention</span>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="topbar-stat"><span class="n warn">2</span> attn</span>
+    <span class="topbar-stat"><span class="n ok">2</span> ok</span>
+    <span class="topbar-stat">$1.68</span>
+    <span class="cmd-hint"><kbd>Ctrl+K</kbd></span>
+  </div>
+</div>
+
+<div class="main">
+  <!-- Slim sidebar with number shortcuts -->
+  <div class="sidebar">
+    <div class="sidebar-list">
+      <div class="sb-item active attention">
+        <span class="sb-shortcut">1</span>
+        <span class="sb-dot stuck"></span>
+        <span class="sb-name">Fix auth token refresh</span>
+        <span class="sb-cost">$0.42</span>
+      </div>
+      <div class="sb-item error">
+        <span class="sb-shortcut">2</span>
+        <span class="sb-dot err"></span>
+        <span class="sb-name">Refactor cache layer</span>
+        <span class="sb-cost">$0.87</span>
+      </div>
+      <div class="sb-item">
+        <span class="sb-shortcut">3</span>
+        <span class="sb-dot running"></span>
+        <span class="sb-name">Add pagination to /users</span>
+        <span class="sb-cost">$0.23</span>
+      </div>
+      <div class="sb-item">
+        <span class="sb-shortcut">4</span>
+        <span class="sb-dot running"></span>
+        <span class="sb-name">Add integration tests</span>
+        <span class="sb-cost">$0.11</span>
+      </div>
+      <div class="sb-item">
+        <span class="sb-shortcut">5</span>
+        <span class="sb-dot done"></span>
+        <span class="sb-name">Update README badges</span>
+        <span class="sb-cost">$0.05</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="content-strip">
+      <div class="content-strip-left">
+        <h2>Fix auth token refresh</h2>
+        <span class="status-badge stuck">STUCK</span>
+      </div>
+      <span>claude-code &middot; ~/git/webapp &middot; 18m &middot; $0.42</span>
+    </div>
+
+    <div class="content-split">
+      <div class="conversation-col">
+        <div class="conversation">
+          <!-- Supervisor explanation as system message -->
+          <div class="msg-system">
+            <div class="label">Supervisor</div>
+            Agent ran <code>npm test</code> 8 times with the same <code>TypeError: token.verify is not a function</code>. Keeps editing <code>src/auth/token.ts</code> but hasn't tried changing the import. Likely needs a hint about which jwt module to use.
+          </div>
+          <div class="msg agent">
+            <div class="label">Agent</div>
+            I'll fix the auth token refresh logic in <code>src/auth/token.ts</code>.
+          </div>
+          <div class="msg tool">
+            <div class="label">Read src/auth/token.ts</div>
+export function refreshToken(token: string) {
+  return jwt.verify(token, SECRET);
+}
+          </div>
+          <div class="msg tool">
+            <div class="label">Bash: npm test <span class="repeat-pill">x8</span></div>
+FAIL src/auth/__tests__/token.test.ts
+  TypeError: token.verify is not a function
+          </div>
+          <div class="msg agent">
+            <div class="label">Agent</div>
+            Still failing. Let me try a different approach...
+          </div>
+        </div>
+      </div>
+
+      <!-- Terminal side panel -->
+      <div class="terminal-col">
+        <div class="terminal-header">
+          <div class="terminal-header-left"><span class="dot"></span> Terminal</div>
+          <span>Attach</span>
+        </div>
+        <div class="terminal-content">
+$ npm test -- --testPathPattern=token
+
+> webapp@2.1.0 test
+> vitest run --testPathPattern=token
+
+ RUN  v1.6.0 /home/user/git/webapp
+
+ <span class="err">FAIL</span>  src/auth/__tests__/token.test.ts
+   > refreshToken > should issue new token
+     <span class="err">TypeError: token.verify is not a function</span>
+      <span class="dim">&#10095;</span> refreshToken <span class="file">src/auth/token.ts:14:18</span>
+
+ Tests  <span class="err">1 failed</span> | <span class="pass">3 passed</span> (4)
+ Time   1.24s
+        </div>
+      </div>
+    </div>
+
+    <div class="response-area">
+      <div class="response-row">
+        <input type="text" placeholder="Send a hint..." autofocus />
+        <button class="btn-primary" onclick="showSent()">Send & Next</button>
+        <button class="btn-secondary">Skip</button>
+        <button class="btn-secondary">Snooze</button>
+      </div>
+      <div class="response-hint">
+        <kbd>Ctrl+Enter</kbd> send & next &middot; <kbd>Tab</kbd> skip &middot; <kbd>1</kbd>-<kbd>5</kbd> switch task &middot; <kbd>Ctrl+K</kbd> commands
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Command palette -->
+<div class="cmd-palette" id="cmdPalette">
+  <div class="cmd-box">
+    <input class="cmd-input" type="text" placeholder="Type a command..." autofocus />
+    <div class="cmd-results">
+      <div class="cmd-item selected">
+        <span class="cmd-item-icon">&#9654;</span>
+        <span class="cmd-item-label">Next bottleneck</span>
+        <span class="cmd-item-shortcut"><kbd>Ctrl+N</kbd></span>
+      </div>
+      <div class="cmd-item">
+        <span class="cmd-item-icon">+</span>
+        <span class="cmd-item-label">Launch new task...</span>
+        <span class="cmd-item-shortcut"><kbd>Ctrl+L</kbd></span>
+      </div>
+      <div class="cmd-item">
+        <span class="cmd-item-icon">&#8634;</span>
+        <span class="cmd-item-label">Snooze current task (5m)</span>
+      </div>
+      <div class="cmd-item">
+        <span class="cmd-item-icon">&#9744;</span>
+        <span class="cmd-item-label">Attach to terminal</span>
+        <span class="cmd-item-shortcut"><kbd>Ctrl+`</kbd></span>
+      </div>
+      <div class="cmd-item">
+        <span class="cmd-item-icon">&#9632;</span>
+        <span class="cmd-item-label">Stop current task</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Sent overlay -->
+<div class="sent-overlay" id="sentOverlay">
+  <div class="sent-card">
+    <div class="sent-check">&#10003;</div>
+    <div class="sent-text">Hint sent to Fix auth token refresh</div>
+    <div class="sent-next">Advancing to: Refactor cache layer...</div>
+  </div>
+</div>
+
+<script>
+function showSent() {
+  const o = document.getElementById('sentOverlay');
+  o.style.display = 'flex';
+  setTimeout(() => { o.style.display = 'none'; }, 1500);
+}
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === 'k') {
+    e.preventDefault();
+    const p = document.getElementById('cmdPalette');
+    p.style.display = p.style.display === 'flex' ? 'none' : 'flex';
+    if (p.style.display === 'flex') p.querySelector('input').focus();
+  }
+  if (e.key === 'Escape') {
+    document.getElementById('cmdPalette').style.display = 'none';
+  }
+});
+</script>
+</body>
+</html>

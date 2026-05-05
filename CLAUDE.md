@@ -1,0 +1,186 @@
+# Kookr — AI Agent Instructions
+
+## What is Kookr?
+
+Kookr is a **smart attention router** for developers running multiple AI coding agents. Its core is a **supervisor agent** — an AI that watches your coding agents' output streams, detects anomalies (stuck loops, repeated errors, permission blocks, budget burn), and explains what's going wrong in plain language. It then routes the developer to the most urgent agent.
+
+It IS an AI agent — but a supervisor, not a coder. It watches agents, not code.
+
+## Repository Structure
+
+```
+README.md              — Start here: problem, solution, design principles
+docs/features.md       — What the app must do (user-facing)
+docs/architecture.md   — System design: supervisor agent, adapters, reuse map
+docs/roadmap.md        — 4 implementation phases (Phases 1-3 mostly complete)
+docs/rfc/              — Request for Comments: feature proposals, design explorations
+docs/adr/              — Architecture Decision Records: accepted technical decisions
+docs/poc/              — Proof-of-concept validation (hook mechanism)
+docs/reports/          — One-time analysis artifacts (gap reports, audits)
+src/core/              — Pure logic: types, parsers, task store, anomaly detection, attention queue, monitor
+src/adapters/          — I/O boundaries: TerminalBackend + LocalDtachBackend, Claude Code adapter, Codex CLI adapter
+src/server/            — HTTP (Hono) + WebSocket server, hook file watcher, reconciliation
+src/frontend/          — React SPA: components, Zustand store, WebSocket hook, CSS
+.claude/skills/        — Kookr-internal skills (project-scope; reference Kookr paths/commands)
+.claude/agents/        — Kookr-internal review agents (project-scope)
+plugin/                — Kookr Toolkit (Claude Code plugin distributed via marketplace)
+plugin/.claude-plugin/plugin.json  — Plugin manifest (name, version, author)
+plugin/skills/         — General-purpose toolkit skills (no Kookr-internal refs)
+plugin/agents/         — General-purpose review subagents
+.claude-plugin/marketplace.json    — Marketplace manifest pointing at ./plugin
+```
+
+## Key principles
+
+1. **Reuse, don't reinvent** — Agent drivers from aegiscore, skill format from Claude Code. Check existing solutions before designing new ones.
+2. **Smart supervisor, not coder** — Kookr's AI understands what agents are doing and explains anomalies. It doesn't write code itself.
+3. **Simple first** — No plugins, no persistence, no cloud for V1. Single package, in-memory state.
+4. **TypeScript strict** — Full TypeScript stack, strict mode, discriminated unions, exhaustive switches.
+5. **Spec-driven** — Write spec → write tests (Vitest + Playwright) → implement.
+
+## Decided
+
+- Backend + Frontend: TypeScript (ADR-001)
+- Frontend framework: React + Vite, Zustand for state (ADR-002)
+- Deployment: Local Node.js backend + browser frontend (ADR-003)
+- Testing: Vitest (unit/integration) + Playwright (E2E)
+- Agent execution: Managed terminal sessions — agents run in interactive mode inside dtach-backed sessions owned by LocalDtachBackend. One persistent attach per session, ring-buffered for replay. Input via keystrokes, monitoring via hooks + transcript JSONL (ADR-014 supersedes ADR-007; RFC `rfc-v8-tmux-removal.md` completes the migration)
+- Agent monitoring: Claude Code hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) injected via `--settings` flag. Hooks are additive to user settings. See docs/poc/001-hook-mechanism-validation.md
+- Skill/agent distribution: Kookr Toolkit ships as a Claude Code plugin at `plugin/` with `.claude-plugin/marketplace.json` listing it. `ClaudeCodeAdapter` injects `--plugin-dir <kookr>/plugin` into every spawned `claude` so Kookr-spawned agents see the toolkit regardless of cwd. Other developers install via `/plugin marketplace add kookr-ai/kookr` + `/plugin install kookr-toolkit@kookr`. See `docs/rfc/rfc-share-claude-resources-cross-project.md`.
+
+## Where to put a new skill or agent
+
+- **Kookr-internal** (references `pnpm prod:*`, `KOOKR_*`, `~/.kookr/`, `.hooks/`, hardcoded `/home/.../git/kookr`, or describes Kookr internals like the dashboard / supervisor / playbook system): goes in `<kookr>/.claude/{skills,agents}/`. Loaded as project-scope when cwd is the Kookr repo. Not shipped to other developers.
+- **General-purpose** (no Kookr-internal references): goes in `<kookr>/plugin/{skills,agents}/`. Ships via the toolkit plugin to all consumers. **Bump `plugin/.claude-plugin/plugin.json#version`** in the same PR — the pre-push hook enforces this.
+
+User-scope (`~/.claude/skills/<name>`) **wins over** project-scope (`<cwd>/.claude/skills/<name>`) on name collision (silent shadow — empirically verified). The pre-push hook rejects pushes that introduce a name collision between `.claude/<kind>/` and `plugin/<kind>/`.
+
+Plugin skill invocation is backwards-compatible: prompts that say `typescript-type-safety` (unqualified) still trigger the same skill once it's namespaced as `kookr-toolkit:typescript-type-safety`. No CLAUDE.md / memory / prompt rewrites needed when promoting a skill from project-scope to plugin.
+
+The `KOOKR_PLUGIN_DIR` env var overrides the auto-resolved plugin path. Set to empty string to disable injection for a session (hermetic mode).
+- Platform: Linux + macOS required. Windows deferred.
+
+## Related projects
+
+- `~/git/aegiscore` — Agent drivers, stuck detector, JSONL parsers (we fork code from here)
+- `~/git/openclaw` — Plugin SDK, skills, gateway protocol (we study patterns from here)
+- `~/git/codex` — Forked Codex CLI with Claude-compatible skill loading (`.claude/skills` instead of `.agents/skills`)
+
+## Codex CLI binary
+
+Kookr's Codex adapter (`src/adapters/codex-cli-adapter.ts`) calls a Codex CLI binary configured via `KOOKR_CODEX_BIN` (defaults to `codex` on PATH). This binary comes from the forked repo at `~/git/codex`.
+
+- **Rebuild after fork changes:** `pnpm codex:rebuild` (defaults to the faster `kookr-dev` build path in `scripts/rebuild-codex.sh`)
+- **Override paths:** `CODEX_SRC` (fork location), `CODEX_INSTALL_DIR` (install target), `CODEX_BUILD_PROFILE` (`kookr-dev` by default, set to `release` for the full slow build)
+- **After rebuilding:** restart Kookr (`pnpm prod:update`) so the new binary is picked up
+- **Known gaps in the fork:** plugin marketplace paths and permission logic still reference `.agents` — see [#210](https://github.com/kookr-ai/kookr/issues/210)
+
+## Bypassing agent permission prompts
+
+Set `KOOKR_BYPASS_ALL_PERMISSIONS=true` in `.env` to make Kookr launch spawned agents without any permission prompts:
+
+- **Claude Code:** adds `--dangerously-skip-permissions` to the launch command.
+- **Codex CLI:** replaces `--full-auto` with `--dangerously-bypass-approvals-and-sandbox` (skips approvals AND the sandbox, allowing writes outside the workspace).
+
+Off by default. Opt-in because both flags remove important safety guardrails.
+
+## Production instance
+
+A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on port 4800. It is isolated from this dev checkout — building here does not affect it.
+
+- **All dev commands default to port 4801** (`pnpm dev`, `pnpm start:dev`) — no conflict with production
+- **Do not modify `../kookr-prod`** — it is updated explicitly via `pnpm prod:update`. This includes skills, source, docs, and config files. Even if your cwd is `kookr-prod`, edit files in `~/git/kookr` instead. A PreToolUse hook enforces this — if it blocks your edit, switch to the main repo.
+- `pnpm prod:update` fetches, builds, and **auto-restarts** the server (kills port 4800, restarts, health-checks)
+- `pnpm prod:restart` restarts without rebuilding (uses `lsof` — works on Linux and macOS)
+- **When asked to "restart server"** → run `pnpm prod:update` (includes build + restart)
+- **Commit and push before `pnpm prod:update`** — the prod worktree pulls from `origin/main`, so uncommitted or unpushed changes will not be deployed
+- Tests are safe — they use random ports and temp directories
+- See `docs/rfc/rfc-stable-instance-isolation.md` for design rationale
+
+## When working on this project
+
+- **Never work on `main` without permission** — Do not edit Kookr from the main repo on branch `main` unless the user explicitly approves that exception first.
+- **All changes in worktrees** — Always use `EnterWorktree` before making changes. Never switch branches on the main repo. Start by reporting the current branch/worktree and any dirty files in this repo, and keep reporting dirty files for any additional repos you touch. If a worktree with a similar name already exists, ask the user whether to reuse it or create a new one. If you must switch branches on the main repo (edge case), explain why and wait for explicit user approval. See `.claude/skills/github-issue-workflow/SKILL.md` for naming conventions.
+- **Use injected Kookr session context** — Kookr-managed agent sessions export `KOOKR_TASK_ID`, `KOOKR_PARENT_TASK_ID` (when present), `KOOKR_API_BASE_URL`, and `KOOKR_GIT_COMMON_DIR` (when in a worktree). Use these instead of dtach/process probing when spawning child tasks or diagnosing worktree behavior.
+- **Complete the delivery cycle** — After finishing implementation work, don't stop and wait. Commit, push, and create (or update) a PR. The user should not have to ask you to "commit and push" or "create PR" — do it proactively as the final step. If there's a PR checklist, verify each item before declaring done.
+- **Use the delivery-cycle skills explicitly** — Before a non-trivial `git push`, run `pre-push`. After pushing a branch with a PR, or after creating/updating the PR, run `post-push`. These skills compose the repo pre-push hook, `pre-pr-review`, `pr-lifecycle`, and `pr-review-triage` into one flow.
+- **Report completion clearly** — When you finish a task, explicitly state what was done, what was committed/pushed, and the PR URL (if created). Don't leave the user guessing whether you're done or still working. End with a clear status: "Done — PR created at [URL]" or "Done — changes committed and pushed to [branch]".
+- Read `docs/features.md` for what to build
+- Read `docs/architecture.md` for how
+- Before designing any new system, check if aegiscore or openclaw already solved it
+- Keep V1 minimal: single package, no monorepo, no plugins, in-memory state
+- **Verify with real data, don't assume** — Before designing a fix for any behavior bug, find the actual inputs causing the problem (hook logs in `~/.kookr/hooks/*.jsonl`, transcripts, DB records). Reproduce the issue programmatically with real data. Scan broadly to measure real-world frequency of both false-positives and true-positives. The data may reveal the right solution is fundamentally different from what you'd assume.
+- **Capitalize on gathered knowledge** — When a research task, POC, or debugging session produces reusable knowledge (how a system works, validated patterns, gotchas), distill it into a skill in `.claude/skills/`. Don't let hard-won insights evaporate with the conversation. If a skill already exists for the topic, update it. If not, create one. The bar is: "would a future agent benefit from knowing this without re-discovering it?"
+- **Persistence Mechanism Picker** — When you need to persist anything (a rule, a learning, a correction), consult the picker below **before** choosing where it goes. The system-prompt `# auto memory` section actively trains you toward memory as a default; this section overrides that default for behavioral rules.
+- **Load `codex-claude-compatibility` skill before Codex fork work** — Before modifying, building, or deploying `~/git/codex`, load the skill first. It documents the exact build command, install path, version scheme, branch policy, and verification workflow.
+
+- **RFC workflow** — When generating an RFC or design document, follow the iterative review pattern: draft in worktree → run parallel critic subagents → incorporate feedback → repeat (default 3 rounds) → present to user and wait for approval before committing or implementing. See `rfc-iterative-review` skill.
+
+## Persistence Mechanism Picker
+
+**This section overrides the system-prompt `# auto memory` default behavior when the two conflict.** Kookr runs tasks on both Claude Code AND Codex CLI agents. Codex CLI cannot read Claude Code's memory system. Feedback memories are therefore invisible to half the runtime — which means **memory is the wrong default for any behavioral rule in this project**, no matter how much the auto-memory system-prompt section tells you otherwise.
+
+Before persisting anything, walk this decision tree:
+
+```
+Is it a BEHAVIORAL RULE or WORKFLOW CORRECTION?
+("do X before Y", "never use Z", "always run W", "use A not B")
+│
+├── YES → Memory is BANNED for this. Pick from:
+│         │
+│         ├── Can a shell command deterministically detect the
+│         │   wrong behavior? → HOOK (`~/.claude/hooks/*.sh` or
+│         │                     `.claude/hooks/*.sh` wired in settings.json)
+│         │
+│         ├── Is it a workflow with repeatable steps? → SKILL
+│         │                     (`.claude/skills/<name>/SKILL.md`)
+│         │
+│         └── Is it a universal one-line rule? → CLAUDE.md
+│                                (project `CLAUDE.md` or `~/.claude/CLAUDE.md`)
+│
+└── NO, it's USER/PROJECT CONTEXT
+    (who the user is, project history, external references,
+     stakeholder asks, who decided what and why)
+    │
+    └── → Memory is the right place
+          (`~/.claude/projects/<proj>/memory/*.md`)
+```
+
+### Ranking for behavioral rules (strongest to weakest)
+
+| # | Mechanism | Strength | Notes |
+|---|---|---|---|
+| 1 | **Hook** | Deterministic enforcement | Runs every tool call regardless of agent type; cannot be forgotten |
+| 2 | **Skill** | Loaded on demand by every agent type | Both Claude Code and Codex CLI read `.claude/skills/` |
+| 3 | **CLAUDE.md** | Loaded every session by every agent type | Keep concise; promote only universal rules |
+| 4 | ~~Memory~~ | **BANNED for rules in this project** | Invisible to Codex CLI; only for user/project context |
+
+### The calibration question
+
+If you're tempted to save a feedback memory as a fix, ask yourself:
+
+> *"Would this memory still protect the user if they ran the exact same task on Codex CLI tomorrow?"*
+
+If the answer is no — and for behavioral rules it's always no — pick a hook, skill, or CLAUDE.md rule instead.
+
+### When memory IS acceptable
+
+- **User profile**: "Jean is the project owner, senior engineer, prefers minimal code"
+- **Project history**: "The crash-recovery RFC was drafted 2026-03-28 after repeated WSL crashes"
+- **External references**: "Pipeline bugs are tracked in Linear project INGEST"
+- **Stakeholder context**: "Legal flagged the old auth middleware for compliance reasons"
+
+None of these are behavioral rules. They are context that helps an agent understand the situation — not instructions about how to work.
+
+### Related
+
+See the `self-reflect` skill at `.claude/skills/self-reflect/SKILL.md`. Its Persistence Mechanism Picker defers to this section and ranks memory last for behavioral rules.
+
+## Design document conventions
+
+- **RFCs** → `docs/rfc/rfc-<slug>.md` — feature proposals, design explorations
+- **ADRs** → `docs/adr/<NNN>-<slug>.md` — accepted architecture decisions (numbered, with README index)
+- **POCs** → `docs/poc/<NNN>-<slug>.md` — proof-of-concept validations
+- **Reports** → `docs/reports/` — one-time analysis artifacts (gap reports, audits)
+- Never put design documents directly in `docs/` — use the appropriate subdirectory
+- Core docs in `docs/` root: `architecture.md`, `features.md`, `requirements.md`, `roadmap.md` only

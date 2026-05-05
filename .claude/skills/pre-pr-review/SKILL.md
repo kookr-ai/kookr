@@ -1,0 +1,225 @@
+---
+name: pre-pr-review
+description: Self-review checklist before creating a PR — repo checks, diff review, reviewer specialists, and gate state creation before gh pr create.
+keywords: review, self-review, pre-PR, checklist, before PR, quality, validation, before merge, before submit
+related: pre-push, pr-lifecycle, git-commit-discipline, testing-patterns, pr-review-triage
+---
+
+# Pre-PR Review
+
+> **Requires:** the four reviewer specialists at `~/.claude/reviewer-specialists/` (part of the optional OSS extension — see `docs/hooks-setup.md`). If absent, stop and report the missing dependency rather than fabricating review output. The repo-level checks (build, tsc, tests) below still run.
+
+Run this checklist before creating a pull request. When Kookr is installed via `scripts/install-hooks.sh`, the `pr-workflow-gate` hook enforces this skill before every `gh pr create` in *any* repo on your machine.
+
+## When to Use
+
+- Before every `gh pr create`
+- After finishing implementation, before declaring the task complete
+
+## Checklist
+
+### 1. Detect Project Type
+
+Detect the project's build system from the working directory. Pick the first row whose condition is true:
+
+| Detected                                                          | Build command                                                              | Test command   |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------- | -------------- |
+| **Kookr main** (`package.json` + `.hooks/pre-push` present)      | `pnpm build:server && pnpm check:e2e`                                      | `pnpm test`    |
+| **pnpm** (`pnpm-lock.yaml`)                                       | prefer `pnpm build`; else `pnpm tsc --noEmit` if `tsconfig.json` present   | `pnpm test`    |
+| **npm** (`package-lock.json`)                                     | prefer `npm run build`; else `npx tsc --noEmit` if `tsconfig.json` present | `npm test`     |
+| **yarn** (`yarn.lock`)                                            | prefer `yarn build`; else `yarn tsc --noEmit` if `tsconfig.json` present   | `yarn test`    |
+| **Rust** (`Cargo.toml`)                                           | `cargo check`                                                              | `cargo test`   |
+| **Python** (`pyproject.toml`)                                     | run configured typecheck (mypy / pyright) if any                           | `pytest` or `python -m pytest` if configured |
+| **Other / unknown**                                               | skip step 2                                                                | skip step 3    |
+
+"prefer X; else Y" means: run `X` only if the corresponding package-manifest script exists (check `package.json`'s `scripts` map); otherwise fall back to `Y`. If neither exists, skip the step and note "no build step detected" in the output contract.
+
+Diff review (step 4) and commit hygiene (step 5) are **always** required regardless of project type.
+
+### 2. Type Safety / Build
+
+Run the build command from the detected row. Must be clean. No `any` casts introduced unless justified. No `@ts-ignore` added. For Rust, no new `#[allow(...)]` without a comment explaining why.
+
+If the project is "Other / unknown", skip this step and state so in the output contract.
+
+### 3. Tests
+
+Run the test command from the detected row. Must be green. New functionality should have tests. Modified behavior should have updated tests.
+
+If the project has no test script / test suite, skip this step and state so in the output contract.
+
+### 3b. Bug Fix Reproduction (required for `fix:` PRs)
+
+If the PR is a bug fix, **reproduce the buggy behavior and verify the fix eliminates it** before proceeding. Unit tests passing is necessary but not sufficient — the old code path must be shown to fail and the new code path must be shown to work.
+
+Concretely:
+1. **Reproduce the bug** — write a script, REPL snippet, or test that demonstrates the broken behavior on the old code (or explains why the test alone covers it if the bug is purely logic).
+2. **Verify the fix** — run the same reproduction with the new code and confirm the correct behavior.
+3. **Verify no regression** — confirm the happy path still works.
+
+This step catches fixes that pass tests but don't actually address the reported issue (partial fixes, wrong assumptions about the failure mode, tests that don't exercise the real code path).
+
+4. **Document in the PR description** — add a "Verification" section showing the before/after behavior (old code output vs. new code output). Reviewers appreciate seeing concrete evidence that the fix works, not just "tests pass."
+
+Skip this step only for trivial fixes where the unit test IS the reproduction (e.g., a typo in a string constant).
+
+### 4. Diff Review
+
+```bash
+git diff --stat          # overview of changed files
+git diff --cached        # staged changes in detail
+git diff                 # unstaged changes
+```
+
+Check for:
+- **Accidental files** — build artifacts, `.env`, `node_modules`, lock files you didn't intend to change
+- **Debug leftovers** — `console.log`, `debugger`, `TODO` comments that should be resolved
+- **Secrets** — API keys, tokens, passwords, connection strings in the diff
+- **Unrelated changes** — formatting-only changes, unrelated refactors mixed in
+
+### 5. Commit Hygiene
+
+- Commits follow Conventional Commits format (`feat:`, `fix:`, `chore:`, `docs:`, `test:`)
+- Each commit is atomic — one logical change per commit
+- No commits with messages like "wip", "fix", "temp"
+
+### 6. PR Scope
+
+Ask: **"Does every change in this diff directly serve the PR's stated goal?"**
+
+If you find unrelated improvements, either:
+- Remove them from the PR (stash for a separate PR)
+- Or justify them in the PR description
+
+### 7. Architecture Sanity
+
+For non-trivial changes, quick-check:
+- Does the change follow existing patterns in the codebase?
+- Are imports going in the right direction (no circular deps, no core importing from adapters)?
+- Are new files in the right directory?
+
+### 8. Subagent Review
+
+Run specialized reviewer subagents in parallel against the diff. **Skip for trivial changes** (typo fixes, comment updates, single-line config changes).
+
+**Two reviewer layers are available:**
+
+#### Layer 1: Reviewer Specialists (`~/.claude/reviewer-specialists/`)
+Narrow prompt templates for PR-level review. Use for all non-trivial PRs:
+- **conventions-specialist** — style, naming, imports, code organization
+- **correctness-specialist** — logic bugs, edge cases, data flow, security
+- **deadcode-specialist** — unused code introduced or orphaned by the PR
+- **test-specialist** — test quality, tautologies, missing coverage
+- **a11y-specialist** — ARIA validity, accessible names, keyboard semantics (UI-component diffs only)
+
+Each specialist expects:
+- `{repoDir}` — path to the full repo checkout (the worktree)
+- PR context: `git diff main..HEAD` output and list of changed files
+
+#### Layer 2: Architecture Agents (`.claude/agents/`)
+Use when the change touches module boundaries, imports, or public APIs:
+- **dependency-graph-analyzer** — import graph, circular deps, layering violations
+- **module-interface-auditor** — public API clarity, leaky abstractions
+- **architecture-drift-detector** — doc/code divergence
+
+**Selection guide:**
+
+| Change type | Which reviewers |
+|---|---|
+| Any non-trivial code change | conventions / correctness / deadcode / test specialists (Layer 1) |
+| UI-component change (`.tsx` / `.jsx` / `.vue` / `.svelte` touching `aria-*`, `role=`, semantic HTML, or spreading props onto HTML elements) | + a11y-specialist |
+| Module boundary / import refactor | + dependency-graph-analyzer, module-interface-auditor |
+| New public API / API changes | + api-surface-auditor, module-interface-auditor |
+| State / workflow logic | + state-machine-verifier, failure-mode-analyst |
+
+**How to run:**
+1. Prepare context: `git diff main..HEAD` and `git diff main..HEAD --stat`
+2. Launch selected agents **in parallel** as subagents, passing the diff and repo path.
+   For the test-focused reviewer, explicitly ask whether the changed runtime path is tested directly or only inferred through helper/unit coverage.
+3. Collect findings — fix any **blocking** issues before proceeding.
+4. Note informational findings in the PR description if relevant.
+
+### 9. OSS base-branch policy check (external upstream PRs only)
+
+If this PR targets an **external upstream** (i.e. `gh pr create -R <other>/<repo>`
+against a fork you own), verify the `--base` argument matches the recon's
+declared policy. This catches cases where upstream added a guard workflow that
+rejects fork→main PRs (real incident: `berriai/litellm` added `Guard main branch`
+mid-April 2026).
+
+```bash
+# Variables you already know at this point:
+#   REPO      = {owner}/{repo} (the upstream, not the fork)
+#   BASE      = the --base argument you will pass to gh pr create
+#
+SLUG=$(echo "${REPO}" | tr '/' '-' | tr '.' '-')
+RECON="${HOME}/.claude/${SLUG}-recon/recon-report.md"
+if [ -f "${RECON}" ]; then
+  # Strict grammar: "- external_pr_base: <branch>" (one space after dash, one after colon)
+  RULE=$(grep -oP '^- external_pr_base: \K\S+' "${RECON}" || true)
+  if [ -n "${RULE}" ] && [ "${RULE}" != "${BASE}" ]; then
+    echo "ERROR: recon says external_pr_base=${RULE} but PR targets ${BASE}."
+    echo "Either retarget (git rebase --onto upstream/${RULE} upstream/${BASE} \${BRANCH}"
+    echo "+ gh api repos/${REPO}/pulls/N -X PATCH -f base=${RULE}) or update the recon"
+    echo "if the upstream policy has genuinely changed."
+    exit 1
+  fi
+fi
+```
+
+If the recon has no `## Policies` section or no `external_pr_base:` line, skip
+silently — absence means "no declared policy for this repo." Do not invent a rule.
+
+For non-OSS PRs (internal to Kookr or any repo where `-R` is not used), skip
+this step entirely — the check only applies when pushing from a fork to an
+upstream that declares a base-branch rule.
+
+## Create Gate State File
+
+**After ALL mandatory checks above pass**, create the state file that allows `gh pr create` through the hook gate. The key must match the hook's derivation, which prefers `-R owner/repo` / `--head` parsed from the command and only falls back to the cwd when a flag is absent — so deriving `REPO_NAME` from the git remote URL matches both paths:
+
+```bash
+# Match pr-workflow-gate.sh's `-R owner/repo` parsing by deriving REPO_NAME
+# from the remote URL, not the worktree's directory basename. Worktrees
+# typically have dir names like `kookr-feature-x` while the remote and the
+# hook agree on `kookr`; using the basename there produces a key the hook
+# never looks up. See issue #406.
+REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null || true)
+REPO_NAME=$(basename -s .git "${REMOTE_URL:-$(git rev-parse --show-toplevel)}")
+SAFE_BRANCH=$(git rev-parse --abbrev-ref HEAD | tr '/' '-')
+touch "/dev/shm/.pr-gate-${REPO_NAME}-${SAFE_BRANCH}-pre-done"
+```
+
+**Do NOT create the state file if any mandatory check failed.** Fix the issue first, re-run the checks, then create it.
+
+The state file is the contract between this skill and the `pr-workflow-gate` hook. The hook checks for its existence before allowing `gh pr create`.
+
+## Output Contract
+
+Before you conclude this skill, report the checklist result explicitly:
+
+- detected project type: `kookr|pnpm|npm|yarn|rust|python|other`
+- type/build checks: passed / failed / skipped (with reason)
+- tests: passed / failed / skipped (with reason)
+- bug reproduction (fix PRs only): reproduced / verified / skipped with reason
+- diff review: done
+- reviewer specialists: run / skipped, with reason
+- OSS base-branch policy (external PRs only): matched / failed / skipped with reason
+- gate file: created / not created
+
+Do not say the branch is PR-ready without stating whether the reviewer specialists were run and whether the gate file was actually created.
+
+## Quick Version
+
+For small/obvious changes, the minimum is: run the detected build + test commands, then `git diff --stat`, then create the state file (see above). For Kookr specifically:
+
+```bash
+pnpm build:server && pnpm check:e2e && pnpm test && git diff --stat
+```
+
+## See Also
+
+- [[pre-push]] — Delivery-cycle entrypoint before push (Kookr only)
+- [[pr-lifecycle]] — Full PR lifecycle after this checklist passes
+- [[git-commit-discipline]] — Commit message and branch safety
+- [[testing-patterns]] — Test configuration and isolation

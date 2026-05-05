@@ -1,0 +1,5 @@
+{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[
+  {"number":1000,"state":"MERGED","title":"old","mergedAt":"2025-01-01T00:00:00Z","url":"https://github.com/testowner/testrepo/pull/1000"},
+  {"number":2000,"state":"MERGED","title":"new","mergedAt":"2026-03-01T00:00:00Z","url":"https://github.com/testowner/testrepo/pull/2000"},
+  {"number":1500,"state":"MERGED","title":"mid","mergedAt":"2025-06-01T00:00:00Z","url":"https://github.com/testowner/testrepo/pull/1500"}
+]}}}}}

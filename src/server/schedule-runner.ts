@@ -1,0 +1,199 @@
+import type { ScheduleStore, Schedule } from '../core/schedule.js';
+import { nextRun } from '../core/cron.js';
+import { ScheduleValidationError, isTriggerLimitExhausted } from '../core/schedule.js';
+import { ScheduleService } from './schedule-service.js';
+import { ScheduleValidator } from './schedule-validator.js';
+import type { LaunchOpts, LaunchResult } from './launch-service.js';
+
+const TICK_INTERVAL_MS = 60_000;
+const CATCHUP_MAX_STALENESS_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+export interface ScheduleRunnerDeps {
+  store: ScheduleStore;
+  service: ScheduleService;
+  validator: ScheduleValidator;
+  launcher: (opts: LaunchOpts) => Promise<LaunchResult>;
+  getActiveCount: () => number;
+  getMaxActiveTasks: () => number;
+  isTaskActive: (taskId: string) => boolean;
+}
+
+export class ScheduleRunner {
+  private tickInterval: ReturnType<typeof setInterval> | null = null;
+  private firing = false;
+  private deps: ScheduleRunnerDeps;
+
+  constructor(deps: ScheduleRunnerDeps) {
+    this.deps = deps;
+  }
+
+  start(): void {
+    const catchUpEnabled = !process.env.KOOKR_NO_CATCHUP;
+    this.deps.service.recordRunnerStarted(catchUpEnabled);
+
+    if (catchUpEnabled) {
+      this.catchUp().catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.deps.service.recordRunnerError(`[schedule] Catch-up error: ${message}`);
+        console.error('[schedule] Catch-up error:', err);
+      });
+    } else {
+      console.log('[schedule] Catch-up disabled (KOOKR_NO_CATCHUP)');
+    }
+
+    this.tickInterval = setInterval(() => {
+      this.tick().catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.deps.service.recordRunnerError(`[schedule] Tick error: ${message}`);
+        console.error('[schedule] Tick error:', err);
+      });
+    }, TICK_INTERVAL_MS);
+
+    console.log(`[schedule] Runner started (${this.deps.store.list().length} schedule(s), tick=${TICK_INTERVAL_MS / 1000}s)`);
+  }
+
+  stop(): void {
+    if (this.tickInterval) {
+      clearInterval(this.tickInterval);
+      this.tickInterval = null;
+    }
+  }
+
+  async tick(): Promise<void> {
+    if (this.firing) return;
+    this.firing = true;
+    try {
+      const now = new Date();
+      for (const schedule of this.deps.store.list()) {
+        if (!schedule.enabled) continue;
+        if (isTriggerLimitExhausted(schedule)) {
+          await this.deps.service.markCronLimitExhausted(schedule.id);
+          continue;
+        }
+        const scheduledNextRun = computeNextRunFor(schedule);
+        if (!scheduledNextRun || scheduledNextRun > now) continue;
+        await this.fire(schedule, 'cron', scheduledNextRun);
+      }
+      this.deps.service.recordTickCompleted();
+    } finally {
+      this.firing = false;
+    }
+  }
+
+  async runNow(id: string): Promise<{ taskId?: string; error?: string; queued?: boolean }> {
+    const schedule = this.deps.store.get(id);
+    if (!schedule) return { error: 'Schedule not found' };
+    return this.fire(schedule, 'manual');
+  }
+
+  private async fire(
+    schedule: Schedule,
+    trigger: 'cron' | 'manual',
+    scheduledNextRun?: Date,
+  ): Promise<{ taskId?: string; error?: string; queued?: boolean }> {
+    if (trigger === 'cron' && isTriggerLimitExhausted(schedule)) {
+      await this.deps.service.markCronLimitExhausted(schedule.id);
+      return { error: 'Schedule trigger limit reached' };
+    }
+
+    const receipt = await this.deps.service.reserveExecution(
+      schedule,
+      trigger,
+      scheduledNextRun?.toISOString(),
+    );
+
+    if (schedule.latestExecution?.taskId && this.deps.isTaskActive(schedule.latestExecution.taskId)) {
+      console.warn(`[schedule] Skipping "${schedule.name}" — previous run still active (task ${schedule.latestExecution.taskId})`);
+      await this.deps.service.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'skipped_active',
+        'previous_run_active',
+        'Previous run still active',
+      );
+      return { error: 'Previous run still active' };
+    }
+
+    if (this.deps.getActiveCount() >= this.deps.getMaxActiveTasks()) {
+      console.warn(`[schedule] Skipping "${schedule.name}" — at max active tasks (${this.deps.getMaxActiveTasks()})`);
+      await this.deps.service.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'skipped_capacity',
+        'capacity',
+        'Max active tasks reached',
+      );
+      return { error: 'Max active tasks reached' };
+    }
+
+    try {
+      const launch = await this.deps.validator.resolveLaunch(schedule);
+      const result = await this.deps.launcher({
+        prompt: launch.prompt,
+        cwd: launch.cwd,
+        criteria: launch.criteria,
+        name: launch.name,
+        playbookId: launch.playbookId,
+        projectId: launch.projectId,
+        autonomy: schedule.autonomy,
+        agentType: schedule.agentType,
+        disableDedup: true,
+      });
+
+      await this.deps.service.markExecutionAccepted(schedule.id, receipt.id, result.task.id, result.queued);
+      console.log(`[schedule] Fired "${schedule.name}" → task ${result.task.id}${result.queued ? ' (queued)' : ''}`);
+      return { taskId: result.task.id, queued: result.queued };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const reasonCode = mapErrorToReasonCode(err);
+      console.error(`[schedule] Error firing "${schedule.name}":`, message);
+      await this.deps.service.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'dispatch_failed',
+        reasonCode,
+        message,
+      );
+      return { error: message };
+    }
+  }
+
+  private async catchUp(): Promise<void> {
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - CATCHUP_MAX_STALENESS_MS);
+
+    for (const schedule of this.deps.store.list()) {
+      if (!schedule.enabled) continue;
+      if (isTriggerLimitExhausted(schedule)) {
+        await this.deps.service.markCronLimitExhausted(schedule.id);
+        continue;
+      }
+
+      const scheduledNext = computeNextRunFor(schedule);
+      if (!scheduledNext) continue;
+
+      if (scheduledNext < now && scheduledNext >= cutoff) {
+        console.log(`[schedule] Catching up "${schedule.name}" (was due ${scheduledNext.toISOString()})`);
+        await this.fire(schedule, 'cron', scheduledNext);
+      } else if (scheduledNext < cutoff) {
+        console.log(`[schedule] Skipping stale catch-up for "${schedule.name}" (due ${scheduledNext.toISOString()}, > 24h ago)`);
+      }
+    }
+  }
+}
+
+function mapErrorToReasonCode(err: unknown) {
+  if (err instanceof ScheduleValidationError) {
+    if (err.fieldErrors?.cwd) return 'missing_cwd' as const;
+    if (err.fieldErrors?.playbook) return 'missing_playbook' as const;
+    return 'validation' as const;
+  }
+  return 'launch_error' as const;
+}
+
+function computeNextRunFor(schedule: Schedule): Date | null {
+  const after = schedule.lastScheduledFor
+    ? new Date(schedule.lastScheduledFor)
+    : new Date(schedule.createdAt);
+  return nextRun(schedule.cron, after);
+}

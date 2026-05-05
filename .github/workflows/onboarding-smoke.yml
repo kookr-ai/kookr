@@ -1,0 +1,64 @@
+name: Onboarding Smoke Test
+
+on:
+  workflow_dispatch: # manual trigger only — requires API credits
+
+concurrency:
+  group: onboarding-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  onboarding-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Claude Code
+        run: curl -fsSL https://claude.ai/install.sh | bash
+
+      - name: Run onboarding smoke test
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          REPORT_DIR: ${{ runner.temp }}
+        run: bash scripts/onboarding-smoke-test.sh
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onboarding-report
+          path: ${{ runner.temp }}/onboarding-report*.md
+          retention-days: 30
+
+      - name: Upload hook log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onboarding-hooks
+          path: ${{ runner.temp }}/onboarding-hooks/
+          retention-days: 7
+
+      - name: Comment on commit (failure only)
+        if: failure() && github.event_name == 'push'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reports = fs.readdirSync(process.env.RUNNER_TEMP)
+              .filter(f => f.startsWith('onboarding-report'));
+            const report = reports.length > 0
+              ? fs.readFileSync(`${process.env.RUNNER_TEMP}/${reports[0]}`, 'utf8')
+              : 'Report not generated.';
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: `## Onboarding Smoke Test Failed\n\n<details><summary>Full report</summary>\n\n${report}\n\n</details>\n\n[View run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+            });

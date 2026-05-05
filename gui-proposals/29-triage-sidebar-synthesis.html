@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 29: Triage + Sidebar Synthesis</title>
+<!--
+  Design rationale:
+  The convergence point both critiques identified: P25's complete layout
+  (sidebar + alert banner + conversation + terminal drawer) merged with
+  P26's triage behavior (Send & Next, queue dots, sent-confirmation overlay,
+  all-clear state). Adds P13's task-centric naming and filtered context strip.
+
+  Key synthesis decisions:
+  - P25 sidebar (260px, grouped by urgency, search filter)
+  - P25 alert banner (pinned, never scrolls) + P26 queue dots inline
+  - P26 "Send & Next" as primary action (not just "Send")
+  - P26 sent-confirmation overlay with auto-advance
+  - P25 terminal drawer (VS Code-style, toggleable)
+  - P13 task-centric naming (task descriptions, not "Agent #N")
+  - P13 repeat pills for loop detection
+  - "All clear" state when no agents need attention
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0f1117;
+    --bg-panel: #151820;
+    --bg-card: #1b1f2e;
+    --bg-card-hover: #21263a;
+    --bg-input: #1c2134;
+    --bg-terminal: #0a0c12;
+    --border: #262d42;
+    --border-dim: #1d2338;
+    --text: #b2bace;
+    --text-secondary: #6b778e;
+    --text-bright: #dfe4f0;
+    --text-muted: #3f4a62;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --purple: #a78bfa;
+    --teal: #2dd4bf;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    height: 100vh; display: flex; flex-direction: column;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11.5px; }
+
+  /* Top bar */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); height: 38px; flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 14px; }
+  .logo { font-family: 'JetBrains Mono', monospace; color: var(--teal);
+    font-weight: 700; font-size: 13px; letter-spacing: 1.5px; }
+  .topbar-hint { font-size: 11px; color: var(--text-muted); }
+  .topbar-hint kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 1px 5px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  }
+  .topbar-right { display: flex; gap: 8px; align-items: center; }
+  .topbar-stat { font-size: 11px; color: var(--text-muted); }
+  .topbar-stat .n { font-weight: 700; }
+  .topbar-stat .n.warn { color: var(--amber); }
+  .topbar-stat .n.ok { color: var(--green); }
+  .btn-launch {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 4px 14px; border-radius: 5px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  }
+
+  /* Alert banner with queue dots (P25 banner + P26 queue) */
+  .alert-banner {
+    background: rgba(251,191,36,0.07); border-bottom: 1px solid rgba(251,191,36,0.18);
+    padding: 8px 16px; display: flex; align-items: center; gap: 10px;
+    flex-shrink: 0;
+  }
+  .alert-badge {
+    background: var(--amber); color: #0a0e12; font-size: 10px; font-weight: 700;
+    padding: 2px 7px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .alert-text { font-size: 12px; color: var(--amber); flex: 1; line-height: 1.4; }
+  .alert-text strong { color: var(--text-bright); }
+  .queue-dots { display: flex; gap: 4px; align-items: center; }
+  .queue-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .queue-dot.current { background: var(--amber); box-shadow: 0 0 6px rgba(251,191,36,0.4); }
+  .queue-dot.waiting { background: var(--text-muted); }
+  .queue-label { font-size: 10.5px; color: var(--text-muted); margin-left: 4px; }
+  .alert-actions { display: flex; gap: 6px; }
+  .alert-btn {
+    padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 600;
+    cursor: pointer; border: none;
+  }
+  .alert-btn.secondary { background: rgba(251,191,36,0.12); color: var(--amber); border: 1px solid rgba(251,191,36,0.25); }
+
+  /* All-clear banner (hidden when agents need attention) */
+  .all-clear-banner {
+    display: none;
+    background: rgba(52,211,153,0.06); border-bottom: 1px solid rgba(52,211,153,0.15);
+    padding: 10px 16px; text-align: center; flex-shrink: 0;
+    font-size: 13px; color: var(--green);
+  }
+  .all-clear-banner .icon { font-size: 16px; margin-right: 6px; }
+
+  /* Main layout */
+  .main { flex: 1; display: flex; overflow: hidden; }
+
+  /* Sidebar */
+  .sidebar {
+    width: 260px; background: var(--bg-panel);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+    flex-shrink: 0;
+  }
+  .sb-search {
+    padding: 8px 10px; border-bottom: 1px solid var(--border-dim);
+  }
+  .sb-search input {
+    width: 100%; background: var(--bg-card); border: 1px solid var(--border-dim);
+    color: var(--text); padding: 6px 10px; border-radius: 5px;
+    font-family: inherit; font-size: 12px; outline: none;
+  }
+  .sb-search input::placeholder { color: var(--text-muted); }
+  .sb-search input:focus { border-color: var(--teal); }
+  .sb-label {
+    padding: 10px 12px 4px; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.8px;
+  }
+  .sb-label.alert { color: var(--amber); }
+  .sb-label.normal { color: var(--text-muted); }
+  .sidebar-list { flex: 1; overflow-y: auto; }
+
+  .agent-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; cursor: pointer; border-left: 3px solid transparent;
+    transition: background 0.1s; min-height: 48px;
+  }
+  .agent-row:hover { background: var(--bg-card); }
+  .agent-row.active { background: var(--bg-card); border-left-color: var(--teal); }
+  .agent-row.attention { border-left-color: var(--amber); }
+  .agent-row.error { border-left-color: var(--red); }
+
+  .agent-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .agent-dot.running { background: var(--green); }
+  .agent-dot.stuck { background: var(--amber); animation: pulse 2s ease-in-out infinite; }
+  .agent-dot.err { background: var(--red); }
+  .agent-dot.done { background: var(--text-muted); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .agent-info { flex: 1; min-width: 0; }
+  .agent-name { font-size: 12px; font-weight: 600; color: var(--text-bright); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .agent-summary { font-size: 10.5px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .agent-row.attention .agent-summary { color: var(--amber); }
+  .agent-row.error .agent-summary { color: var(--red); }
+  .agent-meta { text-align: right; flex-shrink: 0; }
+  .agent-meta .time { font-size: 10px; color: var(--text-muted); }
+  .agent-meta .cost { font-size: 10px; color: var(--text-muted); }
+
+  /* Content area */
+  .content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  .content-header {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+  }
+  .content-header-left { display: flex; align-items: center; gap: 8px; }
+  .content-header h2 { font-size: 14px; font-weight: 600; color: var(--text-bright); }
+  .status-badge { font-size: 10px; padding: 2px 7px; border-radius: 3px; font-weight: 600; }
+  .status-badge.stuck { background: rgba(251,191,36,0.1); color: var(--amber); }
+  .content-header-right { font-size: 11px; color: var(--text-muted); display: flex; gap: 12px; }
+  .content-header-right .action {
+    color: var(--text-secondary); cursor: pointer; padding: 2px 6px; border-radius: 3px;
+  }
+  .content-header-right .action:hover { background: var(--bg-card); }
+
+  /* Conversation */
+  .conversation {
+    flex: 1; overflow-y: auto; padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .msg { padding: 10px 14px; border-radius: 6px; font-size: 12.5px; line-height: 1.6; }
+  .msg.agent { background: var(--bg-card); border: 1px solid var(--border-dim); }
+  .msg.tool {
+    background: var(--bg-terminal); border: 1px solid var(--border-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text-secondary); white-space: pre-wrap;
+  }
+  .msg .label {
+    font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .msg .label .ts { font-weight: 400; margin-left: auto; }
+  .msg code { background: var(--bg-terminal); padding: 1px 4px; border-radius: 2px; }
+  .repeat-pill {
+    display: inline-block; background: rgba(251,191,36,0.12);
+    color: var(--amber); font-size: 9.5px; font-weight: 700;
+    padding: 0 6px; border-radius: 6px; margin-left: 4px;
+  }
+
+  /* Response area — Send & Next as primary (P26 behavior) */
+  .response-area {
+    padding: 10px 16px; border-top: 1px solid var(--border);
+    background: var(--bg-panel); flex-shrink: 0;
+  }
+  .response-row { display: flex; gap: 8px; align-items: center; }
+  .response-area input {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border-dim);
+    border-radius: 8px; padding: 11px 14px; color: var(--text-bright);
+    font-family: inherit; font-size: 13px; outline: none;
+  }
+  .response-area input:focus { border-color: var(--teal); box-shadow: 0 0 0 2px rgba(45,212,191,0.12); }
+  .response-area input::placeholder { color: var(--text-muted); }
+  .btn-send-next {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 11px 20px; border-radius: 8px; font-weight: 700; cursor: pointer;
+    font-size: 13px; white-space: nowrap;
+  }
+  .btn-action {
+    background: none; border: 1px solid var(--border-dim); color: var(--text-secondary);
+    padding: 11px 14px; border-radius: 8px; font-size: 12px; cursor: pointer;
+    white-space: nowrap;
+  }
+  .response-hint { margin-top: 6px; font-size: 10.5px; color: var(--text-muted); }
+  .response-hint kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 4px; border-radius: 2px; font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  }
+
+  /* Terminal drawer */
+  .terminal-drawer {
+    background: var(--bg-terminal); border-top: 1px solid var(--border);
+    flex-shrink: 0; display: flex; flex-direction: column;
+  }
+  .terminal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 16px; background: var(--bg-panel); border-bottom: 1px solid var(--border-dim);
+    cursor: ns-resize;
+  }
+  .terminal-header-left { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-secondary); }
+  .terminal-header-left .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .terminal-toggle {
+    background: none; border: 1px solid var(--border-dim); color: var(--text-muted);
+    padding: 1px 6px; border-radius: 3px; cursor: pointer; font-size: 11px;
+  }
+  .terminal-body {
+    padding: 10px 16px; font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px; color: var(--green); line-height: 1.6;
+    white-space: pre-wrap; overflow-y: auto; height: 160px;
+  }
+  .terminal-body .err { color: var(--red); }
+  .terminal-body .dim { color: var(--text-muted); }
+  .terminal-body .file { color: var(--blue); }
+  .terminal-body .pass { color: var(--green); }
+
+  /* Status bar */
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; height: 26px; background: var(--bg-panel);
+    border-top: 1px solid var(--border); font-size: 10.5px; color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .statusbar kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 4px; border-radius: 2px; font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  }
+
+  /* Sent-confirmation overlay (P26) */
+  .sent-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(10,12,18,0.8);
+    z-index: 100; justify-content: center; align-items: center;
+  }
+  .sent-card {
+    background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px 32px; text-align: center;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+  }
+  .sent-check { font-size: 32px; color: var(--green); margin-bottom: 8px; }
+  .sent-text { font-size: 14px; color: var(--text-bright); margin-bottom: 4px; }
+  .sent-next { font-size: 12px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+    <span class="topbar-hint"><kbd>Ctrl+K</kbd> commands</span>
+  </div>
+  <div class="topbar-right">
+    <span class="topbar-stat"><span class="n warn">2</span> attention</span>
+    <span class="topbar-stat"><span class="n ok">2</span> running</span>
+    <span class="topbar-stat">$1.68</span>
+    <button class="btn-launch">+ Launch</button>
+  </div>
+</div>
+
+<!-- Alert banner with queue dots -->
+<div class="alert-banner" id="alertBanner">
+  <span class="alert-badge">Stuck</span>
+  <span class="alert-text"><strong>Fix auth token refresh</strong> — ran <code>npm test</code> 8x, same TypeError. Needs hint about jwt import.</span>
+  <div class="queue-dots">
+    <div class="queue-dot current" title="Fix auth token (current)"></div>
+    <div class="queue-dot waiting" title="Refactor cache (next)"></div>
+  </div>
+  <span class="queue-label">1 of 2</span>
+  <div class="alert-actions">
+    <button class="alert-btn secondary">Skip</button>
+    <button class="alert-btn secondary">Snooze</button>
+  </div>
+</div>
+
+<!-- All-clear (shown when no agents need attention) -->
+<div class="all-clear-banner" id="allClear">
+  <span class="icon">&#10003;</span> All agents working autonomously. You'll be notified when attention is needed.
+</div>
+
+<!-- Main -->
+<div class="main">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sb-search">
+      <input type="text" placeholder="Filter tasks..." />
+    </div>
+    <div class="sb-label alert">Attention (2)</div>
+    <div class="sidebar-list">
+      <div class="agent-row active attention">
+        <span class="agent-dot stuck"></span>
+        <div class="agent-info">
+          <div class="agent-name">Fix auth token refresh</div>
+          <div class="agent-summary">Stuck: same test 8x</div>
+        </div>
+        <div class="agent-meta">
+          <div class="time">18m</div>
+          <div class="cost">$0.42</div>
+        </div>
+      </div>
+      <div class="agent-row error">
+        <span class="agent-dot err"></span>
+        <div class="agent-info">
+          <div class="agent-name">Refactor cache layer</div>
+          <div class="agent-summary">Permission blocked: rm -rf</div>
+        </div>
+        <div class="agent-meta">
+          <div class="time">32m</div>
+          <div class="cost">$0.87</div>
+        </div>
+      </div>
+      <div class="sb-label normal">Working (2)</div>
+      <div class="agent-row">
+        <span class="agent-dot running"></span>
+        <div class="agent-info">
+          <div class="agent-name">Add pagination to /users</div>
+          <div class="agent-summary">Editing src/routes/users.ts</div>
+        </div>
+        <div class="agent-meta">
+          <div class="time">12m</div>
+          <div class="cost">$0.23</div>
+        </div>
+      </div>
+      <div class="agent-row">
+        <span class="agent-dot running"></span>
+        <div class="agent-info">
+          <div class="agent-name">Add integration tests</div>
+          <div class="agent-summary">Running vitest</div>
+        </div>
+        <div class="agent-meta">
+          <div class="time">6m</div>
+          <div class="cost">$0.11</div>
+        </div>
+      </div>
+      <div class="sb-label normal">Completed (1)</div>
+      <div class="agent-row">
+        <span class="agent-dot done"></span>
+        <div class="agent-info">
+          <div class="agent-name">Update README badges</div>
+          <div class="agent-summary">Completed — PR #142</div>
+        </div>
+        <div class="agent-meta">
+          <div class="time">4m</div>
+          <div class="cost">$0.05</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+    <div class="content-header">
+      <div class="content-header-left">
+        <h2>Fix auth token refresh</h2>
+        <span class="status-badge stuck">STUCK</span>
+      </div>
+      <div class="content-header-right">
+        <span>~/git/webapp</span>
+        <span>18m</span>
+        <span class="action">Attach</span>
+        <span class="action">Stop</span>
+      </div>
+    </div>
+
+    <div class="conversation">
+      <div class="msg agent">
+        <div class="label">Agent <span class="ts">18m ago</span></div>
+        I'll fix the auth token refresh logic in <code>src/auth/token.ts</code>. Let me start by reading the current implementation.
+      </div>
+      <div class="msg tool">
+        <div class="label">Read src/auth/token.ts</div>
+export function refreshToken(token: string) {
+  return jwt.verify(token, SECRET);
+}
+      </div>
+      <div class="msg agent">
+        <div class="label">Agent <span class="ts">15m ago</span></div>
+        I see the issue — <code>jwt.verify</code> validates but doesn't refresh. I'll update this to decode, check expiry, and issue a new token.
+      </div>
+      <div class="msg tool">
+        <div class="label">Bash: npm test <span class="repeat-pill">x8</span> <span class="ts">3m ago</span></div>
+FAIL src/auth/__tests__/token.test.ts
+  TypeError: token.verify is not a function
+    at refreshToken (src/auth/token.ts:14:18)
+
+Tests  1 failed | 3 passed (4)
+      </div>
+      <div class="msg agent">
+        <div class="label">Agent <span class="ts">3m ago</span></div>
+        The test is still failing with the same TypeError. Let me try a different approach...
+      </div>
+    </div>
+
+    <!-- Response area with Send & Next -->
+    <div class="response-area">
+      <div class="response-row">
+        <input type="text" placeholder="Send a hint to Fix auth token refresh..." autofocus />
+        <button class="btn-send-next" onclick="showSent()">Send & Next</button>
+        <button class="btn-action">Skip</button>
+        <button class="btn-action">Snooze</button>
+      </div>
+      <div class="response-hint">
+        <kbd>Ctrl+Enter</kbd> send & advance &middot; <kbd>Tab</kbd> skip &middot; <kbd>Ctrl+`</kbd> terminal &middot; <kbd>Ctrl+K</kbd> commands
+      </div>
+    </div>
+
+    <!-- Terminal drawer -->
+    <div class="terminal-drawer">
+      <div class="terminal-header" onclick="toggleTerminal()">
+        <div class="terminal-header-left">
+          <span class="dot"></span>
+          Terminal — Fix auth token refresh
+        </div>
+        <button class="terminal-toggle" id="termToggle">&#9660;</button>
+      </div>
+      <div class="terminal-body" id="termBody">
+$ npm test -- --testPathPattern=token
+
+> webapp@2.1.0 test
+> vitest run --testPathPattern=token
+
+ RUN  v1.6.0 /home/user/git/webapp
+
+ <span class="err">FAIL</span>  src/auth/__tests__/token.test.ts > refreshToken > should issue new token
+   <span class="err">TypeError: token.verify is not a function</span>
+    <span class="dim">&#10095;</span> refreshToken <span class="file">src/auth/token.ts:14:18</span>
+
+ Tests  <span class="err">1 failed</span> | <span class="pass">3 passed</span> (4)
+ Time   1.24s
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Status bar -->
+<div class="statusbar">
+  <span>5 tasks &middot; $1.68 session</span>
+  <span><kbd>Ctrl+K</kbd> commands &middot; <kbd>Ctrl+N</kbd> next &middot; <kbd>Ctrl+Enter</kbd> send & next &middot; <kbd>Ctrl+`</kbd> terminal</span>
+</div>
+
+<!-- Sent confirmation overlay -->
+<div class="sent-overlay" id="sentOverlay">
+  <div class="sent-card">
+    <div class="sent-check">&#10003;</div>
+    <div class="sent-text">Hint sent to Fix auth token refresh</div>
+    <div class="sent-next">Advancing to: Refactor cache layer...</div>
+  </div>
+</div>
+
+<script>
+let termOpen = true;
+function toggleTerminal() {
+  termOpen = !termOpen;
+  document.getElementById('termBody').style.display = termOpen ? 'block' : 'none';
+  document.getElementById('termToggle').innerHTML = termOpen ? '&#9660;' : '&#9650;';
+}
+function showSent() {
+  const overlay = document.getElementById('sentOverlay');
+  overlay.style.display = 'flex';
+  setTimeout(() => { overlay.style.display = 'none'; }, 1500);
+}
+document.querySelectorAll('.agent-row').forEach(row => {
+  row.addEventListener('click', () => {
+    document.querySelectorAll('.agent-row').forEach(r => r.classList.remove('active'));
+    row.classList.add('active');
+  });
+});
+</script>
+</body>
+</html>

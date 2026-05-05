@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 32: Quadrant Overview + Triage Drill-down</title>
+<!--
+  Design rationale:
+  P24's multi-agent quadrant grid as the overview, with P26's triage
+  drill-down when you click an agent. Addresses P24's weaknesses
+  (quadrants too cramped) by making expansion the primary workflow.
+
+  Key improvements over P24:
+  - Single-click to expand (not double-click)
+  - Expanded view includes full conversation + terminal + Send & Next
+  - Queue dots in expanded view for triage flow
+  - Glowing borders preserved for urgency signaling
+  - Back button returns to grid overview
+  - Grid quadrants show more useful summary (supervisor alert text, not mini-chat)
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0d0f14;
+    --bg-panel: #131620;
+    --bg-card: #181c2a;
+    --bg-card-hover: #1e2338;
+    --bg-input: #1a1f30;
+    --bg-terminal: #0a0c12;
+    --border: #242a3e;
+    --border-dim: #1b2036;
+    --text: #b0b8d0;
+    --text-secondary: #6a7690;
+    --text-bright: #dce2f0;
+    --text-muted: #3e4860;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --purple: #a78bfa;
+    --teal: #2dd4bf;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    height: 100vh; display: flex; flex-direction: column;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11.5px; }
+
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); height: 38px; flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 14px; }
+  .logo { font-family: 'JetBrains Mono', monospace; color: var(--teal);
+    font-weight: 700; font-size: 13px; letter-spacing: 1.5px; }
+  .topbar-stats { font-size: 11px; color: var(--text-muted); }
+  .topbar-stats .n { font-weight: 700; }
+  .topbar-stats .n.warn { color: var(--amber); }
+  .topbar-stats .n.ok { color: var(--green); }
+  .topbar-right { display: flex; gap: 8px; }
+  .btn-launch {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 4px 14px; border-radius: 5px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  }
+
+  /* Grid overview */
+  .grid {
+    flex: 1; display: grid; grid-template-columns: 1fr 1fr;
+    gap: 2px; padding: 2px; overflow: hidden; background: var(--border-dim);
+  }
+
+  .quadrant {
+    background: var(--bg); display: flex; flex-direction: column;
+    overflow: hidden; cursor: pointer; position: relative;
+    transition: box-shadow 0.3s ease;
+  }
+  .quadrant:hover { background: var(--bg-card); }
+  .quadrant.attention {
+    box-shadow: inset 0 0 0 2px var(--amber), 0 0 20px rgba(251,191,36,0.12);
+  }
+  .quadrant.error {
+    box-shadow: inset 0 0 0 2px var(--red), 0 0 16px rgba(248,113,113,0.1);
+  }
+
+  .q-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid var(--border-dim);
+    background: var(--bg-panel); flex-shrink: 0;
+  }
+  .q-header-left { display: flex; align-items: center; gap: 8px; }
+  .q-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .q-dot.running { background: var(--green); }
+  .q-dot.stuck { background: var(--amber); animation: pulse 2s ease-in-out infinite; }
+  .q-dot.error { background: var(--red); }
+  .q-dot.done { background: var(--text-muted); }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+  .q-title { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+  .q-meta { font-size: 10.5px; color: var(--text-muted); display: flex; gap: 8px; }
+
+  .q-body { flex: 1; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+
+  /* Supervisor summary card inside quadrant */
+  .q-alert {
+    padding: 8px 10px; border-radius: 6px; font-size: 11.5px; line-height: 1.5;
+  }
+  .q-alert.warn { background: rgba(251,191,36,0.06); border: 1px solid rgba(251,191,36,0.15); color: var(--amber); }
+  .q-alert.err { background: rgba(248,113,113,0.06); border: 1px solid rgba(248,113,113,0.12); color: var(--red); }
+  .q-alert code { background: rgba(251,191,36,0.1); padding: 0 3px; border-radius: 2px; }
+
+  /* Recent activity summary */
+  .q-activity {
+    font-size: 11px; color: var(--text-secondary); line-height: 1.5;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .q-act-item { display: flex; align-items: center; gap: 6px; }
+  .q-act-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+  .q-act-dot.tool { background: var(--blue); }
+  .q-act-dot.edit { background: var(--purple); }
+  .q-act-dot.error { background: var(--red); }
+  .q-act-dot.ok { background: var(--green); }
+  .q-act-item code { font-size: 10.5px; }
+
+  .q-footer {
+    padding: 6px 14px; border-top: 1px solid var(--border-dim);
+    font-size: 10.5px; color: var(--text-muted); flex-shrink: 0;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .spinner {
+    width: 8px; height: 8px; border: 1.5px solid var(--text-muted);
+    border-top-color: var(--green); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* === EXPANDED / TRIAGE VIEW (hidden by default) === */
+  .triage-view {
+    display: none; flex: 1; flex-direction: column; overflow: hidden;
+  }
+  .triage-view.active { display: flex; }
+  .grid.hidden { display: none; }
+
+  .triage-bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    background: var(--bg-panel); flex-shrink: 0;
+  }
+  .btn-back {
+    background: var(--bg-card); border: 1px solid var(--border-dim); color: var(--text-secondary);
+    padding: 5px 12px; border-radius: 5px; font-size: 11px; cursor: pointer;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .triage-title { font-size: 14px; font-weight: 600; color: var(--text-bright); flex: 1; }
+  .triage-badge { font-size: 10px; padding: 2px 7px; border-radius: 3px; font-weight: 600; background: rgba(251,191,36,0.1); color: var(--amber); }
+  .triage-meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 10px; }
+  .queue-section { display: flex; align-items: center; gap: 6px; }
+  .queue-dots { display: flex; gap: 4px; }
+  .queue-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .queue-dot.current { background: var(--amber); box-shadow: 0 0 6px rgba(251,191,36,0.4); }
+  .queue-dot.waiting { background: var(--text-muted); }
+  .queue-text { font-size: 10.5px; color: var(--text-muted); }
+
+  /* Supervisor explanation */
+  .supervisor-box {
+    padding: 10px 16px; background: rgba(251,191,36,0.05);
+    border-bottom: 1px solid rgba(251,191,36,0.12); flex-shrink: 0;
+    font-size: 13px; color: var(--amber); line-height: 1.5;
+  }
+  .supervisor-box strong { color: var(--text-bright); font-weight: 700; }
+  .supervisor-box code { background: rgba(251,191,36,0.1); padding: 1px 4px; border-radius: 2px; }
+
+  .triage-split { flex: 1; display: flex; overflow: hidden; }
+
+  .conversation {
+    flex: 1; overflow-y: auto; padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .msg { padding: 10px 14px; border-radius: 6px; font-size: 12.5px; line-height: 1.6; }
+  .msg.agent { background: var(--bg-card); border: 1px solid var(--border-dim); }
+  .msg.tool {
+    background: var(--bg-terminal); border: 1px solid var(--border-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text-secondary); white-space: pre-wrap;
+  }
+  .msg .label { font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; }
+  .msg code { background: var(--bg-terminal); padding: 1px 4px; border-radius: 2px; }
+  .repeat-pill {
+    display: inline-block; background: rgba(251,191,36,0.12);
+    color: var(--amber); font-size: 9.5px; font-weight: 700;
+    padding: 0 6px; border-radius: 6px; margin-left: 4px;
+  }
+
+  .terminal-panel {
+    width: 380px; background: var(--bg-terminal);
+    border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .terminal-header {
+    padding: 6px 12px; background: var(--bg-panel); border-bottom: 1px solid var(--border-dim);
+    font-size: 11px; color: var(--text-secondary);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .terminal-header .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .terminal-content {
+    flex: 1; padding: 10px 12px; font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px; color: var(--green); line-height: 1.6;
+    white-space: pre-wrap; overflow-y: auto;
+  }
+  .terminal-content .err { color: var(--red); }
+  .terminal-content .dim { color: var(--text-muted); }
+  .terminal-content .file { color: var(--blue); }
+
+  .response-area {
+    padding: 12px 16px; border-top: 1px solid var(--border);
+    background: var(--bg-panel); flex-shrink: 0;
+  }
+  .response-row { display: flex; gap: 8px; align-items: center; }
+  .response-area input {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border-dim);
+    border-radius: 8px; padding: 11px 14px; color: var(--text-bright);
+    font-family: inherit; font-size: 14px; outline: none;
+  }
+  .response-area input:focus { border-color: var(--teal); box-shadow: 0 0 0 2px rgba(45,212,191,0.12); }
+  .response-area input::placeholder { color: var(--text-muted); }
+  .btn-primary {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 11px 20px; border-radius: 8px; font-weight: 700; cursor: pointer;
+    font-size: 13px; white-space: nowrap;
+  }
+  .btn-secondary {
+    background: none; border: 1px solid var(--border-dim); color: var(--text-secondary);
+    padding: 11px 14px; border-radius: 8px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  .response-hint { margin-top: 5px; font-size: 10px; color: var(--text-muted); }
+  .response-hint kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 4px; border-radius: 2px; font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  }
+
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; height: 26px; background: var(--bg-panel);
+    border-top: 1px solid var(--border); font-size: 10.5px; color: var(--text-muted); flex-shrink: 0;
+  }
+  .statusbar kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 4px; border-radius: 2px; font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  }
+
+  .sent-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(10,12,18,0.8);
+    z-index: 100; justify-content: center; align-items: center;
+  }
+  .sent-card {
+    background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px 32px; text-align: center;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+  }
+  .sent-check { font-size: 32px; color: var(--green); margin-bottom: 8px; }
+  .sent-text { font-size: 14px; color: var(--text-bright); margin-bottom: 4px; }
+  .sent-next { font-size: 12px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+    <span class="topbar-stats">
+      <span class="n warn">2</span> attention &middot;
+      <span class="n ok">2</span> running &middot; $1.68
+    </span>
+  </div>
+  <div class="topbar-right">
+    <button class="btn-launch">+ Launch</button>
+  </div>
+</div>
+
+<!-- GRID OVERVIEW -->
+<div class="grid" id="gridView">
+  <div class="quadrant attention" onclick="expandAgent(this)">
+    <div class="q-header">
+      <div class="q-header-left">
+        <span class="q-dot stuck"></span>
+        <span class="q-title">Fix auth token refresh</span>
+      </div>
+      <div class="q-meta"><span>18m</span><span>$0.42</span></div>
+    </div>
+    <div class="q-body">
+      <div class="q-alert warn">
+        Stuck: ran <code>npm test</code> 8x with same <code>TypeError</code>. Editing <code>token.ts</code> but not changing import. Needs hint about jwt module.
+      </div>
+      <div class="q-activity">
+        <div class="q-act-item"><span class="q-act-dot edit"></span> Edit <code>src/auth/token.ts</code> :42</div>
+        <div class="q-act-item"><span class="q-act-dot error"></span> npm test &mdash; TypeError x8</div>
+        <div class="q-act-item"><span class="q-act-dot edit"></span> Edit <code>src/auth/token.ts</code> :42</div>
+      </div>
+    </div>
+    <div class="q-footer">Click to respond</div>
+  </div>
+
+  <div class="quadrant error" onclick="expandAgent(this)">
+    <div class="q-header">
+      <div class="q-header-left">
+        <span class="q-dot error"></span>
+        <span class="q-title">Refactor cache layer</span>
+      </div>
+      <div class="q-meta"><span>32m</span><span>$0.87</span></div>
+    </div>
+    <div class="q-body">
+      <div class="q-alert err">
+        Permission blocked: wants to run <code>rm -rf node_modules</code>. Waiting for approval.
+      </div>
+      <div class="q-activity">
+        <div class="q-act-item"><span class="q-act-dot tool"></span> Read <code>package.json</code></div>
+        <div class="q-act-item"><span class="q-act-dot error"></span> Permission: rm -rf</div>
+      </div>
+    </div>
+    <div class="q-footer">Click to respond</div>
+  </div>
+
+  <div class="quadrant" onclick="expandAgent(this)">
+    <div class="q-header">
+      <div class="q-header-left">
+        <span class="q-dot running"></span>
+        <span class="q-title">Add pagination to /users</span>
+      </div>
+      <div class="q-meta"><span>12m</span><span>$0.23</span></div>
+    </div>
+    <div class="q-body">
+      <div class="q-activity">
+        <div class="q-act-item"><span class="q-act-dot tool"></span> Read <code>src/routes/users.ts</code></div>
+        <div class="q-act-item"><span class="q-act-dot edit"></span> Edit <code>src/routes/users.ts</code></div>
+        <div class="q-act-item"><span class="q-act-dot ok"></span> npm test &mdash; 12 passed</div>
+      </div>
+    </div>
+    <div class="q-footer"><span class="spinner"></span> Editing src/routes/users.ts</div>
+  </div>
+
+  <div class="quadrant" onclick="expandAgent(this)">
+    <div class="q-header">
+      <div class="q-header-left">
+        <span class="q-dot running"></span>
+        <span class="q-title">Add integration tests</span>
+      </div>
+      <div class="q-meta"><span>6m</span><span>$0.11</span></div>
+    </div>
+    <div class="q-body">
+      <div class="q-activity">
+        <div class="q-act-item"><span class="q-act-dot edit"></span> Write <code>users.test.ts</code></div>
+        <div class="q-act-item"><span class="q-act-dot ok"></span> vitest &mdash; 4 passed</div>
+      </div>
+    </div>
+    <div class="q-footer"><span class="spinner"></span> Running vitest</div>
+  </div>
+</div>
+
+<!-- TRIAGE DRILL-DOWN -->
+<div class="triage-view" id="triageView">
+  <div class="triage-bar">
+    <button class="btn-back" onclick="backToGrid()">&#8592; Grid</button>
+    <span class="triage-title">Fix auth token refresh</span>
+    <span class="triage-badge">STUCK</span>
+    <div class="queue-section">
+      <div class="queue-dots">
+        <div class="queue-dot current"></div>
+        <div class="queue-dot waiting"></div>
+      </div>
+      <span class="queue-text">1 of 2</span>
+    </div>
+    <div class="triage-meta">
+      <span>claude-code</span>
+      <span>~/git/webapp</span>
+      <span>18m</span>
+      <span>$0.42</span>
+    </div>
+  </div>
+
+  <div class="supervisor-box">
+    <strong>Supervisor:</strong> Agent ran <code>npm test</code> 8 times with the same <code>TypeError: token.verify is not a function</code>. Keeps editing <code>src/auth/token.ts</code> but hasn't tried changing the import.
+  </div>
+
+  <div class="triage-split">
+    <div class="conversation">
+      <div class="msg agent">
+        <div class="label">Agent</div>
+        I'll fix the auth token refresh logic in <code>src/auth/token.ts</code>.
+      </div>
+      <div class="msg tool">
+        <div class="label">Read src/auth/token.ts</div>
+export function refreshToken(token: string) {
+  return jwt.verify(token, SECRET);
+}
+      </div>
+      <div class="msg tool">
+        <div class="label">Bash: npm test <span class="repeat-pill">x8</span></div>
+FAIL src/auth/__tests__/token.test.ts
+  TypeError: token.verify is not a function
+      </div>
+      <div class="msg agent">
+        <div class="label">Agent</div>
+        Still failing. Let me try a different approach...
+      </div>
+    </div>
+
+    <div class="terminal-panel">
+      <div class="terminal-header"><span class="dot"></span> Terminal</div>
+      <div class="terminal-content">
+$ npm test -- --testPathPattern=token
+
+ <span class="err">FAIL</span>  src/auth/__tests__/token.test.ts
+   <span class="err">TypeError: token.verify is not a function</span>
+    <span class="dim">at</span> refreshToken <span class="file">src/auth/token.ts:14:18</span>
+
+ Tests  <span class="err">1 failed</span> | 3 passed (4)
+      </div>
+    </div>
+  </div>
+
+  <div class="response-area">
+    <div class="response-row">
+      <input type="text" placeholder="Send a hint..." autofocus />
+      <button class="btn-primary" onclick="showSent()">Send & Next</button>
+      <button class="btn-secondary">Skip</button>
+      <button class="btn-secondary">Snooze</button>
+    </div>
+    <div class="response-hint">
+      <kbd>Ctrl+Enter</kbd> send & next &middot; <kbd>Esc</kbd> back to grid &middot; <kbd>Tab</kbd> skip
+    </div>
+  </div>
+</div>
+
+<div class="statusbar">
+  <span>4 agents &middot; $1.68 session</span>
+  <span><kbd>Ctrl+N</kbd> next &middot; <kbd>Esc</kbd> grid &middot; <kbd>Ctrl+Enter</kbd> send & next</span>
+</div>
+
+<div class="sent-overlay" id="sentOverlay">
+  <div class="sent-card">
+    <div class="sent-check">&#10003;</div>
+    <div class="sent-text">Hint sent to Fix auth token refresh</div>
+    <div class="sent-next">Advancing to: Refactor cache layer...</div>
+  </div>
+</div>
+
+<script>
+function expandAgent(el) {
+  document.getElementById('gridView').classList.add('hidden');
+  document.getElementById('triageView').classList.add('active');
+}
+function backToGrid() {
+  document.getElementById('gridView').classList.remove('hidden');
+  document.getElementById('triageView').classList.remove('active');
+}
+function showSent() {
+  const o = document.getElementById('sentOverlay');
+  o.style.display = 'flex';
+  setTimeout(() => { o.style.display = 'none'; }, 1500);
+}
+</script>
+</body>
+</html>

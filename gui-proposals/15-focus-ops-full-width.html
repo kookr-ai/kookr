@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 15: Focus-Ops Full-Width</title>
+<!--
+  Design rationale:
+  Same Focus-Ops Hybrid, but addresses the terminal truncation problem from P09.
+  Instead of side-by-side split, uses FULL-WIDTH stacked views controlled by tabs.
+  Each tab gets 100% horizontal width — no more line wrapping in terminal output.
+
+  Key differences from P13:
+  - No split view at all — tabs switch between full-width Timeline OR Terminal
+  - Terminal gets the full canvas width (no truncation)
+  - Timeline gets the full canvas width (more room for long file paths)
+  - Alert still inlined as first timeline entry
+  - Compact "activity bar" shown at bottom of terminal view as breadcrumb context
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #13161c;
+    --bg-panel: #181c24;
+    --bg-card: #1e2330;
+    --bg-card-hover: #252b3a;
+    --bg-input: #212738;
+    --bg-terminal: #0e1117;
+    --border: #2a3244;
+    --border-dim: #222a3a;
+    --text: #b8c0ce;
+    --text-secondary: #7a8599;
+    --text-bright: #dde2ec;
+    --text-muted: #4d5770;
+    --green: #3dbc72;
+    --amber: #dba644;
+    --red: #d65555;
+    --blue: #5b9bea;
+    --purple: #9881d6;
+    --teal: #41b5a8;
+    --amber-bg: rgba(219,166,68,0.06);
+    --amber-border: rgba(219,166,68,0.18);
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    height: 100vh; display: flex; flex-direction: column;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 11.5px;
+  }
+
+  /* ─── Top bar ─── */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 18px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); height: 38px; flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 16px; }
+  .logo { font-family: 'JetBrains Mono', monospace; color: var(--teal);
+    font-weight: 700; font-size: 13px; letter-spacing: 1px; }
+  .topbar-stats { display: flex; gap: 4px; }
+  .stat-chip {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 11px; padding: 2px 8px; border-radius: 4px;
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    color: var(--text-secondary);
+  }
+  .stat-chip .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .stat-chip .dot.amber { background: var(--amber); }
+  .stat-chip .dot.green { background: var(--green); }
+  .stat-chip .dot.gray { background: var(--text-muted); }
+  .stat-chip .val { font-weight: 600; color: var(--text-bright); }
+  .topbar-right { display: flex; gap: 8px; align-items: center; }
+  .btn-new {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 4px 14px; border-radius: 5px;
+    font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+
+  .main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ─── Sidebar: always expanded (P09/P11 style) ─── */
+  .sidebar {
+    width: 260px; background: var(--bg-panel);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .sb-search {
+    padding: 10px 10px 8px;
+    border-bottom: 1px solid var(--border-dim);
+  }
+  .sb-search-input {
+    width: 100%; background: var(--bg-card);
+    border: 1px solid var(--border-dim); color: var(--text);
+    padding: 6px 10px; border-radius: 5px;
+    font-family: inherit; font-size: 12px; outline: none;
+  }
+  .sb-search-input::placeholder { color: var(--text-muted); }
+  .sb-search-input:focus { border-color: var(--teal); }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+  .sb-label { padding: 10px 14px 4px; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.7px; }
+  .sb-label.alert { color: var(--amber); }
+  .sb-label.normal { color: var(--text-muted); }
+  .agent-list { flex: 1; overflow-y: auto; padding: 0 6px; }
+  .sb-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 6px; cursor: pointer;
+    margin: 1px 0; border-left: 3px solid transparent;
+  }
+  .sb-item:hover { background: var(--bg-card); }
+  .sb-item.selected { background: var(--bg-card); border-left-color: var(--teal); }
+  .sb-item.alert-item { border-left-color: var(--amber); }
+  .sb-item.alert-item.selected { background: var(--amber-bg); }
+  .sb-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .sb-dot.working { background: var(--green); }
+  .sb-dot.stuck { background: var(--amber); animation: pulse 2s ease-in-out infinite; }
+  .sb-dot.done { background: var(--text-muted); }
+  .sb-info { flex: 1; min-width: 0; }
+  .sb-name { font-size: 12.5px; font-weight: 600; color: var(--text-bright);
+    display: flex; align-items: center; justify-content: space-between; }
+  .sb-badge { font-size: 9.5px; font-weight: 600; padding: 1px 6px; border-radius: 6px; }
+  .sb-badge.stuck { background: rgba(219,166,68,0.15); color: var(--amber); }
+  .sb-badge.working { background: rgba(61,188,114,0.1); color: var(--green); }
+  .sb-meta { display: flex; gap: 8px; font-size: 10.5px; color: var(--text-muted); margin-top: 2px; }
+
+  /* ─── Center ─── */
+  .center { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+
+  /* Context strip: stuck + working only */
+  .context-strip {
+    display: flex; gap: 4px; padding: 6px 18px;
+    border-bottom: 1px solid var(--border-dim); flex-shrink: 0;
+    overflow-x: auto;
+  }
+  .ctx-chip {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 10px; border-radius: 5px;
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    font-size: 11px; cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  }
+  .ctx-chip:hover { background: var(--bg-card-hover); }
+  .ctx-chip.selected { border-color: var(--teal); background: var(--bg-card-hover); }
+  .ctx-chip.alert { border-color: var(--amber-border); }
+  .ctx-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .ctx-dot.working { background: var(--green); }
+  .ctx-dot.stuck { background: var(--amber); }
+  .ctx-name { font-weight: 600; color: var(--text-bright); }
+  .ctx-status { color: var(--text-muted); }
+
+  /* View tabs */
+  .view-tabs {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; border-bottom: 1px solid var(--border-dim);
+    height: 34px; flex-shrink: 0;
+  }
+  .view-tabs-left { display: flex; gap: 2px; }
+  .view-tab {
+    background: none; border: none;
+    color: var(--text-muted); font-family: inherit;
+    font-size: 11.5px; font-weight: 500;
+    padding: 7px 14px; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .view-tab:hover { color: var(--text-secondary); }
+  .view-tab.active { color: var(--teal); border-bottom-color: var(--teal); }
+  .view-tabs-right {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 11px; color: var(--text-muted);
+  }
+  .view-tabs-right code { color: var(--blue); font-size: 11px; }
+
+  /* Full-width content area (no split) */
+  .content-area {
+    flex: 1; overflow-y: auto; padding: 12px 24px;
+    background: var(--bg-terminal);
+  }
+
+  .col-title { font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.6px; color: var(--text-muted); margin-bottom: 8px; }
+
+  /* Activity bar: compact breadcrumb trail at bottom of terminal view */
+  .activity-bar {
+    display: flex; gap: 6px; padding: 6px 20px; flex-shrink: 0;
+    border-top: 1px solid var(--border-dim); background: var(--bg-panel);
+    overflow-x: auto; align-items: center;
+  }
+  .ab-item {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 10.5px; color: var(--text-muted); white-space: nowrap;
+  }
+  .ab-dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    border: 1.5px solid var(--border); background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 7px; font-weight: 700;
+  }
+  .ab-dot.edit { border-color: var(--purple); color: var(--purple); }
+  .ab-dot.error { border-color: var(--red); color: var(--red); }
+  .ab-dot.read { border-color: var(--text-secondary); color: var(--text-secondary); }
+  .ab-item code { font-size: 10px; color: var(--teal); }
+  .ab-arrow { color: var(--text-muted); font-size: 9px; }
+  .repeat-pill {
+    display: inline-block; background: rgba(219,166,68,0.12);
+    color: var(--amber); font-size: 9px; font-weight: 700;
+    padding: 0 5px; border-radius: 6px; margin-left: 2px;
+  }
+
+  .terminal-pane {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 12px; line-height: 1.7; color: var(--text-secondary);
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .terminal-pane .prompt { color: var(--green); }
+  .terminal-pane .cmd { color: var(--text-bright); }
+  .terminal-pane .err { color: var(--red); }
+  .terminal-pane .dim { color: var(--text-muted); }
+  .terminal-pane .file { color: var(--blue); }
+  .terminal-pane .pass { color: var(--green); }
+
+  /* Input area */
+  .input-area {
+    padding: 8px 20px 10px; border-top: 1px solid var(--border);
+    background: var(--bg-panel); flex-shrink: 0;
+  }
+  .input-hints {
+    font-size: 10px; color: var(--text-muted); margin-bottom: 4px;
+    display: flex; justify-content: space-between;
+  }
+  .input-hints kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 4px; border-radius: 2px;
+    font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--text-secondary);
+  }
+  .input-row { display: flex; gap: 8px; }
+  .input-field {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border);
+    color: var(--text-bright); padding: 8px 12px; border-radius: 6px;
+    font-family: inherit; font-size: 13px; outline: none;
+  }
+  .input-field:focus { border-color: var(--teal); }
+  .input-field::placeholder { color: var(--text-muted); }
+  .btn-send {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 0 18px; border-radius: 6px;
+    font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .btn-xs {
+    background: var(--bg-card); border: 1px solid var(--border);
+    color: var(--text-secondary); padding: 3px 10px; border-radius: 4px;
+    font-family: inherit; font-size: 10.5px; cursor: pointer;
+  }
+  .btn-xs:hover { color: var(--text-bright); background: var(--bg-card-hover); }
+
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 18px; background: var(--bg-panel);
+    border-top: 1px solid var(--border); height: 24px; flex-shrink: 0;
+    font-size: 10.5px; color: var(--text-muted);
+  }
+  .statusbar-left, .statusbar-right { display: flex; gap: 12px; }
+  .statusbar kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 3px; border-radius: 2px;
+    font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+    <div class="topbar-stats">
+      <div class="stat-chip"><span class="dot amber"></span><span class="val">1</span> stuck</div>
+      <div class="stat-chip"><span class="dot green"></span><span class="val">2</span> working</div>
+      <div class="stat-chip"><span class="dot gray"></span><span class="val">1</span> done</div>
+      <div class="stat-chip"><span class="val">$0.98</span></div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <button class="btn-new">+ New Task</button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="sidebar">
+    <div class="sb-search">
+      <input class="sb-search-input" type="text" placeholder="Filter tasks..." />
+    </div>
+    <div class="sb-label alert">Attention</div>
+    <div class="agent-list">
+      <div class="sb-item alert-item selected">
+        <span class="sb-dot stuck"></span>
+        <div class="sb-info">
+          <div class="sb-name">Fix auth bug in login.ts <span class="sb-badge stuck">Stuck</span></div>
+          <div class="sb-meta"><span>12m</span><span>$0.42</span><span>Claude Code</span></div>
+        </div>
+      </div>
+      <div class="sb-label normal">Working</div>
+      <div class="sb-item">
+        <span class="sb-dot working"></span>
+        <div class="sb-info">
+          <div class="sb-name">Add pagination to /users <span class="sb-badge working">Working</span></div>
+          <div class="sb-meta"><span>8m</span><span>$0.18</span></div>
+        </div>
+      </div>
+      <div class="sb-item">
+        <span class="sb-dot working"></span>
+        <div class="sb-info">
+          <div class="sb-name">Write tests for utils.ts <span class="sb-badge working">Working</span></div>
+          <div class="sb-meta"><span>3m</span><span>$0.07</span></div>
+        </div>
+      </div>
+      <div class="sb-label normal">Done</div>
+      <div class="sb-item">
+        <span class="sb-dot done"></span>
+        <div class="sb-info">
+          <div class="sb-name">Update README</div>
+          <div class="sb-meta"><span>Done</span><span>$0.31</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="center">
+    <!-- Context strip: stuck + working only -->
+    <div class="context-strip">
+      <div class="ctx-chip selected alert">
+        <span class="ctx-dot stuck"></span>
+        <span class="ctx-name">Fix auth bug</span>
+        <span class="ctx-status">Stuck 12m</span>
+      </div>
+      <div class="ctx-chip">
+        <span class="ctx-dot working"></span>
+        <span class="ctx-name">Add pagination</span>
+        <span class="ctx-status">8m</span>
+      </div>
+      <div class="ctx-chip">
+        <span class="ctx-dot working"></span>
+        <span class="ctx-name">Write tests</span>
+        <span class="ctx-status">3m</span>
+      </div>
+    </div>
+
+    <!-- View tabs: full-width, no split mode -->
+    <div class="view-tabs">
+      <div class="view-tabs-left">
+        <button class="view-tab">Timeline</button>
+        <button class="view-tab active">Terminal</button>
+      </div>
+      <div class="view-tabs-right">
+        <span>Claude Code</span>
+        <span><code>~/git/myapp</code></span>
+        <span>12m</span>
+        <span>$0.42</span>
+      </div>
+    </div>
+
+    <!-- Full-width terminal (no truncation!) -->
+    <div class="content-area">
+      <div class="terminal-pane"><span class="dim">~/git/myapp</span>
+<span class="prompt">$</span> <span class="cmd">npm test</span>
+
+<span class="dim">&gt; myapp@1.0.0 test</span>
+<span class="dim">&gt; vitest run</span>
+
+ <span class="pass">PASS</span>  src/utils.test.ts (2 tests)
+ <span class="pass">PASS</span>  src/db.test.ts (3 tests)
+ <span class="err">FAIL</span>  src/auth.test.ts (1 test)
+
+  Auth module
+    <span class="err">x token verification</span>
+
+      <span class="err">TypeError: token.verify is not a function</span>
+
+      <span class="dim">    at verifyToken</span> (<span class="file">src/auth.ts:42:18</span>)
+      <span class="dim">    at Object.&lt;anonymous&gt;</span> (<span class="file">src/auth.test.ts:15:5</span>)
+      <span class="dim">    at processTicksAndRejections</span> (<span class="dim">node:internal/process/task_queues:95:5</span>)
+
+  <span class="dim">Cause: The imported module @auth/core does not export 'verify'.</span>
+  <span class="dim">Did you mean to import from '@auth/jwt'?</span>
+
+Test Suites:  <span class="err">1 failed</span>, <span class="pass">2 passed</span>, 3 total
+Tests:        <span class="err">1 failed</span>, <span class="pass">5 passed</span>, 6 total
+Snapshots:    0 total
+Time:         1.23s
+Ran all test suites.
+
+<span class="prompt">$</span> <span class="dim">_</span></div>
+    </div>
+
+    <!-- Activity bar: compact breadcrumb of recent actions while in terminal view -->
+    <div class="activity-bar">
+      <div class="ab-item">
+        <div class="ab-dot read">R</div>
+        <code>auth.ts</code>
+      </div>
+      <span class="ab-arrow">&rarr;</span>
+      <div class="ab-item">
+        <div class="ab-dot edit">E</div>
+        <code>auth.ts:42</code>
+      </div>
+      <span class="ab-arrow">&rarr;</span>
+      <div class="ab-item">
+        <div class="ab-dot error">!</div>
+        <code>npm test</code> <span class="repeat-pill">x3</span>
+      </div>
+      <span class="ab-arrow">&rarr;</span>
+      <div class="ab-item">
+        <div class="ab-dot edit">E</div>
+        <code>auth.ts:42</code>
+      </div>
+      <span class="ab-arrow">&rarr;</span>
+      <div class="ab-item">
+        <div class="ab-dot error">!</div>
+        <code>npm test</code> <span class="repeat-pill">x9</span>
+      </div>
+      <span class="ab-arrow">&rarr;</span>
+      <div class="ab-item">
+        <div class="ab-dot edit">E</div>
+        <code>auth.ts:42</code>
+      </div>
+      <span class="ab-arrow">&rarr;</span>
+      <div class="ab-item">
+        <div class="ab-dot error">!</div>
+        <code>npm test</code> <span class="repeat-pill">x12</span>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-hints">
+        <span>Respond to task — sent as keystrokes</span>
+        <span><kbd>Ctrl+Enter</kbd> send &nbsp; <kbd>Ctrl+N</kbd> next &nbsp; <kbd>Ctrl+1</kbd> timeline &nbsp; <kbd>Ctrl+2</kbd> terminal</span>
+      </div>
+      <div class="input-row">
+        <input class="input-field" type="text" placeholder="Try importing from @auth/jwt instead..." />
+        <button class="btn-send">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="statusbar">
+  <div class="statusbar-left">
+    <span>4 tasks</span><span>1 stuck</span><span>$0.98</span><span>Focus</span>
+  </div>
+  <div class="statusbar-right">
+    <span><kbd>Ctrl+N</kbd> next</span>
+    <span><kbd>Ctrl+Enter</kbd> send</span>
+    <span><kbd>Ctrl+B</kbd> sidebar</span>
+    <span><kbd>Ctrl+1/2</kbd> views</span>
+  </div>
+</div>
+
+</body>
+</html>

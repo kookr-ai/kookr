@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 23: Command Palette Centric</title>
+<!--
+  Design rationale:
+  Keyboard-first design inspired by VS Code command palette, Raycast, and
+  terminal multiplexers. The screen is split into a minimal agent status bar
+  on the left (just icons + names + status dots) and a large main area.
+  The main area shows the focused agent's conversation. A command palette
+  (Ctrl+K) overlays for quick agent switching, launching, and actions.
+  Everything is accessible via keyboard — no mouse required. Minimal chrome,
+  maximum content. Designed for developers who prefer keyboard workflows.
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0e1015;
+    --bg-panel: #14161e;
+    --bg-card: #1a1d28;
+    --bg-card-hover: #22263a;
+    --bg-input: #1c2030;
+    --bg-terminal: #0a0c12;
+    --bg-overlay: rgba(10,12,18,0.85);
+    --border: #252a3c;
+    --border-dim: #1c2034;
+    --text: #aab2c8;
+    --text-secondary: #636e88;
+    --text-bright: #e2e7f2;
+    --text-muted: #3c4560;
+    --green: #4ade80;
+    --amber: #fcd34d;
+    --red: #fb7185;
+    --blue: #60a5fa;
+    --purple: #c084fc;
+    --teal: #5eead4;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    height: 100vh; display: flex; flex-direction: column;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 11.5px;
+  }
+
+  /* Minimal top bar */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); height: 36px; flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 14px; }
+  .logo { font-family: 'JetBrains Mono', monospace; color: var(--teal);
+    font-weight: 700; font-size: 12px; letter-spacing: 1.5px; }
+  .palette-hint {
+    font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 4px;
+  }
+  .palette-hint kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 1px 6px; border-radius: 3px; font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; color: var(--text-secondary);
+  }
+  .topbar-status { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); }
+  .topbar-status .c { font-weight: 600; }
+  .topbar-status .c.warn { color: var(--amber); }
+  .topbar-status .c.ok { color: var(--green); }
+
+  /* Main layout */
+  .main { flex: 1; display: flex; overflow: hidden; }
+
+  /* Slim sidebar */
+  .sidebar {
+    width: 220px; background: var(--bg-panel);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+    flex-shrink: 0;
+  }
+  .sidebar-header {
+    padding: 10px 14px; font-size: 10.5px; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600;
+    border-bottom: 1px solid var(--border-dim);
+  }
+  .sidebar-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+
+  .agent-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 14px; cursor: pointer; transition: background 0.1s;
+  }
+  .agent-item:hover { background: var(--bg-card); }
+  .agent-item.active { background: var(--bg-card); border-right: 2px solid var(--teal); }
+  .agent-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .agent-dot.running { background: var(--green); }
+  .agent-dot.stuck { background: var(--amber); animation: pulse 2s ease-in-out infinite; }
+  .agent-dot.error { background: var(--red); }
+  .agent-dot.done { background: var(--text-muted); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .agent-name { font-size: 12px; color: var(--text); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .agent-item.active .agent-name { color: var(--text-bright); }
+  .agent-shortcut { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--text-muted); }
+
+  /* Content area */
+  .content { flex: 1; display: flex; flex-direction: column; }
+
+  /* Agent header */
+  .agent-header {
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .agent-header-left { display: flex; align-items: center; gap: 10px; }
+  .agent-header h2 { font-size: 14px; font-weight: 600; color: var(--text-bright); }
+  .agent-header .status-tag {
+    font-size: 10.5px; padding: 2px 8px; border-radius: 4px; font-weight: 600;
+  }
+  .status-tag.stuck { background: rgba(252,211,77,0.1); color: var(--amber); }
+  .agent-header-right { font-size: 11px; color: var(--text-muted); display: flex; gap: 14px; }
+
+  /* Alert strip */
+  .alert-strip {
+    background: rgba(252,211,77,0.06); border-bottom: 1px solid rgba(252,211,77,0.15);
+    padding: 10px 20px; font-size: 12.5px; color: var(--amber); line-height: 1.5;
+  }
+  .alert-strip code { background: rgba(252,211,77,0.1); padding: 1px 5px; border-radius: 3px; }
+
+  /* Conversation */
+  .conversation {
+    flex: 1; overflow-y: auto; padding: 16px 20px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .msg {
+    max-width: 85%; padding: 10px 14px; border-radius: 8px;
+    font-size: 13px; line-height: 1.6;
+  }
+  .msg.agent {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    align-self: flex-start;
+  }
+  .msg.user {
+    background: rgba(94,234,212,0.08); border: 1px solid rgba(94,234,212,0.18);
+    align-self: flex-end;
+  }
+  .msg.tool {
+    align-self: flex-start; max-width: 90%;
+    background: var(--bg-terminal); border: 1px solid var(--border-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text-secondary); white-space: pre-wrap; padding: 8px 12px;
+  }
+  .msg code { background: var(--bg-terminal); padding: 1px 4px; border-radius: 2px; font-size: 11.5px; }
+  .msg .ts { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
+  .msg .tool-label { font-size: 10px; color: var(--text-muted); margin-bottom: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+
+  /* Input */
+  .input-area {
+    padding: 12px 20px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px;
+  }
+  .input-area input {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border-dim);
+    border-radius: 6px; padding: 10px 14px; color: var(--text-bright);
+    font-family: inherit; font-size: 13px; outline: none;
+  }
+  .input-area input:focus { border-color: var(--teal); }
+  .input-area input::placeholder { color: var(--text-muted); }
+  .input-area .btn {
+    padding: 10px 18px; border-radius: 6px; font-size: 12.5px; font-weight: 600;
+    cursor: pointer; border: none;
+  }
+  .btn-send { background: var(--teal); color: #0a0e12; }
+  .btn-skip {
+    background: none; border: 1px solid var(--border-dim) !important;
+    color: var(--text-secondary);
+  }
+
+  /* Command palette overlay */
+  .palette-overlay {
+    display: none; position: fixed; inset: 0;
+    background: var(--bg-overlay); z-index: 200;
+    justify-content: center; padding-top: 15vh;
+  }
+  .palette-overlay.open { display: flex; }
+  .palette {
+    width: 520px; background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    overflow: hidden; max-height: 400px; display: flex; flex-direction: column;
+  }
+  .palette-input {
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+  }
+  .palette-input input {
+    width: 100%; background: none; border: none; outline: none;
+    color: var(--text-bright); font-family: inherit; font-size: 15px;
+  }
+  .palette-input input::placeholder { color: var(--text-muted); }
+  .palette-results { overflow-y: auto; padding: 6px 0; }
+  .palette-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 18px; cursor: pointer;
+  }
+  .palette-item:hover, .palette-item.selected { background: var(--bg-card); }
+  .palette-item .icon { font-size: 14px; width: 22px; text-align: center; }
+  .palette-item .label { font-size: 13px; color: var(--text); flex: 1; }
+  .palette-item .shortcut { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-muted); }
+  .palette-item .status-dot { width: 6px; height: 6px; border-radius: 50%; }
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+    <div class="palette-hint"><kbd>Ctrl+K</kbd> command palette</div>
+  </div>
+  <div class="topbar-status">
+    <span><span class="c warn">2</span> attention</span>
+    <span><span class="c ok">2</span> running</span>
+    <span>$1.68 spent</span>
+  </div>
+</div>
+
+<!-- Main -->
+<div class="main">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">Agents</div>
+    <div class="sidebar-list">
+      <div class="agent-item active">
+        <span class="agent-dot stuck"></span>
+        <span class="agent-name">Fix auth token refresh</span>
+        <span class="agent-shortcut">1</span>
+      </div>
+      <div class="agent-item">
+        <span class="agent-dot error"></span>
+        <span class="agent-name">Refactor cache layer</span>
+        <span class="agent-shortcut">2</span>
+      </div>
+      <div class="agent-item">
+        <span class="agent-dot running"></span>
+        <span class="agent-name">Add pagination to /users</span>
+        <span class="agent-shortcut">3</span>
+      </div>
+      <div class="agent-item">
+        <span class="agent-dot running"></span>
+        <span class="agent-name">Add integration tests</span>
+        <span class="agent-shortcut">4</span>
+      </div>
+      <div class="agent-item">
+        <span class="agent-dot done"></span>
+        <span class="agent-name">Update README badges</span>
+        <span class="agent-shortcut">5</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+    <div class="agent-header">
+      <div class="agent-header-left">
+        <h2>Fix auth token refresh</h2>
+        <span class="status-tag stuck">STUCK</span>
+      </div>
+      <div class="agent-header-right">
+        <span>~/git/webapp</span>
+        <span>18m</span>
+        <span>$0.42</span>
+      </div>
+    </div>
+
+    <div class="alert-strip">
+      Supervisor: Agent ran <code>npm test</code> 8 times with same <code>TypeError: token.verify is not a function</code>. It keeps editing <code>src/auth/token.ts</code> without changing the import. Try suggesting it check which jwt library is imported.
+    </div>
+
+    <div class="conversation">
+      <div class="msg agent">
+        I'll fix the auth token refresh logic in <code>src/auth/token.ts</code>. Let me start by reading the current implementation.
+        <div class="ts">18m ago</div>
+      </div>
+      <div class="msg tool">
+        <div class="tool-label">Read src/auth/token.ts</div>
+export function refreshToken(token: string) {
+  return jwt.verify(token, SECRET);
+}
+      </div>
+      <div class="msg agent">
+        I see the issue — <code>jwt.verify</code> validates but doesn't refresh. I'll update this to decode, check expiry, and issue a new token.
+        <div class="ts">15m ago</div>
+      </div>
+      <div class="msg tool">
+        <div class="tool-label">Bash: npm test (attempt 8/8)</div>
+FAIL src/auth/__tests__/token.test.ts
+  TypeError: token.verify is not a function
+    at refreshToken (src/auth/token.ts:14:18)
+
+Tests  1 failed | 3 passed (4)
+      </div>
+      <div class="msg agent">
+        The test is still failing with the same TypeError. Let me try yet another approach to the verify call...
+        <div class="ts">3m ago</div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <input type="text" placeholder="Send a hint... (Ctrl+Enter to send, Tab to skip)" autofocus />
+      <button class="btn btn-send">Send</button>
+      <button class="btn btn-skip">Skip</button>
+    </div>
+  </div>
+</div>
+
+<!-- Command palette -->
+<div class="palette-overlay" id="palette">
+  <div class="palette">
+    <div class="palette-input">
+      <input type="text" placeholder="Type a command or agent name..." id="paletteInput" />
+    </div>
+    <div class="palette-results">
+      <div class="palette-item selected">
+        <span class="icon">&#8594;</span>
+        <span class="label">Go to: Fix auth token refresh</span>
+        <span class="status-dot" style="background:var(--amber)"></span>
+      </div>
+      <div class="palette-item">
+        <span class="icon">&#8594;</span>
+        <span class="label">Go to: Refactor cache layer</span>
+        <span class="status-dot" style="background:var(--red)"></span>
+      </div>
+      <div class="palette-item">
+        <span class="icon">&#8594;</span>
+        <span class="label">Go to: Add pagination to /users</span>
+        <span class="status-dot" style="background:var(--green)"></span>
+      </div>
+      <div class="palette-item">
+        <span class="icon">+</span>
+        <span class="label">Launch new agent</span>
+        <span class="shortcut">Ctrl+L</span>
+      </div>
+      <div class="palette-item">
+        <span class="icon">&#8631;</span>
+        <span class="label">Next bottleneck</span>
+        <span class="shortcut">Ctrl+N</span>
+      </div>
+      <div class="palette-item">
+        <span class="icon">&#9202;</span>
+        <span class="label">Snooze current agent</span>
+        <span class="shortcut">Ctrl+Z</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Command palette
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === 'k') {
+    e.preventDefault();
+    const pal = document.getElementById('palette');
+    pal.classList.toggle('open');
+    if (pal.classList.contains('open')) {
+      document.getElementById('paletteInput').focus();
+    }
+  }
+  if (e.key === 'Escape') {
+    document.getElementById('palette').classList.remove('open');
+  }
+});
+
+// Agent switching
+document.querySelectorAll('.agent-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.agent-item').forEach(i => i.classList.remove('active'));
+    item.classList.add('active');
+  });
+});
+</script>
+</body>
+</html>

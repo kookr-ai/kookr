@@ -1,0 +1,381 @@
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { access } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import type { TerminalBackend } from './terminal-backend.js';
+import type { TaskStore } from '../core/tasks.js';
+import type { AgentEvent } from '../core/types.js';
+import type { AgentAdapter, EffectiveHookSettings, ResumeContext } from './agent-adapter.js';
+import { parseHookEvent } from '../core/hook-parser.js';
+import { getGitInfo, isGitBranchCommand } from './git-info.js';
+import { buildAgentLaunchContext } from './agent-launch-context.js';
+import { resolveAndPrepareCheckpointDir, CHECKPOINT_LOAD_INSTRUCTION } from '../core/checkpoint-path.js';
+import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder('utf-8', { fatal: false });
+
+export interface HookSettings {
+  hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>>;
+  permissions?: {
+    allow: string[];
+  };
+}
+
+export interface ClaudeCodeAdapterOptions {
+  hooksDir?: string;
+  settingsDir?: string;
+  /** Write a file to disk. Injected so tests can skip real I/O. */
+  writeFile?: (path: string, content: string) => Promise<void>;
+  /** Server port for HTTP push hook command. When set, hooks write to JSONL + POST to server. */
+  serverPort?: number;
+  /** Path or command name for the agent binary. Defaults to 'claude'. */
+  agentBin?: string;
+  /**
+   * Opt-in: launch the agent with --dangerously-skip-permissions so the
+   * spawned Claude Code bypasses all permission prompts. Defaults to false.
+   */
+  bypassAllPermissions?: boolean;
+  /**
+   * Kookr data directory (`~/.kookr` or `~/.kookr-<port>`). When provided,
+   * each launched task gets a per-(repo, branch) checkpoint directory under
+   * `<kookrDataDir>/checkpoints/...` and `KOOKR_CHECKPOINT_DIR` is injected
+   * into the spawned agent's environment. Without this, checkpointing is
+   * silently disabled (fail-open).
+   */
+  kookrDataDir?: string;
+  /**
+   * Absolute path to the kookr-toolkit plugin tree (containing
+   * `.claude-plugin/plugin.json`). When set and the path is valid, the
+   * adapter passes `--plugin-dir <path>` to every spawned `claude` so
+   * Kookr-spawned agents see the toolkit regardless of cwd.
+   *
+   * Resolution order: this option > `KOOKR_PLUGIN_DIR` env > auto-resolved
+   * relative to the adapter's compiled location. Empty string disables
+   * injection. See `resolvePluginDir()`.
+   */
+  pluginDir?: string;
+}
+
+// CommonJS context — `__dirname` is auto-defined.
+const adapterDir = __dirname;
+
+/**
+ * Resolve the kookr-toolkit plugin tree. Tries (in order): the explicit
+ * option, the `KOOKR_PLUGIN_DIR` env var, and finally `<repo-root>/plugin`
+ * inferred from the adapter's compiled-output location. Returns `undefined`
+ * if no candidate contains `.claude-plugin/plugin.json` so the caller can
+ * skip injection rather than passing a bad path.
+ */
+export function resolvePluginDir(
+  explicit: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  baseDir: string = adapterDir,
+): string | undefined {
+  // Explicit option (including empty string = disable)
+  if (explicit !== undefined) {
+    return explicit && pluginDirIsValid(explicit) ? explicit : undefined;
+  }
+  const fromEnv = env.KOOKR_PLUGIN_DIR;
+  if (fromEnv !== undefined) {
+    return fromEnv && pluginDirIsValid(fromEnv) ? fromEnv : undefined;
+  }
+  // Auto-resolve. Compiled output: dist/adapters/...js → ../../plugin.
+  // Source (dev/test): src/adapters/...ts → ../../plugin. Same depth.
+  const candidate = resolve(baseDir, '..', '..', 'plugin');
+  return pluginDirIsValid(candidate) ? candidate : undefined;
+}
+
+function pluginDirIsValid(p: string): boolean {
+  return existsSync(resolve(p, '.claude-plugin', 'plugin.json'));
+}
+
+export class ClaudeCodeAdapter implements AgentAdapter {
+  readonly agentType = 'claude-code';
+  private eventHandlers: Array<(tmuxName: string, event: AgentEvent) => void> = [];
+  private refreshHandlers: Array<() => void> = [];
+  private settingsMap = new Map<string, HookSettings>();
+  private tmuxToTaskId = new Map<string, string>();
+  private hooksDir: string;
+  private settingsDir: string;
+  private writeFile?: (path: string, content: string) => Promise<void>;
+  private serverPort?: number;
+  private agentBin: string;
+  private bypassAllPermissions: boolean;
+  private kookrDataDir?: string;
+  private pluginDir?: string;
+
+  constructor(
+    private backend: TerminalBackend,
+    private taskStore: TaskStore,
+    options?: ClaudeCodeAdapterOptions,
+  ) {
+    this.hooksDir = options?.hooksDir ?? '~/.kookr/hooks';
+    this.settingsDir = options?.settingsDir ?? '~/.kookr/settings';
+    this.writeFile = options?.writeFile;
+    this.serverPort = options?.serverPort;
+    this.agentBin = options?.agentBin ?? 'claude';
+    this.bypassAllPermissions = options?.bypassAllPermissions ?? false;
+    this.kookrDataDir = options?.kookrDataDir;
+    this.pluginDir = resolvePluginDir(options?.pluginDir);
+  }
+
+  /**
+   * Launch a Claude Code agent under the dtach backend.
+   * Returns the session id (historically called `tmuxName`).
+   */
+  async launch(taskId: string, prompt: string, cwd: string, resume?: ResumeContext): Promise<string> {
+    const tmuxName = `kookr-${randomUUID().slice(0, 8)}`;
+    this.tmuxToTaskId.set(tmuxName, taskId);
+
+    // Resolve per-(repo, branch) checkpoint dir if data dir is configured.
+    // Returns null on any failure — fail-open so checkpoint problems never
+    // break task launch. See docs/poc/005-checkpoint-cycle-mechanics.md.
+    const checkpointDir = this.kookrDataDir
+      ? (await resolveAndPrepareCheckpointDir({ cwd, kookrDataDir: this.kookrDataDir })) ?? undefined
+      : undefined;
+
+    const launchContext = await buildAgentLaunchContext({
+      taskStore: this.taskStore,
+      taskId,
+      cwd,
+      serverPort: this.serverPort,
+      checkpointDir,
+    });
+
+    // Generate hook settings
+    const settings = this.generateSettings(tmuxName, this.hooksDir, launchContext.permissionAllowlist);
+    this.settingsMap.set(tmuxName, settings);
+
+    // Write settings file to disk if writeFile is available (production)
+    const settingsPath = `${this.settingsDir}/${tmuxName}.json`;
+    if (this.writeFile) {
+      await this.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+    }
+
+    // Decide resume vs fresh. Resume requires a sessionId; if a transcriptPath
+    // is also supplied, verify the file exists before passing the flag (the CLI
+    // would otherwise error opaquely). See rfc-crash-recovery-resume.md.
+    const useResume =
+      !!resume?.sessionId &&
+      (!resume.transcriptPath || (await fileExists(resume.transcriptPath)));
+
+    // Argv-based launch — zero shell features needed per docs/spikes/argv-audit.md.
+    // Env lives in SessionSpec.env; each flag and the prompt are argv entries.
+    // --dangerously-skip-permissions is conditional on opt-in via
+    // KOOKR_BYPASS_ALL_PERMISSIONS=true. --append-system-prompt is conditional
+    // on checkpointing being wired (see docs/poc/005-checkpoint-cycle-mechanics.md).
+    const args: string[] = [];
+    if (this.bypassAllPermissions) args.push('--dangerously-skip-permissions');
+    if (this.pluginDir) args.push('--plugin-dir', this.pluginDir);
+    if (useResume) {
+      // --fork-session creates a new sessionId for the resumed branch so the
+      // user's pre-crash transcript is preserved as a read-only snapshot.
+      // No --append-system-prompt or prompt arg: the resumed conversation
+      // already contains the original prompt and any checkpoint context.
+      args.push('--resume', resume!.sessionId, '--fork-session');
+      args.push('--settings', settingsPath);
+    } else {
+      if (checkpointDir) args.push('--append-system-prompt', CHECKPOINT_LOAD_INSTRUCTION);
+      args.push('--settings', settingsPath, prompt);
+    }
+
+    await this.backend.createSession({
+      id: tmuxName,
+      command: this.agentBin,
+      args,
+      env: launchContext.env,
+      cwd,
+      size: { cols: 200, rows: 50 },
+    });
+
+    // Register session with task store
+    this.taskStore.addSession(taskId, {
+      tmuxSession: tmuxName,
+      agentType: 'claude-code',
+      cwd,
+      createdAt: new Date(),
+    });
+
+    // Fire-and-forget: capture git context from CWD
+    getGitInfo(cwd)
+      .then((info) => {
+        if (info) {
+          this.taskStore.updateSessionGitInfo(taskId, tmuxName, info);
+          // Trigger a snapshot broadcast so the frontend picks up git info.
+          // Uses refreshHandlers (not eventHandlers) to avoid injecting a
+          // spurious input_received event that could clear anomaly state.
+          for (const handler of this.refreshHandlers) {
+            handler();
+          }
+        }
+      })
+      .catch(() => { /* graceful degradation — no git info displayed */ });
+
+    return tmuxName;
+  }
+
+  /** Send developer input (text + Enter) to an agent's session. */
+  async sendInput(tmuxName: string, text: string): Promise<void> {
+    await this.backend.writeSequence(tmuxName, [
+      textEncoder.encode(text),
+      ENTER_BYTES,
+    ]);
+  }
+
+  /** Send a single keystroke without trailing Enter (for permission prompts). */
+  async sendKeystroke(tmuxName: string, key: string): Promise<void> {
+    await this.backend.write(tmuxName, translateKeystroke(key));
+  }
+
+  /** Stop an agent by killing its session. */
+  async stop(tmuxName: string): Promise<void> {
+    await this.backend.killSession(tmuxName);
+    this.settingsMap.delete(tmuxName);
+    this.tmuxToTaskId.delete(tmuxName);
+  }
+
+  /** Capture the current terminal display as a decoded string. */
+  async captureDisplay(tmuxName: string): Promise<string> {
+    const bytes = await this.backend.captureBytes(tmuxName);
+    return textDecoder.decode(bytes);
+  }
+
+  /**
+   * Register an event handler for AgentEvents from hook events.
+   */
+  onEvent(handler: (tmuxName: string, event: AgentEvent) => void): void {
+    this.eventHandlers.push(handler);
+  }
+
+  /**
+   * Register a handler called when metadata changes (e.g. git info) require
+   * a snapshot broadcast but no AgentEvent should be emitted.
+   */
+  onRefreshNeeded(handler: () => void): void {
+    this.refreshHandlers.push(handler);
+  }
+
+  /**
+   * Inject a raw hook event (for testing or from hook file tailing).
+   * Parses the JSON, emits the AgentEvent, and updates session metadata.
+   * Detects CWD changes and git commands to refresh git info.
+   */
+  injectHookEvent(tmuxName: string, rawJson: string): void {
+    const event = parseHookEvent(rawJson);
+    if (!event) return; // Unknown hook type — silently skip
+    const taskId = this.tmuxToTaskId.get(tmuxName);
+
+    // Update session metadata on SessionStart
+    if (event.type === 'session_start' && taskId) {
+      this.taskStore.updateSession(taskId, tmuxName, {
+        claudeSessionId: event.sessionId,
+        transcriptPath: event.transcriptPath,
+      });
+    }
+
+    // Detect CWD changes and git commands to refresh git info
+    if (taskId && 'cwd' in event && event.cwd) {
+      const task = this.taskStore.getTask(taskId);
+      const session = task?.sessions.find((s) => s.tmuxSession === tmuxName);
+      if (session) {
+        let shouldRefreshGit = false;
+
+        // Trigger 1: CWD changed — agent moved to a different directory
+        if (event.cwd !== session.cwd) {
+          this.taskStore.updateSessionCwd(taskId, tmuxName, event.cwd);
+          shouldRefreshGit = true;
+        }
+
+        // Trigger 2: Git command detected — branch may have changed in same directory
+        if (event.type === 'tool_result' && event.toolName === 'Bash' && isGitBranchCommand(event.toolResponse)) {
+          shouldRefreshGit = true;
+        }
+        if (event.type === 'tool_use' && event.toolName === 'Bash' && isGitBranchCommand(event.toolInput)) {
+          shouldRefreshGit = true;
+        }
+
+        if (shouldRefreshGit) {
+          const currentCwd = event.cwd;
+          getGitInfo(currentCwd)
+            .then((info) => {
+              if (info) {
+                this.taskStore.updateSessionGitInfo(taskId, tmuxName, info);
+              }
+            })
+            .catch(() => { /* graceful degradation */ });
+        }
+      }
+    }
+
+    // Emit to all handlers with tmuxName for routing
+    for (const handler of this.eventHandlers) {
+      handler(tmuxName, event);
+    }
+  }
+
+  /**
+   * Get the generated settings for a tmux session (for testing).
+   */
+  getGeneratedSettings(tmuxName: string): HookSettings | undefined {
+    return this.settingsMap.get(tmuxName);
+  }
+
+  getEffectiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined {
+    const content = this.settingsMap.get(tmuxName);
+    if (!content) return undefined;
+    return {
+      content,
+      agentType: this.agentType,
+      settingsPath: `${this.settingsDir}/${tmuxName}.json`,
+    };
+  }
+
+  private generateSettings(tmuxName: string, hookOutputDir: string, permissionAllowlist: string[]): HookSettings {
+    const hookFile = `${hookOutputDir}/${tmuxName}.jsonl`;
+
+    // When serverPort is set, dual-write: JSONL file (durable) + HTTP POST (fast).
+    // tee reads stdin (the hook event JSON) and appends to the JSONL file, then
+    // pipes the same data to curl for immediate HTTP delivery.
+    // IMPORTANT: no trailing `&` — Claude Code runs hooks via non-interactive bash,
+    // and `bash -c 'cmd &'` redirects stdin from /dev/null, so tee would read nothing.
+    // curl's --max-time 1 prevents blocking Claude Code if the server is slow.
+    let hookCommand: string;
+    if (this.serverPort) {
+      const url = `http://localhost:${this.serverPort}/api/hook-event/${tmuxName}`;
+      hookCommand = `tee -a ${hookFile} | curl -s -X POST ${url} --max-time 1 -H 'Content-Type: application/json' -d @- >/dev/null 2>&1`;
+    } else {
+      hookCommand = `cat >> ${hookFile}`;
+    }
+
+    const cmd = { type: 'command', command: hookCommand };
+    return {
+      hooks: {
+        // Tool-name matchers — '*' matches all tool names
+        SessionStart: [{ matcher: '*', hooks: [cmd] }],
+        PreToolUse: [{ matcher: '*', hooks: [cmd] }],
+        PostToolUse: [{ matcher: '*', hooks: [cmd] }],
+        PostToolUseFailure: [{ matcher: '*', hooks: [cmd] }],
+        PermissionRequest: [{ matcher: '*', hooks: [cmd] }],
+        // No-matcher hooks — '' fires unconditionally
+        Stop: [{ matcher: '', hooks: [cmd] }],
+        StopFailure: [{ matcher: '', hooks: [cmd] }],
+        Notification: [{ matcher: '', hooks: [cmd] }],
+        UserPromptSubmit: [{ matcher: '', hooks: [cmd] }],
+        SubagentStart: [{ matcher: '', hooks: [cmd] }],
+        SubagentStop: [{ matcher: '', hooks: [cmd] }],
+        SessionEnd: [{ matcher: '', hooks: [cmd] }],
+      },
+      permissions: permissionAllowlist.length > 0 ? { allow: permissionAllowlist } : undefined,
+    };
+  }
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}

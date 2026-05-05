@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 21: Kanban Board</title>
+<!--
+  Design rationale:
+  Agents organized into swim-lane columns by status: Needs Attention, Running,
+  Completed. Each agent is a card with key info. Clicking a card opens a
+  slide-over detail panel on the right with conversation history, terminal
+  output, and response input. This gives an at-a-glance overview of all agents
+  while still allowing deep-dive into any single agent. Inspired by Trello/
+  Linear board views, adapted for real-time agent monitoring.
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0f1117;
+    --bg-panel: #161921;
+    --bg-card: #1c2030;
+    --bg-card-hover: #222840;
+    --bg-input: #1e2438;
+    --bg-terminal: #0b0d14;
+    --border: #2a3148;
+    --border-dim: #1f2640;
+    --text: #b4bcd0;
+    --text-secondary: #6e7a94;
+    --text-bright: #e0e5f0;
+    --text-muted: #404a64;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --purple: #a78bfa;
+    --teal: #2dd4bf;
+    --amber-bg: rgba(251,191,36,0.08);
+    --amber-border: rgba(251,191,36,0.22);
+    --red-bg: rgba(248,113,113,0.07);
+    --red-border: rgba(248,113,113,0.2);
+    --green-bg: rgba(52,211,153,0.06);
+    --green-border: rgba(52,211,153,0.16);
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    height: 100vh; display: flex; flex-direction: column;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  code, .mono {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 11.5px;
+  }
+
+  /* Top bar */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); height: 42px; flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 18px; }
+  .logo { font-family: 'JetBrains Mono', monospace; color: var(--teal);
+    font-weight: 700; font-size: 14px; letter-spacing: 1.5px; }
+  .topbar-stats { display: flex; gap: 12px; }
+  .stat { font-size: 11.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
+  .stat .n { font-weight: 700; }
+  .stat .n.alert { color: var(--amber); }
+  .stat .n.ok { color: var(--green); }
+  .stat .n.done { color: var(--text-muted); }
+  .topbar-right { display: flex; gap: 8px; }
+  .btn-launch {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 5px 16px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+
+  /* Board layout */
+  .board {
+    flex: 1; display: flex; gap: 16px; padding: 16px; overflow-x: auto;
+  }
+  .column {
+    flex: 1; min-width: 280px; max-width: 400px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .column-header {
+    display: flex; align-items: center; gap: 8px; padding: 8px 4px;
+    font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--text-secondary);
+  }
+  .column-header .count {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 1px 7px; border-radius: 10px; font-size: 10.5px;
+  }
+  .column-header .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+  .col-attention .dot { background: var(--amber); }
+  .col-running .dot { background: var(--green); }
+  .col-completed .dot { background: var(--text-muted); }
+
+  .column-cards {
+    flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+    padding-right: 4px;
+  }
+
+  /* Cards */
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    border-radius: 8px; padding: 14px; cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .card:hover { background: var(--bg-card-hover); border-color: var(--border); }
+  .card.selected { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal); }
+  .card.attention { border-left: 3px solid var(--amber); }
+  .card.stuck { border-left: 3px solid var(--red); }
+
+  .card-title { font-weight: 600; color: var(--text-bright); font-size: 13px; margin-bottom: 6px; }
+  .card-meta { font-size: 11px; color: var(--text-secondary); display: flex; gap: 10px; margin-bottom: 8px; }
+  .card-alert {
+    background: var(--amber-bg); border: 1px solid var(--amber-border);
+    border-radius: 5px; padding: 8px 10px; font-size: 11.5px;
+    color: var(--amber); line-height: 1.4; margin-top: 4px;
+  }
+  .card-alert.error {
+    background: var(--red-bg); border-color: var(--red-border); color: var(--red);
+  }
+  .card-activity {
+    font-size: 11px; color: var(--text-muted); margin-top: 6px;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .card-activity code { color: var(--text-secondary); }
+  .card-cost { font-size: 10.5px; color: var(--text-muted); margin-top: 4px; }
+
+  /* Slide-over detail panel */
+  .detail-overlay {
+    display: none; position: fixed; top: 0; right: 0; bottom: 0;
+    width: 520px; background: var(--bg-panel); border-left: 1px solid var(--border);
+    z-index: 100; flex-direction: column;
+    box-shadow: -8px 0 24px rgba(0,0,0,0.4);
+  }
+  .detail-overlay.open { display: flex; }
+
+  .detail-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+  }
+  .detail-header h2 { font-size: 14px; font-weight: 600; color: var(--text-bright); }
+  .btn-close {
+    background: none; border: 1px solid var(--border-dim); color: var(--text-secondary);
+    width: 28px; height: 28px; border-radius: 5px; cursor: pointer; font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .btn-close:hover { background: var(--bg-card); }
+
+  .detail-tabs {
+    display: flex; border-bottom: 1px solid var(--border); padding: 0 18px;
+  }
+  .detail-tab {
+    padding: 8px 14px; font-size: 12px; color: var(--text-secondary);
+    cursor: pointer; border-bottom: 2px solid transparent;
+    background: none; border-top: none; border-left: none; border-right: none;
+  }
+  .detail-tab.active { color: var(--teal); border-bottom-color: var(--teal); }
+
+  .detail-body { flex: 1; overflow-y: auto; }
+
+  /* Conversation tab */
+  .conversation { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { padding: 10px 12px; border-radius: 7px; font-size: 12.5px; line-height: 1.5; }
+  .msg.agent { background: var(--bg-card); border: 1px solid var(--border-dim); }
+  .msg.user { background: rgba(45,212,191,0.08); border: 1px solid rgba(45,212,191,0.18); }
+  .msg.tool {
+    background: var(--bg-terminal); border: 1px solid var(--border-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text-secondary); white-space: pre-wrap;
+  }
+  .msg-label { font-size: 10.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  /* Terminal tab */
+  .terminal-pane {
+    background: var(--bg-terminal); padding: 14px 18px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px;
+    color: var(--green); line-height: 1.6; white-space: pre-wrap;
+    height: 100%;
+  }
+
+  /* Input area */
+  .detail-input {
+    padding: 12px 18px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px;
+  }
+  .detail-input input {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border-dim);
+    border-radius: 6px; padding: 8px 12px; color: var(--text-bright);
+    font-family: inherit; font-size: 12.5px; outline: none;
+  }
+  .detail-input input:focus { border-color: var(--teal); }
+  .detail-input input::placeholder { color: var(--text-muted); }
+  .btn-send {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 8px 18px; border-radius: 6px; font-weight: 600; cursor: pointer;
+    font-size: 12px;
+  }
+
+  /* Status bar */
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; height: 28px; background: var(--bg-panel);
+    border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .statusbar kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 5px; border-radius: 3px; font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+  }
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+    <div class="topbar-stats">
+      <span class="stat"><span class="n alert">2</span> need attention</span>
+      <span class="stat"><span class="n ok">2</span> running</span>
+      <span class="stat"><span class="n done">1</span> completed</span>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <button class="btn-launch">+ Launch Agent</button>
+  </div>
+</div>
+
+<!-- Board -->
+<div class="board">
+
+  <!-- Needs Attention column -->
+  <div class="column col-attention">
+    <div class="column-header">
+      <span class="dot"></span> Needs Attention <span class="count">2</span>
+    </div>
+    <div class="column-cards">
+      <div class="card attention selected" onclick="openDetail('auth')">
+        <div class="card-title">Fix auth token refresh</div>
+        <div class="card-meta">
+          <span>claude-code</span>
+          <span>~/git/webapp</span>
+          <span>18m</span>
+        </div>
+        <div class="card-alert">
+          Stuck in loop: ran <code>npm test</code> 8 times with same TypeError.
+          Not changing approach — needs a hint about the token module import.
+        </div>
+        <div class="card-cost">$0.42 spent</div>
+      </div>
+
+      <div class="card stuck" onclick="openDetail('cache')">
+        <div class="card-title">Refactor cache layer</div>
+        <div class="card-meta">
+          <span>claude-code</span>
+          <span>~/git/api-server</span>
+          <span>32m</span>
+        </div>
+        <div class="card-alert error">
+          Permission blocked: wants to run <code>rm -rf node_modules</code>.
+          Waiting for approval.
+        </div>
+        <div class="card-cost">$0.87 spent</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Running column -->
+  <div class="column col-running">
+    <div class="column-header">
+      <span class="dot"></span> Running <span class="count">2</span>
+    </div>
+    <div class="column-cards">
+      <div class="card" onclick="openDetail('pagination')">
+        <div class="card-title">Add pagination to /users</div>
+        <div class="card-meta">
+          <span>claude-code</span>
+          <span>~/git/api-server</span>
+          <span>12m</span>
+        </div>
+        <div class="card-activity">
+          Currently: editing <code>src/routes/users.ts</code>
+        </div>
+        <div class="card-cost">$0.23 spent</div>
+      </div>
+
+      <div class="card" onclick="openDetail('tests')">
+        <div class="card-title">Add integration tests</div>
+        <div class="card-meta">
+          <span>claude-code</span>
+          <span>~/git/webapp</span>
+          <span>6m</span>
+        </div>
+        <div class="card-activity">
+          Currently: running <code>vitest --run</code>
+        </div>
+        <div class="card-cost">$0.11 spent</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Completed column -->
+  <div class="column col-completed">
+    <div class="column-header">
+      <span class="dot"></span> Completed <span class="count">1</span>
+    </div>
+    <div class="column-cards">
+      <div class="card" onclick="openDetail('readme')">
+        <div class="card-title">Update README badges</div>
+        <div class="card-meta">
+          <span>claude-code</span>
+          <span>~/git/webapp</span>
+          <span>4m total</span>
+        </div>
+        <div class="card-activity" style="color: var(--green);">
+          Completed — PR #142 created
+        </div>
+        <div class="card-cost">$0.05 spent</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Slide-over detail panel -->
+<div class="detail-overlay" id="detailPanel">
+  <div class="detail-header">
+    <h2 id="detailTitle">Fix auth token refresh</h2>
+    <button class="btn-close" onclick="closeDetail()">&times;</button>
+  </div>
+  <div class="detail-tabs">
+    <button class="detail-tab active" onclick="switchTab(this, 'conv')">Conversation</button>
+    <button class="detail-tab" onclick="switchTab(this, 'term')">Terminal</button>
+  </div>
+  <div class="detail-body">
+    <div id="tab-conv" class="conversation">
+      <div class="msg agent">
+        <div class="msg-label">Agent</div>
+        I'll fix the auth token refresh logic in <code>src/auth/token.ts</code>. Let me start by reading the current implementation.
+      </div>
+      <div class="msg tool">
+<div class="msg-label">Tool: Read src/auth/token.ts</div>
+export function refreshToken(token: string) {
+  return jwt.verify(token, SECRET);
+}
+      </div>
+      <div class="msg agent">
+        <div class="msg-label">Agent</div>
+        I see the issue — <code>jwt.verify</code> validates but doesn't refresh. I'll update this to decode, check expiry, and issue a new token.
+      </div>
+      <div class="msg tool">
+<div class="msg-label">Tool: Bash — npm test (attempt 8/8)</div>
+FAIL src/auth/__tests__/token.test.ts
+  TypeError: token.verify is not a function
+  at refreshToken (src/auth/token.ts:14:18)
+      </div>
+      <div class="msg agent">
+        <div class="msg-label">Agent — Stuck</div>
+        The test is still failing with the same error. Let me try a different approach...
+      </div>
+    </div>
+    <div id="tab-term" class="terminal-pane" style="display:none;">
+$ npm test -- --testPathPattern=token
+
+> webapp@2.1.0 test
+> vitest run --testPathPattern=token
+
+ RUN  v1.6.0 /home/user/git/webapp
+
+ FAIL  src/auth/__tests__/token.test.ts > refreshToken > should issue new token
+   TypeError: token.verify is not a function
+    ❯ refreshToken src/auth/token.ts:14:18
+    ❯ src/auth/__tests__/token.test.ts:23:20
+
+ Tests  1 failed | 3 passed (4)
+ Time   1.24s
+    </div>
+  </div>
+  <div class="detail-input">
+    <input type="text" placeholder="Send a hint to this agent... (Ctrl+Enter)" />
+    <button class="btn-send">Send</button>
+  </div>
+</div>
+
+<!-- Status bar -->
+<div class="statusbar">
+  <span>5 agents total &middot; $1.68 session cost</span>
+  <span><kbd>Ctrl+N</kbd> next bottleneck &middot; <kbd>Esc</kbd> close panel &middot; <kbd>Ctrl+Enter</kbd> send</span>
+</div>
+
+<script>
+function openDetail(id) {
+  document.getElementById('detailPanel').classList.add('open');
+  document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+  event.currentTarget.classList.add('selected');
+}
+function closeDetail() {
+  document.getElementById('detailPanel').classList.remove('open');
+  document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+}
+function switchTab(el, tab) {
+  document.querySelectorAll('.detail-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-conv').style.display = tab === 'conv' ? 'flex' : 'none';
+  document.getElementById('tab-term').style.display = tab === 'term' ? 'block' : 'none';
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeDetail();
+});
+</script>
+</body>
+</html>

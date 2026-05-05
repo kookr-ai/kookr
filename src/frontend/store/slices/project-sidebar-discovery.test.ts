@@ -1,0 +1,260 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createKookrStore } from '../useStore.js';
+
+describe('discovery + track actions', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test('fetchDiscoveryStatus stores snapshot from server', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        projects: ['github.com/a/b'],
+        warnings: ['foo-recon: bad'],
+        scannedAt: '2026-04-05T10:00:00.000Z',
+      }),
+    });
+    const store = createKookrStore();
+    await store.getState().fetchDiscoveryStatus();
+    const status = store.getState().discoveryStatus;
+    expect(status?.projects).toEqual(['github.com/a/b']);
+    expect(status?.warnings).toEqual(['foo-recon: bad']);
+  });
+
+  test('fetchDiscoveryStatus on HTTP error records lastError', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 500 });
+    const store = createKookrStore();
+    await store.getState().fetchDiscoveryStatus();
+    expect(store.getState().discoveryStatus?.lastError).toContain('500');
+  });
+
+  test('fetchDiscoveryStatus on network error records lastError', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('offline'));
+    const store = createKookrStore();
+    await store.getState().fetchDiscoveryStatus();
+    expect(store.getState().discoveryStatus?.lastError).toBe('offline');
+  });
+
+  test('rescanSkills posts and updates snapshot', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ projects: ['github.com/x/y'], warnings: [] }),
+    });
+    const store = createKookrStore();
+    await store.getState().rescanSkills();
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/rescan-skills', { method: 'POST' });
+    expect(store.getState().discoveryStatus?.projects).toEqual(['github.com/x/y']);
+    expect(store.getState().discoveryBusy).toBe(false);
+  });
+
+  test('rescanSkills on server error preserves busy=false and records lastError', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 503 });
+    const store = createKookrStore();
+    await store.getState().rescanSkills();
+    expect(store.getState().discoveryStatus?.lastError).toContain('503');
+    expect(store.getState().discoveryBusy).toBe(false);
+  });
+
+  test('trackOssProject rejects malformed input without calling fetch', async () => {
+    const store = createKookrStore();
+    const res = await store.getState().trackOssProject('not-valid');
+    expect(res.ok).toBe(false);
+    expect(store.getState().trackOssError).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('trackOssProject posts normalized slug and clears error on success', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ project: 'github.com/a/b' }),
+    });
+    const store = createKookrStore();
+    const res = await store.getState().trackOssProject('A/B');
+    expect(res.ok).toBe(true);
+    const call = fetchMock.mock.calls[0];
+    expect(call[0]).toBe('/api/projects/track');
+    const body = JSON.parse(call[1].body);
+    expect(body.repo).toBe('a/b');
+    expect(store.getState().trackOssError).toBeNull();
+    expect(store.getState().trackOssBusy).toBe(false);
+  });
+
+  test('trackOssProject surfaces server error body', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: 'repo must be in owner/repo format' }),
+    });
+    const store = createKookrStore();
+    const res = await store.getState().trackOssProject('grafana/grafana');
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('owner/repo format');
+    expect(store.getState().trackOssError).toContain('owner/repo format');
+  });
+
+  test('trackOssProject falls back to HTTP <status> when body is not JSON', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      json: async () => { throw new Error('not json'); },
+    });
+    const store = createKookrStore();
+    const res = await store.getState().trackOssProject('grafana/grafana');
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('502');
+    expect(store.getState().trackOssBusy).toBe(false);
+  });
+
+  test('trackOssProject records network errors and resets busy', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('offline'));
+    const store = createKookrStore();
+    const res = await store.getState().trackOssProject('grafana/grafana');
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('offline');
+    expect(store.getState().trackOssError).toBe('offline');
+    expect(store.getState().trackOssBusy).toBe(false);
+  });
+
+  test('untrackOssProject rejects malformed input without calling fetch', async () => {
+    const store = createKookrStore();
+    const res = await store.getState().untrackOssProject('not-valid');
+    expect(res.ok).toBe(false);
+    expect(store.getState().untrackOssError).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('untrackOssProject posts normalized slug and clears error on success', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ project: 'github.com/grafana/grafana', removed: true, config: null }),
+    });
+    const store = createKookrStore();
+    const res = await store.getState().untrackOssProject('Grafana/Grafana');
+    expect(res.ok).toBe(true);
+    const call = fetchMock.mock.calls[0];
+    expect(call[0]).toBe('/api/projects/untrack');
+    const body = JSON.parse(call[1].body);
+    expect(body.repo).toBe('grafana/grafana');
+    expect(store.getState().untrackOssError).toBeNull();
+    expect(store.getState().untrackOssBusy).toBe(false);
+  });
+
+  test('untrackOssProject clears selected project when untracking the selected row', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ project: 'github.com/grafana/grafana', removed: true, config: null }),
+    });
+    const store = createKookrStore();
+    store.getState().handleProjectSummaries([
+      {
+        project: 'github.com/grafana/grafana',
+        displayName: 'grafana/grafana',
+        color: 1,
+        activeAgents: 0,
+        findingCount: 0,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+        tracked: true,
+      },
+    ]);
+    store.getState().selectProject('github.com/grafana/grafana');
+    expect(store.getState().selectedProject).toBe('github.com/grafana/grafana');
+
+    const res = await store.getState().untrackOssProject('grafana/grafana');
+    expect(res.ok).toBe(true);
+    expect(store.getState().selectedProject).toBeNull();
+  });
+
+  test('untrackOssProject forgets project from sidebar prefs + catalog on success', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ project: 'github.com/grafana/grafana', removed: true, config: null }),
+    });
+    const store = createKookrStore();
+    // Seed the project as a live summary so forgetting has something to clean.
+    store.getState().handleProjectSummaries([
+      {
+        project: 'github.com/grafana/grafana',
+        displayName: 'grafana/grafana',
+        color: 1,
+        activeAgents: 0,
+        findingCount: 0,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+        tracked: true,
+      },
+    ]);
+    store.getState().pinProjectToTop('github.com/grafana/grafana');
+    expect(store.getState().projectSidebarCatalog['github.com/grafana/grafana']).toBeDefined();
+    expect(store.getState().projectSidebarPrefs.pinned).toContain('github.com/grafana/grafana');
+
+    const res = await store.getState().untrackOssProject('grafana/grafana');
+    expect(res.ok).toBe(true);
+
+    expect(store.getState().projectSidebarCatalog['github.com/grafana/grafana']).toBeUndefined();
+    expect(store.getState().projectSidebarPrefs.pinned).not.toContain('github.com/grafana/grafana');
+    expect(store.getState().projectSidebarPrefs.ordered).not.toContain('github.com/grafana/grafana');
+    expect(store.getState().projectSummaries).toHaveLength(0);
+    expect(store.getState().visibleProjectSummaries).toHaveLength(0);
+  });
+
+  test('untrackOssProject surfaces server error body and leaves state unchanged', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: 'repo must be in owner/repo format' }),
+    });
+    const store = createKookrStore();
+    store.getState().handleProjectSummaries([
+      {
+        project: 'github.com/grafana/grafana',
+        displayName: 'grafana/grafana',
+        color: 1,
+        activeAgents: 0,
+        findingCount: 0,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+        tracked: true,
+      },
+    ]);
+    const res = await store.getState().untrackOssProject('grafana/grafana');
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('owner/repo format');
+    expect(store.getState().untrackOssError).toContain('owner/repo format');
+    // State should not be mutated when the server rejects.
+    expect(store.getState().projectSummaries).toHaveLength(1);
+    expect(store.getState().projectSidebarCatalog['github.com/grafana/grafana']).toBeDefined();
+  });
+
+  test('untrackOssProject records network errors and resets busy', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('offline'));
+    const store = createKookrStore();
+    const res = await store.getState().untrackOssProject('grafana/grafana');
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('offline');
+    expect(store.getState().untrackOssError).toBe('offline');
+    expect(store.getState().untrackOssBusy).toBe(false);
+  });
+
+  test('clearUntrackOssError resets the error', () => {
+    const store = createKookrStore();
+    store.setState({ untrackOssError: 'something broke' });
+    store.getState().clearUntrackOssError();
+    expect(store.getState().untrackOssError).toBeNull();
+  });
+});

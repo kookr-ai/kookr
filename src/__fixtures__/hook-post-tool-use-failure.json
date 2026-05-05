@@ -1,0 +1,14 @@
+{
+  "session_id": "ef2bb325-8a22-4eec-a5df-708b6a00a609",
+  "transcript_path": "/home/jean/.claude/projects/-home-jean-git-kookr/ef2bb325-8a22-4eec-a5df-708b6a00a609.jsonl",
+  "cwd": "/home/jean/git/kookr",
+  "permission_mode": "acceptEdits",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "/nonexistent/file.txt"
+  },
+  "tool_use_id": "toolu_01KZT2BTx2q68JSaK5hCJDkv",
+  "error": "File does not exist.",
+  "is_interrupt": false
+}

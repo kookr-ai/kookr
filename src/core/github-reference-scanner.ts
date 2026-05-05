@@ -1,0 +1,219 @@
+import type { AgentEvent } from './types.js';
+import type { GitHubReference } from './github-types.js';
+
+/**
+ * Extract GitHub PR and issue references from agent events using regex patterns.
+ * Phase 1: deterministic regex extraction. Phase 2 will add Haiku LLM extraction.
+ */
+
+// --- Regex patterns ---
+
+/**
+ * PR/issue URL on any Git hosting platform (GitHub, GitLab, etc.)
+ * Matches:
+ *   https://github.com/owner/repo/pull/42
+ *   https://github.com/owner/repo/issues/42
+ *   https://gitlab.example.com/owner/repo/-/merge_requests/42
+ */
+const GIT_HOST_URL_RE = /https?:\/\/[^/\s]+\/([^/\s]+)\/([^/\s]+)\/(?:-\/)?(pull|issues|merge_requests)\/(\d+)/g;
+
+/** Explicit "PR #42" or "pull request #42" or "issue #42" or "issue 42" */
+const EXPLICIT_REF_RE = /\b(?:PR|pull request)\s*#?(\d+)/gi;
+const EXPLICIT_ISSUE_RE = /\b(?:issue)\s*#?(\d+)/gi;
+
+/** Bare #123 — only matched when we have owner/repo context */
+const BARE_REF_RE = /(?:^|\s)#(\d+)\b/g;
+
+/**
+ * Action verbs followed by #N — treated as issue references in prompt context.
+ * Matches: "fix #18", "resolve #18", "close #18", "implement #18", "work on #18", "address #18"
+ */
+const ACTION_ISSUE_RE = /\b(?:fix|fixes|resolve|resolves|close|closes|implement|implements|address|addresses|work\s+on|start\s+working\s+on)\s+#(\d+)/gi;
+
+export interface ExtractedRef {
+  type: 'pr' | 'issue';
+  owner?: string;
+  repo?: string;
+  number: number;
+  url?: string;
+}
+
+/**
+ * Extract GitHub references from a block of text.
+ * Returns deduplicated references.
+ */
+export function extractRefsFromText(text: string): ExtractedRef[] {
+  const refs: ExtractedRef[] = [];
+  const seen = new Set<string>();
+
+  function addRef(ref: ExtractedRef): void {
+    const key = `${ref.type}:${ref.owner ?? ''}/${ref.repo ?? ''}#${ref.number}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    refs.push(ref);
+  }
+
+  // Full PR/issue URLs from any Git hosting platform (most reliable)
+  for (const match of text.matchAll(GIT_HOST_URL_RE)) {
+    const [url, owner, repo, typeStr, numStr] = match;
+    addRef({
+      type: typeStr === 'issues' ? 'issue' : 'pr',
+      owner,
+      repo,
+      number: parseInt(numStr, 10),
+      url,
+    });
+  }
+
+  // Explicit "PR #42" references (no owner/repo — needs inference)
+  for (const match of text.matchAll(EXPLICIT_REF_RE)) {
+    addRef({
+      type: 'pr',
+      number: parseInt(match[1], 10),
+    });
+  }
+
+  // Explicit "issue #42" references
+  for (const match of text.matchAll(EXPLICIT_ISSUE_RE)) {
+    addRef({
+      type: 'issue',
+      number: parseInt(match[1], 10),
+    });
+  }
+
+  return refs;
+}
+
+/**
+ * Extract GitHub references from a task prompt.
+ * Unlike extractRefsFromText, this also:
+ * - Matches action verb + #N patterns as issue refs (e.g. "fix #18", "resolve #42")
+ * - Treats bare #N refs as issue refs (in prompts, bare refs almost always mean issues)
+ */
+export function extractRefsFromPrompt(text: string): ExtractedRef[] {
+  // Start with standard text extraction
+  const refs = extractRefsFromText(text);
+  const seen = new Set<string>();
+
+  function addRef(ref: ExtractedRef): void {
+    const key = `${ref.type}:${ref.owner ?? ''}/${ref.repo ?? ''}#${ref.number}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    refs.push(ref);
+  }
+
+  // Index existing refs for dedup
+  for (const ref of refs) {
+    const key = `${ref.type}:${ref.owner ?? ''}/${ref.repo ?? ''}#${ref.number}`;
+    seen.add(key);
+  }
+
+  // Action verb + #N → issue refs (e.g. "fix #18", "resolve #42")
+  for (const match of text.matchAll(ACTION_ISSUE_RE)) {
+    addRef({
+      type: 'issue',
+      number: parseInt(match[1], 10),
+    });
+  }
+
+  // Bare #N refs → issue refs (in prompt context, bare refs are almost always issues)
+  for (const match of text.matchAll(BARE_REF_RE)) {
+    addRef({
+      type: 'issue',
+      number: parseInt(match[1], 10),
+    });
+  }
+
+  return refs;
+}
+
+/**
+ * Extract GitHub references from agent events.
+ *
+ * Scans all tool_result events and stop events for PR/issue URLs.
+ * No command filtering — any tool output containing a recognizable
+ * PR/issue URL triggers extraction.
+ */
+export function extractRefsFromEvents(
+  events: AgentEvent[],
+  defaultOwner?: string,
+  defaultRepo?: string,
+): ExtractedRef[] {
+  const allRefs: ExtractedRef[] = [];
+  const seen = new Set<string>();
+
+  function addRefs(refs: ExtractedRef[]): void {
+    for (const ref of refs) {
+      const owner = ref.owner ?? defaultOwner;
+      const repo = ref.repo ?? defaultRepo;
+      const key = `${ref.type}:${owner ?? ''}/${repo ?? ''}#${ref.number}`;
+
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      allRefs.push({
+        ...ref,
+        owner: owner ?? ref.owner,
+        repo: repo ?? ref.repo,
+      });
+    }
+  }
+
+  for (const event of events) {
+    if (event.type === 'tool_result') {
+      const response = event.toolResponse;
+      if (typeof response !== 'string' && typeof response !== 'object') continue;
+
+      const text = typeof response === 'string' ? response : JSON.stringify(response);
+      addRefs(extractRefsFromText(text));
+    } else if (event.type === 'stop' || event.type === 'stop_failure') {
+      addRefs(extractRefsFromText(event.lastMessage));
+    }
+  }
+
+  return allRefs;
+}
+
+/**
+ * Infer owner/repo from a git remote URL.
+ * Handles SSH (git@github.com:owner/repo.git) and HTTPS (https://github.com/owner/repo.git).
+ */
+export function parseGitRemoteUrl(remoteUrl: string): { owner: string; repo: string } | null {
+  // SSH: git@github.com:owner/repo.git
+  const sshMatch = remoteUrl.match(/git@github\.com:([^/]+)\/([^/.]+)(?:\.git)?/);
+  if (sshMatch) {
+    return { owner: sshMatch[1], repo: sshMatch[2] };
+  }
+
+  // HTTPS: https://github.com/owner/repo.git
+  const httpsMatch = remoteUrl.match(/https?:\/\/github\.com\/([^/]+)\/([^/.]+)(?:\.git)?/);
+  if (httpsMatch) {
+    return { owner: httpsMatch[1], repo: httpsMatch[2] };
+  }
+
+  return null;
+}
+
+/**
+ * Convert extracted refs to full GitHubReference objects.
+ */
+export function toGitHubReferences(
+  extracted: ExtractedRef[],
+  agentId: string,
+  taskId: string,
+): GitHubReference[] {
+  return extracted
+    .filter((ref): ref is ExtractedRef & { owner: string; repo: string } =>
+      ref.owner != null && ref.repo != null,
+    )
+    .map((ref) => ({
+      type: ref.type,
+      owner: ref.owner,
+      repo: ref.repo,
+      number: ref.number,
+      url: ref.url ?? `https://github.com/${ref.owner}/${ref.repo}/${ref.type === 'pr' ? 'pull' : 'issues'}/${ref.number}`,
+      detectedAt: new Date(),
+      detectedFrom: agentId,
+      taskId,
+    }));
+}

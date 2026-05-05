@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 33: Supervisor-First Triage</title>
+<!--
+  Design rationale:
+  P28's supervisor-first framing (findings are the UI, not agents) merged
+  with P26's respond-advance loop. Terminal as full side panel (not drawer).
+
+  Key insight: Kookr's product IS the supervisor's findings. The UI should
+  be organized around "what the supervisor found" not "which agents exist."
+
+  Layout:
+  - Left panel (340px): Supervisor findings feed — rich cards showing
+    problems found, ordered by urgency. Each card has inline quick-reply.
+    Healthy agents shown as a compact "all clear" section at bottom.
+  - Center: Conversation view for the selected finding's agent.
+  - Right: Full-height terminal panel (split view, not a drawer).
+  - Send & Next advances through findings queue.
+
+  Fixes P28's weaknesses:
+  - Full terminal side panel (P28 had none; drawer was too small)
+  - Healthy agents collapsed into compact section (not equal-weight cards)
+  - Auto-advance after responding (P28 lacked this)
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0f1117;
+    --bg-panel: #151820;
+    --bg-card: #1b1f2e;
+    --bg-card-hover: #21263a;
+    --bg-input: #1c2134;
+    --bg-terminal: #0a0c12;
+    --border: #262d42;
+    --border-dim: #1d2338;
+    --text: #b2bace;
+    --text-secondary: #6b778e;
+    --text-bright: #dfe4f0;
+    --text-muted: #3f4a62;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --purple: #a78bfa;
+    --teal: #2dd4bf;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    height: 100vh; display: flex; flex-direction: column;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11.5px; }
+
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); height: 38px; flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 14px; }
+  .logo { font-family: 'JetBrains Mono', monospace; color: var(--teal);
+    font-weight: 700; font-size: 13px; letter-spacing: 1.5px; }
+  .queue-info { display: flex; align-items: center; gap: 6px; }
+  .queue-dots { display: flex; gap: 4px; }
+  .queue-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .queue-dot.current { background: var(--amber); box-shadow: 0 0 6px rgba(251,191,36,0.4); }
+  .queue-dot.waiting { background: var(--text-muted); }
+  .queue-text { font-size: 10.5px; color: var(--text-muted); }
+  .topbar-right { display: flex; gap: 8px; align-items: center; }
+  .topbar-stat { font-size: 11px; color: var(--text-muted); }
+  .topbar-stat .n { font-weight: 700; }
+  .topbar-stat .n.warn { color: var(--amber); }
+  .topbar-stat .n.ok { color: var(--green); }
+  .btn-launch {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 4px 14px; border-radius: 5px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  }
+
+  .main { flex: 1; display: flex; overflow: hidden; }
+
+  /* Supervisor findings panel */
+  .findings-panel {
+    width: 340px; background: var(--bg-panel);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .findings-header {
+    padding: 10px 14px; border-bottom: 1px solid var(--border-dim);
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.8px; color: var(--text-muted);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .findings-count { color: var(--amber); }
+  .findings-list { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+
+  /* Finding card */
+  .finding-card {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    border-radius: 8px; padding: 12px; cursor: pointer;
+    transition: border-color 0.15s;
+    border-left: 3px solid transparent;
+  }
+  .finding-card:hover { border-color: var(--border); }
+  .finding-card.selected { border-color: var(--teal); border-left-color: var(--teal); background: var(--bg-card-hover); }
+  .finding-card.stuck { border-left-color: var(--amber); }
+  .finding-card.permission { border-left-color: var(--red); }
+
+  .finding-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .finding-severity {
+    font-size: 9.5px; font-weight: 700; padding: 2px 6px; border-radius: 3px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .finding-severity.stuck { background: rgba(251,191,36,0.12); color: var(--amber); }
+  .finding-severity.permission { background: rgba(248,113,113,0.1); color: var(--red); }
+  .finding-task { font-size: 12px; font-weight: 600; color: var(--text-bright); }
+  .finding-meta { font-size: 10px; color: var(--text-muted); }
+
+  .finding-explanation {
+    font-size: 12px; line-height: 1.5; color: var(--text);
+    margin-bottom: 8px;
+  }
+  .finding-explanation code { background: var(--bg-terminal); padding: 0 3px; border-radius: 2px; color: var(--blue); }
+
+  /* Inline quick-reply */
+  .finding-quick-reply {
+    display: flex; gap: 6px;
+  }
+  .finding-quick-reply input {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border-dim);
+    border-radius: 5px; padding: 5px 8px; color: var(--text-bright);
+    font-family: inherit; font-size: 11px; outline: none;
+  }
+  .finding-quick-reply input::placeholder { color: var(--text-muted); }
+  .finding-quick-reply input:focus { border-color: var(--teal); }
+  .btn-quick {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 5px 10px; border-radius: 5px; font-size: 10px; font-weight: 600; cursor: pointer;
+    white-space: nowrap;
+  }
+  .finding-actions {
+    display: flex; gap: 4px; margin-top: 6px;
+  }
+  .btn-xs {
+    background: none; border: 1px solid var(--border-dim); color: var(--text-muted);
+    padding: 3px 8px; border-radius: 4px; font-size: 10px; cursor: pointer;
+  }
+  .btn-xs:hover { color: var(--text-secondary); }
+
+  /* Healthy agents section */
+  .healthy-section {
+    border-top: 1px solid var(--border-dim); padding: 10px 14px;
+    flex-shrink: 0;
+  }
+  .healthy-label {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.8px; color: var(--green); margin-bottom: 6px;
+  }
+  .healthy-row {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; padding: 3px 0; color: var(--text-secondary);
+  }
+  .healthy-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+  .healthy-dot.running { background: var(--green); }
+  .healthy-dot.done { background: var(--text-muted); }
+
+  /* Detail panel: header + split view + response */
+  .detail-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  .detail-header {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+  }
+  .detail-header-left { display: flex; align-items: center; gap: 8px; }
+  .detail-header h2 { font-size: 14px; font-weight: 600; color: var(--text-bright); }
+  .detail-badge { font-size: 10px; padding: 2px 7px; border-radius: 3px; font-weight: 600; background: rgba(251,191,36,0.1); color: var(--amber); }
+  .detail-header-right { font-size: 11px; color: var(--text-muted); display: flex; gap: 10px; }
+  .action { color: var(--text-secondary); cursor: pointer; padding: 2px 6px; border-radius: 3px; }
+  .action:hover { background: var(--bg-card); }
+
+  /* Horizontal split: conversation (left) + terminal (right) */
+  .split-view { flex: 1; display: flex; overflow: hidden; }
+
+  .conversation-col { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  .conversation {
+    flex: 1; overflow-y: auto; padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .msg { padding: 10px 14px; border-radius: 6px; font-size: 12.5px; line-height: 1.6; }
+  .msg.agent { background: var(--bg-card); border: 1px solid var(--border-dim); }
+  .msg.tool {
+    background: var(--bg-terminal); border: 1px solid var(--border-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text-secondary); white-space: pre-wrap;
+  }
+  .msg .label { font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; }
+  .msg code { background: var(--bg-terminal); padding: 1px 4px; border-radius: 2px; }
+  .repeat-pill {
+    display: inline-block; background: rgba(251,191,36,0.12);
+    color: var(--amber); font-size: 9.5px; font-weight: 700;
+    padding: 0 6px; border-radius: 6px; margin-left: 4px;
+  }
+
+  /* Split divider */
+  .split-divider {
+    width: 1px; background: var(--border); flex-shrink: 0;
+    cursor: col-resize; position: relative;
+  }
+  .split-divider::after {
+    content: ''; position: absolute;
+    top: 50%; left: -3px; width: 7px; height: 40px;
+    transform: translateY(-50%); border-radius: 3px;
+  }
+  .split-divider:hover::after { background: var(--border); }
+
+  /* Terminal side panel — full height */
+  .terminal-col {
+    flex: 1; background: var(--bg-terminal);
+    display: flex; flex-direction: column; overflow: hidden; min-width: 0;
+  }
+  .terminal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 14px; background: var(--bg-panel); border-bottom: 1px solid var(--border-dim);
+    flex-shrink: 0;
+  }
+  .terminal-header-left { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-secondary); }
+  .terminal-header-left .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .terminal-header-right { display: flex; gap: 6px; }
+  .terminal-btn {
+    background: none; border: 1px solid var(--border-dim); color: var(--text-muted);
+    padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 10.5px;
+  }
+  .terminal-btn:hover { color: var(--text-secondary); }
+  .terminal-body {
+    flex: 1; padding: 12px 14px; font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px; color: var(--green); line-height: 1.7;
+    white-space: pre-wrap; overflow-y: auto;
+  }
+  .terminal-body .prompt { color: var(--green); }
+  .terminal-body .cmd { color: var(--text-bright); }
+  .terminal-body .err { color: var(--red); }
+  .terminal-body .dim { color: var(--text-muted); }
+  .terminal-body .file { color: var(--blue); }
+  .terminal-body .pass { color: var(--green); }
+
+  /* Response area — spans full width below the split */
+  .response-area {
+    padding: 12px 16px; border-top: 1px solid var(--border);
+    background: var(--bg-panel); flex-shrink: 0;
+  }
+  .response-row { display: flex; gap: 8px; align-items: center; }
+  .response-area input {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border-dim);
+    border-radius: 8px; padding: 11px 14px; color: var(--text-bright);
+    font-family: inherit; font-size: 13px; outline: none;
+  }
+  .response-area input:focus { border-color: var(--teal); box-shadow: 0 0 0 2px rgba(45,212,191,0.12); }
+  .response-area input::placeholder { color: var(--text-muted); }
+  .btn-primary {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 11px 20px; border-radius: 8px; font-weight: 700; cursor: pointer;
+    font-size: 13px; white-space: nowrap;
+  }
+  .btn-secondary {
+    background: none; border: 1px solid var(--border-dim); color: var(--text-secondary);
+    padding: 11px 14px; border-radius: 8px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  .response-hint { margin-top: 5px; font-size: 10.5px; color: var(--text-muted); }
+  .response-hint kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 4px; border-radius: 2px; font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  }
+
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; height: 26px; background: var(--bg-panel);
+    border-top: 1px solid var(--border); font-size: 10.5px; color: var(--text-muted); flex-shrink: 0;
+  }
+  .statusbar kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 4px; border-radius: 2px; font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  }
+
+  .sent-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(10,12,18,0.8);
+    z-index: 100; justify-content: center; align-items: center;
+  }
+  .sent-card {
+    background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px 32px; text-align: center;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+  }
+  .sent-check { font-size: 32px; color: var(--green); margin-bottom: 8px; }
+  .sent-text { font-size: 14px; color: var(--text-bright); margin-bottom: 4px; }
+  .sent-next { font-size: 12px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+    <div class="queue-info">
+      <div class="queue-dots">
+        <div class="queue-dot current"></div>
+        <div class="queue-dot waiting"></div>
+      </div>
+      <span class="queue-text">Triaging 1 of 2 findings</span>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="topbar-stat"><span class="n warn">2</span> findings</span>
+    <span class="topbar-stat"><span class="n ok">3</span> healthy</span>
+    <span class="topbar-stat">$1.68</span>
+    <button class="btn-launch">+ Launch</button>
+  </div>
+</div>
+
+<div class="main">
+  <!-- Supervisor findings feed -->
+  <div class="findings-panel">
+    <div class="findings-header">
+      <span>Supervisor Findings</span>
+      <span class="findings-count">2 active</span>
+    </div>
+    <div class="findings-list">
+      <!-- Finding 1: Stuck loop -->
+      <div class="finding-card stuck selected">
+        <div class="finding-header">
+          <span class="finding-severity stuck">Stuck Loop</span>
+          <span class="finding-meta">18m &middot; $0.42</span>
+        </div>
+        <div class="finding-task">Fix auth token refresh</div>
+        <div class="finding-explanation">
+          Ran <code>npm test</code> 8x with same <code>TypeError: token.verify</code>. Editing <code>token.ts</code> but not changing import path.
+        </div>
+        <div class="finding-quick-reply">
+          <input type="text" placeholder="Quick reply..." />
+          <button class="btn-quick">Send</button>
+        </div>
+        <div class="finding-actions">
+          <button class="btn-xs">Skip</button>
+          <button class="btn-xs">Snooze 5m</button>
+          <button class="btn-xs">Attach</button>
+        </div>
+      </div>
+
+      <!-- Finding 2: Permission block -->
+      <div class="finding-card permission">
+        <div class="finding-header">
+          <span class="finding-severity permission">Permission</span>
+          <span class="finding-meta">32m &middot; $0.87</span>
+        </div>
+        <div class="finding-task">Refactor cache layer</div>
+        <div class="finding-explanation">
+          Blocked on <code>rm -rf node_modules</code>. Agent wants to clean deps before reinstalling.
+        </div>
+        <div class="finding-quick-reply">
+          <input type="text" placeholder="Quick reply..." />
+          <button class="btn-quick">Send</button>
+        </div>
+        <div class="finding-actions">
+          <button class="btn-xs">Skip</button>
+          <button class="btn-xs">Snooze 5m</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Healthy agents -->
+    <div class="healthy-section">
+      <div class="healthy-label">Healthy (3)</div>
+      <div class="healthy-row">
+        <span class="healthy-dot running"></span>
+        Add pagination to /users — 12m
+      </div>
+      <div class="healthy-row">
+        <span class="healthy-dot running"></span>
+        Add integration tests — 6m
+      </div>
+      <div class="healthy-row">
+        <span class="healthy-dot done"></span>
+        Update README badges — done
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail panel -->
+  <div class="detail-panel">
+    <div class="detail-header">
+      <div class="detail-header-left">
+        <h2>Fix auth token refresh</h2>
+        <span class="detail-badge">STUCK</span>
+      </div>
+      <div class="detail-header-right">
+        <span>claude-code</span>
+        <span>~/git/webapp</span>
+        <span>18m</span>
+        <span>$0.42</span>
+        <span class="action">Attach</span>
+        <span class="action">Stop</span>
+      </div>
+    </div>
+
+    <!-- Split: Conversation (left) | Terminal (right) -->
+    <div class="split-view">
+      <div class="conversation-col">
+        <div class="conversation">
+          <div class="msg agent">
+            <div class="label">Agent</div>
+            I'll fix the auth token refresh logic in <code>src/auth/token.ts</code>. Let me start by reading the current implementation.
+          </div>
+          <div class="msg tool">
+            <div class="label">Read src/auth/token.ts</div>
+export function refreshToken(token: string) {
+  return jwt.verify(token, SECRET);
+}
+          </div>
+          <div class="msg agent">
+            <div class="label">Agent</div>
+            I see the issue — <code>jwt.verify</code> validates but doesn't refresh. I'll update this to decode, check expiry, and issue a new token.
+          </div>
+          <div class="msg tool">
+            <div class="label">Edit src/auth/token.ts :14</div>
+- return jwt.verify(token, SECRET);
++ const decoded = jwt.decode(token);
++ if (isExpired(decoded)) {
++   return jwt.sign(decoded.payload, SECRET);
++ }
+          </div>
+          <div class="msg tool">
+            <div class="label">Bash: npm test <span class="repeat-pill">x8</span></div>
+FAIL src/auth/__tests__/token.test.ts
+  TypeError: token.verify is not a function
+    at refreshToken (src/auth/token.ts:14:18)
+
+Tests  1 failed | 3 passed (4)
+          </div>
+          <div class="msg agent">
+            <div class="label">Agent</div>
+            Still failing with the same TypeError. Let me try a different approach...
+          </div>
+        </div>
+      </div>
+
+      <div class="split-divider"></div>
+
+      <div class="terminal-col">
+        <div class="terminal-header">
+          <div class="terminal-header-left">
+            <span class="dot"></span>
+            Terminal — capture-pane
+          </div>
+          <div class="terminal-header-right">
+            <button class="terminal-btn">Attach</button>
+          </div>
+        </div>
+        <div class="terminal-body"><span class="dim">~/git/webapp</span>
+<span class="prompt">$</span> <span class="cmd">npm test -- --testPathPattern=token</span>
+
+<span class="dim">&gt; webapp@2.1.0 test</span>
+<span class="dim">&gt; vitest run --testPathPattern=token</span>
+
+ RUN  v1.6.0 /home/user/git/webapp
+
+ <span class="pass">PASS</span>  src/auth/__tests__/decode.test.ts
+ <span class="pass">PASS</span>  src/auth/__tests__/sign.test.ts
+ <span class="pass">PASS</span>  src/auth/__tests__/middleware.test.ts
+ <span class="err">FAIL</span>  src/auth/__tests__/token.test.ts
+  refreshToken
+    <span class="err">&#10007; should issue new token when expired</span>
+      <span class="err">TypeError: token.verify is not a function</span>
+
+      <span class="dim">at Object.&lt;anonymous&gt;</span> (<span class="file">src/auth/token.ts:14:18</span>)
+      <span class="dim">at Object.&lt;anonymous&gt;</span> (<span class="file">src/auth/__tests__/token.test.ts:23:20</span>)
+
+    <span class="pass">&#10003;</span> should return same token when not expired
+    <span class="pass">&#10003;</span> should reject invalid tokens
+    <span class="pass">&#10003;</span> should handle malformed input
+
+ Tests  <span class="err">1 failed</span>, <span class="pass">3 passed</span>, 4 total
+ Time   1.24s
+
+<span class="prompt">$</span> <span class="dim">_</span></div>
+      </div>
+    </div>
+
+    <!-- Response area spans full width below the split -->
+    <div class="response-area">
+      <div class="response-row">
+        <input type="text" placeholder="Send a hint to Fix auth token refresh..." autofocus />
+        <button class="btn-primary" onclick="showSent()">Send & Next</button>
+        <button class="btn-secondary">Skip</button>
+        <button class="btn-secondary">Snooze</button>
+      </div>
+      <div class="response-hint">
+        <kbd>Ctrl+Enter</kbd> send & next &middot; <kbd>Tab</kbd> skip &middot; <kbd>Ctrl+T</kbd> toggle terminal
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="statusbar">
+  <span>5 tasks &middot; 2 findings &middot; $1.68</span>
+  <span><kbd>Ctrl+N</kbd> next finding &middot; <kbd>Ctrl+Enter</kbd> send & next &middot; <kbd>Ctrl+T</kbd> toggle terminal</span>
+</div>
+
+<div class="sent-overlay" id="sentOverlay">
+  <div class="sent-card">
+    <div class="sent-check">&#10003;</div>
+    <div class="sent-text">Hint sent to Fix auth token refresh</div>
+    <div class="sent-next">Advancing to: Refactor cache layer...</div>
+  </div>
+</div>
+
+<script>
+function showSent() {
+  const o = document.getElementById('sentOverlay');
+  o.style.display = 'flex';
+  setTimeout(() => { o.style.display = 'none'; }, 1500);
+}
+document.querySelectorAll('.finding-card').forEach(card => {
+  card.addEventListener('click', () => {
+    document.querySelectorAll('.finding-card').forEach(c => c.classList.remove('selected'));
+    card.classList.add('selected');
+  });
+});
+</script>
+</body>
+</html>

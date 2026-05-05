@@ -1,0 +1,22 @@
+{
+  "name": "@kookr/stt",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Speech-to-text service for Kookr — bundled from aegiscore/packages/stt",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "STT_INTEGRATION=1 vitest run --config vitest.integration.config.js"
+  },
+  "dependencies": {
+    "fake-indexeddb": "^6.0.0",
+    "onnxruntime-web": "1.24.2",
+    "parakeet.js": "^1.2.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.3"
+  }
+}

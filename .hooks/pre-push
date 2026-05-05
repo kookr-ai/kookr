@@ -1,0 +1,89 @@
+#!/bin/bash
+# pre-push hook: type-check and test before pushing to remote.
+#
+# Self-heals when node_modules is missing — common on fresh worktrees where
+# the previous failure mode was "Local package.json exists, but node_modules
+# missing" rejecting the push before any check could run.
+
+set -u
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT" || exit 1
+
+if [ ! -d node_modules ]; then
+  echo "node_modules missing — running pnpm install --frozen-lockfile..."
+  if ! pnpm install --frozen-lockfile; then
+    echo ""
+    echo "Push rejected: pnpm install failed. Resolve dependency issues before pushing."
+    exit 1
+  fi
+fi
+
+echo "Type-checking server..."
+if ! pnpm build:server; then
+  echo ""
+  echo "Push rejected: server type-check failed."
+  exit 1
+fi
+
+echo "Type-checking E2E tests..."
+if ! pnpm check:e2e; then
+  echo ""
+  echo "Push rejected: E2E type-check failed."
+  exit 1
+fi
+
+echo "Running tests..."
+if ! pnpm test; then
+  echo ""
+  echo "Push rejected: tests failed. Fix failing tests before pushing."
+  exit 1
+fi
+
+# --- kookr-toolkit plugin classification + version bump enforcement ---
+# Reject pushes that introduce Kookr-internal references inside plugin/ (which
+# ships to all consumers via the marketplace), or that change plugin/skills/**
+# or plugin/agents/** without bumping plugin/.claude-plugin/plugin.json#version.
+if [ -d plugin ]; then
+  RANGE="origin/main..HEAD"
+  git rev-parse --verify --quiet origin/main >/dev/null 2>&1 || RANGE="HEAD"
+
+  # 1. Classification grep — Kookr-internal references must not appear in plugin/.
+  BAD=$(grep -rIE 'pnpm (prod|dev|start:dev|build:server|check:|prod:update|codex:|setup|rebuild)|KOOKR_(API_BASE_URL|TASK_ID|BACKEND|DATA_DIR|PARENT_TASK_ID|GIT_COMMON_DIR|CHECKPOINT_DIR|TTS|TTS_URL|URL)|~/\.kookr/|/home/[^/]+/git/kookr|\.hooks/(pre-push|post-push)' plugin/ 2>/dev/null || true)
+  if [ -n "$BAD" ]; then
+    echo ""
+    echo "Push rejected: plugin/ contains Kookr-internal references."
+    echo "These break the toolkit when other developers install it via /plugin install."
+    echo "Move the offending skill/agent back to .claude/, or sanitize the reference."
+    echo ""
+    echo "$BAD" | head -20
+    exit 1
+  fi
+
+  # 2. Intra-repo collision — same name in both .claude/<kind>/ and plugin/<kind>/.
+  for kind in skills agents commands; do
+    if [ -d ".claude/$kind" ] && [ -d "plugin/$kind" ]; then
+      DUPES=$(comm -12 \
+        <(ls ".claude/$kind" 2>/dev/null | sort -u) \
+        <(ls "plugin/$kind" 2>/dev/null | sort -u))
+      if [ -n "$DUPES" ]; then
+        echo ""
+        echo "Push rejected: same name in both .claude/$kind and plugin/$kind:"
+        echo "$DUPES" | sed 's/^/  /'
+        echo "User-scope plugin install would silently shadow project-scope."
+        exit 1
+      fi
+    fi
+  done
+
+  # 3. Version bump — plugin/skills/** or plugin/agents/** changes require version bump.
+  if git diff --name-only "$RANGE" 2>/dev/null | grep -qE '^plugin/(skills|agents)/'; then
+    if ! git diff --name-only "$RANGE" 2>/dev/null | grep -q '^plugin/.claude-plugin/plugin.json$'; then
+      echo ""
+      echo "Push rejected: plugin/ content changed without bumping plugin.json#version."
+      echo "Edit plugin/.claude-plugin/plugin.json — installed-plugin users only get updates"
+      echo "when the version string changes."
+      exit 1
+    fi
+  fi
+fi

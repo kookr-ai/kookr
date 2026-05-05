@@ -1,0 +1,30 @@
+# TTS service for Kookr — started automatically when KOOKR_TTS=true.
+#
+# Single service: Pocket TTS (Kyutai Labs) with FastAPI.
+# GPU is auto-detected by PyTorch. CPU fallback works but is slower.
+#
+# Voice cloning requires HF_TOKEN (accept terms at https://huggingface.co/kyutai/pocket-tts).
+# Built-in voices (no token needed): alba, marius, javert, jean, fantine, cosette, eponine, azelma.
+# Custom voices: place MP3/WAV files in tts/voices/ and reference by path (/app/voices/name.mp3).
+
+services:
+  kookr-tts:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kookr-tts
+    ports:
+      - "${KOOKR_TTS_PORT:-8004}:8000"
+    environment:
+      TTS_MODEL_TEMPERATURE: ${TTS_MODEL_TEMPERATURE:-0.7}
+      TTS_MODEL_LSD_STEPS: ${TTS_MODEL_LSD_STEPS:-1}
+      TTS_MODEL_EOS_THRESHOLD: ${TTS_MODEL_EOS_THRESHOLD:--4.0}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ./voices:/app/voices:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+    restart: unless-stopped

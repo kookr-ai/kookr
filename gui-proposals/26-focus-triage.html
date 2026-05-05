@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 26: Focus Triage Mode</title>
+<!--
+  Design rationale (addresses critique-1 guidance #3, #5):
+  Two distinct UI modes that shift based on urgency:
+
+  TRIAGE MODE (shown here): When agents need attention, the UI focuses entirely
+  on the most urgent agent. Full-screen conversation + alert + input. A small
+  "queue" indicator shows how many more agents need attention. After responding,
+  the UI auto-advances to the next bottleneck with a transition animation.
+
+  MONITOR MODE (toggled): When all agents are fine, shows a calm dashboard
+  with all agents in a relaxed grid — no urgency, just status monitoring.
+
+  The respond-and-advance flow is the primary design driver here.
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #101218;
+    --bg-panel: #161920;
+    --bg-card: #1c2030;
+    --bg-card-hover: #222840;
+    --bg-input: #1d2238;
+    --bg-terminal: #0b0d14;
+    --border: #272e44;
+    --border-dim: #1e2540;
+    --text: #b4bcd0;
+    --text-secondary: #6c7890;
+    --text-bright: #e0e6f2;
+    --text-muted: #404c64;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --teal: #2dd4bf;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    height: 100vh; display: flex; flex-direction: column;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11.5px; }
+
+  /* Triage header — prominent, focused */
+  .triage-header {
+    background: var(--bg-panel); border-bottom: 1px solid var(--border);
+    padding: 0 20px; height: 48px; display: flex; align-items: center;
+    justify-content: space-between; flex-shrink: 0;
+  }
+  .triage-left { display: flex; align-items: center; gap: 14px; }
+  .logo { font-family: 'JetBrains Mono', monospace; color: var(--teal);
+    font-weight: 700; font-size: 13px; letter-spacing: 1.5px; }
+  .mode-badge {
+    font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.8px;
+    background: rgba(251,191,36,0.12); color: var(--amber);
+    border: 1px solid rgba(251,191,36,0.2);
+  }
+  .queue-info {
+    font-size: 12px; color: var(--text-secondary);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .queue-dots { display: flex; gap: 4px; }
+  .queue-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .queue-dot.current { background: var(--amber); box-shadow: 0 0 6px rgba(251,191,36,0.4); }
+  .queue-dot.waiting { background: var(--text-muted); }
+  .queue-dot.done { background: var(--green); opacity: 0.5; }
+  .triage-right { display: flex; align-items: center; gap: 10px; }
+  .btn-monitor {
+    background: var(--bg-card); border: 1px solid var(--border-dim); color: var(--text-secondary);
+    padding: 4px 12px; border-radius: 5px; font-size: 11px; cursor: pointer;
+  }
+
+  /* Focus agent info */
+  .focus-agent {
+    background: rgba(251,191,36,0.05); border-bottom: 1px solid rgba(251,191,36,0.12);
+    padding: 12px 20px; flex-shrink: 0;
+  }
+  .focus-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .focus-title { font-size: 16px; font-weight: 700; color: var(--text-bright); }
+  .focus-meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 12px; }
+  .focus-explanation {
+    font-size: 13px; color: var(--amber); line-height: 1.5;
+    padding: 8px 12px; background: rgba(251,191,36,0.06);
+    border: 1px solid rgba(251,191,36,0.15); border-radius: 6px;
+  }
+  .focus-explanation code { background: rgba(251,191,36,0.1); padding: 1px 4px; border-radius: 2px; }
+
+  /* Content split: conversation + terminal */
+  .content-split { flex: 1; display: flex; overflow: hidden; }
+
+  .conversation-pane { flex: 1; display: flex; flex-direction: column; }
+  .conversation {
+    flex: 1; overflow-y: auto; padding: 14px 20px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .msg { padding: 10px 14px; border-radius: 6px; font-size: 13px; line-height: 1.6; }
+  .msg.agent { background: var(--bg-card); border: 1px solid var(--border-dim); }
+  .msg.tool {
+    background: var(--bg-terminal); border: 1px solid var(--border-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text-secondary); white-space: pre-wrap;
+  }
+  .msg .label { font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .msg code { background: var(--bg-terminal); padding: 1px 4px; border-radius: 2px; }
+
+  .terminal-pane {
+    width: 400px; background: var(--bg-terminal); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .terminal-tab-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 12px; background: var(--bg-panel); border-bottom: 1px solid var(--border-dim);
+  }
+  .terminal-tab-bar span { font-size: 11px; color: var(--text-secondary); }
+  .terminal-tab-bar .close-btn {
+    background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px;
+  }
+  .terminal-content {
+    flex: 1; padding: 12px; font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px; color: var(--green); line-height: 1.6;
+    white-space: pre-wrap; overflow-y: auto;
+  }
+
+  /* Response area — prominent, centered */
+  .response-area {
+    padding: 14px 20px; border-top: 1px solid var(--border);
+    background: var(--bg-panel); flex-shrink: 0;
+  }
+  .response-row { display: flex; gap: 8px; align-items: center; }
+  .response-area input {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border-dim);
+    border-radius: 8px; padding: 12px 16px; color: var(--text-bright);
+    font-family: inherit; font-size: 14px; outline: none;
+  }
+  .response-area input:focus { border-color: var(--teal); box-shadow: 0 0 0 2px rgba(45,212,191,0.15); }
+  .response-area input::placeholder { color: var(--text-muted); }
+  .btn-respond {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 12px 24px; border-radius: 8px; font-weight: 700; cursor: pointer;
+    font-size: 13px; white-space: nowrap;
+  }
+  .btn-action {
+    background: none; border: 1px solid var(--border-dim); color: var(--text-secondary);
+    padding: 12px 16px; border-radius: 8px; font-size: 12px; cursor: pointer;
+    white-space: nowrap;
+  }
+  .response-hint { margin-top: 6px; font-size: 10.5px; color: var(--text-muted); }
+  .response-hint kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 4px; border-radius: 2px; font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  }
+
+  /* Sent confirmation overlay (hidden by default) */
+  .sent-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(10,12,18,0.8);
+    z-index: 100; justify-content: center; align-items: center;
+  }
+  .sent-card {
+    background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px 32px; text-align: center;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+  }
+  .sent-check { font-size: 32px; color: var(--green); margin-bottom: 8px; }
+  .sent-text { font-size: 14px; color: var(--text-bright); margin-bottom: 4px; }
+  .sent-next { font-size: 12px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<!-- Triage header -->
+<div class="triage-header">
+  <div class="triage-left">
+    <span class="logo">KOOKR</span>
+    <span class="mode-badge">Triage Mode</span>
+    <div class="queue-info">
+      <div class="queue-dots">
+        <div class="queue-dot current" title="Fix auth token (current)"></div>
+        <div class="queue-dot waiting" title="Refactor cache (next)"></div>
+      </div>
+      <span>1 of 2 needing attention</span>
+    </div>
+  </div>
+  <div class="triage-right">
+    <button class="btn-monitor">Switch to Monitor</button>
+  </div>
+</div>
+
+<!-- Focus agent -->
+<div class="focus-agent">
+  <div class="focus-top">
+    <div class="focus-title">Fix auth token refresh</div>
+    <div class="focus-meta">
+      <span>claude-code</span>
+      <span>~/git/webapp</span>
+      <span>18m</span>
+      <span>$0.42</span>
+    </div>
+  </div>
+  <div class="focus-explanation">
+    <strong>Supervisor:</strong> Agent ran <code>npm test</code> 8 times with the same <code>TypeError: token.verify is not a function</code>. It keeps editing <code>src/auth/token.ts</code> but hasn't tried changing the import. Likely needs a hint about which jwt module to use.
+  </div>
+</div>
+
+<!-- Content split -->
+<div class="content-split">
+  <div class="conversation-pane">
+    <div class="conversation">
+      <div class="msg agent">
+        <div class="label">Agent</div>
+        I'll fix the auth token refresh logic in <code>src/auth/token.ts</code>. Let me start by reading the current implementation.
+      </div>
+      <div class="msg tool">
+        <div class="label">Read src/auth/token.ts</div>
+export function refreshToken(token: string) {
+  return jwt.verify(token, SECRET);
+}
+      </div>
+      <div class="msg agent">
+        <div class="label">Agent</div>
+        I see the issue — <code>jwt.verify</code> validates but doesn't refresh. I'll update this to decode, check expiry, and issue a new token.
+      </div>
+      <div class="msg tool">
+        <div class="label">Bash: npm test (attempt 8/8)</div>
+FAIL src/auth/__tests__/token.test.ts
+  TypeError: token.verify is not a function
+    at refreshToken (src/auth/token.ts:14:18)
+
+Tests  1 failed | 3 passed (4)
+      </div>
+      <div class="msg agent">
+        <div class="label">Agent</div>
+        The test is still failing. Let me try a different approach...
+      </div>
+    </div>
+  </div>
+
+  <div class="terminal-pane">
+    <div class="terminal-tab-bar">
+      <span>Terminal</span>
+      <button class="close-btn">&times;</button>
+    </div>
+    <div class="terminal-content">
+$ npm test -- --testPathPattern=token
+
+> webapp@2.1.0 test
+> vitest run --testPathPattern=token
+
+ RUN  v1.6.0 /home/user/git/webapp
+
+ FAIL  src/auth/__tests__/token.test.ts
+   > refreshToken > should issue new token
+     TypeError: token.verify is not a function
+      ❯ refreshToken src/auth/token.ts:14:18
+
+ Tests  1 failed | 3 passed (4)
+ Time   1.24s
+    </div>
+  </div>
+</div>
+
+<!-- Response area -->
+<div class="response-area">
+  <div class="response-row">
+    <input type="text" placeholder="Send a hint to Fix auth token refresh..." autofocus />
+    <button class="btn-respond" onclick="showSent()">Send &amp; Next</button>
+    <button class="btn-action">Skip</button>
+    <button class="btn-action">Snooze</button>
+  </div>
+  <div class="response-hint">
+    <kbd>Ctrl+Enter</kbd> send &amp; advance &middot; <kbd>Tab</kbd> skip &middot; <kbd>Ctrl+`</kbd> toggle terminal &middot; <kbd>Ctrl+K</kbd> commands
+  </div>
+</div>
+
+<!-- Sent confirmation -->
+<div class="sent-overlay" id="sentOverlay">
+  <div class="sent-card">
+    <div class="sent-check">&#10003;</div>
+    <div class="sent-text">Hint sent to Fix auth token refresh</div>
+    <div class="sent-next">Advancing to: Refactor cache layer...</div>
+  </div>
+</div>
+
+<script>
+function showSent() {
+  const overlay = document.getElementById('sentOverlay');
+  overlay.style.display = 'flex';
+  setTimeout(() => { overlay.style.display = 'none'; }, 1500);
+}
+</script>
+</body>
+</html>

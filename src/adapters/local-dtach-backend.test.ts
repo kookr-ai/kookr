@@ -1,0 +1,460 @@
+/**
+ * Tests for LocalDtachBackend.
+ *
+ * These are integration tests — they exercise a real dtach binary. If
+ * dtach is not on PATH and vendor/dtach/dtach is missing, tests are
+ * skipped with a message. Running the full suite locally requires
+ * `scripts/build-dtach.sh` first.
+ */
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { LocalDtachBackend } from './local-dtach-backend.js';
+import { SessionGoneError } from './terminal-backend.js';
+
+function resolveDtachBinary(): string | null {
+  // Prefer the vendored copy if present, otherwise fall back to PATH.
+  const vendored = join(process.cwd(), 'vendor', 'dtach', 'dtach');
+  if (existsSync(vendored)) return vendored;
+  try {
+    execFileSync('dtach', ['--help'], { stdio: 'pipe' });
+    return 'dtach';
+  } catch {
+    return null;
+  }
+}
+
+const DTACH = resolveDtachBinary();
+const skipIfNoDtach = DTACH ? it : it.skip;
+
+describe('LocalDtachBackend', () => {
+  let tmpDir: string;
+  let backend: LocalDtachBackend;
+
+  beforeAll(() => {
+    if (!DTACH) {
+      console.warn(
+        '[local-dtach-backend.test] dtach not found at vendor/dtach/dtach and not on PATH; integration tests will be skipped. Run scripts/build-dtach.sh to enable them.',
+      );
+    }
+  });
+
+  afterEach(async () => {
+    // Best-effort cleanup: dtach masters spawned via setsid survive
+    // process exit unless killed. Any leaked masters are visible in
+    // `ps -ef | grep dtach` — developers should run
+    // `scripts/rollback-dtach.sh` with KOOKR_DTACH_SOCK_DIR pointed at
+    // the test tmpDir to clean them.
+    try {
+      if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  skipIfNoDtach('rejects session ids with unsafe characters', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+
+    await expect(
+      backend.createSession({
+        id: '../escape',
+        command: '/bin/sh',
+        args: ['-c', 'sleep 1'],
+      }),
+    ).rejects.toThrow(/must match/);
+  });
+
+  skipIfNoDtach('rejects session ids that would overflow the UDS path limit', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+
+    await expect(
+      backend.createSession({
+        id: 'x'.repeat(100),
+        command: '/bin/sh',
+        args: ['-c', 'sleep 1'],
+      }),
+    ).rejects.toThrow(/too long/);
+  });
+
+  skipIfNoDtach(
+    'rejects sessions when the socketDir consumes the sun_path budget (catches the macOS /var/folders overflow)',
+    async () => {
+      // Simulate macOS's typical $TMPDIR=/var/folders/XX/<hash>/T with a long
+      // base, well within 107 bytes on its own but combined with the standard
+      // kookr-dtach/<uid>/<instanceId>/ structure plus a 40-char ID and `.sock`
+      // it overflows. Pre-fix, this test passed validateSessionId silently and
+      // failed at bind() with EINVAL (`AF_UNIX path too long`).
+      const longBase = mkdtempSync(join(tmpdir(), 'ldb-mac-sim-' + 'x'.repeat(40) + '-'));
+      tmpDir = longBase;
+      backend = new LocalDtachBackend({
+        socketDir: longBase,
+        instanceId: 'port-4800',
+        dtachBinary: DTACH!,
+      });
+
+      await expect(
+        backend.createSession({
+          id: 'session-' + 'x'.repeat(32),
+          command: '/bin/sh',
+          args: ['-c', 'sleep 1'],
+        }),
+      ).rejects.toThrow(/sun_path limit|too long/);
+    },
+  );
+
+  skipIfNoDtach('creates a session and writes a manifest entry with status active', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+
+    const id = 'manifest-smoke';
+    await backend.createSession({
+      id,
+      command: '/bin/sh',
+      args: ['-c', 'cat'], // waits for stdin, keeps pty alive
+    });
+
+    try {
+      const manifestPath = join(tmpDir, 'test', 'manifest.json');
+      expect(existsSync(manifestPath)).toBe(true);
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+        entries: Array<{ sessionId: string; status: string; sock: string }>;
+      };
+      const entry = manifest.entries.find((e) => e.sessionId === id);
+      expect(entry).toBeDefined();
+      expect(entry!.status).toBe('active');
+      expect(existsSync(entry!.sock)).toBe(true);
+
+      expect(await backend.listSessions()).toContain(id);
+      expect(await backend.isAlive(id)).toBe(true);
+    } finally {
+      await backend.killSession(id);
+      expect(await backend.isAlive(id)).toBe(false);
+    }
+  }, 10_000);
+
+  skipIfNoDtach('write throws SessionGoneError for unknown id', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+
+    await expect(backend.write('does-not-exist', new Uint8Array([0x79]))).rejects.toBeInstanceOf(
+      SessionGoneError,
+    );
+  });
+
+  skipIfNoDtach('killSession on an unknown id is a no-op', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+
+    await expect(backend.killSession('does-not-exist')).resolves.not.toThrow();
+  });
+
+  skipIfNoDtach('replays prior output to a second attach after the first detaches', async () => {
+    // End-to-end regression for the "blank terminal on reconnect" bug. Uses
+    // a write→tty-echo loop so the test doesn't depend on child-startup
+    // output ordering — the only guarantee we need is that bytes the monitor
+    // observed before dispose are replayed to a fresh attachSession.
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+
+    const id = 'replay-test';
+    const REPLAY_MARKER = 'REPLAY_OK_42';
+
+    // `cat` with default tty line discipline echoes stdin back to stdout,
+    // which is exactly the loop we need: the write goes monitor → dtach
+    // master → child, then the echo bytes come back master → monitor.
+    await backend.createSession({
+      id,
+      command: '/bin/sh',
+      args: ['-c', 'exec cat'],
+    });
+
+    try {
+      const firstBytes: Uint8Array[] = [];
+      const unsubscribeFirst = backend.onData(id, (b) => { firstBytes.push(b); });
+
+      // Send the marker via the first handle; the tty echoes it back.
+      await backend.write(id, new TextEncoder().encode(REPLAY_MARKER + '\n'));
+
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline) {
+        if (firstBytes.map((b) => Buffer.from(b).toString('utf-8')).join('').includes(REPLAY_MARKER)) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const firstSeen = firstBytes.map((b) => Buffer.from(b).toString('utf-8')).join('');
+      expect(firstSeen).toContain(REPLAY_MARKER);
+
+      // Detach viewer 1. Child + dtach master keep running; the backend
+      // retains the ring for future captureBytes() replay.
+      unsubscribeFirst();
+
+      // Viewer 2's reconnect path now replays via captureBytes() before
+      // subscribing to onData. This is the exact bug the fix targets:
+      // previously the ring was per-bridge, so the reconnect saw a blank
+      // terminal.
+      const secondSeen = Buffer.from(await backend.captureBytes(id)).toString('utf-8');
+      expect(secondSeen).toContain(REPLAY_MARKER);
+    } finally {
+      await backend.killSession(id);
+    }
+  }, 15_000);
+
+  skipIfNoDtach('persists ring buffer across a backend restart', async () => {
+    // Regression guard for the "blank terminal after pnpm prod:restart" bug.
+    // dtach masters are spawned via setsid and survive a Kookr process exit,
+    // so on restart codex-cli (or any TUI) is still running but emits ~0 B/s.
+    // Without on-disk persistence the new backend's ring is empty and the
+    // browser sees a blank viewport. This test simulates that exact state by
+    // (1) writing a marker into a session's ring, (2) calling backend.close()
+    // — which flushes + disposes the attach but does NOT kill the dtach master —
+    // and (3) spawning a fresh backend at the same instanceDir. The first
+    // captureBytes() on the new backend must replay the persisted marker.
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+
+    const id = 'restart-persist';
+    const MARKER = 'RESTART_OK_77';
+    let backend2: LocalDtachBackend | null = null;
+
+    await backend.createSession({
+      id,
+      command: '/bin/sh',
+      args: ['-c', 'exec cat'],
+    });
+
+    try {
+      // Drive the marker into the ring via tty echo (same loop as the
+      // captureBytes-replay test below).
+      const seen: Uint8Array[] = [];
+      const off = backend.onData(id, (b) => {
+        seen.push(b);
+      });
+      await backend.write(id, new TextEncoder().encode(MARKER + '\n'));
+
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline) {
+        if (seen.map((b) => Buffer.from(b).toString('utf-8')).join('').includes(MARKER)) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(seen.map((b) => Buffer.from(b).toString('utf-8')).join('')).toContain(MARKER);
+      off();
+
+      // Tear down the backend the way a Kookr restart does. close() flushes
+      // every active ring, kills the internal attach child, and clears state.
+      // The dtach master keeps running because it was spawned with setsid.
+      backend.close();
+
+      // Snapshot files must be on disk before the new backend starts up.
+      const ringsDir = join(tmpDir, 'test', 'rings');
+      expect(existsSync(join(ringsDir, `${id}.bin`))).toBe(true);
+      expect(existsSync(join(ringsDir, `${id}.meta.json`))).toBe(true);
+
+      // Spawn a fresh backend pointing at the same instanceDir — the exact
+      // condition `pnpm prod:restart` produces. The session must still be
+      // visible (manifest recovery) and its scrollback restored on first
+      // capture.
+      backend2 = new LocalDtachBackend({
+        socketDir: tmpDir,
+        instanceId: 'test',
+        dtachBinary: DTACH!,
+      });
+      // Give recoverOnStartup (async, fire-and-forget) a tick to settle so
+      // listSessions reflects the manifest. captureBytes works either way
+      // because it falls back to readManifestSync.
+      await new Promise((r) => setTimeout(r, 25));
+      expect(await backend2.isAlive(id)).toBe(true);
+
+      const replayed = Buffer.from(await backend2.captureBytes(id)).toString('utf-8');
+      expect(replayed).toContain(MARKER);
+    } finally {
+      // Use whichever backend is alive to kill the dtach master so the test
+      // doesn't leak it into the host. Tolerate failure on both paths.
+      const cleanup = backend2 ?? backend;
+      try {
+        await cleanup.killSession(id);
+      } catch {
+        // best-effort
+      }
+      // killSession is contracted to remove the ring snapshot — assert it,
+      // otherwise removePersistedRing could silently regress to a no-op.
+      expect(existsSync(join(tmpDir, 'test', 'rings', `${id}.bin`))).toBe(false);
+      expect(existsSync(join(tmpDir, 'test', 'rings', `${id}.meta.json`))).toBe(false);
+      if (backend2) backend2.close();
+    }
+  }, 15_000);
+
+  skipIfNoDtach('persists wrapped ring buffer (head > capacity) across restart', async () => {
+    // Wraparound regression guard. The fresh-ring case (head < capacity) and
+    // the wrapped case use different code paths in `persistRing` — wrapped
+    // rings split the logical-ordered copy across the modular boundary. A
+    // fix that off-by-ones the split byte would still pass the small-marker
+    // test above but quietly corrupt scrollback for any session that's been
+    // running long enough to fill the ring (~90 s of token streaming on
+    // codex). Drive the ring well past its capacity by writing a bytes
+    // pattern from a `head -c` source; assert the trailing slice (the part
+    // that should survive eviction) is preserved across restart byte-exact.
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+
+    const id = 'wrap-persist';
+    // Use a small capacity-equivalent payload to keep the test fast: write
+    // RING_BUFFER_BYTES + a known tail, then assert the tail is what
+    // captureBytes returns. We can't change RING_BUFFER_BYTES from the test,
+    // but we can write 1 MB + ~1 KB through `cat`'s tty echo — slow at 1 MB
+    // but bounded. Use printf with a block-pattern + a unique tail marker.
+    const TAIL_MARKER = 'WRAP_TAIL_777';
+    const FILLER_BYTES = 1024 * 1024 + 4096; // > 1 MB so the ring wraps
+
+    let backend2: LocalDtachBackend | null = null;
+    await backend.createSession({
+      id,
+      command: '/bin/sh',
+      args: ['-c', 'exec cat'],
+    });
+
+    try {
+      // Pump filler then the tail. Use a fixed byte pattern so we can verify
+      // the wraparound copy preserves byte order, then send a unique tail
+      // marker that MUST land in the surviving suffix.
+      const filler = Buffer.alloc(FILLER_BYTES, 0x41); // ASCII 'A'
+      // Chunk the write to stay below the per-write timeout — a single 1 MB
+      // pty.write would race the 2 s default.
+      const CHUNK = 32 * 1024;
+      for (let off = 0; off < filler.length; off += CHUNK) {
+        await backend.write(id, new Uint8Array(filler.subarray(off, off + CHUNK)));
+      }
+      await backend.write(id, new TextEncoder().encode(TAIL_MARKER + '\n'));
+
+      // Wait for the cat-echoed bytes to populate the ring past its capacity.
+      // We poll a bounded window and break as soon as captureBytes shows the
+      // marker — that guarantees the tail bytes have arrived.
+      const deadline = Date.now() + 10_000;
+      let preCapture = new Uint8Array(0);
+      while (Date.now() < deadline) {
+        preCapture = await backend.captureBytes(id);
+        if (Buffer.from(preCapture).toString('utf-8').includes(TAIL_MARKER)) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(Buffer.from(preCapture).toString('utf-8')).toContain(TAIL_MARKER);
+      // Pre-restart capture should be capped at the ring size — confirms we
+      // genuinely wrapped, otherwise this test isn't exercising the split path.
+      expect(preCapture.length).toBe(1024 * 1024);
+
+      backend.close();
+
+      backend2 = new LocalDtachBackend({
+        socketDir: tmpDir,
+        instanceId: 'test',
+        dtachBinary: DTACH!,
+      });
+      const postCapture = await backend2.captureBytes(id);
+      // Restored capture must equal the pre-restart capture byte-for-byte.
+      // A wraparound copy off-by-one would differ at the split point.
+      expect(postCapture.length).toBe(preCapture.length);
+      expect(Buffer.from(postCapture).equals(Buffer.from(preCapture))).toBe(true);
+      expect(Buffer.from(postCapture).toString('utf-8')).toContain(TAIL_MARKER);
+    } finally {
+      const cleanup = backend2 ?? backend;
+      try {
+        await cleanup.killSession(id);
+      } catch {
+        // best-effort
+      }
+      if (backend2) backend2.close();
+    }
+  }, 30_000);
+
+  skipIfNoDtach('re-attach after pty crash restores the last-known size', async () => {
+    // Regression guard: when the internal attach child exits (crash, OS kill),
+    // the backend lazily re-spawns on the next write/resize via `ensureWritable`
+    // -> `attachPtyInto(sock, undefined)`. Without the `currentSize` fallback,
+    // the replacement pty would snap back to node-pty's 80x24 default and the
+    // hosted TUI would re-flow its viewport. This test locks the "reapply
+    // stored size" behavior in place.
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+
+    type IPtyLike = { cols: number; rows: number; kill: () => void };
+    type AttachedLike = { pty: IPtyLike | null };
+    const peek = (id: string): AttachedLike =>
+      (backend as unknown as { attached: Map<string, AttachedLike> }).attached.get(id)!;
+
+    const id = 'size-restore';
+    await backend.createSession({
+      id,
+      command: '/bin/sh',
+      args: ['-c', 'exec cat'],
+      size: { cols: 120, rows: 40 },
+    });
+
+    try {
+      // Sanity: initial attach was sized from spec.size.
+      expect(peek(id).pty?.cols).toBe(120);
+      expect(peek(id).pty?.rows).toBe(40);
+
+      // Simulate a crash of the internal attach child. The dtach master keeps
+      // running (we only kill the attach PTY, not the socket).
+      const oldPty = peek(id).pty;
+      expect(oldPty).not.toBeNull();
+      oldPty!.kill();
+
+      // Wait for `pty.onExit` to null the session's pty handle.
+      const deadline = Date.now() + 3_000;
+      while (peek(id).pty !== null && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(peek(id).pty).toBeNull();
+
+      // Any writable op forces `ensureWritable` -> re-attach. We use resize
+      // with the same dimensions so the only change under test is the
+      // attachPtyInto path, not the size itself.
+      await backend.resize(id, 120, 40);
+
+      const newPty = peek(id).pty;
+      expect(newPty).not.toBeNull();
+      expect(newPty!.cols).toBe(120);
+      expect(newPty!.rows).toBe(40);
+    } finally {
+      await backend.killSession(id);
+    }
+  }, 10_000);
+});

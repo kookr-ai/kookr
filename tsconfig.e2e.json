@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": null,
+    "declaration": false,
+    "sourceMap": false,
+    "noEmit": true
+  },
+  "include": ["e2e/**/*.ts", "src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/frontend"]
+}

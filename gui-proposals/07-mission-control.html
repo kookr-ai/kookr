@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 7: Mission Control</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0b0e13;
+    --bg-panel: #10141b;
+    --bg-card: #161b24;
+    --bg-card-hover: #1c2230;
+    --bg-input: #1a202b;
+    --border: #222a38;
+    --border-subtle: #1b2230;
+    --text: #c4ccda;
+    --text-secondary: #717d90;
+    --text-bright: #e8edf5;
+    --text-muted: #4a5568;
+    --green: #22c55e;
+    --amber: #eab308;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --purple: #a78bfa;
+    --teal: #14b8a6;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    font-size: 13.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 12px;
+  }
+
+  /* ─── Top bar ─── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    height: 44px;
+    flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 20px; }
+  .logo {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--teal);
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 1.5px;
+  }
+  .topbar-summary {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+  }
+  .summary-stat {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-secondary);
+  }
+  .summary-stat .num { font-weight: 700; }
+  .summary-stat .num.alert { color: var(--amber); }
+  .summary-stat .num.ok { color: var(--green); }
+  .summary-stat .num.done { color: var(--text-muted); }
+  .summary-stat .num.cost { color: var(--text-bright); }
+  .topbar-right { display: flex; gap: 10px; align-items: center; }
+  .btn-launch {
+    background: var(--teal);
+    color: #000;
+    border: none;
+    padding: 5px 14px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* ─── Agent strip: persistent horizontal overview (fixes P3 context-loss) ─── */
+  .agent-strip {
+    display: flex;
+    gap: 8px;
+    padding: 10px 24px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    overflow-x: auto;
+  }
+  .strip-card {
+    flex: 0 0 220px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .strip-card:hover { background: var(--bg-card-hover); }
+  .strip-card.selected { border-color: var(--teal); background: var(--bg-card-hover); }
+  .strip-card.alert { border-color: rgba(234,179,8,0.4); }
+  .strip-card.alert.selected { border-color: var(--amber); }
+
+  .strip-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .strip-header-left {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .strip-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .strip-dot.running { background: var(--green); box-shadow: 0 0 4px rgba(34,197,94,0.3); }
+  .strip-dot.stuck { background: var(--amber); box-shadow: 0 0 4px rgba(234,179,8,0.3); animation: pulse 2s infinite; }
+  .strip-dot.completed { background: var(--text-muted); }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+  .strip-name { font-weight: 600; font-size: 13px; color: var(--text-bright); }
+  .strip-status {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .strip-status.stuck { background: rgba(234,179,8,0.15); color: var(--amber); }
+  .strip-status.running { background: rgba(34,197,94,0.1); color: var(--green); }
+  .strip-status.completed { background: rgba(74,85,104,0.2); color: var(--text-muted); }
+
+  .strip-task {
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .strip-meta {
+    display: flex;
+    gap: 10px;
+    font-size: 10.5px;
+    color: var(--text-muted);
+  }
+  .strip-activity {
+    font-size: 10.5px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .strip-activity code { color: var(--blue); font-size: 10.5px; }
+
+  /* ─── Main area: split detail view ─── */
+  .main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* Left: Insight + Activity stream */
+  .detail-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  /* Insight block */
+  .insight-block {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .insight-card {
+    background: rgba(234,179,8,0.06);
+    border: 1px solid rgba(234,179,8,0.2);
+    border-radius: 10px;
+    padding: 14px 18px;
+  }
+  .insight-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .insight-badge {
+    background: var(--amber);
+    color: #000;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .insight-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--amber);
+  }
+  .insight-dismiss {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .insight-body {
+    font-size: 13.5px;
+    line-height: 1.7;
+    color: var(--text);
+  }
+  .insight-body code {
+    background: rgba(59,130,246,0.1);
+    color: var(--blue);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .insight-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .btn-sm {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 5px 12px;
+    border-radius: 5px;
+    font-family: inherit;
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .btn-sm:hover { color: var(--text-bright); }
+
+  /* Activity feed */
+  .activity {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 24px;
+  }
+  .activity-item {
+    display: flex;
+    gap: 12px;
+    padding: 6px 0;
+    position: relative;
+  }
+  .activity-item:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 13px;
+    top: 30px;
+    bottom: -6px;
+    width: 1px;
+    background: var(--border-subtle);
+  }
+  .act-dot {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 600;
+    flex-shrink: 0;
+    z-index: 1;
+  }
+  .act-dot.tool { border-color: var(--blue); color: var(--blue); }
+  .act-dot.edit { border-color: var(--purple); color: var(--purple); }
+  .act-dot.error { border-color: var(--red); color: var(--red); }
+  .act-dot.read { border-color: var(--text-secondary); color: var(--text-secondary); }
+
+  .act-content { flex: 1; padding-top: 1px; }
+  .act-label { font-size: 13px; color: var(--text); }
+  .act-label code { background: var(--bg-card); color: var(--teal); padding: 1px 5px; border-radius: 3px; }
+  .act-time { font-size: 10.5px; color: var(--text-muted); margin-top: 1px; }
+  .act-error {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: var(--red);
+    margin-top: 3px;
+    opacity: 0.8;
+  }
+  .repeat-pill {
+    display: inline-block;
+    background: rgba(234,179,8,0.12);
+    color: var(--amber);
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 7px;
+    border-radius: 8px;
+    margin-left: 6px;
+  }
+
+  /* Input */
+  .input-area {
+    padding: 12px 24px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-panel);
+  }
+  .input-row { display: flex; gap: 8px; }
+  .input-field {
+    flex: 1;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text-bright);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 13.5px;
+    outline: none;
+  }
+  .input-field:focus { border-color: var(--teal); }
+  .input-field::placeholder { color: var(--text-muted); }
+  .btn-send {
+    background: var(--teal);
+    color: #000;
+    border: none;
+    padding: 0 20px;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* Right: Agent metadata sidebar */
+  .meta-panel {
+    width: 240px;
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
+    flex-shrink: 0;
+    overflow-y: auto;
+    padding: 18px 16px;
+  }
+  .meta-section { margin-bottom: 20px; }
+  .meta-title {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .meta-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12.5px;
+    padding: 4px 0;
+  }
+  .meta-label { color: var(--text-secondary); }
+  .meta-value { color: var(--text-bright); font-weight: 500; }
+  .meta-value.stuck { color: var(--amber); }
+  .meta-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 6px;
+  }
+  .btn-meta {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 6px 12px;
+    border-radius: 5px;
+    font-family: inherit;
+    font-size: 11.5px;
+    cursor: pointer;
+    text-align: center;
+  }
+  .btn-meta:hover { color: var(--text-bright); background: var(--bg-card-hover); }
+  .btn-meta.danger { color: var(--red); }
+
+  /* ─── Status bar ─── */
+  .statusbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    height: 26px;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .statusbar-left, .statusbar-right { display: flex; gap: 14px; }
+  .statusbar kbd {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    padding: 0 4px;
+    border-radius: 2px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+    <div class="topbar-summary">
+      <span class="summary-stat"><span class="num alert">1</span> stuck</span>
+      <span class="summary-stat"><span class="num ok">2</span> running</span>
+      <span class="summary-stat"><span class="num done">1</span> done</span>
+      <span class="summary-stat"><span class="num cost">$0.98</span> total</span>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <button class="btn-launch">+ Launch Agent</button>
+  </div>
+</div>
+
+<!-- Persistent agent strip — always visible, no context loss -->
+<div class="agent-strip">
+  <div class="strip-card alert selected">
+    <div class="strip-header">
+      <div class="strip-header-left">
+        <span class="strip-dot stuck"></span>
+        <span class="strip-name">Agent #3</span>
+      </div>
+      <span class="strip-status stuck">Stuck</span>
+    </div>
+    <div class="strip-task">Fix auth bug in login.ts</div>
+    <div class="strip-meta"><span>12m</span><span>$0.42</span></div>
+    <div class="strip-activity">Last: <code>npm test</code> x12 FAIL</div>
+  </div>
+
+  <div class="strip-card">
+    <div class="strip-header">
+      <div class="strip-header-left">
+        <span class="strip-dot running"></span>
+        <span class="strip-name">Agent #1</span>
+      </div>
+      <span class="strip-status running">Running</span>
+    </div>
+    <div class="strip-task">Add pagination to /users endpoint</div>
+    <div class="strip-meta"><span>8m</span><span>$0.18</span></div>
+    <div class="strip-activity">Last: Edit <code>routes/users.ts</code></div>
+  </div>
+
+  <div class="strip-card">
+    <div class="strip-header">
+      <div class="strip-header-left">
+        <span class="strip-dot running"></span>
+        <span class="strip-name">Agent #4</span>
+      </div>
+      <span class="strip-status running">Running</span>
+    </div>
+    <div class="strip-task">Write unit tests for utils.ts</div>
+    <div class="strip-meta"><span>3m</span><span>$0.07</span></div>
+    <div class="strip-activity">Last: Bash <code>npx vitest run</code></div>
+  </div>
+
+  <div class="strip-card">
+    <div class="strip-header">
+      <div class="strip-header-left">
+        <span class="strip-dot completed"></span>
+        <span class="strip-name">Agent #2</span>
+      </div>
+      <span class="strip-status completed">Done</span>
+    </div>
+    <div class="strip-task">Update README with API docs</div>
+    <div class="strip-meta"><span>Done</span><span>$0.31</span></div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="detail-main">
+    <div class="insight-block">
+      <div class="insight-card">
+        <div class="insight-header">
+          <span class="insight-badge">Alert</span>
+          <span class="insight-title">Stuck: same test 12x without progress</span>
+          <button class="insight-dismiss">Dismiss</button>
+        </div>
+        <div class="insight-body">
+          Agent #3 has run <code>npm test</code> 12 times with the same error:
+          <code>TypeError: token.verify is not a function</code>. It keeps editing
+          <code>auth.ts</code> line 42 but hasn't tried changing the import path.
+          The function exists in <code>@auth/jwt</code>, not <code>@auth/core</code>.
+        </div>
+        <div class="insight-actions">
+          <button class="btn-sm">Skip</button>
+          <button class="btn-sm">Snooze 5m</button>
+          <button class="btn-sm">Attach Terminal</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="activity">
+      <div class="activity-item">
+        <div class="act-dot read">R</div>
+        <div class="act-content">
+          <div class="act-label">Read <code>src/auth.ts</code></div>
+          <div class="act-time">12:04 PM</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="act-dot edit">E</div>
+        <div class="act-content">
+          <div class="act-label">Edit <code>src/auth.ts</code> line 42 — changed import path</div>
+          <div class="act-time">12:05 PM</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="act-dot error">!</div>
+        <div class="act-content">
+          <div class="act-label">Bash: <code>npm test</code> <span class="repeat-pill">x3</span></div>
+          <div class="act-time">12:05 PM</div>
+          <div class="act-error">TypeError: token.verify is not a function</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="act-dot edit">E</div>
+        <div class="act-content">
+          <div class="act-label">Edit <code>src/auth.ts</code> line 42 — reverted change</div>
+          <div class="act-time">12:07 PM</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="act-dot error">!</div>
+        <div class="act-content">
+          <div class="act-label">Bash: <code>npm test</code> <span class="repeat-pill">x9</span></div>
+          <div class="act-time">12:10 PM</div>
+          <div class="act-error">TypeError: token.verify is not a function</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="act-dot edit">E</div>
+        <div class="act-content">
+          <div class="act-label">Edit <code>src/auth.ts</code> line 42 — same change as 12:05</div>
+          <div class="act-time">12:13 PM</div>
+        </div>
+      </div>
+      <div class="activity-item">
+        <div class="act-dot error">!</div>
+        <div class="act-content">
+          <div class="act-label">Bash: <code>npm test</code> <span class="repeat-pill">x12</span></div>
+          <div class="act-time">12:14 PM</div>
+          <div class="act-error">TypeError: token.verify is not a function</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-row">
+        <input class="input-field" type="text" placeholder="Send a hint to Agent #3..." />
+        <button class="btn-send">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="meta-panel">
+    <div class="meta-section">
+      <div class="meta-title">Agent #3</div>
+      <div class="meta-row">
+        <span class="meta-label">Type</span>
+        <span class="meta-value">Claude Code</span>
+      </div>
+      <div class="meta-row">
+        <span class="meta-label">Status</span>
+        <span class="meta-value stuck">Stuck</span>
+      </div>
+      <div class="meta-row">
+        <span class="meta-label">Runtime</span>
+        <span class="meta-value">12 min</span>
+      </div>
+      <div class="meta-row">
+        <span class="meta-label">Cost</span>
+        <span class="meta-value">$0.42</span>
+      </div>
+    </div>
+    <div class="meta-section">
+      <div class="meta-title">Task</div>
+      <div style="font-size:12.5px;color:var(--text);margin-bottom:8px;line-height:1.4;">Fix auth bug in login.ts</div>
+      <div class="meta-row">
+        <span class="meta-label">Status</span>
+        <span class="meta-value">In Progress</span>
+      </div>
+      <div class="meta-row">
+        <span class="meta-label">Directory</span>
+        <span class="meta-value" style="font-family:'JetBrains Mono',monospace;font-size:11px;">~/git/myapp</span>
+      </div>
+    </div>
+    <div class="meta-section">
+      <div class="meta-title">Actions</div>
+      <div class="meta-actions">
+        <button class="btn-meta">Attach Terminal</button>
+        <button class="btn-meta">Restart Agent</button>
+        <button class="btn-meta danger">Stop Agent</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="statusbar">
+  <div class="statusbar-left">
+    <span>4 agents</span>
+    <span>1 needs attention</span>
+  </div>
+  <div class="statusbar-right">
+    <span><kbd>Ctrl+N</kbd> next</span>
+    <span><kbd>Ctrl+Enter</kbd> send</span>
+    <span><kbd>←→</kbd> agents</span>
+  </div>
+</div>
+
+</body>
+</html>

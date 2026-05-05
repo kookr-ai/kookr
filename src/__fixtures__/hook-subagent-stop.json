@@ -1,0 +1,12 @@
+{
+  "session_id": "ef2bb325-8a22-4eec-a5df-708b6a00a609",
+  "transcript_path": "/home/jean/.claude/projects/-home-jean-git-kookr/ef2bb325-8a22-4eec-a5df-708b6a00a609.jsonl",
+  "cwd": "/home/jean/git/kookr",
+  "permission_mode": "acceptEdits",
+  "agent_id": "a9af72eb6cf1b8c97",
+  "agent_type": "Explore",
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/home/jean/.claude/projects/-home-jean-git-kookr/ef2bb325/subagents/agent-a9af72eb6cf1b8c97.jsonl",
+  "last_assistant_message": "Found 1 .json file in /tmp/kookr-poc-003/"
+}

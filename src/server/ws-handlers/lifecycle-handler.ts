@@ -1,0 +1,267 @@
+import type { AgentEvent } from '../../core/types.js';
+import type { ServerMessage, ClientMessage } from '../../shared/contracts/messages.js';
+import type { TaskStore } from '../../core/tasks.js';
+import type { Monitor } from '../../core/monitor.js';
+import type { AttentionQueue } from '../../core/attention-queue.js';
+import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
+import type { AutonomyOrchestrator } from '../autonomy-orchestrator.js';
+import type { ScheduleService } from '../schedule-service.js';
+import type { LaunchOpts, LaunchResult } from '../launch-service.js';
+import type { LifecycleDeps } from '../agent-lifecycle.js';
+import {
+  completeTask as completeTaskImpl,
+  cancelTask as cancelTaskImpl,
+  cleanupSessionResources as cleanupSessionResourcesImpl,
+} from '../agent-lifecycle.js';
+import { nowISO } from '../../core/interaction-log.js';
+import { generateCompletionDigest } from '../../core/completion-digest.js';
+import { getSnapshotAgentsForClient } from '../use-cases/get-snapshot.js';
+import { deleteTask } from '../use-cases/delete-task.js';
+import { handleLaunchResult } from './launch-result.js';
+
+/**
+ * Narrow dependency bag for task-lifecycle messages.
+ *
+ * Task lifecycle naturally depends on a lot of state — every terminal
+ * transition has to sync with the task store, interaction log, monitor,
+ * schedule service, and agent-lifecycle cleanup. We keep those as a
+ * lifecycleDeps thunk and a tryPromotePending callback to avoid leaking
+ * the underlying AdapterRegistry / broadcastToAll / serverCwd collaborators
+ * into this handler.
+ */
+export interface LifecycleHandlerDeps {
+  send: (msg: ServerMessage) => void;
+  taskStore: TaskStore;
+  monitor: Monitor;
+  queue: AttentionQueue;
+  interactionLog?: DeferredInteractionLogWriter;
+  autonomyOrchestrator?: AutonomyOrchestrator;
+  scheduleService?: ScheduleService;
+  launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
+  broadcastToAll?: (msg: ServerMessage) => void;
+  takePredeleteSnapshot?: () => Promise<void>;
+  /**
+   * Thunk that rebuilds the LifecycleDeps used by agent-lifecycle / delete-task.
+   * Thunk instead of a direct field because several of its members
+   * (interactionLog, suppressionTracker, leaseService, attemptRepository)
+   * may be wired lazily at server startup.
+   */
+  getLifecycleDeps: () => LifecycleDeps;
+  /** Promote pending tasks if concurrency slots have opened. */
+  tryPromotePending: () => Promise<void>;
+}
+
+type LifecycleMessage = Extract<ClientMessage, {
+  type:
+    | 'launch'
+    | 'relaunch'
+    | 'stop'
+    | 'completeTask'
+    | 'cancelTask'
+    | 'reopenTask'
+    | 'renameTask'
+    | 'deleteTask'
+    | 'clearCompleted'
+    | 'ackTerminatedTask'
+    | 'getNext'
+}>;
+
+/**
+ * Handles task-lifecycle client messages.
+ *
+ * Returns `{ duplicate }` from `handle(...)` so the dispatching router
+ * can track duplicate launches for achievement-watcher. Most cases return
+ * `{ duplicate: false }`; only `launch` and `relaunch` may flag it true.
+ */
+export class LifecycleHandler {
+  constructor(private readonly deps: LifecycleHandlerDeps) {}
+
+  async handle(msg: LifecycleMessage): Promise<{ duplicate: boolean }> {
+    switch (msg.type) {
+      case 'launch': {
+        const excerpt = msg.prompt.slice(0, 40);
+        let result: LaunchResult | undefined;
+        let err: unknown;
+        try {
+          result = await this.deps.launchTask?.({
+            prompt: msg.prompt,
+            cwd: msg.cwd,
+            criteria: msg.criteria,
+            autonomy: msg.autonomy,
+            agentType: msg.agentType,
+          });
+        } catch (e) { err = e; }
+        return handleLaunchResult(this.deps.send, excerpt, result, err);
+      }
+
+      case 'relaunch': {
+        const originalTask = this.deps.taskStore.getTask(msg.taskId);
+        if (!originalTask) return { duplicate: false };
+        const excerpt = msg.prompt.slice(0, 40);
+        let result: LaunchResult | undefined;
+        let err: unknown;
+        try {
+          result = await this.deps.launchTask?.({
+            prompt: msg.prompt,
+            cwd: originalTask.cwd,
+            criteria: originalTask.criteria,
+            agentType: msg.agentType ?? originalTask.agentType,
+          });
+        } catch (e) { err = e; }
+        return handleLaunchResult(this.deps.send, excerpt, result, err);
+      }
+
+      case 'stop': {
+        // Cancel auto-proceed for this agent
+        this.deps.autonomyOrchestrator?.onAgentStopped(msg.agentId);
+        // Legacy: kept for backwards compatibility but UI now uses completeTask/cancelTask
+        await cleanupSessionResourcesImpl(msg.agentId, this.deps.getLifecycleDeps());
+        // Mark the session completed and reopen the task if all sessions are done.
+        // User-initiated stops reopen (not complete) because the user interrupted the work.
+        // Natural session ends are auto-completed via reconciliation instead.
+        const stopTask = this.deps.taskStore.findTaskBySession(msg.agentId);
+        if (stopTask && stopTask.status === 'inProgress') {
+          this.deps.taskStore.updateSession(stopTask.id, msg.agentId, { lastStatus: 'completed' });
+          if (stopTask.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted')) {
+            this.deps.taskStore.reopenTask(stopTask.id);
+          }
+        }
+        await this.deps.interactionLog?.append({
+          type: 'agent_stopped',
+          agentId: msg.agentId,
+          reason: 'user',
+          timestamp: nowISO(),
+        });
+        return { duplicate: false };
+      }
+
+      case 'getNext': {
+        const next = this.deps.queue.next();
+        if (next) {
+          const snapshot = getSnapshotAgentsForClient({ monitor: this.deps.monitor });
+          const state = snapshot.find((s) => s.agentId === next.agentId);
+          if (state) {
+            this.deps.send({ type: 'update', agentId: next.agentId, state });
+          }
+        }
+        return { duplicate: false };
+      }
+
+      case 'completeTask': {
+        // Capture events before lifecycle cleanup deletes them from the monitor
+        const completingTask = this.deps.taskStore.getTask(msg.taskId);
+        const preEvents: AgentEvent[] = [];
+        if (completingTask) {
+          for (const session of completingTask.sessions) {
+            preEvents.push(...this.deps.monitor.getAgentEvents(session.tmuxSession));
+          }
+        }
+
+        await completeTaskImpl(msg.taskId, this.deps.getLifecycleDeps());
+        await this.deps.scheduleService?.recordTaskTerminalOutcome(msg.taskId, 'completed');
+
+        // Generate and store completion digest
+        if (completingTask && preEvents.length > 0) {
+          const digest = generateCompletionDigest(preEvents);
+          this.deps.taskStore.setCompletionDigest(msg.taskId, digest);
+
+          // Toast notification for all clients
+          const taskName = completingTask.name ?? 'Task';
+          this.deps.broadcastToAll?.({
+            type: 'alert',
+            agentId: completingTask.sessions[0]?.tmuxSession ?? '',
+            summary: `Completed: ${taskName} — ${digest.bullets[0]}`,
+            details: digest.bullets.slice(1).join(' · '),
+            severity: 'info',
+          });
+        }
+
+        await this.deps.tryPromotePending();
+        return { duplicate: false };
+      }
+
+      case 'cancelTask':
+        await cancelTaskImpl(msg.taskId, this.deps.getLifecycleDeps());
+        await this.deps.scheduleService?.recordTaskTerminalOutcome(msg.taskId, 'cancelled');
+        await this.deps.tryPromotePending();
+        return { duplicate: false };
+
+      case 'reopenTask':
+        this.deps.taskStore.reopenTask(msg.taskId);
+        return { duplicate: false };
+
+      case 'deleteTask':
+        await deleteTask(this.deps.getLifecycleDeps(), msg.taskId);
+        return { duplicate: false };
+
+      case 'renameTask':
+        this.deps.taskStore.renameTask(msg.taskId, msg.name);
+        return { duplicate: false };
+
+      case 'clearCompleted': {
+        // Default scope sweeps user-initiated terminal states: 'completed' AND
+        // 'cancelled'. Both are states the user deliberately drove to and both
+        // appear under the "Completed" pane in the UI. 'terminated' (session
+        // died without user ack) stays opt-in via includeTerminated because
+        // the user may not have noticed the death yet. Cancellation audit is
+        // already preserved via the 'task_cancelled' event in the interaction
+        // log and via predelete tasks.json snapshots, so sweeping the visible
+        // entry loses no history. See rfc-task-loss-prevention.md D2
+        // (revised 2026-04-23).
+        const includeTerminated = msg.includeTerminated === true;
+        const allTasks = this.deps.taskStore.listTasks();
+        const toClear = allTasks.filter((t) => {
+          if (t.status === 'completed' || t.status === 'cancelled') return true;
+          if (includeTerminated && t.status === 'terminated') return true;
+          return false;
+        });
+        if (toClear.length > 0) {
+          // Take a predelete snapshot BEFORE any in-memory mutation so recovery
+          // is possible from disk even if the dashboard click was unintended.
+          // If the snapshot fails, abort the delete — silently proceeding would
+          // recreate the data-loss pipeline this whole RFC is preventing.
+          if (this.deps.takePredeleteSnapshot) {
+            try {
+              await this.deps.takePredeleteSnapshot();
+            } catch (err) {
+              console.error('[clearCompleted] predelete snapshot failed, aborting delete to prevent unrecoverable data loss:', err);
+              return { duplicate: false };
+            }
+          }
+          for (const task of toClear) {
+            if (!this.deps.taskStore.getTask(task.id)) continue;
+            // Unregister any remaining agent entries from the monitor
+            // (defensive: sessions should already be cleaned up, but handles edge cases)
+            for (const session of task.sessions) {
+              this.deps.monitor.unregisterAgent(session.tmuxSession);
+            }
+            this.deps.taskStore.deleteTask(task.id);
+          }
+        }
+        return { duplicate: false };
+      }
+
+      case 'ackTerminatedTask': {
+        // User acknowledges a terminated task as "done" — transitions to 'completed'.
+        // Only valid from 'terminated' (VALID_TRANSITIONS enforces this).
+        const task = this.deps.taskStore.getTask(msg.taskId);
+        if (!task) return { duplicate: false };
+        if (task.status !== 'terminated') {
+          console.warn(`[ack-terminated] taskId=${msg.taskId} — current status is ${task.status}, ignoring ack`);
+          return { duplicate: false };
+        }
+        this.deps.taskStore.completeTask(msg.taskId);
+        console.log(`[ack-terminated] taskId=${msg.taskId} transition=terminated->completed`);
+        await this.deps.interactionLog?.append({
+          type: 'task_completed',
+          taskId: msg.taskId,
+          agentId: task.sessions[0]?.tmuxSession ?? '',
+          reason: 'user_acked_terminated',
+          durationMs: Date.now() - task.createdAt.getTime(),
+          timestamp: nowISO(),
+        });
+        return { duplicate: false };
+      }
+    }
+  }
+}

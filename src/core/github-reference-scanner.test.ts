@@ -1,0 +1,553 @@
+import { describe, test, expect } from 'vitest';
+import type { AgentEvent } from './types.js';
+import {
+  extractRefsFromText,
+  extractRefsFromPrompt,
+  extractRefsFromEvents,
+  parseGitRemoteUrl,
+  toGitHubReferences,
+} from './github-reference-scanner.js';
+
+describe('extractRefsFromText', () => {
+  test('extracts full PR URL', () => {
+    const text = 'Created PR: https://github.com/kookr-ai/kookr/pull/42';
+    const refs = extractRefsFromText(text);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      type: 'pr',
+      owner: 'kookr-ai',
+      repo: 'kookr',
+      number: 42,
+      url: 'https://github.com/kookr-ai/kookr/pull/42',
+    });
+  });
+
+  test('extracts full issue URL', () => {
+    const text = 'See https://github.com/kookr-ai/kookr/issues/16';
+    const refs = extractRefsFromText(text);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      type: 'issue',
+      owner: 'kookr-ai',
+      repo: 'kookr',
+      number: 16,
+      url: 'https://github.com/kookr-ai/kookr/issues/16',
+    });
+  });
+
+  test('extracts explicit PR #N reference', () => {
+    const text = 'This fixes PR #42 and addresses the feedback';
+    const refs = extractRefsFromText(text);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', number: 42 });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('extracts "pull request #N" reference', () => {
+    const text = 'Created pull request #99';
+    const refs = extractRefsFromText(text);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', number: 99 });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('extracts "issue #N" reference', () => {
+    const text = 'Closes issue #16';
+    const refs = extractRefsFromText(text);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 16 });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('extracts multiple references from same text', () => {
+    const text = `
+Created https://github.com/kookr-ai/kookr/pull/42
+This closes issue #16 and PR #10
+`;
+    const refs = extractRefsFromText(text);
+    expect(refs).toHaveLength(3);
+  });
+
+  test('deduplicates identical references', () => {
+    const text = `
+PR https://github.com/kookr-ai/kookr/pull/42
+See https://github.com/kookr-ai/kookr/pull/42
+`;
+    const refs = extractRefsFromText(text);
+    const pr42 = refs.filter((r) => r.type === 'pr' && r.number === 42);
+    expect(pr42).toHaveLength(1);
+  });
+
+  test('extracts "issue N" without hash sign', () => {
+    const text = 'Fixes issue 18 in the codebase';
+    const refs = extractRefsFromText(text);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 18 });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('returns empty array for text with no references', () => {
+    const refs = extractRefsFromText('Just some normal text with no GitHub refs');
+    expect(refs).toHaveLength(0);
+  });
+
+  test('extracts PR URL from non-GitHub domain', () => {
+    const text = 'See https://github.example.com/org/project/pull/7';
+    const refs = extractRefsFromText(text);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      type: 'pr',
+      owner: 'org',
+      repo: 'project',
+      number: 7,
+      url: 'https://github.example.com/org/project/pull/7',
+    });
+  });
+
+  test('extracts issue URL from non-GitHub domain', () => {
+    const text = 'Filed at https://git.internal.corp/team/service/issues/99';
+    const refs = extractRefsFromText(text);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      type: 'issue',
+      owner: 'team',
+      repo: 'service',
+      number: 99,
+      url: 'https://git.internal.corp/team/service/issues/99',
+    });
+  });
+
+  test('extracts GitLab merge request URL', () => {
+    const text = 'MR: https://gitlab.example.com/org/repo/-/merge_requests/15';
+    const refs = extractRefsFromText(text);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      type: 'pr',
+      owner: 'org',
+      repo: 'repo',
+      number: 15,
+      url: 'https://gitlab.example.com/org/repo/-/merge_requests/15',
+    });
+  });
+
+  test('extracts HTTP (non-HTTPS) URL', () => {
+    const text = 'http://github.local/owner/repo/pull/3';
+    const refs = extractRefsFromText(text);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', owner: 'owner', repo: 'repo', number: 3, url: 'http://github.local/owner/repo/pull/3' });
+  });
+});
+
+describe('extractRefsFromPrompt', () => {
+  test('extracts "fix issue #18" as issue ref', () => {
+    const refs = extractRefsFromPrompt('Fix issue #18');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 18 });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('extracts "fix issue 18" (no hash) as issue ref', () => {
+    const refs = extractRefsFromPrompt('Fix issue 18');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 18 });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('extracts "resolve #18" as issue ref via action verb', () => {
+    const refs = extractRefsFromPrompt('resolve #18');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 18 });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('extracts "fix #42" as issue ref via action verb', () => {
+    const refs = extractRefsFromPrompt('fix #42');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 42 });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('extracts "start working on issue #18" as issue ref', () => {
+    const refs = extractRefsFromPrompt('Start working on issue #18');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 18 });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('extracts "implement feature from issue #42" as issue ref', () => {
+    const refs = extractRefsFromPrompt('Implement feature from issue #42');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 42 });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('treats bare #N as issue ref in prompt context', () => {
+    const refs = extractRefsFromPrompt('Please look at #25 and fix it');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 25 });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('still extracts PR references from prompt', () => {
+    const refs = extractRefsFromPrompt('Review PR #10 and fix issue #18');
+    // NOTE: Returns 3 refs — the bare #10 also matches as issue via prompt action-verb patterns.
+    // This is a known false-positive: PR #10 gets a duplicate issue #10 extraction.
+    // Tracked for separate fix.
+    expect(refs).toHaveLength(3);
+    expect(refs.find((r) => r.type === 'pr' && r.number === 10)).toBeDefined();
+    expect(refs.find((r) => r.type === 'issue' && r.number === 18)).toBeDefined();
+    expect(refs.find((r) => r.type === 'issue' && r.number === 10)).toBeDefined();
+  });
+
+  test('still extracts full URLs from prompt', () => {
+    const refs = extractRefsFromPrompt('Fix https://github.com/owner/repo/issues/5');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 5, owner: 'owner', url: 'https://github.com/owner/repo/issues/5' });
+  });
+
+  test('deduplicates refs extracted from multiple patterns', () => {
+    const refs = extractRefsFromPrompt('fix issue #18, resolve #18');
+    const issue18 = refs.filter((r) => r.type === 'issue' && r.number === 18);
+    expect(issue18).toHaveLength(1);
+  });
+
+  test('returns empty for text without references', () => {
+    const refs = extractRefsFromPrompt('Just add a new feature');
+    expect(refs).toHaveLength(0);
+  });
+});
+
+describe('extractRefsFromEvents', () => {
+  test('extracts refs from gh pr create output', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'gh pr create --title "Fix bug" --body "Details"' },
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: 'https://github.com/kookr-ai/kookr/pull/42\n',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 42, url: 'https://github.com/kookr-ai/kookr/pull/42' });
+  });
+
+  test('extracts refs from gh issue create output', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'gh issue create --title "Bug report"' },
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: 'https://github.com/kookr-ai/kookr/issues/16\n',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', owner: 'kookr-ai', repo: 'kookr', number: 16, url: 'https://github.com/kookr-ai/kookr/issues/16' });
+  });
+
+  test('extracts PR URLs from any command (e.g. git log)', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'git log --oneline' },
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: 'abc1234 Merge pull request https://github.com/kookr-ai/kookr/pull/19',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', number: 19, owner: 'kookr-ai', repo: 'kookr', url: 'https://github.com/kookr-ai/kookr/pull/19' });
+  });
+
+  test('extracts PR refs from gh pr view', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'gh pr view 19 --json url' },
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: '{"url":"https://github.com/kookr-ai/kookr/pull/19"}',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 19, url: 'https://github.com/kookr-ai/kookr/pull/19' });
+  });
+
+  test('extracts issue refs from gh issue view', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'gh issue view 26' },
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: 'title: feat: track GitHub issues\nstatus: open\nurl: https://github.com/kookr-ai/kookr/issues/26',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', owner: 'kookr-ai', repo: 'kookr', number: 26, url: 'https://github.com/kookr-ai/kookr/issues/26' });
+  });
+
+  test('extracts refs from stop event lastMessage', () => {
+    const events: AgentEvent[] = [
+      { type: 'stop', sessionId: 's1', lastMessage: 'Created PR https://github.com/kookr-ai/kookr/pull/42' },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', number: 42, owner: 'kookr-ai', repo: 'kookr', url: 'https://github.com/kookr-ai/kookr/pull/42' });
+  });
+
+  test('extracts refs from stop event with PR #N reference', () => {
+    const events: AgentEvent[] = [
+      { type: 'stop', sessionId: 's1', lastMessage: 'Done! See PR #42 for the changes.' },
+    ];
+
+    const refs = extractRefsFromEvents(events, 'kookr-ai', 'kookr');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', number: 42, owner: 'kookr-ai', repo: 'kookr' });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('extracts refs from tool_result without preceding tool_use', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: 'https://github.com/kookr-ai/kookr/pull/42\n',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 42, url: 'https://github.com/kookr-ai/kookr/pull/42' });
+  });
+
+  test('fills in default owner/repo for bare refs', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: 'Created PR #42',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events, 'kookr-ai', 'kookr');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', number: 42, owner: 'kookr-ai', repo: 'kookr' });
+    expect(refs[0].url).toBeUndefined();
+  });
+
+  test('handles object toolResponse', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: { output: 'https://github.com/owner/repo/pull/5' },
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', owner: 'owner', repo: 'repo', number: 5, url: 'https://github.com/owner/repo/pull/5' });
+  });
+
+  test('extracts from gh pr edit output', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'gh pr edit 42 --title "Updated title"' },
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: 'https://github.com/owner/repo/pull/42\n',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', owner: 'owner', repo: 'repo', number: 42, url: 'https://github.com/owner/repo/pull/42' });
+  });
+
+  test('extracts from all tool_result events regardless of command', () => {
+    const events: AgentEvent[] = [
+      // git log
+      { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'git log --oneline' } },
+      { type: 'tool_result', sessionId: 's1', toolName: 'Bash', toolResponse: 'abc Merge https://github.com/o/r/pull/10' },
+      // gh pr list
+      { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'gh pr list' } },
+      { type: 'tool_result', sessionId: 's1', toolName: 'Bash', toolResponse: '#11 open https://github.com/o/r/pull/11' },
+      // gh pr create
+      { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'gh pr create --title "New"' } },
+      { type: 'tool_result', sessionId: 's1', toolName: 'Bash', toolResponse: 'https://github.com/o/r/pull/20\n' },
+      // gh issue view
+      { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'gh issue view 30' } },
+      { type: 'tool_result', sessionId: 's1', toolName: 'Bash', toolResponse: 'https://github.com/o/r/issues/30' },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(4);
+    expect(refs.find((r) => r.number === 10)).toMatchObject({ type: 'pr', owner: 'o', repo: 'r', url: 'https://github.com/o/r/pull/10' });
+    expect(refs.find((r) => r.number === 11)).toMatchObject({ type: 'pr', owner: 'o', repo: 'r', url: 'https://github.com/o/r/pull/11' });
+    expect(refs.find((r) => r.number === 20)).toMatchObject({ type: 'pr', owner: 'o', repo: 'r', url: 'https://github.com/o/r/pull/20' });
+    expect(refs.find((r) => r.number === 30)).toMatchObject({ type: 'issue', owner: 'o', repo: 'r', url: 'https://github.com/o/r/issues/30' });
+  });
+
+  test('extracts refs from curl API output', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'curl -s https://api.github.com/repos/o/r/pulls' },
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: '{"html_url":"https://github.com/o/r/pull/55"}',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', owner: 'o', repo: 'r', number: 55, url: 'https://github.com/o/r/pull/55' });
+  });
+
+  test('deduplicates refs across tool_result and stop events', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: 'https://github.com/o/r/pull/42\n',
+      },
+      { type: 'stop', sessionId: 's1', lastMessage: 'Created https://github.com/o/r/pull/42' },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'pr', owner: 'o', repo: 'r', number: 42, url: 'https://github.com/o/r/pull/42' });
+  });
+
+  test('ignores session_start and other non-scannable events', () => {
+    const events: AgentEvent[] = [
+      { type: 'session_start', sessionId: 's1', transcriptPath: '/tmp/transcript.jsonl' },
+      { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'echo hello' } },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(0);
+  });
+
+  test('skips tool_result with non-string/object response', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: undefined,
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(0);
+  });
+});
+
+describe('parseGitRemoteUrl', () => {
+  test('parses SSH URL', () => {
+    const result = parseGitRemoteUrl('git@github.com:kookr-ai/kookr.git');
+    expect(result).toEqual({ owner: 'kookr-ai', repo: 'kookr' });
+  });
+
+  test('parses SSH URL without .git', () => {
+    const result = parseGitRemoteUrl('git@github.com:kookr-ai/kookr');
+    expect(result).toEqual({ owner: 'kookr-ai', repo: 'kookr' });
+  });
+
+  test('parses HTTPS URL', () => {
+    const result = parseGitRemoteUrl('https://github.com/kookr-ai/kookr.git');
+    expect(result).toEqual({ owner: 'kookr-ai', repo: 'kookr' });
+  });
+
+  test('parses HTTPS URL without .git', () => {
+    const result = parseGitRemoteUrl('https://github.com/kookr-ai/kookr');
+    expect(result).toEqual({ owner: 'kookr-ai', repo: 'kookr' });
+  });
+
+  test('returns null for non-GitHub URLs', () => {
+    expect(parseGitRemoteUrl('https://gitlab.com/owner/repo.git')).toBeNull();
+  });
+});
+
+describe('toGitHubReferences', () => {
+  test('converts extracted refs with owner/repo to GitHubReferences', () => {
+    const extracted = [
+      { type: 'pr' as const, owner: 'kookr-ai', repo: 'kookr', number: 42 },
+    ];
+
+    const refs = toGitHubReferences(extracted, 'agent-1', 'task-1');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      type: 'pr',
+      owner: 'kookr-ai',
+      repo: 'kookr',
+      number: 42,
+      detectedFrom: 'agent-1',
+      taskId: 'task-1',
+    });
+    expect(refs[0].url).toBe('https://github.com/kookr-ai/kookr/pull/42');
+  });
+
+  test('filters out refs without owner/repo', () => {
+    const extracted = [
+      { type: 'pr' as const, number: 42 }, // no owner/repo
+    ];
+
+    const refs = toGitHubReferences(extracted, 'agent-1', 'task-1');
+    expect(refs).toHaveLength(0);
+  });
+});

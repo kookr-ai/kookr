@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Shim `gh` for hook regression tests.
+#
+# Behavior is driven by GH_SHIM_FIXTURE_DIR, which points at a directory
+# containing per-case JSON/text responses. The shim inspects its argv and
+# picks a file:
+#
+#   gh auth status ...           -> $DIR/auth_status.exit  (optional; default: ok)
+#   gh api user --jq .login       -> $DIR/user_login.txt   (default: testuser)
+#   gh pr list ...                -> $DIR/pr_list.json     (default: [])
+#   gh api repos/O/R/issues/N     -> $DIR/issue_O_R_N.json or $DIR/issue.json
+#   gh api graphql ... closedBy.. -> $DIR/graphql.json     (default: empty nodes)
+#
+# An optional $DIR/fail_<cmd> file makes that command exit non-zero.
+#
+# Any gh call not recognised returns exit 0 with empty stdout.
+
+set -euo pipefail
+
+DIR="${GH_SHIM_FIXTURE_DIR:-/tmp/gh-shim-default}"
+
+dump() {
+  local f="$1"
+  local default="${2-}"
+  if [ -f "$f" ]; then
+    cat "$f"
+  elif [ -n "$default" ]; then
+    printf '%s' "$default"
+  fi
+}
+
+maybe_fail() {
+  local name="$1"
+  if [ -f "$DIR/fail_${name}" ]; then
+    exit 1
+  fi
+}
+
+ARGS=("$@")
+FIRST="${ARGS[0]:-}"
+SECOND="${ARGS[1]:-}"
+
+case "$FIRST" in
+  auth)
+    maybe_fail auth
+    exit 0
+    ;;
+  api)
+    ENDPOINT="${SECOND}"
+    case "$ENDPOINT" in
+      graphql)
+        maybe_fail graphql
+        dump "$DIR/graphql.json" '{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[]}}}}}'
+        ;;
+      user)
+        maybe_fail user
+        dump "$DIR/user_login.txt" "testuser"
+        ;;
+      repos/*/issues/*)
+        maybe_fail rest
+        # Try specific fixture first, then generic
+        SPEC=$(printf '%s' "$ENDPOINT" | sed -E 's#repos/([^/]+)/([^/]+)/issues/([0-9]+).*#issue_\1_\2_\3.json#')
+        if [ -f "$DIR/$SPEC" ]; then
+          cat "$DIR/$SPEC"
+        else
+          dump "$DIR/issue.json" '{"state":"open"}'
+        fi
+        ;;
+      *)
+        exit 0
+        ;;
+    esac
+    ;;
+  pr)
+    SUB="${ARGS[1]:-}"
+    case "$SUB" in
+      list)
+        maybe_fail pr_list
+        dump "$DIR/pr_list.json" '[]'
+        ;;
+      *)
+        exit 0
+        ;;
+    esac
+    ;;
+  *)
+    exit 0
+    ;;
+esac

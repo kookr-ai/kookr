@@ -1,0 +1,1187 @@
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { WebSocket } from 'ws';
+import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
+import { createKookrServerInternal } from './index.js';
+import type { KookrServerInternal } from './server-test-helpers.js';
+
+function getActualPort(server: KookrServerInternal): number {
+  const addr = server.httpServer.address();
+  if (addr && typeof addr === 'object') return addr.port;
+  throw new Error('Server not listening');
+}
+
+describe('createKookrServer', () => {
+  let tempDir: string;
+  let server: KookrServerInternal;
+  let port: number;
+  let baseUrl: string;
+  let serverClosed: boolean;
+
+  beforeEach(async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'kookr-test-'));
+    serverClosed = false;
+
+    server = await createKookrServerInternal({
+      port: 0,
+      host: '127.0.0.1',
+      kookrDir: tempDir,
+      tasksFile: join(tempDir, 'tasks.json'),
+      hooksDir: join(tempDir, 'hooks'),
+      settingsDir: join(tempDir, 'settings'),
+      serverCwd: '/test/cwd',
+      frontendDir: join(tempDir, 'frontend'),
+      saveIntervalMs: 600_000,
+      livenessIntervalMs: 600_000,
+      terminalBackend: new FakeTerminalBackend(),
+      claudeDir: join(tempDir, 'claude'),
+    });
+    port = getActualPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterEach(async () => {
+    if (!serverClosed) {
+      await server.close();
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  describe('HTTP API', () => {
+    test('GET /api/health returns status ok', async () => {
+      const res = await fetch(`${baseUrl}/api/health`);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.status).toBe('ok');
+      expect(data.agents).toBe(0);
+      expect(data.build).toEqual(expect.any(Object));
+      expect(typeof data.serverStartedAt).toBe('string');
+    });
+
+    test('GET /api/tasks returns empty array initially', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks`);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual([]);
+    });
+
+    test('GET /api/projects returns empty summaries initially', async () => {
+      const res = await fetch(`${baseUrl}/api/projects`);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual([]);
+    });
+
+    test('GET /api/schedules returns empty list initially', async () => {
+      const res = await fetch(`${baseUrl}/api/schedules`);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual(expect.objectContaining({
+        revision: expect.any(Number),
+        schedules: [],
+        status: expect.objectContaining({
+          catchUpEnabled: true,
+          schedulerHealthy: expect.any(Boolean),
+          timezone: expect.any(String),
+        }),
+      }));
+    });
+
+    test('GET /api/snapshot returns empty array initially', async () => {
+      const res = await fetch(`${baseUrl}/api/snapshot`);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual([]);
+    });
+
+    test('GET /api/queue returns empty array initially', async () => {
+      const res = await fetch(`${baseUrl}/api/queue`);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual([]);
+    });
+
+    test('GET /api/reflect/recommendation suggests reflection for a high-friction session', async () => {
+      const timestamps = [
+        '2026-04-06T09:00:00.000Z',
+        '2026-04-06T09:03:00.000Z',
+        '2026-04-06T09:06:00.000Z',
+        '2026-04-06T09:09:00.000Z',
+      ];
+
+      for (const timestamp of timestamps) {
+        await server.interactionLog.append({
+          type: 'user_input',
+          agentId: 'agent-1',
+          content: 'did you run the tests?',
+          timestamp,
+        });
+      }
+
+      const res = await fetch(`${baseUrl}/api/reflect/recommendation`);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+
+      expect(data.sessionId).toEqual(expect.any(String));
+      expect(data.report.totalInterventions).toBe(4);
+      expect(data.recommendation.shouldSuggest).toBe(true);
+      expect(data.recommendation.summary).toContain('4 interventions');
+    });
+
+    test('GET /api/capture/:name returns 404 with {error, tmuxName} body for unknown session', async () => {
+      const res = await fetch(`${baseUrl}/api/capture/nonexistent`);
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(typeof body.error).toBe('string');
+      expect(body.tmuxName).toBe('nonexistent');
+    });
+
+    test('GET /api/github/:taskId returns 404 for unknown task', async () => {
+      const res = await fetch(`${baseUrl}/api/github/nonexistent-task-id`);
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body).toEqual({ error: 'Task not found' });
+    });
+
+    test('GET /api/github/:taskId returns 200 with empty state for known task without references', async () => {
+      const createRes = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'No GitHub refs yet', cwd: '/cwd' }),
+      });
+      const task = await createRes.json();
+
+      const res = await fetch(`${baseUrl}/api/github/${task.id}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.taskId).toBe(task.id);
+      expect(body.prs).toEqual([]);
+      expect(body.issues).toEqual([]);
+      expect(body.changes).toEqual([]);
+      expect(body.lastScanAt).toBeNull();
+    });
+
+    test('DELETE /api/tasks/:id returns 500 with {error} body when cleanup throws', async () => {
+      const createRes = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Boom on delete', cwd: '/cwd' }),
+      });
+      expect(createRes.status).toBe(201);
+      const task = await createRes.json();
+
+      // Force adapter.stop to throw — propagates up through cleanupSessionResources → deleteTask
+      // and exercises the catch block in routes/task-routes.ts.
+      const originalStop = server.adapter.stop.bind(server.adapter);
+      (server.adapter as { stop: (n: string) => Promise<void> }).stop = async () => {
+        throw new Error('forced stop failure');
+      };
+
+      const res = await fetch(`${baseUrl}/api/tasks/${task.id}`, { method: 'DELETE' });
+
+      // Restore so afterEach close() doesn't re-trigger the throw.
+      (server.adapter as { stop: (n: string) => Promise<void> }).stop = originalStop;
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain('forced stop failure');
+    });
+
+    test('POST /api/tasks creates and launches a task', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'Fix the auth bug',
+          cwd: '/test/project',
+          criteria: 'Tests pass',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const task = await res.json();
+      expect(task.id).toBeDefined();
+      expect(task.prompt).toBe('Fix the auth bug');
+      expect(task.cwd).toBe('/test/project');
+      expect(task.criteria).toBe('Tests pass');
+      expect(task.status).toBe('inProgress');
+      expect(task.sessions).toHaveLength(1);
+
+      // Verify it shows up in task list
+      const listRes = await fetch(`${baseUrl}/api/tasks`);
+      const tasks = await listRes.json();
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].id).toBe(task.id);
+    });
+
+    test('POST /api/tasks with parentTaskId links child to parent', async () => {
+      // Create parent task first
+      const parentRes = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Parent task', cwd: '/cwd' }),
+      });
+      const parent = await parentRes.json();
+
+      // Create child task
+      const childRes = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'Child task',
+          cwd: '/cwd',
+          parentTaskId: parent.id,
+        }),
+      });
+
+      expect(childRes.status).toBe(201);
+      const child = await childRes.json();
+      expect(child.parentTaskId).toBe(parent.id);
+
+      // Verify parent now has childTaskIds
+      const updatedParent = server.taskStore.getTask(parent.id)!;
+      expect(updatedParent.childTaskIds).toContain(child.id);
+    });
+
+    test('POST /api/tasks returns 400 when prompt missing', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd: '/cwd' }),
+      });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('prompt');
+    });
+
+    test('POST /api/tasks returns 400 when cwd missing', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Do something' }),
+      });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('cwd');
+    });
+
+    test('POST /api/tasks returns 404 for non-existent parentTaskId', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'Child task',
+          cwd: '/cwd',
+          parentTaskId: 'nonexistent-id',
+        }),
+      });
+
+      expect(res.status).toBe(404);
+      const data = await res.json();
+      expect(data.error).toContain('Parent task not found');
+    });
+
+    test('POST /api/agents/:id/message returns 404 for unknown agent', async () => {
+      const res = await fetch(`${baseUrl}/api/agents/missing-agent/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: 'hello' }),
+      });
+
+      expect(res.status).toBe(404);
+      const data = await res.json();
+      expect(data.error).toContain('Agent not found');
+    });
+
+    test('POST /api/tasks returns idempotent 200 for duplicate active prompt', async () => {
+      // First submission — creates task
+      const res1 = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Deduplicate me', cwd: '/cwd' }),
+      });
+      expect(res1.status).toBe(201);
+      const first = await res1.json();
+
+      // Second submission with same prompt — should be deduplicated
+      const res2 = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Deduplicate me', cwd: '/cwd' }),
+      });
+      expect(res2.status).toBe(200);
+      const second = await res2.json();
+      expect(second.duplicate).toBe(true);
+      expect(second.task.id).toBe(first.id);
+
+      // Only one task should exist
+      const listRes = await fetch(`${baseUrl}/api/tasks`);
+      const tasks = await listRes.json();
+      const matchingTasks = tasks.filter((t: any) => t.prompt === 'Deduplicate me');
+      expect(matchingTasks).toHaveLength(1);
+    });
+
+    test('POST /api/tasks allows re-submission after task is completed', async () => {
+      // Create and complete a task
+      const res1 = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Complete me first', cwd: '/cwd' }),
+      });
+      const first = await res1.json();
+      server.taskStore.completeTask(first.id);
+
+      // Same prompt should now create a new task
+      const res2 = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Complete me first', cwd: '/cwd' }),
+      });
+      expect(res2.status).toBe(201);
+      const second = await res2.json();
+      expect(second.id).not.toBe(first.id);
+    });
+
+    test('POST /api/tasks does NOT dedup the same prompt across different cwds', async () => {
+      const res1 = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'review the diff', cwd: '/tmp/repo-a' }),
+      });
+      expect(res1.status).toBe(201);
+      const first = await res1.json();
+
+      const res2 = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'review the diff', cwd: '/tmp/repo-b' }),
+      });
+      expect(res2.status).toBe(201);
+      const second = await res2.json();
+      expect(second.id).not.toBe(first.id);
+      expect(second.duplicate).toBeUndefined();
+    });
+
+    test('POST /api/tasks accepts X-Kookr-Launch-Source header without breaking', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Kookr-Launch-Source': 'cli',
+        },
+        body: JSON.stringify({ prompt: 'launched via cli', cwd: '/cwd-from-cli' }),
+      });
+      expect(res.status).toBe(201);
+      const task = await res.json();
+      expect(task.id).toBeDefined();
+      expect(task.cwd).toBe('/cwd-from-cli');
+    });
+
+    test('SPA fallback returns 404 when frontend not built', async () => {
+      const res = await fetch(`${baseUrl}/nonexistent-page`);
+      expect(res.status).toBe(404);
+      const text = await res.text();
+      expect(text).toContain('Frontend not built');
+    });
+
+    test('GET /api/health reflects task count', async () => {
+      server.taskStore.createTask('Task 1', '/cwd');
+      server.taskStore.createTask('Task 2', '/cwd');
+      const res = await fetch(`${baseUrl}/api/health`);
+      const data = await res.json();
+      expect(data.agents).toBe(2);
+    });
+
+    test('POST /api/projects/track normalizes owner/repo and adds to sidebar immediately', async () => {
+      // Before tracking, projects list is empty
+      const before = await fetch(`${baseUrl}/api/projects`);
+      expect(await before.json()).toEqual([]);
+
+      const res = await fetch(`${baseUrl}/api/projects/track`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 'Grafana/Grafana' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.project).toBe('github.com/grafana/grafana');
+      expect(body.config?.tracked).toBe(true);
+
+      const after = await fetch(`${baseUrl}/api/projects`);
+      const summaries = await after.json();
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0].project).toBe('github.com/grafana/grafana');
+      expect(summaries[0].displayName).toBe('grafana/grafana');
+    });
+
+    test('POST /api/projects/track rejects malformed input with 400', async () => {
+      const res = await fetch(`${baseUrl}/api/projects/track`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 'just-one-segment' }),
+      });
+      expect(res.status).toBe(400);
+
+      const res2 = await fetch(`${baseUrl}/api/projects/track`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 'https://github.com/owner/repo' }),
+      });
+      expect(res2.status).toBe(400);
+    });
+
+    test('POST /api/projects/track rejects non-string repo fields with 400 (no crash)', async () => {
+      const cases: unknown[] = [null, 42, true, {}, []];
+      for (const bad of cases) {
+        const res = await fetch(`${baseUrl}/api/projects/track`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repo: bad }),
+        });
+        expect(res.status).toBe(400);
+      }
+
+      // Missing `repo` field
+      const res = await fetch(`${baseUrl}/api/projects/track`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    test('POST /api/projects/untrack clears tracked and removes bare config row', async () => {
+      // Track, then untrack — project should disappear from sidebar and from configs.
+      await fetch(`${baseUrl}/api/projects/track`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 'grafana/grafana' }),
+      });
+      const beforeSummaries = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(beforeSummaries).toHaveLength(1);
+      expect(beforeSummaries[0].tracked).toBe(true);
+
+      const res = await fetch(`${baseUrl}/api/projects/untrack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 'Grafana/Grafana' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.project).toBe('github.com/grafana/grafana');
+      expect(body.removed).toBe(true);
+      expect(body.config).toBeNull();
+
+      // Project should be gone from summaries and configs.
+      const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(summaries).toHaveLength(0);
+      const configs = await (await fetch(`${baseUrl}/api/projects/configs`)).json();
+      expect(configs).toHaveLength(0);
+    });
+
+    test('POST /api/projects/untrack preserves config row when notes/limits remain', async () => {
+      // Seed a config row with BOTH tracked:true and notes.
+      await fetch(`${baseUrl}/api/projects/configs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project: 'github.com/grafana/grafana',
+          tracked: true,
+          notes: 'keep changes small',
+        }),
+      });
+
+      const res = await fetch(`${baseUrl}/api/projects/untrack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 'grafana/grafana' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.removed).toBe(false);
+      expect(body.config?.tracked).toBe(false);
+      expect(body.config?.notes).toBe('keep changes small');
+
+      // Project should still be in the sidebar (notes seeds membership) but
+      // no longer flagged as manually tracked.
+      const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0].project).toBe('github.com/grafana/grafana');
+      expect(summaries[0].tracked).toBeUndefined();
+      expect(summaries[0].notes).toBe('keep changes small');
+    });
+
+    test('POST /api/projects/untrack preserves config row when PR limits remain', async () => {
+      // Seed a config row with tracked:true AND a daily PR limit, no notes.
+      await fetch(`${baseUrl}/api/projects/configs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project: 'github.com/grafana/grafana',
+          tracked: true,
+          dailyPrLimit: 2,
+        }),
+      });
+
+      const res = await fetch(`${baseUrl}/api/projects/untrack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 'grafana/grafana' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.removed).toBe(false);
+      expect(body.config?.tracked).toBe(false);
+      expect(body.config?.dailyPrLimit).toBe(2);
+
+      // Project should still be in the sidebar (the limit seeds membership)
+      // but no longer flagged as manually tracked.
+      const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0].tracked).toBeUndefined();
+      expect(summaries[0].dailyLimit).toBe(2);
+    });
+
+    test('POST /api/projects/untrack is idempotent for unconfigured projects', async () => {
+      const res = await fetch(`${baseUrl}/api/projects/untrack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 'foo/bar' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.project).toBe('github.com/foo/bar');
+      expect(body.removed).toBe(false);
+      expect(body.config).toBeNull();
+    });
+
+    test('POST /api/projects/untrack keeps skill-discovered project in sidebar', async () => {
+      // Set up skill discovery for a repo.
+      const claudeDir = join(tempDir, 'claude');
+      mkdirSync(join(claudeDir, 'grafana-grafana-recon'), { recursive: true });
+      writeFileSync(
+        join(claudeDir, 'grafana-grafana-recon', 'recon-report.md'),
+        '# Recon Report: grafana/grafana\n',
+      );
+      await fetch(`${baseUrl}/api/projects/rescan-skills`, { method: 'POST' });
+
+      // Manually track the same repo (GUI "Add").
+      await fetch(`${baseUrl}/api/projects/track`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 'grafana/grafana' }),
+      });
+
+      // Untrack — since the repo is also skill-discovered, the project
+      // should STAY in the sidebar but the config row should be removed.
+      const res = await fetch(`${baseUrl}/api/projects/untrack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 'grafana/grafana' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.removed).toBe(true);
+
+      const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0].project).toBe('github.com/grafana/grafana');
+      expect(summaries[0].tracked).toBeUndefined();
+
+      const configs = await (await fetch(`${baseUrl}/api/projects/configs`)).json();
+      expect(configs).toHaveLength(0);
+    });
+
+    test('POST /api/projects/untrack rejects malformed input with 400', async () => {
+      const res = await fetch(`${baseUrl}/api/projects/untrack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 'just-one-segment' }),
+      });
+      expect(res.status).toBe(400);
+
+      const res2 = await fetch(`${baseUrl}/api/projects/untrack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: 42 }),
+      });
+      expect(res2.status).toBe(400);
+    });
+
+    test('POST /api/projects/rescan-skills reflects new recon reports', async () => {
+      const claudeDir = join(tempDir, 'claude');
+      mkdirSync(join(claudeDir, 'grafana-grafana-recon'), { recursive: true });
+      writeFileSync(
+        join(claudeDir, 'grafana-grafana-recon', 'recon-report.md'),
+        '# Recon Report: grafana/grafana\n',
+      );
+      mkdirSync(join(claudeDir, 'bad-recon'), { recursive: true });
+      writeFileSync(
+        join(claudeDir, 'bad-recon', 'recon-report.md'),
+        '# Not a recon\n',
+      );
+
+      const res = await fetch(`${baseUrl}/api/projects/rescan-skills`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      const snap = await res.json();
+      expect(snap.projects).toEqual(['github.com/grafana/grafana']);
+      expect(snap.warnings.length).toBe(1);
+      expect(snap.warnings[0]).toContain('bad-recon');
+      expect(snap.lastError).toBeUndefined();
+
+      const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0].project).toBe('github.com/grafana/grafana');
+    });
+
+    test('GET /api/projects/discovery-status returns the snapshot written by the last rescan', async () => {
+      const claudeDir = join(tempDir, 'claude');
+      mkdirSync(join(claudeDir, 'foo-bar-recon'), { recursive: true });
+      writeFileSync(
+        join(claudeDir, 'foo-bar-recon', 'recon-report.md'),
+        '# Recon Report: foo/bar\n',
+      );
+
+      const rescanRes = await fetch(`${baseUrl}/api/projects/rescan-skills`, { method: 'POST' });
+      const rescanSnap = await rescanRes.json();
+
+      const statusRes = await fetch(`${baseUrl}/api/projects/discovery-status`);
+      expect(statusRes.status).toBe(200);
+      const statusSnap = await statusRes.json();
+      expect(statusSnap.projects).toEqual(['github.com/foo/bar']);
+      expect(statusSnap.scannedAt).toBe(rescanSnap.scannedAt);
+    });
+
+    test('POST /api/projects/configs persists a project config', async () => {
+      const res = await fetch(`${baseUrl}/api/projects/configs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project: 'kookr-ai/kookr',
+          dailyPrLimit: 2,
+          weeklyPrLimit: 5,
+          notes: 'Keep changes small',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const config = await res.json();
+      expect(config.project).toBe('kookr-ai/kookr');
+      expect(config.dailyPrLimit).toBe(2);
+      expect(config.weeklyPrLimit).toBe(5);
+      expect(config.notes).toBe('Keep changes small');
+
+      const configsRes = await fetch(`${baseUrl}/api/projects/configs`);
+      const configs = await configsRes.json();
+      expect(configs).toEqual([expect.objectContaining({ project: 'kookr-ai/kookr' })]);
+    });
+
+    test('POST /api/schedules creates a schedule', async () => {
+      const projectDir = join(tempDir, 'project');
+      mkdirSync(join(projectDir, '.kookr', 'playbooks'), { recursive: true });
+      writeFileSync(join(projectDir, '.kookr', 'playbooks', 'daily.md'), `---
+name: Daily review
+parameters: []
+checklist:
+  - Review the queue
+---
+Review daily work.
+`);
+
+      const res = await fetch(`${baseUrl}/api/schedules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Daily review',
+          cron: '0 9 * * *',
+          cwd: projectDir,
+          maxTriggers: 3,
+          playbook: {
+            path: 'daily.md',
+            parameters: {},
+          },
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const schedule = await res.json();
+      expect(schedule.name).toBe('Daily review');
+      expect(schedule.cron).toBe('0 9 * * *');
+      expect(schedule.playbook.path).toBe('daily.md');
+      expect(schedule.nextRunAt).toEqual(expect.any(String));
+      expect(schedule.cronDescription).toEqual(expect.any(String));
+      expect(schedule.maxTriggers).toBe(3);
+      expect(schedule.remainingTriggers).toBe(3);
+      expect(schedule.stopReason).toBeUndefined();
+
+      const schedulesRes = await fetch(`${baseUrl}/api/schedules`);
+      const schedules = await schedulesRes.json();
+      expect(schedules.schedules).toHaveLength(1);
+      expect(schedules.schedules[0].id).toBe(schedule.id);
+      expect(schedules.schedules[0].maxTriggers).toBe(3);
+      expect(schedules.schedules[0].remainingTriggers).toBe(3);
+    });
+
+    test('PATCH /api/schedules updates and clears a finite cron trigger limit', async () => {
+      const projectDir = join(tempDir, 'project-patch');
+      mkdirSync(join(projectDir, '.kookr', 'playbooks'), { recursive: true });
+      writeFileSync(join(projectDir, '.kookr', 'playbooks', 'daily.md'), `---
+name: Daily review
+parameters: []
+---
+Review daily work.
+`);
+
+      const createRes = await fetch(`${baseUrl}/api/schedules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Daily review',
+          cron: '0 9 * * *',
+          cwd: projectDir,
+          playbook: {
+            path: 'daily.md',
+            parameters: {},
+          },
+        }),
+      });
+      const created = await createRes.json();
+
+      const patchRes = await fetch(`${baseUrl}/api/schedules/${created.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxTriggers: 5 }),
+      });
+
+      expect(patchRes.status).toBe(200);
+      const updated = await patchRes.json();
+      expect(updated.maxTriggers).toBe(5);
+      expect(updated.remainingTriggers).toBe(5);
+      expect(updated.stopReason).toBeUndefined();
+
+      const clearRes = await fetch(`${baseUrl}/api/schedules/${created.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxTriggers: null }),
+      });
+
+      expect(clearRes.status).toBe(200);
+      const cleared = await clearRes.json();
+      expect(cleared.maxTriggers).toBeUndefined();
+      expect(cleared.remainingTriggers).toBeUndefined();
+      expect(cleared.stopReason).toBeUndefined();
+    });
+  });
+
+  describe('WebSocket', () => {
+    test('connects and receives initial snapshot', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+
+      const msg = await new Promise<string>((resolve, reject) => {
+        ws.on('message', (data) => resolve(data.toString()));
+        ws.on('error', reject);
+        setTimeout(() => reject(new Error('WS timeout')), 3000);
+      });
+
+      const parsed = JSON.parse(msg);
+      expect(parsed.type).toBe('snapshot');
+      expect(parsed.serverCwd).toBe('/test/cwd');
+      expect(parsed.agents).toEqual([]);
+
+      ws.close();
+      await new Promise<void>((r) => ws.on('close', () => r()));
+    });
+
+    test('launch creates task and broadcasts snapshot', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+
+      // Wait for initial snapshot
+      await new Promise<void>((resolve) => {
+        ws.on('open', () => {
+          ws.once('message', () => resolve());
+        });
+      });
+
+      // Send launch
+      ws.send(JSON.stringify({
+        type: 'launch',
+        prompt: 'Fix the bug',
+        cwd: '/test/project',
+      }));
+
+      // Wait for broadcast snapshot after launch (may be preceded by achievement messages)
+      const parsed = await new Promise<{ type: string }>((resolve) => {
+        const handler = (data: unknown) => {
+          const p = JSON.parse(data!.toString());
+          if (p.type === 'snapshot') {
+            ws.off('message', handler);
+            resolve(p);
+          }
+        };
+        ws.on('message', handler);
+      });
+      expect(parsed.type).toBe('snapshot');
+
+      const tasks = server.taskStore.listTasks();
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].prompt).toBe('Fix the bug');
+
+      ws.close();
+      await new Promise<void>((r) => ws.on('close', () => r()));
+    });
+
+    test('unknown upgrade path rejects connection', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/unknown`);
+
+      await new Promise<void>((resolve) => {
+        ws.on('error', () => resolve());
+        ws.on('close', () => resolve());
+        setTimeout(() => resolve(), 2000);
+      });
+
+      expect(ws.readyState).not.toBe(WebSocket.OPEN);
+    });
+
+    test('multiple clients receive broadcasts', async () => {
+      const ws1 = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      const ws2 = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+
+      // Wait for both to get initial snapshots
+      await Promise.all([
+        new Promise<void>((r) => ws1.once('message', () => r())),
+        new Promise<void>((r) => ws2.once('message', () => r())),
+      ]);
+
+      // Launch from ws1
+      ws1.send(JSON.stringify({
+        type: 'launch',
+        prompt: 'Test broadcast',
+        cwd: '/cwd',
+      }));
+
+      // Both should receive a snapshot broadcast (may be preceded by achievement messages)
+      function waitForSnapshot(ws: WebSocket): Promise<{ type: string }> {
+        return new Promise((resolve) => {
+          const handler = (data: unknown) => {
+            const p = JSON.parse(data!.toString());
+            if (p.type === 'snapshot') {
+              ws.off('message', handler);
+              resolve(p);
+            }
+          };
+          ws.on('message', handler);
+        });
+      }
+
+      const [msg1, msg2] = await Promise.all([
+        waitForSnapshot(ws1),
+        waitForSnapshot(ws2),
+      ]);
+
+      expect(msg1.type).toBe('snapshot');
+      expect(msg2.type).toBe('snapshot');
+
+      ws1.close();
+      ws2.close();
+      await Promise.all([
+        new Promise<void>((r) => ws1.on('close', () => r())),
+        new Promise<void>((r) => ws2.on('close', () => r())),
+      ]);
+    });
+
+    test('malformed payloads receive a single critical alert and the connection stays open', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+
+      // Register the snapshot listener BEFORE 'open' so we don't miss the burst
+      // emitted in the same tick the server accepts the handshake.
+      const sawSnapshot = new Promise<void>((resolve) => {
+        const handler = (data: unknown) => {
+          const parsed = JSON.parse((data as Buffer).toString());
+          if (parsed.type === 'snapshot') {
+            ws.off('message', handler);
+            resolve();
+          }
+        };
+        ws.on('message', handler);
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', reject);
+      });
+
+      await sawSnapshot;
+
+      // Each payload should be rejected by the runtime guard in ws-connection-handler.ts:
+      //   - non-object scalars (string/null/number)
+      //   - object missing `type`
+      //   - object with non-string `type`
+      const cases: Array<{ label: string; payload: string }> = [
+        { label: 'string scalar', payload: '"foo"' },
+        { label: 'null', payload: 'null' },
+        { label: 'number', payload: '42' },
+        { label: 'object missing type', payload: '{}' },
+        { label: 'object with non-string type', payload: '{"type":42}' },
+        { label: 'object with null type', payload: '{"type":null}' },
+      ];
+
+      for (const { label, payload } of cases) {
+        const next = new Promise<{ type: string; severity?: string; agentId?: string; summary?: string }>((resolve, reject) => {
+          const onMsg = (data: unknown) => {
+            ws.off('message', onMsg);
+            resolve(JSON.parse((data as Buffer).toString()));
+          };
+          ws.on('message', onMsg);
+          setTimeout(() => {
+            ws.off('message', onMsg);
+            reject(new Error(`No reply for malformed payload (${label})`));
+          }, 2000);
+        });
+
+        ws.send(payload);
+        const alert = await next;
+
+        expect(alert.type, `case: ${label}`).toBe('alert');
+        expect(alert.severity, `case: ${label}`).toBe('critical');
+        expect(alert.agentId, `case: ${label}`).toBe('');
+        expect(alert.summary, `case: ${label}`).toContain('Malformed WebSocket message');
+        expect(ws.readyState, `case: ${label}`).toBe(WebSocket.OPEN);
+      }
+
+      ws.close();
+      await new Promise<void>((r) => ws.on('close', () => r()));
+    });
+
+    test('ClientMessage payloads failing schema validation receive a critical alert naming the bad field', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+
+      // Absorb the initial snapshot burst before we start asserting.
+      const sawSnapshot = new Promise<void>((resolve) => {
+        const handler = (data: unknown) => {
+          const parsed = JSON.parse((data as Buffer).toString());
+          if (parsed.type === 'snapshot') {
+            ws.off('message', handler);
+            resolve();
+          }
+        };
+        ws.on('message', handler);
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', reject);
+      });
+
+      await sawSnapshot;
+
+      // One case per message family plus an unknown-type case. Each payload has
+      // a valid `type` string (so Gate 1 lets it through) but a shape that
+      // Gate 2 — the discriminated-union schema — must reject.
+      type Case = { label: string; payload: object; expectDetailSubstring: string };
+      const cases: Case[] = [
+        { label: 'launch with non-string cwd', payload: { type: 'launch', prompt: 'x', cwd: 42 }, expectDetailSubstring: 'cwd' },
+        { label: 'respond missing input', payload: { type: 'respond', agentId: 'a1' }, expectDetailSubstring: 'input' },
+        { label: 'respondAll with non-array agentIds', payload: { type: 'respondAll', agentIds: 'a1,a2', input: 'x' }, expectDetailSubstring: 'agentIds' },
+        { label: 'snooze with non-numeric durationMs', payload: { type: 'snooze', agentId: 'a1', durationMs: '5000' }, expectDetailSubstring: 'durationMs' },
+        { label: 'renameTask missing name', payload: { type: 'renameTask', taskId: 't1' }, expectDetailSubstring: 'name' },
+        { label: 'telemetry with non-array events', payload: { type: 'telemetry', events: 'nope' }, expectDetailSubstring: 'events' },
+        { label: 'launchPlaybook with non-object parameterValues', payload: { type: 'launchPlaybook', playbookPath: 'p', cwd: '/c', parameterValues: 'x' }, expectDetailSubstring: 'parameterValues' },
+        { label: 'setAutonomy with invalid level', payload: { type: 'setAutonomy', taskId: 't1', level: 'chaos' }, expectDetailSubstring: 'level' },
+        { label: 'achievement:setEnabled with non-boolean enabled', payload: { type: 'achievement:setEnabled', enabled: 'yes' }, expectDetailSubstring: 'enabled' },
+        { label: 'findingFeedback with wrong verdict', payload: { type: 'findingFeedback', agentId: 'a', anomalyType: 'api_error', explanation: 'e', verdict: 'true_positive' }, expectDetailSubstring: 'verdict' },
+        { label: 'workspace:getView missing projectId', payload: { type: 'workspace:getView' }, expectDetailSubstring: 'projectId' },
+        { label: 'workspace:cleanupCandidate with wrong riskAccepted type', payload: { type: 'workspace:cleanupCandidate', projectId: 'p', worktreePath: '/w', riskAccepted: 1 }, expectDetailSubstring: 'riskAccepted' },
+        { label: 'unknown type string', payload: { type: 'doesNotExist', foo: 'bar' }, expectDetailSubstring: 'type' },
+      ];
+
+      for (const { label, payload, expectDetailSubstring } of cases) {
+        const next = new Promise<{ type: string; severity?: string; agentId?: string; summary?: string; details?: string }>((resolve, reject) => {
+          const onMsg = (data: unknown) => {
+            ws.off('message', onMsg);
+            resolve(JSON.parse((data as Buffer).toString()));
+          };
+          ws.on('message', onMsg);
+          setTimeout(() => {
+            ws.off('message', onMsg);
+            reject(new Error(`No reply for ${label}`));
+          }, 2000);
+        });
+
+        ws.send(JSON.stringify(payload));
+        const alert = await next;
+
+        expect(alert.type, `case: ${label}`).toBe('alert');
+        expect(alert.severity, `case: ${label}`).toBe('critical');
+        expect(alert.agentId, `case: ${label}`).toBe('');
+        expect(alert.summary, `case: ${label}`).toContain('Malformed WebSocket message');
+        // details should name the offending field or path
+        expect(alert.details ?? '', `case: ${label} — details should mention ${expectDetailSubstring}`).toContain(expectDetailSubstring);
+        expect(ws.readyState, `case: ${label}`).toBe(WebSocket.OPEN);
+      }
+
+      ws.close();
+      await new Promise<void>((r) => ws.on('close', () => r()));
+    });
+  });
+
+  describe('Lifecycle', () => {
+    test('close() shuts down server cleanly', async () => {
+      await server.close();
+      serverClosed = true;
+
+      // Server should reject new connections
+      await expect(
+        fetch(`${baseUrl}/api/health`),
+      ).rejects.toThrow();
+    });
+
+    test('close() is idempotent', async () => {
+      await server.close();
+      serverClosed = true;
+
+      // Second close should not throw
+      await expect(server.close()).resolves.toBeUndefined();
+    });
+
+    test('close() disconnects connected WebSocket clients', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+
+      // Wait for connection and initial snapshot
+      await new Promise<void>((resolve) => {
+        ws.on('open', () => {
+          ws.once('message', () => resolve());
+        });
+      });
+
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+
+      await server.close();
+      serverClosed = true;
+
+      // Client should have been disconnected
+      await new Promise<void>((r) => {
+        if (ws.readyState !== WebSocket.OPEN) return r();
+        ws.on('close', () => r());
+        setTimeout(() => r(), 2000);
+      });
+
+      expect(ws.readyState).not.toBe(WebSocket.OPEN);
+    });
+  });
+
+  describe('Task persistence and reconciliation', () => {
+    test('loads persisted tasks and reconciles dead sessions', async () => {
+      // Close the default server first
+      await server.close();
+      serverClosed = true;
+
+      // Pre-populate a tasks.json with a task that has a dead session
+      const newTempDir = mkdtempSync(join(tmpdir(), 'kookr-persist-'));
+      mkdirSync(join(newTempDir, 'hooks'), { recursive: true });
+      mkdirSync(join(newTempDir, 'settings'), { recursive: true });
+      const tasksFile = join(newTempDir, 'tasks.json');
+      writeFileSync(tasksFile, JSON.stringify([
+        {
+          id: 'persisted-task-1',
+          prompt: 'Pre-existing task',
+          cwd: '/cwd',
+          status: 'inProgress',
+          sessions: [{
+            tmuxSession: 'kookr-dead-session',
+            agentType: 'claude-code',
+            cwd: '/cwd',
+            createdAt: '2026-03-25T00:00:00.000Z',
+          }],
+          createdAt: '2026-03-25T00:00:00.000Z',
+          updatedAt: '2026-03-25T00:00:00.000Z',
+        },
+      ]));
+
+      server = await createKookrServerInternal({
+        port: 0,
+        host: '127.0.0.1',
+        kookrDir: newTempDir,
+        tasksFile,
+        hooksDir: join(newTempDir, 'hooks'),
+        settingsDir: join(newTempDir, 'settings'),
+        serverCwd: '/test/cwd',
+        frontendDir: join(newTempDir, 'frontend'),
+        saveIntervalMs: 600_000,
+        livenessIntervalMs: 600_000,
+        terminalBackend: new FakeTerminalBackend(),
+        claudeDir: join(newTempDir, 'claude'),
+      });
+      serverClosed = false;
+      port = getActualPort(server);
+      baseUrl = `http://127.0.0.1:${port}`;
+
+      // Task should have been loaded and reconciled
+      const tasks = server.taskStore.listTasks();
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].prompt).toBe('Pre-existing task');
+      // Session was dead → task auto-transitioned to 'terminated' (not 'completed')
+      // per rfc-task-loss-prevention D1.
+      expect(tasks[0].status).toBe('terminated');
+      expect(tasks[0].sessions[0].lastStatus).toBe('completed');
+
+      await server.close();
+      serverClosed = true;
+      rmSync(newTempDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('Adapter event wiring', () => {
+    test('adapter events trigger broadcast to connected clients', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+
+      // Wait for initial snapshot
+      await new Promise<void>((resolve) => {
+        ws.on('open', () => {
+          ws.once('message', () => resolve());
+        });
+      });
+
+      // Launch a task first
+      ws.send(JSON.stringify({
+        type: 'launch',
+        prompt: 'Test event wiring',
+        cwd: '/cwd',
+      }));
+
+      // Wait for launch broadcast
+      await new Promise<void>((resolve) => {
+        ws.once('message', () => resolve());
+      });
+
+      // Get the tmux session name from the task
+      const tasks = server.taskStore.listTasks({ status: 'inProgress' });
+      expect(tasks.length).toBeGreaterThan(0);
+      const tmuxName = tasks[0].sessions[0].tmuxSession;
+
+      // Inject a hook event — should trigger adapter event handler → broadcast
+      server.adapter.injectHookEvent(tmuxName, JSON.stringify({
+        session_id: 'sess-1',
+        transcript_path: '/path/to/transcript.jsonl',
+        cwd: '/cwd',
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        permission_mode: 'acceptEdits',
+      }));
+
+      // Wait for the broadcast triggered by the event
+      const msg = await new Promise<string>((resolve) => {
+        ws.once('message', (data) => resolve(data.toString()));
+      });
+
+      const parsed = JSON.parse(msg);
+      expect(parsed.type).toBe('snapshot');
+
+      ws.close();
+      await new Promise<void>((r) => ws.on('close', () => r()));
+    });
+  });
+});

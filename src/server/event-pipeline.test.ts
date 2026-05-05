@@ -1,0 +1,371 @@
+/**
+ * Tests for stale suggestion clearing and suggestion lifecycle telemetry
+ * in the event pipeline.
+ *
+ * Two test suites:
+ * 1. Mock-based: fast, isolated tests using vi.fn() mocks with controlled
+ *    pre/post anomaly snapshots to verify the anomaly-diff clearing logic.
+ * 2. Integration: real Monitor/Adapter to verify end-to-end clearing via
+ *    hook event injection and lifecycle telemetry wiring.
+ */
+import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { wireEventPipeline, type EventPipelineDeps } from './event-pipeline.js';
+import type { AgentEvent } from '../core/types.js';
+import type { ServerMessage } from '../shared/protocol.js';
+import { TaskStore } from '../core/tasks.js';
+import { AttentionQueue } from '../core/attention-queue.js';
+import { Monitor } from '../core/monitor.js';
+import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
+import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
+import { TokenTracker } from '../core/token-tracker.js';
+import { Watchdog } from '../core/watchdog.js';
+import { GitHubScannerService } from '../core/github-scanner-service.js';
+import { GitHubStateStore } from '../core/github-state-store.js';
+import {
+  _resetLifecycles,
+  getActiveSuggestionId,
+  startLifecycle,
+} from '../core/suggestion-telemetry.js';
+
+// ---------------------------------------------------------------------------
+// Mock-based tests: controlled pre/post anomaly snapshots
+// ---------------------------------------------------------------------------
+
+type EventHandler = (tmuxName: string, event: AgentEvent) => void;
+
+function createMockDeps(): {
+  deps: EventPipelineDeps;
+  fireEvent: (tmuxName: string, event: AgentEvent) => void;
+  broadcasts: ServerMessage[];
+} {
+  let eventHandler: EventHandler | null = null;
+  const broadcasts: ServerMessage[] = [];
+
+  const deps: EventPipelineDeps = {
+    adapter: {
+      agentType: 'claude-code',
+      launch: vi.fn(),
+      sendInput: vi.fn(),
+      sendKeystroke: vi.fn(),
+      stop: vi.fn(),
+      captureDisplay: vi.fn().mockResolvedValue(''),
+      onEvent: (handler: EventHandler) => { eventHandler = handler; },
+      onRefreshNeeded: vi.fn(),
+      injectHookEvent: vi.fn(),
+    },
+    monitor: {
+      processEvents: vi.fn(),
+      getSnapshot: vi.fn().mockReturnValue([]),
+      getAgentEvents: vi.fn().mockReturnValue([]),
+      markInputReceived: vi.fn(),
+    } as any,
+    taskStore: {
+      findTaskBySession: vi.fn().mockReturnValue(null),
+      updateSession: vi.fn(),
+      listTasks: vi.fn().mockReturnValue([]),
+    } as any,
+    tokenTracker: {
+      register: vi.fn(),
+      scanTask: vi.fn().mockResolvedValue(false),
+      getUsage: vi.fn(),
+    } as any,
+    watchdog: {
+      recordEvents: vi.fn(),
+      recordTokenActivity: vi.fn(),
+    } as any,
+    githubScanner: {
+      isActive: vi.fn().mockReturnValue(false),
+    } as any,
+    llmClient: null,
+    serverCwd: '/test',
+    broadcastToAll: (msg: ServerMessage) => { broadcasts.push(msg); },
+  };
+
+  return {
+    deps,
+    fireEvent: (tmuxName: string, event: AgentEvent) => {
+      if (!eventHandler) throw new Error('Event handler not registered');
+      eventHandler(tmuxName, event);
+    },
+    broadcasts,
+  };
+}
+
+function suggestionBroadcasts(broadcasts: ServerMessage[]): ServerMessage[] {
+  return broadcasts.filter((m) => m.type === 'suggestion');
+}
+
+describe('event-pipeline: anomaly-diff clearing (mock-based)', () => {
+  let deps: EventPipelineDeps;
+  let fireEvent: (tmuxName: string, event: AgentEvent) => void;
+  let broadcasts: ServerMessage[];
+
+  beforeEach(() => {
+    _resetLifecycles();
+    const mocks = createMockDeps();
+    deps = mocks.deps;
+    fireEvent = mocks.fireEvent;
+    broadcasts = mocks.broadcasts;
+  });
+
+  test('clears suggestions when needs_input transitions to healthy', () => {
+    // First snapshot call (pre): needs_input
+    // After processEvents: monitor mock returns healthy
+    let callCount = 0;
+    (deps.monitor.getSnapshot as any).mockImplementation(() => {
+      callCount++;
+      if (callCount <= 1) {
+        return [{ agentId: 'agent-1', anomaly: { type: 'needs_input' }, events: [] }];
+      }
+      return [{ agentId: 'agent-1', anomaly: null, events: [] }];
+    });
+    wireEventPipeline(deps);
+
+    fireEvent('agent-1', { type: 'tool_use', toolName: 'Read', toolUseId: 'tu-1' } as AgentEvent);
+
+    const suggestions = suggestionBroadcasts(broadcasts);
+    // Exactly one clear broadcast; duplicate fires must trip this assertion.
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]).toMatchObject({
+      type: 'suggestion',
+      agentId: 'agent-1',
+      suggestionId: '',
+      suggestions: [],
+      quickActions: [],
+    });
+  });
+
+  test('does NOT fire anomaly-diff when anomaly stays needs_input (e.g. AskUserQuestion)', () => {
+    // Both pre and post show needs_input — no transition away
+    (deps.monitor.getSnapshot as any).mockReturnValue([
+      { agentId: 'agent-1', anomaly: { type: 'needs_input', subType: 'ask_user_question' }, events: [] },
+    ]);
+    wireEventPipeline(deps);
+
+    fireEvent('agent-1', { type: 'tool_use', toolName: 'AskUserQuestion', toolUseId: 'tu-1' } as AgentEvent);
+
+    // Anomaly-diff's clear uses suggestionId = '' (no active lifecycle in mock);
+    // the smart-assist fallback generates a non-empty suggestionId. So an empty
+    // suggestionId is the signature of the anomaly-diff clearing path.
+    const anomalyDiffClears = suggestionBroadcasts(broadcasts).filter(
+      (m) => m.type === 'suggestion'
+        && m.suggestionId === ''
+        && m.suggestions.length === 0
+        && m.quickActions.length === 0,
+    );
+    expect(anomalyDiffClears).toHaveLength(0);
+  });
+
+  test('does NOT clear when no anomaly before and after', () => {
+    (deps.monitor.getSnapshot as any).mockReturnValue([
+      { agentId: 'agent-1', anomaly: null, events: [] },
+    ]);
+    wireEventPipeline(deps);
+
+    fireEvent('agent-1', { type: 'tool_use', toolName: 'Read', toolUseId: 'tu-1' } as AgentEvent);
+
+    const suggestions = suggestionBroadcasts(broadcasts);
+    expect(suggestions).toHaveLength(0);
+  });
+
+  test('clearing is per-agent — does not affect other agents', () => {
+    let callCount = 0;
+    (deps.monitor.getSnapshot as any).mockImplementation(() => {
+      callCount++;
+      if (callCount <= 1) {
+        return [
+          { agentId: 'agent-1', anomaly: { type: 'needs_input' }, events: [] },
+          { agentId: 'agent-2', anomaly: { type: 'needs_input' }, events: [] },
+        ];
+      }
+      return [
+        { agentId: 'agent-1', anomaly: null, events: [] },
+        { agentId: 'agent-2', anomaly: { type: 'needs_input' }, events: [] },
+      ];
+    });
+    wireEventPipeline(deps);
+
+    fireEvent('agent-1', { type: 'tool_use', toolName: 'Read', toolUseId: 'tu-1' } as AgentEvent);
+
+    const suggestions = suggestionBroadcasts(broadcasts);
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]).toMatchObject({ agentId: 'agent-1' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration tests: real Monitor/Adapter, hook event injection
+// ---------------------------------------------------------------------------
+
+function makeStopHook(sessionId = 's1') {
+  return JSON.stringify({
+    session_id: sessionId,
+    hook_event_name: 'Stop',
+    last_assistant_message: 'I need your input',
+    cwd: '/cwd',
+  });
+}
+
+function makeToolUseHook(toolName = 'Read', sessionId = 's1') {
+  return JSON.stringify({
+    session_id: sessionId,
+    hook_event_name: 'PreToolUse',
+    tool_name: toolName,
+    tool_input: {},
+    cwd: '/cwd',
+  });
+}
+
+function makeUserPromptHook(sessionId = 's1') {
+  return JSON.stringify({
+    session_id: sessionId,
+    hook_event_name: 'UserPromptSubmit',
+    cwd: '/cwd',
+  });
+}
+
+describe('wireEventPipeline – stale suggestion clearing (integration)', () => {
+  let taskStore: TaskStore;
+  let queue: AttentionQueue;
+  let monitor: Monitor;
+  let terminal: FakeTerminalBackend;
+  let adapter: ClaudeCodeAdapter;
+  let tokenTracker: TokenTracker;
+  let watchdog: Watchdog;
+  let githubScanner: GitHubScannerService;
+  let broadcastMessages: ServerMessage[];
+
+  beforeEach(() => {
+    _resetLifecycles();
+    taskStore = new TaskStore();
+    queue = new AttentionQueue();
+    monitor = new Monitor(taskStore, queue);
+    terminal = new FakeTerminalBackend();
+    adapter = new ClaudeCodeAdapter(terminal, taskStore);
+    tokenTracker = new TokenTracker();
+    watchdog = new Watchdog();
+    const githubStateStore = new GitHubStateStore();
+    githubScanner = new GitHubScannerService({
+      taskStore, stateStore: githubStateStore,
+      fetcher: { fetchPR: async () => null, fetchIssue: async () => null } as any,
+      config: { enabled: false, scanIntervalMs: 60000, fetchIntervalMs: 60000 },
+      onChanges: () => {},
+    });
+    broadcastMessages = [];
+  });
+
+  function setup() {
+    const broadcastToAll = (msg: ServerMessage) => { broadcastMessages.push(msg); };
+    return wireEventPipeline({
+      adapter, monitor, taskStore, tokenTracker, watchdog,
+      githubScanner, llmClient: null, serverCwd: '/test',
+      broadcastToAll,
+    });
+  }
+
+  async function launchAgent() {
+    const task = taskStore.createTask('Test', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Test', '/cwd');
+    monitor.registerAgent(tmuxName);
+    return tmuxName;
+  }
+
+  test('tool_use event after stop clears suggestions via anomaly-diff', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+
+    // Agent stops → needs_input
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+    expect(monitor.getSnapshot().find(s => s.agentId === tmuxName)?.anomaly?.type).toBe('needs_input');
+
+    broadcastMessages.length = 0;
+
+    // Agent resumes with tool_use → needs_input cleared
+    adapter.injectHookEvent(tmuxName, makeToolUseHook());
+
+    const state = monitor.getSnapshot().find(s => s.agentId === tmuxName);
+    expect(state?.anomaly?.type).not.toBe('needs_input');
+
+    // Should broadcast suggestion-clear
+    const suggestionMsgs = broadcastMessages.filter(
+      (m): m is Extract<ServerMessage, { type: 'suggestion' }> => m.type === 'suggestion',
+    );
+    const clearMsg = suggestionMsgs.find(m => m.suggestions.length === 0);
+    expect(clearMsg).toBeDefined();
+    expect(clearMsg!.agentId).toBe(tmuxName);
+  });
+
+  test('user_prompt also clears via anomaly-diff', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+    expect(monitor.getSnapshot().find(s => s.agentId === tmuxName)?.anomaly?.type).toBe('needs_input');
+
+    broadcastMessages.length = 0;
+
+    adapter.injectHookEvent(tmuxName, makeUserPromptHook());
+
+    const suggestionMsgs = broadcastMessages.filter(
+      (m): m is Extract<ServerMessage, { type: 'suggestion' }> => m.type === 'suggestion',
+    );
+    // At least one clear (empty suggestions + quickActions) confirms anomaly-diff fired.
+    const clears = suggestionMsgs.filter(
+      (m) => m.suggestions.length === 0 && m.quickActions.length === 0,
+    );
+    expect(clears.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('events that do not change anomaly state do not trigger clearing', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+
+    // tool_use when NOT in needs_input state
+    adapter.injectHookEvent(tmuxName, makeToolUseHook());
+
+    const suggestionMsgs = broadcastMessages.filter(m => m.type === 'suggestion');
+    expect(suggestionMsgs).toHaveLength(0);
+  });
+
+  test('abortPendingSuggestion with used outcome resolves lifecycle as used', async () => {
+    const { abortPendingSuggestion } = setup();
+    const tmuxName = await launchAgent();
+
+    startLifecycle(tmuxName, 'test-sug-id');
+    expect(getActiveSuggestionId(tmuxName)).toBe('test-sug-id');
+
+    abortPendingSuggestion(tmuxName, 'used');
+
+    expect(getActiveSuggestionId(tmuxName)).toBeUndefined();
+
+    // Broadcast should include the suggestionId
+    const lastSuggestion = broadcastMessages.filter(m => m.type === 'suggestion').pop() as any;
+    expect(lastSuggestion?.suggestionId).toBe('test-sug-id');
+  });
+
+  test('abortPendingSuggestion defaults to cleared outcome', async () => {
+    const { abortPendingSuggestion } = setup();
+    const tmuxName = await launchAgent();
+
+    startLifecycle(tmuxName, 'test-sug-2');
+    abortPendingSuggestion(tmuxName);
+
+    expect(getActiveSuggestionId(tmuxName)).toBeUndefined();
+  });
+
+  test('anomaly-diff clearing resolves lifecycle as cleared', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+
+    // Agent stops
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+
+    // Manually start a lifecycle (simulating what the pipeline does for AI suggestions)
+    startLifecycle(tmuxName, 'diff-sug-id');
+
+    // Agent resumes with tool_use → anomaly-diff fires → lifecycle resolved as cleared
+    adapter.injectHookEvent(tmuxName, makeToolUseHook());
+
+    expect(getActiveSuggestionId(tmuxName)).toBeUndefined();
+  });
+});

@@ -1,0 +1,370 @@
+import type { Task, TaskStore } from '../core/tasks.js';
+import type { Monitor } from '../core/monitor.js';
+import type { Watchdog } from '../core/watchdog.js';
+import type { HookFileWatcher } from './hook-watcher.js';
+import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
+import { nowISO } from '../core/interaction-log.js';
+import type { GitHubScannerService } from '../core/github-scanner-service.js';
+import type { AgentAdapter } from '../adapters/agent-adapter.js';
+import { AdapterRegistry } from '../adapters/agent-adapter.js';
+import type { ServerMessage } from '../shared/contracts/messages.js';
+import { MAX_ACTIVE_TASKS } from './config.js';
+import { cleanupTaskWorktrees } from '../adapters/git-worktree.js';
+import { getProjectId } from '../core/project-identity.js';
+import { createSnapshotMessage } from './use-cases/get-snapshot.js';
+
+// ---------------------------------------------------------------------------
+// Post-launch registration (used by WS handler and REST routes)
+// ---------------------------------------------------------------------------
+
+export interface AgentLifecycleDeps {
+  monitor: Monitor;
+  watchdog: Watchdog;
+  hookWatcher: HookFileWatcher;
+  interactionLog?: DeferredInteractionLogWriter;
+  githubScanner: GitHubScannerService;
+  autoNameTask: (taskId: string, prompt: string, cwd: string, criteria?: string) => void;
+  taskStore?: TaskStore;
+}
+
+/**
+ * Performs the full post-launch registration sequence for a newly launched task.
+ *
+ * This is the single place that registers an agent with the monitor, watchdog,
+ * hook file watcher, interaction log, GitHub scanner, and AI task naming.
+ * All code paths that launch agents (WS messages, REST API) call this function.
+ */
+export async function registerNewAgent(task: Task, deps: AgentLifecycleDeps): Promise<void> {
+  const { monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask } = deps;
+
+  // Register only live sessions — skip completed, aborted, or crash-recovered ones.
+  // After crash recovery, a task may have old dead sessions alongside the new one;
+  // registering dead sessions creates ghost agents in the monitor with false anomalies.
+  for (const session of task.sessions) {
+    if (session.lastStatus === 'completed' || session.lastStatus === 'aborted' || session.crashRecovered) {
+      continue;
+    }
+    monitor.registerAgent(session.tmuxSession);
+    watchdog.registerAgent(session.tmuxSession);
+    if (!hookWatcher.isWatching(session.tmuxSession)) {
+      hookWatcher.watch(session.tmuxSession, { replayExisting: true });
+    }
+  }
+
+  // Log the launch event
+  const launchedSession = task.sessions[task.sessions.length - 1];
+  await interactionLog?.append({
+    type: 'agent_launched',
+    agentId: launchedSession?.tmuxSession ?? task.id,
+    taskPrompt: task.prompt,
+    timestamp: new Date().toISOString(),
+  });
+
+  // Scan task prompt for GitHub issue/PR references
+  if (githubScanner.isActive()) {
+    void githubScanner.processTaskPrompt(task.id);
+  }
+
+  // AI-generate a short task name (skip if task already has a name, e.g., playbooks)
+  if (!task.name) {
+    autoNameTask(task.id, task.prompt, task.cwd, task.criteria);
+  }
+
+  // Resolve project identity (fire-and-forget — non-blocking)
+  if (!task.projectId && deps.taskStore) {
+    const store = deps.taskStore;
+    getProjectId(task.cwd)
+      .then((projectId) => {
+        store.setProjectId(task.id, projectId);
+      })
+      .catch(() => {
+        // Best-effort — if git fails, leave projectId unset
+      });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Terminal input: clear anomaly state on user interaction
+// ---------------------------------------------------------------------------
+
+export interface TerminalInputDeps {
+  monitor: Monitor;
+  abortPendingSuggestion: (agentId: string, outcome?: 'used' | 'cleared') => void;
+  broadcastToAll: (msg: ServerMessage) => void;
+  serverCwd: string;
+}
+
+/**
+ * Handle Enter-key input on a terminal session: clear needs_input /
+ * permission_blocked anomaly state, abort any pending suggestion, and
+ * broadcast an updated snapshot.
+ */
+export function handleTerminalInput(
+  deps: TerminalInputDeps,
+  sessionName: string,
+): void {
+  const changed = deps.monitor.markInputReceived(sessionName);
+  if (changed) {
+    deps.abortPendingSuggestion(sessionName);
+    deps.broadcastToAll(createSnapshotMessage({ monitor: deps.monitor, serverCwd: deps.serverCwd }));
+  }
+}
+
+/**
+ * Handle any keystroke on a terminal session.  Only acts when the agent is
+ * permission-blocked (single-char responses like 'y'/'a'/'n' don't require
+ * Enter).
+ */
+export function handleTerminalKeystroke(
+  deps: TerminalInputDeps,
+  sessionName: string,
+): void {
+  if (deps.monitor.isPermissionBlocked(sessionName)) {
+    handleTerminalInput(deps, sessionName);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Task completion / cancellation
+// ---------------------------------------------------------------------------
+
+/**
+ * Dependencies for task completion/cancellation operations.
+ * Uses structural typing so callers can pass any matching objects.
+ */
+export interface LifecycleDeps {
+  adapter: { stop(tmuxName: string): Promise<void> };
+  monitor: { unregisterAgent(agentId: string): void };
+  taskStore: TaskStore;
+  interactionLog?: DeferredInteractionLogWriter;
+  hookWatcher?: { stop(tmuxName: string): void };
+  watchdog?: { unregisterAgent(agentId: string): void };
+  shadowRegistry?: { unregisterAgent(agentId: string): void };
+  tokenTracker?: { unregister(transcriptPath: string): void };
+  autonomyOrchestrator?: { onSessionCleanup(agentId: string): void };
+  suppressionTracker?: { reset(agentId: string): void };
+  /** v5 checkpoint cycler — forget per-session state on cleanup to avoid leaks. */
+  checkpointCycler?: { forget(tmuxName: string): void };
+  /** Workspace lease service — releases leases on task completion (Phase 1b). */
+  leaseService?: { release(worktreePath: string, ownerId: string): boolean };
+  /** Workspace attempt repository — records cleanup attempts (Phase 1b). */
+  attemptRepository?: import('../core/workspace-attempt-repository.js').WorkspaceAttemptRepository;
+}
+
+/**
+ * Clean up all resources associated with a single agent session.
+ * Stops tmux, unregisters from monitor/watchdog/shadow, and stops hook watcher.
+ * Safe to call on already-dead sessions (adapter.stop is a graceful no-op).
+ */
+export async function cleanupSessionResources(
+  tmuxName: string,
+  deps: LifecycleDeps,
+): Promise<void> {
+  // Unregister transcript from token tracker before stopping the session
+  if (deps.tokenTracker) {
+    const task = deps.taskStore.findTaskBySession(tmuxName);
+    if (task) {
+      for (const session of task.sessions) {
+        if (session.tmuxSession === tmuxName && session.transcriptPath) {
+          deps.tokenTracker.unregister(session.transcriptPath);
+        }
+      }
+    }
+  }
+
+  deps.autonomyOrchestrator?.onSessionCleanup(tmuxName);
+  await deps.adapter.stop(tmuxName);
+  deps.monitor.unregisterAgent(tmuxName);
+  deps.hookWatcher?.stop(tmuxName);
+  deps.watchdog?.unregisterAgent(tmuxName);
+  deps.shadowRegistry?.unregisterAgent(tmuxName);
+  deps.suppressionTracker?.reset(tmuxName);
+  deps.checkpointCycler?.forget(tmuxName);
+}
+
+/**
+ * Stop every live session of a task and mark its session status accordingly.
+ * Shared helper for completeTask / cancelTask / terminateTask so the three
+ * terminal transitions stay in lockstep.
+ */
+async function stopAllLiveSessions(
+  task: Task,
+  deps: LifecycleDeps,
+  finalSessionStatus: 'completed' | 'aborted',
+): Promise<void> {
+  for (const session of task.sessions) {
+    if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {
+      await cleanupSessionResources(session.tmuxSession, deps);
+      deps.taskStore.updateSession(task.id, session.tmuxSession, { lastStatus: finalSessionStatus });
+    }
+  }
+}
+
+/**
+ * Complete a task: stop all active sessions, mark completed,
+ * log the event, and fire-and-forget worktree cleanup.
+ */
+export async function completeTask(
+  taskId: string,
+  deps: LifecycleDeps,
+): Promise<void> {
+  const task = deps.taskStore.getTask(taskId);
+  if (!task) throw new Error(`Task not found: ${taskId}`);
+
+  await stopAllLiveSessions(task, deps, 'completed');
+  deps.taskStore.completeTask(taskId);
+
+  await deps.interactionLog?.append({
+    type: 'task_completed',
+    taskId,
+    agentId: task.sessions[0]?.tmuxSession ?? '',
+    reason: 'user_marked',
+    durationMs: Date.now() - task.createdAt.getTime(),
+    timestamp: nowISO(),
+  });
+
+  // Release worktree leases for this task
+  releaseTaskLeases(task, taskId, deps);
+
+  // Fire-and-forget worktree cleanup — does not block the caller
+  cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
+}
+
+/**
+ * Terminate a task: session(s) died without user ack. Mirrors completeTask
+ * but transitions to 'terminated' so the user must acknowledge (→ completed)
+ * or reopen (→ open) before the task is sweepable by "Clear completed".
+ *
+ * Invoked from reconciliation when all sessions are dead on an in-progress
+ * task. See rfc-task-loss-prevention.md D1.
+ */
+export async function terminateTask(
+  taskId: string,
+  deps: LifecycleDeps,
+): Promise<void> {
+  const task = deps.taskStore.getTask(taskId);
+  if (!task) throw new Error(`Task not found: ${taskId}`);
+
+  await stopAllLiveSessions(task, deps, 'completed');
+  deps.taskStore.terminateTask(taskId);
+
+  await deps.interactionLog?.append({
+    type: 'task_terminated',
+    taskId,
+    agentId: task.sessions[0]?.tmuxSession ?? '',
+    reason: 'sessions_died',
+    durationMs: Date.now() - task.createdAt.getTime(),
+    timestamp: nowISO(),
+  });
+
+  // Release worktree leases for this task
+  releaseTaskLeases(task, taskId, deps);
+
+  // Fire-and-forget worktree cleanup — does not block the caller
+  cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
+}
+
+/**
+ * Cancel a task: stop all active sessions, mark aborted,
+ * log the event, and fire-and-forget worktree cleanup.
+ */
+export async function cancelTask(
+  taskId: string,
+  deps: LifecycleDeps,
+): Promise<void> {
+  const task = deps.taskStore.getTask(taskId);
+  if (!task) throw new Error(`Task not found: ${taskId}`);
+
+  await stopAllLiveSessions(task, deps, 'aborted');
+
+  // Release worktree leases for this task
+  releaseTaskLeases(task, taskId, deps);
+
+  deps.taskStore.cancelTask(taskId);
+
+  await deps.interactionLog?.append({
+    type: 'task_cancelled',
+    taskId,
+    agentId: task.sessions[0]?.tmuxSession ?? '',
+    reason: 'user_cancelled',
+    durationMs: Date.now() - task.createdAt.getTime(),
+    timestamp: nowISO(),
+  });
+
+  // Fire-and-forget worktree cleanup — does not block the caller
+  cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// Pending task promotion — launch queued tasks when slots open
+// ---------------------------------------------------------------------------
+
+export interface PromotionDeps {
+  taskStore: TaskStore;
+  adapterRegistry: AdapterRegistry;
+  lifecycleDeps: AgentLifecycleDeps;
+  broadcastToAll: (msg: ServerMessage) => void;
+  serverCwd: string;
+  /** Live getter for max concurrent tasks. Falls back to static default if not provided. */
+  getMaxActiveTasks?: () => number;
+}
+
+/**
+ * Promote pending tasks to inProgress up to the concurrency limit.
+ * Called after task completion, cancellation, and on startup after reconciliation.
+ * Returns the number of tasks promoted.
+ */
+export async function promotePendingTasks(deps: PromotionDeps): Promise<number> {
+  const { taskStore, adapterRegistry, lifecycleDeps, broadcastToAll, serverCwd } = deps;
+  const maxActive = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
+  let promoted = 0;
+  const seen = new Set<string>();
+
+  while (taskStore.getActiveCount() < maxActive) {
+    const pending = taskStore.getNextPending();
+    if (!pending) break;
+
+    // Safety: prevent infinite loop if a task stays pending after launch
+    if (seen.has(pending.id)) {
+      console.error(`[promotion] Task ${pending.id} still pending after launch — breaking to prevent infinite loop`);
+      taskStore.cancelTask(pending.id);
+      break;
+    }
+    seen.add(pending.id);
+
+    try {
+      const adapter = adapterRegistry.get(pending.agentType);
+      await adapter.launch(pending.id, pending.prompt, pending.cwd);
+      await registerNewAgent(pending, lifecycleDeps);
+      promoted++;
+    } catch (err) {
+      // If launch fails, cancel the task rather than leaving it pending forever
+      console.error(`[promotion] Failed to launch pending task ${pending.id}:`, err);
+      taskStore.cancelTask(pending.id);
+    }
+  }
+
+  if (promoted > 0) {
+    const monitor = lifecycleDeps.monitor as Monitor;
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+  }
+
+  return promoted;
+}
+
+// ---------------------------------------------------------------------------
+// Lease management helpers (Phase 1b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Release worktree leases held by a task's sessions.
+ * Called on task completion/cancellation to free the lease for cleanup.
+ */
+function releaseTaskLeases(task: Task, taskId: string, deps: LifecycleDeps): void {
+  if (!deps.leaseService) return;
+  for (const session of task.sessions) {
+    if (session.gitIsWorktree && session.cwd) {
+      deps.leaseService.release(session.cwd, taskId);
+    }
+  }
+}

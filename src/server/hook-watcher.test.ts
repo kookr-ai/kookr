@@ -1,0 +1,255 @@
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { HookFileWatcher } from './hook-watcher.js';
+import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
+import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
+import { TaskStore } from '../core/tasks.js';
+import type { AgentEvent } from '../core/types.js';
+
+describe('HookFileWatcher', () => {
+  let tempDir: string;
+  let taskStore: TaskStore;
+  let adapter: ClaudeCodeAdapter;
+  let watcher: HookFileWatcher;
+  let events: AgentEvent[];
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'kookr-hooks-'));
+    taskStore = new TaskStore();
+    const terminal = new FakeTerminalBackend();
+    adapter = new ClaudeCodeAdapter(terminal, taskStore);
+    watcher = new HookFileWatcher(tempDir, adapter);
+    events = [];
+    adapter.onEvent((_tmux, e) => events.push(e));
+  });
+
+  afterEach(() => {
+    watcher.stopAll();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('isWatching returns false before watch', () => {
+    expect(watcher.isWatching('kookr-abc')).toBe(false);
+  });
+
+  test('watch starts watching a session', () => {
+    // Create the hook file first so watch doesn't need to poll
+    writeFileSync(join(tempDir, 'kookr-abc.jsonl'), '');
+    watcher.watch('kookr-abc');
+    expect(watcher.isWatching('kookr-abc')).toBe(true);
+  });
+
+  test('stop removes watcher', () => {
+    writeFileSync(join(tempDir, 'kookr-abc.jsonl'), '');
+    watcher.watch('kookr-abc');
+    watcher.stop('kookr-abc');
+    expect(watcher.isWatching('kookr-abc')).toBe(false);
+  });
+
+  test('stopAll removes all watchers', () => {
+    writeFileSync(join(tempDir, 'kookr-1.jsonl'), '');
+    writeFileSync(join(tempDir, 'kookr-2.jsonl'), '');
+    watcher.watch('kookr-1');
+    watcher.watch('kookr-2');
+    watcher.stopAll();
+    expect(watcher.isWatching('kookr-1')).toBe(false);
+    expect(watcher.isWatching('kookr-2')).toBe(false);
+  });
+
+  test('detects new lines appended to hook file', async () => {
+    const hookFile = join(tempDir, 'kookr-abc.jsonl');
+    writeFileSync(hookFile, '');
+
+    // Register the tmux name with the adapter so injectHookEvent works
+    const task = taskStore.createTask('Test', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-abc', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-abc',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    watcher.watch('kookr-abc');
+
+    // Append a hook event
+    const hookJson = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      model: 'claude-sonnet-4-20250514',
+    });
+    appendFileSync(hookFile, hookJson + '\n');
+
+    // fs.watch is platform-dependent (unreliable on WSL2).
+    // Poll until event arrives or timeout.
+    const deadline = Date.now() + 3000;
+    while (events.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    // On WSL2, fs.watch may not fire for appends. Skip assertion if so.
+    if (events.length === 0) {
+      console.warn('SKIPPED: fs.watch did not detect file change (likely WSL2)');
+      return;
+    }
+
+    expect(events[0].type).toBe('session_start');
+  });
+
+  test('replayExisting=true replays existing content on watch', async () => {
+    const hookFile = join(tempDir, 'kookr-replay.jsonl');
+
+    // Pre-populate file with events before watching
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      model: 'claude-sonnet-4-20250514',
+    });
+    const event2 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      permission_mode: 'acceptEdits',
+    });
+    writeFileSync(hookFile, event1 + '\n' + event2 + '\n');
+
+    // Register so injectHookEvent works
+    const task = taskStore.createTask('Test', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-replay', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-replay',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    // Watch with replay — should immediately read existing events
+    watcher.watch('kookr-replay', { replayExisting: true });
+
+    // readNewLines is async, wait briefly
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(events.length).toBe(2);
+    expect(events[0].type).toBe('session_start');
+    expect(events[1].type).toBe('tool_use');
+  });
+
+  test('handles malformed hook event lines gracefully', async () => {
+    const hookFile = join(tempDir, 'kookr-malformed.jsonl');
+    // Write malformed JSON content
+    writeFileSync(hookFile, 'not json at all\n{"also bad\n');
+
+    // Register the tmux name
+    const task = taskStore.createTask('Test', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-malformed', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-malformed',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    // Watch with replay — should try to parse malformed JSON without crashing
+    watcher.watch('kookr-malformed', { replayExisting: true });
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Should not crash; no valid events parsed
+    expect(events).toHaveLength(0);
+  });
+
+  test('polls for non-existent file until it appears', async () => {
+    // Watch without creating file first — should enter polling mode
+    watcher.watch('kookr-poll');
+    expect(watcher.isWatching('kookr-poll')).toBe(true);
+
+    // Create the file after a short delay
+    await new Promise((r) => setTimeout(r, 100));
+    writeFileSync(join(tempDir, 'kookr-poll.jsonl'), '');
+
+    // Wait for poll cycle (1s interval + buffer)
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // Should still be watching after file appeared and re-registered
+    expect(watcher.isWatching('kookr-poll')).toBe(true);
+  }, 5000);
+
+  test('stopAll cleans up polling sentinels', () => {
+    // Watch non-existent file to start polling
+    watcher.watch('kookr-sentinel');
+    expect(watcher.isWatching('kookr-sentinel')).toBe(true);
+
+    watcher.stopAll();
+    expect(watcher.isWatching('kookr-sentinel')).toBe(false);
+  });
+
+  test('drainNow is a no-op when session is not registered', async () => {
+    // Never called watch() — drainNow should return without touching anything
+    await expect(watcher.drainNow('unknown')).resolves.toBeUndefined();
+    expect(events.length).toBe(0);
+  });
+
+  test('drainNow reads any new lines appended since last offset', async () => {
+    const hookFile = join(tempDir, 'kookr-drain.jsonl');
+    writeFileSync(hookFile, '');
+
+    const task = taskStore.createTask('Test', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-drain', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-drain',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    watcher.watch('kookr-drain');
+    // Baseline offset recorded; no events yet.
+    expect(events.length).toBe(0);
+
+    // Append after watch started; rely on drainNow (not fs.watch, which is
+    // flaky on WSL2) to deliver the event — this is the exact recovery path
+    // the watchdog tick uses.
+    const hookJson = JSON.stringify({
+      session_id: 'sess-drain',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    appendFileSync(hookFile, hookJson + '\n');
+
+    await watcher.drainNow('kookr-drain');
+    expect(events.length).toBe(1);
+    expect(events[0].type).toBe('session_start');
+
+    // Second drain with no new data should not re-deliver.
+    await watcher.drainNow('kookr-drain');
+    expect(events.length).toBe(1);
+  });
+
+  test('replayExisting=false (default) skips existing content', async () => {
+    const hookFile = join(tempDir, 'kookr-skip.jsonl');
+
+    // Pre-populate file
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(hookFile, event1 + '\n');
+
+    // Watch without replay (default) — should skip existing content
+    watcher.watch('kookr-skip');
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(events.length).toBe(0);
+  });
+});

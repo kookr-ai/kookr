@@ -1,0 +1,449 @@
+import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FakeTerminalBackend } from './fake-terminal-backend.js';
+import { CodexCliAdapter } from './codex-cli-adapter.js';
+import { TaskStore } from '../core/tasks.js';
+import type { AgentEvent } from '../core/types.js';
+
+const CODEX_SUPPORTED_HOOK_TYPES = [
+  'SessionStart',
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'Notification',
+  'PermissionRequest',
+  'Stop',
+  'StopFailure',
+  'UserPromptSubmit',
+  'SessionEnd',
+] as const;
+
+const CLAUDE_ONLY_HOOK_TYPES_MISSING_FROM_CODEX = [
+  'SubagentStart',
+  'SubagentStop',
+] as const;
+
+// Mock getGitInfo
+vi.mock('./git-info.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./git-info.js')>();
+  return {
+    ...actual,
+    getGitInfo: vi.fn().mockResolvedValue(null),
+  };
+});
+
+describe('CodexCliAdapter', () => {
+  let backend: FakeTerminalBackend;
+  let taskStore: TaskStore;
+  let adapter: CodexCliAdapter;
+
+  beforeEach(() => {
+    backend = new FakeTerminalBackend();
+    taskStore = new TaskStore();
+    adapter = new CodexCliAdapter(backend, taskStore, {
+      trustWorkspace: false,
+    });
+  });
+
+  test('agentType is codex-cli', () => {
+    expect(adapter.agentType).toBe('codex-cli');
+  });
+
+  test('launch creates a session with codex command and the Codex-hook argv', async () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+    expect(sessionId).toMatch(/^kookr-/);
+    expect(backend.sessions.has(sessionId)).toBe(true);
+
+    // V8: the backend receives a SessionSpec, not a shell string. Env vars
+    // live in spec.env and flags live in spec.args.
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.env?.KOOKR_TASK_ID).toBe(task.id);
+    // The binary is argv[0] on its own — no `env VAR=x codex …` shell prefix.
+    expect(spec.command).toMatch(/(^|\/)codex$/);
+    expect(spec.args).toEqual(expect.arrayContaining(['-c', 'features.codex_hooks=true']));
+    expect(spec.args).toContain('--full-auto');
+    expect(spec.args).toContain('--settings');
+  });
+
+  test('launch uses --full-auto and NOT the dangerous bypass flag by default', async () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).toContain('--full-auto');
+    expect(spec.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+  });
+
+  test('launch replaces --full-auto with the dangerous bypass flag when bypassAllPermissions is true', async () => {
+    const bypassAdapter = new CodexCliAdapter(backend, taskStore, {
+      trustWorkspace: false,
+      bypassAllPermissions: true,
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await bypassAdapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).toContain('--dangerously-bypass-approvals-and-sandbox');
+    // The two flags are mutually exclusive — --full-auto must be absent.
+    expect(spec.args).not.toContain('--full-auto');
+  });
+
+  test('launch registers session with correct agentType', async () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+    const updatedTask = taskStore.getTask(task.id)!;
+    const session = updatedTask.sessions.find(s => s.tmuxSession === sessionId);
+    expect(session).toBeDefined();
+    expect(session!.agentType).toBe('codex-cli');
+  });
+
+  test('launch generates the widened Codex-compatible hook subscription set', async () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+    const settings = adapter.getGeneratedSettings(sessionId);
+    expect(settings).toBeDefined();
+    expect(Object.keys(settings!.hooks).sort()).toEqual([...CODEX_SUPPORTED_HOOK_TYPES].sort());
+    expect(settings!.permissions?.allow).toContain('Bash(git *)');
+
+    for (const hookType of CODEX_SUPPORTED_HOOK_TYPES) {
+      const matchers = settings!.hooks[hookType];
+      expect(matchers, `${hookType} should be configured`).toBeDefined();
+      expect(matchers).toHaveLength(1);
+      expect(matchers[0].hooks).toHaveLength(1);
+      expect(matchers[0].hooks[0].command).toContain(sessionId);
+    }
+
+    expect(settings!.hooks.SessionStart[0].matcher).toBe('*');
+    expect(settings!.hooks.PreToolUse[0].matcher).toBe('*');
+    expect(settings!.hooks.PostToolUse[0].matcher).toBe('*');
+    expect(settings!.hooks.PostToolUseFailure[0].matcher).toBe('*');
+    expect(settings!.hooks.Notification[0].matcher).toBe('*');
+    expect(settings!.hooks.PermissionRequest[0].matcher).toBe('*');
+    expect(settings!.hooks.Stop[0].matcher).toBe('');
+    expect(settings!.hooks.StopFailure[0].matcher).toBe('');
+    expect(settings!.hooks.UserPromptSubmit[0].matcher).toBe('');
+    expect(settings!.hooks.SessionEnd[0].matcher).toBe('');
+  });
+
+  test('launch still omits out-of-scope Claude-only subagent hook events', async () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+    const settings = adapter.getGeneratedSettings(sessionId);
+    expect(settings).toBeDefined();
+
+    for (const hookType of CLAUDE_ONLY_HOOK_TYPES_MISSING_FROM_CODEX) {
+      expect(settings!.hooks[hookType], `${hookType} should not be configured for Codex`).toBeUndefined();
+    }
+  });
+
+  test('getEffectiveHookSettings returns content, agentType codex-cli, and settingsPath for a known session', async () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+    const effective = adapter.getEffectiveHookSettings(sessionId);
+    expect(effective).toBeDefined();
+    expect(effective!.agentType).toBe('codex-cli');
+    expect(effective!.settingsPath).toMatch(/\.json$/);
+    expect(effective!.settingsPath).toContain(sessionId);
+    expect(effective!.content).toBe(adapter.getGeneratedSettings(sessionId));
+  });
+
+  test('getEffectiveHookSettings returns undefined for unknown session id', () => {
+    expect(adapter.getEffectiveHookSettings('not-a-real-session')).toBeUndefined();
+    expect(adapter.getEffectiveHookSettings('../../etc/passwd')).toBeUndefined();
+  });
+
+  test('launch pre-trusts the workspace in the Codex config before starting the session', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'codex-cli-adapter-'));
+    const settingsDir = join(tempDir, 'settings');
+    const hooksDir = join(tempDir, 'hooks');
+    const configPath = join(tempDir, '.codex', 'config.toml');
+    await mkdir(settingsDir, { recursive: true });
+    await mkdir(hooksDir, { recursive: true });
+
+    const trustingAdapter = new CodexCliAdapter(backend, taskStore, {
+      settingsDir,
+      hooksDir,
+      codexConfigPath: configPath,
+      writeFile: (path, content) => writeFile(path, content, 'utf-8'),
+    });
+    const task = taskStore.createTask('Fix bug', '/tmp/project');
+
+    try {
+      await trustingAdapter.launch(task.id, 'Fix bug', '/tmp/project');
+
+      expect(await readFile(configPath, 'utf-8')).toContain('[projects."/tmp/project"]');
+      expect(await readFile(configPath, 'utf-8')).toContain('trust_level = "trusted"');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('injectHookEvent parses Codex CLI events (same format as Claude Code)', () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const events: AgentEvent[] = [];
+    adapter.onEvent((_, event) => events.push(event));
+
+    // Simulate Codex CLI launching (to register tmuxToTaskId + session)
+    const sessionId = 'kookr-test';
+    (adapter as any).tmuxToTaskId.set(sessionId, task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: sessionId,
+      agentType: 'codex-cli',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    // Codex CLI SessionStart event (same field names as Claude Code)
+    const sessionStartJson = JSON.stringify({
+      session_id: 'codex-session-123',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      model: 'gpt-4',
+      permission_mode: 'default',
+    });
+    adapter.injectHookEvent(sessionId, sessionStartJson);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('session_start');
+    expect(events[0].sessionId).toBe('codex-session-123');
+  });
+
+  test('injectHookEvent stores codex hook capabilities from SessionStart', () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = 'kookr-test';
+    (adapter as any).tmuxToTaskId.set(sessionId, task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: sessionId,
+      agentType: 'codex-cli',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'codex-session-123',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      model: 'gpt-5.4',
+      codex_hook_capabilities: {
+        surface_version: 2,
+        supported_events: ['SessionStart', 'Notification', 'Stop'],
+        handler_features: { command_if: true },
+      },
+    }));
+
+    const session = taskStore.getTask(task.id)!.sessions[0];
+    expect(session.codexHookCapabilities).toEqual({
+      surfaceVersion: 2,
+      supportedEvents: ['SessionStart', 'Notification', 'Stop'],
+      handlerFeatures: { commandIf: true },
+    });
+  });
+
+  test('injectHookEvent keeps Codex sessions in legacy mode when capabilities are absent', () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = 'kookr-test';
+    (adapter as any).tmuxToTaskId.set(sessionId, task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: sessionId,
+      agentType: 'codex-cli',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'codex-session-123',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      model: 'gpt-4',
+    }));
+
+    const session = taskStore.getTask(task.id)!.sessions[0];
+    expect(session.codexHookCapabilities).toBeUndefined();
+  });
+
+  test('injectHookEvent handles PreToolUse with Bash tool', () => {
+    const events: AgentEvent[] = [];
+    adapter.onEvent((_, event) => events.push(event));
+
+    const preToolJson = JSON.stringify({
+      session_id: 'codex-session-123',
+      turn_id: 'turn-1',
+      transcript_path: null,
+      cwd: '/cwd',
+      hook_event_name: 'PreToolUse',
+      model: 'gpt-4',
+      permission_mode: 'default',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls -la' },
+      tool_use_id: 'tu-1',
+    });
+    adapter.injectHookEvent('kookr-test', preToolJson);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_use');
+    if (events[0].type === 'tool_use') {
+      expect(events[0].toolName).toBe('Bash');
+    }
+  });
+
+  test('injectHookEvent handles Stop event', () => {
+    const events: AgentEvent[] = [];
+    adapter.onEvent((_, event) => events.push(event));
+
+    const stopJson = JSON.stringify({
+      session_id: 'codex-session-123',
+      turn_id: 'turn-1',
+      transcript_path: null,
+      cwd: '/cwd',
+      hook_event_name: 'Stop',
+      model: 'gpt-4',
+      permission_mode: 'default',
+      stop_hook_active: true,
+      last_assistant_message: 'Done. Fixed the bug.',
+    });
+    adapter.injectHookEvent('kookr-test', stopJson);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('stop');
+  });
+
+  test('injectHookEvent handles PostToolUse', () => {
+    const events: AgentEvent[] = [];
+    adapter.onEvent((_, event) => events.push(event));
+
+    const postToolJson = JSON.stringify({
+      session_id: 'codex-session-123',
+      turn_id: 'turn-1',
+      transcript_path: null,
+      cwd: '/cwd',
+      hook_event_name: 'PostToolUse',
+      model: 'gpt-4',
+      permission_mode: 'default',
+      tool_name: 'Bash',
+      tool_input: { command: 'ls -la' },
+      tool_response: { stdout: 'file.txt' },
+      tool_use_id: 'tu-1',
+    });
+    adapter.injectHookEvent('kookr-test', postToolJson);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_result');
+    if (events[0].type === 'tool_result') {
+      expect(events[0].toolName).toBe('Bash');
+      expect(events[0].toolResponse).toEqual({ stdout: 'file.txt' });
+    }
+  });
+
+  test('injectHookEvent handles UserPromptSubmit', () => {
+    const events: AgentEvent[] = [];
+    adapter.onEvent((_, event) => events.push(event));
+
+    const promptJson = JSON.stringify({
+      session_id: 'codex-session-123',
+      turn_id: 'turn-1',
+      transcript_path: null,
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      model: 'gpt-4',
+      permission_mode: 'default',
+      prompt: 'continue with the refactor',
+    });
+    adapter.injectHookEvent('kookr-test', promptJson);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('user_prompt');
+    if (events[0].type === 'user_prompt') {
+      expect(events[0].prompt).toBe('continue with the refactor');
+    }
+  });
+
+  test('injectHookEvent handles PermissionRequest', () => {
+    const events: AgentEvent[] = [];
+    adapter.onEvent((_, event) => events.push(event));
+
+    const permJson = JSON.stringify({
+      session_id: 'codex-session-123',
+      turn_id: 'turn-1',
+      transcript_path: null,
+      cwd: '/cwd',
+      hook_event_name: 'PermissionRequest',
+      model: 'gpt-4',
+      permission_mode: 'on-request',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf build/' },
+    });
+    adapter.injectHookEvent('kookr-test', permJson);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('permission_request');
+  });
+
+  test('sendInput writes text and Enter as two distinct payloads in submission order', async () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+    await adapter.sendInput(sessionId, 'yes, continue');
+
+    // Codex's TUI distinguishes paste-bursts from typed-then-submit by the
+    // syscall boundary. writeSequence([text, ENTER]) must preserve that split
+    // inside a single mutex acquisition — the fake captures each payload
+    // separately in submission order.
+    const written = backend.getWrittenBytes(sessionId);
+    expect(written).toHaveLength(2);
+    expect(new TextDecoder().decode(written[0])).toBe('yes, continue');
+    expect(written[1]).toEqual(Uint8Array.of(0x0d));
+  });
+
+  test('unknown hook events are silently skipped', () => {
+    const events: AgentEvent[] = [];
+    adapter.onEvent((_, event) => events.push(event));
+
+    // Codex CLI doesn't have SubagentStart — but even if it arrived, the parser
+    // handles it. What matters is truly unknown events are dropped.
+    const unknownJson = JSON.stringify({
+      session_id: 'codex-session-123',
+      cwd: '/cwd',
+      hook_event_name: 'SomeFutureEvent',
+    });
+    adapter.injectHookEvent('kookr-test', unknownJson);
+
+    expect(events).toHaveLength(0);
+  });
+
+  test('custom agentBin is used as the SessionSpec command', async () => {
+    const customAdapter = new CodexCliAdapter(backend, taskStore, {
+      trustWorkspace: false,
+      agentBin: '/usr/local/bin/codex-custom',
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await customAdapter.launch(task.id, 'Fix bug', '/cwd');
+
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.command).toBe('/usr/local/bin/codex-custom');
+  });
+
+  test('serverPort enables dual-write hooks (JSONL + HTTP POST)', async () => {
+    const adapterWithPort = new CodexCliAdapter(backend, taskStore, {
+      trustWorkspace: false,
+      serverPort: 4801,
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapterWithPort.launch(task.id, 'Fix bug', '/cwd');
+
+    // The spec's argv must still wire the generated settings file.
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).toContain('--settings');
+    const settings = adapterWithPort.getGeneratedSettings(sessionId);
+    expect(settings!.permissions?.allow).toContain('Bash(curl *KOOKR_API_BASE_URL*api/tasks*)');
+    expect(settings!.permissions?.allow).toContain('Bash(curl *http://127.0.0.1:4801/api/tasks*)');
+  });
+});

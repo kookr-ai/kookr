@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>POC mouse forwarding</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css" />
+  <style>
+    body { background: #0a0c12; color: #b2bace; margin: 0; font-family: monospace; }
+    #status { padding: 6px 10px; font-size: 12px; border-bottom: 1px solid #222; }
+    #term { padding: 10px; }
+  </style>
+</head>
+<body>
+  <div id="status">Loading xterm.js…</div>
+  <div id="term"></div>
+  <script type="module">
+    import { Terminal } from 'https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/+esm';
+
+    const statusEl = document.getElementById('status');
+    const termEl = document.getElementById('term');
+    const params = new URLSearchParams(window.location.search);
+    const port = params.get('port') ?? '9999';
+
+    const term = new Terminal({
+      cols: 80,
+      rows: 24,
+      fontSize: 14,
+      scrollback: 1000,
+      theme: { background: '#0a0c12', foreground: '#b2bace' },
+    });
+    term.open(termEl);
+    term.focus();
+
+    // Expose for Playwright to dispatch wheel events on the xterm screen.
+    window.__term = term;
+
+    // WS and HTTP share the same port (harness.ts attaches WSS to the http server).
+    const ws = new WebSocket(`ws://${window.location.host}`);
+    ws.binaryType = 'arraybuffer';
+
+    ws.addEventListener('open', () => {
+      statusEl.textContent = `connected to ws://${window.location.hostname}:${port}`;
+      window.__wsOpen = true;
+    });
+    ws.addEventListener('close', (e) => {
+      statusEl.textContent = `ws closed code=${e.code} reason=${e.reason}`;
+      window.__wsOpen = false;
+    });
+    ws.addEventListener('message', (ev) => {
+      if (typeof ev.data === 'string') {
+        term.write(ev.data);
+      } else {
+        const u8 = new Uint8Array(ev.data);
+        // xterm.js write() accepts Uint8Array directly in v6.
+        term.write(u8);
+      }
+    });
+
+    term.onData((data) => {
+      // Send as binary frames for byte fidelity.
+      const enc = new TextEncoder();
+      ws.send(enc.encode(data));
+    });
+
+    // Expose a function to read the current screen as text (useful for debugging).
+    window.__readScreen = () => {
+      const buf = term.buffer.active;
+      let out = '';
+      for (let y = 0; y < buf.length; y++) {
+        const line = buf.getLine(y);
+        if (line) out += line.translateToString(true) + '\n';
+      }
+      return out;
+    };
+  </script>
+</body>
+</html>

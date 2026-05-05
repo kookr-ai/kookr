@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 8: Compact Ops Console</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0f1218;
+    --bg-panel: #141820;
+    --bg-card: #1a1f2a;
+    --bg-card-hover: #212836;
+    --bg-input: #1d2430;
+    --border: #262e3d;
+    --border-dim: #1e2636;
+    --text: #c0c8d4;
+    --text-secondary: #6e7a8c;
+    --text-bright: #e4eaf2;
+    --text-muted: #454f5f;
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --blue: #60a5fa;
+    --purple: #a78bfa;
+    --orange: #fb923c;
+    --amber-bg: rgba(245,158,11,0.06);
+    --amber-border: rgba(245,158,11,0.2);
+    --red-bg: rgba(239,68,68,0.06);
+    --red-border: rgba(239,68,68,0.15);
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 11.5px;
+  }
+
+  /* ─── Top bar: compact, info-dense ─── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    height: 38px;
+    flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 14px; }
+  .logo {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--orange);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 1px;
+  }
+  .topbar-stats {
+    display: flex;
+    gap: 3px;
+  }
+  .stat-chip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+  }
+  .stat-chip .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .stat-chip .dot.amber { background: var(--amber); }
+  .stat-chip .dot.green { background: var(--green); }
+  .stat-chip .dot.gray { background: var(--text-muted); }
+  .stat-chip .val { font-weight: 600; color: var(--text-bright); }
+
+  .topbar-right { display: flex; gap: 8px; align-items: center; }
+  .btn-launch {
+    background: var(--orange);
+    color: #000;
+    border: none;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* ─── Main layout: sidebar + split center ─── */
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ─── Narrow sidebar ─── */
+  .sidebar {
+    width: 220px;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  .sb-section {
+    padding: 8px 8px 0;
+  }
+  .sb-label {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding: 6px 8px 4px;
+  }
+  .sb-label.alert { color: var(--amber); }
+  .sb-label.normal { color: var(--text-muted); }
+
+  .sb-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.1s;
+    border-left: 2px solid transparent;
+  }
+  .sb-item:hover { background: var(--bg-card); }
+  .sb-item.selected { background: var(--bg-card); border-left-color: var(--orange); }
+  .sb-item.alert-item { border-left-color: var(--amber); background: var(--amber-bg); }
+  .sb-item.alert-item.selected { border-left-color: var(--amber); }
+
+  .sb-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .sb-dot.running { background: var(--green); }
+  .sb-dot.stuck { background: var(--amber); animation: pulse 2s infinite; }
+  .sb-dot.completed { background: var(--text-muted); }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+  .sb-info { flex: 1; min-width: 0; }
+  .sb-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-bright);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sb-task {
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sb-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    font-size: 10px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .sb-cost { font-weight: 500; color: var(--text-secondary); }
+
+  /* ─── Center: split into pinned alert (top) + activity (bottom) ─── */
+  .center {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  /* Pinned supervisor alert — NEVER scrolls away (fixes P4's chat-scroll issue) */
+  .pinned-alert {
+    background: var(--amber-bg);
+    border-bottom: 1px solid var(--amber-border);
+    padding: 12px 20px;
+    flex-shrink: 0;
+    display: flex;
+    gap: 14px;
+  }
+  .pinned-alert-badge {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    padding-top: 2px;
+  }
+  .alert-icon {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--amber);
+    color: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 800;
+  }
+  .alert-severity {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--amber);
+  }
+
+  .pinned-alert-content { flex: 1; }
+  .pinned-alert-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+  .pinned-alert-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--amber);
+  }
+  .pinned-alert-agent {
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+  .pinned-alert-actions { display: flex; gap: 5px; }
+  .btn-xs {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 3px 9px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 10.5px;
+    cursor: pointer;
+  }
+  .btn-xs:hover { color: var(--text-bright); }
+
+  .pinned-alert-body {
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--text);
+  }
+  .pinned-alert-body code {
+    background: rgba(96,165,250,0.1);
+    color: var(--blue);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* Detail header */
+  .detail-header {
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border-dim);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .detail-header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .dh-name { font-weight: 600; font-size: 14px; color: var(--text-bright); }
+  .dh-task { font-size: 12px; color: var(--text-secondary); }
+  .dh-meta {
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .dh-meta span code { color: var(--blue); }
+
+  /* Split view: Activity feed (left) + Terminal snapshot (right) */
+  .split-view {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* Activity column */
+  .activity-col {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 20px;
+    border-right: 1px solid var(--border-dim);
+  }
+  .col-label {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+  }
+
+  .act-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 5px 0;
+    font-size: 12.5px;
+    position: relative;
+  }
+  .act-row:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 9px;
+    top: 24px;
+    bottom: -5px;
+    width: 1px;
+    background: var(--border-dim);
+  }
+  .act-dot-sm {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 8.5px;
+    font-weight: 700;
+    flex-shrink: 0;
+    z-index: 1;
+  }
+  .act-dot-sm.tool { border-color: var(--blue); color: var(--blue); }
+  .act-dot-sm.edit { border-color: var(--purple); color: var(--purple); }
+  .act-dot-sm.error { border-color: var(--red); color: var(--red); }
+  .act-dot-sm.read { border-color: var(--text-secondary); color: var(--text-secondary); }
+
+  .act-info { flex: 1; }
+  .act-info-label { font-size: 12.5px; color: var(--text); }
+  .act-info-label code { background: var(--bg-card); color: var(--orange); padding: 0 4px; border-radius: 2px; }
+  .act-info-time { font-size: 10px; color: var(--text-muted); }
+  .act-info-error {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    color: var(--red);
+    opacity: 0.8;
+    margin-top: 1px;
+  }
+  .repeat-pill {
+    display: inline-block;
+    background: rgba(245,158,11,0.12);
+    color: var(--amber);
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 0 6px;
+    border-radius: 6px;
+    margin-left: 5px;
+  }
+
+  /* Terminal snapshot column */
+  .terminal-col {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 16px;
+    background: var(--bg);
+  }
+  .terminal-pane {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 11.5px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .terminal-pane .prompt { color: var(--green); }
+  .terminal-pane .cmd { color: var(--text-bright); }
+  .terminal-pane .err { color: var(--red); }
+  .terminal-pane .dim { color: var(--text-muted); }
+  .terminal-pane .file { color: var(--blue); }
+  .terminal-pane .pass { color: var(--green); }
+
+  /* Input area */
+  .input-area {
+    padding: 10px 20px 14px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-panel);
+    flex-shrink: 0;
+  }
+  .input-wrapper {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .input-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-bottom: 5px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .input-label kbd {
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    padding: 0 4px;
+    border-radius: 2px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px;
+    color: var(--text-secondary);
+  }
+  .input-field {
+    flex: 1;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text-bright);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+  }
+  .input-field:focus { border-color: var(--orange); }
+  .input-field::placeholder { color: var(--text-muted); }
+  .btn-send {
+    background: var(--orange);
+    color: #000;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* ─── Status bar ─── */
+  .statusbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    height: 24px;
+    flex-shrink: 0;
+    font-size: 10.5px;
+    color: var(--text-muted);
+  }
+  .statusbar-left, .statusbar-right { display: flex; gap: 12px; }
+  .statusbar kbd {
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    padding: 0 3px;
+    border-radius: 2px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+    <div class="topbar-stats">
+      <div class="stat-chip"><span class="dot amber"></span><span class="val">1</span> stuck</div>
+      <div class="stat-chip"><span class="dot green"></span><span class="val">2</span> running</div>
+      <div class="stat-chip"><span class="dot gray"></span><span class="val">1</span> done</div>
+      <div class="stat-chip"><span class="val">$0.98</span></div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <button class="btn-launch">+ Launch</button>
+  </div>
+</div>
+
+<div class="main">
+  <!-- Narrow sidebar -->
+  <div class="sidebar">
+    <div class="sb-section">
+      <div class="sb-label alert">Attention</div>
+      <div class="sb-item alert-item selected">
+        <span class="sb-dot stuck"></span>
+        <div class="sb-info">
+          <div class="sb-name">Agent #3</div>
+          <div class="sb-task">Fix auth bug in login.ts</div>
+        </div>
+        <div class="sb-right">
+          <span>12m</span>
+          <span class="sb-cost">$0.42</span>
+        </div>
+      </div>
+    </div>
+    <div class="sb-section">
+      <div class="sb-label normal">Running</div>
+      <div class="sb-item">
+        <span class="sb-dot running"></span>
+        <div class="sb-info">
+          <div class="sb-name">Agent #1</div>
+          <div class="sb-task">Add pagination to /users</div>
+        </div>
+        <div class="sb-right">
+          <span>8m</span>
+          <span class="sb-cost">$0.18</span>
+        </div>
+      </div>
+      <div class="sb-item">
+        <span class="sb-dot running"></span>
+        <div class="sb-info">
+          <div class="sb-name">Agent #4</div>
+          <div class="sb-task">Write tests for utils.ts</div>
+        </div>
+        <div class="sb-right">
+          <span>3m</span>
+          <span class="sb-cost">$0.07</span>
+        </div>
+      </div>
+    </div>
+    <div class="sb-section">
+      <div class="sb-label normal">Done</div>
+      <div class="sb-item">
+        <span class="sb-dot completed"></span>
+        <div class="sb-info">
+          <div class="sb-name">Agent #2</div>
+          <div class="sb-task">Update README</div>
+        </div>
+        <div class="sb-right">
+          <span class="sb-cost">$0.31</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="center">
+    <!-- Pinned alert: always visible, never pushed off screen -->
+    <div class="pinned-alert">
+      <div class="pinned-alert-badge">
+        <div class="alert-icon">!</div>
+        <div class="alert-severity">Stuck</div>
+      </div>
+      <div class="pinned-alert-content">
+        <div class="pinned-alert-header">
+          <div>
+            <span class="pinned-alert-title">Same test 12x without progress</span>
+            <span class="pinned-alert-agent"> — Agent #3</span>
+          </div>
+          <div class="pinned-alert-actions">
+            <button class="btn-xs">Skip</button>
+            <button class="btn-xs">Snooze</button>
+            <button class="btn-xs">Attach</button>
+          </div>
+        </div>
+        <div class="pinned-alert-body">
+          Running <code>npm test</code> 12 times with the same <code>TypeError: token.verify is not a function</code>.
+          Editing <code>auth.ts:42</code> but not trying a different import.
+          Hint: function is in <code>@auth/jwt</code>, not <code>@auth/core</code>.
+        </div>
+      </div>
+    </div>
+
+    <div class="detail-header">
+      <div class="detail-header-left">
+        <span class="dh-name">Agent #3</span>
+        <span class="dh-task">Fix auth bug in login.ts</span>
+      </div>
+      <div class="dh-meta">
+        <span>Claude Code</span>
+        <span><code>~/git/myapp</code></span>
+        <span>12m</span>
+        <span>$0.42</span>
+      </div>
+    </div>
+
+    <!-- Split: Activity feed + Terminal snapshot side-by-side -->
+    <div class="split-view">
+      <div class="activity-col">
+        <div class="col-label">Activity Timeline</div>
+
+        <div class="act-row">
+          <div class="act-dot-sm read">R</div>
+          <div class="act-info">
+            <div class="act-info-label">Read <code>src/auth.ts</code></div>
+            <div class="act-info-time">12:04 PM</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot-sm edit">E</div>
+          <div class="act-info">
+            <div class="act-info-label">Edit <code>src/auth.ts</code> :42</div>
+            <div class="act-info-time">12:05 PM</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot-sm error">!</div>
+          <div class="act-info">
+            <div class="act-info-label">Bash: <code>npm test</code> <span class="repeat-pill">x3</span></div>
+            <div class="act-info-time">12:05 PM</div>
+            <div class="act-info-error">TypeError: token.verify is not a function</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot-sm edit">E</div>
+          <div class="act-info">
+            <div class="act-info-label">Edit <code>src/auth.ts</code> :42 — reverted</div>
+            <div class="act-info-time">12:07 PM</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot-sm error">!</div>
+          <div class="act-info">
+            <div class="act-info-label">Bash: <code>npm test</code> <span class="repeat-pill">x9</span></div>
+            <div class="act-info-time">12:10 PM</div>
+            <div class="act-info-error">TypeError: token.verify is not a function</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot-sm edit">E</div>
+          <div class="act-info">
+            <div class="act-info-label">Edit <code>src/auth.ts</code> :42</div>
+            <div class="act-info-time">12:13 PM</div>
+          </div>
+        </div>
+        <div class="act-row">
+          <div class="act-dot-sm error">!</div>
+          <div class="act-info">
+            <div class="act-info-label">Bash: <code>npm test</code> <span class="repeat-pill">x12</span></div>
+            <div class="act-info-time">12:14 PM</div>
+            <div class="act-info-error">TypeError: token.verify is not a function</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Terminal snapshot: live tmux capture-pane view -->
+      <div class="terminal-col">
+        <div class="col-label" style="color:var(--text-muted);">Terminal Snapshot (capture-pane)</div>
+        <div class="terminal-pane">
+<span class="dim">~/git/myapp</span>
+<span class="prompt">$</span> <span class="cmd">npm test</span>
+
+<span class="dim">&gt; myapp@1.0.0 test</span>
+<span class="dim">&gt; vitest run</span>
+
+ <span class="pass">PASS</span>  src/utils.test.ts
+ <span class="pass">PASS</span>  src/db.test.ts
+ <span class="err">FAIL</span>  src/auth.test.ts
+  Auth module
+    <span class="err">x token verification</span>
+      <span class="err">TypeError: token.verify is not a function</span>
+
+      <span class="dim">at Object.&lt;anonymous&gt;</span> (<span class="file">src/auth.ts:42:18</span>)
+      <span class="dim">at Object.&lt;anonymous&gt;</span> (<span class="file">src/auth.test.ts:15:5</span>)
+
+Tests:  <span class="err">1 failed</span>, <span class="pass">4 passed</span>, 5 total
+Time:   1.23s
+
+<span class="prompt">$</span> <span class="dim">_</span></div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-label">
+        <span>Respond to Agent #3 — sent as keystrokes</span>
+        <span><kbd>Ctrl+Enter</kbd> send &nbsp; <kbd>Ctrl+N</kbd> next &nbsp; <kbd>Ctrl+T</kbd> terminal</span>
+      </div>
+      <div class="input-wrapper">
+        <input class="input-field" type="text" placeholder="Try importing from @auth/jwt instead..." />
+        <button class="btn-send">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="statusbar">
+  <div class="statusbar-left">
+    <span>4 agents</span>
+    <span>1 stuck</span>
+    <span>$0.98 total</span>
+  </div>
+  <div class="statusbar-right">
+    <span><kbd>Ctrl+N</kbd> next</span>
+    <span><kbd>Ctrl+Enter</kbd> send</span>
+    <span><kbd>↑↓</kbd> agents</span>
+    <span><kbd>Ctrl+T</kbd> terminal</span>
+    <span><kbd>Ctrl+L</kbd> launch</span>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 22: Timeline Feed</title>
+<!--
+  Design rationale:
+  A unified vertical timeline showing events from ALL agents in chronological
+  order. Each event is color-coded by agent and tagged with type (tool call,
+  error, message, alert). Agent filter chips at the top allow filtering. A
+  sticky alert banner at the top shows the most urgent bottleneck. The input
+  bar at the bottom is contextual — it targets whichever agent's event you
+  last interacted with. This design prioritizes recency and cross-agent
+  awareness over single-agent deep-dives.
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #111318;
+    --bg-panel: #171a22;
+    --bg-card: #1c2030;
+    --bg-card-hover: #212638;
+    --bg-input: #1e2336;
+    --bg-terminal: #0c0f16;
+    --border: #272e42;
+    --border-dim: #1e2438;
+    --text: #b0b8cc;
+    --text-secondary: #6d7990;
+    --text-bright: #dde2f0;
+    --text-muted: #424d66;
+    --green: #22c55e;
+    --amber: #eab308;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --purple: #a78bfa;
+    --teal: #14b8a6;
+    --agent1: #60a5fa;
+    --agent2: #a78bfa;
+    --agent3: #f472b6;
+    --agent4: #34d399;
+    --agent5: #fbbf24;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    height: 100vh; display: flex; flex-direction: column;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 11.5px;
+  }
+
+  /* Top bar */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); height: 42px; flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 18px; }
+  .logo { font-family: 'JetBrains Mono', monospace; color: var(--teal);
+    font-weight: 700; font-size: 14px; letter-spacing: 1.5px; }
+  .topbar-right { display: flex; gap: 8px; }
+  .btn-launch {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 5px 16px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+
+  /* Alert banner */
+  .alert-banner {
+    background: rgba(234,179,8,0.08); border-bottom: 1px solid rgba(234,179,8,0.2);
+    padding: 10px 20px; display: flex; align-items: center; gap: 12px;
+    flex-shrink: 0;
+  }
+  .alert-badge {
+    background: var(--amber); color: #0a0e12; font-size: 10.5px; font-weight: 700;
+    padding: 2px 8px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+  .alert-text { font-size: 12.5px; color: var(--amber); flex: 1; }
+  .alert-action {
+    background: rgba(234,179,8,0.15); border: 1px solid rgba(234,179,8,0.3);
+    color: var(--amber); padding: 4px 12px; border-radius: 5px;
+    font-size: 11.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+
+  /* Filter bar */
+  .filters {
+    display: flex; align-items: center; gap: 8px; padding: 10px 20px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .filter-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .filter-chip {
+    display: flex; align-items: center; gap: 5px;
+    padding: 3px 10px; border-radius: 12px; font-size: 11.5px;
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    color: var(--text-secondary); cursor: pointer;
+    transition: all 0.1s ease;
+  }
+  .filter-chip.active { border-color: currentColor; }
+  .filter-chip .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .filter-chip[data-agent="1"] { --c: var(--agent1); }
+  .filter-chip[data-agent="2"] { --c: var(--agent2); }
+  .filter-chip[data-agent="3"] { --c: var(--agent3); }
+  .filter-chip[data-agent="4"] { --c: var(--agent4); }
+  .filter-chip[data-agent="5"] { --c: var(--agent5); }
+  .filter-chip .dot { background: var(--c); }
+  .filter-chip.active { color: var(--c); }
+  .filter-sep { width: 1px; height: 18px; background: var(--border-dim); margin: 0 4px; }
+  .filter-type {
+    padding: 3px 10px; border-radius: 12px; font-size: 11px;
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    color: var(--text-muted); cursor: pointer;
+  }
+  .filter-type.active { color: var(--text-secondary); border-color: var(--border); }
+
+  /* Timeline */
+  .timeline {
+    flex: 1; overflow-y: auto; padding: 16px 20px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+
+  .event {
+    display: flex; gap: 12px; padding: 8px 12px;
+    border-radius: 6px; transition: background 0.1s;
+  }
+  .event:hover { background: var(--bg-card); }
+
+  .event-line {
+    width: 3px; border-radius: 2px; flex-shrink: 0;
+  }
+  .event[data-agent="1"] .event-line { background: var(--agent1); }
+  .event[data-agent="2"] .event-line { background: var(--agent2); }
+  .event[data-agent="3"] .event-line { background: var(--agent3); }
+  .event[data-agent="4"] .event-line { background: var(--agent4); }
+  .event[data-agent="5"] .event-line { background: var(--agent5); }
+
+  .event-content { flex: 1; min-width: 0; }
+  .event-header { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+  .event-agent { font-size: 11px; font-weight: 600; }
+  .event[data-agent="1"] .event-agent { color: var(--agent1); }
+  .event[data-agent="2"] .event-agent { color: var(--agent2); }
+  .event[data-agent="3"] .event-agent { color: var(--agent3); }
+  .event[data-agent="4"] .event-agent { color: var(--agent4); }
+  .event[data-agent="5"] .event-agent { color: var(--agent5); }
+  .event-type {
+    font-size: 10px; padding: 1px 6px; border-radius: 3px;
+    background: var(--bg-input); color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .event-type.alert { background: var(--amber-bg); color: var(--amber); }
+  .event-type.error { background: rgba(239,68,68,0.1); color: var(--red); }
+  .event-time { font-size: 10.5px; color: var(--text-muted); margin-left: auto; }
+  .event-body { font-size: 12.5px; line-height: 1.5; color: var(--text); }
+  .event-body code { background: var(--bg-terminal); padding: 1px 5px; border-radius: 3px; }
+  .event-terminal {
+    background: var(--bg-terminal); border: 1px solid var(--border-dim);
+    border-radius: 5px; padding: 8px 10px; margin-top: 6px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text-secondary); white-space: pre-wrap; max-height: 120px;
+    overflow-y: auto;
+  }
+  .event.alert-event {
+    background: var(--amber-bg); border: 1px solid var(--amber-border);
+    border-radius: 6px; margin: 4px 0;
+  }
+
+  /* Input bar */
+  .input-bar {
+    padding: 12px 20px; border-top: 1px solid var(--border);
+    background: var(--bg-panel); display: flex; align-items: center; gap: 10px;
+    flex-shrink: 0;
+  }
+  .input-target {
+    font-size: 11px; padding: 3px 10px; border-radius: 4px;
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    color: var(--agent1); white-space: nowrap;
+  }
+  .input-bar input {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border-dim);
+    border-radius: 6px; padding: 9px 14px; color: var(--text-bright);
+    font-family: inherit; font-size: 13px; outline: none;
+  }
+  .input-bar input:focus { border-color: var(--teal); }
+  .input-bar input::placeholder { color: var(--text-muted); }
+  .btn-send {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 9px 20px; border-radius: 6px; font-weight: 600; cursor: pointer;
+    font-size: 12.5px;
+  }
+  .btn-skip {
+    background: none; border: 1px solid var(--border-dim); color: var(--text-secondary);
+    padding: 9px 14px; border-radius: 6px; font-size: 12px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+  </div>
+  <div class="topbar-right">
+    <button class="btn-launch">+ Launch Agent</button>
+  </div>
+</div>
+
+<!-- Alert banner -->
+<div class="alert-banner">
+  <span class="alert-badge">Stuck</span>
+  <span class="alert-text"><strong>Fix auth token refresh</strong> — ran <code>npm test</code> 8 times with same TypeError. Needs a hint about the token module import.</span>
+  <button class="alert-action">Respond</button>
+</div>
+
+<!-- Filters -->
+<div class="filters">
+  <span class="filter-label">Agents:</span>
+  <span class="filter-chip active" data-agent="1"><span class="dot"></span> Fix auth token</span>
+  <span class="filter-chip active" data-agent="2"><span class="dot"></span> Add pagination</span>
+  <span class="filter-chip active" data-agent="3"><span class="dot"></span> Refactor cache</span>
+  <span class="filter-chip active" data-agent="4"><span class="dot"></span> Integration tests</span>
+  <span class="filter-chip active" data-agent="5"><span class="dot"></span> Update README</span>
+  <span class="filter-sep"></span>
+  <span class="filter-type active">All</span>
+  <span class="filter-type">Alerts</span>
+  <span class="filter-type">Tools</span>
+  <span class="filter-type">Messages</span>
+</div>
+
+<!-- Timeline -->
+<div class="timeline">
+  <div class="event" data-agent="5">
+    <div class="event-line"></div>
+    <div class="event-content">
+      <div class="event-header">
+        <span class="event-agent">Update README</span>
+        <span class="event-type">completed</span>
+        <span class="event-time">2m ago</span>
+      </div>
+      <div class="event-body">Task completed. Created PR #142 with updated badges and installation instructions.</div>
+    </div>
+  </div>
+
+  <div class="event alert-event" data-agent="1">
+    <div class="event-line"></div>
+    <div class="event-content">
+      <div class="event-header">
+        <span class="event-agent">Fix auth token</span>
+        <span class="event-type alert">stuck loop</span>
+        <span class="event-time">3m ago</span>
+      </div>
+      <div class="event-body">Supervisor detected stuck loop: ran <code>npm test</code> 8 times. Same <code>TypeError: token.verify is not a function</code> each time. Agent keeps editing <code>src/auth/token.ts</code> but hasn't tried changing the import.</div>
+    </div>
+  </div>
+
+  <div class="event" data-agent="1">
+    <div class="event-line"></div>
+    <div class="event-content">
+      <div class="event-header">
+        <span class="event-agent">Fix auth token</span>
+        <span class="event-type">tool</span>
+        <span class="event-time">4m ago</span>
+      </div>
+      <div class="event-body">Ran <code>npm test -- --testPathPattern=token</code></div>
+      <div class="event-terminal">FAIL src/auth/__tests__/token.test.ts
+  TypeError: token.verify is not a function
+    at refreshToken (src/auth/token.ts:14:18)
+
+Tests  1 failed | 3 passed (4)</div>
+    </div>
+  </div>
+
+  <div class="event" data-agent="2">
+    <div class="event-line"></div>
+    <div class="event-content">
+      <div class="event-header">
+        <span class="event-agent">Add pagination</span>
+        <span class="event-type">tool</span>
+        <span class="event-time">5m ago</span>
+      </div>
+      <div class="event-body">Editing <code>src/routes/users.ts</code> — adding cursor-based pagination with <code>after</code> and <code>limit</code> parameters.</div>
+    </div>
+  </div>
+
+  <div class="event" data-agent="3">
+    <div class="event-line"></div>
+    <div class="event-content">
+      <div class="event-header">
+        <span class="event-agent">Refactor cache</span>
+        <span class="event-type error">permission</span>
+        <span class="event-time">6m ago</span>
+      </div>
+      <div class="event-body">Permission blocked: agent wants to run <code>rm -rf node_modules</code>. Waiting for approval.</div>
+    </div>
+  </div>
+
+  <div class="event" data-agent="4">
+    <div class="event-line"></div>
+    <div class="event-content">
+      <div class="event-header">
+        <span class="event-agent">Integration tests</span>
+        <span class="event-type">message</span>
+        <span class="event-time">7m ago</span>
+      </div>
+      <div class="event-body">I'll create integration tests for the user API endpoints. Starting with the authentication flow, then CRUD operations.</div>
+    </div>
+  </div>
+
+  <div class="event" data-agent="2">
+    <div class="event-line"></div>
+    <div class="event-content">
+      <div class="event-header">
+        <span class="event-agent">Add pagination</span>
+        <span class="event-type">tool</span>
+        <span class="event-time">9m ago</span>
+      </div>
+      <div class="event-body">Read <code>src/routes/users.ts</code> — analyzing current query implementation.</div>
+    </div>
+  </div>
+
+  <div class="event" data-agent="1">
+    <div class="event-line"></div>
+    <div class="event-content">
+      <div class="event-header">
+        <span class="event-agent">Fix auth token</span>
+        <span class="event-type">message</span>
+        <span class="event-time">12m ago</span>
+      </div>
+      <div class="event-body">I see the issue — <code>jwt.verify</code> validates but doesn't refresh. Let me update the function to decode, check expiry, and issue a new token.</div>
+    </div>
+  </div>
+
+  <div class="event" data-agent="3">
+    <div class="event-line"></div>
+    <div class="event-content">
+      <div class="event-header">
+        <span class="event-agent">Refactor cache</span>
+        <span class="event-type">message</span>
+        <span class="event-time">14m ago</span>
+      </div>
+      <div class="event-body">Starting cache layer refactor. I'll migrate from the custom LRU implementation to Redis with a TTL-based eviction strategy. First, let me clean up dependencies.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Input bar -->
+<div class="input-bar">
+  <span class="input-target">Fix auth token</span>
+  <input type="text" placeholder="Send a hint to this agent..." />
+  <button class="btn-send">Send</button>
+  <button class="btn-skip">Skip</button>
+</div>
+
+<script>
+// Filter chip toggle
+document.querySelectorAll('.filter-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    chip.classList.toggle('active');
+    const agent = chip.dataset.agent;
+    document.querySelectorAll(`.event[data-agent="${agent}"]`).forEach(ev => {
+      ev.style.display = chip.classList.contains('active') ? 'flex' : 'none';
+    });
+  });
+});
+</script>
+</body>
+</html>

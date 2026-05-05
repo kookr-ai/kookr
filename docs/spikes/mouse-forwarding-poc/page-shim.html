@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>POC — wheel→keystroke shim (alt-screen aware)</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css" />
+  <style>
+    body { background: #0a0c12; color: #b2bace; margin: 0; font-family: monospace; }
+    #status { padding: 6px 10px; font-size: 12px; border-bottom: 1px solid #222; }
+    #debug { padding: 6px 10px; font-size: 11px; color: #6b7280; border-bottom: 1px solid #222; min-height: 16px; }
+    #term { padding: 10px; }
+  </style>
+</head>
+<body>
+  <div id="status">Loading xterm.js…</div>
+  <div id="debug">debug: awaiting wheel…</div>
+  <div id="term"></div>
+  <script type="module">
+    import { Terminal } from 'https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/+esm';
+
+    const statusEl = document.getElementById('status');
+    const debugEl = document.getElementById('debug');
+    const termEl = document.getElementById('term');
+
+    const term = new Terminal({
+      cols: 80,
+      rows: 24,
+      fontSize: 14,
+      scrollback: 1000,
+      theme: { background: '#0a0c12', foreground: '#b2bace' },
+    });
+    term.open(termEl);
+    term.focus();
+    window.__term = term;
+
+    // Track which buffer xterm.js thinks is active.
+    // term.buffer.active.type is 'normal' | 'alternate' in v6.
+    function altActive() {
+      return term.buffer.active.type === 'alternate';
+    }
+
+    // Track whether the child has enabled SGR mouse (DECSET 1000/1002/1006) so
+    // we don't steal wheel events from an app that wants them. Cheap proxy:
+    // scan incoming writes for DECSET/DECRST of mouse modes and update flag.
+    let childWantsMouse = false;
+    const origWrite = term.write.bind(term);
+    term.write = (data) => {
+      if (data) {
+        const s = typeof data === 'string' ? data :
+                  new TextDecoder().decode(data);
+        // DECSET mouse: ?1000h/?1002h/?1003h/?1006h. DECRST = same + l.
+        if (/\x1b\[\?(1000|1002|1003|1006)h/.test(s)) childWantsMouse = true;
+        if (/\x1b\[\?(1000|1002|1003|1006)l/.test(s)) childWantsMouse = false;
+      }
+      return origWrite(data);
+    };
+
+    const ws = new WebSocket(`ws://${window.location.host}`);
+    ws.binaryType = 'arraybuffer';
+    ws.addEventListener('open', () => {
+      statusEl.textContent = `connected — shim active (alt→synthesize keys when child doesn't request mouse)`;
+      window.__wsOpen = true;
+    });
+    ws.addEventListener('close', (e) => {
+      statusEl.textContent = `ws closed code=${e.code}`;
+      window.__wsOpen = false;
+    });
+    ws.addEventListener('message', (ev) => {
+      if (typeof ev.data === 'string') term.write(ev.data);
+      else term.write(new Uint8Array(ev.data));
+    });
+
+    // Outgoing user input → WS (bytes preserved via TextEncoder).
+    const enc = new TextEncoder();
+    term.onData((data) => ws.send(enc.encode(data)));
+
+    // The shim: when (a) alt-screen is active AND (b) the child has NOT
+    // enabled mouse reporting, translate wheel events to cursor-up/down
+    // sequences and inject them into the WS. This is what xterm in classic
+    // mode and a few TUIs do automatically — but xterm.js v6 does NOT by
+    // default, leaving keyboard-only TUIs like Claude Code with no scroll.
+    //
+    // When the child DOES enable mouse reporting, we do nothing — xterm.js's
+    // native coreMouseService will forward wheel events as CSI SGR sequences.
+    const viewport = termEl.querySelector('.xterm-viewport')
+      ?? termEl.querySelector('.xterm-screen')
+      ?? termEl;
+    let shimEvents = 0;
+    viewport.addEventListener('wheel', (e) => {
+      if (!altActive() || childWantsMouse) return;
+      // Translate. Number of keystrokes ~ scroll distance. We use 3 per tick
+      // by default; consumers can tune the modifier.
+      const ticks = Math.max(1, Math.abs(Math.round(e.deltaY / 40)));
+      const key = e.deltaY < 0 ? '\x1b[A' : '\x1b[B';
+      const payload = key.repeat(ticks);
+      ws.send(enc.encode(payload));
+      shimEvents += ticks;
+      debugEl.textContent = `shim fired: deltaY=${e.deltaY.toFixed(0)} ticks=${ticks} dir=${e.deltaY < 0 ? 'UP' : 'DOWN'} totalKeystrokes=${shimEvents}`;
+      e.preventDefault();
+    }, { passive: false });
+
+    // Read-screen helper (same as page.html for Playwright assertions).
+    window.__readScreen = () => {
+      const buf = term.buffer.active;
+      let out = '';
+      for (let y = 0; y < buf.length; y++) {
+        const line = buf.getLine(y);
+        if (line) out += line.translateToString(true) + '\n';
+      }
+      return out;
+    };
+    window.__shimEvents = () => shimEvents;
+    window.__altActive = () => altActive();
+    window.__childWantsMouse = () => childWantsMouse;
+  </script>
+</body>
+</html>

@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kookr — Proposal 28: Notification Center</title>
+<!--
+  Design rationale (addresses critique-1: novel layout idea):
+  Inspired by macOS Notification Center / Slack's channel model.
+
+  Left: a notification-style feed of supervisor alerts and agent events,
+  grouped by agent, with the most urgent at top. Each notification is
+  actionable (respond inline, snooze, dismiss).
+
+  Right: when you click a notification or agent, the right panel shows
+  the full conversation + terminal for that agent.
+
+  The key insight: Kookr's primary output is supervisor explanations.
+  Make those the first-class UI element, not the agent list.
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #101218;
+    --bg-panel: #151820;
+    --bg-card: #1b1f2e;
+    --bg-card-hover: #21263a;
+    --bg-input: #1c2134;
+    --bg-terminal: #0a0c12;
+    --border: #262d42;
+    --border-dim: #1d2338;
+    --text: #b2bace;
+    --text-secondary: #6b778e;
+    --text-bright: #dfe4f0;
+    --text-muted: #3f4a62;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --teal: #2dd4bf;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    height: 100vh; display: flex; flex-direction: column;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11.5px; }
+
+  /* Top bar */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); height: 38px; flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 14px; }
+  .logo { font-family: 'JetBrains Mono', monospace; color: var(--teal);
+    font-weight: 700; font-size: 13px; letter-spacing: 1.5px; }
+  .topbar-stats { font-size: 11px; color: var(--text-muted); display: flex; gap: 10px; }
+  .topbar-stats .n { font-weight: 700; }
+  .topbar-stats .n.warn { color: var(--amber); }
+  .topbar-stats .n.ok { color: var(--green); }
+  .topbar-right { display: flex; gap: 8px; }
+  .btn-launch {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 4px 14px; border-radius: 5px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  }
+
+  /* Main split */
+  .main { flex: 1; display: flex; overflow: hidden; }
+
+  /* Left: Notification feed */
+  .notif-panel {
+    width: 380px; background: var(--bg-panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .notif-header {
+    padding: 10px 14px; border-bottom: 1px solid var(--border-dim);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .notif-header h3 { font-size: 12px; font-weight: 600; color: var(--text-bright); }
+  .notif-filter { font-size: 10.5px; color: var(--text-muted); cursor: pointer; }
+  .notif-list { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+
+  /* Notification cards */
+  .notif {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    border-radius: 8px; padding: 12px; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .notif:hover { background: var(--bg-card-hover); border-color: var(--border); }
+  .notif.selected { border-color: var(--teal); }
+  .notif.urgent { border-left: 3px solid var(--amber); }
+  .notif.error { border-left: 3px solid var(--red); }
+  .notif.info { border-left: 3px solid var(--green); }
+
+  .notif-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .notif-agent { font-size: 12px; font-weight: 600; color: var(--text-bright); }
+  .notif-time { font-size: 10px; color: var(--text-muted); }
+  .notif-badge {
+    font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 3px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .notif-badge.stuck { background: rgba(251,191,36,0.12); color: var(--amber); }
+  .notif-badge.permission { background: rgba(248,113,113,0.12); color: var(--red); }
+  .notif-badge.running { background: rgba(52,211,153,0.1); color: var(--green); }
+  .notif-badge.done { background: rgba(63,74,98,0.3); color: var(--text-muted); }
+
+  .notif-body { font-size: 12px; color: var(--text); line-height: 1.5; margin-bottom: 8px; }
+  .notif-body code { background: var(--bg-terminal); padding: 1px 4px; border-radius: 2px; }
+
+  .notif-actions { display: flex; gap: 6px; }
+  .notif-btn {
+    font-size: 10.5px; padding: 3px 8px; border-radius: 4px;
+    cursor: pointer; border: 1px solid var(--border-dim);
+    background: none; color: var(--text-secondary);
+  }
+  .notif-btn.primary {
+    background: var(--teal); color: #0a0e12; border-color: transparent; font-weight: 600;
+  }
+  .notif-btn:hover { background: var(--bg-card-hover); }
+  .notif-btn.primary:hover { background: #25b8a6; }
+
+  /* Quick reply inline */
+  .notif-reply {
+    margin-top: 8px; display: flex; gap: 6px;
+  }
+  .notif-reply input {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border-dim);
+    border-radius: 5px; padding: 5px 8px; color: var(--text-bright);
+    font-family: inherit; font-size: 11.5px; outline: none;
+  }
+  .notif-reply input:focus { border-color: var(--teal); }
+  .notif-reply .send-sm {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 5px 10px; border-radius: 5px; font-size: 11px; font-weight: 600; cursor: pointer;
+  }
+
+  /* Right: Agent detail panel */
+  .detail-panel { flex: 1; display: flex; flex-direction: column; }
+
+  .detail-header {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .detail-header-left { display: flex; align-items: center; gap: 8px; }
+  .detail-header h2 { font-size: 14px; font-weight: 600; color: var(--text-bright); }
+  .detail-header .meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 10px; }
+
+  .detail-tabs {
+    display: flex; border-bottom: 1px solid var(--border-dim); flex-shrink: 0;
+  }
+  .d-tab {
+    padding: 8px 16px; font-size: 11.5px; color: var(--text-muted);
+    cursor: pointer; border-bottom: 2px solid transparent;
+    background: none; border-top: none; border-left: none; border-right: none;
+  }
+  .d-tab.active { color: var(--teal); border-bottom-color: var(--teal); }
+
+  .detail-body { flex: 1; overflow-y: auto; }
+
+  /* Conversation view */
+  .conv { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { padding: 10px 12px; border-radius: 6px; font-size: 12.5px; line-height: 1.5; }
+  .msg.agent { background: var(--bg-card); border: 1px solid var(--border-dim); }
+  .msg.tool {
+    background: var(--bg-terminal); border: 1px solid var(--border-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text-secondary); white-space: pre-wrap;
+  }
+  .msg .lbl { font-size: 10px; font-weight: 600; color: var(--text-muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .msg code { background: var(--bg-terminal); padding: 1px 4px; border-radius: 2px; }
+
+  /* Terminal view */
+  .term-view {
+    padding: 12px 16px; font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px; color: var(--green); line-height: 1.6;
+    white-space: pre-wrap; display: none;
+  }
+
+  /* Input */
+  .detail-input {
+    padding: 10px 16px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px; flex-shrink: 0;
+  }
+  .detail-input input {
+    flex: 1; background: var(--bg-input); border: 1px solid var(--border-dim);
+    border-radius: 6px; padding: 9px 12px; color: var(--text-bright);
+    font-family: inherit; font-size: 13px; outline: none;
+  }
+  .detail-input input:focus { border-color: var(--teal); }
+  .detail-input input::placeholder { color: var(--text-muted); }
+  .btn-send {
+    background: var(--teal); color: #0a0e12; border: none;
+    padding: 9px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 12px;
+  }
+
+  /* Status bar */
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; height: 26px; background: var(--bg-panel);
+    border-top: 1px solid var(--border); font-size: 10.5px; color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .statusbar kbd {
+    background: var(--bg-card); border: 1px solid var(--border-dim);
+    padding: 0 4px; border-radius: 2px; font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  }
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="logo">KOOKR</span>
+    <div class="topbar-stats">
+      <span><span class="n warn">2</span> alerts</span>
+      <span><span class="n ok">2</span> running</span>
+      <span>$1.68</span>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <button class="btn-launch">+ Launch</button>
+  </div>
+</div>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Notification feed -->
+  <div class="notif-panel">
+    <div class="notif-header">
+      <h3>Supervisor Alerts</h3>
+      <span class="notif-filter">All &darr;</span>
+    </div>
+    <div class="notif-list">
+
+      <div class="notif urgent selected" onclick="selectNotif(this)">
+        <div class="notif-top">
+          <span class="notif-agent">Fix auth token refresh</span>
+          <span class="notif-badge stuck">Stuck</span>
+        </div>
+        <div class="notif-body">
+          Ran <code>npm test</code> 8 times with same <code>TypeError: token.verify is not a function</code>. Keeps editing token.ts without changing the import. Needs a hint.
+        </div>
+        <div class="notif-actions">
+          <button class="notif-btn primary">Respond</button>
+          <button class="notif-btn">Snooze 15m</button>
+          <button class="notif-btn">Skip</button>
+        </div>
+        <div class="notif-reply">
+          <input type="text" placeholder="Quick reply..." />
+          <button class="send-sm">Send</button>
+        </div>
+        <div class="notif-time" style="margin-top: 6px;">3 minutes ago &middot; 18m running &middot; $0.42</div>
+      </div>
+
+      <div class="notif error" onclick="selectNotif(this)">
+        <div class="notif-top">
+          <span class="notif-agent">Refactor cache layer</span>
+          <span class="notif-badge permission">Permission</span>
+        </div>
+        <div class="notif-body">
+          Blocked on permission: wants to run <code>rm -rf node_modules</code>. Approve or suggest an alternative.
+        </div>
+        <div class="notif-actions">
+          <button class="notif-btn primary">Respond</button>
+          <button class="notif-btn">Snooze</button>
+        </div>
+        <div class="notif-time" style="margin-top: 6px;">6 minutes ago &middot; 32m running &middot; $0.87</div>
+      </div>
+
+      <div class="notif info" onclick="selectNotif(this)">
+        <div class="notif-top">
+          <span class="notif-agent">Add pagination to /users</span>
+          <span class="notif-badge running">Running</span>
+        </div>
+        <div class="notif-body">
+          Agent is progressing normally. Currently editing <code>src/routes/users.ts</code> to add cursor-based pagination.
+        </div>
+        <div class="notif-time" style="margin-top: 6px;">5 minutes ago &middot; 12m running &middot; $0.23</div>
+      </div>
+
+      <div class="notif info" onclick="selectNotif(this)">
+        <div class="notif-top">
+          <span class="notif-agent">Add integration tests</span>
+          <span class="notif-badge running">Running</span>
+        </div>
+        <div class="notif-body">
+          Creating integration tests for user API. Running vitest.
+        </div>
+        <div class="notif-time" style="margin-top: 6px;">7 minutes ago &middot; 6m running &middot; $0.11</div>
+      </div>
+
+      <div class="notif" onclick="selectNotif(this)">
+        <div class="notif-top">
+          <span class="notif-agent">Update README badges</span>
+          <span class="notif-badge done">Done</span>
+        </div>
+        <div class="notif-body">
+          Task completed. Created PR #142 with updated badges.
+        </div>
+        <div class="notif-time" style="margin-top: 6px;">2 minutes ago &middot; 4m total &middot; $0.05</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Detail panel -->
+  <div class="detail-panel">
+    <div class="detail-header">
+      <div class="detail-header-left">
+        <h2>Fix auth token refresh</h2>
+      </div>
+      <div class="meta">
+        <span>~/git/webapp</span>
+        <span>18m</span>
+        <span>$0.42</span>
+        <span style="cursor:pointer; color: var(--text-secondary);">Attach</span>
+      </div>
+    </div>
+    <div class="detail-tabs">
+      <button class="d-tab active" onclick="switchDetailTab('conv')">Conversation</button>
+      <button class="d-tab" onclick="switchDetailTab('term')">Terminal</button>
+    </div>
+    <div class="detail-body">
+      <div id="detail-conv" class="conv">
+        <div class="msg agent">
+          <div class="lbl">Agent</div>
+          I'll fix the auth token refresh logic in <code>src/auth/token.ts</code>. Let me read the current implementation.
+        </div>
+        <div class="msg tool">
+          <div class="lbl">Read src/auth/token.ts</div>
+export function refreshToken(token: string) {
+  return jwt.verify(token, SECRET);
+}
+        </div>
+        <div class="msg agent">
+          <div class="lbl">Agent</div>
+          I see the issue — <code>jwt.verify</code> validates but doesn't refresh. I'll update this to decode, check expiry, and issue a new token.
+        </div>
+        <div class="msg tool">
+          <div class="lbl">Bash: npm test (attempt 8/8)</div>
+FAIL src/auth/__tests__/token.test.ts
+  TypeError: token.verify is not a function
+    at refreshToken (src/auth/token.ts:14:18)
+Tests  1 failed | 3 passed (4)
+        </div>
+        <div class="msg agent">
+          <div class="lbl">Agent</div>
+          Still failing with the same error. Let me try yet another approach...
+        </div>
+      </div>
+      <div id="detail-term" class="term-view">
+$ npm test -- --testPathPattern=token
+
+> webapp@2.1.0 test
+> vitest run --testPathPattern=token
+
+ RUN  v1.6.0 /home/user/git/webapp
+
+ FAIL  src/auth/__tests__/token.test.ts
+   > refreshToken > should issue new token
+     TypeError: token.verify is not a function
+      ❯ refreshToken src/auth/token.ts:14:18
+
+ Tests  1 failed | 3 passed (4)
+ Time   1.24s
+      </div>
+    </div>
+    <div class="detail-input">
+      <input type="text" placeholder="Send a hint to this agent... (Ctrl+Enter)" />
+      <button class="btn-send">Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- Status bar -->
+<div class="statusbar">
+  <span>5 agents &middot; $1.68</span>
+  <span><kbd>Ctrl+N</kbd> next alert &middot; <kbd>Ctrl+Enter</kbd> send &middot; <kbd>Ctrl+K</kbd> commands</span>
+</div>
+
+<script>
+function selectNotif(el) {
+  document.querySelectorAll('.notif').forEach(n => n.classList.remove('selected'));
+  el.classList.add('selected');
+}
+function switchDetailTab(tab) {
+  document.querySelectorAll('.d-tab').forEach(t => t.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+  document.getElementById('detail-conv').style.display = tab === 'conv' ? 'flex' : 'none';
+  document.getElementById('detail-term').style.display = tab === 'term' ? 'block' : 'none';
+}
+</script>
+</body>
+</html>

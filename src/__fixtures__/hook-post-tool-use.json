@@ -1,0 +1,16 @@
+{
+  "session_id": "ecdffeda-e0fc-490d-9efe-3347d80fb85e",
+  "transcript_path": "/home/jean/.claude/projects/-home-jean-git-kookr/ecdffeda-e0fc-490d-9efe-3347d80fb85e.jsonl",
+  "cwd": "/home/jean/git/kookr",
+  "permission_mode": "acceptEdits",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ls -la",
+    "description": "List files"
+  },
+  "tool_use_id": "toolu_01ABC123",
+  "tool_response": {
+    "stdout": "total 8\ndrwxr-xr-x 2 user user 4096 Mar 24 10:00 .\ndrwxr-xr-x 3 user user 4096 Mar 24 10:00 .."
+  }
+}

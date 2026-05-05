@@ -1,0 +1,260 @@
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
+import { rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import type { TaskStore, Task } from '../core/tasks.js';
+import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
+import { nowISO } from '../core/interaction-log.js';
+import { isProtectedWorktreePath } from '../core/worktree-protection.js';
+
+const execFile = promisify(execFileCb);
+
+/** Run a git command and return trimmed stdout, or null on failure. */
+async function git(...args: string[]): Promise<string | null> {
+  try {
+    const { stdout } = await execFile('git', args);
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve the default branch name (e.g. main, master) from origin/HEAD. */
+async function getDefaultBranch(): Promise<string> {
+  const ref = await git('symbolic-ref', 'refs/remotes/origin/HEAD');
+  if (ref) {
+    // "refs/remotes/origin/main" → "main"
+    const parts = ref.split('/');
+    return parts[parts.length - 1];
+  }
+  return 'main';
+}
+
+/**
+ * Check whether a worktree is clean:
+ * - No uncommitted changes (git status --porcelain)
+ * - All commits merged to default branch (git log default..branch --oneline)
+ *
+ * Returns { clean: true } or { clean: false, reason: string }.
+ */
+async function isClean(
+  worktreePath: string,
+  branch: string | undefined,
+  isDetached: boolean | undefined,
+): Promise<{ clean: true } | { clean: false; reason: string }> {
+  // Detached HEAD — can't verify merge status
+  if (isDetached) {
+    return { clean: false, reason: 'detached HEAD' };
+  }
+
+  // No branch info — treat as dirty (conservative)
+  if (!branch) {
+    return { clean: false, reason: 'no branch info' };
+  }
+
+  // Check for uncommitted changes
+  const status = await git('-C', worktreePath, 'status', '--porcelain');
+  if (status === null) {
+    return { clean: false, reason: 'git status failed' };
+  }
+  if (status.length > 0) {
+    return { clean: false, reason: 'uncommitted changes' };
+  }
+
+  // Check for unmerged commits
+  const defaultBranch = await getDefaultBranch();
+  const unmerged = await git('-C', worktreePath, 'log', `${defaultBranch}..${branch}`, '--oneline');
+  if (unmerged === null) {
+    // git log failed — branch might not exist locally, treat as dirty
+    return { clean: false, reason: 'unmerged commits check failed' };
+  }
+  if (unmerged.length > 0) {
+    return { clean: false, reason: 'unmerged commits' };
+  }
+
+  return { clean: true };
+}
+
+/** Run `git worktree prune` to clean up stale registry entries. */
+async function pruneStaleEntries(): Promise<void> {
+  await git('worktree', 'prune');
+}
+
+/** Delete a fully-merged local branch. Uses -d (safe delete — fails if not merged). */
+async function deleteBranch(branch: string): Promise<boolean> {
+  const result = await git('branch', '-d', branch);
+  return result !== null;
+}
+
+/** Collect all unique worktree paths from a task's sessions. */
+function getWorktreePaths(task: Task): string[] {
+  const paths = new Set<string>();
+  for (const s of task.sessions) {
+    if (s.gitIsWorktree && s.cwd) {
+      paths.add(s.cwd);
+    }
+  }
+  return [...paths];
+}
+
+/** Check if any other open/inProgress task uses this worktree path. */
+function isSharedWorktree(taskStore: TaskStore, taskId: string, worktreePath: string): boolean {
+  const activeTasks = [
+    ...taskStore.listTasks({ status: 'open' }),
+    ...taskStore.listTasks({ status: 'inProgress' }),
+  ];
+  for (const task of activeTasks) {
+    if (task.id === taskId) continue;
+    for (const s of task.sessions) {
+      if (s.gitIsWorktree && s.cwd === worktreePath) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Get session info for a worktree path from the task. */
+function getSessionForWorktree(task: Task, worktreePath: string) {
+  return task.sessions.find((s) => s.gitIsWorktree && s.cwd === worktreePath);
+}
+
+/**
+ * Clean up worktrees for a completed/cancelled task.
+ * Fires asynchronously — does NOT block the caller.
+ * Checks task.status before each destructive step to abort if reopened.
+ */
+export async function cleanupTaskWorktrees(
+  taskStore: TaskStore,
+  taskId: string,
+  interactionLog?: DeferredInteractionLogWriter,
+): Promise<void> {
+  const task = taskStore.getTask(taskId);
+  if (!task) return;
+
+  const paths = getWorktreePaths(task);
+  if (paths.length === 0) return;
+
+  for (const worktreePath of paths) {
+    try {
+      await cleanupSingleWorktree(taskStore, taskId, task, worktreePath, interactionLog);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await interactionLog?.append({
+        type: 'worktree_cleanup_failed',
+        taskId,
+        worktreePath,
+        error: message,
+        timestamp: nowISO(),
+      });
+    }
+  }
+}
+
+async function cleanupSingleWorktree(
+  taskStore: TaskStore,
+  taskId: string,
+  task: Task,
+  worktreePath: string,
+  interactionLog?: DeferredInteractionLogWriter,
+): Promise<void> {
+  // Path doesn't exist on disk — just prune git registry
+  if (!existsSync(worktreePath)) {
+    await pruneStaleEntries();
+    await interactionLog?.append({
+      type: 'worktree_skipped',
+      taskId,
+      worktreePath,
+      reason: 'not found',
+      timestamp: nowISO(),
+    });
+    return;
+  }
+
+  // Protected worktree
+  if (isProtectedWorktreePath(worktreePath)) {
+    await interactionLog?.append({
+      type: 'worktree_skipped',
+      taskId,
+      worktreePath,
+      reason: 'protected',
+      timestamp: nowISO(),
+    });
+    return;
+  }
+
+  // Shared with another active task
+  if (isSharedWorktree(taskStore, taskId, worktreePath)) {
+    await interactionLog?.append({
+      type: 'worktree_skipped',
+      taskId,
+      worktreePath,
+      reason: 'shared',
+      timestamp: nowISO(),
+    });
+    return;
+  }
+
+  // Safety checks
+  const session = getSessionForWorktree(task, worktreePath);
+  const branch = session?.gitBranch;
+  const isDetached = session?.gitIsDetached;
+
+  const result = await isClean(worktreePath, branch, isDetached);
+  if (!result.clean) {
+    await interactionLog?.append({
+      type: 'worktree_kept',
+      taskId,
+      worktreePath,
+      branch,
+      reason: result.reason,
+      timestamp: nowISO(),
+    });
+    return;
+  }
+
+  // --- Destructive steps: check task status before each ---
+
+  // Guard: abort if task was reopened
+  if (taskStore.getTask(taskId)?.status === 'open') {
+    await interactionLog?.append({
+      type: 'worktree_skipped',
+      taskId,
+      worktreePath,
+      reason: 'task reopened',
+      timestamp: nowISO(),
+    });
+    return;
+  }
+
+  // Step 1: Remove directory
+  await rm(worktreePath, { recursive: true, force: true });
+
+  // Guard again before prune + branch delete
+  if (taskStore.getTask(taskId)?.status === 'open') {
+    await interactionLog?.append({
+      type: 'worktree_skipped',
+      taskId,
+      worktreePath,
+      reason: 'task reopened',
+      timestamp: nowISO(),
+    });
+    return;
+  }
+
+  // Step 2: Prune git worktree registry
+  await pruneStaleEntries();
+
+  // Step 3: Delete merged branch
+  if (branch) {
+    await deleteBranch(branch);
+  }
+
+  await interactionLog?.append({
+    type: 'worktree_cleaned',
+    taskId,
+    worktreePath,
+    branch,
+    timestamp: nowISO(),
+  });
+}

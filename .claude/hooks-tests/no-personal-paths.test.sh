@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# Path-lint for bundled assets.
+#
+# Catches new bundled-asset references to user-global paths
+# (~/.claude/, ~/.codex/, ~/.kookr/, /home/jean/) that aren't on the
+# inline allowlist below. Designed to prevent regression of bundled
+# skills silently degrading on coworker machines because they reference
+# personal paths the coworker doesn't have.
+#
+# Each allowlist entry has a "# follow-up:" label naming the deferred
+# cleanup track, or the literal "NONE — load-bearing personal path"
+# (e.g. meta-skills that document Claude Code's own filesystem
+# conventions).
+#
+# Run: bash .claude/hooks-tests/no-personal-paths.test.sh
+# Or:  pnpm test:hooks
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+cd "$REPO_ROOT"
+
+# --- Inline allowlist ---------------------------------------------------------
+# Each entry: "<repo-relative-path> # follow-up: <ref>"
+# <ref> is either "NONE — <reason>" or a free-form deferred-work label.
+ALLOWLIST=(
+  # OSS extension — distribution to coworkers pending design
+  ".claude/skills/pre-pr-review/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/pre-push/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/oss-pr-distill/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/kookr-oss-pr-state/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/oss-pr-plan/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/oss-pr-critic/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/oss-pr-threshold/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/oss-issue-scout/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/oss-repo-recon/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/oss-fork-manager/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/kookr-oss-contribution-gate/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/kookr-oss-dashboard-verify/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/codex-pr-distill/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/kookr-codex-pr-state/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/codex-pr-plan/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/codex-pr-threshold/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/reviewer-distillation-predict/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/reviewer-distillation-select/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/playbooks/oss-contribute.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/agents/oss-issue-scout.md # follow-up: NONE — deferred OSS extension distribution"
+
+  # Meta-skills that legitimately document the agent runtime's filesystem
+  # conventions (~/.claude/ for Claude Code, ~/.codex/ for Codex CLI,
+  # ~/.kookr/ for Kookr itself). These references are universal for any
+  # user of those tools, not personal to the maintainer.
+  ".claude/skills/claude-code-hooks/SKILL.md # follow-up: NONE — load-bearing personal path"
+  ".claude/skills/claude-code-metrics-analysis/SKILL.md # follow-up: NONE — load-bearing personal path"
+  ".claude/skills/claude-code-permissions/SKILL.md # follow-up: NONE — load-bearing personal path"
+  ".claude/skills/kookr-codex-claude-compatibility/SKILL.md # follow-up: NONE — load-bearing personal path"
+  ".claude/skills/hook-driven-workflow-enforcement/SKILL.md # follow-up: NONE — load-bearing personal path"
+  ".claude/skills/kookr-playbooks/SKILL.md # follow-up: NONE — load-bearing personal path"
+  ".claude/skills/kookr-skill-naming-convention/SKILL.md # follow-up: NONE — load-bearing personal path"
+  ".claude/skills/self-reflect/SKILL.md # follow-up: NONE — load-bearing personal path"
+  ".claude/skills/session-reflect/SKILL.md # follow-up: NONE — load-bearing personal path"
+  ".claude/skills/kookr-shadow-detection/SKILL.md # follow-up: NONE — load-bearing personal path"
+
+  # Project CLAUDE.md: Persistence Picker section documents the Claude Code
+  # filesystem convention paths (~/.claude/hooks/, ~/.claude/CLAUDE.md,
+  # ~/.claude/projects/<proj>/memory/) and Kookr's own ~/.kookr/hooks/
+  # log location. Universal, not maintainer-specific.
+  "CLAUDE.md # follow-up: NONE — load-bearing personal path"
+  "AGENTS.md # follow-up: NONE — load-bearing personal path"
+)
+
+# --- Build allowlist maps ----------------------------------------------------
+declare -A ALLOWED
+declare -A LABEL
+for entry in "${ALLOWLIST[@]}"; do
+  path="${entry%% #*}"
+  label="${entry#*# }"
+  ALLOWED["$path"]=1
+  LABEL["$path"]="$label"
+done
+
+# --- Validate allowlist labels ----------------------------------------------
+LABEL_FAIL=0
+for path in "${!LABEL[@]}"; do
+  label="${LABEL[$path]}"
+  case "$label" in
+    "follow-up: NONE"*|"follow-up: NONE — "*)
+      ;;
+    "follow-up: "*)
+      ;;
+    *)
+      printf 'FAIL: allowlist entry for %q has invalid label: %q\n' "$path" "$label" >&2
+      printf '      Must start with "follow-up: "\n' >&2
+      LABEL_FAIL=1
+      ;;
+  esac
+done
+
+if [ "$LABEL_FAIL" -ne 0 ]; then
+  printf '\nPath-lint allowlist validation failed.\n' >&2
+  exit 1
+fi
+
+# --- Scan targets ------------------------------------------------------------
+PATTERN='(~|\$HOME|\$\{HOME\}|/home/jean)/\.(claude|codex|kookr)/'
+
+TARGETS=()
+[ -e "CLAUDE.md" ] && TARGETS+=("CLAUDE.md")
+[ -e "AGENTS.md" ] && TARGETS+=("AGENTS.md")
+while IFS= read -r f; do TARGETS+=("$f"); done < <(find .claude/skills   -name 'SKILL.md' -type f 2>/dev/null | sort)
+while IFS= read -r f; do TARGETS+=("$f"); done < <(find .claude/agents    -name '*.md'     -type f 2>/dev/null | sort)
+while IFS= read -r f; do TARGETS+=("$f"); done < <(find .claude/playbooks -name '*.md'     -type f 2>/dev/null | sort)
+
+VIOLATIONS=0
+for f in "${TARGETS[@]}"; do
+  if grep -qE "$PATTERN" "$f"; then
+    if [ -z "${ALLOWED[$f]:-}" ]; then
+      printf 'FAIL: %s references personal paths but is not on the allowlist.\n' "$f" >&2
+      grep -nE "$PATTERN" "$f" | head -3 | sed 's/^/    /' >&2
+      VIOLATIONS=$((VIOLATIONS + 1))
+    fi
+  fi
+done
+
+# --- Stale allowlist entries (informational, not failing) -------------------
+STALE=()
+for path in "${!ALLOWED[@]}"; do
+  if [ -e "$path" ] && ! grep -qE "$PATTERN" "$path"; then
+    STALE+=("$path")
+  fi
+done
+
+if [ "$VIOLATIONS" -ne 0 ]; then
+  printf '\nPath-lint failed: %d file(s) with unallowlisted personal-path references.\n' "$VIOLATIONS" >&2
+  printf 'Either remove the references or add the file to the allowlist with a justification.\n' >&2
+  exit 1
+fi
+
+if [ "${#STALE[@]}" -gt 0 ]; then
+  printf 'INFO: %d allowlist entry/entries no longer have matches and could be removed:\n' "${#STALE[@]}"
+  printf '    %s\n' "${STALE[@]}"
+fi
+
+printf 'Path-lint passed: %d files scanned, %d allowlisted, 0 violations.\n' "${#TARGETS[@]}" "${#ALLOWED[@]}"

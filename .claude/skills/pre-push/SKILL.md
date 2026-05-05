@@ -1,0 +1,107 @@
+---
+name: pre-push
+description: Repo delivery-cycle entrypoint before git push or PR creation — compose the repo pre-push hook, pre-pr-review, reviewer specialists, and PR gate without duplicating them.
+keywords: pre-push, before push, git push, before PR, delivery cycle, push, PR gate, reviewer specialists
+related: pre-pr-review, post-push, pr-lifecycle, pr-review-triage, git-commit-discipline
+---
+
+# Pre-Push
+
+> **Requires:** the OSS extension's `[[pre-pr-review]]` skill for the review-layer step (not bundled — see `docs/hooks-setup.md`). If absent, skip the review-layer step rather than fabricating output. The repo-level `pnpm test`, `pnpm build:server`, and `pnpm check:e2e` checks always run.
+
+Use this before every non-trivial `git push` in Kookr. This skill does not replace existing checks. It sequences the checks that already exist so the branch is ready for push and for `gh pr create`.
+
+## What Is Already Enforced
+
+- **Repo git hook (`.hooks/pre-push`)**: `git push` automatically runs `pnpm build:server`, `pnpm check:e2e`, and `pnpm test`. `package.json` installs the hook via `prepare -> git config core.hooksPath .hooks`. Bundled — runs for every contributor.
+- **Global PR gate (`~/.claude/hooks/pr-workflow-gate.sh`)** — part of the OSS extension (not bundled): `gh pr create` is blocked until `[[pre-pr-review]]` creates `/dev/shm/.pr-gate-<repo>-<branch>-pre-done`.
+- **Reviewer specialists (`~/.claude/reviewer-specialists/`)** — part of the OSS extension (not bundled): `[[pre-pr-review]]` defines the four-specialist review layer for non-trivial work.
+
+This skill adds the missing delivery-cycle behavior: run the repo's review workflow before the push, not just when the hook or PR gate forces you to.
+
+## Workflow
+
+### 1. Check scope before pushing
+
+Review the branch before you spend hook time:
+
+```bash
+git diff --stat main..HEAD
+git diff main..HEAD
+git log --oneline --decorate -n 5
+```
+
+Confirm:
+- The diff only contains issue-relevant changes
+- No debug leftovers, secrets, or accidental files
+- Commit messages are PR-ready, not `wip` or `temp`
+
+### 2. Run `pre-pr-review`
+
+For any branch that you expect to push for review or turn into a PR, run [[pre-pr-review]] before `git push`.
+
+In this repo, that means:
+- Run the repo's TypeScript checks: `pnpm build:server`, `pnpm check:e2e`, `pnpm test`
+- Run the reviewer specialists for non-trivial changes
+- Fix blocking findings before proceeding
+- Create the PR gate state file only after the mandatory checks pass
+
+This is intentionally earlier than the `gh pr create` hook. The hook is the backstop; this skill is the normal path.
+
+### 3. Push and let the repo hook re-check
+
+Push normally:
+
+```bash
+git push --set-upstream origin "$(git rev-parse --abbrev-ref HEAD)"
+```
+
+Expect `.hooks/pre-push` to re-run:
+- `pnpm build:server`
+- `pnpm check:e2e`
+- `pnpm test`
+
+Do not bypass the hook. If it fails, fix the issue and push again.
+
+### 4. Report milestone status explicitly
+
+Before you tell the user "push succeeded", "looks good", or "open a PR", report the delivery milestones in plain language:
+
+- `pre-pr-review`: run / skipped, with reason
+- reviewer specialists: run / skipped, with reason
+- repo pre-push hook: passed / failed
+- branch state: pushed / needs another push
+- next step: create PR / run `[[post-push]]` / fix blockers
+
+Do not make the user ask whether the pre-push workflow or reviewer layer actually ran.
+
+## Fast Path
+
+For trivial doc-only or comment-only changes:
+- You may skip reviewer specialists
+- The repo hook still runs on `git push`
+- `gh pr create` still requires the `[[pre-pr-review]]` state file unless the developer manually creates a bypass file
+- Still report whether reviewer specialists were intentionally skipped
+
+## External OSS Contributions (pushing to a fork)
+
+If you are about to push a branch that will become a PR to an **external repository** (any PR where `--base` is not `kookr-ai/kookr`), run this extra pre-push checklist before `git push`:
+
+1. **Re-read the recon report** at `~/.claude/{slug}-recon/recon-report.md` — slug is the dash-separated org-repo (`langgenius-dify`, `rust-lang-rust`, etc.).
+2. **Check the recon's AI-disclosure policy** and apply it **on the first push**, not after reviewer pushback. Common forms:
+   - **Opt-in marker in title** — e.g. dify appends `🤖🤖🤖` to the PR title for automated agents
+   - **Co-authored-by trailer** — some projects want `Co-authored-by: Claude <noreply@anthropic.com>` in the commit
+   - **Disclosure line in PR body** — "This contribution was developed with AI assistance"
+   - **No AI policy documented** → default to writing the description like a human (no backtick-heavy prose, contractions, imperfect grammar — repos without an explicit opt-in usually dislike LLM-looking PRs)
+   - **AI explicitly banned** (e.g. ggml-org/llama.cpp) → the repo is already on the oss-gate blocklist; stop.
+   - **Anti-AI / LLM-detection-harsh** (e.g. rust-lang/rust banning suspected-LLM PRs as spam) → **stop before pushing** and escalate to the user with sourced evidence: quote the CONTRIBUTING.md line, link the rejected PR or reviewer pushback, cite the CI bot that detects AI content. Ask for explicit confirmation before contributing — the user usually does not want AI contributions to these repos and may want to add the repo to the oss-gate blocklist. Don't try to "write like a human" to sneak through.
+3. **Verify commit message style** — some repos forbid issue links (`#NNN`) in commit messages (e.g. rust-lang/rust keeps them in PR body only).
+4. **Verify reviewer assignment** — don't manually `r?` a specific person unless the recon confirms they're a valid assignee; let the triagebot auto-assign.
+
+These checks live here (not in the global PR gate) because they apply **before** `git push`, while the commit and branch name are still fluid and cheap to amend.
+
+## Relationship to the Rest of the Flow
+
+- `[[pre-pr-review]]` is the enforced pre-PR gate and the place where the reviewer specialists live
+- `.hooks/pre-push` is the enforced push-time verification
+- `[[post-push]]` starts after the branch is on GitHub and continues through PR follow-through

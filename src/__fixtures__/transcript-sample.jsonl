@@ -1,0 +1,6 @@
+{"type":"system","session_id":"abc-123","transcript_path":"/home/jean/.claude/projects/test/abc-123.jsonl","model":"claude-sonnet-4-20250514"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll help you fix the auth bug. Let me look at the code."}]},"session_id":"abc-123","cost_usd":0.003}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Read","input":{"file_path":"/src/auth.ts"}}]},"session_id":"abc-123"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[{"type":"text","text":"const token = jwt.sign(payload, secret);"}]}]},"session_id":"abc-123"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Can you also check the test file?"}]},"session_id":"abc-123"}
+{"type":"result","subtype":"success","result":"I've fixed the auth bug by updating the token verification.","session_id":"abc-123","total_cost_usd":0.015,"duration_ms":45000,"num_turns":5}
