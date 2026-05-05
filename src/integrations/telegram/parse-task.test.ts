@@ -14,6 +14,7 @@ describe('parseTaskCommand', () => {
     if (r.kind === 'spec') {
       expect(r.prompt).toBe('fix sweep');
       expect(r.project.cwd).toBe('/home/jean/git/kookr');
+      expect(r.agentType).toBeUndefined();
     }
   });
 
@@ -63,6 +64,33 @@ describe('parseTaskCommand', () => {
     expect(r.kind).toBe('spec');
     if (r.kind === 'spec') {
       expect(r.prompt).toBe('line1\nline2');
+    }
+  });
+
+  it('parses explicit --agent option for /task', () => {
+    const r = parseTaskCommand('/task --agent codex fix sweep', ONE_PROJECT);
+    expect(r.kind).toBe('spec');
+    if (r.kind === 'spec') {
+      expect(r.agentType).toBe('codex-cli');
+      expect(r.prompt).toBe('fix sweep');
+    }
+  });
+
+  it('parses explicit --agent=<agent> option for /task@project', () => {
+    const r = parseTaskCommand('/task@kookr --agent=claude fix sweep', TWO_PROJECTS);
+    expect(r.kind).toBe('spec');
+    if (r.kind === 'spec') {
+      expect(r.agentType).toBe('claude-code');
+      expect(r.project.cwd).toBe('/home/jean/git/kookr');
+      expect(r.prompt).toBe('fix sweep');
+    }
+  });
+
+  it('rejects unknown --agent value', () => {
+    const r = parseTaskCommand('/task --agent cursor fix sweep', ONE_PROJECT);
+    expect(r.kind).toBe('usage_error');
+    if (r.kind === 'usage_error') {
+      expect(r.message).toMatch(/Unknown agent/);
     }
   });
 

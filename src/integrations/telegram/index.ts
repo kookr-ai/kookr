@@ -7,6 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { DEFAULT_AGENT_TYPE, type AgentType } from '../../core/agent-types.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { LaunchOpts, LaunchResult } from '../../server/launch-service.js';
 import { TelegramApiClient, TelegramApiError, type TelegramUpdate, type TelegramMessage } from './api-client.js';
@@ -89,6 +90,8 @@ export interface StartTelegramTriggerDeps {
   dataDir: string;
   /** When true, never call launchTask; reply with "[DRY-RUN] would spawn ...". */
   dryRun: boolean;
+  /** Enables Codex CLI as a Telegram-selectable remote launch target. */
+  allowCodexRemoteSpawn?: boolean;
   /** Per-minute per-sender rate limit (default 10). */
   perMinuteRateLimit?: number;
   /** Daily spawn cap (default 50). */
@@ -137,6 +140,32 @@ function truncate(s: string, n: number): string {
  */
 function isHelpCommand(text: string): boolean {
   return /^\/(start|help)(@\w+)?(\s|$)/.test(text);
+}
+
+function parseAgentCommand(text: string): 'status' | 'claude' | 'codex' | 'usage' | null {
+  const m = text.match(/^\/agent(?:@\w+)?(?:\s+(\S+))?\s*$/);
+  if (!m) return null;
+  switch ((m[1] ?? 'status').toLowerCase()) {
+    case 'status':
+      return 'status';
+    case 'claude':
+    case 'claude-code':
+      return 'claude';
+    case 'codex':
+    case 'codex-cli':
+      return 'codex';
+    default:
+      return 'usage';
+  }
+}
+
+function agentLabel(agentType: AgentType): string {
+  switch (agentType) {
+    case 'claude-code':
+      return 'Claude Code';
+    case 'codex-cli':
+      return 'Codex CLI';
+  }
 }
 
 /**
@@ -598,27 +627,45 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       return;
     }
 
+    const agentCommand = parseAgentCommand(text);
+    if (agentCommand) {
+      await handleAgentCommand(m.chat.id, userId, agentCommand);
+      return;
+    }
+
     if (text.startsWith('/task')) {
       const parsed = parseTaskCommand(text, deps.allowedProjects);
       if (parsed.kind === 'usage_error') {
         await sendMessageSafe(m.chat.id, parsed.message);
         return;
       }
+      const defaultAgentType = getDefaultAgentType(userId);
+      const agentType = parsed.agentType ?? defaultAgentType;
+      const agentSource = parsed.agentType ? 'command' : 'default';
+      if (!(await ensureAgentAllowed(m.chat.id, userId, agentType))) {
+        return;
+      }
       // Same Zod gate as rephrase output (round-3 V12).
-      const candidate = { prompt: parsed.prompt, cwd: parsed.project.cwd };
+      const candidate = { prompt: parsed.prompt, cwd: parsed.project.cwd, agentType };
       const v = TaskSpecBypassSchema.safeParse(candidate);
       if (!v.success) {
         await sendMessageSafe(m.chat.id, `/task validation failed: ${v.error.issues[0]?.message ?? 'unknown'}`);
         return;
       }
-      audit({ kind: 'task_command', sender: userId, project: parsed.project.name });
-      const spec: ValidatedTaskSpec = { ...v.data, agentType: 'claude-code' };
+      audit({ kind: 'agent_resolved', sender: userId, agentType, source: agentSource });
+      audit({ kind: 'task_command', sender: userId, project: parsed.project.name, agentType });
+      const spec: ValidatedTaskSpec = { ...v.data, agentType };
       await sendConfirmation(m.chat.id, spec);
       return;
     }
 
     // Rephrase path.
-    const result = await rephrase(text, { allowedProjects: deps.allowedProjects, llm: deps.llmClient });
+    const defaultAgentType = getDefaultAgentType(userId);
+    const result = await rephrase(text, {
+      allowedProjects: deps.allowedProjects,
+      llm: deps.llmClient,
+      defaultAgentType,
+    });
     if (result.kind === 'failed') {
       audit({ kind: 'rephrase_failed', reason: result.reason });
       await sendMessageSafe(m.chat.id, `Rephrase failed: ${result.reason}`);
@@ -634,8 +681,59 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       provider: deps.llmClient?.provider ?? 'unknown',
       model: deps.llmClient?.model ?? 'unknown',
       specCwd: result.spec.cwd,
+      agentType: result.spec.agentType,
+    });
+    if (!(await ensureAgentAllowed(m.chat.id, userId, result.spec.agentType))) {
+      return;
+    }
+    audit({
+      kind: 'agent_resolved',
+      sender: userId,
+      agentType: result.spec.agentType,
+      source: result.spec.agentType === defaultAgentType ? 'default' : 'rephrase',
     });
     await sendConfirmation(m.chat.id, result.spec);
+  }
+
+  function getDefaultAgentType(userId: number): AgentType {
+    return state.get().agentDefaultsByUser[String(userId)] ?? DEFAULT_AGENT_TYPE;
+  }
+
+  async function handleAgentCommand(chatId: number, userId: number, command: 'status' | 'claude' | 'codex' | 'usage'): Promise<void> {
+    if (command === 'usage') {
+      await sendMessageSafe(chatId, 'Usage: /agent status | /agent claude | /agent codex');
+      return;
+    }
+    if (command === 'status') {
+      const agentType = getDefaultAgentType(userId);
+      audit({ kind: 'agent_status_replied', sender: userId, agentType });
+      const suffix = agentType === 'codex-cli' && !deps.allowCodexRemoteSpawn
+        ? '\nCodex remote launch is currently disabled on this Kookr instance.'
+        : '';
+      await sendMessageSafe(chatId, `Default agent: ${agentLabel(agentType)}${suffix}`);
+      return;
+    }
+    const agentType: AgentType = command === 'codex' ? 'codex-cli' : 'claude-code';
+    if (!(await ensureAgentAllowed(chatId, userId, agentType))) {
+      return;
+    }
+    await state.update((s) => { s.agentDefaultsByUser[String(userId)] = agentType; });
+    audit({ kind: 'agent_default_changed', sender: userId, agentType });
+    await sendMessageSafe(chatId, `Default agent set to ${agentLabel(agentType)}.`);
+  }
+
+  async function ensureAgentAllowed(chatId: number, userId: number, agentType: AgentType): Promise<boolean> {
+    if (agentType !== 'codex-cli' || deps.allowCodexRemoteSpawn) {
+      return true;
+    }
+    audit({
+      kind: 'agent_default_rejected',
+      sender: userId,
+      agentType,
+      reason: 'KOOKR_REMOTE_CHAT_ALLOW_CODEX is not enabled',
+    });
+    await sendMessageSafe(chatId, 'Codex remote launch is disabled. Set KOOKR_REMOTE_CHAT_ALLOW_CODEX=1 to allow Telegram-spawned Codex tasks.');
+    return false;
   }
 
   async function sendConfirmation(chatId: number, spec: ValidatedTaskSpec): Promise<void> {
@@ -645,6 +743,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     const branchLine = spec.suggestedBranch ? `\nbranch: ${spec.suggestedBranch}` : '';
     const text =
       `Spawn this task?\n` +
+      `agent: ${agentLabel(spec.agentType)}\n` +
       `cwd: ${spec.cwd}${branchLine}\n` +
       `prompt: ${truncate(spec.prompt, 500)}`;
     await sendMessageSafe(chatId, text, {
@@ -702,7 +801,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
 
     // R17 dry-run: never call launchTask.
     if (deps.dryRun) {
-      const reply = `[DRY-RUN] would spawn: cwd=${consumed.spec.cwd} prompt="${truncate(consumed.spec.prompt, 80)}"`;
+      const reply = `[DRY-RUN] would spawn: agent=${consumed.spec.agentType} cwd=${consumed.spec.cwd} prompt="${truncate(consumed.spec.prompt, 80)}"`;
       if (cb.message) {
         await api.editMessageText(consumed.chatId, cb.message.message_id, reply).catch(() => undefined);
       }
@@ -718,7 +817,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         prompt: consumed.spec.prompt,
         cwd: consumed.spec.cwd,
         autonomy: 'supervised',
-        agentType: 'claude-code',
+        agentType: consumed.spec.agentType,
         launchSource: 'remote-chat-telegram',
       });
     } catch (err) {

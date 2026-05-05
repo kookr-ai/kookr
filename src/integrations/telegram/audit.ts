@@ -15,14 +15,19 @@
 
 import { appendFile, chmod, mkdir, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import type { AgentType } from '../../core/agent-types.js';
 
 export type AuditEvent =
   | { kind: 'start'; allowedUserCount: number; allowedProjectCount: number; dryRun: boolean }
   | { kind: 'message_received'; sender: number; text: string; len: number }
   | { kind: 'help_replied'; sender: number }
   | { kind: 'rate_limited'; sender: number }
-  | { kind: 'task_command'; sender: number; project: string }
-  | { kind: 'rephrased'; provider: string; model: string; specCwd: string }
+  | { kind: 'agent_default_changed'; sender: number; agentType: AgentType }
+  | { kind: 'agent_default_rejected'; sender: number; agentType: AgentType; reason: string }
+  | { kind: 'agent_status_replied'; sender: number; agentType: AgentType }
+  | { kind: 'agent_resolved'; sender: number; agentType: AgentType; source: 'default' | 'command' | 'rephrase' }
+  | { kind: 'task_command'; sender: number; project: string; agentType: AgentType }
+  | { kind: 'rephrased'; provider: string; model: string; specCwd: string; agentType: AgentType }
   | { kind: 'rephrase_failed'; reason: string }
   | { kind: 'rephrase_ambiguous'; reason: string }
   | { kind: 'confirmation_pending'; hash: string; chatId: number }

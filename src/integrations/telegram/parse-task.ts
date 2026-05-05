@@ -11,11 +11,47 @@
  * "low-severity" cleanup for the dispatch extraction.
  */
 
+import type { AgentType } from '../../core/agent-types.js';
 import type { ProjectInfo } from './types.js';
 
 export type ParsedTaskCommand =
-  | { kind: 'spec'; prompt: string; project: ProjectInfo }
+  | { kind: 'spec'; prompt: string; project: ProjectInfo; agentType?: AgentType }
   | { kind: 'usage_error'; message: string };
+
+function parseAgentAlias(value: string): AgentType | null {
+  switch (value.toLowerCase()) {
+    case 'claude':
+    case 'claude-code':
+      return 'claude-code';
+    case 'codex':
+    case 'codex-cli':
+      return 'codex-cli';
+    default:
+      return null;
+  }
+}
+
+function parseAgentOption(rawPrompt: string): { prompt: string; agentType?: AgentType } | { error: string } {
+  const prompt = rawPrompt.trim();
+  if (!prompt.startsWith('--agent')) {
+    return { prompt };
+  }
+  const equals = prompt.match(/^--agent=([^\s]+)\s+([\s\S]+)$/);
+  const spaced = prompt.match(/^--agent\s+([^\s]+)\s+([\s\S]+)$/);
+  const match = equals ?? spaced;
+  if (!match) {
+    return { error: 'Usage: --agent <claude|codex> must be followed by a prompt' };
+  }
+  const agentType = parseAgentAlias(match[1]);
+  if (!agentType) {
+    return { error: `Unknown agent: ${match[1]}. Allowed: claude, codex` };
+  }
+  const rest = match[2].trim();
+  if (!rest) {
+    return { error: 'Empty prompt. Usage: /task --agent <claude|codex> <prompt>' };
+  }
+  return { prompt: rest, agentType };
+}
 
 export function parseTaskCommand(text: string, allowedProjects: ProjectInfo[]): ParsedTaskCommand {
   if (!text.startsWith('/task')) {
@@ -29,14 +65,15 @@ export function parseTaskCommand(text: string, allowedProjects: ProjectInfo[]): 
       return { kind: 'usage_error', message: 'Usage: /task@<project> <prompt>' };
     }
     const name = m[1];
-    const prompt = m[2].trim();
-    if (!prompt) return { kind: 'usage_error', message: 'Empty prompt. Usage: /task@<project> <prompt>' };
+    const parsedPrompt = parseAgentOption(m[2]);
+    if ('error' in parsedPrompt) return { kind: 'usage_error', message: parsedPrompt.error };
+    if (!parsedPrompt.prompt) return { kind: 'usage_error', message: 'Empty prompt. Usage: /task@<project> <prompt>' };
     const project = allowedProjects.find((p) => p.name === name);
     if (!project) {
       const list = allowedProjects.map((p) => p.name).join(', ') || '(none configured)';
       return { kind: 'usage_error', message: `Unknown project: ${name}. Allowed: ${list}` };
     }
-    return { kind: 'spec', prompt, project };
+    return { kind: 'spec', prompt: parsedPrompt.prompt, project, agentType: parsedPrompt.agentType };
   }
 
   // /task <prompt>  — only valid for single-project setups
@@ -44,8 +81,9 @@ export function parseTaskCommand(text: string, allowedProjects: ProjectInfo[]): 
     return { kind: 'usage_error', message: 'Usage: /task <prompt>  or  /task@<project> <prompt>' };
   }
   if (text.startsWith('/task ')) {
-    const prompt = text.slice(6).trim();
-    if (!prompt) {
+    const parsedPrompt = parseAgentOption(text.slice(6));
+    if ('error' in parsedPrompt) return { kind: 'usage_error', message: parsedPrompt.error };
+    if (!parsedPrompt.prompt) {
       return { kind: 'usage_error', message: 'Empty prompt. Usage: /task <prompt>' };
     }
     if (allowedProjects.length === 0) {
@@ -55,7 +93,7 @@ export function parseTaskCommand(text: string, allowedProjects: ProjectInfo[]): 
       const list = allowedProjects.map((p) => p.name).join(', ');
       return { kind: 'usage_error', message: `Multiple projects allowed; use /task@<project> <prompt>. Allowed: ${list}` };
     }
-    return { kind: 'spec', prompt, project: allowedProjects[0] };
+    return { kind: 'spec', prompt: parsedPrompt.prompt, project: allowedProjects[0], agentType: parsedPrompt.agentType };
   }
 
   // Anything else starting with /task (e.g. /tasks) is unrecognized.

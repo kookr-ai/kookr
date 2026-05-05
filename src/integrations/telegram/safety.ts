@@ -20,6 +20,7 @@
 
 import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { AgentType } from '../../core/agent-types.js';
 
 // ---------------------------------------------------------------------------
 // Token bucket (per-sender, in-memory, simple)
@@ -153,10 +154,16 @@ export interface IntegrationState {
   spawnsByMs: number[];
   /** taskId → chatId for R16 block-alert routing. */
   origin: Record<string, number>;
+  /** Telegram sender id string → default agent for future task confirmations. */
+  agentDefaultsByUser: Record<string, AgentType>;
 }
 
 function emptyState(): IntegrationState {
-  return { offset: 0, spawnsByMs: [], origin: {} };
+  return { offset: 0, spawnsByMs: [], origin: {}, agentDefaultsByUser: {} };
+}
+
+function isAgentType(value: unknown): value is AgentType {
+  return value === 'claude-code' || value === 'codex-cli';
 }
 
 export class StateStore {
@@ -173,6 +180,13 @@ export class StateStore {
         offset: typeof parsed.offset === 'number' ? parsed.offset : 0,
         spawnsByMs: Array.isArray(parsed.spawnsByMs) ? parsed.spawnsByMs.filter((n) => typeof n === 'number') : [],
         origin: typeof parsed.origin === 'object' && parsed.origin !== null ? parsed.origin as Record<string, number> : {},
+        agentDefaultsByUser: Object.fromEntries(
+          Object.entries(
+            typeof parsed.agentDefaultsByUser === 'object' && parsed.agentDefaultsByUser !== null
+              ? parsed.agentDefaultsByUser as Record<string, unknown>
+              : {},
+          ).filter(([, value]) => isAgentType(value)),
+        ) as Record<string, AgentType>,
       };
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
@@ -243,7 +257,7 @@ export class DailyCap {
 
 export interface PendingSpec {
   /** ms epoch */ createdAt: number;
-  /** pre-validated spec */ spec: { prompt: string; cwd: string; agentType: 'claude-code'; suggestedBranch?: string };
+  /** pre-validated spec */ spec: { prompt: string; cwd: string; agentType: AgentType; suggestedBranch?: string };
   /** chat that created this draft */ chatId: number;
 }
 

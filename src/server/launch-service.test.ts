@@ -535,10 +535,17 @@ describe('launchTask', () => {
 describe('R19 trust boundary (rfc-remote-chat-trigger §4)', () => {
   let store: TaskStore;
   let deps: LaunchServiceDeps;
+  const originalAllowCodex = process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX;
 
   beforeEach(() => {
     store = new TaskStore();
     deps = makeDeps(store);
+    delete process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX;
+  });
+
+  afterEach(() => {
+    if (originalAllowCodex === undefined) delete process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX;
+    else process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX = originalAllowCodex;
   });
 
   it('throws when launchSource=remote-chat-telegram and agentType=codex-cli', async () => {
@@ -588,5 +595,17 @@ describe('R19 trust boundary (rfc-remote-chat-trigger §4)', () => {
       agentType: 'codex-cli',
     });
     expect(result.task.agentType).toBe('codex-cli');
+  });
+
+  it('allows remote-chat-telegram codex only when KOOKR_REMOTE_CHAT_ALLOW_CODEX=1', async () => {
+    process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX = '1';
+    const result = await launchTask(deps, {
+      prompt: 'p',
+      cwd: '/tmp',
+      launchSource: 'remote-chat-telegram',
+      agentType: 'codex-cli',
+    });
+    expect(result.task.agentType).toBe('codex-cli');
+    expect(deps.adapterRegistry.get('codex-cli').launch).toHaveBeenCalledOnce();
   });
 });

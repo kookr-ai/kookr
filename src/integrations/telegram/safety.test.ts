@@ -103,6 +103,15 @@ describe('StateStore + DailyCap', () => {
     const a = await StateStore.open(path);
     expect(a.get().offset).toBe(0);
   });
+
+  it('persists Telegram agent defaults by sender id', async () => {
+    const path = join(tmp, 'state.json');
+    const a = await StateStore.open(path);
+    await a.update((s) => { s.agentDefaultsByUser['12345'] = 'codex-cli'; });
+
+    const b = await StateStore.open(path);
+    expect(b.get().agentDefaultsByUser['12345']).toBe('codex-cli');
+  });
 });
 
 describe('PendingStore', () => {
@@ -112,9 +121,10 @@ describe('PendingStore', () => {
 
   it('write + consume returns the spec exactly once', async () => {
     const store = await PendingStore.open(join(tmp, 'pending'));
-    await store.write('h1', { createdAt: Date.now(), spec: { prompt: 'p', cwd: '/c', agentType: 'claude-code' }, chatId: 7 });
+    await store.write('h1', { createdAt: Date.now(), spec: { prompt: 'p', cwd: '/c', agentType: 'codex-cli' }, chatId: 7 });
     const got = await store.consume('h1');
     expect(got?.chatId).toBe(7);
+    expect(got?.spec.agentType).toBe('codex-cli');
     expect(await store.consume('h1')).toBeNull();
   });
 
