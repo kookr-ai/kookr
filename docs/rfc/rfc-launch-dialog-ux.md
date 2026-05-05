@@ -2,7 +2,7 @@
 
 ## Status
 
-**Draft (v4 — post round-3 critic incorporation)**
+**Accepted** (v4 — post round-3 critic incorporation; implementation ships in PR 1 + PR 2; PR 3 gated on telemetry)
 
 ## Problem
 
