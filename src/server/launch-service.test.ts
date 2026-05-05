@@ -531,3 +531,62 @@ describe('launchTask', () => {
     expect(result.task.prompt).toBe(prompt);
   });
 });
+
+describe('R19 trust boundary (rfc-remote-chat-trigger §4)', () => {
+  let store: TaskStore;
+  let deps: LaunchServiceDeps;
+
+  beforeEach(() => {
+    store = new TaskStore();
+    deps = makeDeps(store);
+  });
+
+  it('throws when launchSource=remote-chat-telegram and agentType=codex-cli', async () => {
+    await expect(
+      launchTask(deps, {
+        prompt: 'p',
+        cwd: '/tmp',
+        launchSource: 'remote-chat-telegram',
+        agentType: 'codex-cli',
+      }),
+    ).rejects.toThrow(/R19/);
+  });
+
+  it('R19 throws BEFORE any side effects (no task created, no adapter call)', async () => {
+    const claudeLaunch = (deps.adapterRegistry.get('claude-code') as any).launch as ReturnType<typeof vi.fn>;
+    const codexLaunch = (deps.adapterRegistry.get('codex-cli') as any).launch as ReturnType<typeof vi.fn>;
+    claudeLaunch.mockClear();
+    codexLaunch.mockClear();
+    await expect(
+      launchTask(deps, {
+        prompt: 'p',
+        cwd: '/tmp',
+        launchSource: 'remote-chat-telegram',
+        agentType: 'codex-cli',
+      }),
+    ).rejects.toThrow(/R19/);
+    expect(store.listTasks()).toHaveLength(0);
+    expect(claudeLaunch).not.toHaveBeenCalled();
+    expect(codexLaunch).not.toHaveBeenCalled();
+  });
+
+  it('allows launchSource=remote-chat-telegram with agentType=claude-code', async () => {
+    const result = await launchTask(deps, {
+      prompt: 'p',
+      cwd: '/tmp',
+      launchSource: 'remote-chat-telegram',
+      agentType: 'claude-code',
+    });
+    expect(result.task.agentType).toBe('claude-code');
+  });
+
+  it('does not enforce R19 for other launch sources', async () => {
+    const result = await launchTask(deps, {
+      prompt: 'p',
+      cwd: '/tmp',
+      launchSource: 'api',
+      agentType: 'codex-cli',
+    });
+    expect(result.task.agentType).toBe('codex-cli');
+  });
+});

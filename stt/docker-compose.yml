@@ -17,6 +17,12 @@ services:
   kookr-stt-whisper:
     image: ${WHISPER_IMAGE:-fedirz/faster-whisper-server:latest-cuda}
     container_name: kookr-stt-whisper
+    # Bind to localhost so the Kookr Node process can POST OGG voice
+    # messages from Telegram directly to the OpenAI-compatible endpoint.
+    # See issue #574; we deliberately do NOT expose 0.0.0.0 — this is
+    # a local-only sidecar.
+    ports:
+      - "127.0.0.1:${KOOKR_STT_WHISPER_PORT:-8010}:8010"
     environment:
       WHISPER__MODEL: ${WHISPER_MODEL:-large-v3}
       WHISPER__INFERENCE_DEVICE: ${WHISPER_DEVICE:-cuda}

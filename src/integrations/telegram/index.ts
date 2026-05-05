@@ -1,0 +1,794 @@
+/**
+ * Telegram remote-chat trigger — orchestration.
+ *
+ * See `docs/rfc/rfc-remote-chat-trigger.md` for the design rationale and the
+ * three-round critic-review trail. The integration is opt-in (off by default);
+ * setting KOOKR_TELEGRAM_BOT_TOKEN in .env enables it.
+ */
+
+import { createHash } from 'node:crypto';
+import type { LlmClient } from '../../core/llm-client.js';
+import type { LaunchOpts, LaunchResult } from '../../server/launch-service.js';
+import { TelegramApiClient, TelegramApiError, type TelegramUpdate, type TelegramMessage } from './api-client.js';
+import { parseTaskCommand } from './parse-task.js';
+import { rephrase } from './rephrase.js';
+import { transcribeVoice as defaultTranscribeVoice, TranscriptionError } from './transcribe.js';
+import { TaskSpecBypassSchema, type ProjectInfo, type ValidatedTaskSpec } from './types.js';
+import {
+  acquireLockOrFail,
+  createTokenBucket,
+  DailyCap,
+  ensureIntegrationDir,
+  LockBusyError,
+  PendingStore,
+  StateStore,
+  type LockHandle,
+  type RateLimiter,
+} from './safety.js';
+import { createAuditWriter, type AuditWriter } from './audit.js';
+import type { AuditEvent } from './audit.js';
+import { startVoiceWarmup } from './warmup.js';
+
+/**
+ * Cap for Telegram audio we will transcribe. Telegram's default in-app voice
+ * recording cap is 60 s, but uploaded audio/video files can be much longer.
+ * We refuse anything past 5 minutes — large-v3 on GPU does ~10x realtime, so
+ * a 5 min clip is still ~30 s of work.
+ */
+const MAX_AUDIO_SECONDS = 300;
+
+/**
+ * Hard upper bound on audio payload size. Telegram caps voice files at 20 MB
+ * and faster-whisper-server defaults its upload limit to 25 MB; uploaded
+ * audio/document files can be much larger, so we fail closed at 25 MiB before
+ * download whenever Telegram exposes file_size. The Buffer is held in memory
+ * only — never persisted — and freed once the multipart POST returns.
+ */
+const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Telegram documents do not include a duration field. For audio documents, use
+ * a conservative size heuristic before download/transcription; a 5-minute
+ * 256 kbps audio file is roughly 10 MiB, so 12 MiB leaves room for container
+ * overhead without letting obviously long compressed uploads through.
+ */
+const MAX_AUDIO_DOCUMENT_BYTES_WITHOUT_DURATION = 12 * 1024 * 1024;
+
+/**
+ * Total wall-clock budget for the (download + transcribe) round-trip. The
+ * audio branch passes a shared deadline to both legs so a slow CDN download
+ * cannot extend the per-message ceiling beyond this — naively passing the
+ * full 30 s to each leg independently would allow ~60 s worst-case.
+ */
+const TRANSCRIBE_TIMEOUT_MS = 30_000;
+
+type AudioSource = 'voice' | 'audio' | 'video_note' | 'document';
+
+interface TelegramAudioAttachment {
+  source: AudioSource;
+  fileId: string;
+  durationSec?: number;
+  fileSize?: number;
+  mimeType?: string;
+  fallbackFilename: string;
+}
+
+interface AudioDropDecision {
+  event: AuditEvent;
+  reply: string;
+}
+
+export interface StartTelegramTriggerDeps {
+  /** Bot API token (from BotFather). */
+  token: string;
+  /** Allowlisted Telegram numeric user IDs. */
+  allowedUserIds: Set<number>;
+  /** Projects this integration may spawn tasks against. */
+  allowedProjects: ProjectInfo[];
+  /** Kookr-internal data dir. Integration writes to <dataDir>/telegram/. */
+  dataDir: string;
+  /** When true, never call launchTask; reply with "[DRY-RUN] would spawn ...". */
+  dryRun: boolean;
+  /** Per-minute per-sender rate limit (default 10). */
+  perMinuteRateLimit?: number;
+  /** Daily spawn cap (default 50). */
+  maxSpawnsPerDay?: number;
+  /** URL the dashboard is reachable at (e.g., http://localhost:4800). */
+  dashboardBaseUrl: string;
+  /** Function that calls into launch-service. Injected for testability. */
+  launchTask: (opts: LaunchOpts) => Promise<LaunchResult>;
+  /** May be null if no LLM provider is configured. /task bypass still works. */
+  llmClient: LlmClient | null;
+  /**
+   * Base URL of the local faster-whisper-server (e.g. `http://127.0.0.1:8010`).
+   * When unset, audio messages are dropped with `dropped_audio_disabled`.
+   * See issues #574, #585 and `transcribe.ts`.
+   */
+  whisperUrl?: string;
+  /**
+   * Test seam — overrides the transcription function. Production wiring
+   * uses the default `transcribeVoice` from `./transcribe.ts`.
+   */
+  transcribeVoice?: typeof defaultTranscribeVoice;
+}
+
+export interface TelegramHandle {
+  stop(): Promise<void>;
+  /**
+   * Callback wired into wireEventPipeline (R16 block-alerts). The pipeline
+   * catches throws so this implementation is allowed to be sloppy if it must,
+   * but in practice every send is fire-and-forget and the only path that
+   * could throw is synchronous (a missing chatId for a non-remote task,
+   * which we silently skip). See event-pipeline.ts try/catch around the call.
+   */
+  onPermissionBlocked: (taskId: string, promptText: string) => void;
+}
+
+/**
+ * Truncate text to N chars without breaking on word boundaries (just hard cut).
+ */
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+/**
+ * Recognize `/start` and `/help`, including the `@botname` suffix Telegram
+ * appends in groups (e.g. `/start@kookr_core_bot`).
+ */
+function isHelpCommand(text: string): boolean {
+  return /^\/(start|help)(@\w+)?(\s|$)/.test(text);
+}
+
+/**
+ * Friendly first-touch reply for `/start` and `/help`. Lists the configured
+ * projects so the user knows what they can spawn against. See issue #583.
+ */
+function helpText(allowedProjects: ProjectInfo[]): string {
+  const projects = allowedProjects.length === 0
+    ? '  (no projects configured)'
+    : allowedProjects.map((p) => `  • ${p.name} — ${p.cwd}`).join('\n');
+  return [
+    'Kookr remote-chat trigger.',
+    '',
+    'Type a free-text request — I will rephrase it into a task spec and ask you to confirm.',
+    'Reply ✓ Spawn or ✗ Cancel on the confirmation message.',
+    '',
+    'Or use /task <project> <prompt> to bypass the LLM.',
+    '',
+    'Available projects:',
+    projects,
+  ].join('\n');
+}
+
+/**
+ * Conservative credential-shape detector for block-alert texts before they
+ * leave Kookr for Telegram (round-3 V13). If any pattern matches, the entire
+ * body is replaced with a sentinel; the user views the full prompt in the
+ * dashboard. False positives are acceptable; false negatives are not.
+ *
+ * Patterns: BEGIN ... PRIVATE KEY (PEM), the usual word-shaped markers
+ * (password / secret / token / api_key), AWS access keys (AKIA...), GitHub
+ * tokens (ghp_/gho_/ghs_/ghu_/ghr_), and Bearer-style auth headers.
+ *
+ * Exported for direct unit testing (rfc round-3 V13 follow-up).
+ */
+export function redactCredentials(text: string): string {
+  const patterns = /(BEGIN [A-Z ]*PRIVATE KEY|password|token|secret|api[_-]?key|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+\S+)/i;
+  if (!patterns.test(text)) return text;
+  return '<prompt redacted; view in dashboard>';
+}
+
+/**
+ * 4xx statuses that genuinely mean "this specific recording was rejected" — the
+ * issue's spec wording for the payload-rejected bucket. Other 4xx (429 rate
+ * limit, 408 timeout, 401/403 auth, 407 proxy auth) are infrastructure
+ * problems where the OGG itself is fine; routing those to "re-record" gives
+ * users wrong advice. They get the server-error reply ("try again") instead.
+ */
+const PAYLOAD_REJECTED_STATUSES = new Set([
+  400, // Bad Request — whisper rejected the body shape
+  413, // Payload Too Large
+  415, // Unsupported Media Type
+  422, // Unprocessable Entity
+]);
+
+/**
+ * Classify an audio-pipeline error into one of four user-facing replies. The
+ * audit log keeps the raw `err` either way (see issue #577) — this is purely
+ * about telling the user whether to retry now, re-record, or give up.
+ *
+ * The catch in the audio branch covers THREE legs: api.getFile, api.downloadFile,
+ * and transcribeVoice. So the input here can be a TranscriptionError (whisper),
+ * a TelegramApiError (Telegram CDN/API), or a bare Error. Status is checked
+ * before any message-pattern match so an HTTP 5xx whose body happens to mention
+ * "ECONNREFUSED" can't flip to the unreachable branch (acceptance criterion:
+ * "no false positives").
+ */
+export function classifyVoiceError(err: unknown): string {
+  // TranscriptionError.status can be null (transport failure) — skip the
+  // range checks in that case so the message regex below has a chance.
+  // TelegramApiError.status is always a number, so a non-2xx Telegram CDN
+  // response gets classified the same way as a whisper non-2xx response.
+  const status =
+    err instanceof TranscriptionError ? err.status :
+    err instanceof TelegramApiError ? err.status :
+    null;
+  if (status !== null) {
+    if (PAYLOAD_REJECTED_STATUSES.has(status)) {
+      return 'Could not transcribe that recording. Please re-record or type.';
+    }
+    // Everything else 4xx (429 rate limit, 408 timeout, 401/403 auth, etc.)
+    // and all 5xx — the recording is fine, the user should retry.
+    if (status >= 400 && status < 600) {
+      return 'Transcription failed (server error). Please type or try again.';
+    }
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  // 2xx whisper responses with a malformed body — TranscriptionError carries
+  // the original 2xx status, so the range checks above miss it; the message
+  // is the only signal. Strings here mirror transcribe.ts exactly.
+  if (/non-JSON|missing "text" field/.test(msg)) {
+    return 'Transcription failed (server error). Please type or try again.';
+  }
+  // Transport-layer failures from any leg. The undici fetch backend can stringify
+  // failures in several shapes — best-effort coverage of the common ones. The
+  // AbortError name check catches both transcribeVoice's bespoke "aborted after
+  // Nms" and downloadFile's raw AbortError that doesn't get wrapped.
+  const TRANSPORT_FAIL =
+    /ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|UND_ERR_(SOCKET|CONNECT_TIMEOUT|HEADERS_TIMEOUT)|getaddrinfo|aborted after \d+ms/i;
+  if (TRANSPORT_FAIL.test(msg) || (err instanceof Error && err.name === 'AbortError')) {
+    return 'Transcription server unreachable. Please type — audio will retry on the next message.';
+  }
+  return 'Transcription failed. Please type.';
+}
+
+/**
+ * Outcome of probing the local faster-whisper-server's `/v1/models` endpoint.
+ * `modelCount` is null when the body is missing or shaped unexpectedly — the
+ * 2xx itself is treated as "reachable" regardless of the body shape.
+ */
+export type WhisperProbeResult =
+  | { ok: true; modelCount: number | null }
+  | { ok: false; reason: string };
+
+/**
+ * One-shot reachability check for `${whisperUrl}/v1/models`. Used at startup
+ * to surface misconfig (URL set, container down) in the operator log instead
+ * of letting it manifest as per-message timeouts. Never throws — caller logs
+ * the result and proceeds either way; the per-message error path (#574/#577)
+ * remains the runtime fallback. See issue #576.
+ *
+ * A 2xx headers response establishes reachability; a subsequent body-stream
+ * abort or non-JSON body does NOT flip the verdict back to FAILED — the
+ * server replied, which is what the probe is asking. modelCount is null in
+ * those cases.
+ */
+export async function probeWhisperReachability(
+  whisperUrl: string,
+  timeoutMs = 3000,
+): Promise<WhisperProbeResult> {
+  const url = `${whisperUrl.replace(/\/+$/, '')}/v1/models`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { method: 'GET', signal: controller.signal });
+    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+    let modelCount: number | null = null;
+    try {
+      const json = (await res.json()) as { data?: unknown };
+      if (Array.isArray(json.data)) modelCount = json.data.length;
+    } catch {
+      // Non-JSON body OR mid-stream abort after headers arrived. Either way
+      // the server already proved it's reachable; we just have no count.
+    }
+    return { ok: true, modelCount };
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      return { ok: false, reason: `timeout after ${timeoutMs}ms` };
+    }
+    // undici surfaces ECONNREFUSED / ENOTFOUND on `cause.code`. Guard the
+    // property read so a non-object rejection (e.g. `throw null`) can't
+    // turn this catch into a re-thrown TypeError.
+    if (err !== null && typeof err === 'object' && 'cause' in err) {
+      const cause = (err as { cause?: { code?: string } }).cause;
+      if (cause?.code) return { ok: false, reason: cause.code };
+    }
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Compact sha256-hex of a spec, used as the inline-keyboard callback_data.
+ * Truncated to 32 hex chars (128 bits) so `${hash}:y` / `${hash}:n` stays
+ * within Telegram's 1-64 byte callback_data limit; full hex (64 chars) plus
+ * a 2-byte suffix is 66 bytes and trips BUTTON_DATA_INVALID. See issue #572.
+ */
+function specHash(spec: ValidatedTaskSpec, chatId: number): string {
+  const h = createHash('sha256');
+  h.update(JSON.stringify({ p: spec.prompt, c: spec.cwd, b: spec.suggestedBranch ?? '', chat: chatId, n: Date.now() }));
+  return h.digest('hex').slice(0, 32);
+}
+
+function dashboardUrl(base: string, taskId: string): string {
+  return `${base.replace(/\/$/, '')}/?task=${encodeURIComponent(taskId)}`;
+}
+
+function extractAudioAttachment(m: TelegramMessage): TelegramAudioAttachment | null {
+  if (m.voice) {
+    return {
+      source: 'voice',
+      fileId: m.voice.file_id,
+      durationSec: m.voice.duration,
+      fileSize: m.voice.file_size,
+      mimeType: m.voice.mime_type ?? 'audio/ogg',
+      fallbackFilename: 'voice.oga',
+    };
+  }
+  if (m.audio) {
+    return {
+      source: 'audio',
+      fileId: m.audio.file_id,
+      durationSec: m.audio.duration,
+      fileSize: m.audio.file_size,
+      mimeType: m.audio.mime_type,
+      fallbackFilename: m.audio.file_name ?? 'audio',
+    };
+  }
+  if (m.video_note) {
+    return {
+      source: 'video_note',
+      fileId: m.video_note.file_id,
+      durationSec: m.video_note.duration,
+      fileSize: m.video_note.file_size,
+      mimeType: 'video/mp4',
+      fallbackFilename: 'video-note.mp4',
+    };
+  }
+  if (m.document?.mime_type?.startsWith('audio/')) {
+    return {
+      source: 'document',
+      fileId: m.document.file_id,
+      fileSize: m.document.file_size,
+      mimeType: m.document.mime_type,
+      fallbackFilename: m.document.file_name ?? 'document-audio',
+    };
+  }
+  return null;
+}
+
+function filenameFromFilePath(filePath: string, fallback: string): string {
+  return filePath.split('/').pop() || fallback;
+}
+
+function audioDropDecision(audio: TelegramAudioAttachment, bytes?: number): AudioDropDecision | null {
+  if (typeof audio.durationSec === 'number' && audio.durationSec > MAX_AUDIO_SECONDS) {
+    return {
+      event: { kind: 'dropped_audio_too_long', source: audio.source, durationSec: audio.durationSec },
+      reply: `Audio too long (${audio.durationSec}s). Cap is ${MAX_AUDIO_SECONDS}s — please type.`,
+    };
+  }
+  if (typeof bytes !== 'number') {
+    return null;
+  }
+  if (bytes > MAX_AUDIO_BYTES) {
+    return {
+      event: { kind: 'dropped_audio_too_large', source: audio.source, bytes, durationSec: audio.durationSec },
+      reply: `Audio payload too large (${bytes} bytes). Cap is ${MAX_AUDIO_BYTES} bytes — please type.`,
+    };
+  }
+  if (
+    audio.source === 'document' &&
+    audio.durationSec === undefined &&
+    bytes > MAX_AUDIO_DOCUMENT_BYTES_WITHOUT_DURATION
+  ) {
+    return {
+      event: {
+        kind: 'dropped_audio_too_long',
+        source: audio.source,
+        bytes,
+        estimatedFromBytes: true,
+      },
+      reply: `Audio document may be too long (${bytes} bytes). Cap is ${MAX_AUDIO_SECONDS}s — please type.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Backoff in ms for a poll-loop error. Honors Telegram's `retry_after` on 429.
+ */
+function backoffMs(err: unknown, attempt: number): number {
+  if (err instanceof TelegramApiError && err.retryAfter) {
+    return Math.min(60_000, err.retryAfter * 1000);
+  }
+  return Math.min(30_000, 1000 * Math.pow(2, Math.min(attempt, 5)));
+}
+
+export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Promise<TelegramHandle> {
+  const paths = await ensureIntegrationDir(deps.dataDir);
+  const audit: AuditWriter = await createAuditWriter(paths.audit);
+
+  // R9: lockfile fail-fast.
+  let lock: LockHandle;
+  try {
+    lock = await acquireLockOrFail(paths.lock);
+  } catch (err) {
+    if (err instanceof LockBusyError) {
+      throw new Error(`[telegram] Cannot start: another Kookr instance holds the lock (PID ${err.holderPid}). ${err.message}`);
+    }
+    throw err;
+  }
+
+  const state = await StateStore.open(paths.state);
+  const pending = await PendingStore.open(paths.pendingDir);
+  const limiter: RateLimiter = createTokenBucket(deps.perMinuteRateLimit ?? 10);
+  const dailyCap = new DailyCap(deps.maxSpawnsPerDay ?? 50, state);
+  const api = new TelegramApiClient(deps.token);
+
+  // Initial GC pass; schedule periodic GC.
+  await pending.gc(24 * 60 * 60 * 1000);
+  const gcTimer = setInterval(() => {
+    void pending.gc(24 * 60 * 60 * 1000);
+  }, 60 * 60 * 1000);
+  // Don't keep Kookr alive just for the GC timer.
+  if (typeof gcTimer.unref === 'function') gcTimer.unref();
+
+  audit({
+    kind: 'start',
+    allowedUserCount: deps.allowedUserIds.size,
+    allowedProjectCount: deps.allowedProjects.length,
+    dryRun: deps.dryRun,
+  });
+
+  // transcribeVoice is a test seam for per-message voice handling; production
+  // leaves it unset, so warmup exercises the real multipart whisper request.
+  const warmup = deps.whisperUrl && !deps.transcribeVoice
+    ? startVoiceWarmup({
+      whisperUrl: deps.whisperUrl,
+      timeoutMs: TRANSCRIBE_TIMEOUT_MS,
+      audit,
+      logger: console,
+    })
+    : null;
+
+  let polling = true;
+  let pollAttempt = 0;
+
+  // Outer loop body extracted so we can also call it from tests if needed.
+  const pollLoop = async () => {
+    while (polling) {
+      try {
+        const updates = await api.getUpdates(state.get().offset, 30);
+        pollAttempt = 0;
+        for (const u of updates) {
+          // INNER guard: per-update errors never escape.
+          try {
+            await handleUpdate(u);
+          } catch (err) {
+            try { audit({ kind: 'handle_failed', updateId: u.update_id, err: String(err) }); } catch { /* noop */ }
+          }
+          // Round-2 N17: persist offset in its own try; on failure halt the loop
+          // rather than retry the same batch (which would re-process every update).
+          try {
+            await state.update((s) => { s.offset = u.update_id + 1; });
+          } catch (err) {
+            try { audit({ kind: 'offset_persist_failed', err: String(err) }); } catch { /* noop */ }
+            polling = false;
+            break;
+          }
+        }
+      } catch (err) {
+        const ms = backoffMs(err, pollAttempt++);
+        await new Promise((r) => setTimeout(r, ms));
+      }
+    }
+  };
+
+  // Last-resort sentinel — should never fire because the inner loop catches everything.
+  pollLoop().catch((err) => {
+    try { audit({ kind: 'loop_died', err: String(err) }); } catch { /* noop */ }
+  });
+
+  // -------------------------------------------------------------------------
+  // handleUpdate — message and callback_query routing
+  // -------------------------------------------------------------------------
+
+  async function handleUpdate(u: TelegramUpdate): Promise<void> {
+    if (u.callback_query) {
+      await handleCallback(u.callback_query);
+      return;
+    }
+
+    const m = u.message;
+    if (!m) return; // edited_message etc. — skip
+    if (m.chat.type !== 'private') { audit({ kind: 'dropped_non_private' }); return; }
+    if (m.forward_origin || m.forward_from || m.forward_from_chat) { audit({ kind: 'dropped_forwarded' }); return; }
+
+    const userId = m.from?.id;
+    if (!userId || !deps.allowedUserIds.has(userId)) { audit({ kind: 'dropped_unauthorized' }); return; }
+
+    // Rate-limit BEFORE audio download so an attacker (in the unlikely event
+    // they bypass the allowlist) can't burn whisper GPU cycles. The text path
+    // is identically rated below.
+    if (!limiter.allow(userId)) {
+      audit({ kind: 'rate_limited', sender: userId });
+      await sendMessageSafe(m.chat.id, 'Rate limited. Try again in a minute.');
+      return;
+    }
+
+    let text = m.text;
+
+    const audio = !text ? extractAudioAttachment(m) : null;
+
+    // Audio branch — transcribe Telegram audio/video attachments into the same
+    // text-flow the rephraser/parser already use. See issues #574 and #585.
+    if (!text && audio) {
+      if (!deps.whisperUrl) {
+        audit({ kind: 'dropped_audio_disabled', source: audio.source });
+        await sendMessageSafe(
+          m.chat.id,
+          'Audio messages are not supported by this Kookr instance — please type.',
+        );
+        return;
+      }
+      const metadataDrop = audioDropDecision(audio, audio.fileSize);
+      if (metadataDrop) {
+        audit(metadataDrop.event);
+        await sendMessageSafe(m.chat.id, metadataDrop.reply);
+        return;
+      }
+      // Shared deadline so a slow download can't blow past TRANSCRIBE_TIMEOUT_MS.
+      const deadlineAt = Date.now() + TRANSCRIBE_TIMEOUT_MS;
+      const remaining = (): number => Math.max(1, deadlineAt - Date.now());
+      try {
+        const file = await api.getFile(audio.fileId);
+        if (!file.file_path) {
+          throw new Error('Telegram getFile returned no file_path');
+        }
+        const fileSizeDrop = audioDropDecision(audio, file.file_size);
+        if (fileSizeDrop) {
+          audit(fileSizeDrop.event);
+          await sendMessageSafe(m.chat.id, fileSizeDrop.reply);
+          return;
+        }
+        const audioBytes = await api.downloadFile(file.file_path, remaining());
+        const downloadedDrop = audioDropDecision(audio, audioBytes.length);
+        if (downloadedDrop) {
+          audit(downloadedDrop.event);
+          await sendMessageSafe(m.chat.id, downloadedDrop.reply);
+          return;
+        }
+        audit({
+          kind: 'audio_received',
+          source: audio.source,
+          sender: userId,
+          durationSec: audio.durationSec,
+          bytes: audioBytes.length,
+          mimeType: audio.mimeType,
+        });
+        const transcribe = deps.transcribeVoice ?? defaultTranscribeVoice;
+        text = await transcribe(audioBytes, {
+          whisperUrl: deps.whisperUrl,
+          timeoutMs: remaining(),
+          filename: filenameFromFilePath(file.file_path, audio.fallbackFilename),
+          mimeType: audio.mimeType,
+        });
+        audit({
+          kind: 'transcribed',
+          source: audio.source,
+          durationSec: audio.durationSec,
+          len: text?.length ?? 0,
+        });
+      } catch (err) {
+        audit({ kind: 'transcription_failed', err: String(err) });
+        await sendMessageSafe(m.chat.id, classifyVoiceError(err));
+        return;
+      }
+    }
+
+    if (!text || text.length === 0 || text.length > 4096) { audit({ kind: 'dropped_non_text' }); return; }
+
+    audit({ kind: 'message_received', sender: userId, text, len: text.length });
+
+    if (isHelpCommand(text)) {
+      audit({ kind: 'help_replied', sender: userId });
+      await sendMessageSafe(m.chat.id, helpText(deps.allowedProjects));
+      return;
+    }
+
+    if (text.startsWith('/task')) {
+      const parsed = parseTaskCommand(text, deps.allowedProjects);
+      if (parsed.kind === 'usage_error') {
+        await sendMessageSafe(m.chat.id, parsed.message);
+        return;
+      }
+      // Same Zod gate as rephrase output (round-3 V12).
+      const candidate = { prompt: parsed.prompt, cwd: parsed.project.cwd };
+      const v = TaskSpecBypassSchema.safeParse(candidate);
+      if (!v.success) {
+        await sendMessageSafe(m.chat.id, `/task validation failed: ${v.error.issues[0]?.message ?? 'unknown'}`);
+        return;
+      }
+      audit({ kind: 'task_command', sender: userId, project: parsed.project.name });
+      const spec: ValidatedTaskSpec = { ...v.data, agentType: 'claude-code' };
+      await sendConfirmation(m.chat.id, spec);
+      return;
+    }
+
+    // Rephrase path.
+    const result = await rephrase(text, { allowedProjects: deps.allowedProjects, llm: deps.llmClient });
+    if (result.kind === 'failed') {
+      audit({ kind: 'rephrase_failed', reason: result.reason });
+      await sendMessageSafe(m.chat.id, `Rephrase failed: ${result.reason}`);
+      return;
+    }
+    if (result.kind === 'ambiguous') {
+      audit({ kind: 'rephrase_ambiguous', reason: result.reason });
+      await sendMessageSafe(m.chat.id, `Need more info: ${result.reason}`);
+      return;
+    }
+    audit({
+      kind: 'rephrased',
+      provider: deps.llmClient?.provider ?? 'unknown',
+      model: deps.llmClient?.model ?? 'unknown',
+      specCwd: result.spec.cwd,
+    });
+    await sendConfirmation(m.chat.id, result.spec);
+  }
+
+  async function sendConfirmation(chatId: number, spec: ValidatedTaskSpec): Promise<void> {
+    const hash = specHash(spec, chatId);
+    await pending.write(hash, { createdAt: Date.now(), spec, chatId });
+    audit({ kind: 'confirmation_pending', hash, chatId });
+    const branchLine = spec.suggestedBranch ? `\nbranch: ${spec.suggestedBranch}` : '';
+    const text =
+      `Spawn this task?\n` +
+      `cwd: ${spec.cwd}${branchLine}\n` +
+      `prompt: ${truncate(spec.prompt, 500)}`;
+    await sendMessageSafe(chatId, text, {
+      inline_keyboard: [
+        [
+          { text: '✓ Spawn', callback_data: `${hash}:y` },
+          { text: '✗ Cancel', callback_data: `${hash}:n` },
+        ],
+      ],
+    });
+  }
+
+  async function handleCallback(cb: NonNullable<TelegramUpdate['callback_query']>): Promise<void> {
+    const data = cb.data ?? '';
+    const m = data.match(/^([0-9a-f]{32}):(y|n)$/);
+    if (!m) {
+      audit({ kind: 'callback_invalid', data });
+      await api.answerCallbackQuery(cb.id, 'Invalid callback').catch(() => undefined);
+      return;
+    }
+    const [, hash, action] = m;
+
+    // Round-2 N6: explicit UX for expired/GC'd callback.
+    const consumed = await pending.consume(hash);
+    if (!consumed) {
+      audit({ kind: 'callback_expired', hash });
+      await api.answerCallbackQuery(cb.id, 'This confirmation expired. Send the message again.').catch(() => undefined);
+      return;
+    }
+
+    if (cb.from.id !== consumed.chatId && !deps.allowedUserIds.has(cb.from.id)) {
+      // The chatId equality is best-effort; for private chats with the bot, chat.id == from.id
+      // for the user's own DM. We additionally allowlist-check the clicker.
+      audit({ kind: 'dropped_unauthorized' });
+      return;
+    }
+    audit({ kind: 'callback_received', hash, action, sender: cb.from.id });
+
+    if (action === 'n') {
+      if (cb.message) {
+        await api.editMessageText(consumed.chatId, cb.message.message_id, '✗ Cancelled.').catch(() => undefined);
+      }
+      await api.answerCallbackQuery(cb.id, 'Cancelled').catch(() => undefined);
+      return;
+    }
+
+    // R7 cap check at SPAWN time (round-2 N9).
+    const cap = await dailyCap.checkAndReserveSpawn();
+    if (!cap.allowed) {
+      audit({ kind: 'cap_reached', usage: cap.usage });
+      await api.answerCallbackQuery(cb.id, `Daily cap reached (${cap.usage.spawnsLast24h}/24h). Try again later.`).catch(() => undefined);
+      return;
+    }
+    audit({ kind: 'spawn_reserved', capUsage: { spawnsLast24h: cap.usage.spawnsLast24h } });
+
+    // R17 dry-run: never call launchTask.
+    if (deps.dryRun) {
+      const reply = `[DRY-RUN] would spawn: cwd=${consumed.spec.cwd} prompt="${truncate(consumed.spec.prompt, 80)}"`;
+      if (cb.message) {
+        await api.editMessageText(consumed.chatId, cb.message.message_id, reply).catch(() => undefined);
+      }
+      await api.answerCallbackQuery(cb.id, '[DRY-RUN] reply sent').catch(() => undefined);
+      audit({ kind: 'spawned', taskId: 'dry-run', chatId: consumed.chatId, dryRun: true });
+      return;
+    }
+
+    // Real spawn. R8 + R19 enforced server-side.
+    let result: LaunchResult;
+    try {
+      result = await deps.launchTask({
+        prompt: consumed.spec.prompt,
+        cwd: consumed.spec.cwd,
+        autonomy: 'supervised',
+        agentType: 'claude-code',
+        launchSource: 'remote-chat-telegram',
+      });
+    } catch (err) {
+      audit({ kind: 'spawn_failed', reason: String(err) });
+      if (cb.message) {
+        await api.editMessageText(consumed.chatId, cb.message.message_id, `Spawn failed: ${truncate(String(err), 200)}`).catch(() => undefined);
+      }
+      await api.answerCallbackQuery(cb.id, 'Spawn failed').catch(() => undefined);
+      return;
+    }
+
+    // Record the (taskId → chatId) mapping for R16 routing.
+    await state.update((s) => { s.origin[result.task.id] = consumed.chatId; });
+    audit({ kind: 'spawned', taskId: result.task.id, chatId: consumed.chatId, dryRun: false });
+
+    let body: string;
+    if (result.duplicate) {
+      body = `Duplicate of existing task: ${result.task.id}\n${dashboardUrl(deps.dashboardBaseUrl, result.task.id)}`;
+    } else if (result.queued) {
+      body = `Queued (concurrency cap). Task: ${result.task.id}\n${dashboardUrl(deps.dashboardBaseUrl, result.task.id)}`;
+    } else {
+      body = `Spawned: ${result.task.id}\n${dashboardUrl(deps.dashboardBaseUrl, result.task.id)}`;
+    }
+    if (cb.message) {
+      await api.editMessageText(consumed.chatId, cb.message.message_id, body).catch(() => undefined);
+    }
+    await api.answerCallbackQuery(cb.id).catch(() => undefined);
+  }
+
+  // -------------------------------------------------------------------------
+  // sendMessageSafe — never throws into the caller.
+  // -------------------------------------------------------------------------
+
+  async function sendMessageSafe(chatId: number, text: string, replyMarkup?: { inline_keyboard: { text: string; callback_data: string }[][] }): Promise<TelegramMessage | null> {
+    try {
+      return await api.sendMessage(chatId, text, replyMarkup);
+    } catch (err) {
+      try { audit({ kind: 'spawn_failed', reason: `sendMessage: ${String(err)}` }); } catch { /* noop */ }
+      return null;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // R16 callback exposed to wireEventPipeline.
+  // -------------------------------------------------------------------------
+
+  const onPermissionBlocked = (taskId: string, promptText: string): void => {
+    const chatId = state.get().origin[taskId];
+    if (chatId === undefined) {
+      // Not remote-spawned — silently skip. Don't audit every non-remote
+      // permission-blocked event (would dwarf the real signal).
+      return;
+    }
+    // Redact BEFORE truncating: a credential that lives past char 200 would
+    // be silently dropped by the truncate, hiding the redaction signal.
+    const safe = truncate(redactCredentials(promptText), 200);
+    const url = dashboardUrl(deps.dashboardBaseUrl, taskId);
+    void api
+      .sendMessage(chatId, `Task ${taskId} blocked: ${safe}\nApprove: ${url}`)
+      .then(() => audit({ kind: 'block_alert_sent', taskId, chatId }))
+      .catch((err) => audit({ kind: 'spawn_failed', reason: `block_alert: ${String(err)}` }));
+  };
+
+  const stop = async () => {
+    polling = false;
+    clearInterval(gcTimer);
+    await warmup?.stop();
+    await audit.close();
+    await lock.release();
+  };
+
+  return { stop, onPermissionBlocked };
+}
