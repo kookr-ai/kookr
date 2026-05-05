@@ -5,15 +5,17 @@ REPORT_DIR="${REPORT_DIR:-/tmp}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 REPORT_FILE="$REPORT_DIR/onboarding-report-$TIMESTAMP.md"
 CONTAINER_NAME="kookr-onboarding-$TIMESTAMP"
-HOOKS_DIR="$REPORT_DIR/onboarding-hooks"
+HOOKS_DIR="$REPORT_DIR/onboarding-hooks-$TIMESTAMP"
 SETTINGS_FILE="$REPORT_DIR/onboarding-settings-$TIMESTAMP.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+STAGING_DIR="$(mktemp -d -t kookr-onboarding-stage-XXXXXX)"
 
 cleanup() {
   echo "Cleaning up container $CONTAINER_NAME..."
   docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
   rm -f "$SETTINGS_FILE"
+  rm -rf "$STAGING_DIR" "$HOOKS_DIR"
 }
 trap cleanup EXIT
 
@@ -34,9 +36,16 @@ docker run -d \
   kookr-onboarding-test \
   sleep infinity
 
-# 3. Copy the repo into the container (simulates git clone)
-echo "[3/5] Copying repo into container (simulates git clone)..."
-docker cp "$REPO_DIR/." "$CONTAINER_NAME:/home/developer/kookr"
+# 3. Stage a clean clone of the repo, then copy it in. We clone to a temp dir
+#    rather than `docker cp`-ing $REPO_DIR/. directly because the working tree
+#    typically contains node_modules/, dist/, vendor/dtach/dtach (compiled),
+#    and — when run from a git worktree — a `.git` *file* pointing at a host
+#    path that doesn't exist in the container. A clone gives us only HEAD-
+#    tracked files and a real `.git` directory, which is what a real user
+#    sees after `git clone`.
+echo "[3/5] Staging clean clone (simulates fresh git clone)..."
+git clone --quiet "$REPO_DIR" "$STAGING_DIR/kookr"
+docker cp "$STAGING_DIR/kookr/." "$CONTAINER_NAME:/home/developer/kookr"
 docker exec "$CONTAINER_NAME" sudo chown -R developer:developer /home/developer/kookr
 
 # 4. Generate hook settings (same pattern as ClaudeCodeAdapter.generateSettings)
