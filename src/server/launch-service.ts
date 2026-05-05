@@ -69,6 +69,10 @@ export interface LaunchResult {
 /** Active statuses — tasks in these states block duplicate submissions. */
 const ACTIVE_STATUSES = new Set(['open', 'pending', 'inProgress']);
 
+function allowRemoteChatCodex(): boolean {
+  return process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX === '1';
+}
+
 /**
  * Check if an active task with the same prompt hash and canonical cwd already
  * exists. Returns the existing task if found, undefined otherwise.
@@ -114,12 +118,17 @@ export async function launchTask(
   const maxActive = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
   const agentType = opts.agentType ?? adapterRegistry.getDefaultType() ?? DEFAULT_AGENT_TYPE;
 
-  // R19 trust-boundary check (rfc-remote-chat-trigger §4): remote-chat-spawned
-  // tasks MUST use claude-code. This prevents a crafted /task command from trying to
-  // silently route a remote-chat task to Codex.
-  if (opts.launchSource === 'remote-chat-telegram' && agentType !== 'claude-code') {
+  // R19 trust-boundary check (rfc-remote-chat-trigger §4): Telegram-spawned
+  // Codex is opt-in because its permission model is more permissive than
+  // Claude Code's supervised path. The integration checks this before
+  // confirmation; this server-side check is the defense-in-depth boundary.
+  if (
+    opts.launchSource === 'remote-chat-telegram' &&
+    agentType !== 'claude-code' &&
+    !(agentType === 'codex-cli' && allowRemoteChatCodex())
+  ) {
     throw new Error(
-      `R19: remote-chat-telegram tasks must use claude-code, not ${agentType}`,
+      `R19: remote-chat-telegram tasks cannot use ${agentType} unless KOOKR_REMOTE_CHAT_ALLOW_CODEX=1`,
     );
   }
 

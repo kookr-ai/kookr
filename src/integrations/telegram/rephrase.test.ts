@@ -39,6 +39,32 @@ describe('rephrase', () => {
     }
   });
 
+  it('uses the caller default agent when LLM emits no agentType', async () => {
+    const llm = fakeLlm(JSON.stringify({
+      prompt: 'Investigate Codex prompt handling.',
+      cwd: '/home/jean/git/kookr',
+    }));
+    const r = await rephrase('fix it', { allowedProjects: PROJECTS, llm, defaultAgentType: 'codex-cli' });
+    expect(r.kind).toBe('spec');
+    if (r.kind === 'spec') {
+      expect(r.spec.agentType).toBe('codex-cli');
+    }
+  });
+
+  it('accepts structured agentType metadata from the LLM', async () => {
+    const llm = fakeLlm(JSON.stringify({
+      prompt: 'Fix the sweep button.',
+      cwd: '/home/jean/git/kookr',
+      agentType: 'codex-cli',
+    }));
+    const r = await rephrase('use codex to fix sweep button', { allowedProjects: PROJECTS, llm, defaultAgentType: 'claude-code' });
+    expect(r.kind).toBe('spec');
+    if (r.kind === 'spec') {
+      expect(r.spec.agentType).toBe('codex-cli');
+      expect(r.spec.prompt).toBe('Fix the sweep button.');
+    }
+  });
+
   it('returns ambiguous when LLM emits {ambiguous: ...}', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'placeholder',  // schema requires prompt; ambiguous can coexist
@@ -83,14 +109,11 @@ describe('rephrase', () => {
     }
   });
 
-  it('rejects unknown agentType field at schema level (R19 schema-level enforcement)', async () => {
-    // The schema deliberately omits agentType so the LLM cannot pick codex-cli.
-    // Combined with the launch-service R19 trust-boundary check, this is the
-    // schema-level half of the defense-in-depth pair.
+  it('rejects unknown agentType values at schema level', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'x',
       cwd: '/home/jean/git/kookr',
-      agentType: 'codex-cli',
+      agentType: 'cursor',
     }));
     const r = await rephrase('x', { allowedProjects: PROJECTS, llm });
     expect(r.kind).toBe('failed');

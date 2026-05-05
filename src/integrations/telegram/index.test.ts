@@ -360,6 +360,121 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     await sleep(150);
     const sent = fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1] as any;
     expect(sent?.text).toMatch(/Spawn this task/);
+    expect(sent?.text).toMatch(/agent: Claude Code/);
+  });
+
+  it('/task bypass accepts explicit --agent codex when remote Codex is enabled', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/task --agent codex fix the sweep button' })]);
+    handle = await startTelegramTrigger(makeDeps({
+      llmClient: null,
+      allowCodexRemoteSpawn: true,
+    }));
+    await waitFor(() => expect(fake.outbound.sendMessage.some((m) => /Spawn this task/.test(m.text))).toBe(true));
+    const sent = fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1] as any;
+    expect(sent.text).toMatch(/agent: Codex CLI/);
+
+    const cbData = sent.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data as string;
+    fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
+    await sleep(200);
+
+    expect(launchTaskMock).toHaveBeenCalledTimes(1);
+    expect((launchTaskMock.mock.calls[0][0] as LaunchOpts).agentType).toBe('codex-cli');
+  });
+
+  it('rejects explicit Codex selection when remote Codex is disabled', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/task --agent codex fix the sweep button' })]);
+    handle = await startTelegramTrigger(makeDeps({ llmClient: null }));
+    await sleep(150);
+
+    expect(launchTaskMock).not.toHaveBeenCalled();
+    expect(fake.outbound.sendMessage.some((m) => /Codex remote launch is disabled/.test(m.text))).toBe(true);
+  });
+
+  it('/agent status reports the current default agent', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/agent status' })]);
+    handle = await startTelegramTrigger(makeDeps());
+    await sleep(150);
+
+    expect(fake.outbound.sendMessage).toHaveLength(1);
+    expect(fake.outbound.sendMessage[0].text).toMatch(/Default agent: Claude Code/);
+  });
+
+  it('/agent codex persists the default and future tasks use Codex when enabled', async () => {
+    fake.queueUpdates([
+      makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/agent codex' }),
+      makeMessage({ update_id: 2, userId: ALLOWED_USER_ID, text: 'fix sweep button' }),
+    ]);
+    handle = await startTelegramTrigger(makeDeps({
+      allowCodexRemoteSpawn: true,
+      llmClient: fakeLlm(JSON.stringify({
+        prompt: 'Investigate sweep button placement.',
+        cwd: PROJECT.cwd,
+      })),
+    }));
+    await waitFor(() => expect(fake.outbound.sendMessage.some((m) => /Spawn this task/.test(m.text))).toBe(true));
+
+    expect(fake.outbound.sendMessage.some((m) => /Default agent set to Codex CLI/.test(m.text))).toBe(true);
+    const sent = fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1] as any;
+    expect(sent.text).toMatch(/agent: Codex CLI/);
+
+    const cbData = sent.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data as string;
+    fake.queueUpdates([makeCallback({ update_id: 3, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
+    await sleep(200);
+
+    expect(launchTaskMock).toHaveBeenCalledTimes(1);
+    expect((launchTaskMock.mock.calls[0][0] as LaunchOpts).agentType).toBe('codex-cli');
+
+    await waitForAudit(tmp, (events) => {
+      expect(events.some((e) => e.kind === 'agent_default_changed' && e.agentType === 'codex-cli')).toBe(true);
+      expect(events.some((e) => e.kind === 'agent_resolved' && e.agentType === 'codex-cli' && e.source === 'default')).toBe(true);
+    });
+  });
+
+  it('/agent claude switches the default back to Claude Code', async () => {
+    fake.queueUpdates([
+      makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/agent codex' }),
+      makeMessage({ update_id: 2, userId: ALLOWED_USER_ID, text: '/agent claude' }),
+      makeMessage({ update_id: 3, userId: ALLOWED_USER_ID, text: '/agent status' }),
+    ]);
+    handle = await startTelegramTrigger(makeDeps({ allowCodexRemoteSpawn: true }));
+    await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThanOrEqual(3));
+
+    expect(fake.outbound.sendMessage.some((m) => /Default agent set to Claude Code/.test(m.text))).toBe(true);
+    expect(fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1].text).toMatch(/Default agent: Claude Code/);
+  });
+
+  it('/agent codex is blocked when remote Codex is disabled', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/agent codex' })]);
+    handle = await startTelegramTrigger(makeDeps());
+    await sleep(150);
+
+    expect(fake.outbound.sendMessage).toHaveLength(1);
+    expect(fake.outbound.sendMessage[0].text).toMatch(/Codex remote launch is disabled/);
+  });
+
+  it('voice transcription can select Codex through structured rephrase metadata', async () => {
+    const oggBytes = Buffer.from('OggS-FAKE-VOICE-CODEX');
+    fake.registerFile('voice-codex-fid', 'voice/codex.oga', oggBytes);
+    fake.queueUpdates([makeVoiceMessage({
+      update_id: 1,
+      userId: ALLOWED_USER_ID,
+      voice: { file_id: 'voice-codex-fid', duration: 4, file_size: oggBytes.length },
+    })]);
+
+    handle = await startTelegramTrigger(makeDeps({
+      allowCodexRemoteSpawn: true,
+      whisperUrl: 'http://127.0.0.1:65535',
+      transcribeVoice: vi.fn(async () => 'use codex to fix the sweep button'),
+      llmClient: fakeLlm(JSON.stringify({
+        prompt: 'Fix the sweep button.',
+        cwd: PROJECT.cwd,
+        agentType: 'codex-cli',
+      })),
+    }));
+    await waitFor(() => expect(fake.outbound.sendMessage.some((m) => /Spawn this task/.test(m.text))).toBe(true));
+
+    const sent = fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1] as any;
+    expect(sent.text).toMatch(/agent: Codex CLI/);
   });
 
   it('dry-run mode: callback "y" does NOT call launchTask', async () => {

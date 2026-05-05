@@ -1075,6 +1075,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           allowedProjects,
           dataDir: kookrDir,
           dryRun: process.env.KOOKR_REMOTE_CHAT_DRY_RUN === '1',
+          allowCodexRemoteSpawn: process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX === '1',
           dashboardBaseUrl,
           launchTask: (opts) => launchTask(launchServiceDeps, opts),
           llmClient,
@@ -1089,6 +1090,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         console.log(
           `[telegram] active — allowedUsers=${allowedUserIds.size} projects=${allowedProjects.length} ` +
           `dryRun=${process.env.KOOKR_REMOTE_CHAT_DRY_RUN === '1'} ` +
+          `codex=${process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX === '1' ? 'enabled' : 'disabled'} ` +
           `audio=${process.env.KOOKR_STT_WHISPER_URL ? 'enabled' : 'disabled'}`,
         );
         // Issue #576: surface whisper misconfig at startup so operators see it

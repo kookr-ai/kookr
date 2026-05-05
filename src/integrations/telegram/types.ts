@@ -5,6 +5,9 @@
  */
 
 import { z } from 'zod';
+import type { AgentType } from '../../core/agent-types.js';
+
+export const AgentTypeSchema = z.enum(['claude-code', 'codex-cli']);
 
 /**
  * Result of rephrasing a free-form Telegram message into a structured task
@@ -12,13 +15,15 @@ import { z } from 'zod';
  *   - a valid spec (cwd in the project allowlist, prompt in length range)
  *   - { ambiguous: "..." } if it can't infer which project the user means
  *
- * V1 is Claude Code only (R19 enforced at launch-service trust boundary);
- * the schema does not include `agentType` so the LLM cannot pick Codex.
+ * `agentType` is structured metadata so phrases like "use codex" do not need
+ * to survive as prompt text. The launch-service trust boundary still gates
+ * whether Codex remote-spawn is enabled.
  */
 export const TaskSpecSchema = z
   .object({
     prompt: z.string().min(1).max(2000),
     cwd: z.string(),
+    agentType: AgentTypeSchema.optional(),
     suggestedBranch: z
       .string()
       .regex(/^[a-zA-Z0-9_/-]{1,80}$/)
@@ -36,6 +41,7 @@ export const TaskSpecBypassSchema = z
   .object({
     prompt: z.string().min(1).max(2000),
     cwd: z.string(),
+    agentType: AgentTypeSchema.optional(),
   })
   .strict();
 
@@ -47,13 +53,12 @@ export interface ProjectInfo {
 }
 
 /**
- * Validated task spec with `cwd` confirmed in the project allowlist and
- * `agentType` hardcoded to claude-code for V1. This is what the bus passes
- * to launchTask.
+ * Validated task spec with `cwd` confirmed in the project allowlist and the
+ * selected agent resolved. This is what the bus passes to launchTask.
  */
 export interface ValidatedTaskSpec {
   prompt: string;
   cwd: string;
-  agentType: 'claude-code';
+  agentType: AgentType;
   suggestedBranch?: string;
 }

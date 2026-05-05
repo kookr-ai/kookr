@@ -403,6 +403,23 @@ The system SHOULD provide a minimal quick-launch mode that inherits the path fro
 
 **Evidence:** `src/frontend/components/QuickLaunch.tsx` (prompt-only input bar, resolves CWD from selected agent → recent paths → serverCwd), `src/frontend/App.tsx` (Ctrl+L opens QuickLaunch, TopBar button opens full LaunchTaskDialog), `src/frontend/styles.css` (quick-launch-bar styling).
 
+### R4b.5: Telegram Agent Selection — SHOULD — `done`
+
+The system SHOULD allow authorized Telegram users to choose the coding agent used for remotely launched tasks.
+
+**Acceptance criteria:**
+- `/agent status` reports the authorized user's current default agent
+- `/agent claude` persists Claude Code as that user's default agent
+- `/agent codex` persists Codex CLI as that user's default agent only when `KOOKR_REMOTE_CHAT_ALLOW_CODEX=1`
+- Free-text and transcribed voice messages may resolve an explicit agent request, such as "use codex", into structured `agentType` metadata
+- `/task` accepts an explicit `--agent <claude|codex>` option without invoking the LLM
+- Confirmation messages display the resolved agent before spawn
+- Telegram-spawned Codex tasks are rejected when `KOOKR_REMOTE_CHAT_ALLOW_CODEX` is not enabled
+
+**Rationale:** Remote task launch should support the same agent choices as the rest of Kookr while keeping Codex remote spawn behind an explicit operator-controlled safety flag.
+
+**Evidence:** `src/integrations/telegram/index.ts` (`/agent` command, confirmation text, launch call), `src/integrations/telegram/rephrase.ts` (structured `agentType` schema), `src/integrations/telegram/parse-task.ts` (`--agent` parser), `src/integrations/telegram/safety.ts` (persistent per-user defaults), `src/server/launch-service.ts` (`KOOKR_REMOTE_CHAT_ALLOW_CODEX` trust-boundary guard), tests in `src/integrations/telegram/*.test.ts` and `src/server/launch-service.test.ts`.
+
 ---
 
 ## R4c: Contribution Workspace
@@ -719,6 +736,7 @@ The system SHOULD suggest an opt-in reflection task after a supervision session 
 | R4b.2 | — | SHALL | done | recent-paths, LaunchTaskDialog |
 | R4b.3 | — | SHOULD | done | useStore, DetailPanel, App |
 | R4b.4 | — | SHOULD | done | QuickLaunch, App |
+| R4b.5 | — | SHOULD | done | telegram/index, telegram/rephrase, launch-service |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R5.1 | F5.1 | SHALL | done | AgentList |
 | R5.2 | F5.2 | SHALL | done | AgentDetail |
