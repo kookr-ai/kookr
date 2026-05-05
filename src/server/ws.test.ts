@@ -191,7 +191,7 @@ describe('WebSocket MessageRouter', () => {
     expect(queue.next()).toBeNull();
   });
 
-  test('client sends launch - new agent started', async () => {
+  test('client sends launch - new task started', async () => {
     const msg: ClientMessage = {
       type: 'launch',
       prompt: 'Add pagination',

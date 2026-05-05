@@ -4,12 +4,12 @@ import React from 'react';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
-import { LaunchDialog } from './LaunchDialog.js';
+import { LaunchTaskDialog } from './LaunchTaskDialog.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
-import { LAUNCH_DIALOG_DRAFT_KEY } from '../store/launch-dialog-draft.js';
+import { LAUNCH_TASK_DIALOG_DRAFT_KEY } from '../store/launch-task-dialog-draft.js';
 import type { ClientMessage } from '../../shared/protocol.js';
 
-const DRAFT_KEY = LAUNCH_DIALOG_DRAFT_KEY;
+const DRAFT_KEY = LAUNCH_TASK_DIALOG_DRAFT_KEY;
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -67,7 +67,7 @@ function renderDialog(container: HTMLElement, opts: RenderOpts = {}): { root: Ro
   const root = createRoot(container);
   act(() => {
     root.render(
-      React.createElement(LaunchDialog, {
+      React.createElement(LaunchTaskDialog, {
         send: (_msg: ClientMessage) => true,
         onClose: () => {
           closeCalls.count++;
@@ -82,7 +82,7 @@ function renderDialog(container: HTMLElement, opts: RenderOpts = {}): { root: Ro
   return { root, closeCalls };
 }
 
-describe('LaunchDialog dismiss behavior', () => {
+describe('LaunchTaskDialog dismiss behavior', () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
@@ -183,7 +183,7 @@ describe('LaunchDialog dismiss behavior', () => {
   });
 });
 
-describe('LaunchDialog draft-restored banner', () => {
+describe('LaunchTaskDialog draft-restored banner', () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
@@ -245,7 +245,7 @@ describe('LaunchDialog draft-restored banner', () => {
   });
 
   test('does not render the banner for a draft whose prompt and criteria are both empty', async () => {
-    // saveLaunchDialogDraft already clears empty drafts, but defend against a
+    // saveLaunchTaskDialogDraft already clears empty drafts, but defend against a
     // hand-rolled / pre-existing key that snuck in via a different code path.
     localStorage.setItem(
       DRAFT_KEY,

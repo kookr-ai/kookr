@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 import { describe, test, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
-  LAUNCH_DIALOG_DRAFT_KEY,
-  loadLaunchDialogDraft,
-  saveLaunchDialogDraft,
-  clearLaunchDialogDraft,
-} from './launch-dialog-draft.js';
+  LAUNCH_TASK_DIALOG_DRAFT_KEY,
+  loadLaunchTaskDialogDraft,
+  saveLaunchTaskDialogDraft,
+  clearLaunchTaskDialogDraft,
+} from './launch-task-dialog-draft.js';
 
-const KEY = LAUNCH_DIALOG_DRAFT_KEY;
+const KEY = LAUNCH_TASK_DIALOG_DRAFT_KEY;
 
-describe('launch-dialog-draft', () => {
+describe('launch-task-dialog-draft', () => {
   beforeEach(() => {
     localStorage.clear();
   });
@@ -19,13 +19,13 @@ describe('launch-dialog-draft', () => {
   });
 
   test('load returns null when no draft is stored', () => {
-    expect(loadLaunchDialogDraft()).toBeNull();
+    expect(loadLaunchTaskDialogDraft()).toBeNull();
   });
 
   test('save then load round-trips the three fields', () => {
-    saveLaunchDialogDraft({ prompt: 'Fix the bug', cwd: '/repo', criteria: 'Tests pass' });
+    saveLaunchTaskDialogDraft({ prompt: 'Fix the bug', cwd: '/repo', criteria: 'Tests pass' });
 
-    expect(loadLaunchDialogDraft()).toEqual({
+    expect(loadLaunchTaskDialogDraft()).toEqual({
       prompt: 'Fix the bug',
       cwd: '/repo',
       criteria: 'Tests pass',
@@ -35,21 +35,21 @@ describe('launch-dialog-draft', () => {
   test('load returns null on corrupted JSON', () => {
     localStorage.setItem(KEY, 'not-json');
 
-    expect(loadLaunchDialogDraft()).toBeNull();
+    expect(loadLaunchTaskDialogDraft()).toBeNull();
   });
 
   test('load returns null when parsed value is not an object', () => {
     localStorage.setItem(KEY, JSON.stringify('a string'));
-    expect(loadLaunchDialogDraft()).toBeNull();
+    expect(loadLaunchTaskDialogDraft()).toBeNull();
 
     localStorage.setItem(KEY, JSON.stringify(42));
-    expect(loadLaunchDialogDraft()).toBeNull();
+    expect(loadLaunchTaskDialogDraft()).toBeNull();
   });
 
   test('load tolerantly coerces missing or wrong-typed fields to empty strings', () => {
     localStorage.setItem(KEY, JSON.stringify({ prompt: 'only this' }));
 
-    expect(loadLaunchDialogDraft()).toEqual({
+    expect(loadLaunchTaskDialogDraft()).toEqual({
       prompt: 'only this',
       cwd: '',
       criteria: '',
@@ -59,19 +59,19 @@ describe('launch-dialog-draft', () => {
   test('save with all-empty prompt and criteria clears the key', () => {
     localStorage.setItem(KEY, JSON.stringify({ prompt: 'old', cwd: '/a', criteria: 'old' }));
 
-    saveLaunchDialogDraft({ prompt: '', cwd: '/some/auto-cwd', criteria: '' });
+    saveLaunchTaskDialogDraft({ prompt: '', cwd: '/some/auto-cwd', criteria: '' });
 
     expect(localStorage.getItem(KEY)).toBeNull();
   });
 
   test('save with whitespace-only prompt and criteria clears the key (cwd alone does not save)', () => {
-    saveLaunchDialogDraft({ prompt: '   ', cwd: '/recent/path', criteria: '\n\t' });
+    saveLaunchTaskDialogDraft({ prompt: '   ', cwd: '/recent/path', criteria: '\n\t' });
 
     expect(localStorage.getItem(KEY)).toBeNull();
   });
 
   test('save with non-empty prompt persists all three fields including cwd', () => {
-    saveLaunchDialogDraft({ prompt: 'typed', cwd: '/a', criteria: '' });
+    saveLaunchTaskDialogDraft({ prompt: 'typed', cwd: '/a', criteria: '' });
 
     const stored = JSON.parse(localStorage.getItem(KEY)!);
     expect(stored).toEqual({ prompt: 'typed', cwd: '/a', criteria: '' });
@@ -79,17 +79,17 @@ describe('launch-dialog-draft', () => {
 
   test('save with non-empty criteria persists even if prompt is empty', () => {
     // Edge case: user typed only in criteria. Still counts as a draft worth saving.
-    saveLaunchDialogDraft({ prompt: '', cwd: '/a', criteria: 'PR created' });
+    saveLaunchTaskDialogDraft({ prompt: '', cwd: '/a', criteria: 'PR created' });
 
     const stored = JSON.parse(localStorage.getItem(KEY)!);
     expect(stored).toEqual({ prompt: '', cwd: '/a', criteria: 'PR created' });
   });
 
   test('clear removes the key', () => {
-    saveLaunchDialogDraft({ prompt: 'x', cwd: '/a', criteria: 'y' });
+    saveLaunchTaskDialogDraft({ prompt: 'x', cwd: '/a', criteria: 'y' });
     expect(localStorage.getItem(KEY)).not.toBeNull();
 
-    clearLaunchDialogDraft();
+    clearLaunchTaskDialogDraft();
 
     expect(localStorage.getItem(KEY)).toBeNull();
   });
@@ -102,7 +102,7 @@ describe('launch-dialog-draft', () => {
 
     try {
       expect(() =>
-        saveLaunchDialogDraft({ prompt: 'p', cwd: '/a', criteria: 'c' }),
+        saveLaunchTaskDialogDraft({ prompt: 'p', cwd: '/a', criteria: 'c' }),
       ).not.toThrow();
     } finally {
       Storage.prototype.setItem = original;
@@ -116,7 +116,7 @@ describe('launch-dialog-draft', () => {
     });
 
     try {
-      expect(loadLaunchDialogDraft()).toBeNull();
+      expect(loadLaunchTaskDialogDraft()).toBeNull();
     } finally {
       Storage.prototype.getItem = original;
     }
@@ -129,7 +129,7 @@ describe('launch-dialog-draft', () => {
     });
 
     try {
-      expect(() => clearLaunchDialogDraft()).not.toThrow();
+      expect(() => clearLaunchTaskDialogDraft()).not.toThrow();
     } finally {
       Storage.prototype.removeItem = original;
     }

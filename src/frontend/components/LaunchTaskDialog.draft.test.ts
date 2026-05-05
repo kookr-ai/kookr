@@ -4,12 +4,12 @@ import React from 'react';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
-import { LaunchDialog } from './LaunchDialog.js';
+import { LaunchTaskDialog } from './LaunchTaskDialog.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
-import { LAUNCH_DIALOG_DRAFT_KEY } from '../store/launch-dialog-draft.js';
+import { LAUNCH_TASK_DIALOG_DRAFT_KEY } from '../store/launch-task-dialog-draft.js';
 import type { ClientMessage } from '../../shared/protocol.js';
 
-const DRAFT_KEY = LAUNCH_DIALOG_DRAFT_KEY;
+const DRAFT_KEY = LAUNCH_TASK_DIALOG_DRAFT_KEY;
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -65,7 +65,7 @@ function renderDialog(container: HTMLElement, opts: RenderOpts = {}): { root: Ro
   const root = createRoot(container);
   act(() => {
     root.render(
-      React.createElement(LaunchDialog, {
+      React.createElement(LaunchTaskDialog, {
         send: (msg: ClientMessage) => {
           sent.push(msg);
           return opts.sendReturns ?? true;
@@ -80,7 +80,7 @@ function renderDialog(container: HTMLElement, opts: RenderOpts = {}): { root: Ro
   return { root, sent };
 }
 
-describe('LaunchDialog draft persistence', () => {
+describe('LaunchTaskDialog draft persistence', () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {

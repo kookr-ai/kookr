@@ -13,7 +13,7 @@ import { TopBar } from './components/TopBar.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
 import { DetailPanel } from './components/DetailPanel.js';
 import { StatusBar } from './components/StatusBar.js';
-import { LaunchDialog } from './components/LaunchDialog.js';
+import { LaunchTaskDialog } from './components/LaunchTaskDialog.js';
 import { QuickLaunch } from './components/QuickLaunch.js';
 import { Toasts } from './components/Toasts.js';
 import { AchievementToasts } from './components/AchievementToast.js';
@@ -608,7 +608,7 @@ export function App() {
         />
       )}
       {showLaunch && (
-        <LaunchDialog
+        <LaunchTaskDialog
           send={send}
           onClose={handleCloseLaunch}
           defaultCwd={relaunchTask?.cwd}

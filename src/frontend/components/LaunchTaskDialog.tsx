@@ -5,10 +5,10 @@ import { useKookrStore } from '../store/useStore.js';
 import { track } from '../telemetry.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import {
-  loadLaunchDialogDraft,
-  saveLaunchDialogDraft,
-  clearLaunchDialogDraft,
-} from '../store/launch-dialog-draft.js';
+  loadLaunchTaskDialogDraft,
+  saveLaunchTaskDialogDraft,
+  clearLaunchTaskDialogDraft,
+} from '../store/launch-task-dialog-draft.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
@@ -35,7 +35,7 @@ interface Props {
   projectContext?: ProjectSummary;
 }
 
-export function LaunchDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext }: Props) {
+export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext }: Props) {
   const serverCwd = useKookrStore((s) => s.serverCwd);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
@@ -52,10 +52,10 @@ export function LaunchDialog({ send, onClose, defaultCwd, defaultPrompt, default
   // `defaultAgentType` is intentionally absent: agentType is persisted under
   // its own key and is orthogonal to draft-vs-relaunch semantics.
   const isRelaunch = defaultPrompt != null || defaultCriteria != null || defaultCwd != null;
-  const initialDraft = isRelaunch ? null : loadLaunchDialogDraft();
+  const initialDraft = isRelaunch ? null : loadLaunchTaskDialogDraft();
   // Was this dialog opened with content hydrated from a stored draft? Recorded
   // once at mount so subsequent typing (which keeps writing to storage) does
-  // not flip the indicator on/off. cwd alone doesn't count — see saveLaunchDialogDraft
+  // not flip the indicator on/off. cwd alone doesn't count — see saveLaunchTaskDialogDraft
   // for the same "cwd is auto-populated, ignore it" rationale.
   const initialHadDraft = !isRelaunch && initialDraft != null
     && (initialDraft.prompt.trim().length > 0 || initialDraft.criteria.trim().length > 0);
@@ -90,7 +90,7 @@ export function LaunchDialog({ send, onClose, defaultCwd, defaultPrompt, default
   useEffect(() => {
     if (isRelaunch) return;
     if (submittedRef.current) return;
-    saveLaunchDialogDraft({ prompt, cwd, criteria });
+    saveLaunchTaskDialogDraft({ prompt, cwd, criteria });
   }, [prompt, cwd, criteria, isRelaunch]);
 
   useEffect(() => {
@@ -143,7 +143,7 @@ export function LaunchDialog({ send, onClose, defaultCwd, defaultPrompt, default
       // Set the ref *before* clearing so any pending save-effect re-run sees
       // it and early-returns instead of re-persisting the just-launched draft.
       submittedRef.current = true;
-      clearLaunchDialogDraft();
+      clearLaunchTaskDialogDraft();
       useKookrStore.getState().handleAlert('', `Starting task: ${excerpt}`, 'info');
     } else {
       useKookrStore.getState().handleAlert(
@@ -164,7 +164,7 @@ export function LaunchDialog({ send, onClose, defaultCwd, defaultPrompt, default
   });
 
   function discardDraft() {
-    clearLaunchDialogDraft();
+    clearLaunchTaskDialogDraft();
     setPrompt('');
     setCriteria('');
     setDraftRestored(false);
@@ -214,7 +214,7 @@ export function LaunchDialog({ send, onClose, defaultCwd, defaultPrompt, default
     <div className="dialog-overlay">
       <div className="dialog">
         <div className="dialog-header">
-          <h3>Launch New Agent</h3>
+          <h3>Launch New Task</h3>
           <button className="dialog-close" onClick={() => { track({ type: 'launch_dialog_closed', submitted: false, dwellMs: Date.now() - openedAtRef.current }); onClose(); }} aria-label="Close">&times;</button>
         </div>
 

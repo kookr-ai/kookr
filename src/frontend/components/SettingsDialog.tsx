@@ -274,7 +274,7 @@ export function SettingsDialog({ onClose }: Props) {
                       <div className="settings-row-info">
                         <span className="settings-label">Default autonomy</span>
                         <span className="settings-desc">
-                          Pre-selected autonomy level when launching new agents. "Supervised" agents
+                          Pre-selected autonomy level when launching new tasks. "Supervised" agents
                           pause and ask for confirmation before taking significant actions. "Autonomous"
                           agents proceed without asking, using the --dangerously-skip-permissions flag.
                         </span>
