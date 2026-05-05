@@ -215,7 +215,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
     const totalCount = allAgents.length;
 
     return (
-      <div className={`detail-panel${collapsed ? ' collapsed' : ''}`}>
+      <div className={`detail-panel kookr-tour-target-layout${collapsed ? ' collapsed' : ''}`}>
         <div className="detail-empty">
           {findingsCount > 0 ? (
             <p>{findingsCount} finding{findingsCount > 1 ? 's' : ''} need{findingsCount === 1 ? 's' : ''} attention.</p>
@@ -434,7 +434,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
     : 'RUNNING';
 
   return (
-    <div className="detail-panel">
+    <div className="detail-panel kookr-tour-target-layout">
       <div className="detail-header">
         <div className="detail-header-left">
           <EditableHeading agent={agent} send={send} />

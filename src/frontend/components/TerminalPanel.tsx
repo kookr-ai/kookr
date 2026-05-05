@@ -421,7 +421,7 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
         : '';
 
   return (
-    <div className={`terminal-col${focusZone === 'terminal' ? ' zone-active' : ''}`}>
+    <div className={`terminal-col kookr-tour-target-layout${focusZone === 'terminal' ? ' zone-active' : ''}`}>
       {searchOpen && (
         <form
           className="terminal-search"

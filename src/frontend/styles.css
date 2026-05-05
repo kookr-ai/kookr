@@ -6647,3 +6647,223 @@ button.act-tool-entry:focus-visible {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+
+/* --- Onboarding Tour --- */
+
+.onboarding-overlay {
+  /* Keep z-index above other dialogs so the tour is the topmost surface
+     during first-run and replay. Existing dialog-overlay is z-index: 100. */
+  z-index: 200;
+}
+
+.onboarding-tour {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px 28px;
+  width: min(560px, 92vw);
+  max-width: 92vw;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  animation: overlay-in 0.18s ease-out;
+}
+
+.onboarding-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.onboarding-header h3 {
+  margin: 0;
+  font-size: 17px;
+  color: var(--text-bright);
+}
+
+.onboarding-skip {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.onboarding-skip:hover {
+  color: var(--text-bright);
+}
+
+.onboarding-card-body {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 110px;
+}
+
+.onboarding-card-body p {
+  margin: 0;
+}
+
+.onboarding-card-body strong {
+  color: var(--text-bright);
+}
+
+.onboarding-card-body kbd {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+}
+
+.onboarding-card-footer-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.onboarding-layout-diagram {
+  width: 100%;
+  height: auto;
+  max-height: 220px;
+  margin-top: 4px;
+}
+
+.onboarding-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--border-dim);
+  padding-top: 14px;
+}
+
+.onboarding-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.onboarding-dot {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+.onboarding-dot.active {
+  background: var(--accent, #61dafb);
+  border-color: var(--accent, #61dafb);
+}
+
+.onboarding-dot:hover:not(.active) {
+  background: var(--bg-card-hover, var(--bg-card));
+}
+
+.onboarding-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.onboarding-btn {
+  background: var(--bg-card);
+  color: var(--text-bright);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.onboarding-btn:hover:not(:disabled) {
+  background: var(--bg-card-hover, var(--bg-card));
+}
+
+.onboarding-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.onboarding-btn.primary {
+  background: var(--accent, #61dafb);
+  color: #0a0c14;
+  border-color: var(--accent, #61dafb);
+  font-weight: 600;
+}
+
+.onboarding-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+/* "Take the product tour" CTA inside HelpDialog (a.k.a. ShortcutsHelp) */
+.shortcuts-tour-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: var(--accent, #61dafb);
+  border: 1px solid var(--accent, #61dafb);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.shortcuts-tour-cta:hover {
+  background: rgba(97, 218, 251, 0.08);
+}
+
+/* Class-based spotlight: while tour is on a card with targetClass=X,
+   any element matching .kookr-tour-target-X gets an outline ring. The
+   pulse animation is gated on prefers-reduced-motion (WCAG 2.3.3). */
+@keyframes kookr-tour-pulse {
+  0%, 100% { outline-color: var(--accent, #61dafb); outline-offset: 4px; }
+  50%      { outline-color: var(--accent, #61dafb); outline-offset: 6px; }
+}
+
+body.kookr-tour-active-layout .kookr-tour-target-layout,
+body.kookr-tour-active-launch .kookr-tour-target-launch,
+body.kookr-tour-active-findings .kookr-tour-target-findings {
+  outline: 2px solid var(--accent, #61dafb);
+  outline-offset: 4px;
+  border-radius: 6px;
+  /* Keep the ring above neighboring panels' borders. */
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  body.kookr-tour-active-layout .kookr-tour-target-layout,
+  body.kookr-tour-active-launch .kookr-tour-target-launch,
+  body.kookr-tour-active-findings .kookr-tour-target-findings {
+    animation: kookr-tour-pulse 2s ease-in-out infinite;
+  }
+}
+
+@media (max-width: 768px) {
+  .onboarding-tour {
+    padding: 18px 18px 20px;
+    gap: 14px;
+  }
+  .onboarding-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .onboarding-nav {
+    justify-content: space-between;
+  }
+}
+

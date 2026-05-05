@@ -30,6 +30,8 @@ import { SchedulesDialog } from './components/SchedulesDialog.js';
 import { ContributionWorkspace } from './components/ContributionWorkspace.js';
 import { SweepButton } from './components/SweepButton.js';
 import { OssProductivityView } from './components/OssProductivityView.js';
+import { OnboardingTour } from './components/OnboardingTour.js';
+import { maybeOpenForFirstRun } from './store/onboarding-store.js';
 import './styles.css';
 
 interface ReflectionSuggestion {
@@ -99,6 +101,12 @@ export function App() {
       setShowLaunch(true);
     }
   }, [relaunchTask]);
+
+  // First-run onboarding tour: opens once per browser when localStorage has
+  // no `kookr:onboarding:seen-v1` key. Idempotent on subsequent reloads.
+  useEffect(() => {
+    maybeOpenForFirstRun();
+  }, []);
 
   useEffect(() => {
     function updateViewportMode() {
@@ -607,6 +615,7 @@ export function App() {
           onClose={() => { setShowWorkspace(false); clearWorkspaceView(); }}
         />
       )}
+      <OnboardingTour />
       {showLaunch && (
         <LaunchDialog
           send={send}
