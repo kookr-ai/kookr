@@ -412,13 +412,6 @@ Contributions are welcome! This project uses:
 
 Before submitting a PR, make sure `pnpm test` passes. The pre-push hook enforces this automatically.
 
-## Related Projects
-
-| Project | What we reuse |
-|---------|--------------|
-| [aegiscore](~/git/aegiscore) | Claude Code & Codex CLI drivers, JSONL parsers, stuck detector |
-| [openclaw](~/git/openclaw) | Skill file patterns, gateway protocol inspiration |
-
 ## License
 
 Kookr is released into the public domain under [The Unlicense](UNLICENSE). You may copy, modify, distribute, and use the software, in source or compiled form, for any purpose, with no restrictions. See [unlicense.org](https://unlicense.org) for details.
