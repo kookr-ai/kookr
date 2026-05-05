@@ -7,8 +7,8 @@ import { hashPrompt } from './hash-prompt.js';
 
 export interface CrashRecoveryEntry {
   taskId: string;
-  oldTmux: string;
-  newTmux: string;
+  oldSessionId: string;
+  newSessionId: string;
   /**
    * How the new session was launched.
    * - 'resumed': the new session was launched via `claude --resume <id> --fork-session`,
@@ -25,13 +25,13 @@ export interface CrashRecoveryEntry {
 
 export interface CrashRecoverySkip {
   taskId: string;
-  tmux: string;
+  sessionId: string;
   reason: string;
 }
 
 export interface CrashRecoveryFailure {
   taskId: string;
-  tmux: string;
+  sessionId: string;
   error: string;
 }
 
@@ -100,7 +100,7 @@ export async function recoverCrashedSessions(
     if (tasksWithLiveSessions.has(task.id)) {
       result.skipped.push({
         taskId: task.id,
-        tmux: tmuxName,
+        sessionId: tmuxName,
         reason: 'task already has a running session',
       });
       continue;
@@ -110,7 +110,7 @@ export async function recoverCrashedSessions(
     if (relaunchedTaskIds.has(task.id)) {
       result.skipped.push({
         taskId: task.id,
-        tmux: tmuxName,
+        sessionId: tmuxName,
         reason: 'task already relaunched in this recovery pass',
       });
       continue;
@@ -121,7 +121,7 @@ export async function recoverCrashedSessions(
     if (livePromptHashes.has(promptHash) || relaunchedPromptHashes.has(promptHash)) {
       result.skipped.push({
         taskId: task.id,
-        tmux: tmuxName,
+        sessionId: tmuxName,
         reason: 'duplicate prompt already running or relaunched',
       });
       continue;
@@ -141,7 +141,7 @@ export async function recoverCrashedSessions(
       if (elapsed < CRASH_LOOP_WINDOW_MS) {
         result.skipped.push({
           taskId: task.id,
-          tmux: tmuxName,
+          sessionId: tmuxName,
           reason: `rapid crash-loop (relaunched ${Math.round(elapsed / 1000)}s ago, window is ${CRASH_LOOP_WINDOW_MS / 1000}s)`,
         });
         continue;
@@ -153,7 +153,7 @@ export async function recoverCrashedSessions(
     if (!cwdExists) {
       result.skipped.push({
         taskId: task.id,
-        tmux: tmuxName,
+        sessionId: tmuxName,
         reason: `CWD does not exist: ${session.cwd}`,
       });
       continue;
@@ -181,13 +181,13 @@ export async function recoverCrashedSessions(
     const { resumeContext, fallbackReason } = await buildResumeContext(task, session);
 
     // Launch a new session using the EXISTING launch path.
-    // adapter.launch() handles: tmux creation, addSession(), tmuxToTaskId,
+    // adapter.launch() handles: sessionId creation, addSession(), sessionToTaskId,
     // settings file generation, and git info capture. When `resumeContext`
     // is provided AND the adapter supports resume (Claude Code), the launch
     // continues the prior conversation on a forked branch.
     try {
       const adapter = adapterRegistry.get(task.agentType);
-      const newTmuxName = await adapter.launch(task.id, task.prompt, session.cwd, resumeContext);
+      const newSessionId = await adapter.launch(task.id, task.prompt, session.cwd, resumeContext);
 
       // Transfer relaunch metadata to the new session. Mark resumedFromCrash
       // only when we actually requested resume; the adapter may have ignored
@@ -202,15 +202,15 @@ export async function recoverCrashedSessions(
       if (actuallyResumed) {
         updates.resumedFromCrash = true;
       }
-      taskStore.updateSession(task.id, newTmuxName, updates);
+      taskStore.updateSession(task.id, newSessionId, updates);
 
       relaunchedTaskIds.add(task.id);
       relaunchedPromptHashes.add(promptHash);
 
       const entry: CrashRecoveryEntry = {
         taskId: task.id,
-        oldTmux: tmuxName,
-        newTmux: newTmuxName,
+        oldSessionId: tmuxName,
+        newSessionId,
         mode: actuallyResumed ? 'resumed' : 'fresh',
       };
       if (entry.mode === 'fresh') {
@@ -222,7 +222,7 @@ export async function recoverCrashedSessions(
     } catch (err) {
       result.failed.push({
         taskId: task.id,
-        tmux: tmuxName,
+        sessionId: tmuxName,
         error: err instanceof Error ? err.message : String(err),
       });
     }

@@ -24,12 +24,44 @@ export interface ResumeContext {
   transcriptPath?: string;
 }
 
+/**
+ * Per-launch options that don't fit the resume concept. Currently carries the
+ * sandbox profile flag for reflect-task spawns (write-allowlist + memory gate).
+ * Adapters that don't recognize a profile MUST ignore it (Codex CLI today).
+ *
+ * Kept as a flag — not a `Partial<HookSettings>` — so the on-disk settings
+ * shape stays private to the Claude Code adapter.
+ */
+export interface AdapterLaunchOptions {
+  /** When set, the adapter applies a stricter sandbox: write-allowlist, memory frontmatter gate, no destructive bash. */
+  sandboxProfile?: 'reflect';
+  /**
+   * Per-call override of the adapter's constructor-time `bypassAllPermissions`
+   * default. When set, this value wins over instance state for THIS launch
+   * only.
+   */
+  bypassPermissions?: boolean;
+}
+
+/**
+ * Outcome of a startup binary preflight. See {@link AgentAdapter.preflight}.
+ *
+ * `configuredVia` distinguishes operator intent: `'env'` means the operator
+ * explicitly set `KOOKR_AGENT_BIN` / `KOOKR_CODEX_BIN`; `'default'` means
+ * the adapter fell back to the default command name on PATH.
+ */
+export type PreflightResult =
+  | { kind: 'ok'; resolvedPath: string; version: string }
+  | { kind: 'absent'; reason: string; configuredVia: 'env' | 'default'; envVarName: string };
+
 export interface AgentAdapter {
   /** Unique identifier for this agent type (e.g., 'claude-code', 'codex-cli'). */
   readonly agentType: AgentType;
 
   /**
-   * Launch an agent in a managed terminal session. Returns the tmux session name.
+   * Launch an agent in a managed terminal session. Returns the terminal
+   * session id (also used as the dtach socket filename and the WebSocket
+   * attach route).
    *
    * When `resume` is provided AND the adapter supports resume AND the
    * preconditions are met (transcript file present), the launch will continue
@@ -37,7 +69,20 @@ export interface AgentAdapter {
    * is not mutated). Otherwise — including for adapters that do not yet
    * support resume — the launch is fresh with `prompt`, identical to today.
    */
-  launch(taskId: string, prompt: string, cwd: string, resume?: ResumeContext): Promise<string>;
+  launch(
+    taskId: string,
+    prompt: string,
+    cwd: string,
+    resume?: ResumeContext,
+    opts?: AdapterLaunchOptions,
+  ): Promise<string>;
+
+  /**
+   * Probe the agent binary before the server accepts connections.
+   * Optional — adapters that cannot meaningfully probe (routing wrappers,
+   * fakes) omit this method. {@link runAdapterPreflights} skips them.
+   */
+  preflight?(): Promise<PreflightResult>;
 
   /** Send developer input to an agent's terminal session. */
   sendInput(tmuxName: string, text: string): Promise<void>;

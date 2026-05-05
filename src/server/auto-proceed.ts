@@ -17,7 +17,7 @@ export interface AutoProceedDeps {
   interactionLog?: DeferredInteractionLogWriter;
   broadcastToAll: (msg: ServerMessage) => void;
   serverCwd: string;
-  /** Override for testing — checks if a user has a tmux client attached. */
+  /** Override for testing — checks if a user has an attached terminal client. */
   hasAttachedClients?: (agentId: string) => boolean;
 }
 
@@ -187,7 +187,7 @@ export class AutoProceedService {
       return;
     }
 
-    // Check tmux session is alive (captureDisplay throws if session is dead)
+    // Check terminal session is alive (captureDisplay throws if session is dead)
     try {
       await this.deps.adapter.captureDisplay(agentId);
     } catch {
@@ -195,7 +195,7 @@ export class AutoProceedService {
       return;
     }
 
-    // Check if a user is attached to the tmux session — don't inject "yes"
+    // Check if a user is attached to the terminal session — don't inject "yes"
     // into a terminal the user is actively typing in.
     if (this.hasAttachedClients(agentId)) {
       const effectiveDelay = task.autoProceedDelayMs ?? DEFAULT_DELAY_MS;
@@ -326,8 +326,8 @@ export class AutoProceedService {
   /**
    * Returns true when a live attach client should block auto-proceed.
    *
-   * Pre-V8 this called `tmux list-clients` to detect an external operator
-   * on the session. V8 moved to dtach (rfc-v8-tmux-removal.md) — there is
+   * Pre-V8 this queried external terminal clients directly
+   * on the session. V8 moved to dtach — there is
    * no equivalent cheap probe at the backend level yet, and the WS bridge
    * itself is the only attach surface. Tests can still override via the
    * injected `hasAttachedClients` dep.

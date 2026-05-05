@@ -10,7 +10,7 @@
 export type CircuitBreakerState = 'closed' | 'open' | 'half-open';
 
 export interface CircuitBreakerConfig {
-  /** Human-readable name (e.g. "llm", "github", "tmux"). */
+  /** Human-readable name (e.g. "llm", "github", "terminal"). */
   name: string;
   /** Number of failures within the window to trip the breaker. Default: 5. */
   failureThreshold?: number;

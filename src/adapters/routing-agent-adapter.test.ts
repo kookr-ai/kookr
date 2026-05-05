@@ -9,7 +9,7 @@ function createMockAdapter(agentType: AgentType): AgentAdapter {
   const refreshHandlers: Array<() => void> = [];
   return {
     agentType,
-    launch: vi.fn().mockResolvedValue('mock-tmux'),
+    launch: vi.fn().mockResolvedValue('mock-session'),
     sendInput: vi.fn().mockResolvedValue(undefined),
     sendKeystroke: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
@@ -137,9 +137,9 @@ describe('RoutingAgentAdapter', () => {
 
   describe('event fan-in', () => {
     test('fans in events from all adapters', () => {
-      const events: Array<{ tmux: string; event: any }> = [];
-      router.onEvent((tmuxName, event) => {
-        events.push({ tmux: tmuxName, event });
+      const events: Array<{ sessionId: string; event: any }> = [];
+      router.onEvent((sessionId, event) => {
+        events.push({ sessionId, event });
       });
 
       const claudeWithEmit = claudeAdapter as AgentAdapter & { _emitEvent: (t: string, e: any) => void };
@@ -149,8 +149,8 @@ describe('RoutingAgentAdapter', () => {
       codexWithEmit._emitEvent('kookr-codex-1', { type: 'tool_use', toolName: 'Write' });
 
       expect(events).toHaveLength(2);
-      expect(events[0].tmux).toBe('kookr-claude-1');
-      expect(events[1].tmux).toBe('kookr-codex-1');
+      expect(events[0].sessionId).toBe('kookr-claude-1');
+      expect(events[1].sessionId).toBe('kookr-codex-1');
     });
 
     test('fans in refresh events from all adapters', () => {

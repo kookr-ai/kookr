@@ -743,7 +743,7 @@ describe('promotePendingTasks', () => {
     const deps = makePromotionDeps({
       taskStore: mockTaskStore as any,
       adapterRegistry: createAdapterRegistry({
-        launch: vi.fn().mockRejectedValue(new Error('tmux not available')),
+        launch: vi.fn().mockRejectedValue(new Error('terminal backend not available')),
         agentType: 'claude-code',
       } as any),
     });
@@ -858,7 +858,7 @@ describe('promotePendingTasks (integration)', () => {
     const t1 = taskStore.createTask('Task 1', '/cwd');
     taskStore.pendTask(t1.id);
 
-    (adapter.launch as any).mockRejectedValueOnce(new Error('tmux failed'));
+    (adapter.launch as any).mockRejectedValueOnce(new Error('terminal failed'));
 
     await promotePendingTasks(deps);
 

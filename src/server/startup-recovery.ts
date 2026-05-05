@@ -61,20 +61,20 @@ export async function runStartupRecoveryPhase({
       }
       if (entry.mode === 'resumed') {
         console.log(
-          `[crash-recovery] Resumed task ${entry.taskId} → tmux ${entry.newTmux}`,
+          `[crash-recovery] Resumed task ${entry.taskId} → session ${entry.newSessionId}`,
         );
       } else {
         const reason = entry.fallbackReason ?? 'unknown';
         console.log(
-          `[crash-recovery] Fresh-launched task ${entry.taskId}: ${reason} → tmux ${entry.newTmux}`,
+          `[crash-recovery] Fresh-launched task ${entry.taskId}: ${reason} → session ${entry.newSessionId}`,
         );
       }
     }
-    for (const { tmux, reason } of recoveryResult.skipped) {
-      console.warn(`[crash-recovery] Skipped ${tmux}: ${reason}`);
+    for (const { sessionId, reason } of recoveryResult.skipped) {
+      console.warn(`[crash-recovery] Skipped ${sessionId}: ${reason}`);
     }
-    for (const { tmux, error } of recoveryResult.failed) {
-      console.error(`[crash-recovery] Failed ${tmux}: ${error}`);
+    for (const { sessionId, error } of recoveryResult.failed) {
+      console.error(`[crash-recovery] Failed ${sessionId}: ${error}`);
     }
 
     if (recoveryResult.relaunched.length > 0 || recoveryResult.failed.length > 0) {

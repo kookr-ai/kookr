@@ -5,7 +5,7 @@ import type { TaskStore } from './tasks.js';
  * Per-session state machine for the proactive checkpoint cycle.
  *
  * The cycle is a three-step sequence Kookr drives via the existing
- * `tmux send-keys` infrastructure:
+ * terminal-input infrastructure:
  *
  *   1. PROMPTING — Kookr has injected a user message asking the agent to
  *      update CHECKPOINT.md. Waiting for the agent to finish the turn.
