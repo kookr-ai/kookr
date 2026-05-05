@@ -15,7 +15,7 @@ export function OnboardingLayoutDiagram() {
       className="onboarding-layout-diagram"
       viewBox="0 0 600 320"
       role="img"
-      aria-label="Diagram of Kookr's four-pane dashboard: top bar across the top, project sidebar on the left, findings panel in the middle, detail panel on the right"
+      aria-label="Diagram of Kookr's four-pane dashboard: top bar across the top, project sidebar on the left, findings panel in the middle, and a detail panel on the right split into Activity and a Terminal/Diff toggle, with a reply input below."
     >
       {/* Background */}
       <rect x="0" y="0" width="600" height="320" rx="8" fill="var(--bg-bg)" stroke="var(--border)" />
@@ -41,13 +41,28 @@ export function OnboardingLayoutDiagram() {
       <rect x="148" y="148" width="196" height="40" rx="3" fill="var(--bg-card)" stroke="#dca364" />
       <rect x="148" y="196" width="196" height="40" rx="3" fill="var(--bg-card)" />
 
-      {/* Detail panel */}
+      {/* Detail panel — split into Activity (left) + Terminal/Diff (right),
+          with a reply input below. Mirrors DetailPanel.tsx's .detail-split. */}
       <rect x="364" y="48" width="228" height="264" rx="4" fill="var(--bg-panel)" stroke="var(--border-dim)" />
-      <text x="478" y="68" fontSize="11" fill="var(--text-muted)" textAnchor="middle">Detail</text>
-      <text x="478" y="84" fontSize="9" fill="var(--text-secondary)" textAnchor="middle">terminal + reply</text>
-      <rect x="376" y="100" width="204" height="140" rx="3" fill="#0a0c14" />
-      <text x="386" y="118" fontSize="9" fill="var(--accent)" fontFamily="monospace">$ claude</text>
-      <text x="386" y="132" fontSize="9" fill="var(--text-secondary)" fontFamily="monospace">running tests…</text>
+
+      {/* Activity sub-zone */}
+      <rect x="376" y="100" width="98" height="140" rx="3" fill="var(--bg-card)" />
+      <text x="425" y="116" fontSize="9" fill="var(--text-bright)" textAnchor="middle" fontWeight="600">Activity</text>
+      <rect x="384" y="124" width="82" height="8" rx="1.5" fill="var(--bg-panel)" />
+      <rect x="384" y="138" width="82" height="8" rx="1.5" fill="var(--bg-panel)" />
+      <rect x="384" y="152" width="82" height="8" rx="1.5" fill="var(--bg-panel)" />
+      <rect x="384" y="166" width="82" height="8" rx="1.5" fill="var(--bg-panel)" />
+      <rect x="384" y="180" width="82" height="8" rx="1.5" fill="var(--bg-panel)" />
+
+      {/* Terminal/Diff sub-zone — tab toggle at top, terminal content below */}
+      <rect x="482" y="100" width="98" height="140" rx="3" fill="#0a0c14" />
+      <rect x="486" y="104" width="36" height="14" rx="2" fill="var(--bg-card)" />
+      <text x="504" y="114" fontSize="8" fill="var(--text-bright)" textAnchor="middle" fontWeight="600">Terminal</text>
+      <text x="540" y="114" fontSize="8" fill="var(--text-muted)" textAnchor="middle">Diff</text>
+      <text x="490" y="138" fontSize="9" fill="var(--accent)" fontFamily="monospace">$ claude</text>
+      <text x="490" y="152" fontSize="9" fill="var(--text-secondary)" fontFamily="monospace">running…</text>
+
+      {/* Reply input — spans the full detail panel below the split */}
       <rect x="376" y="252" width="204" height="48" rx="3" fill="var(--bg-card)" />
       <text x="386" y="282" fontSize="9" fill="var(--text-muted)">reply…</text>
     </svg>

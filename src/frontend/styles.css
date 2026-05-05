@@ -6865,19 +6865,24 @@ button.act-tool-entry:focus-visible {
 }
 
 /* Class-based spotlight: while tour is on a card with targetClass=X,
-   any element matching .kookr-tour-target-X gets an outline ring. The
-   pulse animation is gated on prefers-reduced-motion (WCAG 2.3.3). */
+   any element matching .kookr-tour-target-X gets an outline ring. Amber
+   (not accent-blue) for contrast against the near-black dashboard
+   background. The pulse animation is gated on prefers-reduced-motion
+   (WCAG 2.3.3); the static outline + glow remain when motion is off. */
 @keyframes kookr-tour-pulse {
-  0%, 100% { outline-color: var(--accent, #61dafb); outline-offset: 4px; }
-  50%      { outline-color: var(--accent, #61dafb); outline-offset: 6px; }
+  0%, 100% { outline-offset: 4px; box-shadow: 0 0 0 6px rgba(251, 191, 36, 0.18); }
+  50%      { outline-offset: 6px; box-shadow: 0 0 0 10px rgba(251, 191, 36, 0.28); }
 }
 
 body.kookr-tour-active-layout .kookr-tour-target-layout,
 body.kookr-tour-active-launch .kookr-tour-target-launch,
 body.kookr-tour-active-findings .kookr-tour-target-findings {
-  outline: 2px solid var(--accent, #61dafb);
+  outline: 3px solid var(--amber, #fbbf24);
   outline-offset: 4px;
   border-radius: 6px;
+  /* Soft amber glow so the ring reads against the near-black backdrop
+     even when the pulse animation is suppressed. */
+  box-shadow: 0 0 0 6px rgba(251, 191, 36, 0.18);
   /* Keep the ring above neighboring panels' borders. */
   position: relative;
   z-index: 1;
