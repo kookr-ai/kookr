@@ -20,7 +20,7 @@ export function formatCleanupSubtext(
   const classification = candidate.classification;
 
   // Classifications where no list-level info is meaningful.
-  if (classification === 'protected' || classification === 'busy' || classification === 'checked_out_elsewhere') {
+  if (classification === 'protected' || classification === 'busy' || classification === 'checked_out_elsewhere' || classification === 'stale_worktree') {
     return null;
   }
 
@@ -98,6 +98,9 @@ export function formatDirty(
   if (summary.untracked) parts.push(`U${summary.untracked}`);
   if (parts.length === 0) {
     return classification === 'dirty' ? 'clean' : null;
+  }
+  if (classification === 'generated_only') {
+    return `generated ${parts.join(' ')}`;
   }
   return parts.join(' ');
 }

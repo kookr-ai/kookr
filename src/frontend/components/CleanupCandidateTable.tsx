@@ -36,8 +36,10 @@ const CLASSIFICATION_LABELS: Record<string, { label: string; color: string }> = 
   merged: { label: 'Merged', color: 'var(--color-success, #4caf50)' },
   patch_equivalent: { label: 'Patch eq.', color: 'var(--color-info, #2196f3)' },
   unique_commits: { label: 'Unique', color: 'var(--color-warning, #ff9800)' },
+  generated_only: { label: 'Generated', color: 'var(--color-info, #2196f3)' },
   dirty: { label: 'Dirty', color: 'var(--color-error, #f44336)' },
   checked_out_elsewhere: { label: 'Elsewhere', color: 'var(--color-warning, #ff9800)' },
+  stale_worktree: { label: 'Stale', color: 'var(--color-muted, #9e9e9e)' },
   busy: { label: 'Busy', color: 'var(--color-info, #2196f3)' },
   protected: { label: 'Protected', color: 'var(--color-warning, #ff9800)' },
   unknown: { label: 'Unknown', color: 'var(--color-muted, #9e9e9e)' },
@@ -48,7 +50,9 @@ const FILTER_OPTIONS = [
   { value: 'merged', label: 'Merged' },
   { value: 'patch_equivalent', label: 'Patch eq.' },
   { value: 'unique_commits', label: 'Unique' },
+  { value: 'generated_only', label: 'Generated' },
   { value: 'dirty', label: 'Dirty' },
+  { value: 'stale_worktree', label: 'Stale' },
   { value: 'busy', label: 'Busy' },
   { value: 'protected', label: 'Protected' },
   { value: 'unknown', label: 'Unknown' },
@@ -368,6 +372,9 @@ export function CleanupCandidateTable({
             <div className="cleanup-context-block">
               <h4>Policy</h4>
               <p>{selectedCandidate.capabilities.riskSummary}</p>
+              {selectedCandidate.recoveryGuidance && (
+                <p>{selectedCandidate.recoveryGuidance}</p>
+              )}
               {selectedCandidate.capabilities.blockedReason && (
                 <p className="cleanup-disabled-reason">{selectedCandidate.capabilities.blockedReason}</p>
               )}

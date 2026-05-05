@@ -56,6 +56,18 @@ describe('deriveCleanupCapabilities', () => {
       reasonCode: 'no_baseline',
     }).blockedReason).toContain('Unknown cleanup candidates');
   });
+
+  it('blocks generated-only and stale worktree cleanup with specific next steps', () => {
+    expect(deriveCleanupCapabilities({
+      classification: 'generated_only',
+      reasonCode: 'generated_artifacts',
+    }).blockedReason).toContain('Generated artifacts');
+
+    expect(deriveCleanupCapabilities({
+      classification: 'stale_worktree',
+      reasonCode: 'missing_worktree_path',
+    }).blockedReason).toContain('registry cleanup');
+  });
 });
 
 describe('canSweepRemove', () => {
@@ -76,9 +88,11 @@ describe('canSweepRemove', () => {
   it('rejects every classification that canSafeRemove rejects', () => {
     const rejected: Array<Parameters<typeof canSweepRemove>[0]> = [
       { classification: 'unique_commits', reasonCode: 'has_unique_commits' },
+      { classification: 'generated_only', reasonCode: 'generated_artifacts' },
       { classification: 'dirty', reasonCode: 'uncommitted_changes' },
       { classification: 'busy', reasonCode: 'lease_active' },
       { classification: 'checked_out_elsewhere', reasonCode: 'other_worktree' },
+      { classification: 'stale_worktree', reasonCode: 'missing_worktree_path' },
       { classification: 'protected', reasonCode: 'protected_path' },
       { classification: 'unknown', reasonCode: 'detached_head' },
       { classification: 'unknown', reasonCode: 'no_baseline' },

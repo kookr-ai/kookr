@@ -13,6 +13,7 @@ import type {
   CleanupCommitSummary,
   CleanupDirtySummary,
 } from '../../core/workspace-types.js';
+import { existsSync } from 'node:fs';
 import type { RepoPolicyResolver } from '../../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js';
 import { gitIn } from '../../core/git-helpers.js';
@@ -26,6 +27,8 @@ interface GitWorktreeInfo {
   branch?: string;
   detached?: boolean;
   bare?: boolean;
+  locked?: boolean;
+  prunable?: boolean;
 }
 
 /** Parse `git worktree list --porcelain` output into structured info. */
@@ -47,6 +50,10 @@ function parseWorktreeList(output: string): GitWorktreeInfo[] {
       current.detached = true;
     } else if (line === 'bare') {
       current.bare = true;
+    } else if (line.startsWith('locked')) {
+      current.locked = true;
+    } else if (line.startsWith('prunable')) {
+      current.prunable = true;
     } else if (line === '' && current.worktree) {
       entries.push(current as GitWorktreeInfo);
       current = {};
@@ -146,6 +153,19 @@ async function classifyCandidate(
     };
   }
 
+  if (wt.locked || wt.prunable) {
+    const reasonCode = wt.locked ? 'locked_worktree' : 'prunable_worktree';
+    return {
+      ...base,
+      classification: 'stale_worktree',
+      reasonCode,
+      recoveryGuidance: wt.locked
+        ? 'Inspect the worktree lock and unlock it only if no live process is using it; then run git worktree prune.'
+        : 'Run git worktree prune to remove stale worktree registry entries.',
+      capabilities: deriveCleanupCapabilities({ classification: 'stale_worktree', reasonCode }),
+    };
+  }
+
   // No branch info (detached HEAD) → unknown.
   // Run dirty enrichment so a detached-HEAD worktree with uncommitted
   // state is not silently rendered as empty in the list. There is no
@@ -153,6 +173,19 @@ async function classifyCandidate(
   // is intentionally skipped.
   if (!wt.branch) {
     const dirty = await checkDirty(wt.worktree);
+    if (dirty.reason === 'status_failed') {
+      const reasonCode = existsSync(wt.worktree) ? 'status_failed' : 'missing_worktree_path';
+      return {
+        ...base,
+        classification: 'stale_worktree',
+        reasonCode,
+        recoveryGuidance: reasonCode === 'missing_worktree_path'
+          ? 'Run git worktree prune to remove this missing worktree registry entry.'
+          : 'Inspect why git status failed for this worktree before cleanup.',
+        capabilities: deriveCleanupCapabilities({ classification: 'stale_worktree', reasonCode }),
+        headShortSha: wt.HEAD?.slice(0, 7),
+      };
+    }
     return {
       ...base,
       classification: 'unknown',
@@ -184,6 +217,28 @@ async function classifyCandidate(
   // attach to the assessment — we never re-run status for enrichment.
   const dirty = await checkDirty(wt.worktree);
   if (dirty.reason) {
+    if (dirty.reason === 'status_failed') {
+      const reasonCode = existsSync(wt.worktree) ? 'status_failed' : 'missing_worktree_path';
+      return {
+        ...base,
+        classification: 'stale_worktree',
+        reasonCode,
+        recoveryGuidance: reasonCode === 'missing_worktree_path'
+          ? 'Run git worktree prune to remove this missing worktree registry entry.'
+          : 'Inspect why git status failed for this worktree before cleanup.',
+        capabilities: deriveCleanupCapabilities({ classification: 'stale_worktree', reasonCode }),
+      };
+    }
+    if (dirty.reason === 'generated_artifacts') {
+      return {
+        ...base,
+        classification: 'generated_only',
+        reasonCode: dirty.reason,
+        recoveryGuidance: 'Delete the generated artifact directory or refresh after the branch includes the ignore rule.',
+        capabilities: deriveCleanupCapabilities({ classification: 'generated_only', reasonCode: dirty.reason }),
+        dirtySummary: dirty.summary,
+      };
+    }
     const commitSummary = await maybeEnrichCommits(repoPath, wt.worktree, wt.branch, baseline.baselineRef);
     return {
       ...base,
@@ -267,7 +322,20 @@ async function checkDirty(worktreePath: string): Promise<DirtyCheckResult> {
   if (status === null) return { reason: 'status_failed' };
   if (status.length === 0) return { reason: null };
   const parsed = parsePorcelainStatus(status);
+  if (isGeneratedArtifactStatus(status)) {
+    return { reason: 'generated_artifacts', summary: parsed.summary };
+  }
   return { reason: 'uncommitted_changes', summary: parsed.summary };
+}
+
+function isGeneratedArtifactStatus(rawStatus: string): boolean {
+  const lines = rawStatus.split('\n').filter(Boolean);
+  if (lines.length === 0) return false;
+  return lines.every((line) => {
+    const status = line.slice(0, 2);
+    const path = line.slice(3).trim();
+    return status === '??' && (path === 'graphify-out/' || path === 'graphify-out' || path.startsWith('graphify-out/'));
+  });
 }
 
 /** Check merge/patch-equivalence status of a branch against the baseline. */
