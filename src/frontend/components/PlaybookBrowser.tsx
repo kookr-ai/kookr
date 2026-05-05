@@ -17,6 +17,20 @@ const recentPaths = new RecentPaths();
 /** Threshold: use filterable dropdown when option count exceeds this */
 const FILTERABLE_THRESHOLD = 5;
 
+function renderPlaybookTags(tags: string[]): React.ReactNode {
+  const visible = tags.filter((tag) => tag === 'workflow' || tag === 'loopable');
+  if (visible.length === 0) return null;
+  return (
+    <span className="playbook-tags">
+      {visible.map((tag) => (
+        <span key={tag} className={`playbook-tag playbook-tag-${tag}`}>
+          {tag}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 interface Props {
   send: (msg: ClientMessage) => boolean;
   onClose: () => void;
@@ -38,7 +52,10 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
   const [resolvedOptions, setResolvedOptions] = useState<Record<string, PlaybookParameterOption[]>>({});
   const [search, setSearch] = useState('');
+  const [showLoopableOnly, setShowLoopableOnly] = useState(false);
   const [focusIdx, setFocusIdx] = useState(-1);
+  const [launchMode, setLaunchMode] = useState<'standard' | 'looped'>('standard');
+  const [submitting, setSubmitting] = useState(false);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => usageTracker.getPinned());
   const [agentType, setAgentType] = useState<AgentType>(() =>
     (localStorage.getItem('kookr:defaultAgentType') as AgentType) || defaultAgentType || 'claude-code'
@@ -110,10 +127,12 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   const sortedPlaybooks = useMemo(() => {
     const recent = usageTracker.getRecent();
 
-    let filtered = playbooks;
+    let filtered = showLoopableOnly
+      ? playbooks.filter((pb) => pb.tags.includes('loopable'))
+      : playbooks;
     if (search.trim()) {
       const q = search.toLowerCase();
-      filtered = playbooks.filter(
+      filtered = filtered.filter(
         (pb) => pb.name.toLowerCase().includes(q) || pb.description.toLowerCase().includes(q),
       );
     }
@@ -132,7 +151,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
 
       return a.name.localeCompare(b.name);
     });
-  }, [playbooks, search, pinnedIds]);
+  }, [playbooks, search, pinnedIds, showLoopableOnly]);
 
   useEffect(() => {
     setFocusIdx(-1);
@@ -169,6 +188,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
     }
 
     setParamValues(defaults);
+    setLaunchMode('standard');
     setSelected(playbook);
   }
 
@@ -176,12 +196,15 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
     setSelected(null);
     setParamValues({});
     setResolvedOptions({});
+    setLaunchMode('standard');
     setTimeout(() => searchRef.current?.focus(), 0);
   }
 
-  function handleLaunch(e: React.FormEvent) {
+  async function handleLaunch(e: React.FormEvent) {
     e.preventDefault();
     if (!selected) return;
+    if (!canLaunch()) return;
+    setSubmitting(true);
     usageTracker.recordLaunch(selected.id);
     usageTracker.recordParams(selected.id, selected.sourceCwd, paramValues);
     const trimmedCwd = cwd.trim();
@@ -189,28 +212,69 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
     localStorage.setItem('kookr:defaultAutonomy', autonomy);
     localStorage.setItem('kookr:defaultAgentType', agentType);
     const excerpt = selected.name.slice(0, 40) + (selected.name.length > 40 ? '…' : '');
-    const sent = send({
-      type: 'launchPlaybook',
-      playbookPath: selected.id,
-      cwd,
-      parameterValues: paramValues,
-      autonomy,
-      agentType,
-    });
-    if (sent) {
-      useKookrStore.getState().handleAlert('', `Starting task: ${excerpt}`, 'info');
+    if (launchMode === 'looped') {
+      try {
+        const res = await fetch('/api/playbooks/ralph-loop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'ui' },
+          body: JSON.stringify({
+            playbookPath: selected.id,
+            cwd,
+            parameterValues: paramValues,
+            autonomy,
+            agentType,
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({})) as { error?: string };
+          useKookrStore.getState().handleAlert(
+            '',
+            `Could not start looped playbook: ${body.error ?? `HTTP ${res.status}`}. ${excerpt}`,
+            'error',
+          );
+          setSubmitting(false);
+          return;
+        }
+        useKookrStore.getState().handleAlert('', `Starting looped playbook: ${excerpt}`, 'info');
+      } catch (err) {
+        useKookrStore.getState().handleAlert(
+          '',
+          `Could not start looped playbook: ${err instanceof Error ? err.message : String(err)}. ${excerpt}`,
+          'error',
+        );
+        setSubmitting(false);
+        return;
+      }
     } else {
-      useKookrStore.getState().handleAlert(
-        '',
-        `Could not start task: not connected. ${excerpt}`,
-        'error',
-      );
+      const sent = send({
+        type: 'launchPlaybook',
+        playbookPath: selected.id,
+        cwd,
+        parameterValues: paramValues,
+        autonomy,
+        agentType,
+      });
+      if (sent) {
+        useKookrStore.getState().handleAlert('', `Starting task: ${excerpt}`, 'info');
+      } else {
+        useKookrStore.getState().handleAlert(
+          '',
+          `Could not start task: not connected. ${excerpt}`,
+          'error',
+        );
+        setSubmitting(false);
+        return;
+      }
     }
     onClose();
   }
 
   function canLaunch(): boolean {
     if (!selected) return false;
+    if (submitting) return false;
+    if (launchMode === 'looped' && (!selected.tags.includes('loopable') || !selected.effectiveLoop || selected.loopValidationError)) {
+      return false;
+    }
     return selected.parameters
       .filter((p) => p.required)
       .every((p) => (paramValues[p.name] ?? '').trim() !== '');
@@ -251,6 +315,9 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   // --- Detail view (selected playbook) ---
   if (selected) {
     const effectiveCwd = selected.cwd ?? cwd;
+    const isLoopable = selected.tags.includes('loopable');
+    const loopDisabledReason = selected.loopValidationError
+      ?? (!isLoopable ? 'Looping unavailable: this playbook is not tagged loopable.' : '');
 
     return (
       <form onSubmit={handleLaunch}>
@@ -259,6 +326,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
             Back
           </button>
           <span className="playbook-detail-name">{selected.name}</span>
+          {renderPlaybookTags(selected.tags)}
           <span
             className={`project-badge color-${projectColor(effectiveCwd)}`}
             title={effectiveCwd}
@@ -270,6 +338,51 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
         <div className="playbook-cwd" title={effectiveCwd}>
           {effectiveCwd}
         </div>
+
+        <div className="launch-mode-toggle playbook-launch-mode" role="group" aria-label="Playbook launch mode">
+          <button
+            type="button"
+            className={`launch-mode-option${launchMode === 'standard' ? ' active' : ''}`}
+            aria-pressed={launchMode === 'standard'}
+            onClick={() => setLaunchMode('standard')}
+          >
+            Run
+          </button>
+          <button
+            type="button"
+            className={`launch-mode-option${launchMode === 'looped' ? ' active' : ''}`}
+            aria-pressed={launchMode === 'looped'}
+            disabled={Boolean(loopDisabledReason)}
+            title={loopDisabledReason || 'Run this playbook in a bounded loop'}
+            onClick={() => setLaunchMode('looped')}
+          >
+            Run looped
+          </button>
+        </div>
+
+        {loopDisabledReason && (
+          <div className="playbook-loop-disabled">{loopDisabledReason}</div>
+        )}
+
+        {launchMode === 'looped' && selected.effectiveLoop && (
+          <div className="playbook-loop-bounds" role="group" aria-label="Loop bounds">
+            <div>
+              <span>Max iterations</span>
+              <strong>{selected.effectiveLoop.iterationCap}</strong>
+              <em>{selected.effectiveLoop.sources.iterationCap === 'playbook' ? 'From playbook' : 'Default'}</em>
+            </div>
+            <div>
+              <span>Stop after no changes</span>
+              <strong>{selected.effectiveLoop.zeroDiffConsecutiveIterations ?? 'Off'}</strong>
+              <em>{selected.effectiveLoop.sources.zeroDiffConsecutiveIterations ? 'From playbook' : 'Not configured'}</em>
+            </div>
+            <div>
+              <span>Cost cap</span>
+              <strong>{selected.effectiveLoop.costCapUsd !== undefined ? `$${selected.effectiveLoop.costCapUsd}` : 'Off'}</strong>
+              <em>{selected.effectiveLoop.sources.costCapUsd === 'playbook' ? 'Observed spend from playbook' : 'Default observed spend when usage is available'}</em>
+            </div>
+          </div>
+        )}
 
         {selected.parameters.length > 0 && (
           <div className="playbook-params">
@@ -376,7 +489,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
             Cancel
           </button>
           <button type="submit" className="btn-primary" disabled={!canLaunch()}>
-            Launch Playbook
+            {launchMode === 'looped' ? 'Launch Looped' : 'Launch Playbook'}
           </button>
         </div>
       </form>
@@ -401,6 +514,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
 
   // --- List view ---
   const recentIds = new Set(usageTracker.getRecent());
+  const loopableCount = playbooks.filter((pb) => pb.tags.includes('loopable')).length;
 
   return (
     <div>
@@ -420,6 +534,18 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
           </span>
         )}
       </div>
+      {loopableCount > 0 && (
+        <div className="playbook-filter-row">
+          <button
+            type="button"
+            className={`playbook-filter${showLoopableOnly ? ' active' : ''}`}
+            aria-pressed={showLoopableOnly}
+            onClick={() => setShowLoopableOnly((value) => !value)}
+          >
+            Loopable workflows ({loopableCount})
+          </button>
+        </div>
+      )}
       {sortedPlaybooks.length === 0 ? (
         <div className="playbook-empty">
           No playbooks match &ldquo;{search}&rdquo;
@@ -452,6 +578,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
                   </span>
                   <span className="playbook-card-meta">
                     {isRecent && <span className="playbook-recent-badge">recent</span>}
+                    {renderPlaybookTags(pb.tags)}
                     <span
                       className={`project-badge color-${projectColor(targetCwd)}`}
                       title={targetCwd}
