@@ -130,12 +130,12 @@ describe('createKookrServer', () => {
       expect(data.recommendation.summary).toContain('4 interventions');
     });
 
-    test('GET /api/capture/:name returns 404 with {error, tmuxName} body for unknown session', async () => {
+    test('GET /api/capture/:sessionId returns 404 with {error, sessionId} body for unknown session', async () => {
       const res = await fetch(`${baseUrl}/api/capture/nonexistent`);
       expect(res.status).toBe(404);
       const body = await res.json();
       expect(typeof body.error).toBe('string');
-      expect(body.tmuxName).toBe('nonexistent');
+      expect(body.sessionId).toBe('nonexistent');
     });
 
     test('GET /api/github/:taskId returns 404 for unknown task', async () => {

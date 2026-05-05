@@ -119,6 +119,17 @@ The spawned task uses `$PWD` as the working directory and appears in the dashboa
 
 **Install:** `pnpm build && pnpm link --global` adds `kookr-spawn` to `$PATH`. If you previously linked Kookr before this binary existed, re-run `pnpm link --global` — pnpm caches bin symlinks at link time and does not auto-pick-up new `bin` entries. See `kookr-spawn --help` for all options.
 
+### Terminal Usage: `kookr-status`
+
+A read-only CLI that prints a snapshot of the running Kookr instance — server uptime, build version, and a per-agent severity summary pulled from `/api/snapshot` and `/api/health`. Auto-detects port (4800 → 4801) when `KOOKR_PORT` is unset.
+
+```bash
+kookr-status        # one-shot snapshot
+pnpm status         # equivalent for local dev
+```
+
+Bundled with `kookr-spawn` — `pnpm link --global` exposes both binaries.
+
 ### Setup for AI agents
 
 If you use Claude Code or Codex CLI to work on this repo, the bundled `.claude/skills/`, `.claude/agents/`, and `.claude/playbooks/` are picked up automatically — no install step required. The repo's git pre-push hook is wired by `pnpm install`'s `prepare` script.
@@ -131,7 +142,7 @@ bash scripts/install-hooks.sh   # installs hooks/oss-stale-scout-gate.sh into ~/
 
 ### Kookr Toolkit (Claude Code plugin)
 
-Kookr ships a curated set of **44 skills + 15 review subagents** as a Claude Code plugin (`kookr-toolkit`). Skills cover code patterns (`typescript-type-safety`, `error-handling-patterns`, `async-flow-control`, `dependency-injection-patterns`, `domain-driven-design`, etc.), workflow (`git-commit-discipline`, `tdd-workflow`, `token-efficiency`), OSS contribution (`oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `find-best-reviewers`), and a reviewer-distillation experiment (`reviewer-distillation-{judge,mutate,predict,prepare,select,meta}`). Review subagents include `boundary-critic`, `design-minimalist`, `failure-mode-analyst`, `delivery-pragmatist`, `socratic-challenger`, and others.
+Kookr ships a curated set of **47 skills + 17 review subagents** as a Claude Code plugin (`kookr-toolkit`). Skills cover code patterns (`typescript-type-safety`, `error-handling-patterns`, `async-flow-control`, `dependency-injection-patterns`, `domain-driven-design`, etc.), workflow (`git-commit-discipline`, `tdd-workflow`, `token-efficiency`), OSS contribution (`oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `find-best-reviewers`), and a reviewer-distillation experiment (`reviewer-distillation-{judge,mutate,predict,prepare,select,meta}`). Review subagents include `boundary-critic`, `design-minimalist`, `failure-mode-analyst`, `delivery-pragmatist`, `socratic-challenger`, and others. See [`plugin/README.md`](plugin/README.md) for the canonical inventory.
 
 **Kookr users get the toolkit automatically.** When Kookr spawns Claude Code against any project, the adapter injects `--plugin-dir <kookr>/plugin` so the toolkit is visible regardless of cwd.
 
@@ -145,7 +156,7 @@ claude
 
 Update with `/plugin marketplace update kookr`. See [`plugin/README.md`](plugin/README.md) for the full skill/agent inventory and the maintainer dev workflow (`claude --plugin-dir ~/git/kookr/plugin`).
 
-**Optional OSS extension** — Several bundled skills (`pre-pr-review`, `oss-pr-distill`, `codex-pr-distill`, `oss-issue-scout`, `oss-repo-recon`) and the `oss-contribute` playbook depend on an OSS contribution layer that lives as user-global scripts and data outside this repo (`~/.claude/reviewer-specialists/`, `~/.claude/skills/pr-contribution-excellence/`, `~/.claude/hooks/{pr-workflow-gate,oss-contribution-gate,…}.sh`). The extension is **not bundled** — its distribution mechanism is pending design (see [`docs/rfc/rfc-coworker-shipping-gaps.md`](docs/rfc/rfc-coworker-shipping-gaps.md)). Without it, the affected skills are still safe to invoke — they detect the missing dependencies and stop rather than fabricating output. Read [`docs/hooks-setup.md`](docs/hooks-setup.md) for the full status.
+**Optional OSS extension** — Several bundled skills (`pre-pr-review`, `oss-pr-distill`, `codex-pr-distill`, `oss-issue-scout`, `oss-repo-recon`) and the `oss-contribute` playbook depend on an OSS contribution layer that lives as user-global scripts and data outside this repo (`~/.claude/reviewer-specialists/`, `~/.claude/skills/pr-contribution-excellence/`, `~/.claude/hooks/{pr-workflow-gate,oss-contribution-gate,…}.sh`). The extension is **not bundled** — its distribution mechanism is still pending. Without it, the affected skills are still safe to invoke — they detect the missing dependencies and stop rather than fabricating output. Read [`docs/hooks-setup.md`](docs/hooks-setup.md) for the full status.
 
 ## Why Kookr?
 
@@ -213,30 +224,89 @@ See [Architecture docs](docs/architecture.md) for the full design and [ADR-014](
 
 ## API Reference
 
+### Health & build
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/health` | Server status + agent count + build info |
+| `GET /api/health/stt` | Bundled STT (speech-to-text) container health |
+| `GET /api/startup-summary` | Crash-recovery startup summary (fetched once on UI mount) |
+
+### Tasks & agents
+| Endpoint | Description |
+|----------|-------------|
 | `GET /api/tasks` | All tasks with sessions |
 | `POST /api/tasks` | Create and launch a new task |
 | `DELETE /api/tasks/:id` | Stop and remove a task |
 | `POST /api/agents/:id/message` | Send a message/hint to a running agent |
+| `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
+| `GET /api/sessions/:sessionId/effective-hook-settings` | Resolved per-session hook settings (additive merge of user + Kookr-injected) |
+
+### Supervisor surface
+| Endpoint | Description |
+|----------|-------------|
 | `GET /api/snapshot` | Current agent states + anomalies |
 | `GET /api/queue` | Attention queue contents |
 | `GET /api/anomaly-stats` | Anomaly counters and detector stats |
+| `GET /api/capture/:sessionId` | Snapshot of the dtach session's ring buffer |
+| `POST /api/hook-event/:sessionId` | HTTP push surface for hook events (used by Codex CLI hooks) |
+
+### Projects
+| Endpoint | Description |
+|----------|-------------|
 | `GET /api/projects` | Tracked project directories |
 | `POST /api/projects/track` | Register a new project directory |
 | `POST /api/projects/untrack` | Remove a tracked project |
 | `GET /api/projects/contributions` | Contributions summary across projects |
+| `GET /api/projects/configs` | Per-project configuration (contribution policy, agent defaults) |
+| `POST /api/projects/configs` | Update a project's config |
+| `GET /api/projects/discovery-status` | Background project-discovery progress |
+| `POST /api/projects/rescan-skills` | Re-scan tracked repos for `.claude/skills/` |
+
+### Playbooks & schedules
+| Endpoint | Description |
+|----------|-------------|
 | `GET /api/playbooks?cwd=` | Discover playbooks at a CWD |
 | `GET /api/schedules` | List scheduled tasks |
 | `POST /api/schedules` | Create a scheduled task (cron) |
+| `POST /api/schedules/preview` | Preview the next-run timestamps for a candidate schedule |
+| `PATCH /api/schedules/:id` | Update an existing schedule |
+| `DELETE /api/schedules/:id` | Delete a schedule |
 | `POST /api/schedules/:id/run` | Trigger a scheduled task immediately |
+
+### Reflection & telemetry
+| Endpoint | Description |
+|----------|-------------|
 | `GET /api/reflect` | Analyze session friction patterns |
+| `GET /api/reflect/recommendation` | Top-priority reflection recommendation for the UI banner |
+| `GET /api/telemetry/report` | Aggregated telemetry over the session log |
+| `GET /api/shadow-report` | Shadow-detection comparison report (`?format=text` for plain text) |
+
+### GitHub
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/github` | All tracked tasks' PR/issue state |
 | `GET /api/github/status` | GitHub scanner active status |
 | `GET /api/github/:taskId` | PR/issue state for a task |
-| `GET /api/capture/:sessionId` | Capture the session's recent terminal bytes |
-| `ws://host:port/ws` | WebSocket for real-time updates |
-| `ws://host:port/ws/terminal/:sessionId` | Interactive terminal bridge (xterm.js) |
+
+### Settings & infrastructure
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/settings` | Get user/project settings |
+| `PUT /api/settings` | Update settings |
+| `GET /api/circuit-breakers` | Snapshots of all wrapped-dependency breakers |
+| `GET /api/diagnostic` | Latest self-diagnostic report + last error |
+| `POST /api/diagnostic/run` | Trigger a self-diagnostic run on demand |
+| `GET /api/oss-attempts` | OSS contribution-attempt store snapshot |
+| `POST /api/oss-attempts/refresh` | Refresh PR/issue state for tracked OSS attempts |
+| `POST /api/oss-attempts/events` | Record an OSS attempt event (used by hooks) |
+| `GET /api/deploy/status` | Production-update job status |
+| `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job |
+
+### WebSocket
+| Endpoint | Description |
+|----------|-------------|
+| `ws://host:port/ws` | WebSocket for real-time updates (snapshots, alerts, suggestions, …) |
+| `ws://host:port/ws/terminal/:sessionId` | Interactive terminal bridge — binary frames over the dtach session |
 
 **Data directory:** `~/.kookr/` (port 4800) or `~/.kookr-{port}/` (other ports).
 
@@ -259,21 +329,34 @@ Configure via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KOOKR_PORT` | `4800` | HTTP/WebSocket port |
+| `KOOKR_PORT` | `4800` | HTTP/WebSocket port (dev defaults to `4801` to avoid conflict with prod) |
 | `KOOKR_HOST` | `127.0.0.1` | Bind address |
+| `KOOKR_BACKEND` | `dtach` | Terminal backend. Hard-rejected unless `dtach` (V8 escape hatch removed; see [ADR-014](docs/adr/014-local-dtach-backend.md)) |
+| `KOOKR_BYPASS_ALL_PERMISSIONS` | `false` | When `true`, spawn agents without permission prompts (`--dangerously-skip-permissions` for Claude Code, `--dangerously-bypass-approvals-and-sandbox` for Codex). Off by default — both flags remove safety guardrails |
+| `KOOKR_PLUGIN_DIR` | auto | Override the auto-resolved Kookr Toolkit plugin path injected into spawned `claude`. Empty string disables injection (hermetic mode) |
+| `KOOKR_CODEX_BIN` | `codex` | Codex CLI binary path (the forked build at `~/git/codex` ships via `pnpm codex:rebuild`) |
+| `ANTHROPIC_API_KEY` | unset | Required for AI task naming (F4.8) and AI response suggestions (F3.9). Falls back to truncated prompt / no suggestions when unset |
 
 ### Project Structure
 
 ```
 src/
+  shared/         # Cross-boundary contracts — ServerMessage/ClientMessage
+                  #   protocol, repo-slug helpers (imported by both server and frontend)
   core/           # Pure logic — types, parsers, task store, anomaly detection,
-                  #   attention queue, monitor, token tracking, friction analysis
-  adapters/       # I/O boundaries — local dtach backend, Claude Code adapter,
-                  #   Codex CLI adapter, GitHub fetcher
-  server/         # Hono HTTP + WebSocket server, hook watcher, reconciliation,
-                  #   session bridge
-  frontend/       # React SPA — Zustand store, WebSocket hook, 11 components
+                  #   attention queue, monitor, token tracking, friction analysis,
+                  #   circuit breakers, GitHub state diff, playbook discovery
+  adapters/       # I/O boundaries — LocalDtachBackend, Claude Code adapter,
+                  #   Codex CLI adapter, GitHub fetcher, git worktree
+  server/         # Hono HTTP + WebSocket server — split route modules,
+                  #   ws-handlers, hook watcher, reconciliation, SessionBridge,
+                  #   schedule runner, autonomy orchestrator
+  frontend/       # React SPA — Zustand store with sliced architecture,
+                  #   WebSocket hook, ~30 components (findings, terminal,
+                  #   workspace, OSS dashboard, settings)
 ```
+
+For the canonical file-by-file tree see [docs/architecture.md](docs/architecture.md#module-structure-v1).
 
 ### Testing
 
@@ -296,7 +379,6 @@ If you run Claude Code or Codex CLI agents on this repo and want the PR-workflow
 | [Roadmap](docs/roadmap.md) | 4 phases from discovery to multi-agent polish |
 | [Hooks setup](docs/hooks-setup.md) | Repo + Claude Code hook install, inventory, verification, troubleshooting |
 | [ADRs](docs/adr/README.md) | Accepted decisions — TypeScript, managed dtach sessions, session bridge |
-| [RFCs](docs/rfc/) | Design explorations and feature proposals |
 
 ## Contributing
 

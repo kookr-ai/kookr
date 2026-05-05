@@ -638,7 +638,7 @@ The system SHALL derive cleanup authorization from a single server-owned policy 
 - `dirty`, `busy`, `protected`, `checked_out_elsewhere`, detached-HEAD, and other `unknown` states are blocked according to the rollout rules
 - UI-facing cleanup actions consume server-derived capability data rather than hard-coding `classification === 'merged'`
 
-**Evidence:** RFC `docs/rfc/rfc-guided-workspace-cleanup-controls.md`, shared policy boundary in `src/core/workspace-cleanup-policy.ts`, cleanup inspector/view projections, cleanup service authorization tests.
+**Evidence:** shared policy boundary in `src/core/workspace-cleanup-policy.ts`, cleanup inspector/view projections, cleanup service authorization tests.
 
 ### R8.2: Freshness-gated Cleanup Execution — SHALL — `done`
 
