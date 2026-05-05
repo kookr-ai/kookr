@@ -436,6 +436,17 @@ The system SHALL allow Contribution Workspace cleanup for candidates classified 
 
 **Evidence:** `src/server/use-cases/cleanup-inspector.ts` (safe classification including `patch_equivalent`), `src/server/use-cases/workspace-cleanup-service.ts` (revalidation + cleanup execution), `src/frontend/components/CleanupCandidateTable.tsx` (guided cleanup affordance), `src/server/use-cases/workspace-cleanup-service.test.ts`, `src/core/workspace-types.test.ts`.
 
+### R4c.2: Project Contribution Counters — SHALL — `done`
+
+The system SHALL summarize each tracked contribution project with lifecycle counters derived from the OSS attempt store.
+
+**Acceptance criteria:**
+- Open PR count reflects every currently open PR for the project, regardless of when the PR was created
+- Recent activity endpoints may apply explicit time windows without changing current-state counters
+- Scouted-only records do not count as PRs
+
+**Evidence:** `src/core/ledger-analytics.ts` (`getAttemptsByProject`, `getAttemptsByProjectRecent`), `src/core/project-summary.ts` (`openPrs` from all PR-keyed attempts), `src/core/ledger-analytics.test.ts`, `src/core/project-summary.test.ts`.
+
 ---
 
 ## R5: GUI Layout
@@ -738,6 +749,7 @@ The system SHOULD suggest an opt-in reflection task after a supervision session 
 | R4b.4 | — | SHOULD | done | QuickLaunch, App |
 | R4b.5 | — | SHOULD | done | telegram/index, telegram/rephrase, launch-service |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
+| R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |
 | R5.2 | F5.2 | SHALL | done | AgentDetail |
 | R5.3 | F5.3 | SHOULD | done | StatusBar |

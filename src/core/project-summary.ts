@@ -100,10 +100,10 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
     const config = configStore.getConfig(projectId);
     const todayCount = ledgerAnalytics.getTodayCount(projectId);
     const weekCount = ledgerAnalytics.getWeekCount(projectId);
-    const recentAttempts = ledgerAnalytics.getAttemptsByProjectRecent(projectId, 7);
-    const openPrs = recentAttempts.filter((a) => a.state === 'pr_open').length;
-    const lastContrib = recentAttempts.length > 0
-      ? recentAttempts.reduce((a, b) => a.createdAt > b.createdAt ? a : b).createdAt
+    const attempts = ledgerAnalytics.getAttemptsByProject(projectId);
+    const openPrs = attempts.filter((a) => a.state === 'pr_open').length;
+    const lastContrib = attempts.length > 0
+      ? attempts.reduce((a, b) => a.createdAt > b.createdAt ? a : b).createdAt
       : undefined;
 
     const activeAgents = agentList.filter(

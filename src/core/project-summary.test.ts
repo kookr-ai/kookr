@@ -231,6 +231,22 @@ describe('computeProjectSummaries', () => {
     expect(grafana).toBeTruthy();
     expect(grafana?.openPrs).toBe(1);
   });
+
+  test('counts currently open PRs even when they were created before the recent window', async () => {
+    const oldTimestamp = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    appendLedgerEntry(tempDir, {
+      timestamp: oldTimestamp,
+      repo: 'grafana/grafana',
+      prUrl: 'https://github.com/grafana/grafana/pull/1',
+    });
+    await ossAttemptStore.loadFromLedger();
+
+    const summaries = computeProjectSummaries({ agents: [], ledgerAnalytics, configStore });
+    const grafana = summaries.find((s) => s.project === 'github.com/grafana/grafana');
+
+    expect(grafana).toBeTruthy();
+    expect(grafana?.openPrs).toBe(1);
+  });
 });
 
 describe('configSeedsMembership', () => {
