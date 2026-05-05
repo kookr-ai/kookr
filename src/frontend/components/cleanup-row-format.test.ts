@@ -66,12 +66,23 @@ describe('formatCleanupSubtext', () => {
     expect(out?.failed).toBe(false);
   });
 
-  it('returns null for protected / busy / checked_out_elsewhere', () => {
-    for (const cls of ['protected', 'busy', 'checked_out_elsewhere'] as const) {
+  it('returns null for protected / busy / checked_out_elsewhere / stale_worktree', () => {
+    for (const cls of ['protected', 'busy', 'checked_out_elsewhere', 'stale_worktree'] as const) {
       expect(
         formatCleanupSubtext({ ...BASE, classification: cls }, NOW),
       ).toBeNull();
     }
+  });
+
+  it('identifies generated-only dirty summaries explicitly', () => {
+    const out = formatCleanupSubtext({
+      ...BASE,
+      classification: 'generated_only',
+      reasonCode: 'generated_artifacts',
+      dirtySummary: { modified: 0, added: 0, deleted: 0, renamed: 0, untracked: 1 },
+    }, NOW);
+    expect(out?.text).toBe('generated U1');
+    expect(out?.failed).toBe(false);
   });
 
   it('returns null for a clean worktree with no commit summary', () => {

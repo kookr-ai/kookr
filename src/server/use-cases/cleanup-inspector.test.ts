@@ -222,7 +222,7 @@ describe('inspectCleanupCandidates', () => {
     expect(result[0].recoveryGuidance).toContain('uncommitted');
   });
 
-  it('classifies dirty when git status fails', async () => {
+  it('classifies status failure for a missing worktree as stale instead of dirty', async () => {
     mockGitArgs([
       { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
       { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'abc123' },
@@ -234,8 +234,64 @@ describe('inspectCleanupCandidates', () => {
     });
 
     expect(result).toHaveLength(1);
+    expect(result[0].classification).toBe('stale_worktree');
+    expect(result[0].reasonCode).toBe('missing_worktree_path');
+    expect(result[0].recoveryGuidance).toContain('worktree prune');
+  });
+
+  it('classifies graphify-only untracked artifacts as generated-only', async () => {
+    mockGitArgs([
+      { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
+      { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'abc123' },
+      { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '?? graphify-out/' },
+    ]);
+
+    const result = await inspectCleanupCandidates('/repo', 'github.com/org/repo', {
+      policyResolver, leaseService,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].classification).toBe('generated_only');
+    expect(result[0].reasonCode).toBe('generated_artifacts');
+    expect(result[0].dirtySummary).toEqual({ modified: 0, added: 0, deleted: 0, renamed: 0, untracked: 1 });
+    expect(result[0].recoveryGuidance).toContain('generated artifact');
+  });
+
+  it('does not classify mixed generated and source changes as generated-only', async () => {
+    mockGitArgs([
+      { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
+      { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'abc123' },
+      { match: (a) => a.includes('status') && a.includes('--porcelain') && !a.includes('--porcelain=v1'), stdout: '?? graphify-out/\n M src/file.ts' },
+    ]);
+
+    const result = await inspectCleanupCandidates('/repo', 'github.com/org/repo', {
+      policyResolver, leaseService,
+    });
+
+    expect(result).toHaveLength(1);
     expect(result[0].classification).toBe('dirty');
-    expect(result[0].reasonCode).toBe('status_failed');
+    expect(result[0].reasonCode).toBe('uncommitted_changes');
+  });
+
+  it('classifies locked worktree registry entries separately from dirty', async () => {
+    const worktreeList = [
+      'worktree /repo', 'HEAD abc123', 'branch refs/heads/main', '',
+      'worktree /repo-wt', 'HEAD def456', 'branch refs/heads/feature', 'locked initializing', '',
+    ].join('\n');
+
+    mockGitArgs([
+      { match: (a) => a.includes('worktree') && a.includes('list'), stdout: worktreeList },
+      { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'abc123' },
+    ]);
+
+    const result = await inspectCleanupCandidates('/repo', 'github.com/org/repo', {
+      policyResolver, leaseService,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].classification).toBe('stale_worktree');
+    expect(result[0].reasonCode).toBe('locked_worktree');
+    expect(result[0].recoveryGuidance).toContain('unlock');
   });
 
   // --- Classification: merged ---

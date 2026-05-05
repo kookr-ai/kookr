@@ -38,6 +38,11 @@ export function deriveCleanupCapabilities(facts: CleanupPolicyFacts): CleanupCap
         defaultActionLabel: 'Review cleanup options',
         riskSummary: 'Branch has local-only commits. Removing the path is allowed; deleting the branch requires reviewed risk acceptance.',
       };
+    case 'generated_only':
+      return blockedCapabilities(
+        'Generated artifacts are not removed by branch cleanup. Delete the generated files or refresh after ignore rules apply.',
+        'Only known generated artifacts are dirty. This is not meaningful source work, but Kookr leaves file deletion explicit.',
+      );
     case 'dirty':
       return {
         canSafeRemove: false,
@@ -51,6 +56,11 @@ export function deriveCleanupCapabilities(facts: CleanupPolicyFacts): CleanupCap
       return blockedCapabilities(
         'Branch is checked out in another worktree.',
         'Cleanup is blocked while the branch is active elsewhere.',
+      );
+    case 'stale_worktree':
+      return blockedCapabilities(
+        'Stale or inaccessible worktree entries require registry cleanup, not branch cleanup.',
+        'Kookr could not inspect this worktree path. Prune stale worktree metadata only after confirming no live process owns it.',
       );
     case 'busy':
       return blockedCapabilities(

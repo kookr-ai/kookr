@@ -12,8 +12,10 @@ export type CleanupClassification =
   | 'merged'
   | 'patch_equivalent'
   | 'unique_commits'
+  | 'generated_only'
   | 'dirty'
   | 'checked_out_elsewhere'
+  | 'stale_worktree'
   | 'busy'
   | 'protected'
   | 'unknown';

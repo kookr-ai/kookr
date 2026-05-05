@@ -66,7 +66,8 @@ export function SweepButton({ send, projectCount }: Props) {
             <p>
               Kookr will visit <strong>{projectCount}</strong> known project(s) and remove worktrees
               whose branches are fully merged into their baseline. <em>patch_equivalent</em> worktrees
-              are <strong>not</strong> touched by the sweep (per-project panel only).
+              are <strong>not</strong> touched by the sweep (per-project panel only), and dirty,
+              generated-only, stale, or busy worktrees are reported but skipped.
             </p>
             <p className="sweep-confirm-hint">
               Deleted branches remain recoverable via <code>git reflog</code> in each repo for ~30 days.

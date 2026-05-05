@@ -9,8 +9,10 @@ describe('isCleanupRemovableClassification', () => {
 
   it('returns false for all non-removable classifications', () => {
     expect(isCleanupRemovableClassification('unique_commits')).toBe(false);
+    expect(isCleanupRemovableClassification('generated_only')).toBe(false);
     expect(isCleanupRemovableClassification('dirty')).toBe(false);
     expect(isCleanupRemovableClassification('checked_out_elsewhere')).toBe(false);
+    expect(isCleanupRemovableClassification('stale_worktree')).toBe(false);
     expect(isCleanupRemovableClassification('busy')).toBe(false);
     expect(isCleanupRemovableClassification('protected')).toBe(false);
     expect(isCleanupRemovableClassification('unknown')).toBe(false);
