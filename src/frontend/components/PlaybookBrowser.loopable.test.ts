@@ -112,6 +112,8 @@ describe('PlaybookBrowser loopable workflows', () => {
     expect(workflowCard).toBeTruthy();
     expect(workflowCard!.querySelector('.playbook-tag-loopable')).toBeTruthy();
     expect(workflowCard!.querySelector('.playbook-tag-workflow')).toBeTruthy();
+    expect(workflowCard!.querySelector('.playbook-tag-loopable svg')).toBeTruthy();
+    expect(workflowCard!.querySelector('.playbook-tag-workflow svg')).toBeTruthy();
 
     // The plain playbook should not show any tag badges
     const plainCard = Array.from(cards).find((c) => c.textContent?.includes('Plain'));
@@ -125,6 +127,30 @@ describe('PlaybookBrowser loopable workflows', () => {
     const filterBtn = container.querySelector<HTMLButtonElement>('.playbook-filter');
     expect(filterBtn).toBeTruthy();
     expect(filterBtn!.textContent).toContain('Loopable workflows (1)');
+    expect(filterBtn!.querySelector('svg')).toBeTruthy();
+  });
+
+  test('renders pin as an accessible icon button', async () => {
+    await flush();
+
+    const pinBtn = container.querySelector<HTMLButtonElement>('.playbook-pin-btn');
+    expect(pinBtn).toBeTruthy();
+    expect(pinBtn!.getAttribute('aria-label')).toBe('Pin playbook to top');
+    expect(pinBtn!.querySelector('svg')).toBeTruthy();
+  });
+
+  test('renders pinned state with filled pin controls', async () => {
+    await flush();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.playbook-pin-btn')!.click();
+    });
+
+    const pinnedBtn = container.querySelector<HTMLButtonElement>('.playbook-pin-btn.pinned');
+    expect(pinnedBtn).toBeTruthy();
+    expect(pinnedBtn!.getAttribute('aria-label')).toBe('Unpin playbook');
+    expect(pinnedBtn!.querySelector('svg.filled')).toBeTruthy();
+    expect(container.querySelector('.playbook-pin-indicator svg.filled')).toBeTruthy();
   });
 
   test('filter button shows only loopable playbooks when active', async () => {
