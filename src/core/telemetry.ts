@@ -18,6 +18,7 @@ export type TelemetryEventType =
   | 'launch_dialog_closed'
   | 'launch_dialog_draft_restored'
   | 'launch_dialog_draft_discarded'
+  | 'launch_dialog_cwd_field_used'
   | 'launch_submitted'
   | 'task_completed'
   | 'task_cancelled'
