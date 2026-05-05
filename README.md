@@ -76,6 +76,14 @@ brew install node@22 pnpm
 
 </details>
 
+### Recording prerequisites
+
+Only required if you plan to regenerate the demo video with `pnpm demo:record`. Skip this section otherwise.
+
+- **Color emoji font** — Linux: `sudo apt-get install fonts-noto-color-emoji && fc-cache -fv`. macOS: ships with the system. A startup preflight (`demo/lib/preflight.ts`) refuses to record if Chromium can't render colored emoji.
+- **ffmpeg ≥ 5.0** — Linux: `sudo apt-get install ffmpeg`. macOS: `brew install ffmpeg`. Used to mux the captured video with TTS narration.
+- **Docker** — only needed for the bundled TTS service (`KOOKR_TTS=true`). Skip if you record silent (`KOOKR_TTS=`) or point at an external TTS endpoint via `KOOKR_TTS_URL`.
+
 ### Install & Run
 
 ```bash

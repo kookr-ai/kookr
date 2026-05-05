@@ -45,6 +45,7 @@ import {
   mergeConflictContent,
 } from './terminal-content.js';
 import { startTTS, type TTSManager } from '../src/server/tts-manager.js';
+import { preflight } from './lib/preflight.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -660,6 +661,13 @@ async function mergeAudioIntoVideo(
 // ---------------------------------------------------------------------------
 
 async function record() {
+  // --- Preflight: verify color-emoji font + Chromium can render it.
+  // Fails fast with an actionable message so we never spin up TTS Docker
+  // and Playwright just to produce a video full of tofu boxes.
+  console.log('[preflight] Verifying color-emoji rendering...');
+  await preflight();
+  console.log('[preflight] OK — emoji renders as a colored glyph.');
+
   // --- TTS setup (optional) ---
   let ttsManager: TTSManager | null = null;
   let ttsUrl = TTS_URL;
@@ -714,23 +722,6 @@ async function record() {
 
     // Seed project configs so the sidebar appears
     await seedProjectConfigs(request);
-
-    // Disable achievements client-side to prevent toasts
-    await page.evaluate(() => {
-      localStorage.setItem('kookr-achievements-enabled', 'false');
-    });
-    // Hide elements with emojis that don't render in headless Chromium (no emoji font)
-    // Trophy button, mic buttons, sound toggle — all use Unicode emojis
-    await page.evaluate(() => {
-      const style = document.createElement('style');
-      style.textContent = `
-        .btn-trophy { display: none !important; }
-        .btn-voice { display: none !important; }
-        .btn-sound { display: none !important; }
-        .achievement-toasts { display: none !important; }
-      `;
-      document.head.appendChild(style);
-    });
 
     // Inject click ripple and keystroke badge visual indicators
     await injectInteractionIndicators(page);

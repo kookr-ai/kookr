@@ -93,16 +93,9 @@ Mirrors the STT pattern exactly:
 - Non-fatal: TTS failure doesn't break the server or recording (falls back to silent)
 - Manager: `src/server/tts-manager.ts` (mirrors `src/server/stt-manager.ts`)
 
-## Headless Chromium Gotchas
+## Emoji Rendering
 
-Playwright uses headless Chromium which has no emoji fonts installed. **All Unicode emoji characters render as broken boxes.** This affects:
-
-- **Trophy button** (`🏆` in StatusBar) — hide with `.btn-trophy { display: none !important; }`
-- **Mic buttons** (`🎤` in VoiceInputButton) — hide with `.btn-voice { display: none !important; }`
-- **Sound button** (`🔊/🔇` in StatusBar) — hide with `.btn-sound { display: none !important; }`
-- **Achievement toasts** — disable via `localStorage.setItem('kookr-achievements-enabled', 'false')`
-
-Inject these overrides via `page.evaluate()` after page load, before the scenario starts. Every time a new UI element with emojis is added, add it to the CSS hide list.
+Recording requires `fonts-noto-color-emoji` on Linux / Apple Color Emoji on macOS — verified by `demo/lib/preflight.ts` at startup.
 
 ## Fake Data Requirements
 
@@ -154,7 +147,6 @@ After recording, verify each of these before committing:
 | Docker build timeout | First build installs PyTorch+CUDA (~6GB). Subsequent builds use cache. |
 | ffmpeg not found | Install ffmpeg: `sudo apt install ffmpeg` |
 | No audio in output | Check that `[tts] Generated N/N clips` shows in output. If 0, TTS failed. |
-| Broken emoji boxes | Hide the element via CSS injection (see Headless Chromium Gotchas above) |
+| Broken emoji boxes | Install `fonts-noto-color-emoji` (Linux) and run `fc-cache -fv`. Preflight will fail fast if the font is missing. |
 | $0.00 in TopBar | Inject fake spend data via `/api/test/set-spend` |
-| Achievement toasts pop up | Set `kookr-achievements-enabled` to `false` in localStorage before scenario |
 | Snooze/complete task vanishes | Wait for the snoozed/completed section to render after the action |
