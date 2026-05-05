@@ -42,7 +42,8 @@ export const ONBOARDING_CARDS: Card[] = [
         <p>
           Kookr's dashboard has four areas: a <strong>top bar</strong> with status and shortcuts,
           a <strong>project sidebar</strong>, a <strong>findings panel</strong> in the middle,
-          and a <strong>detail panel</strong> on the right with the live terminal and reply input.
+          and a <strong>detail panel</strong> on the right that splits an <strong>Activity</strong> feed
+          alongside a <strong>Terminal</strong> / <strong>Diff</strong> toggle, with a reply input below.
         </p>
         <OnboardingLayoutDiagram />
       </>

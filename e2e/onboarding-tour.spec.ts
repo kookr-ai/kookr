@@ -122,6 +122,14 @@ test.describe('Onboarding tour', () => {
     await page.keyboard.press('ArrowRight');
     await expect(page.locator('body')).toHaveClass(/kookr-tour-active-layout/);
 
+    // Spotlight ring must use amber (#fbbf24) for contrast against the dark
+    // dashboard — guards against an accidental revert to accent-blue.
+    const ringColor = await page
+      .locator('.kookr-tour-target-layout')
+      .first()
+      .evaluate((el) => getComputedStyle(el).outlineColor);
+    expect(ringColor).toMatch(/251,\s*191,\s*36/);
+
     // Card 3 = launch.
     await page.keyboard.press('ArrowRight');
     await expect(page.locator('body')).toHaveClass(/kookr-tour-active-launch/);
