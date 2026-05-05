@@ -147,7 +147,7 @@ test.describe('Launch dialog', () => {
   test('dialog opens and focuses prompt textarea', async ({ page }) => {
     await page.locator('.btn-launch').click();
     await expect(page.locator('.dialog')).toBeVisible();
-    await expect(page.locator('.dialog h3')).toContainText('Launch New Agent');
+    await expect(page.locator('.dialog h3')).toContainText('Launch New Task');
     await expect(page.locator('.dialog textarea')).toBeFocused();
   });
 

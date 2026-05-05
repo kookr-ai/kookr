@@ -1,14 +1,16 @@
-export const LAUNCH_DIALOG_DRAFT_KEY = 'kookr:launchDialogDraft';
+// Storage key value intentionally unchanged ('kookr:launchDialogDraft') so
+// in-flight drafts survive the file/symbol rename without a migration step.
+export const LAUNCH_TASK_DIALOG_DRAFT_KEY = 'kookr:launchDialogDraft';
 
-export interface LaunchDialogDraft {
+export interface LaunchTaskDialogDraft {
   prompt: string;
   cwd: string;
   criteria: string;
 }
 
-export function loadLaunchDialogDraft(): LaunchDialogDraft | null {
+export function loadLaunchTaskDialogDraft(): LaunchTaskDialogDraft | null {
   try {
-    const raw = localStorage.getItem(LAUNCH_DIALOG_DRAFT_KEY);
+    const raw = localStorage.getItem(LAUNCH_TASK_DIALOG_DRAFT_KEY);
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
@@ -29,21 +31,21 @@ export function loadLaunchDialogDraft(): LaunchDialogDraft | null {
  * cwd alone does not count: it is auto-populated from recentPaths on open
  * and would otherwise cause every dialog-open to persist a zombie draft.
  */
-export function saveLaunchDialogDraft(draft: LaunchDialogDraft): void {
+export function saveLaunchTaskDialogDraft(draft: LaunchTaskDialogDraft): void {
   if (!draft.prompt.trim() && !draft.criteria.trim()) {
-    clearLaunchDialogDraft();
+    clearLaunchTaskDialogDraft();
     return;
   }
   try {
-    localStorage.setItem(LAUNCH_DIALOG_DRAFT_KEY, JSON.stringify(draft));
+    localStorage.setItem(LAUNCH_TASK_DIALOG_DRAFT_KEY, JSON.stringify(draft));
   } catch {
     // Quota exceeded / private browsing — silently ignore.
   }
 }
 
-export function clearLaunchDialogDraft(): void {
+export function clearLaunchTaskDialogDraft(): void {
   try {
-    localStorage.removeItem(LAUNCH_DIALOG_DRAFT_KEY);
+    localStorage.removeItem(LAUNCH_TASK_DIALOG_DRAFT_KEY);
   } catch {
     // Ignore.
   }

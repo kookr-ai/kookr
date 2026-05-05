@@ -276,7 +276,7 @@ The system SHALL allow launching a new agent from the GUI with a task descriptio
 - Hook settings are additive to user's existing settings
 - New task created with status `open`, transitions to `in_progress` on agent start
 
-**Evidence:** `src/frontend/components/LaunchDialog.tsx` (dialog UI), `src/server/ws.ts` (launch handler), `src/adapters/claude-code-adapter.ts` (tmux session creation, settings generation), `src/server/ws.test.ts` ("client sends launch - new agent started"), `src/adapters/claude-code-adapter.test.ts` (settings with hooks).
+**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (dialog UI), `src/server/ws.ts` (launch handler), `src/adapters/claude-code-adapter.ts` (tmux session creation, settings generation), `src/server/ws.test.ts` ("client sends launch - new task started"), `src/adapters/claude-code-adapter.test.ts` (settings with hooks).
 
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 
@@ -324,7 +324,7 @@ The system SHOULD allow the user to provide optional completion criteria when la
 - Criteria stored with the task
 - Supervisor can reference criteria when evaluating agent completion (V2: auto-evaluate)
 
-**Evidence:** `src/frontend/components/LaunchDialog.tsx` (criteria field in dialog), `src/core/tasks.ts` (criteria stored in task). Auto-evaluation not implemented.
+**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (criteria field in dialog), `src/core/tasks.ts` (criteria stored in task). Auto-evaluation not implemented.
 
 ### R4.6: Attach to Agent Terminal [F4.6] — SHOULD — `partial`
 
@@ -355,7 +355,7 @@ The system SHALL pre-fill the launch dialog's path field with the working direct
 
 **Rationale:** Eliminates the path field entirely for single-repo workflows. Near-zero effort.
 
-**Evidence:** `src/server/ws.ts` (snapshot includes `serverCwd`), `src/server/index.ts` (passes `process.cwd()`), `src/frontend/store/useStore.ts` (stores `serverCwd`), `src/frontend/hooks/useWebSocket.ts` (passes `serverCwd` from snapshot), `src/frontend/components/LaunchDialog.tsx` (uses `serverCwd` as fallback). Tests in `ws.test.ts` and `useStore.test.ts`.
+**Evidence:** `src/server/ws.ts` (snapshot includes `serverCwd`), `src/server/index.ts` (passes `process.cwd()`), `src/frontend/store/useStore.ts` (stores `serverCwd`), `src/frontend/hooks/useWebSocket.ts` (passes `serverCwd` from snapshot), `src/frontend/components/LaunchTaskDialog.tsx` (uses `serverCwd` as fallback). Tests in `ws.test.ts` and `useStore.test.ts`.
 
 ### R4b.2: Recent Paths Dropdown with Autocomplete — SHALL — `done`
 
@@ -372,7 +372,7 @@ The system SHALL remember recently used paths and offer them in an autocomplete 
 
 **Rationale:** Developers typically work across 2–5 repos. MRU dropdown covers multi-repo workflows without a filesystem browser.
 
-**Evidence:** `src/frontend/store/recent-paths.ts` (RecentPaths class with MRU, filter, persistence), `src/frontend/store/recent-paths.test.ts` (11 tests), `src/frontend/components/LaunchDialog.tsx` (combo input with dropdown, keyboard navigation, onBlur dismiss).
+**Evidence:** `src/frontend/store/recent-paths.ts` (RecentPaths class with MRU, filter, persistence), `src/frontend/store/recent-paths.test.ts` (11 tests), `src/frontend/components/LaunchTaskDialog.tsx` (combo input with dropdown, keyboard navigation, onBlur dismiss).
 
 ### R4b.3: Re-launch from Task History — SHOULD — `done`
 
@@ -386,7 +386,7 @@ The system SHOULD allow re-launching a previous task, pre-filling the launch dia
 
 **Rationale:** "Run the same thing again with a tweak" is extremely common. The data already exists in `tasks.ts` — this is purely a UI affordance. The WebSocket protocol already defines a `relaunch` message type.
 
-**Evidence:** `src/frontend/store/useStore.ts` (relaunchTask state, setRelaunchTask/clearRelaunchTask actions), `src/frontend/store/useStore.test.ts` (2 tests), `src/frontend/components/DetailPanel.tsx` (Re-launch button fetches task data from `/api/tasks`), `src/frontend/App.tsx` (opens LaunchDialog pre-filled when relaunchTask is set).
+**Evidence:** `src/frontend/store/useStore.ts` (relaunchTask state, setRelaunchTask/clearRelaunchTask actions), `src/frontend/store/useStore.test.ts` (2 tests), `src/frontend/components/DetailPanel.tsx` (Re-launch button fetches task data from `/api/tasks`), `src/frontend/App.tsx` (opens LaunchTaskDialog pre-filled when relaunchTask is set).
 
 ### R4b.4: Quick-launch Shortcut — SHOULD — `done`
 
@@ -401,7 +401,7 @@ The system SHOULD provide a minimal quick-launch mode that inherits the path fro
 
 **Rationale:** When running multiple agents in the same repo, the path is always the same. Removing the dialog entirely for this case cuts launch time to a single keystroke + prompt.
 
-**Evidence:** `src/frontend/components/QuickLaunch.tsx` (prompt-only input bar, resolves CWD from selected agent → recent paths → serverCwd), `src/frontend/App.tsx` (Ctrl+L opens QuickLaunch, TopBar button opens full LaunchDialog), `src/frontend/styles.css` (quick-launch-bar styling).
+**Evidence:** `src/frontend/components/QuickLaunch.tsx` (prompt-only input bar, resolves CWD from selected agent → recent paths → serverCwd), `src/frontend/App.tsx` (Ctrl+L opens QuickLaunch, TopBar button opens full LaunchTaskDialog), `src/frontend/styles.css` (quick-launch-bar styling).
 
 ---
 
@@ -709,14 +709,14 @@ The system SHOULD suggest an opt-in reflection task after a supervision session 
 | R3.6 | F3.6 | SHALL | done | attention-queue, ws, loop.test |
 | R3.7 | F3.7 | SHALL | done | attention-queue, ws, loop.test |
 | R3.8 | — | SHOULD | done | useStore, SentOverlay, DetailPanel |
-| R4.1 | F4.1 | SHALL | done | LaunchDialog, ws, claude-code-adapter |
+| R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, claude-code-adapter |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | todo | — |
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation |
-| R4.5 | F4.5 | SHOULD | partial | LaunchDialog, tasks (auto-eval todo) |
+| R4.5 | F4.5 | SHOULD | partial | LaunchTaskDialog, tasks (auto-eval todo) |
 | R4.6 | F4.6 | SHOULD | partial | tmux-terminal-manager, DetailPanel, TerminalPanel, FindingsPanel |
-| R4b.1 | — | SHALL | done | ws, server/index, useStore, LaunchDialog |
-| R4b.2 | — | SHALL | done | recent-paths, LaunchDialog |
+| R4b.1 | — | SHALL | done | ws, server/index, useStore, LaunchTaskDialog |
+| R4b.2 | — | SHALL | done | recent-paths, LaunchTaskDialog |
 | R4b.3 | — | SHOULD | done | useStore, DetailPanel, App |
 | R4b.4 | — | SHOULD | done | QuickLaunch, App |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
