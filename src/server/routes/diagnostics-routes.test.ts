@@ -97,9 +97,9 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // POST /api/hook-event/:tmuxName
+  // POST /api/hook-event/:sessionId
   // ---------------------------------------------------------------------------
-  describe('POST /api/hook-event/:tmuxName', () => {
+  describe('POST /api/hook-event/:sessionId', () => {
     test('returns 200 and records arrival when body is non-empty', async () => {
       const arrivals: Array<{ tmux: string; body: string }> = [];
       const httpPushTracker = {

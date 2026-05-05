@@ -76,13 +76,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     return c.json(deps.circuitBreakerRegistry.getAllSnapshots());
   });
 
-  app.post('/api/hook-event/:tmuxName', async (c) => {
-    const tmuxName = c.req.param('tmuxName');
+  app.post('/api/hook-event/:sessionId', async (c) => {
+    const sessionId = c.req.param('sessionId');
     const body = await c.req.text();
     if (!body.trim()) return c.json({ status: 'empty' }, 400);
 
     if (deps.httpPushTracker) {
-      deps.httpPushTracker.recordHttpArrival(tmuxName, body);
+      deps.httpPushTracker.recordHttpArrival(sessionId, body);
     }
 
     return c.json({ status: 'received' });
@@ -174,14 +174,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   // Crash recovery startup summary endpoint (fetched once by frontend on mount)
   app.get('/api/startup-summary', (c) => c.json(deps.startupRecoverySummary ?? null));
 
-  app.get('/api/capture/:tmuxName', async (c) => {
-    const tmuxName = c.req.param('tmuxName');
+  app.get('/api/capture/:sessionId', async (c) => {
+    const sessionId = c.req.param('sessionId');
     try {
-      const output = await adapter.captureDisplay(tmuxName);
-      return c.json({ tmuxName, output });
+      const output = await adapter.captureDisplay(sessionId);
+      return c.json({ sessionId, output });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return c.json({ error: message, tmuxName }, 404);
+      return c.json({ error: message, sessionId }, 404);
     }
   });
 }
