@@ -16,7 +16,16 @@ export interface PreparePlaybookLaunchInput {
   agentType?: AgentType;
 }
 
+export interface PreparedPlaybookLaunch {
+  playbook: ReturnType<typeof parsePlaybook>;
+  launchOpts: LaunchOpts;
+}
+
 export async function preparePlaybookLaunch(input: PreparePlaybookLaunchInput): Promise<LaunchOpts> {
+  return (await preparePlaybookLaunchWithMetadata(input)).launchOpts;
+}
+
+export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLaunchInput): Promise<PreparedPlaybookLaunch> {
   const playbooksDir = join(input.cwd, '.kookr', 'playbooks');
   const filePath = join(playbooksDir, input.playbookPath);
   if (!filePath.startsWith(playbooksDir + '/')) {
@@ -55,14 +64,17 @@ export async function preparePlaybookLaunch(input: PreparePlaybookLaunchInput): 
   }
 
   return {
-    prompt,
-    cwd: effectiveCwd,
-    criteria,
-    name: playbook.name,
-    playbookId: playbook.id,
-    playbookParameterValues: input.parameterValues,
-    autonomy: input.autonomy,
-    agentType: input.agentType,
-    projectId,
+    playbook,
+    launchOpts: {
+      prompt,
+      cwd: effectiveCwd,
+      criteria,
+      name: playbook.name,
+      playbookId: playbook.id,
+      playbookParameterValues: input.parameterValues,
+      autonomy: input.autonomy,
+      agentType: input.agentType,
+      projectId,
+    },
   };
 }

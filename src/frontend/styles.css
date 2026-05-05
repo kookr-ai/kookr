@@ -1549,6 +1549,7 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 24px;
   z-index: 100;
 }
 
@@ -1559,6 +1560,10 @@ kbd {
   padding: 24px;
   width: min(640px, 92vw);
   max-width: 92vw;
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  overscroll-behavior: contain;
   box-shadow: 0 16px 48px rgba(0,0,0,0.4);
 }
 
@@ -1791,7 +1796,12 @@ textarea::-webkit-resizer { background: transparent; }
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 16px;
+  position: sticky;
+  bottom: -24px;
+  z-index: 1;
+  margin: 16px -24px -24px;
+  padding: 12px 24px 24px;
+  background: linear-gradient(180deg, rgba(21, 24, 32, 0), rgba(21, 24, 32, 0.96) 32%);
 }
 
 /* --- Combo Input (dropdown autocomplete) --- */
@@ -6011,6 +6021,7 @@ textarea::-webkit-resizer { background: transparent; }
   .dialog {
     width: 100%;
     max-width: none;
+    max-height: none;
     min-height: 100dvh;
     border-radius: 0;
     border-left: none;
@@ -6031,7 +6042,8 @@ textarea::-webkit-resizer { background: transparent; }
   .dialog-actions {
     position: sticky;
     bottom: 0;
-    padding-top: 12px;
+    margin: 12px -16px -24px;
+    padding: 12px 16px 24px;
     background: linear-gradient(180deg, rgba(21, 24, 32, 0), rgba(21, 24, 32, 0.96) 32%);
   }
 
