@@ -2,8 +2,9 @@
 // Must run before any module reads process.env.
 try {
   process.loadEnvFile();
-} catch {
-  // .env file not found — env vars may be set via shell profile or CI
+} catch (err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.warn(`[env] Warning: failed to load .env from ${process.cwd()}: ${msg}`);
 }
 
 import { accessSync } from 'node:fs';

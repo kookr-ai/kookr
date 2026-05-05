@@ -352,7 +352,12 @@ Configure via environment variables:
 | `KOOKR_BYPASS_ALL_PERMISSIONS` | `false` | When `true`, spawn agents without permission prompts (`--dangerously-skip-permissions` for Claude Code, `--dangerously-bypass-approvals-and-sandbox` for Codex). Off by default — both flags remove safety guardrails |
 | `KOOKR_PLUGIN_DIR` | auto | Override the auto-resolved Kookr Toolkit plugin path injected into spawned `claude`. Empty string disables injection (hermetic mode) |
 | `KOOKR_CODEX_BIN` | `codex` | Codex CLI binary path (the forked build at `~/git/codex` ships via `pnpm codex:rebuild`) |
+| `KOOKR_STT_HEALTH_TIMEOUT_S` | `600` | Seconds to wait for the bundled speech-to-text service to become healthy. First-run Whisper model downloads can take several minutes |
 | `ANTHROPIC_API_KEY` | unset | Required for AI task naming (F4.8) and AI response suggestions (F3.9). Falls back to truncated prompt / no suggestions when unset |
+
+### Production instance
+
+`pnpm prod:update` maintains a detached sibling worktree at `../kookr-prod` and restarts the port 4800 server after building it. When the main checkout has a `.env`, production setup links it into the production worktree as `../kookr-prod/.env`, so edit the main checkout's `.env` and run `pnpm prod:restart` for runtime-only configuration changes.
 
 ### Project Structure
 

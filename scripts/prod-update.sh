@@ -26,6 +26,10 @@ if [[ ! -d "${PROD_DIR}" ]]; then
   git worktree add --detach "${PROD_DIR}" origin/main
 fi
 
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  ln -sfn "${ROOT_DIR}/.env" "${PROD_DIR}/.env"
+fi
+
 cd "${PROD_DIR}"
 git fetch origin
 git switch --detach origin/main

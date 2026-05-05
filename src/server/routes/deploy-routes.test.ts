@@ -116,6 +116,18 @@ describe('deploy-routes', () => {
       expect(script).toContain('git switch --detach origin/main');
     });
 
+    it('prod-update script links the main checkout .env into kookr-prod', () => {
+      const script = readFileSync(join(process.cwd(), 'scripts', 'prod-update.sh'), 'utf-8');
+      expect(script).toContain('ln -sfn "${ROOT_DIR}/.env" "${PROD_DIR}/.env"');
+    });
+
+    it('prod:setup mirrors the production .env symlink step', () => {
+      const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as {
+        scripts: Record<string, string>;
+      };
+      expect(pkg.scripts['prod:setup']).toContain('ln -sfn "$(pwd)/.env" ../kookr-prod/.env');
+    });
+
     it('returns 400 when prod dir does not exist', async () => {
       const app = makeApp(mainDir);
       const res = await app.request('/api/deploy/trigger', { method: 'POST' });
