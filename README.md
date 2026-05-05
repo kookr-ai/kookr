@@ -50,8 +50,8 @@ You run 5 Claude Code agents in parallel. One silently loops on the same failing
 <summary>Ubuntu / Debian install commands</summary>
 
 ```bash
-# Node.js 22 via NodeSource
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+# Node.js 24 via NodeSource (tested version; v22 is also supported)
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
 # Build tools + git — dtach is vendored and compiled via `pnpm build:dtach`
