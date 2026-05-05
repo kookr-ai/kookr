@@ -8,7 +8,7 @@ import { TerminalPanel } from './TerminalPanel.js';
 import { GitHubPanel } from './GitHubPanel.js';
 import { ActivityPanel, type DiffClickTarget } from './ActivityPanel.js';
 import { DiffPane } from './DiffPane.js';
-import { formatDuration, formatCost, formatTokens, copyAttachCommand, projectLabel, projectColor, formatBranch } from '../presentation.js';
+import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, formatBranch } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { EffectiveHookSettingsModal } from './EffectiveHookSettingsModal.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
@@ -397,11 +397,6 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
     send({ type: 'cancelTask', taskId: agent.taskId });
   }
 
-  function handleAttach() {
-    if (!agent) return;
-    copyAttachCommand(agent.agentId, handleAlert);
-  }
-
   function handleKeyDown(e: React.KeyboardEvent) {
     // Guard: skip Enter during IME composition (e.g., CJK input) or browser
     // autocomplete acceptance — these fire keydown with key='Enter' but the user
@@ -504,7 +499,6 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
           {agent.startedAt && <span>{formatDuration(agent.startedAt)}</span>}
           {agent.taskId && agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && (
             <>
-              <button data-testid="action-attach" className="action-btn action-btn--neutral" onClick={handleAttach}>Attach</button>
               <button data-testid="action-complete" className="action-btn action-btn--success" onClick={handleComplete}>Complete</button>
               <button data-testid="action-cancel" className="action-btn action-btn--danger" onClick={handleCancel}>Cancel</button>
             </>

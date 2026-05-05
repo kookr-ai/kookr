@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { healthyDotClass, getAttachCommand, healthyStatusLabel, copyAttachCommand, projectLabel, projectColor } from './presentation.js';
+import { healthyDotClass, healthyStatusLabel, projectLabel, projectColor } from './presentation.js';
 import type { AgentEvent } from '../shared/protocol.js';
 
 describe('healthyDotClass', () => {
@@ -49,40 +49,6 @@ describe('healthyStatusLabel', () => {
     vi.setSystemTime(new Date('2026-03-24T10:05:00.000Z'));
     expect(healthyStatusLabel([], '2026-03-24T10:00:00.000Z')).toBe('5m');
     vi.useRealTimers();
-  });
-});
-
-describe('getAttachCommand', () => {
-  test('returns tmux attach command with agent ID', () => {
-    expect(getAttachCommand('kookr-abc123')).toBe('tmux attach-session -t kookr-abc123');
-  });
-});
-
-describe('copyAttachCommand', () => {
-  test('copies command to clipboard and shows info toast on success', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
-    const showToast = vi.fn();
-
-    copyAttachCommand('agent-1', showToast);
-
-    expect(writeText).toHaveBeenCalledWith('tmux attach-session -t agent-1');
-    // Wait for the promise chain to resolve
-    await vi.waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith('agent-1', 'Copied: tmux attach-session -t agent-1', 'info');
-    });
-  });
-
-  test('shows error toast with command when clipboard write fails', async () => {
-    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
-    Object.assign(navigator, { clipboard: { writeText } });
-    const showToast = vi.fn();
-
-    copyAttachCommand('agent-2', showToast);
-
-    await vi.waitFor(() => {
-      expect(showToast).toHaveBeenCalledWith('agent-2', 'Copy failed — run: tmux attach-session -t agent-2', 'error');
-    });
   });
 });
 
