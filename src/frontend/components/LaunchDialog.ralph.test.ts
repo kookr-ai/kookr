@@ -47,6 +47,12 @@ function getRalphCapEl(container: HTMLElement): HTMLInputElement {
   return el as HTMLInputElement;
 }
 
+function getRalphStopPredicateEl(container: HTMLElement): HTMLTextAreaElement {
+  const el = container.querySelector('textarea[name="ralph-stop-predicate"]');
+  if (!el) throw new Error('Ralph stop predicate textarea not rendered');
+  return el as HTMLTextAreaElement;
+}
+
 function getSubmit(container: HTMLElement): HTMLButtonElement {
   const el = container.querySelector('.dialog-actions .btn-primary');
   if (!el) throw new Error('submit button not rendered');
@@ -186,6 +192,77 @@ describe('LaunchDialog Ralph task mode', () => {
 
     expect(getSubmit(container).disabled).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+
+    act(() => root.unmount());
+  });
+
+  test('stop-predicate textarea updates state when typed into', async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-pressed="false"]')!.click();
+    });
+    await flush();
+
+    const el = getRalphStopPredicateEl(container);
+    await act(async () => { setInputValue(el, 'test -f DONE'); });
+
+    expect(el.value).toBe('test -f DONE');
+
+    act(() => root.unmount());
+  });
+
+  test('submitting with a non-empty stop predicate sends stopPredicate in the request body', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: async () => ({ id: 'task-2', ralphLoop: { status: 'running' } }),
+    });
+    const { root } = renderDialog(container);
+    await flush();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-pressed="false"]')!.click();
+    });
+    await act(async () => { setInputValue(getPromptEl(container), 'Batch run with predicate'); });
+    await act(async () => { setInputValue(getCwdEl(container), '/tmp/work'); });
+    await act(async () => { setInputValue(getRalphStopPredicateEl(container), 'test -f .batch-stop'); });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.stopPredicate).toBe('test -f .batch-stop');
+
+    act(() => root.unmount());
+  });
+
+  test('submitting with empty stop predicate does NOT include stopPredicate in the body', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: async () => ({ id: 'task-3', ralphLoop: { status: 'running' } }),
+    });
+    const { root } = renderDialog(container);
+    await flush();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-pressed="false"]')!.click();
+    });
+    await act(async () => { setInputValue(getPromptEl(container), 'Batch run without predicate'); });
+    await act(async () => { setInputValue(getCwdEl(container), '/tmp/work'); });
+    // leave stop predicate empty (default is '')
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty('stopPredicate');
 
     act(() => root.unmount());
   });
