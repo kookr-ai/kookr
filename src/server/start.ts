@@ -2,8 +2,15 @@
 // Must run before any module reads process.env.
 try {
   process.loadEnvFile();
-} catch {
-  // .env file not found — env vars may be set via shell profile or CI
+} catch (err) {
+  // ENOENT is expected when .env is intentionally absent (CI, shell-profile env).
+  // Anything else (parse error, permissions, broken symlink) silently disables
+  // KOOKR_STT/TTS/etc. — surface it so the operator notices.
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code !== 'ENOENT') {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[env] Failed to load .env: ${msg}`);
+  }
 }
 
 import { accessSync } from 'node:fs';
@@ -20,6 +27,9 @@ const KOOKR_DIR = PORT === 4800 ? join(homedir(), '.kookr') : join(homedir(), `.
 const STT_ENABLED = process.env.KOOKR_STT === 'true';
 const STT_URL_OVERRIDE = process.env.KOOKR_STT_URL ?? '';
 const STT_PORT = parseInt(process.env.KOOKR_STT_PORT ?? '8003', 10);
+const STT_HEALTH_TIMEOUT_S = process.env.KOOKR_STT_HEALTH_TIMEOUT_S
+  ? parseInt(process.env.KOOKR_STT_HEALTH_TIMEOUT_S, 10)
+  : undefined;
 const WHISPER_MODEL = process.env.WHISPER_MODEL ?? 'large-v3';
 const TTS_ENABLED = process.env.KOOKR_TTS === 'true';
 const TTS_URL_OVERRIDE = process.env.KOOKR_TTS_URL ?? '';
@@ -80,6 +90,9 @@ async function main(): Promise<void> {
         sttDir,
         port: STT_PORT,
         whisperModel: WHISPER_MODEL,
+        ...(STT_HEALTH_TIMEOUT_S !== undefined && Number.isFinite(STT_HEALTH_TIMEOUT_S) && STT_HEALTH_TIMEOUT_S > 0
+          ? { startupTimeoutMs: STT_HEALTH_TIMEOUT_S * 1000 }
+          : {}),
       });
       sttUrl = sttManager.url;
     } catch (err) {

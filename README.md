@@ -342,6 +342,21 @@ pnpm build && pnpm start  # production mode on :4800
 
 Dev mode uses port 4801 to avoid conflicting with a production instance on port 4800.
 
+#### Production instance
+
+A long-lived prod build can run from a sibling git worktree at `../kookr-prod` on port 4800:
+
+```bash
+pnpm prod:setup    # one-time bootstrap of the worktree
+pnpm prod:update   # fetch origin/main, build, restart prod (port 4800)
+```
+
+Both commands symlink `<main checkout>/.env` into `../kookr-prod/.env` so the prod
+process inherits your local config (`KOOKR_STT`, `ANTHROPIC_API_KEY`, …). Edit
+the `.env` in your **main checkout** — not the prod-side copy. Worktrees don't
+share untracked files, so without the symlink prod boots with no env vars and
+silently disables features like STT, TTS, and Telegram voice.
+
 Configure via environment variables:
 
 | Variable | Default | Description |
@@ -352,6 +367,8 @@ Configure via environment variables:
 | `KOOKR_BYPASS_ALL_PERMISSIONS` | `false` | When `true`, spawn agents without permission prompts (`--dangerously-skip-permissions` for Claude Code, `--dangerously-bypass-approvals-and-sandbox` for Codex). Off by default — both flags remove safety guardrails |
 | `KOOKR_PLUGIN_DIR` | auto | Override the auto-resolved Kookr Toolkit plugin path injected into spawned `claude`. Empty string disables injection (hermetic mode) |
 | `KOOKR_CODEX_BIN` | `codex` | Codex CLI binary path (the forked build at `~/git/codex` ships via `pnpm codex:rebuild`) |
+| `KOOKR_STT` | unset | Set to `true` to launch the bundled STT Docker stack on startup |
+| `KOOKR_STT_HEALTH_TIMEOUT_S` | `600` | Seconds to wait for the STT containers to pass `/health` before tearing them down. The default accommodates the first-run whisper model download (~2.9 GB). Subsequent launches reuse cached weights and become healthy in seconds |
 | `ANTHROPIC_API_KEY` | unset | Required for AI task naming (F4.8) and AI response suggestions (F3.9). Falls back to truncated prompt / no suggestions when unset |
 
 ### Project Structure

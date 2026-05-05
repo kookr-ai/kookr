@@ -93,6 +93,7 @@ A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on 
 - `pnpm prod:restart` restarts without rebuilding (uses `lsof` — works on Linux and macOS)
 - **When asked to "restart server"** → run `pnpm prod:update` (includes build + restart)
 - **Commit and push before `pnpm prod:update`** — the prod worktree pulls from `origin/main`, so uncommitted or unpushed changes will not be deployed
+- **`.env` is symlinked from the main checkout** — `pnpm prod:setup` and `pnpm prod:update` create `../kookr-prod/.env -> ~/git/kookr/.env` so prod inherits your local config. Edit `~/git/kookr/.env`, never the prod-side copy. Without this, `process.loadEnvFile()` in `start.ts` fails and prod runs with no env vars (silently disables STT/TTS/etc.)
 - Tests are safe — they use random ports and temp directories
 
 ## When working on this project

@@ -26,6 +26,14 @@ if [[ ! -d "${PROD_DIR}" ]]; then
   git worktree add --detach "${PROD_DIR}" origin/main
 fi
 
+# Symlink .env from the main checkout so prod picks up the same config.
+# Worktrees don't share untracked files, and start.ts's process.loadEnvFile()
+# resolves <cwd>/.env — without this, prod silently runs without env vars.
+if [[ -f "${ROOT_DIR}/.env" && ! -e "${PROD_DIR}/.env" ]]; then
+  echo "Linking ${PROD_DIR}/.env -> ${ROOT_DIR}/.env" >&2
+  ln -sfn "${ROOT_DIR}/.env" "${PROD_DIR}/.env"
+fi
+
 cd "${PROD_DIR}"
 git fetch origin
 git switch --detach origin/main

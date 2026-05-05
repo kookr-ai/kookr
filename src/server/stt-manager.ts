@@ -23,7 +23,14 @@ export interface STTManagerConfig {
   port?: number;
   /** Whisper model to use (default: large-v3) */
   whisperModel?: string;
-  /** Max time to wait for health check (ms, default: 120000) */
+  /**
+   * Max time to wait for health check (ms, default: 600000).
+   *
+   * The default is high because the first launch downloads the whisper model
+   * (~2.9 GB for `large-v3`), which routinely takes 5–10 minutes. Tearing the
+   * containers down mid-download wastes the partial pull on the next attempt.
+   * Subsequent launches reuse the cached weights and become healthy in seconds.
+   */
   startupTimeoutMs?: number;
 }
 
@@ -43,7 +50,7 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
     sttDir,
     port = 8003,
     whisperModel = 'large-v3',
-    startupTimeoutMs = 120_000,
+    startupTimeoutMs = 600_000,
   } = config;
 
   const composePath = join(sttDir, 'docker-compose.yml');

@@ -31,7 +31,7 @@
     "dev": "KOOKR_PORT=4801 node --import tsx --watch-path=src/server --watch-path=src/core --watch-path=src/adapters src/server/start.ts & vite & wait",
     "dev:server": "KOOKR_PORT=4801 node --import tsx --watch-path=src/server --watch-path=src/core --watch-path=src/adapters src/server/start.ts",
     "dev:frontend": "vite",
-    "prod:setup": "git worktree add --detach ../kookr-prod HEAD && cd ../kookr-prod && pnpm install && pnpm build",
+    "prod:setup": "git worktree add --detach ../kookr-prod HEAD && { [ -f .env ] && ln -sfn \"$(pwd)/.env\" ../kookr-prod/.env || true; } && cd ../kookr-prod && pnpm install && pnpm build",
     "prod:update": "bash scripts/prod-update.sh",
     "prod:restart": "ROOT_DIR=$(pwd) && cd ../kookr-prod && bash \"$ROOT_DIR/scripts/prod-restart.sh\"",
     "telemetry:report": "node --import tsx scripts/telemetry-report.ts",
