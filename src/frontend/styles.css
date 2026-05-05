@@ -6405,3 +6405,180 @@ button.act-tool-entry:focus-visible {
   color: white;
   border-color: transparent;
 }
+
+/* --- Do Not Disturb pill (TopBar) --- */
+.dnd-pill-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+.dnd-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  background: none;
+  border: 1px solid var(--border-dim);
+  border-right: none;
+  border-radius: 5px 0 0 5px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  font-family: inherit;
+  line-height: 1;
+}
+
+.dnd-pill:hover {
+  color: var(--text-bright);
+  border-color: var(--border);
+}
+
+.dnd-pill:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+  z-index: 1;
+}
+
+.dnd-pill-icon {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.dnd-pill-label {
+  letter-spacing: 0.06em;
+}
+
+.dnd-pill-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  background: var(--amber);
+  color: #0a0e12;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.dnd-pill-remaining {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.dnd-pill-on {
+  color: var(--text-bright);
+  border-color: rgba(45, 212, 191, 0.45);
+  background: rgba(45, 212, 191, 0.08);
+}
+.dnd-pill-on .dnd-pill-icon { color: var(--teal); }
+
+.dnd-pill-pending {
+  color: var(--text-bright);
+  border-color: rgba(251, 191, 36, 0.55);
+  background: rgba(251, 191, 36, 0.08);
+}
+.dnd-pill-pending .dnd-pill-icon { color: var(--amber); }
+
+.dnd-pill-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 28px;
+  background: none;
+  border: 1px solid var(--border-dim);
+  border-radius: 0 5px 5px 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  font-family: inherit;
+}
+.dnd-pill-caret:hover {
+  color: var(--text-bright);
+  border-color: var(--border);
+}
+.dnd-pill-caret:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+  z-index: 1;
+}
+.dnd-pill-on + .dnd-pill-caret,
+.dnd-pill-pending + .dnd-pill-caret {
+  border-color: rgba(45, 212, 191, 0.45);
+  background: rgba(45, 212, 191, 0.04);
+}
+
+.dnd-pill-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 200px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.dnd-pill-menu-header {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding: 6px 8px 4px;
+}
+
+.dnd-pill-menu-item {
+  background: none;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.dnd-pill-menu-item:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-bright);
+}
+.dnd-pill-menu-disable {
+  margin-top: 4px;
+  border-top: 1px solid var(--border-dim);
+  border-radius: 0 0 4px 4px;
+  color: var(--red);
+}
+
+/* "Arrived during DND" badge on FindingCard */
+.dnd-arrived-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  margin-left: 6px;
+  background: rgba(251, 191, 36, 0.14);
+  color: var(--amber);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}

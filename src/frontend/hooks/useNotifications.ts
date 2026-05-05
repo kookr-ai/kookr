@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useKookrStore } from '../store/useStore.js';
+import { isDndEnabled } from './useDnd.js';
 import type { AgentState } from '../../shared/protocol.js';
 
 /**
@@ -43,8 +44,10 @@ export function useNotifications() {
 
     prevFindingIds.current = currentFindings;
 
-    // Only notify when tab is hidden and we have new findings
-    if (newFindings.length === 0 || !document.hidden) return;
+    // Only notify when tab is hidden and we have new findings.
+    // DND silences desktop notifications globally so the user can step away
+    // (meeting, lunch, screenshare) without dismissing each per-agent alert.
+    if (newFindings.length === 0 || !document.hidden || isDndEnabled()) return;
 
     // Request permission if not yet granted
     if (Notification.permission === 'default') {

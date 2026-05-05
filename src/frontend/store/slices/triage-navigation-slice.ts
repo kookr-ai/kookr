@@ -1,5 +1,6 @@
 import type { TriageNavigationSlice, StoreGet, StoreSet } from '../store-types.js';
 import { SEVERITY_ORDER } from '../store-types.js';
+import { isDndEnabled } from '../../hooks/useDnd.js';
 
 export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): TriageNavigationSlice {
   return {
@@ -16,6 +17,9 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
     shortcutsArmed: true,
 
     handleAlert: (agentId, summary, severity) => {
+      // DND silences in-app toasts at the emit site so anomaly detection keeps
+      // running and findings still update; only the visual alert is suppressed.
+      if (isDndEnabled()) return;
       const resolved = severity ?? (summary.startsWith('Error:') ? 'error' : 'info');
       set((prev) => ({
         alerts: [...prev.alerts, { agentId, summary, severity: resolved, timestamp: new Date() }],

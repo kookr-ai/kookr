@@ -1,5 +1,6 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createKookrStore, type KookrStore } from './useStore.js';
+import { __resetDndForTests, disableDnd, enableDnd } from '../hooks/useDnd.js';
 import type { AgentState } from '../../shared/protocol.js';
 
 describe('Kookr Zustand Store', () => {
@@ -14,7 +15,13 @@ describe('Kookr Zustand Store', () => {
       removeItem: (key: string) => localStore.delete(key),
       clear: () => localStore.clear(),
     });
+    __resetDndForTests();
     store = createKookrStore();
+  });
+
+  afterEach(() => {
+    disableDnd();
+    __resetDndForTests();
   });
 
   test('handleSnapshot populates agents', () => {
@@ -119,6 +126,26 @@ describe('Kookr Zustand Store', () => {
     store.getState().handleAlert('agent-1', 'Error: recoverable warning', 'info');
 
     expect(store.getState().alerts[0].severity).toBe('info');
+  });
+
+  test('handleAlert is suppressed while Do Not Disturb is on', () => {
+    enableDnd();
+    try {
+      store.getState().handleAlert('agent-1', 'Error: stuck loop');
+      expect(store.getState().alerts).toHaveLength(0);
+    } finally {
+      disableDnd();
+    }
+  });
+
+  test('handleAlert resumes after Do Not Disturb is turned off', () => {
+    enableDnd();
+    store.getState().handleAlert('agent-1', 'silenced');
+    disableDnd();
+    store.getState().handleAlert('agent-1', 'audible');
+
+    expect(store.getState().alerts).toHaveLength(1);
+    expect(store.getState().alerts[0].summary).toBe('audible');
   });
 
   test('selectAgent updates selectedAgentId', () => {
