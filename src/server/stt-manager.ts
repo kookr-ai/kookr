@@ -15,6 +15,7 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 
 const execFileAsync = promisify(execFile);
+export const DEFAULT_STT_STARTUP_TIMEOUT_MS = 600_000;
 
 export interface STTManagerConfig {
   /** Absolute path to the stt/ directory containing docker-compose.yml */
@@ -23,7 +24,7 @@ export interface STTManagerConfig {
   port?: number;
   /** Whisper model to use (default: large-v3) */
   whisperModel?: string;
-  /** Max time to wait for health check (ms, default: 120000) */
+  /** Max time to wait for health check (ms, default: 600000) */
   startupTimeoutMs?: number;
 }
 
@@ -43,7 +44,7 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
     sttDir,
     port = 8003,
     whisperModel = 'large-v3',
-    startupTimeoutMs = 120_000,
+    startupTimeoutMs = parseSTTHealthTimeoutMs(),
   } = config;
 
   const composePath = join(sttDir, 'docker-compose.yml');
@@ -113,4 +114,19 @@ async function stopSTT(composePath: string, env: NodeJS.ProcessEnv): Promise<voi
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function parseSTTHealthTimeoutMs(raw = process.env.KOOKR_STT_HEALTH_TIMEOUT_S): number {
+  if (!raw) return DEFAULT_STT_STARTUP_TIMEOUT_MS;
+
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    console.warn(
+      `[stt] Warning: ignoring invalid KOOKR_STT_HEALTH_TIMEOUT_S=${JSON.stringify(raw)}; ` +
+        `using ${DEFAULT_STT_STARTUP_TIMEOUT_MS / 1000}s`,
+    );
+    return DEFAULT_STT_STARTUP_TIMEOUT_MS;
+  }
+
+  return Math.round(seconds * 1000);
 }
