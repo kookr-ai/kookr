@@ -12,6 +12,7 @@ import {
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../../core/worktree-protection.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -86,6 +87,12 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   // Blocks the save effect from resurrecting the draft after a successful
   // submit sets the flag and synchronously clears the stored draft.
   const submittedRef = useRef(false);
+  // Tracks the last cwd value committed by a non-typing action (MRU pick or
+  // server-cwd button). At submit time, if the current cwd matches this, the
+  // user didn't mutate after picking, so we don't fire a redundant 'typed'
+  // event. If they typed *over* the picked value, the values diverge and we
+  // fire 'typed' to record the override.
+  const lastNonTypedCwdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (isRelaunch) return;
@@ -126,6 +133,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     if (!trimmed || !cwd.trim() || submitting) return;
     setSubmitting(true);
     recentPaths.add(cwd.trim());
+    if (cwd.trim() !== lastNonTypedCwdRef.current) {
+      track({ type: 'launch_dialog_cwd_field_used', method: 'typed' });
+    }
     track({ type: 'launch_submitted', method: 'manual' });
     track({ type: 'launch_dialog_closed', submitted: true, dwellMs: Date.now() - openedAtRef.current });
     localStorage.setItem('kookr:defaultAutonomy', autonomy);
@@ -177,6 +187,22 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     setShowDropdown(false);
     setHighlightIdx(-1);
     cwdRef.current?.focus();
+    lastNonTypedCwdRef.current = path;
+    track({ type: 'launch_dialog_cwd_field_used', method: 'mru' });
+  }
+
+  // serverCwd is always absolute (process.cwd() from the server), so the
+  // pure suffix predicate is safe — no path canonicalization needed.
+  const serverCwdTarget = endsWithProtectedSuffix(serverCwd)
+    ? deriveParentRepoFromProtected(serverCwd)
+    : serverCwd;
+  const serverCwdProtected = endsWithProtectedSuffix(serverCwd);
+
+  function useServerCwd() {
+    setCwd(serverCwdTarget);
+    cwdRef.current?.focus();
+    lastNonTypedCwdRef.current = serverCwdTarget;
+    track({ type: 'launch_dialog_cwd_field_used', method: 'server-cwd-button' });
   }
 
   function handleCwdKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -269,7 +295,25 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               </div>
             </label>
             <label>
-              Working directory
+              <div className="cwd-label-row">
+                <span>Working directory</span>
+                {cwd.trim() !== serverCwdTarget && (
+                  <button
+                    type="button"
+                    className="link-button cwd-server-button"
+                    onClick={useServerCwd}
+                    title={
+                      serverCwdProtected
+                        ? `Server cwd is a protected worktree (${serverCwd}). Click to use parent repo: ${serverCwdTarget}`
+                        : `Use server cwd: ${serverCwdTarget}`
+                    }
+                  >
+                    {serverCwdProtected
+                      ? `↩ Use parent of server cwd (${serverCwdTarget})`
+                      : `↩ Use server cwd (${serverCwdTarget})`}
+                  </button>
+                )}
+              </div>
               <div className="combo-input">
                 <input
                   ref={cwdRef}

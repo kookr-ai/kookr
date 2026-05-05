@@ -22,6 +22,14 @@ export interface TelemetryReport {
     submitted: number;
     abandoned: number;
     avgDwellMs: number | null;
+    cwdFieldMethodCounts: Record<string, number>;
+    /**
+     * Fraction of cwd-field interactions where the user did NOT pick from the
+     * MRU dropdown — proxy for "users would benefit from path validation /
+     * directory browsing." Null until at least one cwd-field interaction is
+     * recorded. Computed as count(method ∈ {typed, paste}) / total.
+     */
+    nonMruRate: number | null;
   };
   tabSwitchCounts: Record<string, number>;
 }
@@ -29,13 +37,23 @@ export interface TelemetryReport {
 const ALL_EVENT_TYPES: TelemetryEventType[] = [
   'agent_clicked', 'auto_advance_overridden', 'tab_switched',
   'response_sent', 'quick_action_clicked', 'suggestion_accepted', 'suggestion_ignored',
-  'launch_dialog_opened', 'launch_dialog_closed', 'launch_submitted',
+  'launch_dialog_opened', 'launch_dialog_closed', 'launch_dialog_cwd_field_used', 'launch_submitted',
   'task_completed', 'task_cancelled', 'task_relaunched', 'task_renamed',
   'finding_skipped', 'finding_snoozed',
   'shortcut_used',
   'rapid_repeat_click', 'healthy_agent_inspected',
   'session_started', 'websocket_reconnect',
 ];
+
+function computeNonMruRate(counts: Record<string, number>): number | null {
+  let nonMru = 0;
+  let total = 0;
+  for (const [method, count] of Object.entries(counts)) {
+    total += count;
+    if (method === 'typed' || method === 'paste') nonMru += count;
+  }
+  return total > 0 ? nonMru / total : null;
+}
 
 export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryReport {
   const eventCounts: Record<string, number> = {};
@@ -52,6 +70,7 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
   let launchSubmitted = 0;
   let launchAbandoned = 0;
   const launchDwells: number[] = [];
+  const cwdFieldMethodCounts: Record<string, number> = {};
 
   for (const event of events) {
     // Count all event types
@@ -97,6 +116,11 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
         if (typeof event.dwellMs === 'number') {
           launchDwells.push(event.dwellMs);
         }
+        break;
+      }
+      case 'launch_dialog_cwd_field_used': {
+        const method = String(event.method ?? 'unknown');
+        cwdFieldMethodCounts[method] = (cwdFieldMethodCounts[method] ?? 0) + 1;
         break;
       }
       case 'tab_switched': {
@@ -149,6 +173,8 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
       submitted: launchSubmitted,
       abandoned: launchAbandoned,
       avgDwellMs,
+      cwdFieldMethodCounts,
+      nonMruRate: computeNonMruRate(cwdFieldMethodCounts),
     },
     tabSwitchCounts: tabSwitches,
   };
