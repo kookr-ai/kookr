@@ -35,7 +35,15 @@ export type InteractionEvent =
   | { type: 'submission_rejected_dedup'; existingTaskId: string; promptHash: string; canonicalCwd: string; timestamp: string }
   | { type: 'auto_suppressed'; agentId: string; anomalyType: AnomalyType; suppressionCount: number; timestamp: string }
   | { type: 'monitoring_resumed'; agentId: string; reason: 'respond' | 'cleanup'; timestamp: string }
-  | { type: 'finding_feedback'; agentId: string; anomalyType: AnomalyType; verdict: 'false_positive'; explanation: string; timestamp: string };
+  | { type: 'finding_feedback'; agentId: string; anomalyType: AnomalyType; verdict: 'false_positive'; explanation: string; timestamp: string }
+  | {
+      type: 'ralph_prompt_updated';
+      taskId: string;
+      status: 'running' | 'paused';
+      previousPrompt: string;
+      prompt: string;
+      timestamp: string;
+    };
 
 // --- Substantive event detection ---
 

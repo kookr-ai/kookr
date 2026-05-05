@@ -1,5 +1,21 @@
+import { createReadStream } from 'node:fs';
 import { mkdir, appendFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { createInterface } from 'node:readline/promises';
+import type { RalphLoopState } from './tasks.js';
+import type {
+  RalphIterationDiffStats,
+  RalphIterationExitReason,
+  RalphIterationLogReadModel,
+  RalphIterationRecord,
+} from '../shared/contracts/ralph-iteration-log.js';
+export type {
+  RalphIterationDiffStats,
+  RalphIterationExitReason,
+  RalphIterationLogReadModel,
+  RalphIterationLogSummary,
+  RalphIterationRecord,
+} from '../shared/contracts/ralph-iteration-log.js';
 
 /**
  * Append-only audit trail for Ralph iteration cycles. One JSONL line per
@@ -7,62 +23,28 @@ import { dirname } from 'node:path';
  * travels with the task workspace (issue #440, open question Q3 — default
  * per-task-dir; centralised location is a future refinement).
  *
- * This module is pure I/O — it is the writer's responsibility to construct
- * the record. It deliberately knows nothing about the loop state machine,
- * so the controller can be tested without touching the filesystem.
+ * This module owns the append/read/export helpers for the audit log. It is
+ * the writer's responsibility to construct the record, and this code
+ * deliberately knows nothing about the loop state machine so the controller
+ * can be tested without touching the filesystem.
  */
 
-/** Why an iteration ended. Used by readers to render iteration tables. */
-export type RalphIterationExitReason =
-  /** Predicate exited zero — loop should stop. */
-  | 'predicate_satisfied'
-  /** Predicate timed out (5s default) — controller chose to keep looping. */
-  | 'predicate_timeout'
-  /** Iteration cap reached. */
-  | 'iteration_cap'
-  /** User cancelled via UI / API. */
-  | 'cancelled'
-  /** User paused via UI / API. */
-  | 'paused'
-  /** Kookr crashed mid-iteration; reconciled on restart. */
-  | 'kookr_crash'
-  /** Agent session died. */
-  | 'session_dead'
-  /** Predicate process error (spawn failure, exec error). */
-  | 'predicate_error'
-  /** Iteration ran to completion and the next one was injected. */
-  | 'continued';
+export const DEFAULT_RALPH_ITERATION_READ_LIMIT = 200;
+export const MAX_RALPH_ITERATION_READ_LIMIT = 1000;
 
-export interface RalphIterationDiffStats {
-  filesChanged: number;
-  insertions: number;
-  deletions: number;
-}
-
-export interface RalphIterationRecord {
-  iterationNumber: number;
-  startedAt: number;
-  endedAt: number;
-  exitReason: RalphIterationExitReason;
-  /**
-   * Best-effort cost from the Stop-hook event payload. `null` (not omitted)
-   * when the source is unavailable, so readers can distinguish "free" from
-   * "unknown". Cost-cap stop conditions must fail closed when this is null.
-   */
-  cumulativeCostUsd: number | null;
-  /**
-   * Git ref captured at iteration start (`ralph/iter-<N>-start` tag). `null`
-   * when tag creation failed (not a repo, detached HEAD, broken index).
-   */
-  gitBaselineRef: string | null;
-  /**
-   * Diff against `gitBaselineRef` at iteration end. `null` when either the
-   * baseline ref is null or the diff command failed. Distinct from
-   * `{filesChanged: 0, insertions: 0, deletions: 0}` ("no changes"); a null
-   * here must be treated as "data unavailable" by convergence detection.
-   */
-  diffStats: RalphIterationDiffStats | null;
-}
+const EXIT_REASONS: ReadonlySet<RalphIterationExitReason> = new Set([
+  'predicate_satisfied',
+  'predicate_timeout',
+  'iteration_cap',
+  'zero_diff_convergence',
+  'cost_cap',
+  'cancelled',
+  'paused',
+  'kookr_crash',
+  'session_dead',
+  'predicate_error',
+  'continued',
+]);
 
 /**
  * Append one iteration record to `<taskDir>/ralph-iterations.jsonl`. Creates
@@ -86,4 +68,204 @@ export async function appendIterationRecord(
 /** Resolve the iteration log path for a given task workspace. */
 export function iterationLogPath(taskDir: string): string {
   return `${taskDir.replace(/\/+$/, '')}/ralph-iterations.jsonl`;
+}
+
+export function parseIterationRecord(line: string): RalphIterationRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object') return null;
+  const obj = parsed as Record<string, unknown>;
+  const { iterationNumber, startedAt, endedAt, exitReason, cumulativeCostUsd, gitBaselineRef, diffStats } = obj;
+  if (typeof iterationNumber !== 'number' || !Number.isInteger(iterationNumber)) return null;
+  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) return null;
+  if (typeof endedAt !== 'number' || !Number.isFinite(endedAt)) return null;
+  if (typeof exitReason !== 'string' || !EXIT_REASONS.has(exitReason as RalphIterationExitReason)) return null;
+  if (cumulativeCostUsd !== null && (typeof cumulativeCostUsd !== 'number' || !Number.isFinite(cumulativeCostUsd))) return null;
+  if (gitBaselineRef !== null && typeof gitBaselineRef !== 'string') return null;
+  if (diffStats !== null && !isDiffStats(diffStats)) return null;
+
+  return {
+    iterationNumber,
+    startedAt,
+    endedAt,
+    exitReason: exitReason as RalphIterationExitReason,
+    cumulativeCostUsd,
+    gitBaselineRef,
+    diffStats,
+  };
+}
+
+export async function readIterationLog(
+  taskDir: string,
+  opts: { limit?: number; loop?: RalphLoopState } = {},
+): Promise<RalphIterationLogReadModel> {
+  const limit = clampReadLimit(opts.limit);
+  const filePath = iterationLogPath(taskDir);
+  const iterations: RalphIterationRecord[] = [];
+  let totalIterations = 0;
+  let malformedLines = 0;
+  let firstStartedAt: number | null = null;
+  let latest: RalphIterationRecord | null = null;
+  let cumulativeDurationMs = 0;
+  let durationCount = 0;
+
+  try {
+    const rl = createInterface({
+      input: createReadStream(filePath, { encoding: 'utf-8' }),
+      crlfDelay: Infinity,
+    });
+
+    for await (const rawLine of rl) {
+      const line = rawLine.trim();
+      if (line.length === 0) continue;
+      const record = parseIterationRecord(line);
+      if (!record) {
+        malformedLines += 1;
+        continue;
+      }
+
+      totalIterations += 1;
+      firstStartedAt ??= record.startedAt;
+      latest = record;
+      const duration = record.endedAt - record.startedAt;
+      if (Number.isFinite(duration) && duration >= 0) {
+        cumulativeDurationMs += duration;
+        durationCount += 1;
+      }
+      iterations.push(record);
+      if (iterations.length > limit) iterations.shift();
+    }
+  } catch (err) {
+    if (isMissingFileError(err)) return emptyReadModel(limit);
+    throw err;
+  }
+
+  const averageIterationDurationMs = durationCount > 0 ? cumulativeDurationMs / durationCount : null;
+  const endedAt = latest?.endedAt ?? null;
+  const runtimeMs = firstStartedAt !== null && endedAt !== null ? Math.max(0, endedAt - firstStartedAt) : null;
+  const etaMs = computeEtaMs(opts.loop, totalIterations, averageIterationDurationMs);
+  return {
+    iterations,
+    summary: {
+      totalIterations,
+      returnedIterations: iterations.length,
+      capped: totalIterations > limit,
+      malformedLines,
+      latestExitReason: latest?.exitReason ?? null,
+      cumulativeCostUsd: latest?.cumulativeCostUsd ?? null,
+      startedAt: firstStartedAt,
+      endedAt,
+      runtimeMs,
+      averageIterationDurationMs,
+      etaMs,
+    },
+  };
+}
+
+export function formatIterationLogCsv(model: RalphIterationLogReadModel): string {
+  const rows = [
+    [
+      'iterationNumber',
+      'startedAt',
+      'endedAt',
+      'durationMs',
+      'exitReason',
+      'cumulativeCostUsd',
+      'gitBaselineRef',
+      'diffFilesChanged',
+      'diffInsertions',
+      'diffDeletions',
+    ],
+    ...model.iterations.map((record) => [
+      String(record.iterationNumber),
+      formatTimestamp(record.startedAt),
+      formatTimestamp(record.endedAt),
+      String(Math.max(0, record.endedAt - record.startedAt)),
+      record.exitReason,
+      record.cumulativeCostUsd === null ? '' : String(record.cumulativeCostUsd),
+      record.gitBaselineRef ?? '',
+      record.diffStats === null ? '' : String(record.diffStats.filesChanged),
+      record.diffStats === null ? '' : String(record.diffStats.insertions),
+      record.diffStats === null ? '' : String(record.diffStats.deletions),
+    ]),
+  ];
+  return `${rows.map((row) => row.map(escapeCsvField).join(',')).join('\n')}\n`;
+}
+
+function clampReadLimit(limit: number | undefined): number {
+  if (limit === undefined) return DEFAULT_RALPH_ITERATION_READ_LIMIT;
+  if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit <= 0) {
+    return DEFAULT_RALPH_ITERATION_READ_LIMIT;
+  }
+  return Math.min(limit, MAX_RALPH_ITERATION_READ_LIMIT);
+}
+
+function computeEtaMs(
+  loop: RalphLoopState | undefined,
+  totalIterations: number,
+  averageIterationDurationMs: number | null,
+): number | null {
+  if (!loop || loop.status !== 'running') return null;
+  if (averageIterationDurationMs === null) return null;
+  const observedIterations = Math.max(totalIterations, loop.currentIteration);
+  const remaining = loop.iterationCap - observedIterations;
+  if (remaining <= 0) return null;
+  return remaining * averageIterationDurationMs;
+}
+
+function formatTimestamp(ms: number): string {
+  const date = new Date(ms);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : '';
+}
+
+function escapeCsvField(value: string): string {
+  const spreadsheetSafeValue = neutralizeSpreadsheetFormula(value);
+  if (!/[",\n\r]/.test(spreadsheetSafeValue)) return spreadsheetSafeValue;
+  return `"${spreadsheetSafeValue.replaceAll('"', '""')}"`;
+}
+
+function neutralizeSpreadsheetFormula(value: string): string {
+  if (/^[=+\-@\t\r]/.test(value)) return `'${value}`;
+  return value;
+}
+
+function isDiffStats(value: unknown): value is RalphIterationDiffStats {
+  if (value === null || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  return Number.isFinite(obj.filesChanged)
+    && Number.isInteger(obj.filesChanged)
+    && Number.isFinite(obj.insertions)
+    && Number.isInteger(obj.insertions)
+    && Number.isFinite(obj.deletions)
+    && Number.isInteger(obj.deletions);
+}
+
+function emptyReadModel(limit: number): RalphIterationLogReadModel {
+  return {
+    iterations: [],
+    summary: {
+      totalIterations: 0,
+      returnedIterations: 0,
+      capped: false,
+      malformedLines: 0,
+      latestExitReason: null,
+      cumulativeCostUsd: null,
+      startedAt: null,
+      endedAt: null,
+      runtimeMs: null,
+      averageIterationDurationMs: null,
+      etaMs: null,
+    },
+  };
+}
+
+function isMissingFileError(err: unknown): boolean {
+  return err !== null
+    && typeof err === 'object'
+    && 'code' in err
+    && (err as { code?: unknown }).code === 'ENOENT';
 }

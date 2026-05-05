@@ -11,6 +11,7 @@ import { promotePendingTasks, registerNewAgent, type AgentLifecycleDeps } from '
 import { recoverCrashedSessions, type CrashRecoveryResult } from './crash-recovery.js';
 import type { HookFileWatcher } from './hook-watcher.js';
 import type { ReconciliationResult } from './reconciliation.js';
+import { RalphLoopService } from './ralph-loop-service.js';
 
 interface StartupRecoveryDeps {
   taskStore: TaskStore;
@@ -24,6 +25,8 @@ interface StartupRecoveryDeps {
   reconcileResult: ReconciliationResult;
   persisted: LoadTasksResult;
   lifecycleDeps: AgentLifecycleDeps;
+  serverCwd: string;
+  broadcastToAll: (msg: ServerMessage) => void;
 }
 
 interface PromotePendingStartupTasksDeps {
@@ -46,6 +49,8 @@ export async function runStartupRecoveryPhase({
   reconcileResult,
   persisted,
   lifecycleDeps,
+  serverCwd,
+  broadcastToAll,
 }: StartupRecoveryDeps): Promise<CrashRecoveryResult | null> {
   let startupRecoverySummary: CrashRecoveryResult | null = null;
 
@@ -113,6 +118,22 @@ export async function runStartupRecoveryPhase({
     const resumedSession = resumedTask?.sessions.find((session) => session.tmuxSession === tmuxName);
     watchdog.registerAgent(tmuxName, resumedSession?.lastEventAt);
     hookWatcher.watch(tmuxName, { replayExisting: true });
+  }
+
+  // Ralph startup reconcile. Runs AFTER recoverCrashedSessions so dead-but-relaunched
+  // sessions count as "alive". Loops with no surviving session are marked `failed` with
+  // a `kookr_crash` audit record; alive ones are left running and resume on the next Stop.
+  const ralphSummary = await new RalphLoopService({
+    taskStore,
+    monitor,
+    serverCwd,
+    broadcastToAll,
+  }).reconcileStartupLoops();
+  if (ralphSummary.examined > 0) {
+    console.log(
+      `[ralph-recovery] Examined ${ralphSummary.examined} running loop(s): `
+      + `${ralphSummary.preserved} preserved, ${ralphSummary.failed} failed.`,
+    );
   }
 
   return startupRecoverySummary;

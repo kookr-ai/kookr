@@ -47,6 +47,7 @@ import {
   readTriggerRatioFromEnv,
   readMaxCancelledAttemptsFromEnv,
 } from '../core/checkpoint-cycler.js';
+import { RalphCycler } from '../core/ralph-cycler.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { startLifecycleTimers, clearAllTimers } from './lifecycle-timers.js';
@@ -276,6 +277,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     triggerRatio: readTriggerRatioFromEnv(),
     maxCancelledAttempts: readMaxCancelledAttemptsFromEnv(),
   });
+
+  // Ralph iteration cycler — single instance shared between the event pipeline
+  // (Stop events advance the loop state machine) and the task routes (attach/
+  // resume catch-up dispatches fresh runtimes via the same cycler I/O surface).
+  const ralphCycler = new RalphCycler();
 
   const claudeCodeAdapter = new ClaudeCodeAdapter(terminalBackend, taskStore, {
     hooksDir,
@@ -554,6 +560,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubScanner, llmClient, serverCwd, broadcastToAll,
     autonomyOrchestrator, telemetryLog,
     checkpointCycler,
+    ralphCycler,
     onPermissionBlocked: (taskId, promptText) => {
       onPermissionBlockedHolder?.(taskId, promptText);
     },
@@ -666,6 +673,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     reconcileResult,
     persisted,
     lifecycleDeps,
+    serverCwd,
+    broadcastToAll,
   });
   await promotePendingStartupTasks({
     taskStore,
@@ -746,6 +755,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     diagnosticRunner,
     terminalBackend,
     startupRecoverySummary,
+    ralphCycler,
+    tokenTracker,
     settings: {
       get: () => currentSettings,
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,

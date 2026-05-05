@@ -20,6 +20,7 @@ const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({
 const recentPaths = new RecentPaths();
 
 type Tab = 'manual' | 'playbooks';
+type LaunchMode = 'normal' | 'ralph';
 
 interface Props {
   send: (msg: ClientMessage) => boolean;
@@ -71,6 +72,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const [showDropdown, setShowDropdown] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(-1);
   const [tab, setTab] = useState<Tab>(relaunchPlaybookId || projectContext ? 'playbooks' : 'manual');
+  const [launchMode, setLaunchMode] = useState<LaunchMode>('normal');
+  const [ralphIterationCap, setRalphIterationCap] = useState('');
+  const [ralphZeroDiffThreshold, setRalphZeroDiffThreshold] = useState('');
+  const [ralphCostCap, setRalphCostCap] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [agentType, setAgentType] = useState<AgentType>(() => {
     const stored = localStorage.getItem('kookr:defaultAgentType') as AgentType | null;
@@ -127,10 +132,59 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
   const suggestions = useMemo(() => recentPaths.filter(cwd), [cwd]);
 
+  const ralphCapParsed = parseInt(ralphIterationCap, 10);
+  const isRalphCapValid = launchMode !== 'ralph' || (Number.isInteger(ralphCapParsed) && ralphCapParsed > 0);
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = prompt.trim();
     if (!trimmed || !cwd.trim() || submitting) return;
+
+    if (launchMode === 'ralph') {
+      setSubmitting(true);
+      recentPaths.add(cwd.trim());
+      track({ type: 'launch_submitted', method: 'ralph' });
+
+      const body: Record<string, unknown> = {
+        prompt: trimmed,
+        cwd: cwd.trim(),
+      };
+      if (Number.isInteger(ralphCapParsed) && ralphCapParsed > 0) {
+        body.iterationCap = ralphCapParsed;
+      }
+      const zeroDiff = parseInt(ralphZeroDiffThreshold, 10);
+      if (Number.isInteger(zeroDiff) && zeroDiff > 0) {
+        body.zeroDiffConvergence = { consecutiveIterations: zeroDiff };
+      }
+      const costCap = parseFloat(ralphCostCap);
+      if (isFinite(costCap) && costCap > 0) {
+        body.costCapUsd = costCap;
+      }
+
+      fetch('/api/tasks/ralph-loop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'ui' },
+        body: JSON.stringify(body),
+      }).then(async (res) => {
+        setSubmitting(false);
+        if (res.ok) {
+          submittedRef.current = true;
+          clearLaunchTaskDialogDraft();
+          const excerpt = trimmed.slice(0, 40) + (trimmed.length > 40 ? '…' : '');
+          useKookrStore.getState().handleAlert('', `Ralph loop started: ${excerpt}`, 'info');
+          onClose();
+        } else {
+          const data = await res.json().catch(() => ({})) as { error?: string };
+          const msg = data.error ?? `Server error ${res.status}`;
+          useKookrStore.getState().handleAlert('', msg, 'error');
+        }
+      }).catch((err: unknown) => {
+        setSubmitting(false);
+        useKookrStore.getState().handleAlert('', String(err), 'error');
+      });
+      return;
+    }
+
     setSubmitting(true);
     recentPaths.add(cwd.trim());
     if (cwd.trim() !== lastNonTypedCwdRef.current) {
@@ -259,6 +313,17 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
           >
             Playbooks
           </button>
+          {tab === 'manual' && (
+            <button
+              type="button"
+              className={`dialog-tab ralph-mode-toggle ${launchMode === 'ralph' ? 'active' : ''}`}
+              aria-pressed={launchMode === 'ralph'}
+              onClick={() => setLaunchMode((m) => m === 'ralph' ? 'normal' : 'ralph')}
+              title="Ralph loop mode: re-runs the prompt after each agent stop"
+            >
+              Ralph loop
+            </button>
+          )}
         </div>
 
         {tab === 'manual' ? (
@@ -403,12 +468,53 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                   : 'Auto-proceeds after 3 min when the agent stops (max 2 retries, then switches to supervised).'}
               </div>
             </label>
+            {launchMode === 'ralph' && (
+              <div className="ralph-fields">
+                <label>
+                  Iteration cap
+                  <input
+                    type="number"
+                    name="ralph-iteration-cap"
+                    value={ralphIterationCap}
+                    onChange={(e) => setRalphIterationCap(e.target.value)}
+                    placeholder="e.g. 10"
+                    min={1}
+                    step={1}
+                    required
+                  />
+                </label>
+                <label>
+                  Zero-diff threshold (optional)
+                  <input
+                    type="number"
+                    name="ralph-zero-diff-threshold"
+                    value={ralphZeroDiffThreshold}
+                    onChange={(e) => setRalphZeroDiffThreshold(e.target.value)}
+                    placeholder="e.g. 3 consecutive zero-diff iterations"
+                    min={1}
+                    step={1}
+                  />
+                </label>
+                <label>
+                  Cost cap USD (optional)
+                  <input
+                    type="number"
+                    name="ralph-cost-cap"
+                    value={ralphCostCap}
+                    onChange={(e) => setRalphCostCap(e.target.value)}
+                    placeholder="e.g. 5.00"
+                    min={0.01}
+                    step={0.01}
+                  />
+                </label>
+              </div>
+            )}
             <div className="dialog-actions">
               <button type="button" className="btn-secondary" onClick={() => { track({ type: 'launch_dialog_closed', submitted: false, dwellMs: Date.now() - openedAtRef.current }); onClose(); }}>
                 Cancel
               </button>
-              <button type="submit" className="btn-primary" disabled={!prompt.trim() || !cwd.trim() || submitting}>
-                {submitting ? 'Launching...' : 'Launch'}
+              <button type="submit" className="btn-primary" disabled={!prompt.trim() || !cwd.trim() || submitting || !isRalphCapValid}>
+                {submitting ? 'Launching...' : launchMode === 'ralph' ? 'Launch Ralph loop' : 'Launch'}
               </button>
             </div>
           </form>

@@ -31,6 +31,10 @@ export type RalphLoopStatus =
  * separate JSONL file (`<task-dir>/ralph-iterations.jsonl`), not in this
  * struct, so per-task JSON does not balloon as iterations accumulate.
  */
+export interface RalphZeroDiffConvergenceConfig {
+  consecutiveIterations: number;
+}
+
 export interface RalphLoopState {
   /** Verbatim user prompt re-injected on every iteration. No length cap. */
   prompt: string;
@@ -43,11 +47,27 @@ export interface RalphLoopState {
    * by the controller (not encoded here).
    */
   stopPredicate?: string;
+  /** Optional convergence config — stop when N consecutive iterations produce zero diff. */
+  zeroDiffConvergence?: RalphZeroDiffConvergenceConfig;
+  /** Optional best-effort cost cap in USD. Fails closed when cost is unknown. */
+  costCapUsd?: number;
+  /** Current consecutive zero-diff streak. Reset on any non-zero diff. */
+  zeroDiffStreak?: number;
   /** 0-based count of iterations that have started. Incremented on each re-inject. */
   currentIteration: number;
   status: RalphLoopStatus;
   /** When the most recent iteration was injected. 0 before the first iteration. */
   lastIterationStartedAt: number;
+  /** Fingerprint of the last Stop event that was fully handled (launch + cleanup). */
+  lastHandledStopFingerprint?: string;
+  /** Fingerprint of the Stop event currently being handled (in-flight dedup guard). */
+  handlingStopFingerprint?: string;
+  /** Terminal session ID that owns this loop's conversation context. */
+  ownerSessionId?: string;
+  /** Claude/Codex runtime session ID for the owning session. */
+  ownerRuntimeSessionId?: string;
+  /** Transcript path for the owning runtime session. */
+  ownerTranscriptPath?: string;
   /**
    * Sum of iterations across the loop's lifetime, including any iterations
    * before a pause/resume cycle. `currentIteration` is reset by re-arm; this
@@ -137,6 +157,39 @@ export interface Task {
    * launched (or upgraded) into Ralph mode. Absence = no loop. See issue #440.
    */
   ralphLoop?: RalphLoopState;
+}
+
+/**
+ * Claim (or transfer) the Ralph loop owner session on `task`.
+ *
+ * The owner is the terminal session whose conversation context the loop
+ * belongs to. Only the most recent live session is ever the owner at a given
+ * time — resume, crash recovery, and re-arm all transfer ownership.
+ *
+ * `allowTransfer: true` is required to move ownership from one session to
+ * another. Without it, ownership is only set when no owner is recorded yet.
+ */
+export function claimRalphLoopOwner(
+  task: Task,
+  session: SessionInfo | undefined,
+  opts: { allowTransfer?: boolean } = {},
+): void {
+  const loop = task.ralphLoop;
+  if (!loop || !session) return;
+  const isTransfer = Boolean(loop.ownerSessionId && loop.ownerSessionId !== session.tmuxSession);
+  if (isTransfer && !opts.allowTransfer) return;
+
+  if (!loop.ownerSessionId || isTransfer) {
+    loop.ownerSessionId = session.tmuxSession;
+    delete loop.ownerRuntimeSessionId;
+    delete loop.ownerTranscriptPath;
+  }
+  if (!loop.ownerRuntimeSessionId && session.claudeSessionId) {
+    loop.ownerRuntimeSessionId = session.claudeSessionId;
+  }
+  if (!loop.ownerTranscriptPath && session.transcriptPath) {
+    loop.ownerTranscriptPath = session.transcriptPath;
+  }
 }
 
 /**
