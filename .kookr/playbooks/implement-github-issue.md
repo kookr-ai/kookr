@@ -175,40 +175,57 @@ Read the issue title, body, labels, and any linked discussions to fully understa
 
 ## Phase 2: Acquire or Resume Claim
 
-Use Kookr's issue-claim lease as the machine lock when the API context is available:
+Use Kookr's issue-claim lease as the machine lock **when the API is deployed**. The endpoint is optional: not every Kookr build ships it. Probe first; treat a 404 as "no claim coordination available, proceed without it" — do **not** stop. A 200 with no `claimId` means another live task owns the claim — stop in that case.
 
 ```bash
+CLAIM_ID=""
+CLAIMS_API_AVAILABLE=0
 if [ -n "${KOOKR_API_BASE_URL:-}" ] && [ -n "${KOOKR_TASK_ID:-}" ]; then
-  CLAIM_ID=$(curl -fsS "$KOOKR_API_BASE_URL/api/issue-claims?provider=github&repo=$REPO" \
-    | jq -r --argjson issue "$TARGET" --arg task "$KOOKR_TASK_ID" \
-      '.leases[]? | select(.issueNumber == $issue and .status == "active" and .ownerTaskId == $task) | .claimId' \
-    | head -n 1)
+  PROBE_STATUS=$(curl -sS -o /tmp/kookr-claims-probe.$$ -w '%{http_code}' \
+    "$KOOKR_API_BASE_URL/api/issue-claims?provider=github&repo=$REPO" || echo "000")
+  case "$PROBE_STATUS" in
+    2*)
+      CLAIMS_API_AVAILABLE=1
+      CLAIM_ID=$(jq -r --argjson issue "$TARGET" --arg task "$KOOKR_TASK_ID" \
+          '.leases[]? | select(.issueNumber == $issue and .status == "active" and .ownerTaskId == $task) | .claimId' \
+          /tmp/kookr-claims-probe.$$ 2>/dev/null | head -n 1)
+      ;;
+    404)
+      echo "issue-claims API not deployed (HTTP 404); proceeding without claim coordination."
+      ;;
+    *)
+      echo "issue-claims probe returned HTTP $PROBE_STATUS; proceeding without claim coordination."
+      ;;
+  esac
+  rm -f /tmp/kookr-claims-probe.$$
+fi
 
-  if [ -z "$CLAIM_ID" ]; then
-    CLAIM_RESPONSE=$(curl -sS -X POST "$KOOKR_API_BASE_URL/api/issue-claims/acquire" \
-      -H 'Content-Type: application/json' \
-      -d "{\"provider\":\"github\",\"repo\":\"$REPO\",\"issueNumber\":$TARGET,\"ownerTaskId\":\"$KOOKR_TASK_ID\"}")
-    CLAIM_ID=$(printf '%s' "$CLAIM_RESPONSE" | jq -r '.lease.claimId // empty')
-  fi
+if [ "$CLAIMS_API_AVAILABLE" -eq 1 ] && [ -z "$CLAIM_ID" ]; then
+  CLAIM_RESPONSE=$(curl -sS -X POST "$KOOKR_API_BASE_URL/api/issue-claims/acquire" \
+    -H 'Content-Type: application/json' \
+    -d "{\"provider\":\"github\",\"repo\":\"$REPO\",\"issueNumber\":$TARGET,\"ownerTaskId\":\"$KOOKR_TASK_ID\"}")
+  CLAIM_ID=$(printf '%s' "$CLAIM_RESPONSE" | jq -r '.lease.claimId // empty')
 
   if [ -z "$CLAIM_ID" ]; then
     printf '%s\n' "$CLAIM_RESPONSE"
     echo "Issue is already claimed by another task; stopping."
     exit 0
   fi
+fi
 
+if [ "$CLAIMS_API_AVAILABLE" -eq 1 ] && [ -n "$CLAIM_ID" ]; then
   curl -fsS -X POST "$KOOKR_API_BASE_URL/api/issue-claims/heartbeat" \
     -H 'Content-Type: application/json' \
     -d "{\"claimId\":\"$CLAIM_ID\",\"ownerTaskId\":\"$KOOKR_TASK_ID\"}" || true
 fi
 ```
 
-If the acquire response says another live task owns the claim, stop without doing work. If this task already owns the claim, resume using its `claimId`.
+If the acquire response says another live task owns the claim, stop without doing work. If this task already owns the claim, resume using its `claimId`. If the claims API isn't deployed (404 from the probe), continue without coordination — duplicate-PR protection in Phase 0d/Phase 4 still prevents collisions.
 
-Heartbeat the claim after long operations:
+Heartbeat the claim after long operations (only when the API is available):
 
 ```bash
-if [ -n "${KOOKR_API_BASE_URL:-}" ] && [ -n "${KOOKR_TASK_ID:-}" ]; then
+if [ "${CLAIMS_API_AVAILABLE:-0}" -eq 1 ] && [ -n "${CLAIM_ID:-}" ]; then
   curl -fsS -X POST "$KOOKR_API_BASE_URL/api/issue-claims/heartbeat" \
     -H 'Content-Type: application/json' \
     -d "{\"claimId\":\"$CLAIM_ID\",\"ownerTaskId\":\"$KOOKR_TASK_ID\"}" || true
@@ -342,10 +359,10 @@ If `{{mergeAfterImplementation}}` is `true`:
 
 5. Release the claim only after the PR is merged, the issue is closed, or auto-merge is enabled and no further agent action is possible.
 
-Release completed claims when possible:
+Release completed claims when possible (only when the API is available and a claim was actually acquired):
 
 ```bash
-if [ -n "${KOOKR_API_BASE_URL:-}" ] && [ -n "${KOOKR_TASK_ID:-}" ]; then
+if [ "${CLAIMS_API_AVAILABLE:-0}" -eq 1 ] && [ -n "${CLAIM_ID:-}" ]; then
   curl -fsS -X POST "$KOOKR_API_BASE_URL/api/issue-claims/release" \
     -H 'Content-Type: application/json' \
     -d "{\"claimId\":\"$CLAIM_ID\",\"status\":\"completed\"}" || true
