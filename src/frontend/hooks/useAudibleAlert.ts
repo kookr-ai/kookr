@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useKookrStore } from '../store/useStore.js';
+import { isDndEnabled } from './useDnd.js';
 
 const STORAGE_KEY = 'kookr-sound-enabled';
 
@@ -79,7 +80,7 @@ export function useAudibleAlert(): void {
 
     prevFindingIds.current = currentFindings;
 
-    if (hasNewAlertable && isSoundEnabled()) {
+    if (hasNewAlertable && isSoundEnabled() && !isDndEnabled()) {
       playChime();
     }
   }, [agents]);

@@ -135,6 +135,7 @@ The chosen layout is a two-panel "supervisor-first" design. The UI is organized 
 | F5.5 | **Real-time updates** | All panels update live as agent states change. No manual refresh. |
 | F5.6 | **Respond-and-advance loop** | "Send & Next" as primary action. After responding, a confirmation overlay shows what was sent and where the UI is advancing to. Queue dots track triage progress. |
 | F5.7 | **"All clear" state** | When no findings exist, the findings panel shows a calm "all agents working autonomously" state. |
+| F5.8 | **Do Not Disturb** | Top-bar pill silences toasts, desktop notifications, and the audible chime while leaving anomaly detection running. Optional auto-disable after 15m / 30m / 1h / 2h, or until manually turned off. Findings that arrive while DND is on are tagged with a "while away" badge. Persisted in `localStorage` (`kookr-dnd-enabled`, `kookr-dnd-started-at`, `kookr-dnd-expires-at`). |
 
 ### F6: Project-Scoped Playbooks ([ADR-011](adr/011-project-scoped-playbooks.md))
 

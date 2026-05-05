@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import type { AgentState } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { CapacityGauge } from './CapacityGauge.js';
+import { DndPill } from './DndPill.js';
 import { formatCost } from '../presentation.js';
 
 interface Props {
@@ -263,6 +264,7 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
           )}
         </div>
         <div className="metric-group">
+          <DndPill />
           {!compact && (
             <button className="btn-icon" onClick={onShowShortcuts} title="Keyboard shortcuts" aria-label="Keyboard shortcuts">
               ?

@@ -9,6 +9,7 @@ import { DetectionStatsPanel } from './DetectionStatsPanel.js';
 import { CircuitBreakerPanel } from './CircuitBreakerPanel.js';
 import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
+import { useDnd } from '../hooks/useDnd.js';
 
 interface Props {
   findings: AgentState[];
@@ -138,9 +139,15 @@ function FindingCard({ agent, selected, send }: {
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
   const { selectAgent, nextBottleneck, snoozeAgent, handleAlert } = useKookrStore();
+  const dnd = useDnd();
   const cls = severityClass(agent);
   const autoProceedingAt = agent.anomaly?.autoProceedingAt;
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const arrivedDuringDnd =
+    dnd.enabled &&
+    dnd.startedAt !== null &&
+    agent.anomaly?.detectedAt !== undefined &&
+    new Date(agent.anomaly.detectedAt).getTime() >= dnd.startedAt;
 
   // Clean up pending click timer on unmount
   useEffect(() => {
@@ -210,6 +217,15 @@ function FindingCard({ agent, selected, send }: {
       >
         <div className="finding-header">
           <span className={`finding-severity ${cls}`} aria-label={`${severityLabel(agent)}${agent.anomaly?.detectedAt && formatAge(agent.anomaly.detectedAt) ? `, waiting ${formatAge(agent.anomaly.detectedAt)}` : ''}`}>{severityLabel(agent)}</span>
+          {arrivedDuringDnd && (
+            <span
+              className="dnd-arrived-badge"
+              title="Arrived while Do Not Disturb was on"
+              aria-label="Arrived while Do Not Disturb was on"
+            >
+              while away
+            </span>
+          )}
           <span className="finding-meta">
             {autoProceedingAt ? (
               <span
