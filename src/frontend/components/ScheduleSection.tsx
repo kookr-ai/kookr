@@ -1,9 +1,12 @@
-import React, { useState } from 'react';
+import React from 'react';
 import type { ScheduleResponse } from '../../shared/protocol.js';
+import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
 
 interface Props {
   schedules: ScheduleResponse[];
 }
+
+export const SCHEDULE_SECTION_COLLAPSED_KEY = 'kookr:scheduleSectionCollapsed';
 
 function formatRelativeTime(iso: string | null): string {
   if (!iso) return 'N/A';
@@ -58,13 +61,13 @@ function statusClass(schedule: ScheduleResponse): string {
 }
 
 export function ScheduleSection({ schedules }: Props) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, toggle] = usePersistedCollapsed(SCHEDULE_SECTION_COLLAPSED_KEY, true);
 
   if (schedules.length === 0) return null;
 
   return (
     <div className="schedule-section">
-      <div className="section-header" onClick={() => setCollapsed(!collapsed)}>
+      <div className="section-header" onClick={toggle} aria-expanded={!collapsed}>
         <span className="section-chevron">{collapsed ? '\u25B8' : '\u25BE'}</span>
         <span className="schedule-label">Schedules ({schedules.length})</span>
       </div>

@@ -5,11 +5,18 @@ import { track, trackClick } from '../telemetry.js';
 import { formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, copyAttachCommand, formatTokenUsage, projectLabel, projectColor, formatBranch } from '../presentation.js';
 import { Tooltip } from './Tooltip.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 import { DetectionStatsPanel } from './DetectionStatsPanel.js';
 import { CircuitBreakerPanel } from './CircuitBreakerPanel.js';
 import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import { useDnd } from '../hooks/useDnd.js';
+import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
+
+export const HEALTHY_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.healthy';
+export const PENDING_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.pending';
+export const SNOOZED_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.snoozed';
+export const COMPLETED_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.completed';
 
 interface Props {
   findings: AgentState[];
@@ -258,22 +265,22 @@ function FindingCard({ agent, selected, send }: {
           )}
           {agent.gitBranch && (
             <>
-              {agent.cwd && <span className="finding-context-sep">{'\u00B7'}</span>}
+              {agent.cwd && <span className="finding-context-sep">{'·'}</span>}
               <span className="branch-label" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : agent.gitBranch}>
-                <span className="branch-icon">{'\u2387'}</span>{formatBranch(agent.gitBranch)}
-                {agent.gitIsWorktree && <span className="worktree-indicator" title="Git worktree">{'\uD83C\uDF33'}</span>}
+                <span className="branch-icon">{'⎇'}</span>{formatBranch(agent.gitBranch)}
+                {agent.gitIsWorktree && <span className="worktree-indicator" title="Git worktree">{'🌳'}</span>}
               </span>
             </>
           )}
           {!agent.gitBranch && agent.gitCommit && (
             <>
-              {agent.cwd && <span className="finding-context-sep">{'\u00B7'}</span>}
+              {agent.cwd && <span className="finding-context-sep">{'·'}</span>}
               <span className="branch-label detached" title="Detached HEAD">
-                <span className="branch-icon">{'\u2387'}</span>({agent.gitCommit})
+                <span className="branch-icon">{'⎇'}</span>({agent.gitCommit})
               </span>
             </>
           )}
-          {(agent.cwd || agent.gitBranch || agent.gitCommit) && agent.autonomy && <span className="finding-context-sep">{'\u00B7'}</span>}
+          {(agent.cwd || agent.gitBranch || agent.gitCommit) && agent.autonomy && <span className="finding-context-sep">{'·'}</span>}
           <AutonomyBadge agent={agent} send={send} />
         </div>
         {agent.anomaly && (
@@ -282,7 +289,7 @@ function FindingCard({ agent, selected, send }: {
         {(agent.tokenUsage || agent.startedAt) && (
           <div className="finding-cost">
             {formatTokenUsage(agent.tokenUsage)}
-            {agent.tokenUsage && agent.startedAt ? ' \u00B7 ' : ''}
+            {agent.tokenUsage && agent.startedAt ? ' · ' : ''}
             {formatDuration(agent.startedAt)}
           </div>
         )}
@@ -349,7 +356,7 @@ function HealthyRow({ agent, selected, send }: {
           )}
           {agent.gitBranch && (
             <span className="branch-label" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : agent.gitBranch}>
-              <span className="branch-icon">{'\u2387'}</span>{formatBranch(agent.gitBranch, 20)}
+              <span className="branch-icon">{'⎇'}</span>{formatBranch(agent.gitBranch, 20)}
             </span>
           )}
           <AutonomyBadge agent={agent} send={send} />
@@ -390,7 +397,7 @@ function PlaybookGroup({ playbookId, agents, selectedAgentId, send }: {
         className="playbook-group-header"
         onClick={() => setExpanded(!expanded)}
       >
-        <span className="playbook-group-toggle">{expanded ? '\u25BE' : '\u25B8'}</span>
+        <span className="playbook-group-toggle">{expanded ? '▾' : '▸'}</span>
         <span className="playbook-group-name">{latest.taskName ?? playbookId}</span>
         <span className="playbook-group-count">{agents.length} runs</span>
       </div>
@@ -451,7 +458,7 @@ function FindingGroup({ type, agents, selectedAgentId, send }: {
         className="finding-group-header"
         onClick={() => setExpanded(!expanded)}
       >
-        <span className="finding-group-toggle">{expanded ? '\u25BE' : '\u25B8'}</span>
+        <span className="finding-group-toggle">{expanded ? '▾' : '▸'}</span>
         <span className={`finding-severity ${cls}`}>{severityLabel(agents[0])}</span>
         <span className="finding-group-label">
           {agents.length} agents {groupLabel(type)}
@@ -570,9 +577,12 @@ function SnoozedRow({ agent, selected }: {
 }
 
 // Clear-completed control lives inside the Completed section header so the
-// action is co-located with the content it acts on. Default scope sweeps
-// user-initiated terminal states (completed + cancelled); terminated is an
-// opt-in via the inline checkbox. See rfc-task-loss-prevention.md D2.
+// action is co-located with the content it acts on. Confirmation uses the
+// shared modal ConfirmDialog — the familiar OK/Cancel shape matches the rest
+// of the app (cancel/complete task dialogs) and gives Enter/Escape bindings
+// for free. Default scope sweeps user-initiated terminal states (completed +
+// cancelled); terminated is opt-in via the checkbox inside the dialog. See
+// rfc-task-loss-prevention.md D2.
 //
 // Counts are GLOBAL (unfiltered by the current project selection) because
 // the server's clearCompleted has no project scope — it sweeps across all
@@ -596,18 +606,14 @@ function ClearCompletedButton({ finishedCount, terminatedCount, send }: {
     setIncludeTerminated(false);
     setConfirmOpen(true);
   };
-  const cancelConfirm = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setConfirmOpen(false);
-  };
-  const confirmClear = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const cancelConfirm = () => setConfirmOpen(false);
+  const confirmClear = () => {
     send({ type: 'clearCompleted', includeTerminated });
     setConfirmOpen(false);
   };
 
-  if (!confirmOpen) {
-    return (
+  return (
+    <>
       <button
         className="btn-clear-completed"
         onClick={openConfirm}
@@ -616,36 +622,28 @@ function ClearCompletedButton({ finishedCount, terminatedCount, send }: {
       >
         Clear
       </button>
-    );
-  }
-
-  // Note: no role="dialog" here. This is an inline disclosure, not a modal —
-  // there is no focus trap, no Escape-to-close, and focus stays in reading
-  // order. Labelling it dialog would mislead assistive tech. role="group"
-  // gives a labelled boundary without the modal contract.
-  return (
-    <span
-      className="clear-completed-confirm"
-      role="group"
-      aria-label="Confirm clear completed"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <span className="clear-completed-confirm-copy">
-        Delete {finishedCount} finished task{finishedCount === 1 ? '' : 's'}?
-      </span>
-      {terminatedCount > 0 && (
-        <label className="clear-completed-include-terminated">
-          <input
-            type="checkbox"
-            checked={includeTerminated}
-            onChange={(e) => setIncludeTerminated(e.target.checked)}
-          />
-          Also delete {terminatedCount} terminated task{terminatedCount === 1 ? '' : 's'}
-        </label>
+      {confirmOpen && (
+        <ConfirmDialog
+          title="Clear completed tasks"
+          message={`Delete ${finishedCount} finished task${finishedCount === 1 ? '' : 's'}?`}
+          confirmLabel="Delete"
+          confirmClass="btn-danger"
+          onConfirm={confirmClear}
+          onClose={cancelConfirm}
+        >
+          {terminatedCount > 0 && (
+            <label className="clear-completed-include-terminated">
+              <input
+                type="checkbox"
+                checked={includeTerminated}
+                onChange={(e) => setIncludeTerminated(e.target.checked)}
+              />
+              Also delete {terminatedCount} terminated task{terminatedCount === 1 ? '' : 's'}
+            </label>
+          )}
+        </ConfirmDialog>
       )}
-      <button className="btn-clear-completed-confirm" onClick={confirmClear}>Confirm</button>
-      <button className="btn-clear-completed-cancel" onClick={cancelConfirm}>Cancel</button>
-    </span>
+    </>
   );
 }
 
@@ -684,9 +682,9 @@ function CompletedRow({ agent, selected, send }: {
           </span>
           <span className="completed-row-meta">
             {isCancelled && <span className="completed-cancelled-label">cancelled</span>}
-            {isCancelled && (agent.tokenUsage || agent.startedAt) && ' \u00B7 '}
+            {isCancelled && (agent.tokenUsage || agent.startedAt) && ' · '}
             {formatTokenUsage(agent.tokenUsage)}
-            {agent.tokenUsage && agent.startedAt ? ' \u00B7 ' : ''}
+            {agent.tokenUsage && agent.startedAt ? ' · ' : ''}
             {formatDuration(agent.startedAt)}
           </span>
           {agent.taskId && (
@@ -743,7 +741,10 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
   const totalAgents = findings.length + healthy.length + pending.length + completed.length + snoozed.length;
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const prevFindingIds = useRef<Set<string>>(new Set());
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [healthyCollapsed, toggleHealthy] = usePersistedCollapsed(HEALTHY_SECTION_COLLAPSED_KEY, false);
+  const [pendingCollapsed, togglePending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
+  const [snoozedCollapsed, toggleSnoozed] = usePersistedCollapsed(SNOOZED_SECTION_COLLAPSED_KEY, true);
+  const [completedCollapsed, toggleCompleted] = usePersistedCollapsed(COMPLETED_SECTION_COLLAPSED_KEY, true);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
 
   // Single tick counter to refresh age badges across all cards (every 60s)
@@ -752,10 +753,6 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
     const id = setInterval(() => setAgeTick(t => t + 1), 60_000);
     return () => clearInterval(id);
   }, []);
-
-  function toggleSection(section: string) {
-    setCollapsed(prev => ({ ...prev, [section]: !prev[section] }));
-  }
 
   // Auto-scroll to top when a genuinely new finding arrives (ID-set comparison)
   // Suppressed during initial load so the user sees oldest-first without jarring scroll
@@ -833,11 +830,11 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
         <div className="bottom-sections">
           {healthy.length > 0 && (
             <div className="healthy-section">
-              <div className="section-header" onClick={() => toggleSection('healthy')}>
-                <span className="section-chevron">{collapsed.healthy ? '\u25B8' : '\u25BE'}</span>
+              <div className="section-header" onClick={toggleHealthy} aria-expanded={!healthyCollapsed}>
+                <span className="section-chevron">{healthyCollapsed ? '▸' : '▾'}</span>
                 <span className="healthy-label">Healthy ({healthy.length})</span>
               </div>
-              {!collapsed.healthy && (
+              {!healthyCollapsed && (
                 <>
                   {Array.from(groups.entries()).map(([playbookId, agents]) => (
                     <PlaybookGroup
@@ -862,11 +859,11 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
           )}
           {pending.length > 0 && (
             <div className="pending-section">
-              <div className="section-header" onClick={() => toggleSection('pending')}>
-                <span className="section-chevron">{collapsed.pending ? '\u25B8' : '\u25BE'}</span>
+              <div className="section-header" onClick={togglePending} aria-expanded={!pendingCollapsed}>
+                <span className="section-chevron">{pendingCollapsed ? '▸' : '▾'}</span>
                 <span className="pending-label">Pending ({pending.length})</span>
               </div>
-              {!collapsed.pending && pending.map((agent) => (
+              {!pendingCollapsed && pending.map((agent) => (
                 <PendingRow
                   key={agent.agentId}
                   agent={agent}
@@ -878,11 +875,11 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
           )}
           {snoozed.length > 0 && (
             <div className="snoozed-section">
-              <div className="section-header" onClick={() => toggleSection('snoozed')}>
-                <span className="section-chevron">{collapsed.snoozed ? '\u25B8' : '\u25BE'}</span>
+              <div className="section-header" onClick={toggleSnoozed} aria-expanded={!snoozedCollapsed}>
+                <span className="section-chevron">{snoozedCollapsed ? '▸' : '▾'}</span>
                 <span className="snoozed-label">Snoozed ({snoozed.length})</span>
               </div>
-              {!collapsed.snoozed && snoozed.map((agent) => (
+              {!snoozedCollapsed && snoozed.map((agent) => (
                 <SnoozedRow
                   key={agent.agentId}
                   agent={agent}
@@ -893,8 +890,8 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
           )}
           {completed.length > 0 && (
             <div className="completed-section">
-              <div className="section-header" onClick={() => toggleSection('completed')}>
-                <span className="section-chevron">{collapsed.completed ? '\u25B8' : '\u25BE'}</span>
+              <div className="section-header" onClick={toggleCompleted} aria-expanded={!completedCollapsed}>
+                <span className="section-chevron">{completedCollapsed ? '▸' : '▾'}</span>
                 <span className="completed-label">Completed ({completed.length})</span>
                 <ClearCompletedButton
                   finishedCount={globalFinishedCount}
@@ -902,7 +899,7 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
                   send={send}
                 />
               </div>
-              {!collapsed.completed && completed.map((agent) => (
+              {!completedCollapsed && completed.map((agent) => (
                 <CompletedRow
                   key={agent.agentId}
                   agent={agent}
