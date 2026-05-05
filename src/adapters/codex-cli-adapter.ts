@@ -10,6 +10,7 @@ import { buildAgentLaunchContext } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolveAndPrepareCheckpointDir, CHECKPOINT_LOAD_INSTRUCTION } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
+import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -321,12 +322,14 @@ export class CodexCliAdapter implements AgentAdapter {
   }
 
   getEffectiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined {
-    const content = this.settingsMap.get(tmuxName);
+    const content = this.settingsMap.get(tmuxName) ?? readPersistedHookSettings(this.settingsDir, tmuxName);
     if (!content) return undefined;
+    const settingsPath = effectiveHookSettingsPath(this.settingsDir, tmuxName);
+    if (!settingsPath) return undefined;
     return {
       content,
       agentType: this.agentType,
-      settingsPath: `${this.settingsDir}/${tmuxName}.json`,
+      settingsPath,
     };
   }
 

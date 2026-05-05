@@ -136,6 +136,32 @@ describe('ClaudeCodeAdapter', () => {
     expect(effective!.content).toBe(adapter.getGeneratedSettings(sessionId));
   });
 
+  test('getEffectiveHookSettings falls back to persisted settings after adapter restart', () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'claude-code-settings-'));
+    try {
+      const settingsDir = join(tempRoot, 'settings');
+      mkdirSync(settingsDir, { recursive: true });
+      const sessionId = 'kookr-restart1';
+      const content = {
+        hooks: {
+          SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'x' }] }],
+        },
+      };
+      writeFileSync(join(settingsDir, `${sessionId}.json`), JSON.stringify(content), 'utf-8');
+
+      const restartedAdapter = new ClaudeCodeAdapter(backend, taskStore, { settingsDir });
+      const effective = restartedAdapter.getEffectiveHookSettings(sessionId);
+
+      expect(effective).toEqual({
+        content,
+        agentType: 'claude-code',
+        settingsPath: join(settingsDir, `${sessionId}.json`),
+      });
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test('getEffectiveHookSettings returns undefined for unknown session id', () => {
     expect(adapter.getEffectiveHookSettings('not-a-real-session')).toBeUndefined();
     expect(adapter.getEffectiveHookSettings('../../etc/passwd')).toBeUndefined();

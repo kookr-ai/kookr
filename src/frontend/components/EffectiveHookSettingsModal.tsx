@@ -74,8 +74,8 @@ export function EffectiveHookSettingsModal({ sessionId, onClose }: Props): React
 
         <div className="settings-desc" style={{ marginBottom: '0.5rem' }}>
           Shows the JSON Kookr passed to <code>--settings</code> when this
-          agent was launched. Sourced from adapter memory, not re-read from
-          disk.
+          agent was launched. Sourced from adapter memory or the persisted
+          settings file after restart.
         </div>
 
         {error && <div className="settings-error">{error}</div>}
