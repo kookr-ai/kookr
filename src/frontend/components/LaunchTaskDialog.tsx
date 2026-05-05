@@ -73,7 +73,8 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const [highlightIdx, setHighlightIdx] = useState(-1);
   const [tab, setTab] = useState<Tab>(relaunchPlaybookId || projectContext ? 'playbooks' : 'manual');
   const [launchMode, setLaunchMode] = useState<LaunchMode>('normal');
-  const [ralphIterationCap, setRalphIterationCap] = useState('');
+  const [ralphIterationCap, setRalphIterationCap] = useState('12');
+  const [ralphStopPredicate, setRalphStopPredicate] = useState('');
   const [ralphZeroDiffThreshold, setRalphZeroDiffThreshold] = useState('');
   const [ralphCostCap, setRalphCostCap] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -160,6 +161,8 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       if (isFinite(costCap) && costCap > 0) {
         body.costCapUsd = costCap;
       }
+      const predicate = ralphStopPredicate.trim();
+      if (predicate) body.stopPredicate = predicate;
 
       fetch('/api/tasks/ralph-loop', {
         method: 'POST',
@@ -481,6 +484,16 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                     min={1}
                     step={1}
                     required
+                  />
+                </label>
+                <label>
+                  Stop predicate (optional)
+                  <textarea
+                    name="ralph-stop-predicate"
+                    value={ralphStopPredicate}
+                    onChange={(e) => setRalphStopPredicate(e.target.value)}
+                    placeholder={`e.g. test -f .batch-stop && grep -qE "^STOP:" .batch-stop`}
+                    rows={2}
                   />
                 </label>
                 <label>
