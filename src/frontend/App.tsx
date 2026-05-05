@@ -22,6 +22,8 @@ import { ShortcutsHelp } from './components/ShortcutsHelp.js';
 import { AchievementsPanel } from './components/AchievementsPanel.js';
 import { SnoozeDialog } from './components/SnoozeDialog.js';
 import { ConfirmDialog } from './components/ConfirmDialog.js';
+import { CompleteDialogFooter } from './components/CompleteDialogFooter.js';
+import type { TaskCompletionFeedback } from '../shared/contracts/messages.js';
 import { ProjectSidebar } from './components/ProjectSidebar.js';
 import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
 import { ProjectSidebarManager } from './components/ProjectSidebarManager.js';
@@ -63,6 +65,7 @@ export function App() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showSnooze, setShowSnooze] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'cancel' | 'complete' | null>(null);
+  const [completeFeedback, setCompleteFeedback] = useState<TaskCompletionFeedback | undefined>(undefined);
   const [showProjectSidebarManager, setShowProjectSidebarManager] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showSchedules, setShowSchedules] = useState(false);
@@ -594,12 +597,27 @@ export function App() {
           title="Complete Task"
           message={`Mark "${selectedAgent.taskName ?? selectedAgent.agentId}" as complete?`}
           confirmLabel="Complete"
+          suppressEnterToConfirm={completeFeedback !== undefined}
+          footer={
+            <CompleteDialogFooter
+              feedback={completeFeedback}
+              onChange={setCompleteFeedback}
+            />
+          }
           onConfirm={() => {
             track({ type: 'task_completed', agentId: selectedAgent.agentId, method: 'shortcut' });
-            send({ type: 'completeTask', taskId: selectedAgent.taskId! });
+            send({
+              type: 'completeTask',
+              taskId: selectedAgent.taskId!,
+              ...(completeFeedback ? { feedback: completeFeedback } : {}),
+            });
             setConfirmAction(null);
+            setCompleteFeedback(undefined);
           }}
-          onClose={() => setConfirmAction(null)}
+          onClose={() => {
+            setConfirmAction(null);
+            setCompleteFeedback(undefined);
+          }}
         />
       )}
       {showQuickLaunch && (

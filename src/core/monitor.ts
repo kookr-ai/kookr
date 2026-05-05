@@ -33,6 +33,7 @@ export interface AgentState {
   gitIsWorktree?: boolean;
   projectId?: string;
   completionDigest?: CompletionDigest;
+  completionFeedback?: import('./tasks.js').TaskCompletionFeedback;
   autonomy?: import('./tasks.js').AutonomyLevel;
   ralphLoop?: import('./tasks.js').RalphLoopState;
 }
@@ -509,6 +510,7 @@ export class Monitor {
             gitCommit: lastSession?.gitCommit,
             gitIsWorktree: lastSession?.gitIsWorktree,
             completionDigest: task.completionDigest,
+            completionFeedback: task.completionFeedback,
             autonomy: task.autonomy,
           });
         }

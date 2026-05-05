@@ -37,6 +37,24 @@ export type InteractionEvent =
   | { type: 'monitoring_resumed'; agentId: string; reason: 'respond' | 'cleanup'; timestamp: string }
   | { type: 'finding_feedback'; agentId: string; anomalyType: AnomalyType; verdict: 'false_positive'; explanation: string; timestamp: string }
   | {
+      type: 'task_feedback_submitted';
+      taskId: string;
+      agentId: string;
+      rating: 'up' | 'down';
+      note?: string;
+      downReason?: 'agent_behavior' | 'my_prompt';
+      timestamp: string;
+    }
+  | {
+      type: 'task_feedback_amended';
+      taskId: string;
+      agentId: string;
+      rating: 'up' | 'down';
+      note?: string;
+      downReason?: 'agent_behavior' | 'my_prompt';
+      timestamp: string;
+    }
+  | {
       type: 'ralph_prompt_updated';
       taskId: string;
       status: 'running' | 'paused';

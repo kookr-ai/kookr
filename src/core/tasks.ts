@@ -6,7 +6,36 @@ import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 export type AutonomyLevel = 'supervised' | 'autonomous';
 
 /**
+ * User feedback on a completed task. Drives the per-task self-reflect loop.
+ * `rating` is always required; `note` and `downReason` are optional enrichment.
+ * Stored on `Task.completionFeedback` and persisted to the interaction log.
+ */
+export interface TaskCompletionFeedback {
+  rating: 'up' | 'down';
+  /** Free-text note, sanitized server-side before persistence. */
+  note?: string;
+  /** Only meaningful when rating === 'down'. */
+  downReason?: 'agent_behavior' | 'my_prompt';
+}
+
+/**
+ * Marker for a reflect task spawned to analyze a completed source task.
+ * Persisted on the spawned task itself so cleanup logic can identify reflect tasks
+ * by their relationship to a source task.
+ */
+export interface ReflectMeta {
+  /** Source task this reflect is analyzing. */
+  sourceTaskId: string;
+  /** Path to the immutable feedback bundle dir the reflect was launched against. */
+  bundlePath: string;
+  /** 'up' triggers reinforcement branch in the skill; 'down' triggers fix-proposal branch. */
+  direction: 'up' | 'down';
+}
+
+/**
  * Lifecycle status of a Ralph Wiggum-style iteration loop attached to a task.
+ * See issue #440. Terminal states (`completed`, `failed`, `cancelled`) prevent
+ * further iteration injection on Stop events.
  * See issue #440. Terminal states (`completed`, `failed`, `cancelled`) prevent
  * further iteration injection on Stop events.
  */
@@ -142,6 +171,10 @@ export interface Task {
   tokenUsage?: TokenUsage;
   /** Summary of what the agent accomplished, generated on task completion. */
   completionDigest?: CompletionDigest;
+  /** User feedback on the completed task. Drives the per-task self-reflect loop. */
+  completionFeedback?: TaskCompletionFeedback;
+  /** Marker present iff this task is itself a reflect spawn analyzing another task. */
+  reflectMeta?: ReflectMeta;
   /** Autonomy level: 'supervised' (default) pauses on needs_input; 'autonomous' auto-proceeds stop-type. */
   autonomy: AutonomyLevel;
   /** Auto-proceed delay in ms. Default: 180_000 (3 minutes). */
@@ -441,6 +474,33 @@ export class TaskStore {
     const task = this.tasks.get(taskId);
     if (!task) return;
     task.completionDigest = digest;
+    task.updatedAt = new Date();
+  }
+
+  /**
+   * Upsert user feedback on a completed task. Returns true if the value changed,
+   * false if it was a no-op (existing feedback deep-equal to the input). Callers
+   * use the boolean to suppress redundant interaction-log emissions.
+   */
+  setCompletionFeedback(taskId: string, feedback: TaskCompletionFeedback): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task) return false;
+    const existing = task.completionFeedback;
+    if (existing
+      && existing.rating === feedback.rating
+      && (existing.note ?? '') === (feedback.note ?? '')
+      && existing.downReason === feedback.downReason) {
+      return false;
+    }
+    task.completionFeedback = feedback;
+    task.updatedAt = new Date();
+    return true;
+  }
+
+  setReflectMeta(taskId: string, meta: ReflectMeta): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.reflectMeta = meta;
     task.updatedAt = new Date();
   }
 

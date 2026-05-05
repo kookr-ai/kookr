@@ -96,7 +96,29 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
     autonomy: autonomyLevel.optional(),
     agentType: agentType.optional(),
   }),
-  z.object({ type: z.literal('completeTask'), taskId: z.string() }),
+  z.object({
+    type: z.literal('completeTask'),
+    taskId: z.string(),
+    feedback: z.object({
+      rating: z.enum(['up', 'down']),
+      note: z.string().optional(),
+      downReason: z.enum(['agent_behavior', 'my_prompt']).optional(),
+    }).optional(),
+  }),
+  z.object({
+    type: z.literal('setTaskFeedback'),
+    taskId: z.string(),
+    feedback: z.object({
+      rating: z.enum(['up', 'down']),
+      note: z.string().optional(),
+      downReason: z.enum(['agent_behavior', 'my_prompt']).optional(),
+    }),
+  }),
+  z.object({
+    type: z.literal('requestTaskReflect'),
+    taskId: z.string(),
+    direction: z.enum(['up', 'down']),
+  }),
   z.object({
     type: z.literal('relaunch'),
     taskId: z.string(),
