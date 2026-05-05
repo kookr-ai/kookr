@@ -543,11 +543,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // --- Event pipeline ---
 
+  // Late-bound R16 block-alert callback. The Telegram integration is started
+  // later in bootstrap (after launchServiceDeps is fully built); this holder
+  // lets wireEventPipeline take a stable callback shape now and the integration
+  // installs the real implementation when it's ready.
+  let onPermissionBlockedHolder: ((taskId: string, promptText: string) => void) | undefined;
+
   const { abortPendingSuggestion } = wireEventPipeline({
     adapter, monitor, taskStore, tokenTracker, watchdog,
     githubScanner, llmClient, serverCwd, broadcastToAll,
     autonomyOrchestrator, telemetryLog,
     checkpointCycler,
+    onPermissionBlocked: (taskId, promptText) => {
+      onPermissionBlockedHolder?.(taskId, promptText);
+    },
   });
 
   // Broadcast circuit breaker state changes to all connected clients
@@ -968,6 +977,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
     clients.clear();
 
+    // Telegram integration shutdown (releases lockfile so prod:restart picks up cleanly).
+    if (telegramHandle) {
+      try { await telegramHandle.stop(); } catch (err) { console.warn('[telegram] stop failed:', err); }
+    }
+
     // Close servers
     terminalWss.close();
     wss.close();
@@ -1008,6 +1022,89 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Start background services that should wait for the server to be listening.
   backgroundServices.startAfterListen();
+
+  // --- Telegram remote-chat trigger (opt-in; off by default) ---
+  // See docs/rfc/rfc-remote-chat-trigger.md. Enabled when KOOKR_TELEGRAM_BOT_TOKEN
+  // is set; the panic switch KOOKR_REMOTE_CHAT_DISABLED=1 short-circuits everything.
+  let telegramHandle: { stop(): Promise<void> } | null = null;
+  if (process.env.KOOKR_REMOTE_CHAT_DISABLED === '1') {
+    console.log('[telegram] disabled via KOOKR_REMOTE_CHAT_DISABLED');
+  } else if (process.env.KOOKR_TELEGRAM_BOT_TOKEN) {
+    try {
+      const { startTelegramTrigger, probeWhisperReachability } = await import('../integrations/telegram/index.js');
+      const allowedUserIds = new Set(
+        (process.env.KOOKR_TELEGRAM_ALLOWED_USERS ?? '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map(Number)
+          .filter((n) => !isNaN(n)),
+      );
+      const allowedProjects = (process.env.KOOKR_REMOTE_CHAT_PROJECTS ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((cwd) => ({ name: cwd.split('/').pop() ?? cwd, cwd }));
+
+      if (allowedUserIds.size === 0) {
+        console.warn(
+          '[telegram] KOOKR_TELEGRAM_BOT_TOKEN set but KOOKR_TELEGRAM_ALLOWED_USERS empty — refusing to start ' +
+          '(an unauthenticated bot would be a backdoor).',
+        );
+      } else if (allowedProjects.length === 0) {
+        console.warn(
+          '[telegram] KOOKR_TELEGRAM_BOT_TOKEN set but KOOKR_REMOTE_CHAT_PROJECTS empty — refusing to start ' +
+          '(no projects to spawn against).',
+        );
+      } else {
+        const dashboardBaseUrl = `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`;
+        const handle = await startTelegramTrigger({
+          token: process.env.KOOKR_TELEGRAM_BOT_TOKEN,
+          allowedUserIds,
+          allowedProjects,
+          dataDir: kookrDir,
+          dryRun: process.env.KOOKR_REMOTE_CHAT_DRY_RUN === '1',
+          dashboardBaseUrl,
+          launchTask: (opts) => launchTask(launchServiceDeps, opts),
+          llmClient,
+          // Telegram audio transcription via the local faster-whisper-server.
+          // Unset → audio messages are dropped with `dropped_audio_disabled`.
+          // See issues #574 and #585.
+          whisperUrl: process.env.KOOKR_STT_WHISPER_URL,
+        });
+        telegramHandle = handle;
+        // Install the late-bound R16 callback now that the integration is up.
+        onPermissionBlockedHolder = handle.onPermissionBlocked;
+        console.log(
+          `[telegram] active — allowedUsers=${allowedUserIds.size} projects=${allowedProjects.length} ` +
+          `dryRun=${process.env.KOOKR_REMOTE_CHAT_DRY_RUN === '1'} ` +
+          `audio=${process.env.KOOKR_STT_WHISPER_URL ? 'enabled' : 'disabled'}`,
+        );
+        // Issue #576: surface whisper misconfig at startup so operators see it
+        // in the server log instead of inferring it from per-message timeouts.
+        // Probe is fire-and-forget and informational only — never gates startup,
+        // never re-runs. Per-message error path (#574/#577) remains the runtime
+        // fallback for any whisper container that restarts after this point.
+        if (process.env.KOOKR_STT_WHISPER_URL) {
+          const whisperUrl = process.env.KOOKR_STT_WHISPER_URL;
+          void probeWhisperReachability(whisperUrl).then((probe) => {
+            if (probe.ok) {
+              const suffix = probe.modelCount !== null ? ` (${probe.modelCount} models)` : '';
+              console.log(`[telegram] voice probe: 200 OK${suffix}`);
+            } else {
+              console.warn(
+                `[telegram] voice probe FAILED: ${probe.reason} at ${whisperUrl}/v1/models — ` +
+                'voice transcription will fail per-message',
+              );
+            }
+          });
+        }
+      }
+    } catch (err) {
+      // Integration startup failure must NOT crash the server. Log and continue.
+      console.error('[telegram] Failed to start integration:', err instanceof Error ? err.message : err);
+    }
+  }
 
   // Non-blocking startup refresh of the OSS attempts view.
   // Fire-and-forget: failures surface in the UI via lastRefreshAt + error banner.

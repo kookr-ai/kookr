@@ -35,6 +35,40 @@ export interface EventPipelineDeps {
   telemetryLog?: DeferredTelemetryLogWriter;
   /** Optional v5 checkpoint cycler — advances state on Stop events. */
   checkpointCycler?: CheckpointCycler;
+  /**
+   * Optional callback fired when an agent enters the `permission_blocked`
+   * anomaly state. Used by the remote-chat integration (R16) to send a
+   * Kookr alert to the chat that originated the spawn.
+   *
+   * The callback receives `(taskId, promptText)` where `promptText` is a
+   * human-readable summary of the tool call awaiting approval (e.g.,
+   * "Bash(git push origin feat-x)"). The callback MUST NOT throw; the
+   * pipeline does not handle errors and a thrown rejection would propagate
+   * through the existing fire-and-forget `captureDisplay` chain.
+   *
+   * See `docs/rfc/rfc-remote-chat-trigger.md` §7 (R16).
+   */
+  onPermissionBlocked?: (taskId: string, promptText: string) => void;
+}
+
+/**
+ * Compact tool-input renderer for the R16 block-alert message body. Aims for
+ * ~60 chars max and never includes anything that could itself be a credential
+ * (the integration's send path also redacts; this is just for log-friendly
+ * shape).
+ */
+function formatToolInput(input: unknown): string {
+  if (input == null) return '';
+  if (typeof input === 'string') return input.slice(0, 60);
+  if (typeof input === 'object') {
+    // Common Claude Code shapes: {command: "..."}, {file_path: "..."}, {url: "..."}.
+    const obj = input as Record<string, unknown>;
+    for (const key of ['command', 'file_path', 'path', 'url']) {
+      const v = obj[key];
+      if (typeof v === 'string') return v.slice(0, 60);
+    }
+  }
+  return '';
 }
 
 /**
@@ -103,6 +137,28 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     if (wasNeedsInput && !isNeedsInput) {
       console.debug(`[event-pipeline] needs_input cleared for ${tmuxName} by ${event.type}`);
       abortPendingSuggestion(tmuxName);
+    }
+
+    // R16 block-alert (rfc-remote-chat-trigger §7): fire onPermissionBlocked
+    // exactly once per entry into permission_blocked state. The integration
+    // routes the alert to the originating chat if the task is remote-spawned.
+    // Non-remote tasks: integration's lookup misses → no-op.
+    const isPermissionBlocked = postState?.anomaly?.type === 'permission_blocked';
+    const wasPermissionBlocked = preState?.anomaly?.type === 'permission_blocked';
+    if (!wasPermissionBlocked && isPermissionBlocked && deps.onPermissionBlocked) {
+      const ownerTaskForAlert = taskStore.findTaskBySession(tmuxName);
+      if (ownerTaskForAlert) {
+        const permEvent = [...(postState!.events)].reverse().find(isPermissionRequestEvent);
+        const promptText = permEvent
+          ? `${permEvent.toolName}(${formatToolInput(permEvent.toolInput)})`
+          : 'permission required';
+        try {
+          deps.onPermissionBlocked(ownerTaskForAlert.id, promptText);
+        } catch (err) {
+          // Never let a faulty integration callback escape the pipeline.
+          console.warn('[event-pipeline] onPermissionBlocked threw:', err);
+        }
+      }
     }
 
     // Persist lastEventAt in session metadata for watchdog restart recovery

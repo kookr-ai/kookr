@@ -56,7 +56,7 @@ export interface LaunchOpts {
   /** Explicit project ID (e.g., github.com/owner/repo) — skips CWD-based inference. */
   projectId?: string;
   /** Where the launch came from — for server-side log provenance. Default: 'api'. */
-  launchSource?: 'cli' | 'ui' | 'api';
+  launchSource?: 'cli' | 'ui' | 'api' | 'remote-chat-telegram';
 }
 
 export interface LaunchResult {
@@ -113,6 +113,16 @@ export async function launchTask(
   const { taskStore, adapterRegistry, lifecycleDeps } = deps;
   const maxActive = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
   const agentType = opts.agentType ?? adapterRegistry.getDefaultType() ?? DEFAULT_AGENT_TYPE;
+
+  // R19 trust-boundary check (rfc-remote-chat-trigger §4): remote-chat-spawned
+  // tasks MUST use claude-code. This prevents a crafted /task command from trying to
+  // silently route a remote-chat task to Codex.
+  if (opts.launchSource === 'remote-chat-telegram' && agentType !== 'claude-code') {
+    throw new Error(
+      `R19: remote-chat-telegram tasks must use claude-code, not ${agentType}`,
+    );
+  }
+
   const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd);
   const effectivePrompt = normalizePromptFileReferences(guardedPrompt, opts.cwd);
 

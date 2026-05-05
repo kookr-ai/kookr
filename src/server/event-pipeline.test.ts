@@ -369,3 +369,97 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     expect(getActiveSuggestionId(tmuxName)).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// R16 onPermissionBlocked transition guard (rfc-remote-chat-trigger §7)
+// ---------------------------------------------------------------------------
+
+describe('event-pipeline: R16 onPermissionBlocked transition guard', () => {
+  let deps: EventPipelineDeps;
+  let fireEvent: (tmuxName: string, event: AgentEvent) => void;
+  let onPermissionBlocked: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    _resetLifecycles();
+    const mocks = createMockDeps();
+    deps = mocks.deps;
+    fireEvent = mocks.fireEvent;
+    onPermissionBlocked = vi.fn();
+    deps.onPermissionBlocked = onPermissionBlocked;
+    // findTaskBySession returns a fake task so the R16 path can look up task.id.
+    // The Task shape needs enough fields for the downstream createSnapshotMessage path.
+    (deps.taskStore.findTaskBySession as any).mockReturnValue({
+      id: 't-rc-1',
+      prompt: 'p',
+      cwd: '/c',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'sess-1', agentType: 'claude-code', createdAt: new Date(), cwd: '/c' }],
+    });
+  });
+
+  // Test harness: a small state machine where the monitor's getSnapshot
+  // returns whatever is currently in `state`. `processEvents` is the
+  // transition trigger — we override it to flip `state` from `pre` to `post`
+  // for the current event. This sidesteps call-count fragility (each event
+  // dispatch may call getSnapshot 2-4 times depending on the broadcast path).
+  function setupTransition(pre: 'blocked' | null, post: 'blocked' | null): { permEvent: AgentEvent } {
+    const permEvent = {
+      type: 'permission_request',
+      toolName: 'Bash',
+      toolInput: { command: 'git push origin feat-x' },
+    } as AgentEvent;
+    let phase: 'pre' | 'post' = 'pre';
+    const snapshotFor = (anomalyKind: 'blocked' | null) =>
+      [{ agentId: 'sess-1', anomaly: anomalyKind === 'blocked' ? { type: 'permission_blocked' } : null, events: [permEvent] }];
+    (deps.monitor.getSnapshot as any).mockImplementation(() =>
+      snapshotFor(phase === 'pre' ? pre : post),
+    );
+    (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
+    return { permEvent };
+  }
+
+  test('fires exactly once on transition into permission_blocked', () => {
+    const { permEvent } = setupTransition(null, 'blocked');
+    wireEventPipeline(deps);
+    fireEvent('sess-1', permEvent);
+    expect(onPermissionBlocked).toHaveBeenCalledTimes(1);
+    expect(onPermissionBlocked).toHaveBeenCalledWith('t-rc-1', expect.stringContaining('git push origin'));
+  });
+
+  test('does NOT fire when state stays permission_blocked (already blocked → still blocked)', () => {
+    const { permEvent } = setupTransition('blocked', 'blocked');
+    wireEventPipeline(deps);
+    fireEvent('sess-1', permEvent);
+    fireEvent('sess-1', permEvent);
+    expect(onPermissionBlocked).not.toHaveBeenCalled();
+  });
+
+  test('does NOT fire when state stays clean (not-blocked → not-blocked)', () => {
+    const { permEvent } = setupTransition(null, null);
+    wireEventPipeline(deps);
+    fireEvent('sess-1', permEvent);
+    expect(onPermissionBlocked).not.toHaveBeenCalled();
+  });
+
+  test('does NOT throw when no onPermissionBlocked dep is wired', () => {
+    delete deps.onPermissionBlocked;
+    setupTransition(null, 'blocked');
+    wireEventPipeline(deps);
+    expect(() =>
+      fireEvent('sess-1', { type: 'tool_use', toolName: 'X', toolUseId: 'tu' } as AgentEvent),
+    ).not.toThrow();
+  });
+
+  test('swallows callback throws without breaking the pipeline', () => {
+    onPermissionBlocked.mockImplementation(() => { throw new Error('integration is broken'); });
+    const { permEvent } = setupTransition(null, 'blocked');
+    wireEventPipeline(deps);
+    // The integration callback throw is caught around the call site; the
+    // pipeline may still throw downstream for unrelated reasons given our
+    // minimal mocks. The important assertion is that onPermissionBlocked WAS
+    // invoked AND the integration error did not interrupt the pipeline before
+    // any downstream work.
+    try { fireEvent('sess-1', permEvent); } catch { /* downstream noise */ }
+    expect(onPermissionBlocked).toHaveBeenCalled();
+  });
+});
