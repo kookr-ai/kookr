@@ -102,6 +102,41 @@ describe('generateTelemetryReport', () => {
     expect(report.launchDialogMetrics.avgDwellMs).toBe(3000);
   });
 
+  test('cwd-field nonMruRate is null when no cwd-field events recorded', () => {
+    const events = [makeEvent('launch_dialog_opened', { method: 'button' })];
+    const report = generateTelemetryReport(events);
+    expect(report.launchDialogMetrics.nonMruRate).toBeNull();
+    expect(report.launchDialogMetrics.cwdFieldMethodCounts).toEqual({});
+  });
+
+  test('cwd-field nonMruRate counts typed and paste as non-MRU', () => {
+    const events = [
+      makeEvent('launch_dialog_cwd_field_used', { method: 'mru' }),
+      makeEvent('launch_dialog_cwd_field_used', { method: 'mru' }),
+      makeEvent('launch_dialog_cwd_field_used', { method: 'typed' }),
+      makeEvent('launch_dialog_cwd_field_used', { method: 'paste' }),
+      makeEvent('launch_dialog_cwd_field_used', { method: 'server-cwd-button' }),
+    ];
+    const report = generateTelemetryReport(events);
+    expect(report.launchDialogMetrics.cwdFieldMethodCounts).toEqual({
+      'mru': 2,
+      'typed': 1,
+      'paste': 1,
+      'server-cwd-button': 1,
+    });
+    // 2 of 5 are non-MRU (typed + paste). server-cwd-button counts as MRU-like
+    // (assisted, not raw entry) so the threshold doesn't conflate it with friction.
+    expect(report.launchDialogMetrics.nonMruRate).toBeCloseTo(0.4, 5);
+  });
+
+  test('cwd-field event with missing method falls back to "unknown"', () => {
+    const events = [makeEvent('launch_dialog_cwd_field_used', {})];
+    const report = generateTelemetryReport(events);
+    expect(report.launchDialogMetrics.cwdFieldMethodCounts).toEqual({ unknown: 1 });
+    // 'unknown' is not 'typed' or 'paste', so nonMruRate is 0/1 = 0.
+    expect(report.launchDialogMetrics.nonMruRate).toBe(0);
+  });
+
   test('platform breakdown', () => {
     const events = [
       makeEvent('agent_clicked', { platform: 'linux' }),
