@@ -4,7 +4,7 @@
 
 **A smart attention router for developers running multiple AI coding agents.**
 
-[![Status: V1](https://img.shields.io/badge/status-V1_functional-green)](#) [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](#) [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](#) [![License](https://img.shields.io/badge/license-TBD-lightgrey)](#license)
+[![Status: V1](https://img.shields.io/badge/status-V1_functional-green)](#) [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](#) [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](#) [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](UNLICENSE)
 
 [Features](docs/features.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md) · [ADRs](docs/adr/README.md)
 
@@ -408,4 +408,4 @@ Before submitting a PR, make sure `pnpm test` passes. The pre-push hook enforces
 
 ## License
 
-TBD
+Kookr is released into the public domain under [The Unlicense](UNLICENSE). You may copy, modify, distribute, and use the software, in source or compiled form, for any purpose, with no restrictions. See [unlicense.org](https://unlicense.org) for details.
