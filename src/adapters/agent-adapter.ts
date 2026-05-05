@@ -106,11 +106,11 @@ export interface AgentAdapter {
   injectHookEvent(tmuxName: string, rawJson: string): void;
 
   /**
-   * Return the hook settings Kookr actually passed to --settings for a
-   * given session, along with the on-disk path of the settings file. The
-   * content is sourced from adapter memory, not re-read from disk, so it
-   * reflects exactly what the agent was launched with. Returns undefined
-   * if the session is unknown to this adapter.
+   * Return the hook settings Kookr passed to --settings for a given session,
+   * along with the on-disk path of the settings file. Adapters serve current
+   * launches from memory and may fall back to the persisted settings file for
+   * sessions restored after a server restart. Returns undefined if no settings
+   * are known for this adapter/session.
    */
   getEffectiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined;
 }
