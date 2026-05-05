@@ -88,6 +88,11 @@ export type AgentEvent =
       sessionId: string;
       lastMessage: string;
       cwd?: string;
+      transcriptPath?: string;
+      /** Stable per-turn identifier injected by the Stop hook. When present, used for dedup fingerprinting. */
+      turnId?: string;
+      /** Sequential line number within the hook file. Used to distinguish multiple Stops in one long turn. */
+      hookLineId?: string;
     }
   | {
       type: 'permission_request';
@@ -116,6 +121,9 @@ export type AgentEvent =
       error: string;
       lastMessage: string;
       cwd?: string;
+      transcriptPath?: string;
+      turnId?: string;
+      hookLineId?: string;
     }
   | {
       type: 'session_end';

@@ -1,4 +1,4 @@
-import type { Playbook, PlaybookParameter, PlaybookParameterOption } from './playbook.js';
+import type { Playbook, EffectivePlaybookLoop, PlaybookParameter, PlaybookParameterOption } from './playbook.js';
 
 export const PLAYBOOK_LOOP_DEFAULTS = {
   iterationCap: 6,
@@ -407,4 +407,59 @@ function parseOptions(raw: unknown[]): PlaybookParameterOption[] {
 function parseStringArray(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((item): item is string => typeof item === 'string');
+}
+
+/**
+ * Parse loop frontmatter fields into validated `effectiveLoop` or a
+ * `loopValidationError`. Returns an empty object when no loop metadata is
+ * present (non-loopable playbooks).
+ */
+function parseLoopFields(
+  raw: unknown,
+  tags: string[],
+): Pick<Playbook, 'effectiveLoop' | 'loopValidationError'> {
+  const isLoopable = tags.includes('loopable');
+
+  // No loop metadata — nothing to validate.
+  if (raw === null || raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) {
+    if (isLoopable) {
+      return { loopValidationError: 'playbook is tagged loopable but has no loop: frontmatter block' };
+    }
+    return {};
+  }
+
+  const meta = raw as Record<string, unknown>;
+  const iterationCap = typeof meta.iterationCap === 'number' ? meta.iterationCap
+    : typeof meta.iterationCap === 'string' ? parseInt(meta.iterationCap, 10)
+    : NaN;
+
+  if (!Number.isInteger(iterationCap) || iterationCap <= 0) {
+    return { loopValidationError: 'loop.iterationCap must be a positive integer' };
+  }
+
+  const effectiveLoop: EffectivePlaybookLoop = { iterationCap, sources: { iterationCap: 'playbook' } };
+
+  if (typeof meta.stopPredicate === 'string' && meta.stopPredicate) {
+    effectiveLoop.stopPredicate = meta.stopPredicate;
+  }
+
+  if (meta.zeroDiffConsecutiveIterations !== undefined) {
+    const n = typeof meta.zeroDiffConsecutiveIterations === 'number'
+      ? meta.zeroDiffConsecutiveIterations
+      : parseInt(String(meta.zeroDiffConsecutiveIterations), 10);
+    if (!Number.isInteger(n) || n <= 0) {
+      return { loopValidationError: 'loop.zeroDiffConsecutiveIterations must be a positive integer' };
+    }
+    effectiveLoop.zeroDiffConsecutiveIterations = n;
+  }
+
+  if (meta.costCapUsd !== undefined) {
+    const c = typeof meta.costCapUsd === 'number' ? meta.costCapUsd : parseFloat(String(meta.costCapUsd));
+    if (!isFinite(c) || c <= 0) {
+      return { loopValidationError: 'loop.costCapUsd must be a positive finite number' };
+    }
+    effectiveLoop.costCapUsd = c;
+  }
+
+  return { effectiveLoop };
 }

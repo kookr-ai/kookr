@@ -6,7 +6,8 @@
   "bin": {
     "kookr": "./bin/kookr.js",
     "kookr-spawn": "./bin/kookr-spawn.js",
-    "kookr-status": "./bin/kookr-status.js"
+    "kookr-status": "./bin/kookr-status.js",
+    "kookr-ralph": "./bin/kookr-ralph.js"
   },
   "files": [
     "bin",

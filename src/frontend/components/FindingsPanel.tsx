@@ -35,6 +35,209 @@ interface Props {
   globalTerminatedCount: number;
 }
 
+// ─── Ralph loop helpers ──────────────────────────────────────────────────────
+
+function RalphLoopBadge({ agent }: { agent: AgentState }): React.ReactElement | null {
+  const loop = agent.ralphLoop;
+  if (!loop) return null;
+  return (
+    <span
+      className="ralph-loop-badge"
+      title={`Ralph loop: iteration ${loop.currentIteration}/${loop.iterationCap} (${loop.status})`}
+    >
+      {loop.currentIteration}/{loop.iterationCap}
+    </span>
+  );
+}
+
+function RalphLoopControls({ agent }: { agent: AgentState }): React.ReactElement | null {
+  const loop = agent.ralphLoop;
+  if (!loop) return null;
+  const taskId = agent.taskId;
+  if (!taskId) return null;
+  const { handleAlert } = useKookrStore.getState();
+
+  const isActive = loop.status === 'running' || loop.status === 'paused';
+
+  async function callEndpoint(path: string, method = 'POST') {
+    try {
+      const res = await fetch(path, { method });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        handleAlert('', data.error ?? `Server error ${res.status}`, 'error');
+      }
+    } catch (err) {
+      handleAlert('', String(err), 'error');
+    }
+  }
+
+  if (!isActive) return null;
+
+  return (
+    <span className="ralph-loop-controls" onClick={(e) => e.stopPropagation()}>
+      <RalphLoopBadge agent={agent} />
+      {loop.status === 'running' && (
+        <button
+          className="btn-xs ralph-btn"
+          aria-label="Pause Ralph loop"
+          onClick={() => callEndpoint(`/api/tasks/${taskId}/ralph-loop/pause`)}
+        >Pause</button>
+      )}
+      {loop.status === 'paused' && (
+        <button
+          className="btn-xs ralph-btn"
+          aria-label="Resume Ralph loop"
+          onClick={() => callEndpoint(`/api/tasks/${taskId}/ralph-loop/resume`)}
+        >Resume</button>
+      )}
+      <button
+        className="btn-xs ralph-btn"
+        aria-label="Cancel Ralph loop"
+        onClick={() => callEndpoint(`/api/tasks/${taskId}/ralph-loop`, 'DELETE')}
+      >Cancel</button>
+    </span>
+  );
+}
+
+function AttachRalphDialog({ taskId, onClose }: { taskId: string; onClose: () => void }): React.ReactElement {
+  const { handleAlert } = useKookrStore.getState();
+  const [prompt, setPrompt] = useState('');
+  const [iterationCap, setIterationCap] = useState('');
+  const [stopPredicate, setStopPredicate] = useState('');
+  const [zeroDiff, setZeroDiff] = useState('');
+  const [costCap, setCostCap] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (submitting) return;
+    if (!prompt.trim()) return;
+
+    setSubmitting(true);
+    const cap = parseInt(iterationCap, 10);
+    const body: Record<string, unknown> = {
+      prompt: prompt.trim(),
+    };
+    if (Number.isInteger(cap)) body.iterationCap = cap;
+    if (stopPredicate.trim()) body.stopPredicate = stopPredicate.trim();
+    const zd = parseInt(zeroDiff, 10);
+    if (Number.isInteger(zd) && zd > 0) body.zeroDiffConvergence = { consecutiveIterations: zd };
+    const cc = parseFloat(costCap);
+    if (isFinite(cc) && cc > 0) body.costCapUsd = cc;
+
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/ralph-loop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        handleAlert('', 'Ralph loop attached', 'info');
+        onClose();
+      } else {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        setError(data.error ?? `Server error ${res.status}`);
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div role="dialog" aria-label="Attach Ralph loop" onClick={(e) => e.stopPropagation()}>
+      <h4>Attach Ralph loop</h4>
+      {error && <div role="alert" className="ralph-attach-error">{error}</div>}
+      <form onSubmit={handleSubmit}>
+        <label>
+          Prompt
+          <textarea
+            id={`ralph-attach-prompt-${taskId}`}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            required
+          />
+        </label>
+        <label>
+          Iteration cap
+          <input
+            type="number"
+            name="ralph-attach-iteration-cap"
+            value={iterationCap}
+            onChange={(e) => setIterationCap(e.target.value)}
+            min={1}
+            step={1}
+            required
+          />
+        </label>
+        <label>
+          Stop predicate (optional)
+          <input
+            type="text"
+            name="ralph-attach-stop-predicate"
+            value={stopPredicate}
+            onChange={(e) => setStopPredicate(e.target.value)}
+          />
+        </label>
+        <label>
+          Zero-diff threshold (optional)
+          <input
+            type="number"
+            name="ralph-attach-zero-diff-threshold"
+            value={zeroDiff}
+            onChange={(e) => setZeroDiff(e.target.value)}
+            min={1}
+            step={1}
+          />
+        </label>
+        <label>
+          Cost cap USD (optional)
+          <input
+            type="number"
+            name="ralph-attach-cost-cap"
+            value={costCap}
+            onChange={(e) => setCostCap(e.target.value)}
+            min={0.01}
+            step={0.01}
+          />
+        </label>
+        <div>
+          <button type="submit" disabled={submitting}>Attach</button>
+          <button type="button" onClick={onClose}>Cancel</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function AttachRalphButton({ agent }: { agent: AgentState }): React.ReactElement | null {
+  const [open, setOpen] = useState(false);
+  if (!agent.taskId) return null;
+  // Only offer attach when there is no loop at all (new or after terminal cleanup)
+  if (agent.ralphLoop) return null;
+
+  return (
+    <>
+      <button
+        className="btn-xs ralph-btn"
+        aria-label="Attach Ralph loop"
+        onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+      >Ralph loop</button>
+      {open && (
+        <AttachRalphDialog
+          taskId={agent.taskId}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+// ─── End Ralph loop helpers ───────────────────────────────────────────────────
+
 function severityClass(agent: AgentState): string {
   if (!agent.anomaly) return '';
   switch (agent.anomaly.type) {
@@ -283,6 +486,14 @@ function FindingCard({ agent, selected, send }: {
           {(agent.cwd || agent.gitBranch || agent.gitCommit) && agent.autonomy && <span className="finding-context-sep">{'·'}</span>}
           <AutonomyBadge agent={agent} send={send} />
         </div>
+        {agent.ralphLoop && (
+          <div className="finding-loop-row" onClick={(e) => e.stopPropagation()}>
+            <RalphLoopControls agent={agent} />
+            {!agent.ralphLoop || (agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused') ? (
+              <RalphLoopBadge agent={agent} />
+            ) : null}
+          </div>
+        )}
         {agent.anomaly && (
           <div className="finding-explanation">{agent.anomaly.explanation}</div>
         )}
@@ -371,6 +582,20 @@ function HealthyRow({ agent, selected, send }: {
           >
             Reply
           </button>
+        </div>
+        <div className="healthy-row-details">
+          {agent.gitBranch && (
+            <span className="branch-label" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : agent.gitBranch}>
+              <span className="branch-icon">{'\u2387'}</span>{formatBranch(agent.gitBranch, 20)}
+            </span>
+          )}
+          <div className="healthy-row-controls">
+            <RalphLoopControls agent={agent} />
+            {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
+              <RalphLoopBadge agent={agent} />
+            )}
+            <AttachRalphButton agent={agent} />
+          </div>
         </div>
         <div className="healthy-row-meta">
           {formatTokenUsage(agent.tokenUsage)}
@@ -694,6 +919,9 @@ function CompletedRow({ agent, selected, send }: {
             }}>Reopen</button>
           )}
         </div>
+        {agent.ralphLoop && (
+          <RalphLoopBadge agent={agent} />
+        )}
         {agent.completionDigest && agent.completionDigest.bullets.length > 0 && (
           <ul className="completed-digest">
             {agent.completionDigest.bullets.map((bullet, i) => (

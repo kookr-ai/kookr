@@ -39,3 +39,15 @@ export type {
   StartWorkHandoff,
 } from '../core/workspace-types.js';
 export type { ClientMessage, ServerMessage, SnapshotMessage } from './contracts/messages.js';
+export type {
+  RalphLoopStatus,
+  RalphLoopState,
+  RalphLoopReadModel,
+} from './contracts/ralph.js';
+export type {
+  RalphIterationExitReason,
+  RalphIterationDiffStats,
+  RalphIterationRecord,
+  RalphIterationLogSummary,
+  RalphIterationLogReadModel,
+} from './contracts/ralph-iteration-log.js';

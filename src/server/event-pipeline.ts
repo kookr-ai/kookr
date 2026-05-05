@@ -20,6 +20,8 @@ import {
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import type { CheckpointCycler } from '../core/checkpoint-cycler.js';
 import { isCycleDisabled } from '../core/checkpoint-cycler.js';
+import type { RalphCycler } from '../core/ralph-cycler.js';
+import { RalphLoopService } from './ralph-loop-service.js';
 
 export interface EventPipelineDeps {
   adapter: AgentAdapter;
@@ -49,6 +51,8 @@ export interface EventPipelineDeps {
    * See `docs/rfc/rfc-remote-chat-trigger.md` §7 (R16).
    */
   onPermissionBlocked?: (taskId: string, promptText: string) => void;
+  /** Optional Ralph iteration cycler — drives the loop state machine on Stop events. */
+  ralphCycler?: RalphCycler;
 }
 
 /**
@@ -207,6 +211,33 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
             console.error('[checkpoint-cycler] sendInput failed on Stop:', err);
           });
         }
+      }
+
+      // Ralph iteration cycle: runtime Stop handling belongs to the same
+      // ownership service used by route attach/resume catch-up.
+      if (stopTask?.ralphLoop?.status === 'completed') {
+        new RalphLoopService({
+          taskStore, monitor, serverCwd, broadcastToAll,
+          ralphCycler: deps.ralphCycler,
+        })
+          .finalizeCompletedLoopStop(stopTask, tmuxName, event)
+          .then((changed) => {
+            if (changed) broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+          })
+          .catch((err) => {
+            console.error('[ralph-loop-service] finalizeCompletedLoopStop failed:', err);
+          });
+      } else if (stopTask?.ralphLoop?.status === 'running' && deps.ralphCycler) {
+        new RalphLoopService({
+          taskStore, monitor, serverCwd, broadcastToAll,
+          ralphCycler: deps.ralphCycler,
+        })
+          .handleStopEvent(stopTask, tmuxName, event, {
+            cumulativeCostUsd: tokenTracker.getUsage(stopTask.id)?.costUsd ?? null,
+          })
+          .catch((err) => {
+            console.error('[ralph-loop-service] handleStopEvent failed:', err);
+          });
       }
     }
 

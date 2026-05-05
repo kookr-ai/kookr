@@ -175,3 +175,22 @@ export async function launchTask(
   await registerNewAgent(task, lifecycleDeps);
   return { task, queued: false };
 }
+
+/**
+ * Launch a fresh runtime session for an already-existing task (used by the
+ * Ralph loop service to re-inject the loop prompt after each iteration).
+ * Returns the new tmux session name.
+ */
+export async function launchFreshTaskSession(
+  deps: LaunchServiceDeps,
+  task: Task,
+  prompt: string,
+): Promise<string> {
+  const sessionId = await deps.adapterRegistry.get(task.agentType).launch(
+    task.id,
+    prompt,
+    task.cwd,
+  );
+  await registerNewAgent(task, deps.lifecycleDeps);
+  return sessionId;
+}

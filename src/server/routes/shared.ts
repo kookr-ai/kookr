@@ -27,6 +27,8 @@ import type { ScheduleService } from '../schedule-service.js';
 import type { LaunchServiceDeps } from '../launch-service.js';
 import type { DiagnosticRunner } from '../diagnostic-runner.js';
 import type { CrashRecoveryResult } from '../crash-recovery.js';
+import type { RalphCycler } from '../../core/ralph-cycler.js';
+import type { TokenTracker } from '../../core/token-tracker.js';
 
 export interface RouteDeps {
   taskStore: TaskStore;
@@ -75,4 +77,8 @@ export interface RouteDeps {
   terminalBackend?: TerminalBackend;
   /** Result of the crash-recovery startup phase; fetched once by the frontend on mount. */
   startupRecoverySummary?: CrashRecoveryResult | null;
+  /** Ralph iteration cycler — drives the loop state machine on Stop events. */
+  ralphCycler?: RalphCycler;
+  /** Token tracker — used by ralph routes to read cumulative cost. */
+  tokenTracker?: TokenTracker;
 }

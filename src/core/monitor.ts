@@ -34,6 +34,7 @@ export interface AgentState {
   projectId?: string;
   completionDigest?: CompletionDigest;
   autonomy?: import('./tasks.js').AutonomyLevel;
+  ralphLoop?: import('./tasks.js').RalphLoopState;
 }
 
 const DEFAULT_WINDOW_SIZE = 50;
@@ -278,6 +279,18 @@ export class Monitor {
   /** Get monotonic per-agent event counts (for self-diagnostic). */
   getEventCounts(): Record<string, number> {
     return Object.fromEntries(this._eventCounts);
+  }
+
+  /**
+   * Re-evaluate the Ralph zero-diff signal after the Ralph cycler has updated
+   * loop state. Returns true when the queue was mutated (signal inserted or
+   * cleared) so callers can decide whether to broadcast a new snapshot.
+   *
+   * No-op stub: the full anomaly signal requires additional wiring not included
+   * in this recovery slice. Always returns false.
+   */
+  refreshRalphZeroDiffStreak(_agentId: string): boolean {
+    return false;
   }
 
   /**

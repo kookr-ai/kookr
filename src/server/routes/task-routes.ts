@@ -4,7 +4,15 @@ import { normalizeAgentType } from '../../core/agent-types.js';
 import { createSnapshotMessage, getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
 import { deleteTask } from '../use-cases/delete-task.js';
-import { launchTask } from '../launch-service.js';
+import { launchFreshTaskSession, launchTask } from '../launch-service.js';
+import { cancelTask as cancelTaskLifecycle } from '../agent-lifecycle.js';
+import { detectStandalonePlugin } from '../../core/ralph-plugin-coexistence.js';
+import { DEFAULT_RALPH_ITERATION_READ_LIMIT, MAX_RALPH_ITERATION_READ_LIMIT, formatIterationLogCsv, readIterationLog } from '../../core/ralph-iteration-log.js';
+import { RalphLoopService, validateRalphLoopRequest } from '../ralph-loop-service.js';
+import {
+  launchLoopedPlaybook,
+  LoopedPlaybookLaunchError,
+} from '../use-cases/looped-playbook-launch.js';
 import type { RouteDeps } from './shared.js';
 
 /** Shape of the /api/agents/:id/edit-events/:toolUseId response.
@@ -30,6 +38,18 @@ const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, monitor, adapter, hookWatcher, watchdog, interactionLog, broadcastToAll, serverCwd, serverStartedAt } = deps;
+
+  const ralphLoopService = new RalphLoopService({
+    taskStore,
+    monitor,
+    serverCwd,
+    broadcastToAll,
+    interactionLog,
+    ralphCycler: deps.ralphCycler,
+    terminalBackend: deps.terminalBackend,
+    tokenTracker: deps.tokenTracker,
+    launchFreshTaskSession: (task, prompt) => launchFreshTaskSession(deps.launchServiceDeps, task, prompt),
+  });
 
   app.get('/api/tasks', (c) => {
     const tasks = taskStore.listTasks();
@@ -95,6 +115,265 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     }
   });
 
+  app.post('/api/tasks/ralph-loop', async (c) => {
+    let body: {
+      prompt?: unknown;
+      cwd?: unknown;
+      criteria?: string;
+      parentTaskId?: unknown;
+      autonomy?: string;
+      agentType?: string;
+      iterationCap?: unknown;
+      stopPredicate?: unknown;
+      zeroDiffConvergence?: unknown;
+      costCapUsd?: unknown;
+    };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    if (typeof body.cwd !== 'string' || body.cwd.trim().length === 0) {
+      return c.json({ error: 'cwd is required and must be a string' }, 400);
+    }
+    if (body.parentTaskId !== undefined) {
+      if (typeof body.parentTaskId !== 'string') {
+        return c.json({ error: 'parentTaskId must be a string' }, 400);
+      }
+      if (!taskStore.getTask(body.parentTaskId)) {
+        return c.json({ error: `Parent task not found: ${body.parentTaskId}` }, 404);
+      }
+    }
+
+    const ralphInput = validateRalphLoopRequest(body);
+    if (!ralphInput.ok) return c.json({ error: ralphInput.error }, 400);
+
+    const coexistence = await detectStandalonePlugin(body.cwd);
+    if (coexistence.detected) {
+      return c.json({
+        error: 'standalone ralph-wiggum plugin detected — would double-fire on Stop',
+        matchedFiles: coexistence.matchedFiles,
+        reasons: coexistence.reasons,
+      }, 409);
+    }
+
+    try {
+      const rawSource = c.req.header('X-Kookr-Launch-Source');
+      const launchSource: 'cli' | 'ui' | 'api' =
+        rawSource === 'cli' || rawSource === 'ui' ? rawSource : 'api';
+      const autonomy = body.autonomy === 'autonomous' ? 'autonomous' as const : undefined;
+      const result = await launchTask(deps.launchServiceDeps, {
+        prompt: ralphInput.value.prompt,
+        cwd: body.cwd,
+        criteria: body.criteria,
+        parentTaskId: body.parentTaskId,
+        autonomy,
+        agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
+        launchSource,
+        disableDedup: true,
+      });
+
+      if (result.duplicate) {
+        return c.json({ error: 'Ralph task launch unexpectedly resolved to an existing task; no loop was attached' }, 409);
+      }
+
+      await ralphLoopService.startLoop(result.task, ralphInput.value);
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      return c.json({ ...result.task, ...(result.queued ? { queued: true } : {}) }, 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  /**
+   * Attach a Ralph iteration loop to an existing task.
+   *
+   * Refuses (409) when:
+   *   - the task already has an active loop (would shadow on the next Stop)
+   *   - the standalone `ralph-wiggum@*` Claude Code plugin is enabled in any
+   *     settings file (would double-fire on the same Stop event)
+   *
+   * Requires (400) when:
+   *   - prompt is missing, empty, or non-string
+   *   - iterationCap is missing, non-integer, or non-positive
+   *   - stopPredicate (when present) is non-string
+   *   - zeroDiffConvergence.consecutiveIterations (when present) is not a positive integer
+   *   - costCapUsd (when present) is not a positive finite number
+   */
+  app.post('/api/tasks/:id/ralph-loop', async (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+
+    let body: {
+      prompt?: unknown;
+      iterationCap?: unknown;
+      stopPredicate?: unknown;
+      zeroDiffConvergence?: unknown;
+      costCapUsd?: unknown;
+    };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    const ralphInput = validateRalphLoopRequest(body);
+    if (!ralphInput.ok) return c.json({ error: ralphInput.error }, 400);
+
+    const coexistence = await detectStandalonePlugin(task.cwd);
+    if (coexistence.detected) {
+      return c.json({
+        error: 'standalone ralph-wiggum plugin detected — would double-fire on Stop',
+        matchedFiles: coexistence.matchedFiles,
+        reasons: coexistence.reasons,
+      }, 409);
+    }
+
+    const result = await ralphLoopService.attachLoop(task, ralphInput.value);
+    if (!result.ok) return c.json(result.body, result.status);
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    return c.json({ ok: true, ralphLoop: task.ralphLoop });
+  });
+
+  app.get('/api/tasks/:id/ralph-loop/iterations', async (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    if (!task.ralphLoop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
+
+    const rawLimit = c.req.query('limit');
+    const limit = parseIterationLimit(rawLimit);
+
+    try {
+      const model = await readIterationLog(task.cwd, { limit, loop: task.ralphLoop });
+      return c.json({
+        taskId: task.id,
+        ralphLoop: task.ralphLoop,
+        ...model,
+      });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.get('/api/tasks/:id/ralph-loop/iterations/export', async (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    if (!task.ralphLoop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
+
+    const format = c.req.query('format') ?? 'json';
+    if (format !== 'json' && format !== 'csv') {
+      return c.json({ error: 'format must be json or csv' }, 400);
+    }
+
+    const rawLimit = c.req.query('limit');
+    const limit = parseIterationLimit(rawLimit);
+
+    try {
+      const model = await readIterationLog(task.cwd, { limit, loop: task.ralphLoop });
+      const filename = `ralph-iterations-${sanitizeFilenamePart(task.id)}.${format}`;
+      c.header('Content-Disposition', `attachment; filename="${filename}"`);
+      if (format === 'csv') {
+        c.header('Content-Type', 'text/csv; charset=utf-8');
+        return c.body(formatIterationLogCsv(model));
+      }
+      return c.json({
+        taskId: task.id,
+        ralphLoop: task.ralphLoop,
+        ...model,
+      });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  /**
+   * Cancel a Ralph loop attached to a task. Sets `status: 'cancelled'` so the
+   * cycler stops launching iterations on the next Stop event. Idempotent.
+   */
+  app.delete('/api/tasks/:id/ralph-loop', (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    if (!task.ralphLoop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
+
+    const result = ralphLoopService.cancelLoop(task);
+    if (!result.ok) return c.json(result.body, result.status);
+    if (result.changed) {
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    }
+    return c.json({ ok: true, status: task.ralphLoop.status });
+  });
+
+  /**
+   * Mark a Ralph loop as successfully complete while leaving the owner agent
+   * alive long enough to write its final answer.
+   */
+  app.post('/api/tasks/:id/ralph-loop/complete', (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    if (!task.ralphLoop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
+
+    const result = ralphLoopService.completeLoop(task);
+    if (!result.ok) return c.json(result.body, result.status);
+    if (result.changed) {
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    }
+    return c.json({ ok: true, status: task.ralphLoop.status });
+  });
+
+  app.patch('/api/tasks/:id/ralph-loop/prompt', async (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    if (!task.ralphLoop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
+
+    let body: { prompt?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    const result = await ralphLoopService.updatePrompt(task, body.prompt);
+    if (!result.ok) return c.json(result.body, result.status);
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
+  });
+
+  app.post('/api/tasks/:id/ralph-loop/pause', (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    if (!task.ralphLoop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
+
+    const result = ralphLoopService.pauseLoop(task);
+    if (!result.ok) return c.json(result.body, result.status);
+    if (result.changed) {
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    }
+    return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
+  });
+
+  app.post('/api/tasks/:id/ralph-loop/resume', async (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    if (!task.ralphLoop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
+
+    const result = await ralphLoopService.resumeLoop(task);
+    if (!result.ok) return c.json(result.body, result.status);
+    if (result.changed) {
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    }
+    return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
+  });
+
   app.delete('/api/tasks/:id', async (c) => {
     const id = c.req.param('id');
     const task = taskStore.getTask(id);
@@ -125,6 +404,72 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       return c.json(playbooks);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  app.post('/api/playbooks/ralph-loop', async (c) => {
+    let body: {
+      playbookPath?: unknown;
+      cwd?: unknown;
+      parameterValues?: unknown;
+      autonomy?: string;
+      agentType?: string;
+    };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    if (typeof body.playbookPath !== 'string' || body.playbookPath.trim().length === 0) {
+      return c.json({ error: 'playbookPath is required and must be a string' }, 400);
+    }
+    if (typeof body.cwd !== 'string' || body.cwd.trim().length === 0) {
+      return c.json({ error: 'cwd is required and must be a string' }, 400);
+    }
+    if (!isStringRecord(body.parameterValues)) {
+      return c.json({ error: 'parameterValues is required and must be an object of strings' }, 400);
+    }
+
+    try {
+      const rawSource = c.req.header('X-Kookr-Launch-Source');
+      const launchSource: 'cli' | 'ui' | 'api' =
+        rawSource === 'cli' || rawSource === 'ui' ? rawSource : 'api';
+      const autonomy = body.autonomy === 'autonomous' ? 'autonomous' as const : undefined;
+      const result = await launchLoopedPlaybook({
+        taskStore,
+        ralphLoopService,
+        launchTask: (opts) => launchTask(deps.launchServiceDeps, opts),
+        getMaxActiveTasks: deps.launchServiceDeps.getMaxActiveTasks,
+        cleanupFailedTask: (taskId) => cancelTaskLifecycle(taskId, {
+          adapter,
+          monitor,
+          taskStore,
+          interactionLog,
+          hookWatcher,
+          watchdog,
+          shadowRegistry: deps.shadowRegistry,
+          tokenTracker: deps.tokenTracker,
+          autonomyOrchestrator: deps.autonomyOrchestrator,
+          suppressionTracker: deps.suppressionTracker,
+        }),
+      }, {
+        cwd: body.cwd,
+        playbookPath: body.playbookPath,
+        parameterValues: body.parameterValues,
+        autonomy,
+        agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
+        launchSource,
+      });
+
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      return c.json({ ...result.task, ...(result.queued ? { queued: true } : {}) }, 201);
+    } catch (err) {
+      if (err instanceof LoopedPlaybookLaunchError) {
+        return c.json({ error: err.message, ...err.details }, err.status);
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
     }
   });
 
@@ -227,4 +572,20 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       return c.json({ error: message }, 500);
     }
   });
+}
+
+function parseIterationLimit(rawLimit: string | undefined): number {
+  if (rawLimit === undefined) return DEFAULT_RALPH_ITERATION_READ_LIMIT;
+  const parsed = Number(rawLimit);
+  if (!Number.isInteger(parsed) || parsed <= 0) return DEFAULT_RALPH_ITERATION_READ_LIMIT;
+  return Math.min(parsed, MAX_RALPH_ITERATION_READ_LIMIT);
+}
+
+function sanitizeFilenamePart(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.values(value).every((item) => typeof item === 'string');
 }
