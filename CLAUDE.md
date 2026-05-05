@@ -43,7 +43,7 @@ plugin/agents/         — General-purpose review subagents
 - Frontend framework: React + Vite, Zustand for state (ADR-002)
 - Deployment: Local Node.js backend + browser frontend (ADR-003)
 - Testing: Vitest (unit/integration) + Playwright (E2E)
-- Agent execution: Managed terminal sessions — agents run in interactive mode inside dtach-backed sessions owned by LocalDtachBackend. One persistent attach per session, ring-buffered for replay. Input via keystrokes, monitoring via hooks + transcript JSONL (ADR-014 supersedes ADR-007; RFC `rfc-v8-tmux-removal.md` completes the migration)
+- Agent execution: Managed terminal sessions — agents run in interactive mode inside dtach-backed sessions owned by LocalDtachBackend. One persistent attach per session, ring-buffered for replay. Input via byte-level writes, monitoring via hooks + transcript JSONL (ADR-014 supersedes ADR-007)
 - Agent monitoring: Claude Code hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) injected via `--settings` flag. Hooks are additive to user settings. See docs/poc/001-hook-mechanism-validation.md
 - Skill/agent distribution: Kookr Toolkit ships as a Claude Code plugin at `plugin/` with `.claude-plugin/marketplace.json` listing it. `ClaudeCodeAdapter` injects `--plugin-dir <kookr>/plugin` into every spawned `claude` so Kookr-spawned agents see the toolkit regardless of cwd. Other developers install via `/plugin marketplace add kookr-ai/kookr` + `/plugin install kookr-toolkit@kookr`.
 

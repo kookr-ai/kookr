@@ -78,7 +78,7 @@ Kookr's supervisor is an AI that watches agent streams and **understands** what 
 | ID | Feature | Description |
 |----|---------|-------------|
 | F3.1 | **View blocked agent's context** | When navigating to a blocked agent, show what it's asking and relevant conversation history. |
-| F3.2 | **Respond to agent** | Type a response in Kookr's UI and have it delivered to the agent's managed terminal session via keystrokes (`send-keys`). Same effect as the developer typing directly in the terminal. See [ADR-007](adr/007-managed-terminal-sessions.md). |
+| F3.2 | **Respond to agent** | Type a response in Kookr's UI and have it delivered to the agent's managed dtach session via byte-level writes (`backend.write` / `backend.writeSequence`). Same effect as the developer typing directly in the terminal. See [ADR-007](adr/007-managed-terminal-sessions.md) and [ADR-014](adr/014-local-dtach-backend.md). |
 | F3.3 | **Auto-advance after response** | After sending a response, automatically navigate to the next agent that needs attention. |
 | F3.4 | **"All clear" state** | When no agents need attention, show a clear "all agents working autonomously" state. |
 | F3.5 | **Manual navigation** | Allow the developer to manually select any agent from the list, not just the next bottleneck. |
@@ -92,9 +92,9 @@ Kookr's supervisor is an AI that watches agent streams and **understands** what 
 | ID | Feature | Description |
 |----|---------|-------------|
 | F4.1 | **Launch new agent** | Start a new agent from the GUI with a task description (natural-language prompt) and working directory. Launched in a managed terminal session (interactive mode) for full monitoring and developer access. See [ADR-007](adr/007-managed-terminal-sessions.md). |
-| F4.2 | **Stop agent** | Terminate a running agent from the GUI. Stopping kills the tmux session, stops the hook file watcher, and marks the agent as stopped in the monitor to prevent resurrection from late-arriving hook events. |
+| F4.2 | **Stop agent** | Terminate a running agent from the GUI. Stopping kills the dtach session, stops the hook file watcher, and marks the agent as stopped in the monitor to prevent resurrection from late-arriving hook events. |
 | F4.3 | **Relaunch agent** | Create a new task with the same or modified prompt and working directory. The original task is preserved for history — relaunch creates a new task rather than restarting in-place. |
-| F4.4 | **Task lifecycle management** | Tasks are the unit of work. **One task = one agent session** (no multi-session tasks). Lifecycle: Open → InProgress → Completed/Cancelled. Completing or cancelling a task kills the associated tmux session. Relaunch creates a new task (preserving the original for history). Tasks are persisted locally in JSON. |
+| F4.4 | **Task lifecycle management** | Tasks are the unit of work. **One task = one agent session** (no multi-session tasks). Lifecycle: Open → InProgress → Completed/Cancelled. Completing or cancelling a task kills the associated dtach session. Relaunch creates a new task (preserving the original for history). Tasks are persisted locally in JSON. |
 | F4.5 | **Optional completion criteria** | When launching an agent, the user can provide a definition of done (e.g., "tests pass", "PR created"). Criteria are stored on the task but not auto-evaluated in V1 — the developer must explicitly mark the task complete. |
 | F4.6 | **Attach to agent terminal** | Open an agent's managed terminal session directly — from the GUI (e.g., a button that prints the attach command) or via a CLI command. Lets the developer interact with the agent outside Kookr when needed. See [ADR-007](adr/007-managed-terminal-sessions.md). |
 | F4.7 | **Rename task** | Double-click a task name in the findings panel or detail header to edit it inline. The custom name overrides the auto-generated name (truncated prompt) everywhere in the UI. Clearing the name reverts to the default truncated prompt. |
@@ -113,7 +113,7 @@ The chosen layout is a two-panel "supervisor-first" design. The UI is organized 
 │ (340px)             │ (flex)                                       │
 │                     │                                              │
 │ [Finding cards      │ [Full-height interactive xterm.js terminal   │
-│  with severity,     │  bridged to agent's tmux session]            │
+│  with severity,     │  bridged to agent's dtach session]           │
 │  explanation,       │                                              │
 │  inline quick-reply,│                                              │
 │  skip/snooze]       │                                              │
@@ -129,7 +129,7 @@ The chosen layout is a two-panel "supervisor-first" design. The UI is organized 
 | ID | Feature | Description |
 |----|---------|-------------|
 | F5.1 | **Supervisor findings panel** | Left side (340px): rich finding cards ordered by urgency, each with severity badge, supervisor explanation, inline quick-reply input, and skip/snooze/attach actions. Healthy agents collapsed into a compact section at the bottom. |
-| F5.2 | **Terminal panel** | Main area shows an interactive xterm.js terminal bridged to the selected agent's tmux session via node-pty. The terminal is always visible when an agent is selected. |
+| F5.2 | **Terminal panel** | Main area shows an interactive xterm.js terminal bridged to the selected agent's dtach session via `SessionBridge` over a binary WebSocket. The terminal is always visible when an agent is selected. |
 | F5.3 | **Status bar** | Bottom: task count, finding count, keyboard shortcut hints. Top bar: queue dots showing triage position, findings/healthy counts. Session cost deferred to V2 (R2.5). |
 | F5.4 | **Keyboard shortcuts** | Ctrl+Enter: send & advance. Ctrl+N: next finding. Tab: skip. Ctrl+L: quick launch. |
 | F5.5 | **Real-time updates** | All panels update live as agent states change. No manual refresh. |
@@ -198,12 +198,12 @@ Agents launched through Kookr run with a configurable **autonomy level** that co
 
 ### F10: Resilience — Circuit Breakers
 
-External dependencies (LLM providers, `gh` CLI, tmux) can fail. Kookr wraps them in generic circuit breakers so individual failures don't cascade into a global outage.
+External dependencies (LLM providers, `gh` CLI) can fail. Kookr wraps them in generic circuit breakers so individual failures don't cascade into a global outage.
 
 | ID | Feature | Description |
 |----|---------|-------------|
 | F10.1 | **Core breaker** | `circuit-breaker.ts` implements a CLOSED → OPEN → HALF_OPEN state machine with configurable thresholds and cooldown. |
-| F10.2 | **Wrapped dependencies** | `circuit-breaker-llm-client.ts`, `circuit-breaker-github-fetcher.ts`, and `circuit-breaker-terminal-manager.ts` wrap each outbound integration. |
+| F10.2 | **Wrapped dependencies** | `circuit-breaker-llm-client.ts` and `circuit-breaker-github-fetcher.ts` wrap each outbound integration. |
 | F10.3 | **Status broadcast** | The server periodically publishes `circuitBreakerStatus` with all current snapshots; `CircuitBreakerPanel.tsx` renders them. |
 | F10.4 | **Manual rearm** | Developers can force a breaker back to HALF_OPEN via the `rearmCircuitBreaker` WS message. |
 
@@ -254,7 +254,7 @@ Kookr surfaces Claude API usage against Anthropic's 5-hour and 7-day windows so 
 
 ### F15: Self-Diagnostics
 
-For field debugging, Kookr can run a self-diagnostic pass (disk, memory, hook pipeline, tmux, LLM connectivity) and return a structured report.
+For field debugging, Kookr can run a self-diagnostic pass (disk, memory, hook pipeline, dtach backend, LLM connectivity) and return a structured report.
 
 | ID | Feature | Description |
 |----|---------|-------------|
@@ -293,11 +293,11 @@ Previously marked as deferred; now shipped in V1.
 
 ### V1: Managed Terminal Sessions
 
-V1 supports agents **launched by Kookr** in managed terminal sessions ([ADR-007](adr/007-managed-terminal-sessions.md)). Two agent types are supported: **Claude Code** (primary) and **Codex CLI** (via a forked binary — see [PoC 003](poc/003-codex-compatibility-gaps.md)). Agents run in **interactive mode** (their native execution mode) inside a managed tmux session:
-- **Monitoring:** Hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, `Notification`, `UserPromptSubmit`, `SessionEnd`, …) are written as JSONL into `~/.kookr/hooks/<tmux-session-name>.jsonl` and tailed by the supervisor for anomaly detection. Hooks are configured per agent via the `--settings` flag; they are additive to user hooks. `capture-pane` is used for display purposes only. Transcript JSONL tailing is implemented (`transcript-parser.ts`) but not yet wired — it is a V2 enhancement. No ANSI terminal output parsing is needed. See [PoC 001](poc/001-hook-mechanism-validation.md).
-- **Input delivery:** responses sent as terminal keystrokes (`send-keys`) to the agent's session. Same as the developer typing directly.
-- **Crash recovery:** managed terminal sessions survive Kookr crashes. The developer can reattach or restart Kookr without losing agent sessions.
-- **Direct access:** the developer can attach to any agent's terminal session at any time, even outside Kookr (F4.6).
+V1 supports agents **launched by Kookr** in managed terminal sessions ([ADR-007](adr/007-managed-terminal-sessions.md), [ADR-014](adr/014-local-dtach-backend.md)). Two agent types are supported: **Claude Code** (primary) and **Codex CLI** (via a forked binary — see [PoC 003](poc/003-codex-compatibility-gaps.md)). Agents run in **interactive mode** (their native execution mode) inside a dtach-backed session owned by `LocalDtachBackend`:
+- **Monitoring:** Hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, `Notification`, `UserPromptSubmit`, `SessionEnd`, …) are written as JSONL into `~/.kookr/hooks/<session-id>.jsonl` and tailed by the supervisor for anomaly detection. Hooks are configured per agent via the `--settings` flag; they are additive to user hooks. `backend.captureBytes` provides ring-buffer snapshots for the GUI display only. Transcript JSONL tailing is implemented (`transcript-parser.ts`) but not yet wired — it is a V2 enhancement. No ANSI terminal output parsing is needed. See [PoC 001](poc/001-hook-mechanism-validation.md).
+- **Input delivery:** responses sent as byte-level writes (`backend.write` / `backend.writeSequence`) to the agent's dtach session. Same effect as the developer typing directly.
+- **Crash recovery:** managed dtach sessions survive Kookr crashes. The developer can reattach or restart Kookr without losing agent sessions.
+- **Direct access:** the developer can attach to any agent's dtach session at any time, even outside Kookr (F4.6).
 - **Agent dispatch:** `routing-agent-adapter.ts` dispatches per-session to the correct concrete adapter (`claude-code-adapter.ts` or `codex-cli-adapter.ts`) based on `task.agentType`.
 
 This approach supersedes the headless mode design from [ADR-004](adr/004-agent-communication-protocol.md). Agent discovery via `~/.claude/sessions/` remains deferred — see [ADR-005](adr/005-discovered-agent-degradation.md) for the tiered degradation strategy.
@@ -311,7 +311,7 @@ This approach supersedes the headless mode design from [ADR-004](adr/004-agent-c
 - F2.1: Detect "needs input" state (managed agents)
 - F2.8: Prioritize which agent needs you most
 - F3.1: View blocked agent's context
-- F3.2: Respond to agent via terminal keystrokes (`send-keys`)
+- F3.2: Respond to agent via byte-level writes to the dtach session
 - F3.3: Auto-advance after response
 - F3.6: Skip agent (deprioritize to back of queue)
 - F3.7: Snooze agent (pause monitoring for a duration)
@@ -378,7 +378,7 @@ This approach supersedes the headless mode design from [ADR-004](adr/004-agent-c
 | Question | Answer | Source |
 |----------|--------|--------|
 | Can we discover running Claude Code processes? | **Yes.** Read `~/.claude/sessions/{pid}.json`, verify PID alive. (Deferred from V1 — Kookr manages its own agents.) | Research / ADR-004 |
-| Can we inject input into a running interactive session? | **Yes, via managed terminal sessions.** `send-keys` delivers keystrokes to the agent's terminal session — same as the developer typing. | ADR-007 |
-| How do we send input to agents? | **Terminal keystrokes.** `send-keys` to the agent's managed terminal session. Supersedes the `--resume` approach from ADR-004. | ADR-007 |
-| Is JSONL streaming required for monitoring? | **No, but transcript JSONL is used.** Claude Code interactive mode provides **hooks** (real-time JSON events) and **transcript JSONL files** (full session history). These structured sources are tailed for monitoring — no ANSI terminal output parsing needed. `capture-pane` is used only for display. | PoC / ADR-007 |
+| Can we inject input into a running interactive session? | **Yes, via managed dtach sessions.** Byte-level writes to the dtach socket deliver keystrokes to the agent — same as the developer typing. | ADR-007 / ADR-014 |
+| How do we send input to agents? | **Byte-level writes** to the agent's dtach session via `backend.write` / `backend.writeSequence`. Supersedes the `--resume` approach from ADR-004 and the `tmux send-keys` path from earlier ADR-007. | ADR-007 / ADR-014 |
+| Is JSONL streaming required for monitoring? | **No, but transcript JSONL is used.** Claude Code interactive mode provides **hooks** (real-time JSON events) and **transcript JSONL files** (full session history). These structured sources are tailed for monitoring — no ANSI terminal output parsing needed. `backend.captureBytes` is used only for GUI display. | PoC / ADR-007 |
 | Does Codex CLI support similar patterns? | **Yes.** `codex exec --json` for JSONL, `codex exec resume <threadId>` for follow-ups. Sessions stored in `~/.codex/sessions/`. (Codex CLI support deferred from V1.) | Research / ADR-004 |
