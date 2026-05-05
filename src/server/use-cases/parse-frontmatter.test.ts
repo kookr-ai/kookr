@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * Drives the parse-frontmatter.ts hook directly via `bun run`. The hook reads a
+ * Drives the parse-frontmatter.ts hook directly. The hook reads a
  * Claude Code PreToolUse event from stdin and exits 0 (allow) or 2 (block).
  *
  * These tests cover the failure-mode-analyst concerns explicitly:
@@ -18,9 +18,10 @@ import { join } from 'node:path';
  */
 
 const PARSER = join(__dirname, '..', '..', '..', 'plugin', 'hooks', 'parse-frontmatter.ts');
+const PARSER_ARGS = ['--import', 'tsx', PARSER] as const;
 
 function runHook(input: object, env: Record<string, string> = {}): { exitCode: number; stderr: string } {
-  const result = spawnSync('bun', ['run', PARSER], {
+  const result = spawnSync(process.execPath, PARSER_ARGS, {
     input: JSON.stringify(input),
     encoding: 'utf-8',
     env: { ...process.env, ...env, HOME: env.HOME ?? '/home/test' },
@@ -129,7 +130,7 @@ describe('parse-frontmatter (memory write gate)', () => {
   });
 
   test('malformed JSON event itself is BLOCKED (fail-closed)', () => {
-    const result = spawnSync('bun', ['run', PARSER], {
+    const result = spawnSync(process.execPath, PARSER_ARGS, {
       input: 'this is not json',
       encoding: 'utf-8',
       env: { ...process.env, HOME: '/home/test' },
