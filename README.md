@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="assets/branding/derived/kookr-ai-logo-128.png" alt="Kookr brand mark" width="96" height="96" />
-
-# Kookr
+<img src="assets/branding/derived/kookr-ai-logo-trimmed.png" alt="Kookr brand mark" width="192" height="192" />
 
 **A smart attention router for developers running multiple AI coding agents.**
 
