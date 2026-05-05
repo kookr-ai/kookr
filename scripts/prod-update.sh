@@ -19,8 +19,11 @@ else
 fi
 
 if [[ ! -d "${PROD_DIR}" ]]; then
-  echo "Production directory not found: ${PROD_DIR}" >&2
-  exit 1
+  echo "Production worktree not found: ${PROD_DIR}" >&2
+  echo "Bootstrapping detached worktree from origin/main..." >&2
+  cd "${ROOT_DIR}"
+  git fetch origin
+  git worktree add --detach "${PROD_DIR}" origin/main
 fi
 
 cd "${PROD_DIR}"
