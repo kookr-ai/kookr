@@ -19,6 +19,129 @@ if [ ! -d node_modules ]; then
   fi
 fi
 
+# --- Pre-PR reviewer-specialist gate ---------------------------------------
+# Cheap (file-read + jq) check FIRST, so a missing marker fails-fast in
+# milliseconds rather than after a multi-minute build+test cycle.
+#
+# Forces a SHA-bound marker that the `pre-push` skill writes after running
+# reviewer specialists in parallel. Without the marker, non-trivial pushes
+# are blocked. Fail-CLOSED.
+#
+# Marker layout (.review-state/<key>.json — gitignored):
+#   { "sha": "<full HEAD sha>", "status": "approved" | "bypass",
+#     "reason": "..." }   // reason required for bypass
+#
+# Why: across recent PRs in this and adjacent repos (kb-mcp-server, LRA),
+# 10/10 substantive Codex findings (incl. 2 P1) would have been caught by
+# the specialists. The CLAUDE.md "run the delivery-cycle skills" rule was
+# bypassed on every PR — non-deterministic enforcement loses to velocity.
+
+# Allowlist: paths whose changes alone never require reviewer-specialist
+# review. Anchored to prevent smuggling (e.g. .md anywhere) — top-level
+# *.md and docs/**/*.md only; nested *.md elsewhere is non-trivial.
+# Lockfiles deliberately NOT in the allowlist (supply-chain attack surface).
+TRIVIAL_PATTERN='^(docs/|\.github/|[^/]+\.md$|.*\.test\.(ts|tsx|js|jsx)$|.*\.spec\.(ts|tsx|js|jsx)$|tsconfig.*\.json$|\.gitignore$|\.review-state/)'
+
+# Build the diff range. Three cases:
+# 1. origin/main exists → use the THREE-DOT (symmetric) form which `git diff`
+#    resolves to `git diff $(git merge-base origin/main HEAD) HEAD` — i.e.
+#    only files changed in commits unique to HEAD since divergence. The
+#    two-dot form `origin/main..HEAD` is endpoint comparison and falsely
+#    flags files where origin/main moved forward in unrelated areas.
+# 2. origin/main missing (fresh clone) → enumerate every committed file
+#    via git ls-tree (NOT `git diff HEAD`, which only shows working-tree
+#    vs index — that fails-open silently for committed source files).
+# 3. branch IS at origin/main → empty diff, gate is no-op
+HEAD_SHA=$(git rev-parse HEAD 2>/dev/null) || HEAD_SHA=""
+CHANGED_FILES=""
+if [ -n "$HEAD_SHA" ]; then
+  if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+    CHANGED_FILES=$(git diff --name-only "origin/main...HEAD" 2>/dev/null)
+  else
+    # Fresh clone or origin missing — treat every committed file as the
+    # diff. First-push case: someone with a brand-new clone forking off
+    # no upstream MUST run the gate against everything they're publishing.
+    CHANGED_FILES=$(git ls-tree -r --name-only HEAD 2>/dev/null)
+  fi
+fi
+NONTRIVIAL=$(printf '%s\n' "$CHANGED_FILES" | grep -vE "$TRIVIAL_PATTERN" | grep -v '^$' | head -5)
+
+if [ -n "$NONTRIVIAL" ]; then
+  # Choose a marker key that survives detached HEAD AND avoids slash
+  # collisions in branch names. Symbolic-ref returns the branch when on
+  # one; falls back to the abbreviated SHA when detached, so two parallel
+  # detached worktrees at different SHAs each get their own marker file.
+  if BRANCH_NAME=$(git symbolic-ref --short HEAD 2>/dev/null); then
+    MARKER_KEY=$(printf '%s' "$BRANCH_NAME" | tr -c 'A-Za-z0-9.-' '_')
+    DISPLAY_REF="$BRANCH_NAME"
+  else
+    MARKER_KEY="detached-$(git rev-parse --short HEAD)"
+    DISPLAY_REF="(detached) $HEAD_SHA"
+  fi
+  MARKER_DIR="$REPO_ROOT/.review-state"
+  MARKER_FILE="$MARKER_DIR/$MARKER_KEY.json"
+
+  if [ ! -f "$MARKER_FILE" ]; then
+    echo ""
+    echo "Push rejected: pre-PR review marker missing."
+    echo "  Ref:        $DISPLAY_REF"
+    echo "  HEAD SHA:   $HEAD_SHA"
+    echo "  Non-trivial change e.g.: $(echo "$NONTRIVIAL" | head -1)"
+    echo "  Marker:     $MARKER_FILE"
+    echo ""
+    echo "Run the \`pre-push\` skill in Claude Code (it runs reviewer specialists"
+    echo "and writes the marker). See .claude/skills/pre-push/SKILL.md for the"
+    echo "marker schema and the bypass form."
+    exit 1
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo ""
+    echo "Push rejected: jq not installed but required for marker validation."
+    echo "Install jq (apt/brew/winget) and retry."
+    exit 1
+  fi
+  MARKER_SHA=$(jq -r '.sha // empty' "$MARKER_FILE" 2>/dev/null || true)
+  MARKER_STATUS=$(jq -r '.status // empty' "$MARKER_FILE" 2>/dev/null || true)
+
+  if [ -z "$MARKER_SHA" ] || [ -z "$MARKER_STATUS" ]; then
+    echo ""
+    echo "Push rejected: marker malformed (need 'sha' + 'status')."
+    echo "  File: $MARKER_FILE"
+    exit 1
+  fi
+  if [ "$MARKER_SHA" != "$HEAD_SHA" ]; then
+    echo ""
+    echo "Push rejected: marker SHA does not match HEAD (stale)."
+    echo "  Marker: $MARKER_SHA"
+    echo "  HEAD:   $HEAD_SHA"
+    echo "Re-run the pre-push skill after every amend/new commit."
+    exit 1
+  fi
+
+  case "$MARKER_STATUS" in
+    approved)
+      echo "[pre-push] review-gate: APPROVED for $DISPLAY_REF"
+      ;;
+    bypass)
+      REASON=$(jq -r '.reason // empty' "$MARKER_FILE" 2>/dev/null || true)
+      if [ -z "$REASON" ]; then
+        echo ""
+        echo "Push rejected: bypass marker has no 'reason' field."
+        echo "Bypass requires a one-line justification."
+        exit 1
+      fi
+      echo "[pre-push] review-gate: BYPASS for $DISPLAY_REF — $REASON"
+      ;;
+    *)
+      echo ""
+      echo "Push rejected: marker status \"$MARKER_STATUS\" not recognised."
+      echo "Valid: \"approved\" or \"bypass\"."
+      exit 1
+      ;;
+  esac
+fi
+
 echo "Type-checking server..."
 if ! pnpm build:server; then
   echo ""
@@ -45,7 +168,9 @@ fi
 # ships to all consumers via the marketplace), or that change plugin/skills/**
 # or plugin/agents/** without bumping plugin/.claude-plugin/plugin.json#version.
 if [ -d plugin ]; then
-  RANGE="origin/main..HEAD"
+  # Three-dot symmetric form so unrelated origin/main movement doesn't pollute
+  # the diff (same fix rationale as the review-gate range above).
+  RANGE="origin/main...HEAD"
   git rev-parse --verify --quiet origin/main >/dev/null 2>&1 || RANGE="HEAD"
 
   # 1. Classification grep — Kookr-internal references must not appear in plugin/.
