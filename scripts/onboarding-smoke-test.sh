@@ -70,7 +70,7 @@ cat > "$SETTINGS_FILE" <<SETTINGS
 SETTINGS
 
 # 5. Read the prompt template and inject runtime values
-echo "[5/5] Launching Claude Code agent (interactive mode, default model)..."
+echo "[5/5] Launching Claude Code agent (headless / -p mode, default model)..."
 echo "       Container: $CONTAINER_NAME"
 echo "       Settings: $SETTINGS_FILE"
 echo ""
@@ -85,10 +85,12 @@ PROMPT="$(cat "$REPO_DIR/e2e/onboarding/prompt.md")
 - **Report output path:** /reports/onboarding-report-$TIMESTAMP.md
 "
 
-# Launch the agent — same pattern as Kookr task agents:
-#   claude --settings <settingsPath> '<prompt>'
-# Interactive mode, default model, hook-instrumented
-claude --settings "$SETTINGS_FILE" "$PROMPT"
+# Launch the agent in headless mode (-p / --print). The agent runs through
+# the prompt, drives the container via the Bash tool, writes its verdict
+# report via the Write tool, and exits. Headless mode lets the script run
+# from non-TTY contexts (CI, cron, in-conversation Bash). Hooks defined in
+# $SETTINGS_FILE still fire.
+claude -p --settings "$SETTINGS_FILE" "$PROMPT"
 
 # 6. Display results
 echo ""

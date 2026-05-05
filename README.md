@@ -86,6 +86,15 @@ pnpm dev         # backend on :4801 + Vite frontend on :5173
 
 Open `http://localhost:5173` in your browser. You're ready to launch and supervise agents.
 
+<details>
+<summary>Troubleshooting</summary>
+
+- **`http://127.0.0.1:5173` says "connection refused" but `http://localhost:5173` works** — Vite's dev server binds to IPv6 (`[::1]`) by default. `localhost` resolves to `::1` first on most systems and works; the IPv4 literal does not. Use `localhost`, or run the frontend on IPv4 with `pnpm dev:frontend -- --host 127.0.0.1`.
+- **`serveStatic: root path '...dist/frontend' is not found` on first request** — only emitted by older builds (pre-`fix/onboarding-polish`). In dev the backend on `:4801` does not serve frontend assets — Vite does, on `:5173`. Harmless; gone after `pnpm install` on a current checkout.
+- **`Ignored build scripts: protobufjs@7.5.4` during `pnpm install`** — pnpm 10's secure-by-default behavior. Current `package.json` allow-lists `protobufjs`, so the warning should not appear after a fresh install. If you still see it, run `pnpm install` again to pick up the allow-list.
+
+</details>
+
 ### Launch an Agent
 
 From the dashboard, click **Launch** or use the API:
