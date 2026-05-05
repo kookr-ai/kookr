@@ -13,14 +13,14 @@ const decoder = new TextDecoder('utf-8', { fatal: false });
 /**
  * In-memory TerminalBackend fake for tests.
  *
- * Replaces the v7-era `FakeTerminalManager`. Matches the production
+ * Replaces the older fake terminal manager. Matches the production
  * `TerminalBackend` surface AND preserves the legacy per-session inspection
  * shape (`.sessions.get(id).keysReceived`, `.paneContent`, `.pastedTexts`)
  * so existing tests can migrate with minimal churn. Two `createSession`
  * signatures are accepted:
  *
  *   - `createSession(spec)` — production shape.
- *   - `createSession(name, command, options?)` — legacy tmux-style, used
+ *   - `createSession(name, command, options?)` — legacy call shape, used
  *     throughout the test suite.
  */
 export interface FakeSession {
@@ -148,7 +148,7 @@ export class FakeTerminalBackend implements TerminalBackend {
     };
   }
 
-  // ─── Legacy test helpers — mirror the FakeTerminalManager surface ───────
+  // --- Test helpers kept for older test call sites ---
 
   /**
    * Drive the session as if the caller had used `sendKeys` (text + Enter).

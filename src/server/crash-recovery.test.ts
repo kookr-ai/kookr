@@ -59,12 +59,12 @@ describe('Crash Recovery', () => {
   test('relaunches dead sessions after reconciliation', async () => {
     const cwd = join(tempDir, 'project');
     const task = await setupCrashedTask('Fix the bug', cwd);
-    const deadTmux = task.sessions[0].tmuxSession;
+    const deadSessionId = task.sessions[0].tmuxSession;
 
     // Reconcile marks the session completed and auto-transitions the task
     // to 'terminated' (rfc-task-loss-prevention D1).
     const reconcileResult = await reconcile(taskStore, terminal);
-    expect(reconcileResult.markedCompleted).toContain(deadTmux);
+    expect(reconcileResult.markedCompleted).toContain(deadSessionId);
     expect(taskStore.getTask(task.id)!.status).toBe('terminated');
 
     // Crash recovery relaunches
@@ -72,7 +72,7 @@ describe('Crash Recovery', () => {
 
     expect(result.relaunched).toHaveLength(1);
     expect(result.relaunched[0].taskId).toBe(task.id);
-    expect(result.relaunched[0].oldTmux).toBe(deadTmux);
+    expect(result.relaunched[0].oldSessionId).toBe(deadSessionId);
     expect(result.skipped).toHaveLength(0);
     expect(result.failed).toHaveLength(0);
 
@@ -82,11 +82,11 @@ describe('Crash Recovery', () => {
     expect(updatedTask.sessions).toHaveLength(2);
 
     // Old session marked as crash-recovered
-    const oldSession = updatedTask.sessions.find((s) => s.tmuxSession === deadTmux)!;
+    const oldSession = updatedTask.sessions.find((s) => s.tmuxSession === deadSessionId)!;
     expect(oldSession.crashRecovered).toBe(true);
 
     // New session has relaunch metadata
-    const newSession = updatedTask.sessions.find((s) => s.tmuxSession !== deadTmux)!;
+    const newSession = updatedTask.sessions.find((s) => s.tmuxSession !== deadSessionId)!;
     expect(newSession.relaunchCount).toBe(1);
     expect(newSession.lastRelaunchedAt).toBeGreaterThan(0);
   });
@@ -223,7 +223,7 @@ describe('Crash Recovery', () => {
     const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
 
     // The new session should exist as a live tmux session
-    const newTmux = result.relaunched[0].newTmux;
+    const newTmux = result.relaunched[0].newSessionId;
     expect(await terminal.isAlive(newTmux)).toBe(true);
 
     // And the terminal should have the claude command
@@ -391,7 +391,7 @@ describe('Crash Recovery', () => {
     const reconcile1 = await reconcile(taskStore, terminal);
     const recovery1 = await recoverCrashedSessions(taskStore, adapterRegistry, reconcile1);
     expect(recovery1.relaunched).toHaveLength(1);
-    const newTmux1 = recovery1.relaunched[0].newTmux;
+    const newTmux1 = recovery1.relaunched[0].newSessionId;
 
     // Verify the new session is alive
     expect(await terminal.isAlive(newTmux1)).toBe(true);
@@ -417,7 +417,7 @@ describe('Crash Recovery', () => {
     const finalTask = taskStore.getTask(task.id)!;
     expect(finalTask.sessions).toHaveLength(3);
     expect(finalTask.status).toBe('inProgress');
-    const newTmux2 = recovery2.relaunched[0].newTmux;
+    const newTmux2 = recovery2.relaunched[0].newSessionId;
     expect(await terminal.isAlive(newTmux2)).toBe(true);
 
     // Relaunch count incremented
@@ -458,7 +458,7 @@ describe('Crash Recovery', () => {
 
     // New session is marked resumedFromCrash
     const updatedTask = taskStore.getTask(task.id)!;
-    const newSession = updatedTask.sessions.find((s) => s.tmuxSession === result.relaunched[0].newTmux)!;
+    const newSession = updatedTask.sessions.find((s) => s.tmuxSession === result.relaunched[0].newSessionId)!;
     expect(newSession.resumedFromCrash).toBe(true);
   });
 
@@ -480,7 +480,7 @@ describe('Crash Recovery', () => {
     expect(launchSpy.mock.calls[0][3]).toBeUndefined();
 
     const updatedTask = taskStore.getTask(task.id)!;
-    const newSession = updatedTask.sessions.find((s) => s.tmuxSession === result.relaunched[0].newTmux)!;
+    const newSession = updatedTask.sessions.find((s) => s.tmuxSession === result.relaunched[0].newSessionId)!;
     expect(newSession.resumedFromCrash).toBeUndefined();
   });
 
@@ -584,7 +584,7 @@ describe('Crash Recovery', () => {
     expect(result.relaunched).toHaveLength(1);
 
     // FakeTerminalBackend records sessions; inspect the launch argv.
-    const session = terminal.sessions.get(result.relaunched[0].newTmux);
+    const session = terminal.sessions.get(result.relaunched[0].newSessionId);
     expect(session).toBeDefined();
     expect(session!.args).toContain('--resume');
     expect(session!.args).toContain('args-session');

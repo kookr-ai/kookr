@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { TerminalBackend } from './terminal-backend.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
-import type { AgentAdapter, EffectiveHookSettings } from './agent-adapter.js';
+import type { AgentAdapter, AdapterLaunchOptions, EffectiveHookSettings, PreflightResult } from './agent-adapter.js';
+import { probeAgentBinary, type ProbeExecRunner } from './probe-agent-binary.js';
 import { parseHookEvent } from '../core/hook-parser.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { buildAgentLaunchContext } from './agent-launch-context.js';
@@ -57,7 +58,16 @@ export interface CodexCliAdapterOptions {
    * disabled (fail-open).
    */
   kookrDataDir?: string;
+  /**
+   * Test seam for {@link CodexCliAdapter.preflight}. When provided, the
+   * adapter spawns probes through this runner instead of `child_process.execFile`.
+   * Production callers should leave this unset.
+   */
+  probeExec?: ProbeExecRunner;
 }
+
+/** Env var that overrides the default Codex CLI binary path. */
+export const CODEX_AGENT_BIN_ENV = 'KOOKR_CODEX_BIN';
 
 /**
  * Adapter for OpenAI Codex CLI agent.
@@ -84,10 +94,12 @@ export class CodexCliAdapter implements AgentAdapter {
   private writeFile?: (path: string, content: string) => Promise<void>;
   private serverPort?: number;
   private agentBin: string;
+  private agentBinConfiguredVia: 'env' | 'default';
   private codexConfigPath?: string;
   private trustWorkspace: boolean;
   private bypassAllPermissions: boolean;
   private kookrDataDir?: string;
+  private probeExec?: ProbeExecRunner;
 
   constructor(
     private backend: TerminalBackend,
@@ -99,13 +111,26 @@ export class CodexCliAdapter implements AgentAdapter {
     this.writeFile = options?.writeFile;
     this.serverPort = options?.serverPort;
     this.agentBin = options?.agentBin ?? 'codex';
+    this.agentBinConfiguredVia = options?.agentBin ? 'env' : 'default';
     this.codexConfigPath = options?.codexConfigPath;
     this.trustWorkspace = options?.trustWorkspace ?? true;
     this.bypassAllPermissions = options?.bypassAllPermissions ?? false;
     this.kookrDataDir = options?.kookrDataDir;
+    this.probeExec = options?.probeExec;
   }
 
-  async launch(taskId: string, prompt: string, cwd: string, resume?: import('./agent-adapter.js').ResumeContext): Promise<string> {
+  async preflight(): Promise<PreflightResult> {
+    const probe = await probeAgentBinary(this.agentBin, { exec: this.probeExec });
+    if (probe.kind === 'ok') return probe;
+    return {
+      kind: 'absent',
+      reason: probe.reason,
+      configuredVia: this.agentBinConfiguredVia,
+      envVarName: CODEX_AGENT_BIN_ENV,
+    };
+  }
+
+  async launch(taskId: string, prompt: string, cwd: string, resume?: import('./agent-adapter.js').ResumeContext, _opts?: AdapterLaunchOptions): Promise<string> {
     if (resume?.sessionId) {
       // Codex resume is deferred until the Codex fork emits hooks reliably;
       // without hooks, claudeSessionId is never populated for Codex sessions

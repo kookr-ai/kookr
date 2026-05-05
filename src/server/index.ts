@@ -27,6 +27,11 @@ import { RoutingAgentAdapter } from '../adapters/routing-agent-adapter.js';
 import { ghCliFetcher } from '../adapters/github-fetcher.js';
 import { CircuitBreakerGitHubFetcher } from '../adapters/circuit-breaker-github-fetcher.js';
 import { reconcile } from './reconciliation.js';
+import {
+  runAdapterPreflights,
+  type AgentPreflightSnapshot,
+  type PreflightLogger,
+} from './agent-preflight.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { HookFileWatcher } from './hook-watcher.js';
 import { generateTaskName } from '../core/task-naming.js';
@@ -133,6 +138,15 @@ export interface KookrConfig {
    * to discover skill-tracked OSS repos). Defaults to `~/.claude`.
    */
   claudeDir?: string;
+  /**
+   * Test seam for the startup adapter-binary preflight. Production calls
+   * `process.exit(1)` when an env-configured agent binary is unreachable;
+   * tests pass a throwing fake to assert the policy without exiting the
+   * test runner. Defaults to `process.exit`.
+   */
+  preflightOnFatal?: (snapshot: AgentPreflightSnapshot & { status: 'absent' }) => never;
+  /** Test seam for capturing preflight log lines. */
+  preflightLogger?: PreflightLogger;
 }
 
 /** Narrow public interface — only what production consumers need. */
@@ -196,7 +210,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     port, host, kookrDir, tasksFile, hooksDir, settingsDir,
     serverCwd, frontendDir, saveIntervalMs, livenessIntervalMs,
     terminalBackend, sttUrl, useFakeTerminalBridge, agentBin, codexBin, bypassAllPermissions,
-    claudeDir,
+    claudeDir, preflightOnFatal, preflightLogger,
   } = config;
 
   // Ensure directories exist
@@ -287,6 +301,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   adapterRegistry.register(claudeCodeAdapter);
   adapterRegistry.register(codexCliAdapter);
   const adapter = new RoutingAgentAdapter(taskStore, adapterRegistry);
+
+  // Verify each adapter's binary is reachable BEFORE the HTTP server starts
+  // accepting connections. Mirrors `resolveDtachBinaryOrExit` in start.ts:
+  // env-configured binaries that are unreachable are fatal; default-PATH
+  // misses are warn-and-continue so a Claude-only deployment can still boot.
+  const agentPreflight = await runAdapterPreflights(adapterRegistry, {
+    onFatal: preflightOnFatal ?? ((): never => process.exit(1)),
+    logger: preflightLogger,
+  });
 
   // Create token tracker
   const tokenTracker = new TokenTracker();

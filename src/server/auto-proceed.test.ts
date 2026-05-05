@@ -306,7 +306,7 @@ describe('AutoProceedService', () => {
     const task = setupAutonomousTask();
 
     // Make sendInput throw
-    adapter.sendInput = async () => { throw new Error('tmux send failed'); };
+    adapter.sendInput = async () => { throw new Error('terminal send failed'); };
 
     service.schedule('agent-1', 1000);
     await vi.advanceTimersByTimeAsync(1000);
@@ -363,7 +363,7 @@ describe('AutoProceedService', () => {
 
   // --- User-attached guard ---
 
-  test('fire() reschedules when user is attached to tmux session', async () => {
+  test('fire() reschedules when user is attached to terminal session', async () => {
     // Recreate service with hasAttachedClients returning true
     service.dispose();
     service = new AutoProceedService({

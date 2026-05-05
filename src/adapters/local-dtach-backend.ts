@@ -421,10 +421,7 @@ export class LocalDtachBackend implements TerminalBackend {
     const available = Math.min(head, RING_BUFFER_BYTES);
     const size = Math.min(cap, available);
     const out = Buffer.alloc(size);
-    for (let i = 0; i < size; i++) {
-      const logical = head - size + i;
-      out[i] = sess.ringBuffer[logical % RING_BUFFER_BYTES];
-    }
+    this.copyFromRing(sess, head, size, out);
     return new Uint8Array(out);
   }
 
@@ -611,10 +608,7 @@ export class LocalDtachBackend implements TerminalBackend {
           // a listener threw — keep serving others
         }
       }
-      for (let i = 0; i < bytes.length; i++) {
-        sess.ringBuffer[sess.ringHead % RING_BUFFER_BYTES] = bytes[i];
-        sess.ringHead += 1;
-      }
+      this.copyIntoRing(sess, bytes);
     });
 
     pty.onExit(() => {
@@ -731,6 +725,36 @@ export class LocalDtachBackend implements TerminalBackend {
       if (sess.ringHead === sess.lastFlushedHead) continue;
       this.persistRing(sess);
     }
+  }
+
+  private copyFromRing(sess: AttachedSession, head: number, size: number, out: Buffer): void {
+    if (size === 0) return;
+    const firstLogical = head - size;
+    const startSlot = firstLogical % RING_BUFFER_BYTES;
+    const tail = Math.min(size, RING_BUFFER_BYTES - startSlot);
+    sess.ringBuffer.copy(out, 0, startSlot, startSlot + tail);
+    if (tail < size) {
+      sess.ringBuffer.copy(out, tail, 0, size - tail);
+    }
+  }
+
+  private copyIntoRing(sess: AttachedSession, bytes: Uint8Array): void {
+    if (bytes.length === 0) return;
+    const source = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let retained = source;
+    let firstLogical = sess.ringHead;
+    if (source.length > RING_BUFFER_BYTES) {
+      retained = source.subarray(source.length - RING_BUFFER_BYTES);
+      firstLogical += source.length - RING_BUFFER_BYTES;
+    }
+
+    const startSlot = firstLogical % RING_BUFFER_BYTES;
+    const tail = Math.min(retained.length, RING_BUFFER_BYTES - startSlot);
+    retained.copy(sess.ringBuffer, startSlot, 0, tail);
+    if (tail < retained.length) {
+      retained.copy(sess.ringBuffer, 0, tail);
+    }
+    sess.ringHead += source.length;
   }
 
   /**

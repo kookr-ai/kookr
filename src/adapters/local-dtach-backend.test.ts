@@ -44,9 +44,8 @@ describe('LocalDtachBackend', () => {
   afterEach(async () => {
     // Best-effort cleanup: dtach masters spawned via setsid survive
     // process exit unless killed. Any leaked masters are visible in
-    // `ps -ef | grep dtach` — developers should run
-    // `scripts/rollback-dtach.sh` with KOOKR_DTACH_SOCK_DIR pointed at
-    // the test tmpDir to clean them.
+    // `ps -ef | grep dtach` — developers can remove the test tmpDir after
+    // killing any leaked dtach master that still references it.
     try {
       if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -225,6 +224,65 @@ describe('LocalDtachBackend', () => {
       await backend.killSession(id);
     }
   }, 15_000);
+
+  it('captureBytes returns logical-order bytes after the in-memory ring wraps', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH ?? 'dtach',
+    });
+
+    type AttachedForTest = {
+      id: string;
+      sock: string;
+      pty: null;
+      ringHead: number;
+      ringBuffer: Buffer;
+      lastFlushedHead: number;
+      dataSubscribers: Set<(data: Uint8Array) => void>;
+      writeMutex: Promise<void>;
+      pendingWriters: number;
+      reattachWindow: number[];
+      reattachCount: number;
+      currentSize: null;
+    };
+    const attached = (
+      backend as unknown as { attached: Map<string, AttachedForTest> }
+    ).attached;
+
+    const CAPACITY = 1024 * 1024;
+    const id = 'wrapped-capture';
+    const head = CAPACITY + 512 + 7;
+    const ringBuffer = Buffer.alloc(CAPACITY);
+    for (let logical = head - CAPACITY; logical < head; logical += 1) {
+      ringBuffer[logical % CAPACITY] = logical & 0xff;
+    }
+    attached.set(id, {
+      id,
+      sock: '/tmp/not-used.sock',
+      pty: null,
+      ringHead: head,
+      ringBuffer,
+      lastFlushedHead: -1,
+      dataSubscribers: new Set(),
+      writeMutex: Promise.resolve(),
+      pendingWriters: 0,
+      reattachWindow: [],
+      reattachCount: 0,
+      currentSize: null,
+    });
+
+    try {
+      const replay = await backend.captureBytes(id, 2048);
+      expect(replay.length).toBe(2048);
+      for (let i = 0; i < replay.length; i += 1) {
+        expect(replay[i]).toBe((head - replay.length + i) & 0xff);
+      }
+    } finally {
+      backend.close();
+    }
+  });
 
   skipIfNoDtach('persists ring buffer across a backend restart', async () => {
     // Regression guard for the "blank terminal after pnpm prod:restart" bug.
