@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon, type ISearchOptions, type ISearchResultChangeEvent } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useKookrStore } from '../store/useStore.js';
@@ -18,6 +19,17 @@ interface MenuState {
   hasSelection: boolean;
 }
 
+const SEARCH_OPTIONS: ISearchOptions = {
+  decorations: {
+    matchBackground: '#164e63',
+    matchBorder: '#22d3ee',
+    matchOverviewRuler: '#22d3ee',
+    activeMatchBackground: '#f59e0b',
+    activeMatchBorder: '#fef3c7',
+    activeMatchColorOverviewRuler: '#f59e0b',
+  },
+};
+
 function getValidatedResize(cols: unknown, rows: unknown): { cols: number; rows: number } | null {
   if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
   if (cols <= 0 || rows <= 0) return null;
@@ -26,11 +38,49 @@ function getValidatedResize(cols: unknown, rows: unknown): { cols: number; rows:
 
 export function TerminalPanel({ tmuxName, visible }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const currentTmuxRef = useRef<string | null>(null);
+  const searchOpenRef = useRef(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchFound, setSearchFound] = useState<boolean | null>(null);
+  const [searchResult, setSearchResult] = useState<ISearchResultChangeEvent | null>(null);
+
+  function openSearch() {
+    searchOpenRef.current = true;
+    setSearchOpen(true);
+    setMenu(null);
+  }
+
+  function closeSearch() {
+    searchOpenRef.current = false;
+    setSearchOpen(false);
+    setSearchFound(null);
+    setSearchResult(null);
+    searchAddonRef.current?.clearDecorations();
+    terminalRef.current?.focus();
+  }
+
+  function runSearch(term: string, direction: 'next' | 'previous', incremental = false) {
+    const searchAddon = searchAddonRef.current;
+    if (!searchAddon || term.length === 0) {
+      searchAddon?.clearDecorations();
+      setSearchFound(null);
+      setSearchResult(null);
+      return;
+    }
+
+    const options = direction === 'next' ? { ...SEARCH_OPTIONS, incremental } : SEARCH_OPTIONS;
+    const found = direction === 'next'
+      ? searchAddon.findNext(term, options)
+      : searchAddon.findPrevious(term, options);
+    setSearchFound(found);
+  }
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -80,12 +130,26 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
     });
 
     const fitAddon = new FitAddon();
+    const searchAddon = new SearchAddon();
     terminal.loadAddon(fitAddon);
+    terminal.loadAddon(searchAddon);
     terminal.loadAddon(new WebLinksAddon());
 
     // Let Alt+key combinations bubble to the global shortcut handler
     // instead of being swallowed by xterm.js
     terminal.attachCustomKeyEventHandler((e) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.type === 'keydown' && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        e.stopPropagation();
+        openSearch();
+        return false;
+      }
+      if (searchOpenRef.current && e.type === 'keydown' && e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeSearch();
+        return false;
+      }
       if (e.altKey && e.type === 'keydown') return false;
       return true;
     });
@@ -95,6 +159,13 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    searchAddonRef.current = searchAddon;
+    const searchResultDisposable = searchAddon.onDidChangeResults((event) => {
+      setSearchResult(event);
+      if (event.resultCount === 0) {
+        setSearchFound(false);
+      }
+    });
 
     // Track focus zone via DOM events (xterm v6 removed onFocus/onBlur)
     const container = containerRef.current;
@@ -113,7 +184,7 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
     container.addEventListener('focusin', handleTermFocus);
     container.addEventListener('focusout', handleTermBlur);
 
-    // Right-click → custom Copy/Paste popover. With tmux mouse tracking off,
+    // Right-click → custom Copy/Paste popover. With terminal mouse tracking off,
     // the browser would otherwise show its default page context menu, which
     // is not what terminal users expect for copy/paste.
     function handleContextMenu(e: Event) {
@@ -159,11 +230,22 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
       container.removeEventListener('wheel', handleWheelOverride, { capture: true });
       container.removeEventListener('contextmenu', handleContextMenu);
       resizeObserver.disconnect();
+      searchResultDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      searchAddonRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const rafId = requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [searchOpen]);
 
   // Close the context menu on any click or Escape outside it.
   useEffect(() => {
@@ -204,6 +286,13 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
       wsRef.current.close();
       wsRef.current = null;
     }
+
+    searchOpenRef.current = false;
+    setSearchOpen(false);
+    setSearchTerm('');
+    setSearchFound(null);
+    setSearchResult(null);
+    searchAddonRef.current?.clearDecorations();
 
     if (!tmuxName) {
       terminal.clear();
@@ -257,7 +346,7 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
     };
 
     ws.onclose = (event) => {
-      // If the PTY exited (e.g. dead tmux session), show feedback
+      // If the PTY exited (e.g. dead terminal session), show feedback
       if (event.code === 1000 && terminal) {
         terminal.write('\r\n\x1b[90m  Session ended.\x1b[0m\r\n');
       }
@@ -323,9 +412,79 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
   }, [visible]);
 
   const focusZone = useKookrStore((s) => s.focusZone);
+  const searchStatus = searchTerm.length === 0
+    ? ''
+    : searchFound === false || searchResult?.resultCount === 0
+      ? 'No matches'
+      : searchResult && searchResult.resultCount > 0 && searchResult.resultIndex >= 0
+        ? `${searchResult.resultIndex + 1}/${searchResult.resultCount}`
+        : '';
 
   return (
     <div className={`terminal-col${focusZone === 'terminal' ? ' zone-active' : ''}`}>
+      {searchOpen && (
+        <form
+          className="terminal-search"
+          role="search"
+          aria-label="Search terminal scrollback"
+          onSubmit={(e) => {
+            e.preventDefault();
+            runSearch(searchTerm, 'next');
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <input
+            ref={searchInputRef}
+            value={searchTerm}
+            placeholder="Find scrollback"
+            aria-label="Search terminal scrollback"
+            onChange={(e) => {
+              const nextTerm = e.target.value;
+              setSearchTerm(nextTerm);
+              runSearch(nextTerm, 'next', true);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                closeSearch();
+              } else if (e.key === 'Enter' && e.shiftKey) {
+                e.preventDefault();
+                runSearch(searchTerm, 'previous');
+              }
+            }}
+          />
+          <span className="terminal-search-status" aria-live="polite">
+            {searchStatus}
+          </span>
+          <button
+            type="button"
+            className="terminal-search-btn"
+            onClick={() => runSearch(searchTerm, 'previous')}
+            title="Previous match"
+            aria-label="Previous match"
+          >
+            Previous
+          </button>
+          <button
+            type="submit"
+            className="terminal-search-btn"
+            title="Next match"
+            aria-label="Next match"
+          >
+            Next
+          </button>
+          <button
+            type="button"
+            className="terminal-search-btn terminal-search-close"
+            onClick={closeSearch}
+            title="Close search"
+            aria-label="Close search"
+          >
+            &times;
+          </button>
+        </form>
+      )}
       <div className="terminal-xterm" ref={containerRef} />
       {menu && (
         // Plain popover, not role="menu". The full ARIA menu pattern requires
