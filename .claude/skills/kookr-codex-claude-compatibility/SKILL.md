@@ -117,9 +117,11 @@ Install the built binary for Kookr use:
 
 ```bash
 install -m 755 \
-  /home/jean/git/codex/codex-rs/target/release/codex \
+  "$(cargo +1.93.0 metadata --manifest-path /home/jean/git/codex/codex-rs/Cargo.toml --no-deps --format-version 1 | node -e 'let input = ""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));')/release/codex" \
   /home/jean/bin/codex
 ```
+
+Do not assume the binary lives under `codex-rs/target/release`. Some machines set Cargo's target directory outside the repo, for example `/mnt/d/cargo-target`. Use `cargo metadata`'s `target_directory` value when locating the built binary.
 
 Sanity check:
 

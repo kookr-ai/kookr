@@ -4,6 +4,7 @@
 #
 # Prerequisites:
 #   - Rust toolchain with nightly-2025-06-13 (or the version pinned in rust-toolchain.toml)
+#   - Node.js (used to parse cargo metadata)
 #   - The Codex fork checked out at CODEX_SRC (default: ~/git/codex)
 #
 # Usage:
@@ -75,7 +76,12 @@ cargo $TOOLCHAIN build \
 
 # --- Install ------------------------------------------------------------------
 
-BUILT_BIN="$CODEX_SRC/codex-rs/target/release/codex"
+TARGET_DIR=$(cargo $TOOLCHAIN metadata \
+  --manifest-path "$MANIFEST" \
+  --no-deps \
+  --format-version 1 |
+  node -e 'let input = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", (chunk) => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));')
+BUILT_BIN="$TARGET_DIR/release/codex"
 
 if [ ! -f "$BUILT_BIN" ]; then
   echo "ERROR: Build succeeded but binary not found at $BUILT_BIN" >&2
