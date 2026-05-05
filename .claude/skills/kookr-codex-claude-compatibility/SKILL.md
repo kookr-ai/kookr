@@ -116,9 +116,12 @@ Or use the Kookr helper: `pnpm codex:rebuild` (runs `scripts/rebuild-codex.sh`, 
 Install the built binary for Kookr use:
 
 ```bash
-install -m 755 \
-  "$(cargo +1.93.0 metadata --manifest-path /home/jean/git/codex/codex-rs/Cargo.toml --no-deps --format-version 1 | node -e 'let input = ""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));')/release/codex" \
-  /home/jean/bin/codex
+CODEX_SRC="${CODEX_SRC:-$HOME/git/codex}"
+CODEX_INSTALL_DIR="${CODEX_INSTALL_DIR:-$HOME/bin}"
+MANIFEST="$CODEX_SRC/codex-rs/Cargo.toml"
+TARGET_DIR="$(cargo +1.93.0 metadata --manifest-path "$MANIFEST" --no-deps --format-version 1 | node -e 'let input = ""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));')"
+
+install -m 755 "$TARGET_DIR/release/codex" "$CODEX_INSTALL_DIR/codex"
 ```
 
 Do not assume the binary lives under `codex-rs/target/release`. Some machines set Cargo's target directory outside the repo, for example `/mnt/d/cargo-target`. Use `cargo metadata`'s `target_directory` value when locating the built binary.
@@ -126,10 +129,10 @@ Do not assume the binary lives under `codex-rs/target/release`. Some machines se
 Sanity check:
 
 ```bash
-/home/jean/bin/codex --version
+"${CODEX_INSTALL_DIR:-$HOME/bin}/codex" --version
 ```
 
-Kookr should use `/home/jean/bin/codex` as the deployed custom Codex binary.
+Kookr should use `${CODEX_INSTALL_DIR:-$HOME/bin}/codex` as the deployed custom Codex binary.
 
 If you had to use an alternate checkout or target dir for a one-off rebuild, do not leave that as the operating model. The final committed source of truth must still be `feat/claude-compat` in `/home/jean/git/codex`.
 
