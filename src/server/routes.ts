@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { registerDiagnosticsRoutes } from './routes/diagnostics-routes.js';
@@ -36,8 +37,14 @@ export function createRoutes(deps: RouteDeps): Hono {
     }
   });
 
-  // Serve frontend static files from dist/frontend
-  app.use('/*', serveStatic({ root: deps.frontendDir }));
+  // Serve frontend static files from dist/frontend. In dev mode the frontend
+  // is served by Vite on its own port, so dist/frontend doesn't exist — skip
+  // registering serveStatic to avoid its "root path is not found" warning on
+  // every request. The notFound handler below still returns a useful message
+  // when a user hits the backend for frontend assets without a build.
+  if (existsSync(deps.frontendDir)) {
+    app.use('/*', serveStatic({ root: deps.frontendDir }));
+  }
 
   // SPA fallback — uses notFound handler so routes registered later (e.g. test
   // endpoints) are checked before this fallback fires.
