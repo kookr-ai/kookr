@@ -15,9 +15,9 @@ This document walks both newcomers through the setup, from the "I just want to c
 > - `hooks/pr-workflow-gate.sh` (previously user-global, not bundled)
 > - `.claude/skills/pre-pr-review/` (symlinked into `~/.claude/skills/` by the installer so the hook's companion skill is available in any repo, not just Kookr)
 >
-> The remaining OSS-extension hooks (`oss-contribution-gate`, `claim-gate`, `ai-coauthor-push-guard`, plus the `oss-gate` and `oss-registry-check` CLIs) are **still user-global and not bundled**. Distribution of those is pending the design in [`docs/rfc/rfc-coworker-shipping-gaps.md`](rfc/rfc-coworker-shipping-gaps.md).
+> The remaining OSS-extension hooks (`oss-contribution-gate`, `claim-gate`, `ai-coauthor-push-guard`, plus the `oss-gate` and `oss-registry-check` CLIs) are **still user-global and not bundled**. Distribution of those is still pending.
 >
-> `pr-workflow-gate.sh` is **scope-gated** (per [`rfc-oss-extension-distribution.md`](rfc/rfc-oss-extension-distribution.md)): it consults `~/.kookr/pr-gated-repos.json` and forms an opinion only about repos listed there. If the file is absent the hook falls back to the previous "gate everything" behavior — the upgrade is opt-out, not opt-in. See `Minimum install` below for the scope-list format and the "silent mode" (`[]`) recipe.
+> `pr-workflow-gate.sh` is **scope-gated**: it consults `~/.kookr/pr-gated-repos.json` and forms an opinion only about repos listed there. If the file is absent the hook falls back to the previous "gate everything" behavior — the upgrade is opt-out, not opt-in. See `Minimum install` below for the scope-list format and the "silent mode" (`[]`) recipe.
 
 ## Fast path: repo pre-push hook only
 
@@ -37,18 +37,18 @@ If you use Claude Code (or Codex CLI) to work on this repo, there is a larger ho
 
 ### Hook inventory
 
-| Hook | Event / Matcher | Purpose | Source | RFC |
-|------|-----------------|---------|--------|-----|
-| `pr-workflow-gate.sh` | `PreToolUse` / `Bash(gh pr create*)` | Blocks `gh pr create` until the `pre-pr-review` skill has created a state file proving pre-PR checks ran | **In this repo at `hooks/pr-workflow-gate.sh`** | [rfc-pr-workflow-hooks.md](rfc/rfc-pr-workflow-hooks.md) |
-| `oss-contribution-gate.sh` | `PreToolUse` / `Bash` | Rate-limits external OSS PRs (default 1/day/repo) and enforces the blocked-repo list (`~/.kookr/rate-limits.json`) | User-global, not bundled | [rfc-oss-contribution-safety-gates.md](rfc/rfc-oss-contribution-safety-gates.md) |
-| `oss-contribution-gate-posttool.sh` | `PostToolUse` / `Bash(gh pr create*)` | Captures successfully-created PRs into `~/.kookr/oss-attempts.json` via Kookr's HTTP API | User-global, not bundled | same as above |
-| `oss-stale-scout-gate.sh` | `PreToolUse` / `Bash(gh pr create*)` | Blocks `gh pr create` when the PR body references an already-closed upstream issue (any of the 9 GitHub closing keywords + cross-repo refs + URL form) | **In this repo at `hooks/oss-stale-scout-gate.sh`** | [rfc-oss-stale-scout-gate.md](rfc/rfc-oss-stale-scout-gate.md) |
-| `claim-gate.sh` | `PreToolUse` / `Bash` | Blocks issue-claim comments (`gh issue comment`, `gh api .../comments -X POST`) if a competing PR or assignment already exists | User-global, not bundled | No RFC — companion to the `oss-issue-scout` skill |
-| `ai-coauthor-push-guard.sh` | `PreToolUse` / `Bash(git push*)` | Rejects `git push` to external remotes when commits carry AI attribution markers (`Co-Authored-By: Claude`, etc.) that the target repo forbids | User-global, not bundled | No RFC — policy decision, see CLAUDE.md |
-| `kookr-prod-readonly-guard.sh` | `PreToolUse` / `Edit`, `Write` | Blocks edits to files under `../kookr-prod` (the production worktree at `~/git/kookr-prod`) so agents can't accidentally mutate prod | User-global, not bundled | No RFC — see `docs/rfc/rfc-stable-instance-isolation.md` |
-| `fix-bare-after-worktree.sh` | `PostToolUse` / `EnterWorktree` | Unsets `core.bare` on the main repo if a worktree creation set it, preventing "fatal: this operation must be run in a work tree" errors | User-global workaround | No RFC — bug workaround |
-| `oss-gate` (CLI) | N/A (invoked manually) | Status / reset / log / health commands for the rate-limit gate | User-global helper | same as `oss-contribution-gate` |
-| `oss-registry-check` (CLI) | N/A (invoked manually) | Resolves a repo against the `~/.kookr/oss-repos.json` registry to check eligibility | User-global helper | `docs/rfc/rfc-oss-repo-registry.md` |
+| Hook | Event / Matcher | Purpose | Source |
+|------|-----------------|---------|--------|
+| `pr-workflow-gate.sh` | `PreToolUse` / `Bash(gh pr create*)` | Blocks `gh pr create` until the `pre-pr-review` skill has created a state file proving pre-PR checks ran | **In this repo at `hooks/pr-workflow-gate.sh`** |
+| `oss-contribution-gate.sh` | `PreToolUse` / `Bash` | Rate-limits external OSS PRs (default 1/day/repo) and enforces the blocked-repo list (`~/.kookr/rate-limits.json`) | User-global, not bundled |
+| `oss-contribution-gate-posttool.sh` | `PostToolUse` / `Bash(gh pr create*)` | Captures successfully-created PRs into `~/.kookr/oss-attempts.json` via Kookr's HTTP API | User-global, not bundled |
+| `oss-stale-scout-gate.sh` | `PreToolUse` / `Bash(gh pr create*)` | Blocks `gh pr create` when the PR body references an already-closed upstream issue (any of the 9 GitHub closing keywords + cross-repo refs + URL form) | **In this repo at `hooks/oss-stale-scout-gate.sh`** |
+| `claim-gate.sh` | `PreToolUse` / `Bash` | Blocks issue-claim comments (`gh issue comment`, `gh api .../comments -X POST`) if a competing PR or assignment already exists | User-global, not bundled |
+| `ai-coauthor-push-guard.sh` | `PreToolUse` / `Bash(git push*)` | Rejects `git push` to external remotes when commits carry AI attribution markers (`Co-Authored-By: Claude`, etc.) that the target repo forbids | User-global, not bundled |
+| `kookr-prod-readonly-guard.sh` | `PreToolUse` / `Edit`, `Write` | Blocks edits to files under `../kookr-prod` (the production worktree at `~/git/kookr-prod`) so agents can't accidentally mutate prod | User-global, not bundled |
+| `fix-bare-after-worktree.sh` | `PostToolUse` / `EnterWorktree` | Unsets `core.bare` on the main repo if a worktree creation set it, preventing "fatal: this operation must be run in a work tree" errors | User-global workaround |
+| `oss-gate` (CLI) | N/A (invoked manually) | Status / reset / log / health commands for the rate-limit gate | User-global helper |
+| `oss-registry-check` (CLI) | N/A (invoked manually) | Resolves a repo against the `~/.kookr/oss-repos.json` registry to check eligibility | User-global helper |
 
 **Two hooks in the table above — `oss-stale-scout-gate.sh` and `pr-workflow-gate.sh` — have canonical source checked into this repo, alongside the `pre-pr-review` skill at `.claude/skills/pre-pr-review/`.** The remaining hooks still live as standalone files in `~/.claude/hooks/`, maintained outside version control. Moving those in as well is tracked in the "Future work" section at the bottom.
 
@@ -207,4 +207,4 @@ Key things to know if you're debugging a denied action or a missing block:
 
 ### Future work
 
-The remaining asymmetry — two hooks and one skill in-repo, the rest user-global — is the subject of [`rfc-coworker-shipping-gaps.md`](rfc/rfc-coworker-shipping-gaps.md). [`rfc-oss-extension-distribution.md`](rfc/rfc-oss-extension-distribution.md) (implemented) covers the scope-gate for `pr-workflow-gate.sh`; the analogous scope-gating for the still-user-global hooks (`oss-contribution-gate`, `claim-gate`, `ai-coauthor-push-guard`) is a follow-up.
+The remaining asymmetry — two hooks and one skill in-repo, the rest user-global — has not yet been resolved. The scope-gate that `pr-workflow-gate.sh` uses (consults `~/.kookr/pr-gated-repos.json`) is implemented; the analogous scope-gating for the still-user-global hooks (`oss-contribution-gate`, `claim-gate`, `ai-coauthor-push-guard`) is a follow-up.

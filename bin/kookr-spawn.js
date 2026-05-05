@@ -6,7 +6,6 @@
 //   kookr-spawn --prompt-file /tmp/prompt.md
 //   cat prompt.md | kookr-spawn
 //
-// Design and rationale: docs/rfc/rfc-cli-spawn.md.
 // Contract with the server: POST {base}/api/tasks with JSON body and
 // X-Kookr-Launch-Source: cli header. Server at /api/health must return
 // JSON containing a `serverStartedAt` field — that is the shape-check

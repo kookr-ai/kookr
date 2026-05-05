@@ -13,7 +13,6 @@ README.md              — Start here: problem, solution, design principles
 docs/features.md       — What the app must do (user-facing)
 docs/architecture.md   — System design: supervisor agent, adapters, reuse map
 docs/roadmap.md        — 4 implementation phases (Phases 1-3 mostly complete)
-docs/rfc/              — Request for Comments: feature proposals, design explorations
 docs/adr/              — Architecture Decision Records: accepted technical decisions
 docs/poc/              — Proof-of-concept validation (hook mechanism)
 docs/reports/          — One-time analysis artifacts (gap reports, audits)
@@ -46,7 +45,7 @@ plugin/agents/         — General-purpose review subagents
 - Testing: Vitest (unit/integration) + Playwright (E2E)
 - Agent execution: Managed terminal sessions — agents run in interactive mode inside dtach-backed sessions owned by LocalDtachBackend. One persistent attach per session, ring-buffered for replay. Input via keystrokes, monitoring via hooks + transcript JSONL (ADR-014 supersedes ADR-007; RFC `rfc-v8-tmux-removal.md` completes the migration)
 - Agent monitoring: Claude Code hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) injected via `--settings` flag. Hooks are additive to user settings. See docs/poc/001-hook-mechanism-validation.md
-- Skill/agent distribution: Kookr Toolkit ships as a Claude Code plugin at `plugin/` with `.claude-plugin/marketplace.json` listing it. `ClaudeCodeAdapter` injects `--plugin-dir <kookr>/plugin` into every spawned `claude` so Kookr-spawned agents see the toolkit regardless of cwd. Other developers install via `/plugin marketplace add kookr-ai/kookr` + `/plugin install kookr-toolkit@kookr`. See `docs/rfc/rfc-share-claude-resources-cross-project.md`.
+- Skill/agent distribution: Kookr Toolkit ships as a Claude Code plugin at `plugin/` with `.claude-plugin/marketplace.json` listing it. `ClaudeCodeAdapter` injects `--plugin-dir <kookr>/plugin` into every spawned `claude` so Kookr-spawned agents see the toolkit regardless of cwd. Other developers install via `/plugin marketplace add kookr-ai/kookr` + `/plugin install kookr-toolkit@kookr`.
 
 ## Where to put a new skill or agent
 
@@ -95,7 +94,6 @@ A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on 
 - **When asked to "restart server"** → run `pnpm prod:update` (includes build + restart)
 - **Commit and push before `pnpm prod:update`** — the prod worktree pulls from `origin/main`, so uncommitted or unpushed changes will not be deployed
 - Tests are safe — they use random ports and temp directories
-- See `docs/rfc/rfc-stable-instance-isolation.md` for design rationale
 
 ## When working on this project
 
@@ -178,7 +176,6 @@ See the `self-reflect` skill at `.claude/skills/self-reflect/SKILL.md`. Its Pers
 
 ## Design document conventions
 
-- **RFCs** → `docs/rfc/rfc-<slug>.md` — feature proposals, design explorations
 - **ADRs** → `docs/adr/<NNN>-<slug>.md` — accepted architecture decisions (numbered, with README index)
 - **POCs** → `docs/poc/<NNN>-<slug>.md` — proof-of-concept validations
 - **Reports** → `docs/reports/` — one-time analysis artifacts (gap reports, audits)

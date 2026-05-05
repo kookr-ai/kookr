@@ -166,7 +166,6 @@ Ink has a concept of "static" output (lines that go to scrollback) vs "dynamic" 
 
 ## References
 
-- `docs/rfc/rfc-claude-code-terminal-parity.md` (v7)
 - `docs/spikes/empirical-validation-v6.md` (POC evidence)
 - `docs/adr/014-local-dtach-backend.md`
 - `~/git/deepresearch/deepresearch_report2.md` — VS Code / JupyterLab / Hyper / Theia xterm.js usage patterns

@@ -246,12 +246,12 @@ Agents run in managed dtach sessions (see [ADR-014](adr/014-local-dtach-backend.
 
 ### Task lifecycle — `completed` vs `terminated`
 
-Per [`docs/rfc/rfc-task-loss-prevention.md`](rfc/rfc-task-loss-prevention.md), `TaskStatus` has two distinct end states for a non-cancelled task:
+`TaskStatus` has two distinct end states for a non-cancelled task:
 
 - **`completed`** — user-acknowledged done. Reached via `completeTask()` (user clicks Complete / Mark as done), via crash-recovery reopen-then-complete, or via the upcoming OSS-playbook flow. Tasks in this state are what the "Clear completed" button sweeps by default.
 - **`terminated`** — all sessions died without an explicit user acknowledgement. Reached via `reconcile()` when every session for an `inProgress` / `open` task is no longer alive. Tasks in this state are NOT swept by "Clear completed" unless the user opts in via the confirmation checkbox. The user can `ackTerminatedTask` (→ completed), reopen (→ open), or cancel (→ cancelled).
 
-The split exists so that silent session deaths — WSL glitches, OOM kills, the dtach attach child being reaped out from under the backend — cannot propagate through a single "Clear completed" click and permanently delete work the user never saw. See the RFC for the full motivation and the Stop-hook signal that was rejected as unreliable.
+The split exists so that silent session deaths — WSL glitches, OOM kills, the dtach attach child being reaped out from under the backend — cannot propagate through a single "Clear completed" click and permanently delete work the user never saw. The Stop-hook signal was considered as a "user acknowledgement" proxy and rejected as unreliable.
 
 ### `tasks.json` snapshots
 
@@ -514,7 +514,7 @@ jq '.attempts |= map(.linkedIssue = null)' \
   ~/.kookr/oss-attempts.json > /tmp/x && mv /tmp/x ~/.kookr/oss-attempts.json
 ```
 
-Then hit the dashboard's **Refresh** button (or restart the server). The refresher re-populates `linkedIssue` for every `pr_open` record that has a `Fixes/Closes/Resolves #N` in its body. See `docs/rfc/rfc-oss-zombie-pr-detection.md` §4.5 for rationale.
+Then hit the dashboard's **Refresh** button (or restart the server). The refresher re-populates `linkedIssue` for every `pr_open` record that has a `Fixes/Closes/Resolves #N` in its body.
 
 The dashboard also surfaces an amber warning banner whenever the last refresh had one or more issue-state fetch errors. The banner is sourced from the store snapshot's `lastRefreshIssueCheckErrors` field, so it is visible regardless of which refresh path (manual button, startup refresh, future timer) produced the errors.
 
@@ -526,7 +526,7 @@ The dashboard also surfaces an amber warning banner whenever the last refresh ha
 |---------|-------------|-------------|
 | Agent discovery via session files | Managed terminal sessions are Kookr-created; discovering externally-started agents is a separate problem | When "take over" makes discovered agents actionable |
 | ~~Monitoring mechanism decision~~ | **Validated by PoC:** hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) + transcript JSONL file tailing provide structured data — no terminal parsing needed. Hook configuration: Kookr generates a per-agent settings JSON file passed via `--settings` flag. Hooks are additive to user settings. See [PoC 001](poc/001-hook-mechanism-validation.md) | ~~Phase 1 PoC~~ Done |
-| ~~Terminal multiplexer choice~~ | **Validated and migrated:** dtach replaced tmux (ADR-014 / `rfc-v8-tmux-removal.md`). Agents run under dtach-backed sessions; `backend.captureBytes` provides display snapshots from the ring buffer | Done |
+| ~~Terminal multiplexer choice~~ | **Validated and migrated:** dtach replaced tmux ([ADR-014](adr/014-local-dtach-backend.md)). Agents run under dtach-backed sessions; `backend.captureBytes` provides display snapshots from the ring buffer | Done |
 | LLM-powered supervisor (Tier 2) | Start with rule-based detection; add LLM when rules aren't enough | When rule-based detection misses real anomalies |
 | Plugin system | No users, no plugins needed | When community requests extensions |
 | Session history / analytics DB | Inline session metadata in tasks.json provides the foundation; full history and analytics still need a database | When users want cross-session history or usage analytics |
@@ -534,20 +534,6 @@ The dashboard also surfaces an amber warning banner whenever the last refresh ha
 | Cloud deployment | Local-first solves the VPN problem | When there's demand |
 | Gemini CLI adapter | Focus on Claude Code first | After V1 stabilizes |
 | Windows support | Linux + macOS first | When there's demand |
-
----
-
-## RFCs
-
-Accepted RFCs that describe implemented features:
-
-| RFC | Feature | Status |
-|-----|---------|--------|
-| [rfc-build-version-info.md](rfc/rfc-build-version-info.md) | Build-time version metadata in TopBar | **Implemented** |
-| [rfc-stable-instance-isolation.md](rfc/rfc-stable-instance-isolation.md) | Per-port data directory isolation | **Implemented** |
-| [rfc-ai-task-naming.md](rfc/rfc-ai-task-naming.md) | AI-powered task naming via Claude Haiku | **Implemented** |
-| [rfc-smart-response-assist.md](rfc/rfc-smart-response-assist.md) | Quick actions + AI response suggestions | **Implemented** |
-| [rfc-task-context-visibility.md](rfc/rfc-task-context-visibility.md) | Task context visibility in UI | Proposed |
 
 ---
 

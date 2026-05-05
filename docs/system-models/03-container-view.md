@@ -34,7 +34,7 @@ flowchart LR
 
 > Updated 2026-04-10: Added Codex CLI alongside Claude Code to reflect `RoutingAgentAdapter` dispatching to `claude-code-adapter.ts` or `codex-cli-adapter.ts` per task.
 > Updated 2026-04-22: Terminal session persistence layer moved to dtach by default (ADR-014, Main B.b). The browser↔backend terminal stream is now a binary WebSocket served by `SessionBridge` against the backend's `LocalDtachBackend`.
-> Updated 2026-04-24: V8 removed the tmux escape hatch entirely. `src/server/start.ts` hard-rejects `KOOKR_BACKEND` values other than `dtach` (see `docs/rfc/rfc-v8-tmux-removal.md`). The `tmuxSession` field on `Task.sessions[]` is a historical name that now holds a dtach session ID.
+> Updated 2026-04-24: V8 removed the tmux escape hatch entirely. `src/server/start.ts` hard-rejects `KOOKR_BACKEND` values other than `dtach`. The `tmuxSession` field on `Task.sessions[]` is a historical name that now holds a dtach session ID.
 
 ## Container Responsibility Table
 

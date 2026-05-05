@@ -66,6 +66,5 @@ browser xterm.js ⇄ binary WebSocket ⇄ Kookr SessionBridge ⇄ node-pty ⇄ d
 
 ## References
 
-- [v7 RFC](../rfc/rfc-claude-code-terminal-parity.md) — full design
 - [Empirical validation spike](../spikes/empirical-validation-v6.md) — evidence base
 - [Mouse-forwarding POC](../spikes/mouse-forwarding-poc/) — end-to-end harness that validated the exec-based attach pattern

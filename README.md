@@ -145,7 +145,7 @@ claude
 
 Update with `/plugin marketplace update kookr`. See [`plugin/README.md`](plugin/README.md) for the full skill/agent inventory and the maintainer dev workflow (`claude --plugin-dir ~/git/kookr/plugin`).
 
-**Optional OSS extension** — Several bundled skills (`pre-pr-review`, `oss-pr-distill`, `codex-pr-distill`, `oss-issue-scout`, `oss-repo-recon`) and the `oss-contribute` playbook depend on an OSS contribution layer that lives as user-global scripts and data outside this repo (`~/.claude/reviewer-specialists/`, `~/.claude/skills/pr-contribution-excellence/`, `~/.claude/hooks/{pr-workflow-gate,oss-contribution-gate,…}.sh`). The extension is **not bundled** — its distribution mechanism is pending design (see [`docs/rfc/rfc-coworker-shipping-gaps.md`](docs/rfc/rfc-coworker-shipping-gaps.md)). Without it, the affected skills are still safe to invoke — they detect the missing dependencies and stop rather than fabricating output. Read [`docs/hooks-setup.md`](docs/hooks-setup.md) for the full status.
+**Optional OSS extension** — Several bundled skills (`pre-pr-review`, `oss-pr-distill`, `codex-pr-distill`, `oss-issue-scout`, `oss-repo-recon`) and the `oss-contribute` playbook depend on an OSS contribution layer that lives as user-global scripts and data outside this repo (`~/.claude/reviewer-specialists/`, `~/.claude/skills/pr-contribution-excellence/`, `~/.claude/hooks/{pr-workflow-gate,oss-contribution-gate,…}.sh`). The extension is **not bundled** — its distribution mechanism is still pending. Without it, the affected skills are still safe to invoke — they detect the missing dependencies and stop rather than fabricating output. Read [`docs/hooks-setup.md`](docs/hooks-setup.md) for the full status.
 
 ## Why Kookr?
 
@@ -296,7 +296,6 @@ If you run Claude Code or Codex CLI agents on this repo and want the PR-workflow
 | [Roadmap](docs/roadmap.md) | 4 phases from discovery to multi-agent polish |
 | [Hooks setup](docs/hooks-setup.md) | Repo + Claude Code hook install, inventory, verification, troubleshooting |
 | [ADRs](docs/adr/README.md) | Accepted decisions — TypeScript, managed dtach sessions, session bridge |
-| [RFCs](docs/rfc/) | Design explorations and feature proposals |
 
 ## Contributing
 
