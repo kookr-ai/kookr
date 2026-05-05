@@ -82,11 +82,23 @@ kbd {
 .topbar-left { display: flex; align-items: center; gap: 14px; }
 
 .logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-family: var(--font-mono);
   color: var(--teal);
   font-weight: 700;
   font-size: 13px;
   letter-spacing: 1.5px;
+}
+
+.logo-mark {
+  width: 18px;
+  height: 18px;
+  display: block;
+  flex-shrink: 0;
+  user-select: none;
+  pointer-events: none;
 }
 
 .version-badge {

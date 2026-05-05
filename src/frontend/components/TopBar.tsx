@@ -137,7 +137,10 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
   return (
     <div className={`topbar kookr-tour-target-layout${compact ? ' compact' : ''}`}>
       <div className="topbar-left">
-        <span className="logo">KOOKR</span>
+        <span className="logo">
+          <img src="/kookr-mark-32.png" alt="" aria-hidden="true" width={18} height={18} className="logo-mark" />
+          KOOKR
+        </span>
         <span
           className={`version-badge ${isDev ? 'dev' : ''} ${hasUpdates ? 'has-updates' : ''}`}
           onClick={() => setShowPopover((v) => !v)}
