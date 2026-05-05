@@ -164,3 +164,8 @@ demo/output/
 
 # Vendored third-party binaries (built by scripts/build-dtach.sh, etc.)
 vendor/
+
+# Local-only marker that the .hooks/pre-push gate validates against.
+# Each branch writes its own .review-state/<key>.json before push;
+# never commit these.
+.review-state/

@@ -48,7 +48,51 @@ In this repo, that means:
 
 This is intentionally earlier than the `gh pr create` hook. The hook is the backstop; this skill is the normal path.
 
-### 3. Push and let the repo hook re-check
+### 3. Write the review-gate marker
+
+The repo's `.hooks/pre-push` blocks any push of non-trivial source changes that does not have a SHA-bound review marker at `.review-state/<branch>.json` (slashes in branch names flattened to underscores). The marker proves that reviewer specialists ran against the *current* HEAD, not a stale earlier commit.
+
+After the reviewer specialists complete and any blocking findings are addressed, write the marker atomically (`tmp` + `mv` so a concurrent `git push` can't read a half-written file):
+
+```bash
+mkdir -p .review-state
+# Same key derivation as the hook (.hooks/pre-push):
+#   - on a branch  → branch name with [^A-Za-z0-9.-] flattened to '_'
+#   - detached HEAD → "detached-<short-sha>"
+# Use printf '%s' (no trailing newline) so tr doesn't pick up a stray '\n'
+# and append an extra '_'.
+if BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null); then
+  KEY=$(printf '%s' "$BRANCH" | tr -c 'A-Za-z0-9.-' '_')
+else
+  KEY="detached-$(git rev-parse --short HEAD)"
+fi
+TMP=".review-state/$KEY.json.tmp"
+DST=".review-state/$KEY.json"
+cat > "$TMP" <<EOF
+{ "sha": "$(git rev-parse HEAD)", "status": "approved" }
+EOF
+mv "$TMP" "$DST"
+```
+
+The hook validates only `sha` and `status` — additional fields are ignored, so the schema stays minimal. If you want to leave breadcrumbs for yourself (specialists run, findings, timestamp), add them to the JSON; the hook won't reject extras.
+
+The hook auto-skips the marker requirement for trivial paths (`docs/`, `.github/`, top-level `*.md`, `docs/**/*.md`, `*.test.*`, `*.spec.*`, `tsconfig*.json`, `.gitignore`). Any source file outside that list (`src/**`, `plugin/**`, `.hooks/**`, root config TS, lockfiles) requires the marker. Lockfile changes are deliberately gated — supply-chain attack surface — even for routine bumps.
+
+For genuinely-trivial-but-not-allowlisted changes (e.g. a one-line comment in `src/`, a string-literal typo, a routine dependency version bump) write a `bypass` marker with a `reason` that's specific enough to be useful in `git log` (the hook logs `BYPASS for <ref> — <reason>` on every push):
+
+```bash
+cat > "$TMP" <<EOF
+{ "sha": "$(git rev-parse HEAD)", "status": "bypass",
+  "reason": "<specific justification — e.g. 'pnpm-lock-only bump for axios 1.7.2 → 1.7.3, no transitive changes'>" }
+EOF
+mv "$TMP" "$DST"
+```
+
+The reason field is mandatory for bypass markers — the hook rejects bypass markers without a `reason`.
+
+Every new commit (including amend) shifts the SHA and invalidates the marker. Re-run specialists and re-write the marker after every amend.
+
+### 4. Push and let the repo hook re-check
 
 Push normally:
 
@@ -60,10 +104,12 @@ Expect `.hooks/pre-push` to re-run:
 - `pnpm build:server`
 - `pnpm check:e2e`
 - `pnpm test`
+- Plugin classification + version-bump checks (when `plugin/**` changed)
+- Pre-PR review-gate marker check (this skill's output, step 3)
 
 Do not bypass the hook. If it fails, fix the issue and push again.
 
-### 4. Report milestone status explicitly
+### 5. Report milestone status explicitly
 
 Before you tell the user "push succeeded", "looks good", or "open a PR", report the delivery milestones in plain language:
 
