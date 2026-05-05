@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage, AutonomyLevel } from '../../shared/protocol.js';
 import { track, trackClick } from '../telemetry.js';
-import { formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, copyAttachCommand, formatTokenUsage, projectLabel, projectColor, formatBranch } from '../presentation.js';
+import { formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch } from '../presentation.js';
 import { Tooltip } from './Tooltip.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -348,7 +348,7 @@ function FindingCard({ agent, selected, send }: {
   send: (msg: ClientMessage) => void;
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
-  const { selectAgent, nextBottleneck, snoozeAgent, handleAlert } = useKookrStore();
+  const { selectAgent, nextBottleneck, snoozeAgent } = useKookrStore();
   const dnd = useDnd();
   const cls = severityClass(agent);
   const autoProceedingAt = agent.anomaly?.autoProceedingAt;
@@ -508,10 +508,6 @@ function FindingCard({ agent, selected, send }: {
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); handleSkip(); }}>Skip</button>
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); setShowSnooze(true); }}>Snooze</button>
           <button className="btn-xs btn-fp" onClick={(e) => { e.stopPropagation(); handleFlagFP(); }} title="Mark as false positive">Flag FP</button>
-          <button className="btn-xs" onClick={(e) => {
-            e.stopPropagation();
-            copyAttachCommand(agent.agentId, handleAlert);
-          }}>Attach</button>
         </div>
         {showSnooze && (
           <SnoozeDialog

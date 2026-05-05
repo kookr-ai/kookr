@@ -55,27 +55,6 @@ export function healthyStatusLabel(events: AgentEvent[], startedAt?: string): st
 }
 
 /**
- * Generate the tmux attach command for an agent.
- */
-export function getAttachCommand(agentId: string): string {
-  return `tmux attach-session -t ${agentId}`;
-}
-
-/**
- * Copy the tmux attach command to clipboard and fire a toast notification.
- */
-export function copyAttachCommand(
-  agentId: string,
-  showToast: (agentId: string, summary: string, severity?: 'info' | 'error') => void,
-): void {
-  const cmd = getAttachCommand(agentId);
-  navigator.clipboard.writeText(cmd).then(
-    () => showToast(agentId, `Copied: ${cmd}`, 'info'),
-    () => showToast(agentId, `Copy failed — run: ${cmd}`, 'error'),
-  );
-}
-
-/**
  * Format a duration from an ISO 8601 startedAt timestamp.
  */
 export function formatDuration(startedAt?: string): string {

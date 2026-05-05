@@ -257,14 +257,14 @@ test.describe('Agent detail metadata', () => {
     await expect(page.locator('.detail-header-right .project-badge')).toHaveAttribute('title', '/custom/work/dir');
   });
 
-  test('detail panel shows attach, complete, and cancel actions', async ({ page, request }) => {
+  test('detail panel shows task completion and cancellation actions', async ({ page, request }) => {
     await launchViaUI(page, 'Actions test', '/test/project');
     const tmuxName = await getLatestTmuxName(request);
     await injectSessionStart(request, tmuxName);
     await injectStopEvent(request, tmuxName);
 
     await page.locator('.finding-card').click();
-    await expect(page.locator('[data-testid="action-attach"]')).toBeVisible();
+    await expect(page.locator('[data-testid="action-attach"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="action-complete"]')).toBeVisible();
     await expect(page.locator('[data-testid="action-cancel"]')).toBeVisible();
   });
