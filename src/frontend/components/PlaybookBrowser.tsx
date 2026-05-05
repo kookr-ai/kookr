@@ -17,13 +17,54 @@ const recentPaths = new RecentPaths();
 /** Threshold: use filterable dropdown when option count exceeds this */
 const FILTERABLE_THRESHOLD = 5;
 
+function TagIcon({ tag }: { tag: 'workflow' | 'loopable' }): React.ReactElement {
+  if (tag === 'loopable') {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M4.1 5.1A4.5 4.5 0 0 1 12.3 4" />
+        <path d="M12.3 4V1.8" />
+        <path d="M12.3 4h-2.2" />
+        <path d="M11.9 10.9A4.5 4.5 0 0 1 3.7 12" />
+        <path d="M3.7 12v2.2" />
+        <path d="M3.7 12h2.2" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="4" cy="4" r="1.6" />
+      <circle cx="12" cy="4" r="1.6" />
+      <circle cx="8" cy="12" r="1.6" />
+      <path d="M5.4 4h5.2" />
+      <path d="M4.9 5.2 7.1 10.6" />
+      <path d="M11.1 5.2 8.9 10.6" />
+    </svg>
+  );
+}
+
+function PinIcon({ pinned }: { pinned: boolean }): React.ReactElement {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" className={pinned ? 'filled' : ''}>
+      <path d="M5.4 2.4h5.2l-.8 3 2.2 2.2v1.2H8.8L8 14 6.8 8.8H4V7.6l2.2-2.2-.8-3Z" />
+    </svg>
+  );
+}
+
 function renderPlaybookTags(tags: string[]): React.ReactNode {
-  const visible = tags.filter((tag) => tag === 'workflow' || tag === 'loopable');
+  const visible = tags.filter((tag): tag is 'workflow' | 'loopable' => tag === 'workflow' || tag === 'loopable');
   if (visible.length === 0) return null;
   return (
     <span className="playbook-tags">
       {visible.map((tag) => (
-        <span key={tag} className={`playbook-tag playbook-tag-${tag}`}>
+        <span
+          key={tag}
+          className={`playbook-tag playbook-tag-${tag}`}
+          title={tag === 'loopable' ? 'Loopable workflow' : 'Workflow playbook'}
+        >
+          <span className="playbook-tag-icon">
+            <TagIcon tag={tag} />
+          </span>
           {tag}
         </span>
       ))}
@@ -542,6 +583,9 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
             aria-pressed={showLoopableOnly}
             onClick={() => setShowLoopableOnly((value) => !value)}
           >
+            <span className="playbook-filter-icon" aria-hidden="true">
+              <TagIcon tag="loopable" />
+            </span>
             Loopable workflows ({loopableCount})
           </button>
         </div>
@@ -571,7 +615,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
                   <span className="playbook-card-name">
                     {isPinned && (
                       <span className="playbook-pin-indicator" title="Pinned">
-                        *
+                        <PinIcon pinned />
                       </span>
                     )}
                     {pb.name}
@@ -594,9 +638,10 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
                       type="button"
                       className={`playbook-pin-btn${isPinned ? ' pinned' : ''}`}
                       onClick={(e) => handleTogglePin(e, pb.id)}
+                      aria-label={isPinned ? 'Unpin playbook' : 'Pin playbook to top'}
                       title={isPinned ? 'Unpin' : 'Pin to top'}
                     >
-                      {isPinned ? 'unpin' : 'pin'}
+                      <PinIcon pinned={isPinned} />
                     </button>
                   </span>
                 </div>

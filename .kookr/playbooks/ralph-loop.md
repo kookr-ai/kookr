@@ -12,7 +12,7 @@ checklist:
   - Stop predicate defined (or skipped if iteration cap is the only stop signal)
   - Optional zero-diff convergence threshold chosen when no-file-change iterations should stop automatically
   - Optional cost cap chosen only as a best-effort guard, never as the only hard ceiling
-  - Dashboard badge shows "🔄 N/cap" advancing on each Stop
+  - Dashboard Ralph badge shows "N/cap" advancing on each Stop
   - Pause/resume/cancel controls tested from the dashboard or `kookr ralph`
   - Dashboard Ralph panel shows iteration rows from the audit trail
   - Iteration audit trail at <task-cwd>/ralph-iterations.jsonl growing as expected
@@ -145,7 +145,7 @@ Common failures:
 
 ## Phase 6: Watch it run
 
-The dashboard's task card now shows a **🔄 N/cap** badge. The number ticks on every Stop event the agent emits. Click the task and open the **Ralph** tab in the detail panel.
+The dashboard's task card now shows a **N/cap** Ralph badge. The number ticks on every Stop event the agent emits. Click the task and open the **Ralph** tab in the detail panel.
 
 The Ralph panel shows the latest iteration records, cumulative cost when the hook payload provided it, runtime/ETA when defensible, diff stats when the git baseline was available, and a count of malformed audit lines skipped. The most recent `exitReason` tells you what happened: `continued` (normal), `predicate_satisfied` (stopped), `iteration_cap` (hit the limit), `predicate_timeout` / `predicate_error` (predicate misbehaved but loop kept going), `kookr_crash` (Kookr restart killed it).
 
@@ -159,7 +159,7 @@ Each line is one completed iteration. The `exitReason` field on the most-recent 
 
 ## Phase 7: Pause, resume, or stop early
 
-From the dashboard, use the compact controls beside the **🔄 N/cap** badge:
+From the dashboard, use the compact controls beside the **N/cap** Ralph badge:
 
 - pause stops fresh iteration launches after the current iteration finishes
 - resume re-enables fresh iteration launch on the next Stop event, if the agent session is still live
