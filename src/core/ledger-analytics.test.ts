@@ -107,6 +107,33 @@ describe('LedgerAnalytics', () => {
     });
   });
 
+  describe('getAttemptsByProject', () => {
+    test('returns PR-keyed attempts regardless of age', async () => {
+      const oldTimestamp = new Date(Date.now() - 30 * 86_400_000).toISOString();
+      writeFileSync(
+        join(tempDir, 'contribution-ledger.jsonl'),
+        JSON.stringify({
+          timestamp: oldTimestamp,
+          repo: 'grafana/grafana',
+          action: 'pr_created',
+          prUrl: 'https://github.com/grafana/grafana/pull/1',
+        }),
+      );
+      await store.load();
+      await store.loadFromLedger();
+
+      const attempts = analytics.getAttemptsByProject('github.com/grafana/grafana');
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0].prNumber).toBe(1);
+    });
+
+    test('excludes scouted-only records', async () => {
+      await store.load();
+      store.upsertScouted({ repo: 'grafana/grafana', issueNumber: 1 });
+      expect(analytics.getAttemptsByProject('github.com/grafana/grafana')).toEqual([]);
+    });
+  });
+
   describe('getTodayCount', () => {
     test('subtracts slot_reset entries from today-only pr_created entries', async () => {
       const today = new Date().toISOString().split('T')[0];

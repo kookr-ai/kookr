@@ -42,21 +42,28 @@ export class LedgerAnalytics {
   }
 
   /**
-   * PR-keyed attempts for a project within the last N days. Used by
-   * project-summary for "open PRs" count and last-contribution timestamp.
-   * Scouted-only records are excluded.
+   * All PR-keyed attempts for a project. Scouted-only records are excluded.
+   * Used by project-summary for current-state counters such as "open PRs".
    */
-  getAttemptsByProjectRecent(projectId: string, days: number): ContributionAttempt[] {
+  getAttemptsByProject(projectId: string): ContributionAttempt[] {
     const repoVariants = projectIdToRepoVariants(projectId);
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - days);
-    const cutoffStr = cutoff.toISOString();
     return this.source.getAttemptsReadonly().filter(
       (a) =>
         a.state !== 'scouted' &&
-        repoVariants.includes(a.repo.toLowerCase()) &&
-        a.createdAt >= cutoffStr,
+        repoVariants.includes(a.repo.toLowerCase()),
     );
+  }
+
+  /**
+   * PR-keyed attempts for a project within the last N days. Used by
+   * contribution-history endpoints that intentionally show recent activity.
+   * Scouted-only records are excluded.
+   */
+  getAttemptsByProjectRecent(projectId: string, days: number): ContributionAttempt[] {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    const cutoffStr = cutoff.toISOString();
+    return this.getAttemptsByProject(projectId).filter((a) => a.createdAt >= cutoffStr);
   }
 
   /**
