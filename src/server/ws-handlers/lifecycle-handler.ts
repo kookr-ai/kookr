@@ -18,6 +18,11 @@ import { generateCompletionDigest } from '../../core/completion-digest.js';
 import { getSnapshotAgentsForClient } from '../use-cases/get-snapshot.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { handleLaunchResult } from './launch-result.js';
+import { writeFeedbackBundle } from '../use-cases/write-feedback-bundle.js';
+import { requestTaskReflect } from '../use-cases/request-task-reflect.js';
+import type { TaskCompletionFeedback } from '../../core/tasks.js';
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 
 /**
  * Narrow dependency bag for task-lifecycle messages.
@@ -49,6 +54,14 @@ export interface LifecycleHandlerDeps {
   getLifecycleDeps: () => LifecycleDeps;
   /** Promote pending tasks if concurrency slots have opened. */
   tryPromotePending: () => Promise<void>;
+  /** Where feedback bundles are written. Typically `<kookrDir>/feedback`. Optional — feedback is fail-open. */
+  feedbackDir?: string;
+  /** Where ephemeral reflect worktrees live. Typically `<kookrDir>/reflect-worktrees`. */
+  reflectWorktreesDir?: string;
+  /** Where hook JSONLs live. Typically `<kookrDir>/hooks`. */
+  hooksDir?: string;
+  /** Reads the current full interaction log (snapshot at submission time). */
+  readInteractionLogSnapshot?: () => Promise<import('../../core/interaction-log.js').InteractionEvent[]>;
 }
 
 type LifecycleMessage = Extract<ClientMessage, {
@@ -64,6 +77,8 @@ type LifecycleMessage = Extract<ClientMessage, {
     | 'clearCompleted'
     | 'ackTerminatedTask'
     | 'getNext'
+    | 'setTaskFeedback'
+    | 'requestTaskReflect'
 }>;
 
 /**
@@ -176,7 +191,52 @@ export class LifecycleHandler {
           });
         }
 
+        // Apply optional feedback + auto-trigger reflect on thumbs-down.
+        // Failure here is fail-open (logged) — never blocks completion.
+        if (msg.feedback && completingTask) {
+          await this.applyFeedback(msg.taskId, sanitizeFeedback(msg.feedback), 'submit');
+        }
+
         await this.deps.tryPromotePending();
+        return { duplicate: false };
+      }
+
+      case 'setTaskFeedback': {
+        const task = this.deps.taskStore.getTask(msg.taskId);
+        if (!task) return { duplicate: false };
+        await this.applyFeedback(msg.taskId, sanitizeFeedback(msg.feedback), 'amend');
+        return { duplicate: false };
+      }
+
+      case 'requestTaskReflect': {
+        if (!this.deps.reflectWorktreesDir || !this.deps.launchTask) {
+          console.warn('[requestTaskReflect] missing deps; ignoring');
+          return { duplicate: false };
+        }
+        const task = this.deps.taskStore.getTask(msg.taskId);
+        if (!task?.completionFeedback) {
+          console.warn(`[requestTaskReflect] task ${msg.taskId} has no feedback; ignoring`);
+          return { duplicate: false };
+        }
+        // Manual trigger — find the most recent bundle for this task.
+        const bundlePath = await findLatestBundleDir(this.deps.feedbackDir, msg.taskId);
+        if (!bundlePath) {
+          console.warn(`[requestTaskReflect] no bundle found for ${msg.taskId}; ignoring`);
+          return { duplicate: false };
+        }
+        const result = await requestTaskReflect(
+          { sourceTaskId: msg.taskId, bundlePath, direction: msg.direction },
+          {
+            taskStore: this.deps.taskStore,
+            reflectWorktreesDir: this.deps.reflectWorktreesDir,
+            launchTask: this.deps.launchTask,
+          },
+        );
+        if (!result.spawned) {
+          console.warn(`[requestTaskReflect] spawn declined: ${result.reason}`);
+        } else {
+          console.log(`[requestTaskReflect] spawned reflect ${result.reflectTaskId} for ${msg.taskId} (${msg.direction})`);
+        }
         return { duplicate: false };
       }
 
@@ -228,6 +288,15 @@ export class LifecycleHandler {
               return { duplicate: false };
             }
           }
+          // Bundle gc: skip task IDs that have an in-flight reflect task pointing
+          // at them — the reflect must keep reading its bundle.
+          const inFlightReflectSourceIds = new Set<string>();
+          for (const t of this.deps.taskStore.listTasks()) {
+            if (t.reflectMeta?.sourceTaskId && !isTerminalStatusForReflect(t.status)) {
+              inFlightReflectSourceIds.add(t.reflectMeta.sourceTaskId);
+            }
+          }
+
           for (const task of toClear) {
             if (!this.deps.taskStore.getTask(task.id)) continue;
             // Unregister any remaining agent entries from the monitor
@@ -236,6 +305,11 @@ export class LifecycleHandler {
               this.deps.monitor.unregisterAgent(session.tmuxSession);
             }
             this.deps.taskStore.deleteTask(task.id);
+            // Bundle gc — best effort, never blocks
+            if (this.deps.feedbackDir && !inFlightReflectSourceIds.has(task.id)) {
+              const bundleTaskDir = join(this.deps.feedbackDir, task.id);
+              rm(bundleTaskDir, { recursive: true, force: true }).catch(() => {});
+            }
           }
         }
         return { duplicate: false };
@@ -264,4 +338,148 @@ export class LifecycleHandler {
       }
     }
   }
+
+  /**
+   * Persist feedback, write the bundle snapshot, log the interaction event, and
+   * (on thumbs-down) auto-spawn a reflect task. Mode controls which interaction
+   * event type is emitted: `submit` for first-write inside completeTask,
+   * `amend` for post-completion changes via setTaskFeedback.
+   *
+   * Failures here are fail-open and logged — feedback is enrichment, never a
+   * blocker for the completion lifecycle.
+   */
+  private async applyFeedback(
+    taskId: string,
+    feedback: TaskCompletionFeedback,
+    mode: 'submit' | 'amend',
+  ): Promise<void> {
+    const task = this.deps.taskStore.getTask(taskId);
+    if (!task) return;
+    const changed = this.deps.taskStore.setCompletionFeedback(taskId, feedback);
+    if (!changed) {
+      // No-op amendment (deep-equal to existing) — suppress event emit and reflect spawn
+      return;
+    }
+
+    const agentId = task.sessions[0]?.tmuxSession ?? '';
+    await this.deps.interactionLog?.append({
+      type: mode === 'submit' ? 'task_feedback_submitted' : 'task_feedback_amended',
+      taskId,
+      agentId,
+      rating: feedback.rating,
+      ...(feedback.note !== undefined ? { note: feedback.note } : {}),
+      ...(feedback.downReason !== undefined ? { downReason: feedback.downReason } : {}),
+      timestamp: nowISO(),
+    });
+
+    // Write feedback bundle snapshot. Best-effort.
+    let bundlePath: string | undefined;
+    if (
+      this.deps.feedbackDir &&
+      this.deps.hooksDir &&
+      this.deps.readInteractionLogSnapshot
+    ) {
+      try {
+        const result = await writeFeedbackBundle(task, feedback, {
+          feedbackDir: this.deps.feedbackDir,
+          hooksDir: this.deps.hooksDir,
+          readInteractionLog: this.deps.readInteractionLogSnapshot,
+        });
+        bundlePath = result.bundlePath;
+      } catch (err) {
+        console.warn(`[feedback] bundle write failed for ${taskId}:`, err);
+      }
+    }
+
+    // Auto-trigger reflect on thumbs-down, kill switch is checked inside.
+    if (
+      feedback.rating === 'down' &&
+      bundlePath &&
+      this.deps.reflectWorktreesDir &&
+      this.deps.launchTask
+    ) {
+      const result = await requestTaskReflect(
+        { sourceTaskId: taskId, bundlePath, direction: 'down' },
+        {
+          taskStore: this.deps.taskStore,
+          reflectWorktreesDir: this.deps.reflectWorktreesDir,
+          launchTask: this.deps.launchTask,
+        },
+      );
+      if (result.spawned) {
+        console.log(`[feedback] auto-reflect spawned ${result.reflectTaskId} for ${taskId}`);
+      } else {
+        console.log(`[feedback] auto-reflect skipped for ${taskId}: ${result.reason}`);
+      }
+    }
+  }
+}
+
+/**
+ * Sanitize a feedback note before persistence:
+ *   - hard-truncate to 500 chars
+ *   - redact known secret prefixes
+ */
+function sanitizeFeedback(input: TaskCompletionFeedback): TaskCompletionFeedback {
+  const out: TaskCompletionFeedback = { rating: input.rating };
+  if (input.downReason) out.downReason = input.downReason;
+  if (input.note !== undefined) {
+    let note = input.note;
+    if (note.length > 500) {
+      note = note.slice(0, 500) + ' [truncated]';
+    }
+    note = redactSecrets(note);
+    out.note = note;
+  }
+  return out;
+}
+
+const SECRET_PATTERNS: RegExp[] = [
+  /\bsk-[A-Za-z0-9_-]{16,}\b/g,
+  /\bAKIA[A-Z0-9]{16}\b/g,
+  /\bghp_[A-Za-z0-9]{16,}\b/g,
+  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, // JWT
+  /\bxoxb-[A-Za-z0-9-]{16,}\b/g,
+  /\bglpat-[A-Za-z0-9_-]{16,}\b/g,
+  /\bhf_[A-Za-z0-9]{16,}\b/g,
+  /\bnpm_[A-Za-z0-9]{16,}\b/g,
+  /\bpypi-[A-Za-z0-9_-]{16,}\b/g,
+  /\bdckr_pat_[A-Za-z0-9_-]{16,}\b/g,
+  /\bya29\.[A-Za-z0-9_-]+\b/g,
+  /-----BEGIN [A-Z ]+-----[\s\S]+?-----END [A-Z ]+-----/g,
+];
+
+function redactSecrets(s: string): string {
+  let out = s;
+  for (const re of SECRET_PATTERNS) out = out.replace(re, '[REDACTED]');
+  return out;
+}
+
+/** Reflect tasks whose own status is non-terminal still need their bundle. */
+function isTerminalStatusForReflect(status: string): boolean {
+  return status === 'completed' || status === 'cancelled' || status === 'terminated';
+}
+
+/**
+ * Find the most recent bundle dir under `<feedbackDir>/<taskId>/`. Bundles are
+ * named with timestamp slugs so lex-sorting newest-last is reliable.
+ */
+async function findLatestBundleDir(
+  feedbackDir: string | undefined,
+  taskId: string,
+): Promise<string | undefined> {
+  if (!feedbackDir) return undefined;
+  const taskDir = join(feedbackDir, taskId);
+  const { readdir } = await import('node:fs/promises');
+  let entries: string[] = [];
+  try {
+    entries = (await readdir(taskDir, { withFileTypes: true }))
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+  } catch {
+    return undefined;
+  }
+  if (entries.length === 0) return undefined;
+  return join(taskDir, entries[entries.length - 1]);
 }

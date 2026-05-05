@@ -7,7 +7,7 @@ import type { QuickAction } from '../../core/response-assist.js';
 import type { TelemetryEvent } from '../../core/telemetry.js';
 import type { ProjectSummary } from '../../core/project-summary.js';
 import type { ProjectConfig } from '../../core/project-config-store.js';
-import type { AutonomyLevel } from '../../core/tasks.js';
+import type { AutonomyLevel, TaskCompletionFeedback } from '../../core/tasks.js';
 import type { AgentType, AvailableAgentType } from '../../core/agent-types.js';
 import type { QuotaStatus } from '../../core/quota-types.js';
 import type { CircuitBreakerSnapshot } from '../../core/circuit-breaker.js';
@@ -25,6 +25,7 @@ import type { AttemptState, ContributionAttempt, IssueCheckError } from '../../c
 // (and any other consumer that only talks to the wire) never has to import
 // from src/core/* directly. See boundary-critic review of PR #384.
 export type { AttemptState, ContributionAttempt, IssueCheckError };
+export type { TaskCompletionFeedback };
 
 /** Per-project outcome of a cross-project worktree sweep. */
 export type CrossProjectSweepProjectResult =
@@ -133,7 +134,9 @@ export type ClientMessage =
   | { type: 'snooze'; agentId: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }
   | { type: 'cancelSnooze'; agentId: string }
   | { type: 'launch'; prompt: string; cwd: string; criteria?: string; autonomy?: AutonomyLevel; agentType?: AgentType }
-  | { type: 'completeTask'; taskId: string }
+  | { type: 'completeTask'; taskId: string; feedback?: TaskCompletionFeedback }
+  | { type: 'setTaskFeedback'; taskId: string; feedback: TaskCompletionFeedback }
+  | { type: 'requestTaskReflect'; taskId: string; direction: 'up' | 'down' }
   | { type: 'relaunch'; taskId: string; prompt: string; agentType?: AgentType }
   | { type: 'cancelTask'; taskId: string }
   | { type: 'reopenTask'; taskId: string }
