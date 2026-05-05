@@ -54,7 +54,157 @@ describe('parsePlaybook', () => {
     expect(pb.description).toBe('');
     expect(pb.parameters).toEqual([]);
     expect(pb.checklist).toEqual([]);
+    expect(pb.tags).toEqual([]);
+    expect(pb.effectiveLoop).toBeUndefined();
     expect(pb.body).toBe('Do the thing.');
+  });
+
+  test('parses loopable workflow tags and effective loop defaults', () => {
+    const content = `---
+name: Loopable workflow
+tags: [workflow, loopable]
+---
+
+Do the durable thing.
+`;
+
+    const pb = parsePlaybook(content, 'loopable.md', '/project');
+
+    expect(pb.tags).toEqual(['workflow', 'loopable']);
+    expect(pb.loop).toBeUndefined();
+    expect(pb.loopValidationError).toBeUndefined();
+    expect(pb.effectiveLoop).toEqual({
+      iterationCap: 6,
+      costCapUsd: 5,
+      sources: {
+        iterationCap: 'default',
+        costCapUsd: 'default',
+      },
+    });
+  });
+
+  test('parses quoted inline tags and loop config', () => {
+    const content = `---
+name: Configured loop
+tags: ["workflow", "loopable"]
+loop:
+  iterationCap: 9
+  zeroDiffConsecutiveIterations: 3
+  costCapUsd: 2.5
+---
+
+Do the durable thing.
+`;
+
+    const pb = parsePlaybook(content, 'configured.md', '/project');
+
+    expect(pb.tags).toEqual(['workflow', 'loopable']);
+    expect(pb.loop).toEqual({
+      iterationCap: 9,
+      zeroDiffConsecutiveIterations: 3,
+      costCapUsd: 2.5,
+    });
+    expect(pb.effectiveLoop).toEqual({
+      iterationCap: 9,
+      zeroDiffConsecutiveIterations: 3,
+      costCapUsd: 2.5,
+      sources: {
+        iterationCap: 'playbook',
+        zeroDiffConsecutiveIterations: 'playbook',
+        costCapUsd: 'playbook',
+      },
+    });
+  });
+
+  test('parses list-style tags', () => {
+    const content = `---
+name: List tags
+tags:
+  - workflow
+  - loopable
+---
+
+Body.
+`;
+
+    const pb = parsePlaybook(content, 'tags.md', '/project');
+
+    expect(pb.tags).toEqual(['workflow', 'loopable']);
+    expect(pb.effectiveLoop?.iterationCap).toBe(6);
+  });
+
+  test('preserves standard launch metadata when loop config is invalid', () => {
+    const content = `---
+name: Bad loop
+tags: [workflow, loopable]
+loop:
+  iterationCap: 50
+---
+
+Body.
+`;
+
+    const pb = parsePlaybook(content, 'bad-loop.md', '/project');
+
+    expect(pb.tags).toEqual(['workflow', 'loopable']);
+    expect(pb.loop).toBeUndefined();
+    expect(pb.effectiveLoop).toBeUndefined();
+    expect(pb.loopValidationError).toBe('loop.iterationCap must be between 1 and 20');
+    expect(pb.body).toBe('Body.');
+  });
+
+  test('parses single-line stopPredicate and propagates through effectiveLoop', () => {
+    const content = `---
+name: Stop predicate
+tags: [workflow, loopable]
+loop:
+  iterationCap: 8
+  stopPredicate: 'test -f .batch-stop && grep -qE "^STOP:" .batch-stop'
+---
+
+Body.
+`;
+
+    const pb = parsePlaybook(content, 'predicate.md', '/project');
+
+    expect(pb.loop?.stopPredicate).toBe('test -f .batch-stop && grep -qE "^STOP:" .batch-stop');
+    expect(pb.effectiveLoop?.stopPredicate).toBe('test -f .batch-stop && grep -qE "^STOP:" .batch-stop');
+    expect(pb.loopValidationError).toBeUndefined();
+  });
+
+  test('rejects empty stopPredicate', () => {
+    const content = `---
+name: Empty predicate
+tags: [workflow, loopable]
+loop:
+  iterationCap: 5
+  stopPredicate: ""
+---
+
+Body.
+`;
+
+    const pb = parsePlaybook(content, 'empty-predicate.md', '/project');
+
+    expect(pb.effectiveLoop).toBeUndefined();
+    expect(pb.loopValidationError).toBe('loop.stopPredicate must be a non-empty string');
+  });
+
+  test('validates zero-diff convergence against default iteration cap', () => {
+    const content = `---
+name: Bad zero-diff
+tags: [workflow, loopable]
+loop:
+  zeroDiffConsecutiveIterations: 10
+---
+
+Body.
+`;
+
+    const pb = parsePlaybook(content, 'bad-zero-diff.md', '/project');
+
+    expect(pb.effectiveLoop).toBeUndefined();
+    expect(pb.loopValidationError).toBe('loop.zeroDiffConsecutiveIterations must not exceed loop.iterationCap');
   });
 
   test('throws on missing frontmatter delimiter', () => {

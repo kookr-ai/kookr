@@ -19,7 +19,7 @@ import { applyWorktreeGuardrails } from './worktree-guardrails.js';
  * that referred to a now-missing directory. The fallback is also what lets
  * unit tests pass paths like "/tmp" without caring whether that dir is present.
  */
-function canonicalizeCwd(cwd: string): string {
+export function canonicalizeCwd(cwd: string): string {
   try {
     return realpathSync(cwd);
   } catch {
