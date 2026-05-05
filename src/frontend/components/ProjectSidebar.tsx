@@ -326,7 +326,7 @@ export function ProjectSidebar({ onManage }: Props) {
   }
 
   return (
-    <div className="project-sidebar" data-testid="project-sidebar">
+    <div className="project-sidebar kookr-tour-target-layout" data-testid="project-sidebar">
       <Tooltip text="All Projects">
         <button
           aria-label="All Projects"

@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
+import { open as openOnboardingTour } from '../store/onboarding-store.js';
 
 interface Shortcut {
   keys: string[];
@@ -76,16 +77,30 @@ export function ShortcutsHelp({ onClose }: Props) {
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [onClose]);
 
+  function handleReplayTour() {
+    openOnboardingTour();
+    onClose();
+  }
+
   return (
     <div className="dialog-overlay" onClick={onClose}>
       <div className="shortcuts-help" onClick={(e) => e.stopPropagation()}>
         <div className="shortcuts-header">
-          <h3>Keyboard Shortcuts</h3>
+          <h3>Help &amp; Shortcuts</h3>
           <button className="shortcuts-close" onClick={onClose} aria-label="Close">
             &times;
           </button>
         </div>
         <div className="shortcuts-body">
+          <div className="shortcuts-group">
+            <button
+              type="button"
+              className="shortcuts-tour-cta"
+              onClick={handleReplayTour}
+            >
+              Take the product tour <span aria-hidden="true">{'→'}</span>
+            </button>
+          </div>
           {SHORTCUT_GROUPS.map((group) => (
             <div key={group.title} className="shortcuts-group">
               <h4>{group.title}</h4>

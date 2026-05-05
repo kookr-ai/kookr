@@ -11,7 +11,12 @@ import { test as base, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 
-export const test = base.extend<{}, { serverURL: string }>({
+export const test = base.extend<{ suppressOnboarding: boolean }, { serverURL: string }>({
+  // Test-level option: when true (default), the fixture pre-marks the
+  // onboarding tour as seen so its overlay does not intercept clicks meant
+  // for other dialogs. The tour's own spec sets this to false.
+  suppressOnboarding: [true, { option: true }],
+
   // Worker-scoped: one server per Playwright worker process
   serverURL: [async ({}, use) => {
     const proc: ChildProcess = spawn(
@@ -81,6 +86,19 @@ export const test = base.extend<{}, { serverURL: string }>({
   // Override Playwright's built-in baseURL so page/request use the per-worker server
   baseURL: async ({ serverURL }, use) => {
     await use(serverURL);
+  },
+
+  // Default: pre-mark the onboarding tour as seen so its overlay does not
+  // intercept clicks in other tests' flows. The tour's own spec opts out via
+  // `test.use({ suppressOnboarding: false })`.
+  page: async ({ page, suppressOnboarding }, use) => {
+    if (suppressOnboarding) {
+      await page.addInitScript(() => {
+        try { window.localStorage.setItem('kookr:onboarding:seen-v1', 'true'); }
+        catch { /* ignore */ }
+      });
+    }
+    await use(page);
   },
 });
 

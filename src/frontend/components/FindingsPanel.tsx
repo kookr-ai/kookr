@@ -1023,7 +1023,7 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
   }
 
   return (
-    <div className="findings-panel" onClick={handlePanelClick}>
+    <div className="findings-panel kookr-tour-target-findings kookr-tour-target-layout" onClick={handlePanelClick}>
       <div className="findings-header">
         <span>Supervisor Findings</span>
         {findings.length > 0 && (
@@ -1033,7 +1033,7 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
       <div className="findings-scroll-area" ref={scrollAreaRef}>
         {findings.length === 0 && totalAgents === 0 && (
           <div className="findings-empty">
-            No agents running. Click <strong>+ Launch</strong> to start one.
+            No agents running yet — launch one to begin.
           </div>
         )}
         {Array.from(findingGroups.entries()).map(([type, agents]) => (

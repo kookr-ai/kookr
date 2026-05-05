@@ -169,3 +169,6 @@ vendor/
 # Each branch writes its own .review-state/<key>.json before push;
 # never commit these.
 .review-state/
+
+# Graphify per-session artifact directory.
+graphify-out/
