@@ -84,7 +84,25 @@ If the push changed tests, test helpers, mocks, or build/test harness code, re-r
 - If bots or reviewers left actionable comments, switch to [[pr-review-triage]]
 - If checklist items or PR metadata are stale, switch to [[pr-lifecycle]]
 
-### 6. Report PR health explicitly
+### 6. Wait-then-merge (substitute for `gh pr merge --auto`)
+
+GitHub auto-merge is unavailable on this repo (private + Free plan, no branch
+protection — see issue #29). `gh pr merge <PR> --auto --squash --delete-branch`
+fails with `Auto merge is not allowed for this repository`.
+
+Use the repo wrapper instead:
+
+```bash
+pnpm merge <PR_NUMBER>            # equivalent to:
+bash scripts/kookr-merge.sh <PR_NUMBER>
+```
+
+The wrapper performs `gh pr checks --watch` and then squash-merges with
+`--delete-branch` once checks pass. It refuses to merge a closed, draft, or
+changes-requested PR. Use it instead of writing one-off `sleep` polling loops
+or scheduling wakeups. Do not invoke `gh pr merge --auto` on this repo.
+
+### 7. Report PR health explicitly
 
 Before you say the branch is in good shape, report:
 
