@@ -90,7 +90,16 @@ export async function reconcile(
     // Auto-transition task when all sessions are done. See
     // rfc-task-loss-prevention.md D1 for why this goes to 'terminated', not
     // 'completed'.
+    //
+    // Ralph loops are exempt: between iterations the prior session is dead
+    // and the next has not yet been registered. The loop service drives the
+    // gap; reconciliation must not racily mark the parent task 'terminated'
+    // during that window. See docs/rfc/rfc-ralph-loop-batch-mode-findings.md
+    // Phase 0.
+    const ralphActive =
+      task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
     if (
+      !ralphActive &&
       (task.status === 'inProgress' || task.status === 'open') &&
       task.sessions.length > 0 &&
       task.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted')
