@@ -90,15 +90,22 @@ set.
 
 ## Speech IO
 
+Bundled STT and TTS run via Docker Compose. The default STT config targets an NVIDIA GPU with the NVIDIA Container Toolkit; switch to the CPU-fallback values below (and remove the GPU device reservation in `stt/docker-compose.yml`) to run on CPU.
+
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_STT` | unset | `true` to enable | Starts bundled speech-to-text services when no `KOOKR_STT_URL` is provided. |
 | `KOOKR_STT_URL` | unset | WebSocket URL | Uses an external speech-to-text service and skips bundled startup. |
 | `KOOKR_STT_PORT` | `8003` | Integer port | Port for the bundled speech-to-text service. Also injected into the STT child process. |
 | `KOOKR_STT_HEALTH_TIMEOUT_S` | `600` | Positive number of seconds | Maximum time to wait for the bundled speech-to-text service health check. Increase for slow first-run Whisper model downloads. |
+| `WHISPER_IMAGE` | `fedirz/faster-whisper-server:latest-cuda` | Container image reference | Faster-Whisper server image used by the bundled STT stack. CPU fallback: `fedirz/faster-whisper-server:latest-cpu`. |
+| `WHISPER_MODEL` | `large-v3` | Faster-Whisper model id (`tiny`, `base`, `small`, `medium`, `large-v3`, ...) | Whisper model loaded by the STT sidecar. CPU fallback: `base`. First `KOOKR_STT=true` boot downloads the model (~3 GB for `large-v3`). |
+| `WHISPER_DEVICE` | `cuda` | `cuda` or `cpu` | Inference device for the Whisper sidecar. Set to `cpu` for the CPU fallback. |
+| `WHISPER_COMPUTE_TYPE` | `float16` | `float16`, `int8`, `int8_float16`, ... | Quantization/precision for Whisper inference. CPU fallback: `int8`. |
 | `KOOKR_TTS` | unset | `true` to enable | Starts bundled text-to-speech services when no `KOOKR_TTS_URL` is provided. |
 | `KOOKR_TTS_URL` | unset | HTTP/WebSocket URL expected by the client | Uses an external text-to-speech service and skips bundled startup. |
 | `KOOKR_TTS_PORT` | `8004` | Integer port | Port for the bundled text-to-speech service. Also injected into the TTS child process. |
+| `TTS_VOICE` | `/app/voices/matilda.mp3` | Path inside the `kookr-tts` container | Default voice used by the bundled TTS service. Built-in voices live under `/app/voices/`: `matilda`, `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`. Custom voices: drop MP3/WAV files in `tts/voices/` and reference as `/app/voices/<name>.<ext>`. |
 
 ## Diagnostics And Budgeting
 
