@@ -11,9 +11,9 @@ import type { RouteDeps } from './shared.js';
 /** Strip GIT_DIR so git subprocesses work in test dirs, not the repo. */
 const cleanEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
 
-function makeApp(serverCwd: string): Hono {
+function makeApp(serverCwd: string, serverPort: number = 4800): Hono {
   const app = new Hono();
-  registerDeployRoutes(app, { serverCwd } as unknown as RouteDeps);
+  registerDeployRoutes(app, { serverCwd, serverPort } as unknown as RouteDeps);
   return app;
 }
 
@@ -41,6 +41,18 @@ describe('deploy-routes', () => {
       const res = await app.request('/api/deploy/status');
       const body = await res.json();
       expect(body.configured).toBe(false);
+      expect(body.runningPort).toBe(4800);
+      expect(body.prodPort).toBe(4800);
+    });
+
+    it('reports the dev runningPort separately from prodPort so the dashboard can detect non-prod servers', async () => {
+      // Dev server (4801) with no prod dir configured — the response must
+      // still surface both ports so the TopBar can hide the deploy button.
+      const app = makeApp(mainDir, 4801);
+      const res = await app.request('/api/deploy/status');
+      const body = await res.json();
+      expect(body.runningPort).toBe(4801);
+      expect(body.prodPort).toBe(4800);
     });
 
     it('returns available:false when prod is up to date', async () => {

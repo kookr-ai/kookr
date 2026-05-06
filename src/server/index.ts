@@ -778,7 +778,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
     interactionLog,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
-    serverCwd, frontendDir, broadcastToAll,
+    serverCwd, serverPort: port, frontendDir, broadcastToAll,
     shadowRegistry, httpPushTracker, launchServiceDeps, sttUrl,
     projectConfigStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts,
