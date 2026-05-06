@@ -23,6 +23,7 @@ import type { AutonomyOrchestrator } from './autonomy-orchestrator.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { AgentType, AvailableAgentType } from '../core/agent-types.js';
 import type { ScheduleService } from './schedule-service.js';
+import type { RalphLoopService } from './ralph-loop-service.js';
 import type { WorkspaceAttemptRepository } from '../core/workspace-attempt-repository.js';
 import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
@@ -66,6 +67,7 @@ export interface WsConnectionDeps {
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentType;
   scheduleService?: ScheduleService;
+  ralphLoopService: RalphLoopService;
   /** Get latest self-diagnostic status (for initial connection burst). */
   getDiagnosticStatus?: () => { report: import('../core/self-diagnostic.js').DiagnosticReport | null; lastError: string | null };
   /** Workspace services (Phase 1a). */
@@ -118,6 +120,7 @@ export function handleWsConnection(
     availableAgentTypes: deps.availableAgentTypes,
     defaultAgentType: deps.defaultAgentType,
     scheduleService: deps.scheduleService,
+    ralphLoopService: deps.ralphLoopService,
     workspaceEnabled: deps.workspaceEnabled,
     attemptRepository: deps.attemptRepository,
     policyResolver: deps.policyResolver,

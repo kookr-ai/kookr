@@ -35,6 +35,8 @@ export interface ResumeContext {
 export interface AdapterLaunchOptions {
   /** When set, the adapter applies a stricter sandbox: write-allowlist, memory frontmatter gate, no destructive bash. */
   sandboxProfile?: 'reflect';
+  /** Preallocated terminal session id. Ralph loops use this to publish ownership before spawning. */
+  tmuxName?: string;
   /**
    * Per-call override of the adapter's constructor-time `bypassAllPermissions`
    * default. When set, this value wins over instance state for THIS launch

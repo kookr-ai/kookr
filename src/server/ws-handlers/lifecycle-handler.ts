@@ -6,6 +6,7 @@ import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
 import type { AutonomyOrchestrator } from '../autonomy-orchestrator.js';
 import type { ScheduleService } from '../schedule-service.js';
+import type { RalphLoopService } from '../ralph-loop-service.js';
 import type { LaunchOpts, LaunchResult } from '../launch-service.js';
 import type { LifecycleDeps } from '../agent-lifecycle.js';
 import {
@@ -42,6 +43,7 @@ export interface LifecycleHandlerDeps {
   interactionLog?: DeferredInteractionLogWriter;
   autonomyOrchestrator?: AutonomyOrchestrator;
   scheduleService?: ScheduleService;
+  ralphLoopService: RalphLoopService;
   launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
   broadcastToAll?: (msg: ServerMessage) => void;
   takePredeleteSnapshot?: () => Promise<void>;
@@ -165,6 +167,12 @@ export class LifecycleHandler {
       case 'completeTask': {
         // Capture events before lifecycle cleanup deletes them from the monitor
         const completingTask = this.deps.taskStore.getTask(msg.taskId);
+        if (
+          completingTask?.ralphLoop
+          && (completingTask.ralphLoop.status === 'running' || completingTask.ralphLoop.status === 'paused')
+        ) {
+          this.deps.ralphLoopService.cancelLoop(completingTask);
+        }
         const preEvents: AgentEvent[] = [];
         if (completingTask) {
           for (const session of completingTask.sessions) {

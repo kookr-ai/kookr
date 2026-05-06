@@ -156,8 +156,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
    * Launch a Claude Code agent under the dtach backend.
    * Returns the session id (historically called `tmuxName`).
    */
-  async launch(taskId: string, prompt: string, cwd: string, resume?: ResumeContext, _opts?: AdapterLaunchOptions): Promise<string> {
-    const tmuxName = `kookr-${randomUUID().slice(0, 8)}`;
+  async launch(taskId: string, prompt: string, cwd: string, resume?: ResumeContext, opts?: AdapterLaunchOptions): Promise<string> {
+    const tmuxName = opts?.tmuxName ?? `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
     // Resolve per-(repo, branch) checkpoint dir if data dir is configured.

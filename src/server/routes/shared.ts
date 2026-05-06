@@ -29,6 +29,7 @@ import type { DiagnosticRunner } from '../diagnostic-runner.js';
 import type { CrashRecoveryResult } from '../crash-recovery.js';
 import type { RalphCycler } from '../../core/ralph-cycler.js';
 import type { TokenTracker } from '../../core/token-tracker.js';
+import type { RalphLoopService } from '../ralph-loop-service.js';
 
 export interface RouteDeps {
   taskStore: TaskStore;
@@ -83,4 +84,6 @@ export interface RouteDeps {
   ralphCycler?: RalphCycler;
   /** Token tracker — used by ralph routes to read cumulative cost. */
   tokenTracker?: TokenTracker;
+  /** Singleton Ralph loop orchestration service. */
+  ralphLoopService: RalphLoopService;
 }

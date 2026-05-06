@@ -22,8 +22,6 @@ export interface RalphLoopState {
   lastHandledStopFingerprint?: string;
   handlingStopFingerprint?: string;
   ownerSessionId?: string;
-  ownerRuntimeSessionId?: string;
-  ownerTranscriptPath?: string;
   cumulativeIterations: number;
 }
 

@@ -4,11 +4,11 @@ import { normalizeAgentType } from '../../core/agent-types.js';
 import { createSnapshotMessage, getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
 import { deleteTask } from '../use-cases/delete-task.js';
-import { launchFreshTaskSession, launchTask } from '../launch-service.js';
+import { launchTask } from '../launch-service.js';
 import { cancelTask as cancelTaskLifecycle } from '../agent-lifecycle.js';
 import { detectStandalonePlugin } from '../../core/ralph-plugin-coexistence.js';
 import { DEFAULT_RALPH_ITERATION_READ_LIMIT, MAX_RALPH_ITERATION_READ_LIMIT, formatIterationLogCsv, readIterationLog } from '../../core/ralph-iteration-log.js';
-import { RalphLoopService, validateRalphLoopRequest } from '../ralph-loop-service.js';
+import { validateRalphLoopRequest } from '../ralph-loop-service.js';
 import {
   launchLoopedPlaybook,
   LoopedPlaybookLaunchError,
@@ -38,18 +38,7 @@ const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, monitor, adapter, hookWatcher, watchdog, interactionLog, broadcastToAll, serverCwd, serverStartedAt } = deps;
-
-  const ralphLoopService = new RalphLoopService({
-    taskStore,
-    monitor,
-    serverCwd,
-    broadcastToAll,
-    interactionLog,
-    ralphCycler: deps.ralphCycler,
-    terminalBackend: deps.terminalBackend,
-    tokenTracker: deps.tokenTracker,
-    launchFreshTaskSession: (task, prompt) => launchFreshTaskSession(deps.launchServiceDeps, task, prompt),
-  });
+  const { ralphLoopService } = deps;
 
   app.get('/api/tasks', (c) => {
     const tasks = taskStore.listTasks();

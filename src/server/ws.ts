@@ -19,6 +19,7 @@ import type { AutonomyOrchestrator } from './autonomy-orchestrator.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { AgentType, AvailableAgentType } from '../core/agent-types.js';
 import type { ScheduleService } from './schedule-service.js';
+import type { RalphLoopService } from './ralph-loop-service.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
 import { PlaybookHandler } from './ws-handlers/playbook-handler.js';
 import { ConfigHandler } from './ws-handlers/config-handler.js';
@@ -63,6 +64,7 @@ export interface MessageRouterDeps {
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentType;
   scheduleService?: ScheduleService;
+  ralphLoopService: RalphLoopService;
   /** Workspace services (Phase 1a). */
   workspaceEnabled?: boolean;
   attemptRepository?: WorkspaceAttemptRepository;
@@ -138,6 +140,7 @@ export class MessageRouter {
       interactionLog: this.deps.interactionLog,
       autonomyOrchestrator: this.deps.autonomyOrchestrator,
       scheduleService: this.deps.scheduleService,
+      ralphLoopService: this.deps.ralphLoopService,
       launchTask: this.deps.launchTask,
       broadcastToAll: this.deps.broadcastToAll,
       takePredeleteSnapshot: this.deps.takePredeleteSnapshot,

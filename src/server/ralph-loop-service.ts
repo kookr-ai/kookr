@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { generateCompletionDigest } from '../core/completion-digest.js';
 import type { RalphCycler } from '../core/ralph-cycler.js';
@@ -42,12 +43,12 @@ export interface RalphLoopServiceDeps {
   monitor: Monitor;
   serverCwd: string;
   broadcastToAll: (msg: ServerMessage) => void;
-  interactionLog?: DeferredInteractionLogWriter;
-  ralphCycler?: RalphCycler;
-  terminalBackend?: TerminalBackend;
-  tokenTracker?: TokenTracker;
-  launchFreshTaskSession?: (task: Task, prompt: string) => Promise<string>;
-  completeTask?: (taskId: string) => Promise<void>;
+  interactionLog: DeferredInteractionLogWriter | undefined;
+  ralphCycler: RalphCycler | undefined;
+  terminalBackend: TerminalBackend;
+  tokenTracker: TokenTracker;
+  launchFreshTaskSession: (task: Task, prompt: string, opts?: { tmuxName?: string }) => Promise<string>;
+  completeTask: (taskId: string) => Promise<void>;
 }
 
 export interface RalphStopHandlingOptions {
@@ -474,37 +475,44 @@ export class RalphLoopService {
         cumulativeCostUsd,
       });
       const currentLoop = this.deps.taskStore.getTask(task.id)?.ralphLoop;
-      if (currentLoop?.handlingStopFingerprint === stopFingerprint) {
-        if (action.kind === 'launch_fresh') {
-          const actionTask = this.deps.taskStore.getTask(action.taskId) ?? task;
-          if (this.deps.monitor.refreshRalphZeroDiffStreak(sessionId)) {
-            this.broadcastSnapshot();
+      if (
+        !currentLoop
+        || currentLoop.status !== 'running'
+        || currentLoop.handlingStopFingerprint !== stopFingerprint
+      ) return;
+
+      if (action.kind === 'launch_fresh') {
+        const actionTask = this.deps.taskStore.getTask(action.taskId) ?? task;
+        if (this.deps.monitor.refreshRalphZeroDiffStreak(sessionId)) {
+          this.broadcastSnapshot();
+        }
+        try {
+          const newSessionId = await this.launchFreshRuntime(actionTask, action.text);
+          const loopAfterLaunch = this.deps.taskStore.getTask(task.id)?.ralphLoop;
+          if (loopAfterLaunch?.handlingStopFingerprint === stopFingerprint) {
+            delete loopAfterLaunch.handlingStopFingerprint;
+            loopAfterLaunch.lastHandledStopFingerprint = stopFingerprint;
           }
-          try {
-            const newSessionId = await this.launchFreshRuntime(actionTask, action.text);
-            const loopAfterLaunch = this.deps.taskStore.getTask(task.id)?.ralphLoop;
-            if (loopAfterLaunch?.handlingStopFingerprint === stopFingerprint) {
-              delete loopAfterLaunch.handlingStopFingerprint;
-              loopAfterLaunch.lastHandledStopFingerprint = stopFingerprint;
-            }
-            this.deps.monitor.refreshRalphZeroDiffStreak(newSessionId);
-            this.broadcastSnapshot();
-          } catch (err) {
-            const loopAfterLaunch = this.deps.taskStore.getTask(task.id)?.ralphLoop;
-            if (loopAfterLaunch?.handlingStopFingerprint === stopFingerprint) {
-              delete loopAfterLaunch.handlingStopFingerprint;
-              loopAfterLaunch.lastHandledStopFingerprint = stopFingerprint;
+          this.deps.monitor.refreshRalphZeroDiffStreak(newSessionId);
+          this.broadcastSnapshot();
+        } catch (err) {
+          const loopAfterLaunch = this.deps.taskStore.getTask(task.id)?.ralphLoop;
+          if (loopAfterLaunch?.handlingStopFingerprint === stopFingerprint) {
+            delete loopAfterLaunch.handlingStopFingerprint;
+            loopAfterLaunch.lastHandledStopFingerprint = stopFingerprint;
+            if (!(err instanceof RalphLaunchInterruptedError)) {
               loopAfterLaunch.status = 'failed';
             }
-            throw err;
           }
-          return;
+          if (err instanceof RalphLaunchInterruptedError) return;
+          throw err;
         }
-        if (action.kind !== 'noop') {
-          currentLoop.lastHandledStopFingerprint = stopFingerprint;
-        }
-        delete currentLoop.handlingStopFingerprint;
+        return;
       }
+      if (action.kind !== 'noop') {
+        currentLoop.lastHandledStopFingerprint = stopFingerprint;
+      }
+      delete currentLoop.handlingStopFingerprint;
       if (this.deps.monitor.refreshRalphZeroDiffStreak(sessionId)) {
         this.broadcastSnapshot();
       }
@@ -534,17 +542,35 @@ export class RalphLoopService {
   }
 
   private async launchFreshRuntime(task: Task, prompt: string): Promise<string> {
-    if (!this.deps.launchFreshTaskSession) {
-      throw new Error('Ralph loop service cannot launch a fresh runtime without launchFreshTaskSession');
-    }
-    const newSessionId = await this.deps.launchFreshTaskSession(task, prompt);
     const currentTask = this.deps.taskStore.getTask(task.id) ?? task;
-    const newSession = currentTask.sessions.find((session) => session.tmuxSession === newSessionId);
-    if (!newSession) {
-      throw new Error(`Fresh Ralph session ${newSessionId} was not registered on task ${task.id}`);
+    const loop = currentTask.ralphLoop;
+    if (!loop) throw new Error(`Task ${task.id} has no Ralph loop`);
+
+    const newTmuxName = `kookr-${randomUUID().slice(0, 8)}`;
+    loop.ownerSessionId = newTmuxName;
+
+    try {
+      await this.deps.launchFreshTaskSession(currentTask, prompt, { tmuxName: newTmuxName });
+    } catch (err) {
+      if (currentTask.ralphLoop?.ownerSessionId === newTmuxName) {
+        delete currentTask.ralphLoop.ownerSessionId;
+      }
+      throw err;
     }
-    claimRalphLoopOwner(currentTask, newSession, { allowTransfer: true });
-    return newSessionId;
+
+    const liveTask = this.deps.taskStore.getTask(task.id) ?? currentTask;
+    const liveLoop = liveTask.ralphLoop;
+    if (!liveLoop || liveLoop.status !== 'running') {
+      await this.deps.terminalBackend.killSession(newTmuxName).catch(() => undefined);
+      if (liveTask.ralphLoop?.ownerSessionId === newTmuxName) {
+        delete liveTask.ralphLoop.ownerSessionId;
+      }
+      throw new RalphLaunchInterruptedError(
+        `loop status changed during launch (now ${liveLoop?.status ?? 'gone'})`,
+      );
+    }
+
+    return newTmuxName;
   }
 
   private broadcastSnapshot(): void {
@@ -595,4 +621,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function missingLoop(): RalphLoopServiceResult<never> {
   return { ok: false, status: 404, body: { error: 'task has no Ralph loop attached' } };
+}
+
+class RalphLaunchInterruptedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RalphLaunchInterruptedError';
+  }
 }
