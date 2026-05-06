@@ -165,13 +165,30 @@ export class LifecycleHandler {
       }
 
       case 'completeTask': {
-        // Capture events before lifecycle cleanup deletes them from the monitor.
-        // For Ralph children, completing one iteration must NOT cancel the loop —
-        // the Stop hook on the killed session is what spawns the next iteration.
-        // To stop a Ralph loop entirely, use `cancelTask` (which calls cancelLoop
-        // before killing the owner session, preventing the Stop hook from
-        // re-launching). See rfc-ralph-loop-batch-mode-findings.md Phase 0.
         const completingTask = this.deps.taskStore.getTask(msg.taskId);
+
+        // Ralph child whose loop is still active: "complete" means "this
+        // iteration is done", not "the task is done". Skip task-level
+        // teardown (status transition, lease release, worktree cleanup —
+        // any of which would corrupt the next iteration's state) and just
+        // stop the live session(s). The Stop hook on the killed owner
+        // session is what spawns iteration N+1 in this same task. To stop
+        // the loop entirely, use cancelTask. See
+        // docs/rfc/rfc-ralph-loop-batch-mode-findings.md Phase 0.
+        if (
+          completingTask?.ralphLoop
+          && (completingTask.ralphLoop.status === 'running' || completingTask.ralphLoop.status === 'paused')
+        ) {
+          for (const session of completingTask.sessions) {
+            if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {
+              await cleanupSessionResourcesImpl(session.tmuxSession, this.deps.getLifecycleDeps());
+              this.deps.taskStore.updateSession(completingTask.id, session.tmuxSession, { lastStatus: 'completed' });
+            }
+          }
+          return { duplicate: false };
+        }
+
+        // Capture events before lifecycle cleanup deletes them from the monitor
         const preEvents: AgentEvent[] = [];
         if (completingTask) {
           for (const session of completingTask.sessions) {

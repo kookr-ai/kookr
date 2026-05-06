@@ -606,19 +606,54 @@ describe('WebSocket MessageRouter', () => {
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 
-  test('completeTask on a Ralph child does NOT cancel the loop (iteration done, not loop done)', async () => {
-    // Reframing: clicking complete on a Ralph child means "this iteration is
-    // done"; the next iteration spawns automatically via the Stop hook on the
-    // killed owner session. See rfc-ralph-loop-batch-mode-findings.md Phase 0.
+  test.each([['running' as const], ['paused' as const]])(
+    'completeTask on a Ralph child (loop=%s) is iteration-done, not task-done',
+    async (loopStatus) => {
+      // Reframing: clicking complete on a Ralph child means "this iteration is
+      // done"; the next iteration spawns automatically via the Stop hook on the
+      // killed owner session. Task-level teardown (status transition, worktree
+      // cleanup, lease release) MUST be skipped to keep the next iteration's
+      // state intact. See docs/rfc/rfc-ralph-loop-batch-mode-findings.md Phase 0.
+      const task = taskStore.createTask('Looped', '/cwd');
+      const tmuxName = await adapter.launch(task.id, 'Looped', '/cwd');
+      task.ralphLoop = {
+        prompt: 'iterate',
+        iterationCap: 5,
+        currentIteration: 1,
+        status: loopStatus,
+        lastIterationStartedAt: 0,
+        cumulativeIterations: 1,
+        ownerSessionId: tmuxName,
+      };
+      const startStatus = task.status;
+
+      await router.handleMessage({ type: 'completeTask', taskId: task.id });
+
+      expect(cancelLoop).not.toHaveBeenCalled();
+      // Task status is preserved — the loop continues, so the parent task
+      // does not transition to 'completed'.
+      expect(task.status).toBe(startStatus);
+      expect(task.ralphLoop.status).toBe(loopStatus);
+      // Owner session is killed so its Stop hook can spawn the next iteration.
+      expect(await terminal.isAlive(tmuxName)).toBe(false);
+      expect(task.sessions[0].lastStatus).toBe('completed');
+    },
+  );
+
+  test('completeTask on a Ralph child whose loop already terminated runs the normal completion flow', async () => {
+    // After predicate / cap / cost terminates the loop, completeTask falls
+    // through to the standard completion path (status transition, digest,
+    // worktree cleanup). The early-return guard only fires while the loop is
+    // still 'running' or 'paused'.
     const task = taskStore.createTask('Looped', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Looped', '/cwd');
     task.ralphLoop = {
       prompt: 'iterate',
       iterationCap: 5,
-      currentIteration: 1,
-      status: 'running',
+      currentIteration: 5,
+      status: 'completed',
       lastIterationStartedAt: 0,
-      cumulativeIterations: 1,
+      cumulativeIterations: 5,
       ownerSessionId: tmuxName,
     };
 
@@ -626,7 +661,6 @@ describe('WebSocket MessageRouter', () => {
 
     expect(cancelLoop).not.toHaveBeenCalled();
     expect(task.status).toBe('completed');
-    expect(task.ralphLoop.status).toBe('running');
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 
@@ -686,27 +720,55 @@ describe('WebSocket MessageRouter', () => {
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 
-  test('cancelTask on a Ralph child cancels the loop before killing the owner session', async () => {
-    // Cancellation must mark the loop cancelled before the Stop hook fires;
-    // otherwise the Stop handler would spawn the next iteration. See
-    // rfc-ralph-loop-batch-mode-findings.md Phase 0.
+  test.each([['running' as const], ['paused' as const]])(
+    'cancelTask on a Ralph child (loop=%s) cancels the loop before killing the owner session',
+    async (loopStatus) => {
+      // Cancellation must mark the loop cancelled before the owner session is
+      // killed; otherwise the Stop hook on the dead session would see
+      // `ralphLoop.status` still 'running'/'paused' and spawn the next
+      // iteration. cancelLoop is synchronous and runs before the awaited
+      // cancelTaskImpl in the handler, so the loop status flips before any
+      // session-kill side effect can happen. See
+      // docs/rfc/rfc-ralph-loop-batch-mode-findings.md Phase 0.
+      const task = taskStore.createTask('Looped', '/cwd');
+      const tmuxName = await adapter.launch(task.id, 'Looped', '/cwd');
+      task.ralphLoop = {
+        prompt: 'iterate',
+        iterationCap: 5,
+        currentIteration: 1,
+        status: loopStatus,
+        lastIterationStartedAt: 0,
+        cumulativeIterations: 1,
+        ownerSessionId: tmuxName,
+      };
+
+      await router.handleMessage({ type: 'cancelTask', taskId: task.id });
+
+      expect(cancelLoop).toHaveBeenCalledWith(task);
+      expect(task.status).toBe('cancelled');
+      expect(task.ralphLoop.status).toBe('cancelled');
+      expect(await terminal.isAlive(tmuxName)).toBe(false);
+    },
+  );
+
+  test('cancelTask on a Ralph child whose loop already terminated does not re-cancel', async () => {
     const task = taskStore.createTask('Looped', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Looped', '/cwd');
     task.ralphLoop = {
       prompt: 'iterate',
       iterationCap: 5,
-      currentIteration: 1,
-      status: 'running',
+      currentIteration: 5,
+      status: 'completed',
       lastIterationStartedAt: 0,
-      cumulativeIterations: 1,
+      cumulativeIterations: 5,
       ownerSessionId: tmuxName,
     };
 
     await router.handleMessage({ type: 'cancelTask', taskId: task.id });
 
-    expect(cancelLoop).toHaveBeenCalledWith(task);
+    expect(cancelLoop).not.toHaveBeenCalled();
     expect(task.status).toBe('cancelled');
-    expect(task.ralphLoop.status).toBe('cancelled');
+    expect(task.ralphLoop.status).toBe('completed');
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 
