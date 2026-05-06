@@ -281,7 +281,7 @@ See [Architecture docs](docs/architecture.md) for the full design and [ADR-014](
 
 ## Design Principles
 
-1. **Reuse, don't reinvent** — Agent drivers forked from [aegiscore](~/git/aegiscore). Skill format follows Claude Code conventions. Integrates with existing ecosystems rather than replacing them.
+1. **Reuse, don't reinvent** — Agent drivers were forked from a predecessor project. Skill format follows Claude Code conventions. Integrates with existing ecosystems rather than replacing them.
 2. **Smart supervisor, not coder** — Kookr's AI understands what agents are doing and explains anomalies. It doesn't write code itself.
 3. **Simple first** — No plugins, no persistence, no cloud for V1. Single package, in-memory state, spec-driven development.
 4. **Local-first** — Runs on the developer's machine. Critical for corporate environments behind VPNs. Linux + macOS.
