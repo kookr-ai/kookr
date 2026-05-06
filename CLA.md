@@ -44,4 +44,8 @@ Should You wish to submit work that is not Your original creation, You may submi
 
 Signing is automated through GitHub. When you open a pull request, a bot will comment with a link asking you to confirm your agreement to this CLA. You sign by posting the comment phrase the bot specifies on the pull request thread. Your GitHub username and the commit SHA are recorded as your signature.
 
-You only need to sign once. Future contributions are covered automatically.
+You only need to sign once. Future contributions are covered automatically — signatures are stored in [`kookr-ai/cla-signatures`](https://github.com/kookr-ai/cla-signatures) and matched by GitHub username on every subsequent PR.
+
+### Note for maintainers
+
+The same flow applies. On your first PR after the CLA gate landed, post the sign-off comment once. Future PRs (including AI-assisted commits authored under your git identity) are auto-recognized — there is no separate internal process. Make sure agent-driven worktrees inherit your real git identity so `Co-Authored-By:` trailers and primary commit authors line up with your signed username.
