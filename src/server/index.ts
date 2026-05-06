@@ -6,7 +6,7 @@ import { getRequestListener } from '@hono/node-server';
 import type { Hono } from 'hono';
 import { WebSocketServer, WebSocket } from 'ws';
 
-import { TaskStore } from '../core/tasks.js';
+import { TaskStore, type Task } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { Monitor } from '../core/monitor.js';
 import { loadBuildInfo } from '../core/build-info.js';
@@ -55,7 +55,7 @@ import {
   handleTerminalInput, handleTerminalKeystroke,
   type AgentLifecycleDeps, type TerminalInputDeps,
 } from './agent-lifecycle.js';
-import { launchTask, type LaunchServiceDeps } from './launch-service.js';
+import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
 import { ShadowDetectorRegistry } from '../core/shadow-detector.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
@@ -555,6 +555,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // installs the real implementation when it's ready.
   let onPermissionBlockedHolder: ((taskId: string, promptText: string) => void) | undefined;
 
+  // Late-bound Ralph fresh-runtime launcher. The Stop hot path inside
+  // wireEventPipeline constructs RalphLoopService instances that need this
+  // function to spawn iteration N+1's runtime when iteration N stops. The
+  // launcher itself depends on launchServiceDeps which is built later
+  // (because lifecycleDeps depends on autoNameTask, which depends on the
+  // task-naming service…). The holder is installed BEFORE
+  // runStartupRecoveryPhase below so that the first Stop event replayed
+  // for a resumed Ralph loop after server restart finds a real launcher
+  // — otherwise the loop would silently transition to `failed`.
+  let launchFreshTaskSessionHolder: ((task: Task, prompt: string) => Promise<string>) | undefined;
+
   const { abortPendingSuggestion } = wireEventPipeline({
     adapter, monitor, taskStore, tokenTracker, watchdog,
     githubScanner, llmClient, serverCwd, broadcastToAll,
@@ -563,6 +574,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ralphCycler,
     onPermissionBlocked: (taskId, promptText) => {
       onPermissionBlockedHolder?.(taskId, promptText);
+    },
+    launchFreshTaskSession: (task, prompt) => {
+      if (!launchFreshTaskSessionHolder) {
+        // Bootstrap installs the holder before runStartupRecoveryPhase, so
+        // a Stop event reaching here without one is genuinely impossible
+        // in production. Reject loudly rather than silently failing the
+        // loop downstream.
+        return Promise.reject(new Error(
+          'launchFreshTaskSession invoked before launchServiceDeps was wired',
+        ));
+      }
+      return launchFreshTaskSessionHolder(task, prompt);
     },
   });
 
@@ -656,6 +679,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
   };
 
+  // Live getter for max active tasks — reads from current settings.
+  const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
+
+  // Launch service deps — shared by WS handler, REST routes, and the Ralph
+  // cycler's fresh-runtime launcher inside wireEventPipeline.
+  const launchServiceDeps: LaunchServiceDeps = { taskStore, adapterRegistry, lifecycleDeps, getMaxActiveTasks, interactionLog };
+
+  // Install the late-bound fresh-runtime launcher BEFORE startup recovery.
+  // runStartupRecoveryPhase replays Stop events for resumed Ralph loops; if
+  // the holder were still undefined at that point, the loop's first Stop
+  // after server restart would reject inside wireEventPipeline's holder
+  // shim, RalphLoopService would mark the loop `failed`, and the only
+  // surface would be a stderr line. Order matters here.
+  launchFreshTaskSessionHolder = (task, prompt) => launchFreshTaskSession(launchServiceDeps, task, prompt);
+
   // Terminal input deps — used by terminal bridge handlers
   const terminalDeps: TerminalInputDeps = {
     monitor, abortPendingSuggestion, broadcastToAll, serverCwd,
@@ -684,12 +722,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd,
   });
   autonomyOrchestrator.rearmAfterRestart();
-
-  // Live getter for max active tasks — reads from current settings
-  const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
-
-  // Launch service deps — shared by WS handler and REST routes
-  const launchServiceDeps: LaunchServiceDeps = { taskStore, adapterRegistry, lifecycleDeps, getMaxActiveTasks, interactionLog };
 
   // Schedule system — load schedules and start the cron runner
   const scheduleStore = new ScheduleStore(kookrDir);

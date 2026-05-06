@@ -1,5 +1,5 @@
 import type { Monitor } from '../core/monitor.js';
-import type { TaskStore } from '../core/tasks.js';
+import type { Task, TaskStore } from '../core/tasks.js';
 import type { TokenTracker } from '../core/token-tracker.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
@@ -53,6 +53,17 @@ export interface EventPipelineDeps {
   onPermissionBlocked?: (taskId: string, promptText: string) => void;
   /** Optional Ralph iteration cycler — drives the loop state machine on Stop events. */
   ralphCycler?: RalphCycler;
+  /**
+   * Fresh-runtime launcher used by the Ralph cycler to spawn the next
+   * iteration's Claude Code runtime when a Stop event is accepted.
+   *
+   * Optional in the type only because tests with no Ralph loop don't need
+   * it; in production wiring it must be supplied so that
+   * `RalphLoopService.launchFreshRuntime` (called from the Stop hot path)
+   * doesn't throw and silently mark the loop `failed`. The attach path in
+   * `task-routes` already supplies the same launcher.
+   */
+  launchFreshTaskSession?: (task: Task, prompt: string) => Promise<string>;
 }
 
 /**
@@ -216,6 +227,9 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
       // Ralph iteration cycle: runtime Stop handling belongs to the same
       // ownership service used by route attach/resume catch-up.
       if (stopTask?.ralphLoop?.status === 'completed') {
+        // No launchFreshTaskSession: finalizeCompletedLoopStop never reaches
+        // launchFreshRuntime — adding it here would only invite a future
+        // refactor to assume it's always present.
         new RalphLoopService({
           taskStore, monitor, serverCwd, broadcastToAll,
           ralphCycler: deps.ralphCycler,
@@ -231,6 +245,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
         new RalphLoopService({
           taskStore, monitor, serverCwd, broadcastToAll,
           ralphCycler: deps.ralphCycler,
+          launchFreshTaskSession: deps.launchFreshTaskSession,
         })
           .handleStopEvent(stopTask, tmuxName, event, {
             cumulativeCostUsd: tokenTracker.getUsage(stopTask.id)?.costUsd ?? null,
