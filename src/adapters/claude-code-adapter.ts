@@ -198,7 +198,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // KOOKR_BYPASS_ALL_PERMISSIONS=true. --append-system-prompt is conditional
     // on checkpointing being wired (see docs/poc/005-checkpoint-cycle-mechanics.md).
     const args: string[] = [];
-    if (this.bypassAllPermissions) args.push('--dangerously-skip-permissions');
+    if (this.bypassAllPermissions) {
+      // Both flags required: ask-rules in user settings would otherwise match
+      // before bypass mode is consulted. See docs/poc/006-bypass-permissions-ask-rule-override.md.
+      args.push('--dangerously-skip-permissions');
+      args.push('--setting-sources', '');
+    }
     if (this.pluginDir) args.push('--plugin-dir', this.pluginDir);
     if (useResume) {
       // --fork-session creates a new sessionId for the resumed branch so the

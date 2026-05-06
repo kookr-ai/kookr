@@ -48,11 +48,12 @@ describe('ClaudeCodeAdapter', () => {
     expect(spec.args).toContain('--settings');
   });
 
-  test('launch does NOT include --dangerously-skip-permissions by default', async () => {
+  test('launch does NOT include --dangerously-skip-permissions or --setting-sources by default', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
     const spec = backend.sessions.get(sessionId)!.spec;
     expect(spec.args).not.toContain('--dangerously-skip-permissions');
+    expect(spec.args).not.toContain('--setting-sources');
   });
 
   test('launch includes --dangerously-skip-permissions when bypassAllPermissions is true', async () => {
@@ -68,6 +69,38 @@ describe('ClaudeCodeAdapter', () => {
     const settingsIdx = spec.args.indexOf('--settings');
     expect(bypassIdx).toBeGreaterThanOrEqual(0);
     expect(settingsIdx).toBeGreaterThan(bypassIdx);
+  });
+
+  test('launch includes --setting-sources "" when bypassAllPermissions is true', async () => {
+    const bypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      bypassAllPermissions: true,
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await bypassAdapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    const sourcesIdx = spec.args.indexOf('--setting-sources');
+    expect(sourcesIdx).toBeGreaterThanOrEqual(0);
+    expect(spec.args[sourcesIdx + 1]).toBe('');
+    const settingsIdx = spec.args.indexOf('--settings');
+    expect(settingsIdx).toBeGreaterThan(sourcesIdx);
+  });
+
+  test('resumed launches with bypassAllPermissions still include both bypass flags before --resume', async () => {
+    const bypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      bypassAllPermissions: true,
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await bypassAdapter.launch(task.id, 'Fix bug', '/cwd', {
+      sessionId: '00000000-0000-0000-0000-000000000001',
+    });
+    const spec = backend.sessions.get(sessionId)!.spec;
+    const bypassIdx = spec.args.indexOf('--dangerously-skip-permissions');
+    const sourcesIdx = spec.args.indexOf('--setting-sources');
+    const resumeIdx = spec.args.indexOf('--resume');
+    expect(bypassIdx).toBeGreaterThanOrEqual(0);
+    expect(sourcesIdx).toBeGreaterThan(bypassIdx);
+    expect(resumeIdx).toBeGreaterThan(sourcesIdx);
+    expect(spec.args[sourcesIdx + 1]).toBe('');
   });
 
   test('generated settings file path is included in the launch argv', async () => {
