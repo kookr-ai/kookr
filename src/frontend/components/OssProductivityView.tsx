@@ -66,13 +66,20 @@ export interface RepoRow {
   truncated: boolean;
 }
 
-export function computeRepoRows(attempts: ContributionAttempt[], truncatedRepos: string[]): RepoRow[] {
+export function computeRepoRows(
+  attempts: ContributionAttempt[],
+  truncatedRepos: string[],
+  registryActiveRepos: string[] = [],
+): RepoRow[] {
   const byRepo = new Map<string, ContributionAttempt[]>();
   for (const a of attempts) {
     if (a.state === 'scouted') continue;
     const list = byRepo.get(a.repo) ?? [];
     list.push(a);
     byRepo.set(a.repo, list);
+  }
+  for (const repo of registryActiveRepos) {
+    if (!byRepo.has(repo)) byRepo.set(repo, []);
   }
   const rows: RepoRow[] = [];
   for (const [repo, records] of byRepo.entries()) {
@@ -192,6 +199,7 @@ export function OssProductivityView({ onClose }: Props) {
 
   const {
     ossAttempts,
+    ossRegistryActiveRepos,
     ossLastRefreshAt,
     ossRefreshLoading,
     ossRefreshError,
@@ -226,8 +234,8 @@ export function OssProductivityView({ onClose }: Props) {
   const isSparse = !isWindowEmpty && isSparseTrend(trends.nonEmptyWeeks, chartEvents);
 
   const repoRows = useMemo(
-    () => computeRepoRows(windowed, ossTruncatedRepos),
-    [windowed, ossTruncatedRepos],
+    () => computeRepoRows(windowed, ossTruncatedRepos, ossRegistryActiveRepos),
+    [windowed, ossTruncatedRepos, ossRegistryActiveRepos],
   );
 
   const feed = useMemo(() => computeLifecycleFeed(windowed), [windowed]);
@@ -301,7 +309,7 @@ export function OssProductivityView({ onClose }: Props) {
           </div>
         )}
 
-        {ossAttempts.length === 0 ? (
+        {ossAttempts.length === 0 && ossRegistryActiveRepos.length === 0 ? (
           <div className="oss-productivity-empty">
             No OSS attempts tracked yet. Click <strong>Refresh</strong> to pull your
             PR history from the repos in <code>~/.kookr/oss-repos.json</code>.

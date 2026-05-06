@@ -47,6 +47,7 @@ describe('Settings API', () => {
     expect(data).toEqual({
       githubPollingEnabled: true,
       githubPollingIntervalSec: 60,
+      autoWatchOssSources: true,
       watchdogStaleThresholdSec: 30,
       repeatedErrorThreshold: 3,
       maxActiveTasks: 10,

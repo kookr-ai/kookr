@@ -58,6 +58,7 @@ export interface WsConnectionDeps {
   projectConfigStore: ProjectConfigStore;
   skillDiscoveryState?: SkillDiscoveryStateHolder;
   prLessonsState?: PrLessonsStateHolder;
+  getRegistryActiveProjects?: () => string[];
   achievementWatcher: AchievementWatcher;
   getQuotaStatus?: () => QuotaStatus | null;
   circuitBreakerRegistry?: CircuitBreakerRegistry;
@@ -155,6 +156,7 @@ export function handleWsConnection(
       ledgerAnalytics,
       projectConfigStore,
       getSkillTrackedProjects: () => deps.skillDiscoveryState?.getProjects() ?? [],
+      getRegistryActiveProjects: deps.getRegistryActiveProjects,
       prLessonsHolder: deps.prLessonsState,
     });
     if (projects.length > 0 && ws.readyState === 1) {

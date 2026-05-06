@@ -58,8 +58,10 @@ export interface RouteDeps {
   ossRefresher?: OssRefresher;
   /** Invoked after a mutation that may change the OSS attempt view. */
   broadcastOssAttempts?: () => void;
+  getRegistryActiveRepos?: () => string[];
   skillDiscoveryState?: SkillDiscoveryStateHolder;
   prLessonsState?: PrLessonsStateHolder;
+  getRegistryActiveProjects?: () => string[];
   /** Invoked after a mutation that may change project summaries. */
   broadcastProjectSummaries?: () => void;
   settings?: {

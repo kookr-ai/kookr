@@ -33,6 +33,38 @@ interface OssRegistryFile {
   repos?: Record<string, { status?: string } | undefined>;
 }
 
+export async function loadExternalReposFromRegistry(
+  registryPath: string,
+  ownNamespaces: readonly string[],
+): Promise<string[]> {
+  try {
+    await access(registryPath);
+  } catch {
+    return [];
+  }
+  let raw: string;
+  try {
+    raw = await readFile(registryPath, 'utf-8');
+  } catch {
+    return [];
+  }
+  let parsed: OssRegistryFile;
+  try {
+    parsed = JSON.parse(raw) as OssRegistryFile;
+  } catch {
+    return [];
+  }
+  const repos = parsed.repos ?? {};
+  const external: string[] = [];
+  for (const [repo, meta] of Object.entries(repos)) {
+    if (!meta) continue;
+    if (meta.status && meta.status !== 'active') continue;
+    if (!isExternalRepo(repo, ownNamespaces)) continue;
+    external.push(repo);
+  }
+  return external.sort();
+}
+
 export interface RefreshResult {
   ok: boolean;
   reposProcessed: number;
@@ -520,33 +552,7 @@ export class OssRefresher {
   }
 
   private async loadExternalRepos(registryPath: string): Promise<string[]> {
-    try {
-      await access(registryPath);
-    } catch {
-      return [];
-    }
-    let raw: string;
-    try {
-      raw = await readFile(registryPath, 'utf-8');
-    } catch {
-      return [];
-    }
-    let parsed: OssRegistryFile;
-    try {
-      parsed = JSON.parse(raw) as OssRegistryFile;
-    } catch {
-      return [];
-    }
-    const repos = parsed.repos ?? {};
-    const external: string[] = [];
-    const ownNamespaces = this.deps.store.getOwnNamespaces();
-    for (const [repo, meta] of Object.entries(repos)) {
-      if (!meta) continue;
-      if (meta.status && meta.status !== 'active') continue;
-      if (!isExternalRepo(repo, ownNamespaces)) continue;
-      external.push(repo);
-    }
-    return external.sort();
+    return loadExternalReposFromRegistry(registryPath, this.deps.store.getOwnNamespaces());
   }
 
   private async runGh(args: string[]): Promise<{ stdout: string; stderr: string }> {

@@ -17,11 +17,15 @@ export function registerOssAttemptRoutes(app: Hono, deps: RouteDeps): void {
     if (!deps.ossAttemptStore) {
       return c.json({
         attempts: [],
+        registryActiveRepos: [],
         lastRefreshAt: null,
         lastRefreshIssueCheckErrors: [],
       });
     }
-    return c.json(toOssAttemptsSnapshot(deps.ossAttemptStore));
+    return c.json(toOssAttemptsSnapshot(
+      deps.ossAttemptStore,
+      deps.getRegistryActiveRepos?.() ?? [],
+    ));
   });
 
   const handleEvent = (c: Context) => handleOssAttemptEvent(c, deps);

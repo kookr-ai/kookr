@@ -2560,6 +2560,7 @@ describe('Server→client broadcasts — ossAttempts', () => {
 
       const snapshot = toOssAttemptsSnapshot(store);
       expect(snapshot.attempts).toEqual([]);
+      expect(snapshot.registryActiveRepos).toEqual([]);
       expect(snapshot.lastRefreshAt).toBeNull();
       expect(snapshot.lastRefreshIssueCheckErrors).toEqual([]);
 
