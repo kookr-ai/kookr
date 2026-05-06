@@ -4,7 +4,7 @@
 
 **A smart attention router for developers running multiple AI coding agents.**
 
-[![Status: V1](https://img.shields.io/badge/status-V1_functional-green)](#) [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](#) [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](#) [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
+[![CI](https://github.com/kookr-ai/kookr/actions/workflows/ci.yml/badge.svg)](https://github.com/kookr-ai/kookr/actions/workflows/ci.yml) [![Stars](https://img.shields.io/github/stars/kookr-ai/kookr?style=flat&color=yellow)](https://github.com/kookr-ai/kookr/stargazers) [![Last commit](https://img.shields.io/github/last-commit/kookr-ai/kookr)](https://github.com/kookr-ai/kookr/commits/main) [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](#) [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](#) [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 
 [Features](docs/features.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md) · [ADRs](docs/adr/README.md)
 
@@ -469,6 +469,22 @@ Before submitting a PR, make sure `pnpm test` passes. The pre-push hook enforces
 Contributions to Kookr require signing the [Contributor License Agreement](CLA.md). When you open your first pull request, the CLA Assistant bot will comment with a link to the agreement and instructions for signing — typically a one-line comment posted on the PR. You only need to sign once; future contributions are covered automatically.
 
 The CLA grants the project owner a broad license to use and relicense your contributions, which keeps the door open to dual-licensing and commercial offerings while ensuring the publicly-released versions remain freely available under Apache 2.0.
+
+## Community & Support
+
+- **Bug reports & feature requests** — open a [GitHub issue](https://github.com/kookr-ai/kookr/issues).
+- **Security disclosures** — please use [GitHub Security Advisories](https://github.com/kookr-ai/kookr/security/advisories/new) (private). A formal `SECURITY.md` is tracked in [#91](https://github.com/kookr-ai/kookr/issues/91).
+- **Contributing** — see the [Contributing](#contributing) section above and [`CLA.md`](CLA.md). A dedicated `CONTRIBUTING.md` is tracked in [#93](https://github.com/kookr-ai/kookr/issues/93).
+
+## Privacy
+
+Kookr collects no telemetry. The dashboard, the watcher, and the agents all run on your machine — no phone-home, no analytics, no remote logging. State lives locally in `~/.kookr/` (default port 4800) or `~/.kookr-{port}/` when `KOOKR_PORT` is set to anything else.
+
+Features that *do* reach the network are off by default and named explicitly: `ANTHROPIC_API_KEY` enables AI task naming and response suggestions; `KOOKR_TELEGRAM_*` enables Telegram notifications; `KOOKR_TTS_URL` / `KOOKR_STT_URL` point at external speech endpoints if you choose to use one. Everything else stays on the box.
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=kookr-ai/kookr&type=Date)](https://star-history.com/#kookr-ai/kookr&Date)
 
 ## License
 
