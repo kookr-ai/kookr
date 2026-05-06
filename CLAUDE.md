@@ -78,7 +78,7 @@ Kookr's Codex adapter (`src/adapters/codex-cli-adapter.ts`) calls a Codex CLI bi
 
 Set `KOOKR_BYPASS_ALL_PERMISSIONS=true` in `.env` to make Kookr launch spawned agents without any permission prompts:
 
-- **Claude Code:** adds `--dangerously-skip-permissions` AND `--setting-sources ""` to the launch command. Both flags are required: `--dangerously-skip-permissions` only sets the permission *mode* (rule #4 in Claude Code's evaluation order), but user `permissions.ask` rules in `~/.claude/settings.json` match at rule #2 and would fire first. `--setting-sources ""` skips all file-based settings (user/project/local) so ask rules never load. The per-task hooks/permissions file still loads via the `--settings` CLI flag. Side effect: spawned sessions do not see user-level deny rules or hooks either, so this is opt-in for autonomous loops only.
+- **Claude Code:** adds `--dangerously-skip-permissions` AND `--setting-sources ""` to the launch command. The pair is required because user `permissions.ask` rules in `~/.claude/settings.json` would otherwise match before the bypass mode is consulted. Side effect: spawned sessions do not see user-level deny rules or hooks. See `docs/poc/006-bypass-permissions-ask-rule-override.md`.
 - **Codex CLI:** replaces `--full-auto` with `--dangerously-bypass-approvals-and-sandbox` (skips approvals AND the sandbox, allowing writes outside the workspace).
 
 Off by default. Opt-in because both flags remove important safety guardrails.

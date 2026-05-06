@@ -71,9 +71,6 @@ describe('ClaudeCodeAdapter', () => {
     expect(settingsIdx).toBeGreaterThan(bypassIdx);
   });
 
-  // Issue #60: --dangerously-skip-permissions only sets the permission mode (rule #4).
-  // Without --setting-sources "" the user's permissions.ask rules in ~/.claude/settings.json
-  // load and fire at rule #2, before bypass mode is ever consulted. The pair is required.
   test('launch includes --setting-sources "" when bypassAllPermissions is true', async () => {
     const bypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       bypassAllPermissions: true,
@@ -84,9 +81,26 @@ describe('ClaudeCodeAdapter', () => {
     const sourcesIdx = spec.args.indexOf('--setting-sources');
     expect(sourcesIdx).toBeGreaterThanOrEqual(0);
     expect(spec.args[sourcesIdx + 1]).toBe('');
-    // Must appear before --settings so the per-task CLI settings still loads.
     const settingsIdx = spec.args.indexOf('--settings');
     expect(settingsIdx).toBeGreaterThan(sourcesIdx);
+  });
+
+  test('resumed launches with bypassAllPermissions still include both bypass flags before --resume', async () => {
+    const bypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      bypassAllPermissions: true,
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await bypassAdapter.launch(task.id, 'Fix bug', '/cwd', {
+      sessionId: '00000000-0000-0000-0000-000000000001',
+    });
+    const spec = backend.sessions.get(sessionId)!.spec;
+    const bypassIdx = spec.args.indexOf('--dangerously-skip-permissions');
+    const sourcesIdx = spec.args.indexOf('--setting-sources');
+    const resumeIdx = spec.args.indexOf('--resume');
+    expect(bypassIdx).toBeGreaterThanOrEqual(0);
+    expect(sourcesIdx).toBeGreaterThan(bypassIdx);
+    expect(resumeIdx).toBeGreaterThan(sourcesIdx);
+    expect(spec.args[sourcesIdx + 1]).toBe('');
   });
 
   test('generated settings file path is included in the launch argv', async () => {
