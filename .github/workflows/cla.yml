@@ -37,4 +37,4 @@ jobs:
           custom-notsigned-prcomment: 'Thanks for your contribution! Before we can merge, please read our [Contributor License Agreement](https://github.com/kookr-ai/kookr/blob/main/CLA.md) and sign it by posting the following comment on this PR:'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-allsigned-prcomment: 'All contributors have signed the CLA. Thanks!'
-          lock-pullrequest-aftermerge: false
+          lock-pullrequest-aftermerge: true
