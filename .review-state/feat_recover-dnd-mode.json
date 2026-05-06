@@ -1,5 +1,0 @@
-{
-  "sha": "1ccd2bcd5d249f9898c89955c893dce6c5e006bf",
-  "status": "bypass",
-  "reason": "Feature recovery PR; verified via build + tests + zero-trace check."
-}

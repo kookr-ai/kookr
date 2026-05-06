@@ -10,6 +10,15 @@ set -u
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || exit 1
 
+STAGED_REVIEW_STATE=$(git diff --cached --name-only HEAD -- '.review-state/*.json' 2>/dev/null || true)
+if [ -n "$STAGED_REVIEW_STATE" ]; then
+  echo ""
+  echo "Push rejected: .review-state files must stay local-only."
+  echo "$STAGED_REVIEW_STATE" | sed 's/^/  /'
+  echo "Remove them from the index with: git rm --cached .review-state/<file>.json"
+  exit 1
+fi
+
 if [ ! -d node_modules ]; then
   echo "node_modules missing — running pnpm install --frozen-lockfile..."
   if ! pnpm install --frozen-lockfile; then
