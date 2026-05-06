@@ -12,12 +12,11 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { LocalDtachBackend } from '../adapters/local-dtach-backend.js';
 import { createKookrServer } from './index.js';
+import { resolveListenPort } from './resolve-listen-port.js';
 import { startSTT, type STTManager } from './stt-manager.js';
 import { startTTS, type TTSManager } from './tts-manager.js';
 
-const PORT = parseInt(process.env.KOOKR_PORT ?? '4800', 10);
 const HOST = process.env.KOOKR_HOST ?? '127.0.0.1';
-const KOOKR_DIR = PORT === 4800 ? join(homedir(), '.kookr') : join(homedir(), `.kookr-${PORT}`);
 const STT_ENABLED = process.env.KOOKR_STT === 'true';
 const STT_URL_OVERRIDE = process.env.KOOKR_STT_URL ?? '';
 const STT_PORT = parseInt(process.env.KOOKR_STT_PORT ?? '8003', 10);
@@ -29,9 +28,6 @@ const TTS_VOICE = process.env.TTS_VOICE ?? '/app/voices/matilda.mp3';
 const AGENT_BIN = process.env.KOOKR_AGENT_BIN || undefined;
 const CODEX_BIN = process.env.KOOKR_CODEX_BIN || undefined;
 const BYPASS_ALL_PERMISSIONS = process.env.KOOKR_BYPASS_ALL_PERMISSIONS === 'true';
-// Per-instance namespace so kookr-prod (4800) and kookr-dev (4801) keep
-// their dtach sockets + manifest separate under /tmp/kookr-dtach/<uid>/.
-const INSTANCE_ID = `port-${PORT}`;
 
 /**
  * V8: Fail loud if the dtach binary is unreachable. Startup gets ONE
@@ -68,6 +64,20 @@ function resolveDtachBinaryOrExit(): string {
 }
 
 async function main(): Promise<void> {
+  // Resolve KOOKR_PORT: validate, probe for EADDRINUSE with actionable
+  // guidance, or scan for a free port when KOOKR_PORT=auto. See
+  // src/server/resolve-listen-port.ts.
+  const portResolution = await resolveListenPort(process.env.KOOKR_PORT, HOST);
+  const PORT = portResolution.port;
+  const KOOKR_DIR = PORT === 4800 ? join(homedir(), '.kookr') : join(homedir(), `.kookr-${PORT}`);
+  // Per-instance namespace so kookr-prod (4800) and kookr-dev (4801) keep
+  // their dtach sockets + manifest separate under /tmp/kookr-dtach/<uid>/.
+  const INSTANCE_ID = `port-${PORT}`;
+
+  if (portResolution.source === 'auto') {
+    console.log(`[port] KOOKR_PORT=auto resolved to ${PORT} (open http://${HOST}:${PORT})`);
+  }
+
   // Bundled STT containers (unless user provides their own URL)
   let sttManager: STTManager | null = null;
   let sttUrl: string | undefined;
