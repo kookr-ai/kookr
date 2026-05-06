@@ -94,6 +94,8 @@ pnpm dev         # backend on :4801 + Vite frontend on :5173
 
 Open `http://localhost:5173` in your browser. You're ready to launch and supervise agents.
 
+Optional features (voice, Telegram, LLM-backed AI suggestions) are off by default. Copy [`.env.example`](.env.example) to `.env` and uncomment only what you need — see [`docs/reference/environment-variables.md`](docs/reference/environment-variables.md) for the full reference.
+
 <details>
 <summary>Troubleshooting</summary>
 
@@ -133,6 +135,40 @@ wscat -c ws://127.0.0.1:4801/ws
 The spawned agent runs under a persistent dtach session (one per agent). Attach through the dashboard terminal panel — the WebSocket bridge replays recent output and streams live bytes.
 
 After you send a response to a finding, Kookr auto-advances to the next one. When nothing needs you — "All clear."
+
+### Voice (optional)
+
+Speech-to-text (STT) and text-to-speech (TTS) are off by default. Both services run as Docker Compose stacks and only start when you opt in.
+
+**Prerequisites**
+
+- **Docker** + **Docker Compose**
+- **NVIDIA GPU + the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)** for the default STT configuration (`large-v3` Whisper on CUDA). TTS auto-detects GPU and falls back to CPU.
+- **CPU fallback for STT** (no GPU required): set the following overrides in `.env`, then remove the `deploy.resources.reservations` GPU block from `stt/docker-compose.yml`:
+  ```bash
+  WHISPER_IMAGE=fedirz/faster-whisper-server:latest-cpu
+  WHISPER_MODEL=base
+  WHISPER_DEVICE=cpu
+  WHISPER_COMPUTE_TYPE=int8
+  ```
+
+**First boot**
+
+The first time you start with `KOOKR_STT=true`, the Whisper sidecar downloads the model into a Docker volume — roughly **3 GB for `large-v3`** (the default), or under 200 MB for `base` (CPU fallback). Subsequent boots reuse the cached model.
+
+**Enabling**
+
+Uncomment the relevant lines in [`.env.example`](.env.example) → `.env`:
+
+```bash
+KOOKR_STT=true        # bundled STT, listens on KOOKR_STT_PORT (default 8003)
+KOOKR_TTS=true        # bundled TTS, listens on KOOKR_TTS_PORT (default 8004)
+# Or point at an existing service:
+# KOOKR_STT_URL=ws://127.0.0.1:8003
+# KOOKR_TTS_URL=http://127.0.0.1:8004
+```
+
+Restart Kookr (`pnpm dev` or `pnpm prod:restart`). The full variable list — including `WHISPER_*`, `TTS_VOICE`, and health-check timeouts — is documented in [`docs/reference/environment-variables.md`](docs/reference/environment-variables.md#speech-io).
 
 ### Terminal Usage: `kookr-spawn`
 
