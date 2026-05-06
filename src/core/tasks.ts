@@ -445,6 +445,15 @@ export class TaskStore {
       throw new Error(`Session not found: ${tmuxName}`);
     }
     Object.assign(session, patch);
+    // The Ralph loop's owner refs are seeded at attach time when claudeSessionId
+    // and transcriptPath are usually still undefined. Re-claim here so late-
+    // arriving fields (set when the agent's SessionStart hook fires) propagate
+    // into ownerRuntimeSessionId / ownerTranscriptPath. Without this,
+    // isStopFromMainTaskSession rejects every Stop event, the iteration counter
+    // never increments, and the loop never re-fires.
+    if (task.ralphLoop && task.ralphLoop.ownerSessionId === tmuxName) {
+      claimRalphLoopOwner(task, session);
+    }
     task.updatedAt = new Date();
     return task;
   }

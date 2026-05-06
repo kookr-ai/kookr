@@ -223,6 +223,76 @@ describe('TaskStore', () => {
       expect(session.lastStatus).toBe('running');
     });
 
+    test('updateSession backfills Ralph loop owner refs from late-arriving claudeSessionId', () => {
+      // Repro for the iteration-stall bug: Ralph attaches before SessionStart
+      // fires, so loop.ownerRuntimeSessionId is undefined. When SessionStart
+      // later sets session.claudeSessionId, the loop's owner refs must absorb
+      // it, otherwise isStopFromMainTaskSession rejects every Stop.
+      const task = store.createTask('Looped', '/cwd');
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-loop',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      });
+      task.ralphLoop = {
+        prompt: 'p',
+        iterationCap: 5,
+        currentIteration: 0,
+        status: 'running',
+        lastIterationStartedAt: 0,
+        cumulativeIterations: 0,
+        ownerSessionId: 'kookr-loop',
+      };
+
+      store.updateSession(task.id, 'kookr-loop', {
+        claudeSessionId: 'claude-sess-uuid',
+        transcriptPath: '/path/to/transcript.jsonl',
+      });
+
+      expect(task.ralphLoop.ownerRuntimeSessionId).toBe('claude-sess-uuid');
+      expect(task.ralphLoop.ownerTranscriptPath).toBe('/path/to/transcript.jsonl');
+    });
+
+    test('updateSession does not touch Ralph owner refs for unrelated sessions', () => {
+      const task = store.createTask('Looped', '/cwd');
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-owner',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        claudeSessionId: 'sess-owner',
+      });
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-other',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      });
+      task.ralphLoop = {
+        prompt: 'p',
+        iterationCap: 5,
+        currentIteration: 0,
+        status: 'running',
+        lastIterationStartedAt: 0,
+        cumulativeIterations: 0,
+        ownerSessionId: 'kookr-owner',
+        ownerRuntimeSessionId: 'sess-owner',
+      };
+
+      store.updateSession(task.id, 'kookr-other', {
+        claudeSessionId: 'sess-other',
+        transcriptPath: '/wrong.jsonl',
+      });
+
+      // All three loop owner refs must be untouched. A buggy refactor that
+      // claimed-on-any-session-update would mutate ownerSessionId or
+      // ownerTranscriptPath; the prior single assertion missed both.
+      expect(task.ralphLoop.ownerSessionId).toBe('kookr-owner');
+      expect(task.ralphLoop.ownerRuntimeSessionId).toBe('sess-owner');
+      expect(task.ralphLoop.ownerTranscriptPath).toBeUndefined();
+    });
+
     test('getActiveSessions returns sessions with lastStatus not completed', () => {
       const t1 = store.createTask('Task 1', '/cwd');
       store.addSession(t1.id, {

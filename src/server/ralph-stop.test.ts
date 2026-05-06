@@ -1,6 +1,52 @@
 import { describe, expect, test } from 'vitest';
-import { ralphStopFingerprint } from './ralph-stop.js';
+import { isStopFromMainTaskSession, ralphStopFingerprint } from './ralph-stop.js';
+import { TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
+
+describe('isStopFromMainTaskSession', () => {
+  test('accepts Stop after late updateSession backfills ownerRuntimeSessionId', () => {
+    // Regression for the iteration-stall bug. Before the fix, a Ralph loop
+    // attached at task launch time saw an empty session.claudeSessionId; the
+    // loop's ownerRuntimeSessionId stayed undefined; every Stop event coming
+    // from the agent's actual runtime was rejected by the `!loop.owner...`
+    // guard, the iteration counter never incremented, and Ralph never re-fired.
+    // The fix is in TaskStore.updateSession (it now re-claims when the session
+    // is the loop owner). This test drives the end-to-end gate: late
+    // updateSession → isStopFromMainTaskSession returns true.
+    const store = new TaskStore();
+    const task = store.createTask('Looped', '/cwd');
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-loop',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+    task.ralphLoop = {
+      prompt: 'iterate',
+      iterationCap: 5,
+      currentIteration: 0,
+      status: 'running',
+      lastIterationStartedAt: 0,
+      cumulativeIterations: 0,
+      ownerSessionId: 'kookr-loop',
+    };
+
+    store.updateSession(task.id, 'kookr-loop', {
+      claudeSessionId: 'runtime-late',
+      transcriptPath: '/late.jsonl',
+    });
+
+    const stopEvent: AgentEvent = {
+      type: 'stop',
+      sessionId: 'runtime-late',
+      transcriptPath: '/late.jsonl',
+      turnId: 'turn-1',
+      lastMessage: 'done',
+    };
+
+    expect(isStopFromMainTaskSession(task, 'kookr-loop', stopEvent)).toBe(true);
+  });
+});
 
 describe('ralphStopFingerprint', () => {
   test('uses hook line id so same-message Stops in long turns remain distinct', () => {
