@@ -14,6 +14,7 @@ import type { GitHubReference, GitHubPRState, GitHubIssueState } from '../core/g
 import { MessageRouter } from './ws.js';
 import type { ServerMessage, ClientMessage } from '../shared/protocol.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
+import type { RalphLoopService } from './ralph-loop-service.js';
 
 describe('WebSocket MessageRouter', () => {
   let taskStore: TaskStore;
@@ -23,6 +24,7 @@ describe('WebSocket MessageRouter', () => {
   let adapter: ClaudeCodeAdapter;
   let router: MessageRouter;
   let sentMessages: ServerMessage[];
+  let cancelLoop: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     taskStore = new TaskStore();
@@ -31,6 +33,10 @@ describe('WebSocket MessageRouter', () => {
     terminal = new FakeTerminalBackend();
     adapter = new ClaudeCodeAdapter(terminal, taskStore);
     sentMessages = [];
+    cancelLoop = vi.fn((task) => {
+      if (task.ralphLoop) task.ralphLoop.status = 'cancelled';
+      return { ok: true, value: 'cancelled', changed: true };
+    });
 
     /** Minimal launch function for tests — mirrors LaunchService without registration. */
     const testLaunchTask = async (opts: LaunchOpts): Promise<LaunchResult> => {
@@ -46,6 +52,7 @@ describe('WebSocket MessageRouter', () => {
       send: (msg) => { sentMessages.push(msg); },
       serverCwd: '/test/cwd',
       launchTask: testLaunchTask,
+      ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
     });
   });
 
@@ -596,6 +603,27 @@ describe('WebSocket MessageRouter', () => {
     const updated = taskStore.getTask(task.id)!;
     expect(updated.status).toBe('completed');
     expect(updated.sessions[0].lastStatus).toBe('completed');
+    expect(await terminal.isAlive(tmuxName)).toBe(false);
+  });
+
+  test('completeTask cancels an active Ralph loop before completing the task', async () => {
+    const task = taskStore.createTask('Looped', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Looped', '/cwd');
+    task.ralphLoop = {
+      prompt: 'iterate',
+      iterationCap: 5,
+      currentIteration: 1,
+      status: 'running',
+      lastIterationStartedAt: 0,
+      cumulativeIterations: 1,
+      ownerSessionId: tmuxName,
+    };
+
+    await router.handleMessage({ type: 'completeTask', taskId: task.id });
+
+    expect(cancelLoop).toHaveBeenCalledWith(task);
+    expect(task.status).toBe('completed');
+    expect(task.ralphLoop.status).toBe('cancelled');
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 
@@ -2551,4 +2579,3 @@ describe('Server→client broadcasts — projectSummaries', () => {
     }
   });
 });
-

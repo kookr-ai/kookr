@@ -93,10 +93,6 @@ export interface RalphLoopState {
   handlingStopFingerprint?: string;
   /** Terminal session ID that owns this loop's conversation context. */
   ownerSessionId?: string;
-  /** Claude/Codex runtime session ID for the owning session. */
-  ownerRuntimeSessionId?: string;
-  /** Transcript path for the owning runtime session. */
-  ownerTranscriptPath?: string;
   /**
    * Sum of iterations across the loop's lifetime, including any iterations
    * before a pause/resume cycle. `currentIteration` is reset by re-arm; this
@@ -212,17 +208,7 @@ export function claimRalphLoopOwner(
   const isTransfer = Boolean(loop.ownerSessionId && loop.ownerSessionId !== session.tmuxSession);
   if (isTransfer && !opts.allowTransfer) return;
 
-  if (!loop.ownerSessionId || isTransfer) {
-    loop.ownerSessionId = session.tmuxSession;
-    delete loop.ownerRuntimeSessionId;
-    delete loop.ownerTranscriptPath;
-  }
-  if (!loop.ownerRuntimeSessionId && session.claudeSessionId) {
-    loop.ownerRuntimeSessionId = session.claudeSessionId;
-  }
-  if (!loop.ownerTranscriptPath && session.transcriptPath) {
-    loop.ownerTranscriptPath = session.transcriptPath;
-  }
+  if (!loop.ownerSessionId || isTransfer) loop.ownerSessionId = session.tmuxSession;
 }
 
 /**
@@ -445,15 +431,6 @@ export class TaskStore {
       throw new Error(`Session not found: ${tmuxName}`);
     }
     Object.assign(session, patch);
-    // The Ralph loop's owner refs are seeded at attach time when claudeSessionId
-    // and transcriptPath are usually still undefined. Re-claim here so late-
-    // arriving fields (set when the agent's SessionStart hook fires) propagate
-    // into ownerRuntimeSessionId / ownerTranscriptPath. Without this,
-    // isStopFromMainTaskSession rejects every Stop event, the iteration counter
-    // never increments, and the loop never re-fires.
-    if (task.ralphLoop && task.ralphLoop.ownerSessionId === tmuxName) {
-      claimRalphLoopOwner(task, session);
-    }
     task.updatedAt = new Date();
     return task;
   }

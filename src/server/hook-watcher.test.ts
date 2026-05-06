@@ -247,9 +247,10 @@ describe('HookFileWatcher', () => {
     // options when the file appeared — so the retry used the default
     // replayExisting=false, which seeks past every line already written.
     // The agent's SessionStart line had already been written by then, so
-    // it was permanently skipped: SessionInfo.claudeSessionId stayed
-    // null, the Ralph loop's ownerRuntimeSessionId was never populated,
-    // and isStopFromMainTaskSession rejected every Stop event.
+    // it was permanently skipped: SessionInfo.claudeSessionId stayed null,
+    // which used to break Ralph's three-ref Stop gate. The owner gate is now
+    // terminal-session-only, but replaying the initial hook is still required
+    // for transcript tracking and runtime metadata.
     const hookFile = join(tempDir, 'kookr-late.jsonl');
 
     // Register the tmux name so injectHookEvent can find a task.

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { Monitor } from '../core/monitor.js';
+import { TokenTracker } from '../core/token-tracker.js';
 import { type RalphLoopState, TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
@@ -25,7 +26,8 @@ function mkService(deps: {
   terminalBackend?: FakeTerminalBackend;
   interactionLog?: { append: ReturnType<typeof vi.fn> };
   ralphCycler?: { handleStop: ReturnType<typeof vi.fn> };
-  launchFreshTaskSession?: (task: Parameters<NonNullable<ConstructorParameters<typeof RalphLoopService>[0]['launchFreshTaskSession']>>[0], prompt: string) => Promise<string>;
+  launchFreshTaskSession?: ConstructorParameters<typeof RalphLoopService>[0]['launchFreshTaskSession'];
+  completeTask?: ConstructorParameters<typeof RalphLoopService>[0]['completeTask'];
 } = {}): {
   store: TaskStore;
   service: RalphLoopService;
@@ -40,8 +42,10 @@ function mkService(deps: {
     monitor,
     serverCwd: '/repo',
     terminalBackend,
+    tokenTracker: new TokenTracker(),
     ralphCycler: deps.ralphCycler as never,
-    launchFreshTaskSession: deps.launchFreshTaskSession,
+    launchFreshTaskSession: deps.launchFreshTaskSession ?? vi.fn(async () => 'unused-session'),
+    completeTask: deps.completeTask ?? vi.fn(async () => undefined),
     broadcastToAll: (_msg: ServerMessage) => {
       /* no-op */
     },
@@ -53,7 +57,8 @@ function mkService(deps: {
 describe('RalphLoopService', () => {
   test('task routes delegate Ralph lifecycle ownership to the service', () => {
     const source = readFileSync(new URL('./routes/task-routes.ts', import.meta.url), 'utf8');
-    expect(source).toContain('new RalphLoopService');
+    expect(source).toContain('ralphLoopService');
+    expect(source).not.toContain('new RalphLoopService');
     expect(source).not.toContain('claimRalphLoopOwner');
     expect(source).not.toContain('ralphStopFingerprint');
     expect(source).not.toContain('handlingStopFingerprint');
@@ -61,7 +66,8 @@ describe('RalphLoopService', () => {
 
   test('event pipeline delegates Ralph Stop continuation ownership to the service', () => {
     const source = readFileSync(new URL('./event-pipeline.ts', import.meta.url), 'utf8');
-    expect(source).toContain('new RalphLoopService');
+    expect(source).toContain('ralphLoopService');
+    expect(source).not.toContain('new RalphLoopService');
     expect(source).not.toContain('claimRalphLoopOwner');
     expect(source).not.toContain('ralphStopFingerprint');
     expect(source).not.toContain('handlingStopFingerprint');
@@ -69,7 +75,8 @@ describe('RalphLoopService', () => {
 
   test('startup recovery delegates Ralph crash reconciliation ownership to the service', () => {
     const source = readFileSync(new URL('./startup-recovery.ts', import.meta.url), 'utf8');
-    expect(source).toContain('new RalphLoopService');
+    expect(source).toContain('ralphLoopService.reconcileStartupLoops()');
+    expect(source).not.toContain('new RalphLoopService');
     expect(source).toContain('.reconcileStartupLoops()');
     expect(source).not.toContain('claimRalphLoopOwner');
     expect(source).not.toContain('reconcileRalphLoops');
@@ -138,22 +145,21 @@ describe('RalphLoopService', () => {
       zeroDiffStreak: 0,
       costCapUsd: 1.25,
       ownerSessionId: 'new-session',
-      ownerRuntimeSessionId: 'runtime-new',
-      ownerTranscriptPath: '/tmp/new.jsonl',
     });
   });
 
   test('handleStopEvent advances and launches the next Ralph runtime from the service boundary', async () => {
     const handleStop = vi.fn().mockResolvedValue({ kind: 'launch_fresh', taskId: 'task-1', text: 'continue' });
-    const launchFreshTaskSession = vi.fn(async (task: ReturnType<TaskStore['createTask']>, _prompt: string) => {
+    const launchFreshTaskSession = vi.fn(async (task: ReturnType<TaskStore['createTask']>, _prompt: string, opts?: { tmuxName?: string }) => {
+      const tmuxSession = opts?.tmuxName ?? 'agent-2';
       store.addSession(task.id, {
-        tmuxSession: 'agent-2',
+        tmuxSession,
         agentType: 'claude-code',
         cwd: task.cwd,
         createdAt: new Date('2026-05-03T00:03:00Z'),
         lastStatus: 'running',
       });
-      return 'agent-2';
+      return tmuxSession;
     });
     const { store, service, monitor } = mkService({
       ralphCycler: { handleStop },
@@ -171,8 +177,6 @@ describe('RalphLoopService', () => {
     });
     task.ralphLoop = baseLoop({
       ownerSessionId: 'agent-1',
-      ownerRuntimeSessionId: 'runtime-1',
-      ownerTranscriptPath: '/root.jsonl',
     });
     const stopEvent: AgentEvent = {
       type: 'stop',
@@ -190,12 +194,60 @@ describe('RalphLoopService', () => {
       sessionId: 'agent-1',
       cumulativeCostUsd: 1.25,
     }));
-    expect(launchFreshTaskSession).toHaveBeenCalledWith(task, 'continue');
+    expect(launchFreshTaskSession).toHaveBeenCalledWith(task, 'continue', {
+      tmuxName: expect.stringMatching(/^kookr-[0-9a-f]{8}$/),
+    });
+    const launchedTmuxName = launchFreshTaskSession.mock.calls[0]?.[2]?.tmuxName;
     expect(task.ralphLoop).toMatchObject({
-      ownerSessionId: 'agent-2',
+      ownerSessionId: launchedTmuxName,
       lastHandledStopFingerprint: expect.any(String),
     });
     expect(task.ralphLoop.handlingStopFingerprint).toBeUndefined();
+  });
+
+  test('handleStopEvent leaves a loop cancelled when cancellation happens during fresh launch', async () => {
+    const handleStop = vi.fn().mockResolvedValue({ kind: 'launch_fresh', taskId: 'task-1', text: 'continue' });
+    const launchFreshTaskSession = vi.fn(async (task: ReturnType<TaskStore['createTask']>, _prompt: string, opts?: { tmuxName?: string }) => {
+      const tmuxSession = opts?.tmuxName ?? 'agent-2';
+      await terminalBackend.createSession(tmuxSession, 'claude');
+      store.addSession(task.id, {
+        tmuxSession,
+        agentType: 'claude-code',
+        cwd: task.cwd,
+        createdAt: new Date('2026-05-03T00:03:00Z'),
+        lastStatus: 'running',
+      });
+      task.ralphLoop!.status = 'cancelled';
+      return tmuxSession;
+    });
+    const { store, service, monitor, terminalBackend } = mkService({
+      ralphCycler: { handleStop },
+      launchFreshTaskSession,
+    });
+    const task = store.createTask('prompt', '/repo');
+    store.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-03T00:00:00Z'),
+      lastStatus: 'running',
+    });
+    task.ralphLoop = baseLoop({ ownerSessionId: 'agent-1' });
+    const stopEvent: AgentEvent = {
+      type: 'stop',
+      sessionId: 'runtime-1',
+      turnId: 'turn-1',
+      lastMessage: 'done',
+    };
+    monitor.processEvents('agent-1', [stopEvent]);
+
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 1.25 });
+
+    const launchedTmuxName = launchFreshTaskSession.mock.calls[0]?.[2]?.tmuxName;
+    expect(task.ralphLoop.status).toBe('cancelled');
+    expect(task.ralphLoop.ownerSessionId).toBeUndefined();
+    expect(task.ralphLoop.handlingStopFingerprint).toBeUndefined();
+    expect(await terminalBackend.isAlive(launchedTmuxName!)).toBe(false);
   });
 
   test('attachLoop refuses to replace an active loop', async () => {

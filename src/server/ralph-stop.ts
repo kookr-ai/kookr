@@ -15,10 +15,6 @@ export function isStopFromMainTaskSession(
   const loop = task.ralphLoop;
   if (!loop) return false;
   if (!loop.ownerSessionId || terminalSessionId !== loop.ownerSessionId) return false;
-  if (!loop.ownerRuntimeSessionId || event.sessionId !== loop.ownerRuntimeSessionId) return false;
-  if (loop.ownerTranscriptPath && event.transcriptPath && event.transcriptPath !== loop.ownerTranscriptPath) {
-    return false;
-  }
 
   const session = task.sessions.find((s) => s.tmuxSession === terminalSessionId);
   if (!session) return false;

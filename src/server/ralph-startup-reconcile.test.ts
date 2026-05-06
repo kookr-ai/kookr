@@ -1,6 +1,8 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { Monitor } from '../core/monitor.js';
+import { TokenTracker } from '../core/token-tracker.js';
 import { TaskStore, type RalphLoopState } from '../core/tasks.js';
 import type { RalphIterationRecord } from '../core/ralph-iteration-log.js';
 import { RalphLoopService, type ReconcileRalphLoopsOptions } from './ralph-loop-service.js';
@@ -38,6 +40,12 @@ function reconcileStartupLoops(
     taskStore: store,
     monitor: new Monitor(store, new AttentionQueue()),
     serverCwd: '/repo',
+    interactionLog: undefined,
+    ralphCycler: undefined,
+    terminalBackend: new FakeTerminalBackend(),
+    tokenTracker: new TokenTracker(),
+    launchFreshTaskSession: vi.fn(async () => 'unused-session'),
+    completeTask: vi.fn(async () => undefined),
     broadcastToAll: () => {
       /* no-op */
     },
@@ -77,8 +85,6 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
     expect(task.ralphLoop?.status).toBe('running');
     expect(task.ralphLoop).toMatchObject({
       ownerSessionId: 'live-1',
-      ownerRuntimeSessionId: 'root-runtime',
-      ownerTranscriptPath: '/root/transcript.jsonl',
     });
     expect(recorder.appended).toHaveLength(0);
     expect(summary).toMatchObject({ examined: 1, preserved: 1, failed: 0 });
@@ -166,8 +172,6 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
     const task = store.createTask('recovered', '/cwd');
     task.ralphLoop = baseLoop({
       ownerSessionId: 'pred',
-      ownerRuntimeSessionId: 'old-runtime',
-      ownerTranscriptPath: '/old/transcript.jsonl',
     });
     store.addSession(task.id, {
       tmuxSession: 'pred',
@@ -195,8 +199,6 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
     expect(task.ralphLoop?.status).toBe('running');
     expect(task.ralphLoop).toMatchObject({
       ownerSessionId: 'fresh',
-      ownerRuntimeSessionId: 'new-runtime',
-      ownerTranscriptPath: '/new/transcript.jsonl',
     });
     expect(recorder.appended).toHaveLength(0);
     expect(summary).toMatchObject({ examined: 1, preserved: 1, failed: 0 });
@@ -206,8 +208,6 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
     const task = store.createTask('fresh recovery', '/cwd');
     task.ralphLoop = baseLoop({
       ownerSessionId: 'pred',
-      ownerRuntimeSessionId: 'old-runtime',
-      ownerTranscriptPath: '/old/transcript.jsonl',
     });
     store.addSession(task.id, {
       tmuxSession: 'pred',
@@ -234,8 +234,6 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
     expect(task.ralphLoop).toMatchObject({
       status: 'running',
       ownerSessionId: 'fresh',
-      ownerRuntimeSessionId: 'fresh-runtime',
-      ownerTranscriptPath: '/fresh/transcript.jsonl',
     });
     expect(summary).toMatchObject({ examined: 1, preserved: 1, failed: 0 });
   });

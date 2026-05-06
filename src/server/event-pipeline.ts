@@ -21,7 +21,7 @@ import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import type { CheckpointCycler } from '../core/checkpoint-cycler.js';
 import { isCycleDisabled } from '../core/checkpoint-cycler.js';
 import type { RalphCycler } from '../core/ralph-cycler.js';
-import { RalphLoopService } from './ralph-loop-service.js';
+import type { RalphLoopService } from './ralph-loop-service.js';
 
 export interface EventPipelineDeps {
   adapter: AgentAdapter;
@@ -53,17 +53,8 @@ export interface EventPipelineDeps {
   onPermissionBlocked?: (taskId: string, promptText: string) => void;
   /** Optional Ralph iteration cycler — drives the loop state machine on Stop events. */
   ralphCycler?: RalphCycler;
-  /**
-   * Fresh-runtime launcher used by the Ralph cycler to spawn the next
-   * iteration's Claude Code runtime when a Stop event is accepted.
-   *
-   * Optional in the type only because tests with no Ralph loop don't need
-   * it; in production wiring it must be supplied so that
-   * `RalphLoopService.launchFreshRuntime` (called from the Stop hot path)
-   * doesn't throw and silently mark the loop `failed`. The attach path in
-   * `task-routes` already supplies the same launcher.
-   */
-  launchFreshTaskSession?: (task: Task, prompt: string) => Promise<string>;
+  /** Singleton Ralph loop service shared with routes and startup recovery. */
+  ralphLoopService: RalphLoopService;
 }
 
 /**
@@ -227,14 +218,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
       // Ralph iteration cycle: runtime Stop handling belongs to the same
       // ownership service used by route attach/resume catch-up.
       if (stopTask?.ralphLoop?.status === 'completed') {
-        // No launchFreshTaskSession: finalizeCompletedLoopStop never reaches
-        // launchFreshRuntime — adding it here would only invite a future
-        // refactor to assume it's always present.
-        new RalphLoopService({
-          taskStore, monitor, serverCwd, broadcastToAll,
-          ralphCycler: deps.ralphCycler,
-        })
-          .finalizeCompletedLoopStop(stopTask, tmuxName, event)
+        deps.ralphLoopService.finalizeCompletedLoopStop(stopTask, tmuxName, event)
           .then((changed) => {
             if (changed) broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
           })
@@ -242,14 +226,9 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
             console.error('[ralph-loop-service] finalizeCompletedLoopStop failed:', err);
           });
       } else if (stopTask?.ralphLoop?.status === 'running' && deps.ralphCycler) {
-        new RalphLoopService({
-          taskStore, monitor, serverCwd, broadcastToAll,
-          ralphCycler: deps.ralphCycler,
-          launchFreshTaskSession: deps.launchFreshTaskSession,
+        deps.ralphLoopService.handleStopEvent(stopTask, tmuxName, event, {
+          cumulativeCostUsd: tokenTracker.getUsage(stopTask.id)?.costUsd ?? null,
         })
-          .handleStopEvent(stopTask, tmuxName, event, {
-            cumulativeCostUsd: tokenTracker.getUsage(stopTask.id)?.costUsd ?? null,
-          })
           .catch((err) => {
             console.error('[ralph-loop-service] handleStopEvent failed:', err);
           });

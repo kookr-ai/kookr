@@ -223,11 +223,10 @@ describe('TaskStore', () => {
       expect(session.lastStatus).toBe('running');
     });
 
-    test('updateSession backfills Ralph loop owner refs from late-arriving claudeSessionId', () => {
-      // Repro for the iteration-stall bug: Ralph attaches before SessionStart
-      // fires, so loop.ownerRuntimeSessionId is undefined. When SessionStart
-      // later sets session.claudeSessionId, the loop's owner refs must absorb
-      // it, otherwise isStopFromMainTaskSession rejects every Stop.
+    test('updateSession leaves Ralph loop ownership on the terminal session id', () => {
+      // Repro shape for the iteration-stall bug: Ralph can attach before
+      // SessionStart fills in runtime metadata. The loop no longer depends on
+      // those late fields, so terminal-session ownership must stay stable.
       const task = store.createTask('Looped', '/cwd');
       store.addSession(task.id, {
         tmuxSession: 'kookr-loop',
@@ -250,11 +249,10 @@ describe('TaskStore', () => {
         transcriptPath: '/path/to/transcript.jsonl',
       });
 
-      expect(task.ralphLoop.ownerRuntimeSessionId).toBe('claude-sess-uuid');
-      expect(task.ralphLoop.ownerTranscriptPath).toBe('/path/to/transcript.jsonl');
+      expect(task.ralphLoop.ownerSessionId).toBe('kookr-loop');
     });
 
-    test('updateSession does not touch Ralph owner refs for unrelated sessions', () => {
+    test('updateSession does not touch Ralph owner for unrelated sessions', () => {
       const task = store.createTask('Looped', '/cwd');
       store.addSession(task.id, {
         tmuxSession: 'kookr-owner',
@@ -277,7 +275,6 @@ describe('TaskStore', () => {
         lastIterationStartedAt: 0,
         cumulativeIterations: 0,
         ownerSessionId: 'kookr-owner',
-        ownerRuntimeSessionId: 'sess-owner',
       };
 
       store.updateSession(task.id, 'kookr-other', {
@@ -285,12 +282,7 @@ describe('TaskStore', () => {
         transcriptPath: '/wrong.jsonl',
       });
 
-      // All three loop owner refs must be untouched. A buggy refactor that
-      // claimed-on-any-session-update would mutate ownerSessionId or
-      // ownerTranscriptPath; the prior single assertion missed both.
       expect(task.ralphLoop.ownerSessionId).toBe('kookr-owner');
-      expect(task.ralphLoop.ownerRuntimeSessionId).toBe('sess-owner');
-      expect(task.ralphLoop.ownerTranscriptPath).toBeUndefined();
     });
 
     test('getActiveSessions returns sessions with lastStatus not completed', () => {

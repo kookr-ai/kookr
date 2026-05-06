@@ -194,11 +194,14 @@ export async function launchFreshTaskSession(
   deps: LaunchServiceDeps,
   task: Task,
   prompt: string,
+  opts?: import('../adapters/agent-adapter.js').AdapterLaunchOptions,
 ): Promise<string> {
   const sessionId = await deps.adapterRegistry.get(task.agentType).launch(
     task.id,
     prompt,
     task.cwd,
+    undefined,
+    opts,
   );
   await registerNewAgent(task, deps.lifecycleDeps);
   return sessionId;
