@@ -276,7 +276,9 @@ test.describe('Toast notifications — auto-dismiss behavior', () => {
     // Broadcast a toast
     await broadcastInfoAlert(request, 'PR #42: new comment');
 
-    const toast = page.locator('.toast');
+    // Scope to .toast-info so the locator stays unique even if other
+    // toasts (e.g. error toasts) are rendered concurrently. See #57.
+    const toast = page.locator('.toast-info');
     await expect(toast).toBeVisible();
 
     // Get bounding boxes
