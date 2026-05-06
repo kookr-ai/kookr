@@ -1,7 +1,7 @@
 {
   "session_id": "ef2bb325-8a22-4eec-a5df-708b6a00a609",
-  "transcript_path": "/home/jean/.claude/projects/-home-jean-git-kookr/ef2bb325-8a22-4eec-a5df-708b6a00a609.jsonl",
-  "cwd": "/home/jean/git/kookr",
+  "transcript_path": "~/.claude/projects/-home-jean-git-kookr/ef2bb325-8a22-4eec-a5df-708b6a00a609.jsonl",
+  "cwd": "/workspace/kookr",
   "permission_mode": "acceptEdits",
   "hook_event_name": "PostToolUseFailure",
   "tool_name": "Read",

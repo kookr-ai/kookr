@@ -6,6 +6,7 @@ import { ScheduleValidationError, isValidMaxTriggers } from '../core/schedule.js
 import { isValidCron } from '../core/cron.js';
 import { parsePlaybook, interpolateParameters, PlaybookParseError } from '../core/playbook-parser.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
+import { expandConfiguredCwd } from './cwd-paths.js';
 
 export interface ResolvedScheduleLaunch {
   prompt: string;
@@ -72,7 +73,7 @@ export class ScheduleValidator {
       const criteria = playbook.checklist.length > 0
         ? playbook.checklist.join('\n')
         : undefined;
-      const cwd = playbook.cwd ?? schedule.cwd;
+      const cwd = expandConfiguredCwd(playbook.cwd ?? schedule.cwd);
 
       if (!existsSync(cwd)) {
         throw new ScheduleValidationError(`cwd does not exist: ${cwd}`, { cwd: 'Working directory does not exist' });

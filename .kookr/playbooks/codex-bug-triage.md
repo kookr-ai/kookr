@@ -1,7 +1,7 @@
 ---
 name: Codex CLI Bug Triage
 description: Browse upstream openai/codex bug reports, score by confidence and reproducibility, maintain ranked triage issues in jeanibarz/codex fork
-cwd: /home/jean/git/codex
+cwd: $HOME/git/codex
 checklist:
   - Fetched current triage issues from jeanibarz/codex
   - Fetched recent upstream bug reports from openai/codex (open + recently closed)

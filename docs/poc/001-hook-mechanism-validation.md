@@ -56,8 +56,8 @@ The **`Stop` hook** fires when the agent finishes its turn in interactive mode a
 ```json
 {
   "session_id": "ecdffeda-e0fc-490d-9efe-3347d80fb85e",
-  "transcript_path": "/home/jean/.claude/projects/-home-jean-git-kookr/ecdffeda-e0fc-490d-9efe-3347d80fb85e.jsonl",
-  "cwd": "/home/jean/git/kookr",
+  "transcript_path": "~/.claude/projects/-home-jean-git-kookr/ecdffeda-e0fc-490d-9efe-3347d80fb85e.jsonl",
+  "cwd": "$HOME/git/kookr",
   "permission_mode": "acceptEdits",
   "hook_event_name": "Stop",
   "stop_hook_active": false,
@@ -79,8 +79,8 @@ The **`PermissionRequest` hook** fires when the agent needs permission approval 
 ```json
 {
   "session_id": "e5a32157-98b3-4b34-95be-173437f1dc13",
-  "transcript_path": "/home/jean/.claude/projects/-home-jean-git-kookr/e5a32157-98b3-4b34-95be-173437f1dc13.jsonl",
-  "cwd": "/home/jean/git/kookr",
+  "transcript_path": "~/.claude/projects/-home-jean-git-kookr/e5a32157-98b3-4b34-95be-173437f1dc13.jsonl",
+  "cwd": "$HOME/git/kookr",
   "permission_mode": "default",
   "hook_event_name": "PermissionRequest",
   "tool_name": "Bash",

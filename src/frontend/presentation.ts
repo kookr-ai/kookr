@@ -8,7 +8,7 @@ const PROJECT_COLOR_COUNT = 8;
 
 /**
  * Extract a short project label from an absolute CWD path.
- * Returns the last non-empty segment (e.g., "/home/jean/git/kookr" → "kookr").
+ * Returns the last non-empty segment (e.g., "/workspace/kookr" → "kookr").
  */
 export function projectLabel(cwd: string | undefined): string {
   if (!cwd) return '';

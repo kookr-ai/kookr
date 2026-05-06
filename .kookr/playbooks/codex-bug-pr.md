@@ -1,7 +1,7 @@
 ---
 name: Codex CLI Bug PR
 description: Find ready-labeled triage issues without linked PRs, create upstream PRs on openai/codex for human-reviewed fixes
-cwd: /home/jean/git/codex
+cwd: $HOME/git/codex
 checklist:
   - Listed all triage issues with "ready" label
   - Filtered out issues that already have a linked PR

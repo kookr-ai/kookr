@@ -1,7 +1,7 @@
 {
   "session_id": "e5a32157-98b3-4b34-95be-173437f1dc13",
-  "transcript_path": "/home/jean/.claude/projects/-home-jean-git-kookr/e5a32157-98b3-4b34-95be-173437f1dc13.jsonl",
-  "cwd": "/home/jean/git/kookr",
+  "transcript_path": "~/.claude/projects/-home-jean-git-kookr/e5a32157-98b3-4b34-95be-173437f1dc13.jsonl",
+  "cwd": "/workspace/kookr",
   "permission_mode": "default",
   "hook_event_name": "PermissionRequest",
   "tool_name": "Bash",

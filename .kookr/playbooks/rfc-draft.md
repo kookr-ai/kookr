@@ -25,7 +25,7 @@ Draft an RFC about **{{topic}}** following the iterative review workflow: write 
 
 ## Context
 
-- **Repository**: Kookr (`/home/jean/git/kookr`) — AI agent supervisor
+- **Repository**: Kookr (`$HOME/git/kookr`) — AI agent supervisor
 - **RFC location**: `docs/rfc/rfc-<slug>.md`
 - **Existing RFCs**: Study 2-3 existing RFCs in `docs/rfc/` for format, tone, and depth before writing
 - **Architecture docs**: `docs/architecture.md`, `docs/features.md`

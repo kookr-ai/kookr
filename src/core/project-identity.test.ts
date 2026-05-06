@@ -130,8 +130,8 @@ describe('extractRepoSpecifierFromGhCommand', () => {
 
 describe('extractShellCwd', () => {
   test('extracts command-level cwd from multiline command', () => {
-    expect(extractShellCwd('cd /home/jean/git/rust\ngh pr create --title test'))
-      .toBe('/home/jean/git/rust');
+    expect(extractShellCwd('cd /workspace/rust\ngh pr create --title test'))
+      .toBe('/workspace/rust');
   });
 
   test('extracts quoted cwd', () => {

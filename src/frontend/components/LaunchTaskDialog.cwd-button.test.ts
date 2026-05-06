@@ -71,18 +71,18 @@ describe('LaunchTaskDialog server-cwd button', () => {
   });
 
   test('button is hidden when cwd already equals server cwd (non-protected case)', async () => {
-    const { root } = renderDialog(container, '/home/jean/git/myrepo');
+    const { root } = renderDialog(container, '/workspace/myrepo');
     await flush();
 
     // No MRU, no draft → cwd auto-populates to serverCwd → button hidden.
-    expect(getCwdEl(container).value).toBe('/home/jean/git/myrepo');
+    expect(getCwdEl(container).value).toBe('/workspace/myrepo');
     expect(getServerCwdButton(container)).toBeNull();
 
     act(() => root.unmount());
   });
 
   test('button populates cwd with server cwd when user has typed a different path', async () => {
-    const { root } = renderDialog(container, '/home/jean/git/myrepo');
+    const { root } = renderDialog(container, '/workspace/myrepo');
     await flush();
 
     // User types a different path.
@@ -91,14 +91,14 @@ describe('LaunchTaskDialog server-cwd button', () => {
 
     const button = getServerCwdButton(container);
     expect(button).not.toBeNull();
-    expect(button!.textContent).toContain('/home/jean/git/myrepo');
+    expect(button!.textContent).toContain('/workspace/myrepo');
 
     await act(async () => {
       button!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
 
-    expect(getCwdEl(container).value).toBe('/home/jean/git/myrepo');
+    expect(getCwdEl(container).value).toBe('/workspace/myrepo');
     // Now hidden again.
     expect(getServerCwdButton(container)).toBeNull();
 
@@ -106,23 +106,23 @@ describe('LaunchTaskDialog server-cwd button', () => {
   });
 
   test('protected server cwd: button derives parent and labels accordingly', async () => {
-    const { root } = renderDialog(container, '/home/jean/git/kookr-prod');
+    const { root } = renderDialog(container, '/workspace/kookr-prod');
     await flush();
 
-    // The dialog auto-populated cwd with serverCwd verbatim ('/home/jean/git/kookr-prod').
+    // The dialog auto-populated cwd with serverCwd verbatim ('/workspace/kookr-prod').
     // The button's *target* is the parent path, so the button is visible
-    // because cwd ('/home/jean/git/kookr-prod') !== target ('/home/jean/git/kookr').
+    // because cwd ('/workspace/kookr-prod') !== target ('/workspace/kookr').
     const button = getServerCwdButton(container);
     expect(button).not.toBeNull();
     expect(button!.textContent).toContain('Use parent of server cwd');
-    expect(button!.textContent).toContain('/home/jean/git/kookr');
+    expect(button!.textContent).toContain('/workspace/kookr');
 
     await act(async () => {
       button!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
 
-    expect(getCwdEl(container).value).toBe('/home/jean/git/kookr');
+    expect(getCwdEl(container).value).toBe('/workspace/kookr');
     // Now matches target → hidden.
     expect(getServerCwdButton(container)).toBeNull();
 

@@ -22,12 +22,12 @@ async function makeFakeHome(): Promise<{ home: string; cwd: string; cleanup: () 
 
 describe('settingsFilePaths', () => {
   it('returns the four documented files in precedence order', () => {
-    const paths = settingsFilePaths('/projects/foo', '/home/jean');
+    const paths = settingsFilePaths('/projects/foo', '/user-home');
     expect(paths).toEqual([
       '/projects/foo/.claude/settings.local.json',
       '/projects/foo/.claude/settings.json',
-      '/home/jean/.claude/settings.local.json',
-      '/home/jean/.claude/settings.json',
+      '/user-home/.claude/settings.local.json',
+      '/user-home/.claude/settings.json',
     ]);
   });
 });

@@ -71,7 +71,7 @@ Extra Codex-only fields (`turn_id`, `model`) are harmless — the current `parse
 **Observed:** Passing a valid hooks JSON via `--settings` to either `codex` or `codex exec` does NOT load the hooks. The flag is accepted without error; the hook discovery code path is never hit. `~/.codex/hooks.json` at the user config location DOES work, and a definitive A/B test (remove hooks.json → pass --settings → zero events; add hooks.json → remove --settings → 7 events) proved the flag is a no-op.
 
 **Evidence:**
-- Binary `~/bin/codex` is md5-identical to `/home/jean/git/codex-hook-parity/codex-rs/target/release/codex` (the `feat/codex-hook-parity` build)
+- Binary `~/bin/codex` is md5-identical to `$HOME/git/codex-hook-parity/codex-rs/target/release/codex` (the `feat/codex-hook-parity` build)
 - Plumbing exists in source: `main.rs:87` → `config_override.rs:44` → `config.rs:1853` → `engine/discovery.rs:123` has `load_hooks_from_file()`
 - `codex features list` confirms `codex_hooks = true` (after manually enabling in `config.toml`)
 - `RUST_LOG=trace` logs contain zero mentions of `settings_file`, `discover_handlers`, or `ClaudeHooksEngine` during the `--settings` path

@@ -187,7 +187,7 @@ curl -s -X POST http://localhost:4800/api/tasks \
 4. **Checklist items map to phases**: Each checklist item should correspond to a verifiable phase outcome
 5. **Idempotency section**: If the playbook will run repeatedly, document how to avoid duplicate work
 6. **Anti-patterns section**: Capture past mistakes so the agent doesn't repeat them
-7. **CWD field**: Set it when the playbook targets a specific repo different from the Kookr project (e.g., `cwd: /home/jean/git/codex` for Codex-specific playbooks)
+7. **CWD field**: Set it when the playbook targets a specific repo different from the Kookr project (e.g., `cwd: $HOME/git/codex` for Codex-specific playbooks)
 
 ## Template for a new OSS playbook
 

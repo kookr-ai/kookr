@@ -601,7 +601,7 @@ Issue authors write bug reports against the version they are running. When a maj
 **Run this check for every shortlisted candidate before claiming:**
 
 ```bash
-LOCAL=/home/jean/git/${REPO_NAME}
+LOCAL=$HOME/git/${REPO_NAME}
 cd "$LOCAL" && git fetch upstream >/dev/null 2>&1
 
 # Identify likely target files from the issue (file paths, stack traces, error messages)

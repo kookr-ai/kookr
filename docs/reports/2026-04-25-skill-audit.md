@@ -32,10 +32,10 @@ Plus a manual review of any file that mentions "Kookr" by name to determine whet
 | `claude-code-permissions` | Has a "Kookr Worker Permissions" section |
 | `codex-claude-compatibility` | `pnpm codex:rebuild`, references Kookr fork build path |
 | `codex-pr-state` | "Kookr's dashboard reads this field" |
-| `demo-recording` | `KOOKR_TTS`, `KOOKR_TTS_URL`, `/home/jean/git/kookr` |
+| `demo-recording` | `KOOKR_TTS`, `KOOKR_TTS_URL`, `$HOME/git/kookr` |
 | `kookr-playbooks` | About `.kookr/playbooks/` directory and the dashboard UI |
 | `kookr-terminal-backend` | `KOOKR_BACKEND` env var |
-| `mbse-system-modeling` | Hardcoded `/home/jean/git/kookr` path argument in embedded scripts |
+| `mbse-system-modeling` | Hardcoded `$HOME/git/kookr` path argument in embedded scripts |
 | `oss-contribution-gate` | `KOOKR_TASK_ID`, `~/.kookr/` ledger paths |
 | `oss-dashboard-verify` | `~/.kookr/` paths, Kookr API |
 | `oss-issue-scout` (skill) | `KOOKR_API_BASE_URL`, `~/.kookr/oss-attempts.json` |

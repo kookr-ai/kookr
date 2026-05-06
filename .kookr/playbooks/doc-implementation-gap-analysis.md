@@ -1,7 +1,7 @@
 ---
 name: Doc-Implementation Gap Analysis
 description: Identify misalignments between system design docs and current implementation, present findings to user, then fix docs/code based on user direction
-cwd: /home/jean/git/kookr
+cwd: $HOME/git/kookr
 checklist:
   - Read all design docs (README, CLAUDE.md, features.md, architecture.md, roadmap.md, ADRs, POCs)
   - Explored all implementation directories (src/core, src/adapters, src/server, src/frontend)

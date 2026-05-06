@@ -41,7 +41,7 @@ Modes emitted: `?2026h` (DECSET 2026 sync-output), `?2026l`. **No `?1049h` (alt-
 
 ### 2. xterm.js `scrollOnEraseInDisplay` is set but doesn't populate scrollback
 
-Deployed bundle `/home/jean/git/kookr-prod/dist/frontend/assets/index-DgB7C9lK.js` contains `scrollOnEraseInDisplay:!0,scrollOnUserInput:!1` (set by `TerminalPanel.tsx`).
+Deployed bundle `$HOME/git/kookr-prod/dist/frontend/assets/index-DgB7C9lK.js` contains `scrollOnEraseInDisplay:!0,scrollOnUserInput:!1` (set by `TerminalPanel.tsx`).
 
 Relevant xterm.js source at `node_modules/.../@xterm/xterm/lib/xterm.mjs`:
 

@@ -1,7 +1,7 @@
 ---
 name: LangChain Bug PR
 description: Find ready-labeled triage issues without linked PRs, create upstream PRs on langchain-ai/langchain for human-reviewed fixes
-cwd: /home/jean/git/langchain
+cwd: $HOME/git/langchain
 checklist:
   - Listed all triage issues with "ready" label
   - Filtered out issues that already have a linked PR

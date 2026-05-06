@@ -18,7 +18,8 @@ import { WebSocket } from 'ws';
 
 const STT_URL = process.env.STT_URL || 'ws://localhost:8003';
 const STT_HEALTH_URL = STT_URL.replace(/^ws/, 'http') + '/health';
-const FIXTURE_MP3 = '/home/jean/git/aegiscore/packages/stt/tests/fixtures/antoni.mp3';
+const FIXTURE_MP3 = process.env.STT_FIXTURE_MP3
+  || `${process.env.HOME || ''}/git/aegiscore/packages/stt/tests/fixtures/antoni.mp3`;
 const FIXTURE_PCM = '/tmp/stt-test-antoni-16k.pcm';
 
 const EXPECTED_TEXT = [

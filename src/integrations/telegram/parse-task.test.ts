@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { parseTaskCommand } from './parse-task.js';
 
-const ONE_PROJECT = [{ name: 'kookr', cwd: '/home/jean/git/kookr' }];
+const ONE_PROJECT = [{ name: 'kookr', cwd: '/workspace/kookr' }];
 const TWO_PROJECTS = [
-  { name: 'kookr', cwd: '/home/jean/git/kookr' },
-  { name: 'codex', cwd: '/home/jean/git/codex' },
+  { name: 'kookr', cwd: '/workspace/kookr' },
+  { name: 'codex', cwd: '/workspace/codex' },
 ];
 
 describe('parseTaskCommand', () => {
@@ -13,7 +13,7 @@ describe('parseTaskCommand', () => {
     expect(r.kind).toBe('spec');
     if (r.kind === 'spec') {
       expect(r.prompt).toBe('fix sweep');
-      expect(r.project.cwd).toBe('/home/jean/git/kookr');
+      expect(r.project.cwd).toBe('/workspace/kookr');
       expect(r.agentType).toBeUndefined();
     }
   });
@@ -30,7 +30,7 @@ describe('parseTaskCommand', () => {
     const r = parseTaskCommand('/task@codex fix the cli', TWO_PROJECTS);
     expect(r.kind).toBe('spec');
     if (r.kind === 'spec') {
-      expect(r.project.cwd).toBe('/home/jean/git/codex');
+      expect(r.project.cwd).toBe('/workspace/codex');
       expect(r.prompt).toBe('fix the cli');
     }
   });
@@ -81,7 +81,7 @@ describe('parseTaskCommand', () => {
     expect(r.kind).toBe('spec');
     if (r.kind === 'spec') {
       expect(r.agentType).toBe('claude-code');
-      expect(r.project.cwd).toBe('/home/jean/git/kookr');
+      expect(r.project.cwd).toBe('/workspace/kookr');
       expect(r.prompt).toBe('fix sweep');
     }
   });

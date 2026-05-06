@@ -1,7 +1,7 @@
 ---
 name: Codex PR Lessons
 description: Analyze closed PRs from openai/codex to learn what makes contributions successful, track learnings, and distill patterns into reusable skills
-cwd: /home/jean/git/codex
+cwd: $HOME/git/codex
 checklist:
   - Read state file and determined next batch of PRs to process
   - Fetched batch of closed PRs from openai/codex (5 PRs per iteration)

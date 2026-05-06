@@ -11,8 +11,8 @@ function fakeLlm(response: string | null): LlmClient {
 }
 
 const PROJECTS = [
-  { name: 'kookr', cwd: '/home/jean/git/kookr' },
-  { name: 'codex', cwd: '/home/jean/git/codex' },
+  { name: 'kookr', cwd: '/workspace/kookr' },
+  { name: 'codex', cwd: '/workspace/codex' },
 ];
 
 describe('rephrase', () => {
@@ -27,13 +27,13 @@ describe('rephrase', () => {
   it('returns spec when LLM emits a valid TaskSpec with cwd in allowlist', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'Investigate sweep button placement and fix it.',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
       suggestedBranch: 'fix/sweep-button',
     }));
     const r = await rephrase('fix sweep button', { allowedProjects: PROJECTS, llm });
     expect(r.kind).toBe('spec');
     if (r.kind === 'spec') {
-      expect(r.spec.cwd).toBe('/home/jean/git/kookr');
+      expect(r.spec.cwd).toBe('/workspace/kookr');
       expect(r.spec.agentType).toBe('claude-code');
       expect(r.spec.suggestedBranch).toBe('fix/sweep-button');
     }
@@ -42,7 +42,7 @@ describe('rephrase', () => {
   it('uses the caller default agent when LLM emits no agentType', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'Investigate Codex prompt handling.',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     }));
     const r = await rephrase('fix it', { allowedProjects: PROJECTS, llm, defaultAgentType: 'codex-cli' });
     expect(r.kind).toBe('spec');
@@ -54,7 +54,7 @@ describe('rephrase', () => {
   it('accepts structured agentType metadata from the LLM', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'Fix the sweep button.',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
       agentType: 'codex-cli',
     }));
     const r = await rephrase('use codex to fix sweep button', { allowedProjects: PROJECTS, llm, defaultAgentType: 'claude-code' });
@@ -68,7 +68,7 @@ describe('rephrase', () => {
   it('returns ambiguous when LLM emits {ambiguous: ...}', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'placeholder',  // schema requires prompt; ambiguous can coexist
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
       ambiguous: 'Which project?',
     }));
     const r = await rephrase('do the thing', { allowedProjects: PROJECTS, llm });
@@ -90,7 +90,7 @@ describe('rephrase', () => {
   it('rejects prefix-similar cwd (NOT prefix matching)', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'x',
-      cwd: '/home/jean/git/kookr/src',  // inside kookr but not exact
+      cwd: '/workspace/kookr/src',  // inside kookr but not exact
     }));
     const r = await rephrase('x', { allowedProjects: PROJECTS, llm });
     expect(r.kind).toBe('failed');
@@ -99,7 +99,7 @@ describe('rephrase', () => {
   it('rejects unknown autonomy field at schema level (Zod strict)', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'x',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
       autonomy: 'autonomous',           // unknown — schema is strict
     }));
     const r = await rephrase('x', { allowedProjects: PROJECTS, llm });
@@ -112,7 +112,7 @@ describe('rephrase', () => {
   it('rejects unknown agentType values at schema level', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'x',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
       agentType: 'cursor',
     }));
     const r = await rephrase('x', { allowedProjects: PROJECTS, llm });
@@ -125,7 +125,7 @@ describe('rephrase', () => {
   it('rejects oversize prompts (max 2000)', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'x'.repeat(2001),
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     }));
     const r = await rephrase('big', { allowedProjects: PROJECTS, llm });
     expect(r.kind).toBe('failed');
@@ -134,7 +134,7 @@ describe('rephrase', () => {
   it('rejects shell-meta in suggestedBranch (regex)', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'x',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
       suggestedBranch: 'fix; rm -rf /',
     }));
     const r = await rephrase('x', { allowedProjects: PROJECTS, llm });

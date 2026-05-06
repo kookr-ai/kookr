@@ -1,7 +1,7 @@
 ---
 name: LangChain PR Lessons
 description: Analyze closed PRs from langchain-ai/langchain to learn what makes contributions successful, track learnings, and distill patterns into reusable skills
-cwd: /home/jean/git/langchain
+cwd: $HOME/git/langchain
 checklist:
   - Read state file and determined next batch of PRs to process
   - Fetched batch of closed PRs from langchain-ai/langchain (5 PRs per iteration)

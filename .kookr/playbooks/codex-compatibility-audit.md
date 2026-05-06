@@ -1,7 +1,7 @@
 ---
 name: Codex CLI Compatibility Audit
 description: Analyze Claude Code vs Codex CLI feature gaps and maintain candidate contribution issues in jeanibarz/codex fork
-cwd: /home/jean/git/codex
+cwd: $HOME/git/codex
 checklist:
   - Fetched current candidate issues from jeanibarz/codex
   - Checked recent changes in anthropics/claude-code (new features, closed issues)

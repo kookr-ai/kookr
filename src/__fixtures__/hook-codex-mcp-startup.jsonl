@@ -1,6 +1,6 @@
-{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/home/jean/git/kookr","hook_event_name":"Notification","notification_type":"mcp_startup_starting","message":"Starting MCP servers"}
-{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/home/jean/git/kookr","hook_event_name":"SessionStart","model":"codex","source":"startup"}
-{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/home/jean/git/kookr","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"codex-bash-1"}
-{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/home/jean/git/kookr","hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":"README.md\npackage.json","tool_use_id":"codex-bash-1"}
-{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/home/jean/git/kookr","hook_event_name":"Stop","last_assistant_message":"Done"}
-{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/home/jean/git/kookr","hook_event_name":"SessionEnd","reason":"other"}
+{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/workspace/kookr","hook_event_name":"Notification","notification_type":"mcp_startup_starting","message":"Starting MCP servers"}
+{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/workspace/kookr","hook_event_name":"SessionStart","model":"codex","source":"startup"}
+{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/workspace/kookr","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"codex-bash-1"}
+{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/workspace/kookr","hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":"README.md\npackage.json","tool_use_id":"codex-bash-1"}
+{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/workspace/kookr","hook_event_name":"Stop","last_assistant_message":"Done"}
+{"session_id":"codex-mcp-startup-demo","transcript_path":null,"cwd":"/workspace/kookr","hook_event_name":"SessionEnd","reason":"other"}

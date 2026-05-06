@@ -69,13 +69,13 @@ const REAL_SNAPSHOT_3OPT = `  1460 +  font-size: 11px;
 
 ● Now let me verify the build works:
 
-● Bash(cd /home/jean/git/kookr-shortcuts-help && npx tsc --noEmit 2>&1 | head -30)
+● Bash(cd /workspace/kookr-shortcuts-help && npx tsc --noEmit 2>&1 | head -30)
   ⎿  Running…
 
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Bash command
 
-   cd /home/jean/git/kookr-shortcuts-help && npx tsc --noEmit 2>&1 | head -30
+   cd /workspace/kookr-shortcuts-help && npx tsc --noEmit 2>&1 | head -30
    Type-check the project
 
  Do you want to proceed?
@@ -350,7 +350,7 @@ describe('extractPermissionActions', () => {
     test('real snapshot: 3-option permission menu', () => {
       const actions = extractPermissionActions(
         'Bash',
-        { command: 'cd /home/jean/git/kookr-shortcuts-help && npx tsc --noEmit' },
+        { command: 'cd /workspace/kookr-shortcuts-help && npx tsc --noEmit' },
         REAL_SNAPSHOT_3OPT,
       );
       expect(actions).toHaveLength(3);

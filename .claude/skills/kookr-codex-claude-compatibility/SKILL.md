@@ -30,7 +30,7 @@ For parity work, prefer:
 
 ### Single Claude-compat branch
 
-All Claude-Code compatibility work lives on **`feat/claude-compat`** in the fork (`jeanibarz/codex`). The main fork checkout at `/home/jean/git/codex` is the canonical checkout and should remain the only persistent worktree.
+All Claude-Code compatibility work lives on **`feat/claude-compat`** in the fork (`jeanibarz/codex`). The main fork checkout is configured with `KOOKR_CODEX_CHECKOUT` and defaults to `$HOME/git/codex`; it should remain the only persistent worktree.
 
 Branch state (as of 2026-04-05 consolidation):
 
@@ -96,17 +96,18 @@ Examples:
 
 Operational rule:
 
-- Prefer a shared build-script implementation that derives the SHA from `/home/jean/git/codex`
+- Prefer a shared build-script implementation that derives the SHA from `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}`
 - Make `codex --version` the primary sanity check after install
 - Keep runtime/UI/app-server version surfaces aligned with the same build version where practical
-- After changing versioning, rebuild and reinstall `/home/jean/bin/codex` before concluding the task
+- After changing versioning, rebuild and reinstall `${KOOKR_CODEX_BIN:-$HOME/bin/codex}` before concluding the task
 
 Build from the single fork checkout, on `feat/claude-compat`:
 
 ```bash
-cd /home/jean/git/codex && git checkout feat/claude-compat && git pull
+KOOKR_CODEX_CHECKOUT="${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}"
+cd "$KOOKR_CODEX_CHECKOUT" && git checkout feat/claude-compat && git pull
 cargo +1.93.0 build \
-  --manifest-path /home/jean/git/codex/codex-rs/Cargo.toml \
+  --manifest-path "$KOOKR_CODEX_CHECKOUT/codex-rs/Cargo.toml" \
   -p codex-cli \
   --release
 ```
@@ -116,7 +117,7 @@ Or use the Kookr helper: `pnpm codex:rebuild` (runs `scripts/rebuild-codex.sh`, 
 Install the built binary for Kookr use:
 
 ```bash
-CODEX_SRC="${CODEX_SRC:-$HOME/git/codex}"
+CODEX_SRC="${CODEX_SRC:-${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}}"
 CODEX_INSTALL_DIR="${CODEX_INSTALL_DIR:-$HOME/bin}"
 MANIFEST="$CODEX_SRC/codex-rs/Cargo.toml"
 TARGET_DIR="$(cargo +1.93.0 metadata --manifest-path "$MANIFEST" --no-deps --format-version 1 | node -e 'let input = ""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));')"
@@ -132,9 +133,9 @@ Sanity check:
 "${CODEX_INSTALL_DIR:-$HOME/bin}/codex" --version
 ```
 
-Kookr should use `${CODEX_INSTALL_DIR:-$HOME/bin}/codex` as the deployed custom Codex binary.
+Kookr should use `${KOOKR_CODEX_BIN:-${CODEX_INSTALL_DIR:-$HOME/bin}/codex}` as the deployed custom Codex binary.
 
-If you had to use an alternate checkout or target dir for a one-off rebuild, do not leave that as the operating model. The final committed source of truth must still be `feat/claude-compat` in `/home/jean/git/codex`.
+If you had to use an alternate checkout or target dir for a one-off rebuild, do not leave that as the operating model. The final committed source of truth must still be `feat/claude-compat` in `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}`.
 
 ## Real Verification Workflow
 
@@ -153,14 +154,16 @@ Use a real spawned imported role, not a generic agent with copied instructions.
 1. Start app-server from the deployed binary:
 
 ```bash
-/home/jean/bin/codex app-server --listen ws://127.0.0.1:4222
+KOOKR_CODEX_BIN="${KOOKR_CODEX_BIN:-$(command -v codex)}"
+"$KOOKR_CODEX_BIN" app-server --listen ws://127.0.0.1:4222
 ```
 
 2. Drive it with the Codex app-server test client:
 
 ```bash
+KOOKR_CODEX_CHECKOUT="${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}"
 cargo +1.93.0 run \
-  --manifest-path /home/jean/git/codex-sync-main/codex-rs/Cargo.toml \
+  --manifest-path "$KOOKR_CODEX_CHECKOUT/codex-rs/Cargo.toml" \
   -p codex-app-server-test-client \
   -- \
   --url ws://127.0.0.1:4222 \
@@ -211,17 +214,17 @@ When the user asks for more Claude compatibility, check these next:
 
 ## Working Pattern for New Compatibility Fixes
 
-1. Reproduce the gap using the real deployed binary or the main `/home/jean/git/codex` checkout on `feat/claude-compat`
-2. Inspect the Codex implementation in `/home/jean/git/codex`
+1. Reproduce the gap using the real deployed binary or the main `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}` checkout on `feat/claude-compat`
+2. Inspect the Codex implementation in `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}`
 3. Patch the minimal compatibility layer instead of rewriting Claude assets
 4. Add a regression test in the Codex fork whenever the issue is deterministic
-5. Build and deploy `/home/jean/bin/codex`
+5. Build and deploy `${KOOKR_CODEX_BIN:-$HOME/bin/codex}`
 6. Re-verify in a live Kookr-adjacent process
 7. Commit, push, and record the new behavior here if it is reusable
 
 ## Notes
 
-- `/home/jean/git/codex` on `feat/claude-compat` is the only persistent Codex checkout to rely on
-- If `/home/jean/git/codex` is dirty, either work carefully with those changes or stop and resolve the ownership conflict before proceeding
-- Before ending a task, make sure `git worktree list` for `/home/jean/git/codex` only shows the main checkout unless the user explicitly asked to keep an extra worktree
+- `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}` on `feat/claude-compat` is the only persistent Codex checkout to rely on
+- If `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}` is dirty, either work carefully with those changes or stop and resolve the ownership conflict before proceeding
+- Before ending a task, make sure `git worktree list` for `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}` only shows the main checkout unless the user explicitly asked to keep an extra worktree
 - If a future compatibility fix produces reusable operational knowledge, update this skill rather than leaving the knowledge in chat history
