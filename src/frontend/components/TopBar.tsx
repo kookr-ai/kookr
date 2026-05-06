@@ -29,6 +29,10 @@ interface DeployStatus {
   behindCount?: number;
   commits?: { hash: string; subject: string }[];
   error?: string;
+  /** Port this dashboard's backend is bound to. Undefined when talking to a pre-update backend. */
+  runningPort?: number;
+  /** Port the deploy button targets (the production instance). */
+  prodPort?: number;
 }
 
 function timeAgo(isoString: string): string {
@@ -132,7 +136,16 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
 
   const healthy = healthyAgents.length;
 
-  const hasUpdates = deployStatus?.configured && deployStatus.available && !deploying;
+  // Treat a non-prod backend (e.g. `pnpm dev` on :4801) as "deploy doesn't apply
+  // here" — clicking would update an unrelated sibling process. We hide the
+  // controls and the version-badge update pulse so users aren't nudged toward
+  // a misleading action. See issue #15.
+  const onNonProdPort =
+    deployStatus?.runningPort !== undefined &&
+    deployStatus?.prodPort !== undefined &&
+    deployStatus.runningPort !== deployStatus.prodPort;
+
+  const hasUpdates = !onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying;
 
   return (
     <div className={`topbar kookr-tour-target-layout${compact ? ' compact' : ''}`}>
@@ -170,52 +183,60 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
 
             {/* Deploy section */}
             <div className="deploy-divider" />
-            {deployLoading && !deployStatus && (
-              <div className="version-row deploy-checking">Checking for updates...</div>
-            )}
-            {deployStatus?.error && (
-              <div className="version-row deploy-error">{deployStatus.error}</div>
-            )}
-            {deployStatus && !deployStatus.configured && !deployStatus.error && (
-              <div className="deploy-uptodate">No production instance configured</div>
-            )}
-            {deploying && (
-              <div className="deploy-status-row">
-                <span className="deploy-spinner" /> Deploying to production...
+            {onNonProdPort ? (
+              <div className="deploy-uptodate">
+                This dashboard is on dev (port {deployStatus?.runningPort}). The deploy button updates the prod instance on port {deployStatus?.prodPort}.
               </div>
-            )}
-            {deployStatus?.configured && !deploying && (
+            ) : (
               <>
-                {deployStatus.available ? (
+                {deployLoading && !deployStatus && (
+                  <div className="version-row deploy-checking">Checking for updates...</div>
+                )}
+                {deployStatus?.error && (
+                  <div className="version-row deploy-error">{deployStatus.error}</div>
+                )}
+                {deployStatus && !deployStatus.configured && !deployStatus.error && (
+                  <div className="deploy-uptodate">No production instance configured</div>
+                )}
+                {deploying && (
+                  <div className="deploy-status-row">
+                    <span className="deploy-spinner" /> Deploying to production...
+                  </div>
+                )}
+                {deployStatus?.configured && !deploying && (
                   <>
-                    <div className="deploy-available">
-                      {deployStatus.behindCount} commit{deployStatus.behindCount !== 1 ? 's' : ''} ahead of production
-                      <span className="deploy-range">{deployStatus.currentShort} &rarr; {deployStatus.latestShort}</span>
-                    </div>
-                    {deployStatus.commits && deployStatus.commits.length > 0 && (
-                      <div className="deploy-commits">
-                        {deployStatus.commits.slice(0, 8).map((c) => (
-                          <div key={c.hash} className="deploy-commit">
-                            <code>{c.hash}</code> {c.subject}
-                          </div>
-                        ))}
-                        {deployStatus.commits.length > 8 && (
-                          <div className="deploy-commit deploy-more">
-                            ...and {deployStatus.commits.length - 8} more
+                    {deployStatus.available ? (
+                      <>
+                        <div className="deploy-available">
+                          {deployStatus.behindCount} commit{deployStatus.behindCount !== 1 ? 's' : ''} ahead of production
+                          <span className="deploy-range">{deployStatus.currentShort} &rarr; {deployStatus.latestShort}</span>
+                        </div>
+                        {deployStatus.commits && deployStatus.commits.length > 0 && (
+                          <div className="deploy-commits">
+                            {deployStatus.commits.slice(0, 8).map((c) => (
+                              <div key={c.hash} className="deploy-commit">
+                                <code>{c.hash}</code> {c.subject}
+                              </div>
+                            ))}
+                            {deployStatus.commits.length > 8 && (
+                              <div className="deploy-commit deploy-more">
+                                ...and {deployStatus.commits.length - 8} more
+                              </div>
+                            )}
                           </div>
                         )}
-                      </div>
+                        <button className="btn-deploy" onClick={triggerDeploy}>
+                          Deploy to production
+                        </button>
+                      </>
+                    ) : (
+                      <div className="deploy-uptodate">Production is up to date</div>
                     )}
-                    <button className="btn-deploy" onClick={triggerDeploy}>
-                      Deploy to production
+                    <button className="deploy-refresh" onClick={checkDeployStatus} disabled={deployLoading}>
+                      {deployLoading ? 'Checking...' : 'Refresh'}
                     </button>
                   </>
-                ) : (
-                  <div className="deploy-uptodate">Production is up to date</div>
                 )}
-                <button className="deploy-refresh" onClick={checkDeployStatus} disabled={deployLoading}>
-                  {deployLoading ? 'Checking...' : 'Refresh'}
-                </button>
               </>
             )}
           </div>

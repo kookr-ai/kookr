@@ -30,13 +30,14 @@ function resolveProdUpdateScript(serverCwd: string): string {
 export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
   const prodDir = resolveProdDir(deps.serverCwd);
   const prodUpdateScript = resolveProdUpdateScript(deps.serverCwd);
+  const runningPort = deps.serverPort;
   let deploying = false;
 
   app.get('/api/deploy/status', async (c) => {
     try {
       await access(prodDir);
     } catch {
-      return c.json({ configured: false });
+      return c.json({ configured: false, runningPort, prodPort: PROD_PORT });
     }
 
     try {
@@ -75,10 +76,17 @@ export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
         latestShort,
         behindCount,
         commits,
+        runningPort,
+        prodPort: PROD_PORT,
       });
     } catch (err) {
       return c.json(
-        { configured: true, error: err instanceof Error ? err.message : String(err) },
+        {
+          configured: true,
+          error: err instanceof Error ? err.message : String(err),
+          runningPort,
+          prodPort: PROD_PORT,
+        },
         500,
       );
     }
