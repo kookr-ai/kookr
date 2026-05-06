@@ -353,6 +353,38 @@ describe('Startup Reconciliation', () => {
     },
   );
 
+  test('Ralph exemption releases when loop transitions to a terminal status', async () => {
+    // The exemption is dynamic, not sticky: once the loop completes (or
+    // fails / is cancelled), the next reconcile sweep must terminate the
+    // parent task as usual. Asserts the exemption flips off correctly.
+    const task = taskStore.createTask('Looped', '/cwd');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-prior',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'completed',
+    });
+    task.ralphLoop = {
+      prompt: 'iterate',
+      iterationCap: 5,
+      currentIteration: 1,
+      status: 'running',
+      lastIterationStartedAt: 0,
+      cumulativeIterations: 1,
+    };
+
+    const firstResult = await reconcile(taskStore, backend);
+    expect(firstResult.tasksTerminated).toHaveLength(0);
+    expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+
+    task.ralphLoop.status = 'completed';
+
+    const secondResult = await reconcile(taskStore, backend);
+    expect(secondResult.tasksTerminated).toContain(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('terminated');
+  });
+
   test('Ralph loop in terminal status (cancelled/completed/failed) is NOT exempt from auto-termination', async () => {
     // Once the loop is done, the task should follow the normal lifecycle.
     const task = taskStore.createTask('Looped done', '/cwd');
