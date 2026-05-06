@@ -144,18 +144,12 @@ Speech-to-text (STT) and text-to-speech (TTS) are off by default. Both services 
 **Prerequisites**
 
 - **Docker** + **Docker Compose**
-- **NVIDIA GPU + the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)** for the default STT configuration (`large-v3` Whisper on CUDA). TTS auto-detects GPU and falls back to CPU.
-- **CPU fallback for STT** (no GPU required): set the following overrides in `.env`, then remove the `deploy.resources.reservations` GPU block from `stt/docker-compose.yml`:
-  ```bash
-  WHISPER_IMAGE=fedirz/faster-whisper-server:latest-cpu
-  WHISPER_MODEL=base
-  WHISPER_DEVICE=cpu
-  WHISPER_COMPUTE_TYPE=int8
-  ```
+- **GPU is auto-detected.** STT probes the docker daemon for the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) at startup; if found, it runs Whisper `large-v3` on CUDA, otherwise it runs Whisper `base` on CPU. TTS auto-detects GPU through PyTorch the same way. No manual compose-file edits required.
+- **Force a device** with `KOOKR_STT_DEVICE=cpu` or `KOOKR_STT_DEVICE=gpu` if you want to override the auto choice (e.g. CPU testing on a GPU box, or fail-loud on a GPU box where the runtime is misconfigured).
 
 **First boot**
 
-The first time you start with `KOOKR_STT=true`, the Whisper sidecar downloads the model into a Docker volume — roughly **3 GB for `large-v3`** (the default), or under 200 MB for `base` (CPU fallback). Subsequent boots reuse the cached model.
+The first time you start with `KOOKR_STT=true`, the Whisper sidecar downloads the model into a Docker volume — roughly **150 MB for `base`** (CPU default) or **~3 GB for `large-v3`** (GPU default). Subsequent boots reuse the cached model.
 
 **Enabling**
 

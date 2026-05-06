@@ -17,13 +17,24 @@ import { join } from 'node:path';
 const execFileAsync = promisify(execFile);
 export const DEFAULT_STT_STARTUP_TIMEOUT_MS = 600_000;
 
+export type STTDevice = 'auto' | 'cpu' | 'gpu';
+export type ResolvedSTTDevice = 'cpu' | 'gpu';
+
 export interface STTManagerConfig {
   /** Absolute path to the stt/ directory containing docker-compose.yml */
   sttDir: string;
   /** Port to expose the STT service on the host (default: 8003) */
   port?: number;
-  /** Whisper model to use (default: large-v3) */
+  /**
+   * Whisper model. When omitted, the manager picks `base` for CPU and
+   * `large-v3` for GPU so first-run downloads stay reasonable.
+   */
   whisperModel?: string;
+  /**
+   * Inference device. `auto` (default) probes the docker daemon for an
+   * nvidia runtime; `cpu` and `gpu` force the choice.
+   */
+  device?: STTDevice;
   /** Max time to wait for health check (ms, default: 600000) */
   startupTimeoutMs?: number;
 }
@@ -43,22 +54,43 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
   const {
     sttDir,
     port = 8003,
-    whisperModel = 'large-v3',
+    whisperModel,
+    device = parseSTTDevice(),
     startupTimeoutMs = parseSTTHealthTimeoutMs(),
   } = config;
 
+  const resolvedDevice = await resolveDevice(device);
+  const defaults = deviceDefaults(resolvedDevice);
+  // Explicit user overrides via env beat the device-derived defaults; the
+  // typed config arg (whisperModel) beats both.
+  const model = whisperModel ?? process.env.WHISPER_MODEL ?? defaults.model;
+  const image = process.env.WHISPER_IMAGE ?? defaults.image;
+  const whisperDevice = process.env.WHISPER_DEVICE ?? defaults.device;
+  const computeType = process.env.WHISPER_COMPUTE_TYPE ?? defaults.computeType;
+
   const composePath = join(sttDir, 'docker-compose.yml');
+  const gpuOverlayPath = join(sttDir, 'docker-compose.gpu.yml');
+  const composeFlags =
+    resolvedDevice === 'gpu' ? ['-f', composePath, '-f', gpuOverlayPath] : ['-f', composePath];
+
   const env = {
     ...process.env,
     KOOKR_STT_PORT: String(port),
-    WHISPER_MODEL: whisperModel,
+    WHISPER_IMAGE: image,
+    WHISPER_MODEL: model,
+    WHISPER_DEVICE: whisperDevice,
+    WHISPER_COMPUTE_TYPE: computeType,
   };
 
-  console.log(`[stt] Starting STT containers (model: ${whisperModel}, port: ${port})...`);
+  console.log(
+    `[stt] Starting STT containers (device: ${resolvedDevice}${
+      device === 'auto' ? ' [auto]' : ''
+    }, model: ${model}, port: ${port})...`,
+  );
 
   // Start containers in detached mode
   try {
-    await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d', '--build'], {
+    await execFileAsync('docker', ['compose', ...composeFlags, 'up', '-d', '--build'], {
       env,
       timeout: 120_000,
     });
@@ -84,7 +116,7 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
         const url = `ws://localhost:${port}`;
         return {
           url,
-          stop: () => stopSTT(composePath, env),
+          stop: () => stopSTT(composeFlags, env),
         };
       }
     } catch {
@@ -94,14 +126,14 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
   }
 
   // Timeout — tear down and throw
-  await stopSTT(composePath, env).catch(() => {});
+  await stopSTT(composeFlags, env).catch(() => {});
   throw new Error(`[stt] STT service did not become healthy within ${startupTimeoutMs / 1000}s`);
 }
 
-async function stopSTT(composePath: string, env: NodeJS.ProcessEnv): Promise<void> {
+async function stopSTT(composeFlags: string[], env: NodeJS.ProcessEnv): Promise<void> {
   console.log('[stt] Stopping STT containers...');
   try {
-    await execFileAsync('docker', ['compose', '-f', composePath, 'down'], {
+    await execFileAsync('docker', ['compose', ...composeFlags, 'down'], {
       env,
       timeout: 30_000,
     });
@@ -110,6 +142,67 @@ async function stopSTT(composePath: string, env: NodeJS.ProcessEnv): Promise<voi
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[stt] Warning: failed to stop STT containers: ${msg}`);
   }
+}
+
+/**
+ * Resolve `auto` to `cpu` or `gpu` by probing the docker daemon for an
+ * nvidia runtime. Any probe failure (no docker, permission, parse error)
+ * means "no GPU available" and falls back to CPU — never throws.
+ */
+export async function resolveDevice(
+  device: STTDevice,
+  probe: () => Promise<boolean> = detectNvidiaRuntime,
+): Promise<ResolvedSTTDevice> {
+  if (device === 'cpu' || device === 'gpu') return device;
+  return (await probe()) ? 'gpu' : 'cpu';
+}
+
+async function detectNvidiaRuntime(): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync('docker', ['info', '--format', '{{json .Runtimes}}'], {
+      timeout: 5_000,
+    });
+    const runtimes = JSON.parse(stdout) as Record<string, unknown>;
+    return Object.prototype.hasOwnProperty.call(runtimes, 'nvidia');
+  } catch {
+    return false;
+  }
+}
+
+interface DeviceDefaults {
+  image: string;
+  model: string;
+  device: string;
+  computeType: string;
+}
+
+function deviceDefaults(resolved: ResolvedSTTDevice): DeviceDefaults {
+  if (resolved === 'gpu') {
+    return {
+      image: 'fedirz/faster-whisper-server:latest-cuda',
+      model: 'large-v3',
+      device: 'cuda',
+      computeType: 'float16',
+    };
+  }
+  return {
+    image: 'fedirz/faster-whisper-server:latest-cpu',
+    model: 'base',
+    device: 'cpu',
+    computeType: 'int8',
+  };
+}
+
+export function parseSTTDevice(raw = process.env.KOOKR_STT_DEVICE): STTDevice {
+  if (!raw) return 'auto';
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'auto' || normalized === 'cpu' || normalized === 'gpu') {
+    return normalized;
+  }
+  console.warn(
+    `[stt] Warning: ignoring invalid KOOKR_STT_DEVICE=${JSON.stringify(raw)}; using auto`,
+  );
+  return 'auto';
 }
 
 function sleep(ms: number): Promise<void> {
