@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/kookr-ai/kookr",
   "repository": "https://github.com/kookr-ai/kookr",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": [
     "kookr",
     "skills",
