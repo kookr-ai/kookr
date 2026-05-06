@@ -280,9 +280,11 @@ test.describe('Send & Next — input delivery', () => {
     // The sent overlay should NOT appear
     await expect(page.locator('.sent-overlay')).not.toBeVisible();
 
-    // An error toast/alert should appear
-    await expect(page.locator('.toast')).toBeVisible({ timeout: 3000 });
-    await expect(page.locator('.toast')).toContainText('connection lost');
+    // An error toast/alert should appear. Scope to .toast-error so the
+    // locator stays unique even if other (info) toasts are rendered
+    // concurrently. See #57.
+    await expect(page.locator('.toast-error')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.toast-error')).toContainText('connection lost');
 
     // The selection should NOT have advanced (still on the same finding)
     await expect(page.locator('.detail-badge')).toContainText('NEEDS INPUT');
