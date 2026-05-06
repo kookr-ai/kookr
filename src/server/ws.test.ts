@@ -606,7 +606,10 @@ describe('WebSocket MessageRouter', () => {
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 
-  test('completeTask cancels an active Ralph loop before completing the task', async () => {
+  test('completeTask on a Ralph child does NOT cancel the loop (iteration done, not loop done)', async () => {
+    // Reframing: clicking complete on a Ralph child means "this iteration is
+    // done"; the next iteration spawns automatically via the Stop hook on the
+    // killed owner session. See rfc-ralph-loop-batch-mode-findings.md Phase 0.
     const task = taskStore.createTask('Looped', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Looped', '/cwd');
     task.ralphLoop = {
@@ -621,9 +624,9 @@ describe('WebSocket MessageRouter', () => {
 
     await router.handleMessage({ type: 'completeTask', taskId: task.id });
 
-    expect(cancelLoop).toHaveBeenCalledWith(task);
+    expect(cancelLoop).not.toHaveBeenCalled();
     expect(task.status).toBe('completed');
-    expect(task.ralphLoop.status).toBe('cancelled');
+    expect(task.ralphLoop.status).toBe('running');
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 
@@ -680,6 +683,30 @@ describe('WebSocket MessageRouter', () => {
     const updated = taskStore.getTask(task.id)!;
     expect(updated.status).toBe('cancelled');
     expect(updated.sessions[0].lastStatus).toBe('aborted');
+    expect(await terminal.isAlive(tmuxName)).toBe(false);
+  });
+
+  test('cancelTask on a Ralph child cancels the loop before killing the owner session', async () => {
+    // Cancellation must mark the loop cancelled before the Stop hook fires;
+    // otherwise the Stop handler would spawn the next iteration. See
+    // rfc-ralph-loop-batch-mode-findings.md Phase 0.
+    const task = taskStore.createTask('Looped', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Looped', '/cwd');
+    task.ralphLoop = {
+      prompt: 'iterate',
+      iterationCap: 5,
+      currentIteration: 1,
+      status: 'running',
+      lastIterationStartedAt: 0,
+      cumulativeIterations: 1,
+      ownerSessionId: tmuxName,
+    };
+
+    await router.handleMessage({ type: 'cancelTask', taskId: task.id });
+
+    expect(cancelLoop).toHaveBeenCalledWith(task);
+    expect(task.status).toBe('cancelled');
+    expect(task.ralphLoop.status).toBe('cancelled');
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 

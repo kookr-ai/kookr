@@ -165,14 +165,13 @@ export class LifecycleHandler {
       }
 
       case 'completeTask': {
-        // Capture events before lifecycle cleanup deletes them from the monitor
+        // Capture events before lifecycle cleanup deletes them from the monitor.
+        // For Ralph children, completing one iteration must NOT cancel the loop —
+        // the Stop hook on the killed session is what spawns the next iteration.
+        // To stop a Ralph loop entirely, use `cancelTask` (which calls cancelLoop
+        // before killing the owner session, preventing the Stop hook from
+        // re-launching). See rfc-ralph-loop-batch-mode-findings.md Phase 0.
         const completingTask = this.deps.taskStore.getTask(msg.taskId);
-        if (
-          completingTask?.ralphLoop
-          && (completingTask.ralphLoop.status === 'running' || completingTask.ralphLoop.status === 'paused')
-        ) {
-          this.deps.ralphLoopService.cancelLoop(completingTask);
-        }
         const preEvents: AgentEvent[] = [];
         if (completingTask) {
           for (const session of completingTask.sessions) {
@@ -248,11 +247,23 @@ export class LifecycleHandler {
         return { duplicate: false };
       }
 
-      case 'cancelTask':
+      case 'cancelTask': {
+        // Cancel the Ralph loop *before* killing the owner session, so the
+        // Stop hook sees `ralphLoop.status === 'cancelled'` and skips the
+        // next-iteration spawn path. See rfc-ralph-loop-batch-mode-findings.md
+        // Phase 0.
+        const cancellingTask = this.deps.taskStore.getTask(msg.taskId);
+        if (
+          cancellingTask?.ralphLoop
+          && (cancellingTask.ralphLoop.status === 'running' || cancellingTask.ralphLoop.status === 'paused')
+        ) {
+          this.deps.ralphLoopService.cancelLoop(cancellingTask);
+        }
         await cancelTaskImpl(msg.taskId, this.deps.getLifecycleDeps());
         await this.deps.scheduleService?.recordTaskTerminalOutcome(msg.taskId, 'cancelled');
         await this.deps.tryPromotePending();
         return { duplicate: false };
+      }
 
       case 'reopenTask':
         this.deps.taskStore.reopenTask(msg.taskId);
