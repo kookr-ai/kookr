@@ -150,4 +150,4 @@ These checks live here (not in the global PR gate) because they apply **before**
 
 - `[[pre-pr-review]]` is the enforced pre-PR gate and the place where the reviewer specialists live
 - `.hooks/pre-push` is the enforced push-time verification
-- `[[post-push]]` starts after the branch is on GitHub and continues through PR follow-through
+- `[[post-push]]` starts after the branch is on GitHub and continues through PR follow-through, including the `pnpm merge <PR>` wrapper that substitutes for `gh pr merge --auto` on this repo (issue #29)
