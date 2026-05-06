@@ -102,13 +102,39 @@ export class FakeTerminalBackend implements TerminalBackend {
   }
 
   async write(id: SessionId, data: Uint8Array): Promise<void> {
-    return this.enqueueWrite(id, () => this.writeOne(id, data));
+    return this.enqueueWrite(id, async () => {
+      await this.writeOne(id, data);
+      const text = decoder.decode(data);
+      if (text.endsWith('\r') || text.endsWith('\n')) {
+        const s = this.sessions.get(id);
+        if (s) s.keysReceived.push(text.replace(/[\r\n]+$/, ''));
+      }
+    });
   }
 
   async writeSequence(id: SessionId, payloads: Uint8Array[]): Promise<void> {
     if (payloads.length === 0) return;
     return this.enqueueWrite(id, async () => {
+      // Adapters' sendInput is implemented as writeSequence([text, ENTER]) —
+      // two distinct payloads at the syscall level (Codex CLI's TUI relies on
+      // this to distinguish paste-bursts from typed-then-submit). For the
+      // test-only `keysReceived` observable we want the *logical* submission,
+      // so concatenate first and emit one entry on a terminating CR/LF. Each
+      // payload is still written individually so byte-level inspection
+      // (getWrittenBytes / written) preserves the syscall boundaries. See #57.
       for (const p of payloads) await this.writeOne(id, p);
+      const total = payloads.reduce((acc, p) => acc + p.length, 0);
+      const concat = new Uint8Array(total);
+      let off = 0;
+      for (const p of payloads) {
+        concat.set(p, off);
+        off += p.length;
+      }
+      const concatText = decoder.decode(concat);
+      if (concatText.endsWith('\r') || concatText.endsWith('\n')) {
+        const s = this.sessions.get(id);
+        if (s) s.keysReceived.push(concatText.replace(/[\r\n]+$/, ''));
+      }
     });
   }
 
@@ -239,12 +265,12 @@ export class FakeTerminalBackend implements TerminalBackend {
     if (!s || !s.alive) throw new SessionGoneError(id);
     const text = decoder.decode(data);
     s.written.push(new Uint8Array(data));
-    // Classify as "line submitted" when the payload ends in CR or LF — the
-    // pre-V8 sendKeys behaviour the tests assert on.
+    // Update `paneContent` and `lastKeystroke` per payload. `keysReceived` is
+    // emitted by the calling write/writeSequence wrappers so that a single
+    // logical submission produces one entry even when adapters split it into
+    // multiple payloads. See #57.
     if (text.endsWith('\r') || text.endsWith('\n')) {
-      const stripped = text.replace(/[\r\n]+$/, '');
-      s.keysReceived.push(stripped);
-      s.paneContent += stripped + '\n';
+      s.paneContent += text.replace(/[\r\n]+$/, '') + '\n';
     } else {
       s.paneContent += text;
       if (data.length <= 4) {
