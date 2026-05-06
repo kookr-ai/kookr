@@ -103,6 +103,23 @@ Open `http://localhost:5173` in your browser. You're ready to launch and supervi
 
 </details>
 
+### Daily use vs. development
+
+Kookr is meant to run two ways depending on what you're doing. Pick the one that matches your audience:
+
+| Mode | Port | Worktree | Reload | Audience |
+|------|------|----------|--------|----------|
+| `pnpm dev` | 4801 | this checkout | `tsx --watch` + Vite HMR on every save | **Working on Kookr itself** — you're editing Kookr's source, or AI agents are. The watcher is intentional. |
+| `pnpm prod:setup` (one-time) + `pnpm prod:update` (continuous) | 4800 | sibling `../kookr-prod` (detached HEAD) | Manual, or one-click via the dashboard | **Using Kookr to supervise real agents.** Stable. Doesn't churn while you edit code in this checkout. |
+
+If you're a developer using Kookr to supervise multi-agent workflows, **the prod path is the recommended one.** `pnpm prod:setup` creates the sibling worktree once; after that:
+
+- **One-click deploy from the dashboard** — the top-left **Auto-deploy** button (in the TopBar) is wired only when Kookr runs on port 4800. It checks `origin/main`, lists the commits the prod worktree is behind, and runs `scripts/prod-update.sh` (fetch → build → restart) on click. On any non-prod port the button is hidden.
+- **Terminal equivalent** — `pnpm prod:update` does the same thing from a shell.
+- **Restart only (no rebuild)** — `pnpm prod:restart` bounces the prod server when you've changed `.env` or want to clear in-memory state without recompiling.
+
+The dev checkout's `.env` is symlinked into `../kookr-prod/.env` by `prod:setup`, so runtime configuration stays in one place — edit `.env` here, run `pnpm prod:restart`, and the prod instance picks it up.
+
 ### Launch an Agent
 
 From the dashboard, click **Launch** or use the API:
@@ -357,7 +374,11 @@ Configure via environment variables:
 
 ### Production instance
 
-`pnpm prod:update` maintains a detached sibling worktree at `../kookr-prod` and restarts the port 4800 server after building it. When the main checkout has a `.env`, production setup links it into the production worktree as `../kookr-prod/.env`, so edit the main checkout's `.env` and run `pnpm prod:restart` for runtime-only configuration changes.
+For the audience and workflow, see [Daily use vs. development](#daily-use-vs-development) above. This subsection covers what's relevant when you're hacking on Kookr from this checkout while the prod instance keeps running.
+
+`pnpm prod:update` maintains a detached sibling worktree at `../kookr-prod` and restarts the port 4800 server after building it. The dashboard's auto-deploy button calls the same script via `POST /api/deploy/trigger` (status at `GET /api/deploy/status`). The endpoints are prod-only — they return `{configured: false}` on any port other than 4800.
+
+The dev checkout's `.env` is symlinked into `../kookr-prod/.env` by `pnpm prod:setup`, so edit `.env` here and run `pnpm prod:restart` to apply runtime-only configuration changes without rebuilding.
 
 ### Project Structure
 
