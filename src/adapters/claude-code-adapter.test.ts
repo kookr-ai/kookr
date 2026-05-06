@@ -48,11 +48,12 @@ describe('ClaudeCodeAdapter', () => {
     expect(spec.args).toContain('--settings');
   });
 
-  test('launch does NOT include --dangerously-skip-permissions by default', async () => {
+  test('launch does NOT include --dangerously-skip-permissions or --setting-sources by default', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
     const spec = backend.sessions.get(sessionId)!.spec;
     expect(spec.args).not.toContain('--dangerously-skip-permissions');
+    expect(spec.args).not.toContain('--setting-sources');
   });
 
   test('launch includes --dangerously-skip-permissions when bypassAllPermissions is true', async () => {
@@ -68,6 +69,24 @@ describe('ClaudeCodeAdapter', () => {
     const settingsIdx = spec.args.indexOf('--settings');
     expect(bypassIdx).toBeGreaterThanOrEqual(0);
     expect(settingsIdx).toBeGreaterThan(bypassIdx);
+  });
+
+  // Issue #60: --dangerously-skip-permissions only sets the permission mode (rule #4).
+  // Without --setting-sources "" the user's permissions.ask rules in ~/.claude/settings.json
+  // load and fire at rule #2, before bypass mode is ever consulted. The pair is required.
+  test('launch includes --setting-sources "" when bypassAllPermissions is true', async () => {
+    const bypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      bypassAllPermissions: true,
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await bypassAdapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    const sourcesIdx = spec.args.indexOf('--setting-sources');
+    expect(sourcesIdx).toBeGreaterThanOrEqual(0);
+    expect(spec.args[sourcesIdx + 1]).toBe('');
+    // Must appear before --settings so the per-task CLI settings still loads.
+    const settingsIdx = spec.args.indexOf('--settings');
+    expect(settingsIdx).toBeGreaterThan(sourcesIdx);
   });
 
   test('generated settings file path is included in the launch argv', async () => {

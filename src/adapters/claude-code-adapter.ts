@@ -198,7 +198,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // KOOKR_BYPASS_ALL_PERMISSIONS=true. --append-system-prompt is conditional
     // on checkpointing being wired (see docs/poc/005-checkpoint-cycle-mechanics.md).
     const args: string[] = [];
-    if (this.bypassAllPermissions) args.push('--dangerously-skip-permissions');
+    if (this.bypassAllPermissions) {
+      // --dangerously-skip-permissions only sets the permission *mode* (rule #4
+      // in Claude Code's evaluation order). User `permissions.ask` rules in
+      // ~/.claude/settings.json match at rule #2, so the prompt fires before
+      // bypass mode is consulted — `--dangerously-skip-permissions` alone does
+      // not actually bypass ask rules. `--setting-sources ""` skips all
+      // file-based settings (user/project/local) so ask rules never load.
+      // Per-task `--settings <path>` still loads via CLI-flag precedence.
+      // Empirically validated against issue #60.
+      args.push('--dangerously-skip-permissions');
+      args.push('--setting-sources', '');
+    }
     if (this.pluginDir) args.push('--plugin-dir', this.pluginDir);
     if (useResume) {
       // --fork-session creates a new sessionId for the resumed branch so the
