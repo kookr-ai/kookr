@@ -4,6 +4,7 @@
  * Covers: Triage loop (respond/skip/snooze), multi-agent prioritization & navigation,
  * task lifecycle, snoozed agents.
  */
+import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import {
   resetServer,
@@ -18,6 +19,16 @@ import {
   waitForAgentCount,
   waitForFindingCount,
 } from './battle-helpers.js';
+
+// The Snoozed section in FindingsPanel defaults to collapsed (intentional UX
+// from #589). Tests must expand it before asserting on `.snoozed-row`.
+async function expandSnoozedSection(page: Page) {
+  const header = page.locator('.snoozed-section .section-header');
+  await expect(header).toBeVisible({ timeout: 3000 });
+  if ((await header.getAttribute('aria-expanded')) === 'false') {
+    await header.click();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Suite 4: Triage loop — respond, skip, snooze, advance
@@ -90,6 +101,7 @@ test.describe('Triage loop', () => {
     // Finding should disappear from findings list
     await expect(page.locator('.finding-card')).not.toBeVisible({ timeout: 3000 });
     // Snoozed agent should appear in snoozed section
+    await expandSnoozedSection(page);
     await expect(page.locator('.snoozed-row')).toBeVisible({ timeout: 3000 });
   });
 
@@ -357,6 +369,7 @@ test.describe('Snoozed agents', () => {
     // Finding should be gone, snoozed section should show
     await expect(page.locator('.finding-card')).not.toBeVisible({ timeout: 3000 });
     await expect(page.locator('.statusbar')).toContainText('0 findings');
+    await expandSnoozedSection(page);
     await expect(page.locator('.snoozed-row')).toBeVisible();
   });
 
