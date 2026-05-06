@@ -49,4 +49,4 @@ Kookr's `ClaudeCodeAdapter` already injects `--plugin-dir` automatically for eve
 
 ## License
 
-MIT — see [the Kookr repo](https://github.com/kookr-ai/kookr).
+Apache-2.0 — see [the Kookr repo](https://github.com/kookr-ai/kookr).
