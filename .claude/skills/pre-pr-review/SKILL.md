@@ -77,6 +77,41 @@ Check for:
 - **Secrets** — API keys, tokens, passwords, connection strings in the diff
 - **Unrelated changes** — formatting-only changes, unrelated refactors mixed in
 
+### 4b. Portability Check
+
+Scan **changed lines only** (not the full repo) for user-specific absolute paths in scripts, docs, skills, agent definitions, and PR-template content. Replace with portable equivalents where practical.
+
+```bash
+scripts/check-portability.sh        # defaults to base ref origin/main
+scripts/check-portability.sh main   # explicit base ref
+```
+
+The helper exits 0 when clean and 1 when added lines contain matches. It looks at added diff lines so existing intentional references elsewhere in the repo do not produce noise.
+
+Patterns flagged:
+
+- `/home/<user>/...` (Linux home directories)
+- `/Users/<user>/...` (macOS home directories)
+- `C:\Users\<user>\...` (Windows home directories)
+- Other machine-local install/cache paths in reusable scripts, docs, skills, and templates
+
+Replace with one of:
+
+- `$HOME` or `~`
+- Repo-root-relative paths (e.g. `scripts/foo.sh`, `.claude/skills/bar/SKILL.md`)
+- Documented env vars (`CODEX_SRC`, `CODEX_INSTALL_DIR`, `KOOKR_PLUGIN_DIR`, ...)
+- Placeholders (`/path/to/repo`, `<USER>`) in examples
+
+Allowed without conversion:
+
+- Explicitly documented canonical paths for Kookr's own production/dev machine (the canonical prod-worktree path documented in CLAUDE.md)
+- Test fixtures that intentionally exercise path parsing
+- Examples that already use `$HOME`, env vars, or placeholders
+
+If a flagged line is intentional, either append a `portability-ok` marker comment on the same line so the helper skips it, or justify it in the PR description.
+
+For projects other than Kookr that do not ship the helper, do this step as a manual diff scan for the same patterns.
+
 ### 5. Commit Hygiene
 
 - Commits follow Conventional Commits format (`feat:`, `fix:`, `chore:`, `docs:`, `test:`)
@@ -203,6 +238,7 @@ Before you conclude this skill, report the checklist result explicitly:
 - tests: passed / failed / skipped (with reason)
 - bug reproduction (fix PRs only): reproduced / verified / skipped with reason
 - diff review: done
+- portability check: clean / flagged (with reason or fix) / skipped
 - reviewer specialists: run / skipped, with reason
 - OSS base-branch policy (external PRs only): matched / failed / skipped with reason
 - gate file: created / not created
