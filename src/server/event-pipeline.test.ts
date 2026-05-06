@@ -26,6 +26,7 @@ import {
   getActiveSuggestionId,
   startLifecycle,
 } from '../core/suggestion-telemetry.js';
+import type { RalphCycler } from '../core/ralph-cycler.js';
 
 // ---------------------------------------------------------------------------
 // Mock-based tests: controlled pre/post anomaly snapshots
@@ -461,5 +462,115 @@ describe('event-pipeline: R16 onPermissionBlocked transition guard', () => {
     // any downstream work.
     try { fireEvent('sess-1', permEvent); } catch { /* downstream noise */ }
     expect(onPermissionBlocked).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ralph fresh-runtime wiring on Stop (regression for the iteration-stall
+// follow-up to PR #61).
+//
+// Before this fix, both `new RalphLoopService(...)` constructions inside
+// wireEventPipeline omitted `launchFreshTaskSession`. The attach path in
+// `task-routes.ts` provided it, so loops could be attached, but every Stop
+// event that arrived through the pipeline failed inside
+// `RalphLoopService.launchFreshRuntime` with the explicit guard:
+//   "Ralph loop service cannot launch a fresh runtime without launchFreshTaskSession"
+// which immediately marks the loop `failed` and never spawns iteration N+1.
+// PR #61 (owner-refs propagation) was a precondition that revealed this
+// dormant wiring bug — before it, every Stop was rejected upstream by
+// `isStopFromMainTaskSession`, so this code path never ran in production.
+// ---------------------------------------------------------------------------
+
+describe('wireEventPipeline – Ralph fresh-runtime wiring on Stop (integration)', () => {
+  let taskStore: TaskStore;
+  let queue: AttentionQueue;
+  let monitor: Monitor;
+  let terminal: FakeTerminalBackend;
+  let adapter: ClaudeCodeAdapter;
+  let tokenTracker: TokenTracker;
+  let watchdog: Watchdog;
+  let githubScanner: GitHubScannerService;
+
+  beforeEach(() => {
+    _resetLifecycles();
+    taskStore = new TaskStore();
+    queue = new AttentionQueue();
+    monitor = new Monitor(taskStore, queue);
+    terminal = new FakeTerminalBackend();
+    adapter = new ClaudeCodeAdapter(terminal, taskStore);
+    tokenTracker = new TokenTracker();
+    watchdog = new Watchdog();
+    const githubStateStore = new GitHubStateStore();
+    githubScanner = new GitHubScannerService({
+      taskStore, stateStore: githubStateStore,
+      fetcher: { fetchPR: async () => null, fetchIssue: async () => null } as any,
+      config: { enabled: false, scanIntervalMs: 60000, fetchIntervalMs: 60000 },
+      onChanges: () => {},
+    });
+  });
+
+  test('Stop event on a running Ralph loop invokes launchFreshTaskSession', async () => {
+    // Real task + agent first — the launch returns the tmuxName we'll wire
+    // as the Ralph loop owner so the Stop fingerprint check passes, AND we
+    // need the real task id before constructing the cycler stub so we can
+    // skip the placeholder/overwrite dance.
+    const task = taskStore.createTask('Looped', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'iterate again', '/cwd');
+    monitor.registerAgent(tmuxName);
+
+    const launchFreshTaskSession = vi.fn().mockResolvedValue('kookr-iter2');
+
+    // Cycler stub returns launch_fresh — its action shape is verified
+    // against the real RalphCyclerAction discriminated union by the
+    // RalphCycler type assertion below. No I/O deps needed because we're
+    // bypassing handleStop's real implementation entirely.
+    const ralphCycler: Pick<RalphCycler, 'handleStop'> = {
+      handleStop: vi.fn().mockResolvedValue({
+        kind: 'launch_fresh',
+        taskId: task.id,
+        text: 'iterate again',
+      }),
+    };
+
+    // Synthesize the Ralph loop in the same shape startLoop would produce,
+    // with the owner refs populated so isStopFromMainTaskSession will
+    // accept the synthetic Stop hook below.
+    const runtimeSessionId = 'runtime-1';
+    task.ralphLoop = {
+      prompt: 'iterate again',
+      iterationCap: 5,
+      currentIteration: 0,
+      status: 'running',
+      lastIterationStartedAt: 0,
+      cumulativeIterations: 0,
+      ownerSessionId: tmuxName,
+      ownerRuntimeSessionId: runtimeSessionId,
+    };
+
+    wireEventPipeline({
+      adapter, monitor, taskStore, tokenTracker, watchdog,
+      githubScanner, llmClient: null, serverCwd: '/test',
+      broadcastToAll: () => {},
+      ralphCycler: ralphCycler as RalphCycler,
+      launchFreshTaskSession,
+    });
+
+    // Inject a Stop hook that matches the loop's ownerRuntimeSessionId.
+    adapter.injectHookEvent(tmuxName, makeStopHook(runtimeSessionId));
+
+    // RalphLoopService.handleStopEvent is fire-and-forget from the pipeline.
+    // vi.waitFor handles the async settle without a hand-rolled deadline
+    // poll and produces a useful failure message pointing at the unmet
+    // expectation.
+    await vi.waitFor(
+      () => expect(launchFreshTaskSession).toHaveBeenCalledTimes(1),
+      { timeout: 2000, interval: 20 },
+    );
+
+    expect(ralphCycler.handleStop).toHaveBeenCalledTimes(1);
+    expect(launchFreshTaskSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: task.id }),
+      'iterate again',
+    );
   });
 });
