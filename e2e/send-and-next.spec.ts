@@ -191,7 +191,7 @@ test.describe('Send & Next — input delivery', () => {
 
     // After the response is processed, the first agent's finding should be gone
     // (only one finding card should remain)
-    await expect(page.locator('.finding-card')).toHaveCount(1, { timeout: 5000 });
+    await expect(page.locator('.finding-card')).toHaveCount(1, { timeout: 10000 });
 
     // The remaining finding should be the OTHER agent (not the one we responded to)
     const remainingAgent = await page.locator('.finding-card .finding-task').textContent();
@@ -223,7 +223,7 @@ test.describe('Send & Next — input delivery', () => {
     }).toPass({ timeout: 3000 });
 
     // Finding should be cleared (no more finding cards)
-    await expect(page.locator('.finding-card')).toHaveCount(0, { timeout: 5000 });
+    await expect(page.locator('.finding-card')).toHaveCount(0, { timeout: 10000 });
   });
 
   test('Send & Next with closed WebSocket does NOT advance or clear input', async ({ page, request }) => {

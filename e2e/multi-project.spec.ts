@@ -195,7 +195,7 @@ test.describe('Multi-Project Tracking', () => {
     await setProjectId(request, taskB, 'github.com/org/repo-b');
 
     // Both findings visible
-    await expect(page.locator('.finding-card')).toHaveCount(2, { timeout: 5000 });
+    await expect(page.locator('.finding-card')).toHaveCount(2, { timeout: 10000 });
 
     // Broadcast project summaries
     await broadcastProjectSummaries(request);

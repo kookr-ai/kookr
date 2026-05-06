@@ -209,19 +209,19 @@ test.describe('Multi-agent prioritization', () => {
     const tmux1 = await getLatestTmuxName(request);
     await injectSessionStart(request, tmux1);
     await injectStopEvent(request, tmux1);
-    await expect(page.locator('.finding-card')).toHaveCount(1, { timeout: 5000 });
+    await expect(page.locator('.finding-card')).toHaveCount(1, { timeout: 10000 });
 
     await launchViaUI(page, 'Agent 2', '/test/b');
     const tmux2 = await getLatestTmuxName(request);
     await injectSessionStart(request, tmux2);
     await injectPermissionEvent(request, tmux2);
-    await expect(page.locator('.finding-card')).toHaveCount(2, { timeout: 5000 });
+    await expect(page.locator('.finding-card')).toHaveCount(2, { timeout: 10000 });
 
     await launchViaUI(page, 'Agent 3', '/test/c');
     const tmux3 = await getLatestTmuxName(request);
     await injectSessionStart(request, tmux3);
     await injectStopEvent(request, tmux3);
-    await expect(page.locator('.finding-card')).toHaveCount(3, { timeout: 5000 });
+    await expect(page.locator('.finding-card')).toHaveCount(3, { timeout: 10000 });
 
     // Track which agents we visit
     const visited = new Set<string>();

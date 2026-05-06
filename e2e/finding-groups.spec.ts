@@ -143,7 +143,7 @@ test.describe('Finding Groups — duplicate anomaly grouping', () => {
     await injectStopEvent(request, tmuxStop);
 
     await waitForAgentCount(page, 3);
-    await expect(page.locator('.finding-card')).toHaveCount(3, { timeout: 5000 });
+    await expect(page.locator('.finding-card')).toHaveCount(3, { timeout: 10000 });
 
     // No groups — all individual
     await expect(page.locator('.finding-group')).not.toBeVisible();

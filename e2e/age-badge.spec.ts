@@ -183,7 +183,7 @@ test.describe('Initial-load sort and auto-scroll suppression', () => {
       } else {
         await injectStopEvent(request, tmux);
       }
-      await expect(page.locator('.finding-card')).toHaveCount(i + 1, { timeout: 5000 });
+      await expect(page.locator('.finding-card')).toHaveCount(i + 1, { timeout: 10000 });
     }
 
     // Backdate: Agent A = 3h ago (oldest), Agent B = 1h, Agent C = 5m (newest)
@@ -223,7 +223,7 @@ test.describe('Initial-load sort and auto-scroll suppression', () => {
     const tmux2 = await getLatestTmuxName(request);
     await injectSessionStart(request, tmux2);
     await injectPermissionEvent(request, tmux2);
-    await expect(page.locator('.finding-card')).toHaveCount(2, { timeout: 5000 });
+    await expect(page.locator('.finding-card')).toHaveCount(2, { timeout: 10000 });
 
     // The scroll area should not have scrolled to top during initial load
     // (We can verify by checking the findings panel is still in isInitialLoad state

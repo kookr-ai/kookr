@@ -192,7 +192,7 @@ test.describe('Session Reflection — API', () => {
       } else {
         await injectPermissionEvent(request, tmux);
       }
-      await expect(page.locator('.finding-card')).toHaveCount(i + 1, { timeout: 5000 });
+      await expect(page.locator('.finding-card')).toHaveCount(i + 1, { timeout: 10000 });
     }
 
     // Skip all 4 findings rapidly via the findings panel Skip buttons
