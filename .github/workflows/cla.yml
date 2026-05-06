@@ -21,10 +21,12 @@ jobs:
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # PERSONAL_ACCESS_TOKEN must be a PAT with `repo` scope on the
-          # signatures repo. Create at https://github.com/settings/tokens and
-          # add as a repo secret named PERSONAL_ACCESS_TOKEN.
-          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          # The env var name MUST be PERSONAL_ACCESS_TOKEN — the action reads
+          # it internally (process.env.PERSONAL_ACCESS_TOKEN) and renaming it
+          # silently breaks remote-signature writes. The repo secret on the
+          # right side can be named anything; we use KOOKR_CLA_ASSISTANT_TOKEN
+          # so future scoped PATs in this repo don't clash.
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.KOOKR_CLA_ASSISTANT_TOKEN }}
         with:
           path-to-signatures: 'signatures/version1/cla.json'
           path-to-document: 'https://github.com/kookr-ai/kookr/blob/main/CLA.md'
