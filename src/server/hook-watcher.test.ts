@@ -234,6 +234,105 @@ describe('HookFileWatcher', () => {
     expect(events.length).toBe(1);
   });
 
+  test('replayExisting=true is preserved when file appears after watch (pollUntilExists path)', async () => {
+    // Regression for the Ralph iteration stall:
+    //
+    // adapter.launch returns the tmuxName, then registerNewAgent calls
+    // hookWatcher.watch(tmuxName, { replayExisting: true }). At that
+    // moment the agent process has been spawned but may not have written
+    // its first hook yet, so the JSONL file does not exist and fs.watch
+    // throws ENOENT. The catch branch falls back to pollUntilExists.
+    //
+    // Before the fix, pollUntilExists called this.watch(tmuxName) with no
+    // options when the file appeared — so the retry used the default
+    // replayExisting=false, which seeks past every line already written.
+    // The agent's SessionStart line had already been written by then, so
+    // it was permanently skipped: SessionInfo.claudeSessionId stayed
+    // null, the Ralph loop's ownerRuntimeSessionId was never populated,
+    // and isStopFromMainTaskSession rejected every Stop event.
+    const hookFile = join(tempDir, 'kookr-late.jsonl');
+
+    // Register the tmux name so injectHookEvent can find a task.
+    const task = taskStore.createTask('Looped', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-late', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-late',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    // Watch BEFORE the file exists — exactly the production race.
+    watcher.watch('kookr-late', { replayExisting: true });
+    expect(watcher.isWatching('kookr-late')).toBe(true);
+
+    // Now the agent emits its first hook: file appears, carrying
+    // SessionStart. pollUntilExists must pick this up and force a
+    // replay-from-zero, not skip past the existing content.
+    const sessionStart = JSON.stringify({
+      session_id: 'late-sess',
+      transcript_path: '/late.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+      model: 'claude-opus-4-7[1m]',
+    });
+    writeFileSync(hookFile, sessionStart + '\n');
+
+    // pollUntilExists polls every 1s. CI parallelism + slow disks can
+    // stretch a single tick well past 1s, so give it ~5s of budget plus a
+    // matching per-test timeout — same shape as 'polls for non-existent
+    // file until it appears' below.
+    const deadline = Date.now() + 5000;
+    while (events.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    // Exactly one SessionStart line was written, so exactly one event
+    // should arrive. A looser `>= 1` assertion would let a future bug
+    // that double-replays slip through.
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('session_start');
+
+    // End-to-end: SessionInfo should have been updated with the runtime
+    // session id and transcript path.
+    const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === 'kookr-late')!;
+    expect(session.claudeSessionId).toBe('late-sess');
+    expect(session.transcriptPath).toBe('/late.jsonl');
+  }, 6000);
+
+  test('replayExisting=false (default) is also preserved through pollUntilExists', async () => {
+    // Symmetric coverage to the test above: the fix must thread the flag
+    // through correctly in both directions, not just for the replay-true
+    // path. A pre-existing line that landed before the file appeared
+    // must NOT be replayed when the original watch() opted out of replay.
+    const hookFile = join(tempDir, 'kookr-late-skip.jsonl');
+    const task = taskStore.createTask('Unlooped', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-late-skip', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-late-skip',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    // Watch without replay — the production-default for the non-Ralph path.
+    watcher.watch('kookr-late-skip');
+    expect(watcher.isWatching('kookr-late-skip')).toBe(true);
+
+    writeFileSync(hookFile, JSON.stringify({
+      session_id: 'sess-x',
+      transcript_path: '/x.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    }) + '\n');
+
+    // Same 5s budget — long enough for at least 4 poll cycles.
+    await new Promise((r) => setTimeout(r, 5000));
+
+    expect(events).toHaveLength(0);
+  }, 6000);
+
   test('replayExisting=false (default) skips existing content', async () => {
     const hookFile = join(tempDir, 'kookr-skip.jsonl');
 

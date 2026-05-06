@@ -70,8 +70,14 @@ export class HookFileWatcher {
         this.readNewLines(tmuxName, filePath);
       }
     } catch {
-      // File might not exist yet — poll until it appears.
-      this.pollUntilExists(tmuxName, filePath);
+      // File might not exist yet — poll until it appears. Preserve the
+      // caller's replay intent: when the file finally appears it almost
+      // certainly already contains a SessionStart line that the agent
+      // emitted between adapter.launch returning and this watch() call.
+      // Without forcing replay on the retry, that line would be skipped
+      // (offset = stats.size), leaving SessionInfo.claudeSessionId null
+      // forever and silently breaking the Ralph cycler's Stop acceptance.
+      this.pollUntilExists(tmuxName, filePath, { replayExisting: replay });
     }
   }
 
@@ -195,7 +201,21 @@ export class HookFileWatcher {
     this.pollIntervals.set(tmuxName, interval);
   }
 
-  private pollUntilExists(tmuxName: string, filePath: string): void {
+  /**
+   * Poll for the hook file to appear, then re-enter `watch()`.
+   *
+   * `options` is forwarded verbatim — most importantly `replayExisting`, so
+   * the original caller's intent survives the file-appears fallback. Without
+   * this forwarding the retry would default to skip-mode and silently lose
+   * any line already written before the file became watchable (notably
+   * `SessionStart`, which the agent's hook script tees as its very first
+   * action — so it nearly always lands here in production).
+   */
+  private pollUntilExists(
+    tmuxName: string,
+    filePath: string,
+    options?: { replayExisting?: boolean },
+  ): void {
     if (this.watchers.has(tmuxName)) return;
 
     const interval = setInterval(async () => {
@@ -204,7 +224,7 @@ export class HookFileWatcher {
         clearInterval(interval);
         // Remove sentinel before re-watching
         this.watchers.delete(tmuxName);
-        this.watch(tmuxName);
+        this.watch(tmuxName, options);
       } catch {
         // File doesn't exist yet, keep polling
       }
