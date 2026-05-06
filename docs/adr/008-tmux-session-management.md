@@ -4,7 +4,7 @@
 
 **Superseded by [ADR-014](./014-local-dtach-backend.md)** (persistence layer; as of 2026-04-22) — originally Accepted 2026-03-24.
 
-> Superseded 2026-04-24: The tmux-specific persistence layer described here was replaced by dtach in ADR-014 (V8 tmux removal; see `rfc-v8-tmux-removal.md`). `src/server/start.ts` now hard-rejects `KOOKR_BACKEND=tmux`. The parts of this ADR that still apply against the new backend are preserved: (1) the **tasks.json-inline session metadata** design (Option A), now holding dtach session metadata; (2) the **startup reconciliation flow** (`src/server/startup-recovery.ts`, `src/server/crash-recovery.ts`), now run against `dtach list-sessions`; (3) the `kookr-<uuid>` naming convention. The `Task.sessions[].tmuxSession` field name is historical — its value is now a dtach session ID.
+> Superseded 2026-04-24: The tmux-specific persistence layer described here was replaced by dtach in ADR-014 (V8 tmux removal). `src/server/start.ts` now hard-rejects `KOOKR_BACKEND=tmux`. (The original `rfc-v8-tmux-removal.md` was archived when `docs/rfc/` was reset for the kookr cutover; ADR-014 carries the load-bearing decision record.) The parts of this ADR that still apply against the new backend are preserved: (1) the **tasks.json-inline session metadata** design (Option A), now holding dtach session metadata; (2) the **startup reconciliation flow** (`src/server/startup-recovery.ts`, `src/server/crash-recovery.ts`), now run against `dtach list-sessions`; (3) the `kookr-<uuid>` naming convention. The `Task.sessions[].tmuxSession` field name is historical — its value is now a dtach session ID.
 
 ## Context
 
