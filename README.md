@@ -94,6 +94,8 @@ pnpm dev         # backend on :4801 + Vite frontend on :5173
 
 Open `http://localhost:5173` in your browser. You're ready to launch and supervise agents.
 
+If anything goes wrong, run `pnpm doctor` — it checks Node/pnpm versions, build tools, the dtach binary, Docker (for voice features), GPU availability, and whether ports 4800 / 5173 are free, then prints a copy-pasteable summary with fix commands.
+
 Optional features (voice, Telegram, LLM-backed AI suggestions) are off by default. Copy [`.env.example`](.env.example) to `.env` and uncomment only what you need — see [`docs/reference/environment-variables.md`](docs/reference/environment-variables.md) for the full reference.
 
 <details>

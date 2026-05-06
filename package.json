@@ -23,6 +23,7 @@
     "test:watch": "vitest",
     "build": "pnpm generate-build-info && pnpm build:dtach && tsc && pnpm build:frontend",
     "build:dtach": "bash scripts/build-dtach.sh",
+    "doctor": "bash scripts/doctor.sh",
     "generate-build-info": "node --import tsx scripts/generate-build-info.ts",
     "build:server": "tsc",
     "check:e2e": "tsc -p tsconfig.e2e.json",
