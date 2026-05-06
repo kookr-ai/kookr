@@ -174,10 +174,10 @@ The system SHALL allow the developer to type a response and deliver it to the ag
 **Acceptance criteria:**
 - Input box in the agent detail panel accepts text
 - On submit, text is sent via WebSocket `respond` message to the backend
-- Backend delivers the text as keystrokes to the agent's tmux session via `send-keys`
+- Backend delivers the text via byte-level writes to the agent's dtach session (`backend.write` / `backend.writeSequence`)
 - Response includes a trailing Enter keystroke to submit
 
-**Evidence:** `src/frontend/components/DetailPanel.tsx` (input box), `src/server/ws.ts` (respond handler), `src/adapters/claude-code-adapter.ts` (sendInput → sendKeys), `src/server/ws.test.ts` ("client sends respond - input delivered to agent").
+**Evidence:** `src/frontend/components/DetailPanel.tsx` (input box), `src/server/ws.ts` (respond handler), `src/adapters/claude-code-adapter.ts` (sendInput delegates to the dtach backend), `src/adapters/local-dtach-backend.ts` (write/writeSequence), `src/server/ws.test.ts` ("client sends respond - input delivered to agent").
 
 ### R3.3: Auto-advance After Response [F3.3] — SHALL — `done`
 
@@ -219,23 +219,6 @@ The system SHALL allow the developer to deprioritize an agent to the back of the
 - Supervisor keeps monitoring — if the agent's state changes, it re-enters the queue
 - Frontend auto-advances to the next agent after skip
 
----
-
-## R6: Scheduled Tasks
-
-### R6.1: Finite Cron Trigger Quotas — SHALL — `done`
-
-The system SHALL allow a schedule to define an optional finite number of cron-triggered executions, decrement that quota only for cron dispatch attempts, and stop the schedule automatically once the quota is exhausted.
-
-**Acceptance criteria:**
-- A schedule MAY omit the trigger limit and continue with existing unbounded cron behavior
-- When `maxTriggers` is set, the system tracks `remainingTriggers` and decrements it only for cron-triggered executions
-- Manual `run now` executions remain available after exhaustion and do not decrement `remainingTriggers`
-- When `remainingTriggers` reaches `0`, the schedule is auto-disabled, exposes `stopReason: trigger_limit_reached`, and persists that state across restarts
-- The schedule API returns `maxTriggers`, `remainingTriggers`, `stopReason`, and `exhaustedAt` when applicable
-
-**Evidence:** `src/core/schedule.ts` (persisted schedule model), `src/server/schedule-service.ts` (quota accounting and auto-stop), `src/server/schedule-runner.ts` (runtime enforcement), `src/server/routes/schedule-routes.ts` (REST contract), `src/frontend/components/ScheduleSection.tsx` and `src/frontend/components/SchedulesDialog.tsx` (quota visibility), `src/core/schedule.test.ts`, `src/server/schedule-runner.test.ts`, `src/server/index.test.ts`.
-
 **Evidence:** `src/core/attention-queue.ts` (skip), `src/server/ws.ts` (skip handler), `src/core/loop.test.ts` ("skip agent -> advance to next -> skipped agent gets new anomaly -> re-enters queue").
 
 ### R3.7: Snooze Agent [F3.7] — SHALL — `done`
@@ -271,35 +254,36 @@ The system SHALL allow launching a new agent from the GUI with a task descriptio
 
 **Acceptance criteria:**
 - Launch dialog accepts: task prompt (required), working directory (required), completion criteria (optional)
-- Agent is started in a managed tmux session in interactive mode
+- Agent is started in a managed dtach session in interactive mode (see [ADR-014](adr/014-local-dtach-backend.md))
 - Claude Code launched with `--settings` flag pointing to Kookr-generated hook settings
 - Hook settings are additive to user's existing settings
 - New task created with status `open`, transitions to `in_progress` on agent start
 
-**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (dialog UI), `src/server/ws.ts` (launch handler), `src/adapters/claude-code-adapter.ts` (tmux session creation, settings generation), `src/server/ws.test.ts` ("client sends launch - new task started"), `src/adapters/claude-code-adapter.test.ts` (settings with hooks).
+**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (dialog UI), `src/server/ws.ts` (launch handler), `src/adapters/claude-code-adapter.ts` (settings generation, launch wiring), `src/adapters/local-dtach-backend.ts` (dtach session creation), `src/server/ws.test.ts` ("client sends launch - new task started"), `src/adapters/claude-code-adapter.test.ts` (settings with hooks).
 
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 
 The system SHOULD allow terminating a running agent from the GUI.
 
 **Acceptance criteria:**
-- Stop action kills the agent's tmux session
+- Stop action kills the agent's dtach session
 - Task status transitions appropriately (agent session ends, task returns to `open`)
 - Detail header includes a Stop button that sends a `stop` message via WebSocket
 - `stop` message type included in `ClientMessage` union, handled by `MessageRouter`
 
-**Evidence:** `src/adapters/claude-code-adapter.ts` (stop method kills session). `src/server/ws.ts` (stop message handler). `src/frontend/components/DetailPanel.tsx` (Stop button in header).
+**Evidence:** `src/adapters/claude-code-adapter.ts` and `src/adapters/local-dtach-backend.ts` (stop method kills session). `src/server/ws.ts` (stop message handler). `src/frontend/components/DetailPanel.tsx` (Stop button in header).
 
-### R4.3: Restart Agent [F4.3] — SHOULD — `todo`
+### R4.3: Relaunch Agent [F4.3] — SHOULD — `done`
 
-The system SHOULD allow killing and relaunching an agent with the same or modified task.
+The system SHALL allow relaunching a task with the same or modified prompt and working directory. Relaunch creates a new task (preserving the original for history) rather than restarting in-place.
 
 **Acceptance criteria:**
-- Restart kills the current session and launches a new one
-- Task prompt can be modified before relaunch
-- Task retains its ID across restarts
+- Relaunch action available from the task/finding context menu
+- Original task is preserved; relaunch produces a new task with its own session lifecycle
+- Prompt and working directory can be edited before launch
+- New task is linked to the original via `parentTaskId` for traceability
 
-**Evidence:** WebSocket protocol includes `relaunch` message type in architecture spec. Not yet implemented.
+**Evidence:** `src/core/tasks.ts` (relaunch creates child task), `src/server/ws.ts` (`relaunch` message handler), `src/frontend/components/LaunchTaskDialog.tsx` (relaunch flow), `src/server/ws.test.ts` (relaunch protocol coverage).
 
 ### R4.4: Task Lifecycle Management [F4.4] — SHALL — `done`
 
@@ -311,7 +295,7 @@ The system SHALL manage tasks through a full lifecycle: Open → InProgress → 
 - Agent session ending returns the task to `open` — user must explicitly mark complete
 - Tasks are persisted locally in JSON (`~/.kookr/tasks.json`)
 - Persistence uses atomic writes (temp file → rename)
-- On startup, tasks are loaded from disk and reconciled with live tmux sessions
+- On startup, tasks are loaded from disk and reconciled with live dtach sessions
 
 **Evidence:** `src/core/tasks.ts` (state machine, CRUD), `src/core/task-persistence.ts` (atomic JSON I/O), `src/server/reconciliation.ts` (startup recovery), `src/core/tasks.test.ts`, `src/core/task-persistence.test.ts`, `src/server/reconciliation.test.ts`.
 
@@ -326,18 +310,16 @@ The system SHOULD allow the user to provide optional completion criteria when la
 
 **Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (criteria field in dialog), `src/core/tasks.ts` (criteria stored in task). Auto-evaluation not implemented.
 
-### R4.6: Attach to Agent Terminal [F4.6] — SHOULD — `partial`
+### R4.6: Attach to Agent Terminal [F4.6] — SHOULD — `done`
 
-The system SHOULD allow the developer to open an agent's managed terminal session directly.
+The system SHOULD allow the developer to open an agent's managed dtach session directly from an external terminal when needed. Kookr no longer exposes a GUI button for attach: the in-browser xterm.js terminal (R5.2) already provides full interactive access, and an external attach is available via `dtach -a <socket>` for power users.
 
 **Acceptance criteria:**
-- GUI provides the tmux attach command (e.g., `tmux attach-session -t <name>`)
-- Attach button in detail header, terminal panel header, and finding cards
-- Clicking Attach copies the tmux attach command to clipboard
-- Developer can interact with the agent outside Kookr
-- Agent monitoring continues while attached
+- The dtach socket path is stable per session (under `/tmp/kookr-dtach/<uid>/<instanceId>/<sessionId>.sock`) so an external `dtach -a <socket>` always works
+- Developer can interact with the agent outside Kookr without disrupting in-browser monitoring
+- Agent monitoring (hook tailing, anomaly detection) continues while an external client is attached
 
-**Evidence:** `src/adapters/tmux-terminal-manager.ts` has session name tracking. `src/frontend/components/DetailPanel.tsx` (Attach button in detail header). `getAttachCommand()` in `presentation.ts`.
+**Evidence:** `src/adapters/local-dtach-backend.ts` (socket path layout, attach-safe), `src/frontend/components/TerminalPanel.tsx` (in-browser xterm.js bridge satisfies F4.6 fully). The previous "Attach" button + clipboard copy was removed (see commit `80100d0`).
 
 ---
 
@@ -468,7 +450,7 @@ The system SHALL display a scrollable agent list panel with status indicators.
 The system SHALL display the selected agent's interactive terminal and response input.
 
 **Acceptance criteria:**
-- Main area shows the agent's interactive xterm.js terminal (bridged to its tmux session)
+- Main area shows the agent's interactive xterm.js terminal (bridged to its dtach session via `SessionBridge`)
 - Anomaly explanation badge shown in detail header when active
 - Input box for responding to the agent
 - Empty state when no agent selected
@@ -517,16 +499,16 @@ The system SHALL update all panels live as agent states change, with no manual r
 
 ### R6.1: Managed Terminal Sessions — SHALL — `done`
 
-The system SHALL run agents in managed tmux sessions. See [ADR-007](adr/007-managed-terminal-sessions.md).
+The system SHALL run agents in managed dtach sessions. See [ADR-007](adr/007-managed-terminal-sessions.md) (managed-session decision) and [ADR-014](adr/014-local-dtach-backend.md) (which replaced tmux with dtach in V8).
 
 **Acceptance criteria:**
-- Agents launched in tmux sessions (`tmux new-session -d`)
-- Input delivered via `tmux send-keys`
-- Display snapshots via `tmux capture-pane` (GUI display only)
-- Sessions survive Kookr crashes
+- Agents launched in dtach sessions via `LocalDtachBackend.createSession({ command, … })`
+- Input delivered via byte-level writes to the dtach socket (`backend.write` / `backend.writeSequence`)
+- Display snapshots via `backend.captureBytes` ring-buffer reads (GUI display only)
+- Sessions survive Kookr crashes (the dtach socket persists; reconciliation reattaches)
 - Session creation, liveness check, and teardown tested
 
-**Evidence:** `src/adapters/tmux-terminal-manager.ts` (full tmux API), `src/adapters/tmux-terminal-manager.test.ts` (integration tests with real tmux).
+**Evidence:** `src/adapters/local-dtach-backend.ts` (full dtach API), `src/adapters/local-dtach-backend.test.ts` (integration tests with real dtach).
 
 ### R6.2: Hook-based Monitoring — SHALL — `done`
 
@@ -537,23 +519,23 @@ The system SHALL monitor agents via Claude Code hooks configured through the `--
 - Hooks supported: `SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`
 - Hook scripts append JSON events to agent-specific JSONL files in `~/.kookr/hooks/`
 - Hook events are tailed in real-time by `HookFileWatcher`
-- Events routed by `tmuxName` (stable across restarts), not by `claudeSessionId`
+- Events routed by `sessionId` (stable across restarts; the same string used as the dtach socket filename and retained on `Task.sessions[].tmuxSession` for legacy schema compatibility)
 - On startup reconciliation, hook files are replayed from offset 0 via `replayExisting` option to rebuild detector state from persisted hook history (see R6.3)
 - Hooks are additive to the user's own hook configuration
 
-**Evidence:** `src/adapters/claude-code-adapter.ts` (settings generation, tmuxName routing), `src/server/hook-watcher.ts` (JSONL tailing, replayExisting option), `src/core/hook-parser.ts` (JSON → AgentEvent), `src/server/hook-watcher.test.ts` (replay tests), validated by [PoC 001](poc/001-hook-mechanism-validation.md).
+**Evidence:** `src/adapters/claude-code-adapter.ts` (settings generation, sessionId routing), `src/server/hook-watcher.ts` (JSONL tailing, replayExisting option), `src/core/hook-parser.ts` (JSON → AgentEvent), `src/server/hook-watcher.test.ts` (replay tests), validated by [PoC 001](poc/001-hook-mechanism-validation.md).
 
 ### R6.3: Startup Reconciliation — SHALL — `done`
 
-The system SHALL reconcile persisted task state with live tmux sessions on startup. See [ADR-008](adr/008-tmux-session-management.md).
+The system SHALL reconcile persisted task state with live dtach sessions on startup. See [ADR-008](adr/008-tmux-session-management.md) (superseded by [ADR-014](adr/014-local-dtach-backend.md); the inline-session-metadata + startup-reconciliation design from ADR-008 still applies, now against `LocalDtachBackend`).
 
 **Acceptance criteria:**
-- On startup, read `tasks.json` and query `tmux list-sessions`
+- On startup, read `tasks.json` and query the dtach backend for live sessions (`LocalDtachBackend.listSessions`)
 - Reconnect to sessions that are still alive
 - Mark dead sessions appropriately
 - Handle clean first-start (no tasks file)
-- For each resumed session, call `monitor.registerAgent(tmuxName)` to register with the monitor
-- For each resumed session, call `hookWatcher.watch(tmuxName, { replayExisting: true })` to replay hook history from offset 0 and rebuild anomaly detection state (e.g., permission_blocked, needs_input)
+- For each resumed session, call `monitor.registerAgent(sessionId)` to register with the monitor
+- For each resumed session, call `hookWatcher.watch(sessionId, { replayExisting: true })` to replay hook history from offset 0 and rebuild anomaly detection state (e.g., permission_blocked, needs_input)
 
 **Evidence:** `src/server/reconciliation.ts`, `src/server/reconciliation.test.ts`, `src/server/index.ts` (startup bootstrap — registerAgent + watch with replayExisting), `src/server/hook-watcher.test.ts` ("replayExisting=true replays existing content on watch").
 
@@ -599,7 +581,7 @@ The system SHALL handle SIGINT/SIGTERM gracefully.
 - On signal, stop accepting new connections
 - Clean up WebSocket connections
 - Stop hook file watchers
-- Agent tmux sessions are NOT killed (they survive independently)
+- Agent dtach sessions are NOT killed (they survive independently)
 
 **Evidence:** `src/server/index.ts` (signal handlers, cleanup logic).
 
@@ -624,7 +606,7 @@ The system SHALL maintain comprehensive test coverage using Vitest.
 
 **Acceptance criteria:**
 - Every module in `src/core/` has a corresponding `.test.ts` file
-- Adapter tests use fakes/mocks for isolation; integration tests use real tmux
+- Adapter tests use fakes/mocks for isolation; integration tests use real dtach
 - Server tests verify WebSocket protocol compliance
 - Integration tests cover the full respond-and-advance loop
 
@@ -636,7 +618,7 @@ The system SHALL NOT parse terminal ANSI escape sequences for monitoring. See [A
 
 **Acceptance criteria:**
 - All monitoring data sourced from hooks (structured JSON) and transcript JSONL
-- `capture-pane` used only for GUI display, never for anomaly detection
+- `backend.captureBytes` used only for GUI display, never for anomaly detection
 - No ANSI parser dependency
 
 **Evidence:** Architecture enforced in code — hook-parser.ts and hook-watcher.ts handle all monitoring data.
@@ -711,6 +693,23 @@ The system SHOULD suggest an opt-in reflection task after a supervision session 
 
 ---
 
+## R10: Scheduled Tasks
+
+### R10.1: Finite Cron Trigger Quotas [F11] — SHALL — `done`
+
+The system SHALL allow a schedule to define an optional finite number of cron-triggered executions, decrement that quota only for cron dispatch attempts, and stop the schedule automatically once the quota is exhausted.
+
+**Acceptance criteria:**
+- A schedule MAY omit the trigger limit and continue with existing unbounded cron behavior
+- When `maxTriggers` is set, the system tracks `remainingTriggers` and decrements it only for cron-triggered executions
+- Manual `run now` executions remain available after exhaustion and do not decrement `remainingTriggers`
+- When `remainingTriggers` reaches `0`, the schedule is auto-disabled, exposes `stopReason: trigger_limit_reached`, and persists that state across restarts
+- The schedule API returns `maxTriggers`, `remainingTriggers`, `stopReason`, and `exhaustedAt` when applicable
+
+**Evidence:** `src/core/schedule.ts` (persisted schedule model), `src/server/schedule-service.ts` (quota accounting and auto-stop), `src/server/schedule-runner.ts` (runtime enforcement), `src/server/routes/schedule-routes.ts` (REST contract), `src/frontend/components/ScheduleSection.tsx` and `src/frontend/components/SchedulesDialog.tsx` (quota visibility), `src/core/schedule.test.ts`, `src/server/schedule-runner.test.ts`, `src/server/index.test.ts`.
+
+---
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -737,12 +736,12 @@ The system SHOULD suggest an opt-in reflection task after a supervision session 
 | R3.6 | F3.6 | SHALL | done | attention-queue, ws, loop.test |
 | R3.7 | F3.7 | SHALL | done | attention-queue, ws, loop.test |
 | R3.8 | — | SHOULD | done | useStore, SentOverlay, DetailPanel |
-| R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, claude-code-adapter |
-| R4.2 | F4.2 | SHOULD | done | claude-code-adapter, ws, DetailPanel |
-| R4.3 | F4.3 | SHOULD | todo | — |
+| R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, claude-code-adapter, local-dtach-backend |
+| R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
+| R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation |
 | R4.5 | F4.5 | SHOULD | partial | LaunchTaskDialog, tasks (auto-eval todo) |
-| R4.6 | F4.6 | SHOULD | partial | tmux-terminal-manager, DetailPanel, TerminalPanel, FindingsPanel |
+| R4.6 | F4.6 | SHOULD | done | local-dtach-backend (stable socket path), TerminalPanel (in-browser xterm.js) |
 | R4b.1 | — | SHALL | done | ws, server/index, useStore, LaunchTaskDialog |
 | R4b.2 | — | SHALL | done | recent-paths, LaunchTaskDialog |
 | R4b.3 | — | SHOULD | done | useStore, DetailPanel, App |
@@ -755,9 +754,9 @@ The system SHOULD suggest an opt-in reflection task after a supervision session 
 | R5.3 | F5.3 | SHOULD | done | StatusBar |
 | R5.4 | F5.4 | SHOULD | done | App, useStore, DetailPanel |
 | R5.5 | F5.5 | SHALL | done | useWebSocket, ws, useStore |
-| R6.1 | ADR-007 | SHALL | done | tmux-terminal-manager |
+| R6.1 | ADR-007 / ADR-014 | SHALL | done | local-dtach-backend |
 | R6.2 | PoC 001 | SHALL | done | claude-code-adapter, hook-watcher, hook-parser |
-| R6.3 | ADR-008 | SHALL | done | reconciliation |
+| R6.3 | ADR-008 (superseded by ADR-014) | SHALL | done | reconciliation, local-dtach-backend |
 | R6.4 | arch | SHALL | done | ws, types |
 | R6.5 | arch | SHALL | done | server/index |
 | R6.6 | features | SHALL | partial | tested on Linux only |
@@ -784,9 +783,7 @@ All 18 SHALL requirements are `done`. The MVP core loop is fully implemented and
 | R1.3 | Display agent metadata — all gap items done, cost deferred to R2.5 |
 | R2.9 | Browser Notification API integration |
 | R3.4 | Polish "all clear" empty state UI |
-| R4.3 | Restart/relaunch agent flow (backend + frontend) |
 | R4.5 | Auto-evaluation of completion criteria (V2 candidate) |
-| R4.6 | Attach buttons done in detail header, terminal panel, finding cards |
 | R6.6 | macOS validation |
 
 ### MAY (deferred) requirements: 4

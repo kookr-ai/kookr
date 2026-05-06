@@ -2,7 +2,7 @@
 
 ## Status
 
-**Superseded by [ADR-014](014-local-dtach-backend.md)** (2026-04-22). The managed-interactive-session principle stands; ADR-014 documents the backend switch from tmux to dtach (completed in RFC `rfc-v8-tmux-removal.md`).
+**Superseded by [ADR-014](014-local-dtach-backend.md)** (2026-04-22). The managed-interactive-session principle stands; ADR-014 documents the backend switch from tmux to dtach (V8 tmux removal). The original `rfc-v8-tmux-removal.md` was archived when `docs/rfc/` was reset for the kookr cutover; ADR-014 now carries the load-bearing decision record.
 
 *Original status:* **Accepted** (2026-03-24, by Jean Ibarz) — superseded ADR-004's "headless-only for V1" decision.
 
