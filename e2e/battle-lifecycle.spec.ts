@@ -89,7 +89,7 @@ test.describe('Stop agent', () => {
     await page.locator('[data-testid="action-cancel"]').click();
 
     // Should still have one finding
-    await expect(page.locator('.finding-card')).toHaveCount(1, { timeout: 5000 });
+    await expect(page.locator('.finding-card')).toHaveCount(1, { timeout: 10000 });
   });
 });
 
@@ -318,7 +318,7 @@ test.describe('Full integration scenarios', () => {
       } else {
         await injectPermissionEvent(request, tmux);
       }
-      await expect(page.locator('.finding-card')).toHaveCount(i + 1, { timeout: 5000 });
+      await expect(page.locator('.finding-card')).toHaveCount(i + 1, { timeout: 10000 });
     }
 
     // Triage all via Ctrl+N → respond

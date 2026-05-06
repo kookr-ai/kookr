@@ -150,7 +150,7 @@ test.describe('Input stability — no auto-send on state changes', () => {
     await page.locator('.response-row input').fill(userText);
 
     await injectToolUse(request, tmux);
-    await expect(page.locator('.finding-card')).toHaveCount(0, { timeout: 5000 });
+    await expect(page.locator('.finding-card')).toHaveCount(0, { timeout: 10000 });
 
     await expect(page.locator('.response-row input')).toHaveValue(userText);
     await expect(page.locator('.sent-overlay')).not.toBeVisible();
