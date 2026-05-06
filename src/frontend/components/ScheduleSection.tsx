@@ -40,9 +40,9 @@ function nextRunLabel(schedule: ScheduleResponse): string {
 }
 
 function quotaLabel(schedule: ScheduleResponse): string {
-  if (schedule.maxTriggers === undefined) return 'Quota: unlimited';
-  if (schedule.stopReason === 'trigger_limit_reached') return `Quota: exhausted (${schedule.maxTriggers}/${schedule.maxTriggers})`;
-  return `Quota: ${schedule.remainingTriggers ?? schedule.maxTriggers} left of ${schedule.maxTriggers}`;
+  if (schedule.maxTriggers === undefined) return 'Scheduled runs: unlimited';
+  if (schedule.stopReason === 'trigger_limit_reached') return `Scheduled runs: exhausted (${schedule.maxTriggers}/${schedule.maxTriggers})`;
+  return `Scheduled runs: ${schedule.remainingTriggers ?? schedule.maxTriggers} left of ${schedule.maxTriggers}`;
 }
 
 function statusClass(schedule: ScheduleResponse): string {
