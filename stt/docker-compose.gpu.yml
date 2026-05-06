@@ -1,0 +1,32 @@
+# GPU overlay for the Kookr STT stack.
+#
+# Layered on top of docker-compose.yml when KOOKR_STT_DEVICE=gpu (or auto +
+# detected nvidia runtime) to (1) reserve an NVIDIA GPU device for the
+# Whisper sidecar and (2) flip the image / model / compute defaults to
+# CUDA-friendly values.
+#
+# Manual usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+#
+# Requires the NVIDIA Container Toolkit on the host. stt-manager.ts adds
+# this overlay automatically; do not edit it to "force CPU" — set
+# KOOKR_STT_DEVICE=cpu instead.
+
+services:
+  kookr-stt-whisper:
+    image: ${WHISPER_IMAGE:-fedirz/faster-whisper-server:latest-cuda}
+    environment:
+      WHISPER__MODEL: ${WHISPER_MODEL:-large-v3}
+      WHISPER__INFERENCE_DEVICE: ${WHISPER_DEVICE:-cuda}
+      WHISPER__COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  kookr-stt:
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}

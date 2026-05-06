@@ -13,14 +13,15 @@ import { homedir } from 'node:os';
 import { LocalDtachBackend } from '../adapters/local-dtach-backend.js';
 import { createKookrServer } from './index.js';
 import { resolveListenPort } from './resolve-listen-port.js';
-import { startSTT, type STTManager } from './stt-manager.js';
+import { parseSTTDevice, startSTT, type STTManager } from './stt-manager.js';
 import { startTTS, type TTSManager } from './tts-manager.js';
 
 const HOST = process.env.KOOKR_HOST ?? '127.0.0.1';
 const STT_ENABLED = process.env.KOOKR_STT === 'true';
 const STT_URL_OVERRIDE = process.env.KOOKR_STT_URL ?? '';
 const STT_PORT = parseInt(process.env.KOOKR_STT_PORT ?? '8003', 10);
-const WHISPER_MODEL = process.env.WHISPER_MODEL ?? 'large-v3';
+const STT_DEVICE = parseSTTDevice();
+const WHISPER_MODEL = process.env.WHISPER_MODEL;
 const TTS_ENABLED = process.env.KOOKR_TTS === 'true';
 const TTS_URL_OVERRIDE = process.env.KOOKR_TTS_URL ?? '';
 const TTS_PORT = parseInt(process.env.KOOKR_TTS_PORT ?? '8004', 10);
@@ -91,6 +92,7 @@ async function main(): Promise<void> {
         sttDir,
         port: STT_PORT,
         whisperModel: WHISPER_MODEL,
+        device: STT_DEVICE,
       });
       sttUrl = sttManager.url;
     } catch (err) {

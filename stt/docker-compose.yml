@@ -1,21 +1,21 @@
 # STT service stack for Kookr — started automatically when KOOKR_STT=true.
 #
 # Two services:
-#   1. kookr-stt-whisper: Faster-Whisper HTTP sidecar (GPU + large-v3 by default)
+#   1. kookr-stt-whisper: Faster-Whisper HTTP sidecar (CPU defaults; GPU via overlay)
 #   2. kookr-stt: Node.js WebSocket server that wraps whisper with progressive streaming
 #
-# Requires an NVIDIA GPU with the NVIDIA Container Toolkit installed.
-# To run on CPU instead, override these env vars before `docker compose up`:
-#   WHISPER_IMAGE=fedirz/faster-whisper-server:latest-cpu
-#   WHISPER_MODEL=base WHISPER_DEVICE=cpu WHISPER_COMPUTE_TYPE=int8
-# (and remove the GPU device reservation from kookr-stt-whisper).
+# CPU is the default so this file works out of the box on Mac, AMD, and
+# CPU-only Linux boxes. To run on an NVIDIA GPU, layer the overlay:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+# stt-manager.ts adds the overlay automatically when it detects an
+# nvidia runtime (KOOKR_STT_DEVICE=auto, the default).
 #
-# The model (~2.9 GB for large-v3) is cached in the kookr_stt_whisper_cache
-# volume so it only downloads on first run.
+# The model is cached in the kookr_stt_whisper_cache volume so it only
+# downloads on first run (~150 MB for base-int8, ~2.9 GB for large-v3).
 
 services:
   kookr-stt-whisper:
-    image: ${WHISPER_IMAGE:-fedirz/faster-whisper-server:latest-cuda}
+    image: ${WHISPER_IMAGE:-fedirz/faster-whisper-server:latest-cpu}
     container_name: kookr-stt-whisper
     # Bind to localhost so the Kookr Node process can POST OGG voice
     # messages from Telegram directly to the OpenAI-compatible endpoint.
@@ -24,19 +24,12 @@ services:
     ports:
       - "127.0.0.1:${KOOKR_STT_WHISPER_PORT:-8010}:8010"
     environment:
-      WHISPER__MODEL: ${WHISPER_MODEL:-large-v3}
-      WHISPER__INFERENCE_DEVICE: ${WHISPER_DEVICE:-cuda}
-      WHISPER__COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+      WHISPER__MODEL: ${WHISPER_MODEL:-base}
+      WHISPER__INFERENCE_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER__COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
       UVICORN_PORT: "8010"
     volumes:
       - kookr_stt_whisper_cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     restart: unless-stopped
 
   kookr-stt:
@@ -49,7 +42,7 @@ services:
     environment:
       STT_BACKEND: whisper
       WHISPER_URL: http://kookr-stt-whisper:8010
-      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
       WHISPER_TIMEOUT_MS: "30000"
       PORT: "8003"
       DEFAULT_LANGUAGE: ${STT_LANGUAGE:-en}

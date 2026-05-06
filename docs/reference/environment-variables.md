@@ -99,10 +99,11 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 | `KOOKR_STT_URL` | unset | WebSocket URL | Uses an external speech-to-text service and skips bundled startup. |
 | `KOOKR_STT_PORT` | `8003` | Integer port | Port for the bundled speech-to-text service. Also injected into the STT child process. |
 | `KOOKR_STT_HEALTH_TIMEOUT_S` | `600` | Positive number of seconds | Maximum time to wait for the bundled speech-to-text service health check. Increase for slow first-run Whisper model downloads. |
-| `WHISPER_IMAGE` | `fedirz/faster-whisper-server:latest-cuda` | Container image reference | Faster-Whisper server image used by the bundled STT stack. CPU fallback: `fedirz/faster-whisper-server:latest-cpu`. |
-| `WHISPER_MODEL` | `large-v3` | Faster-Whisper model id (`tiny`, `base`, `small`, `medium`, `large-v3`, ...) | Whisper model loaded by the STT sidecar. CPU fallback: `base`. First `KOOKR_STT=true` boot downloads the model (~3 GB for `large-v3`). |
-| `WHISPER_DEVICE` | `cuda` | `cuda` or `cpu` | Inference device for the Whisper sidecar. Set to `cpu` for the CPU fallback. |
-| `WHISPER_COMPUTE_TYPE` | `float16` | `float16`, `int8`, `int8_float16`, ... | Quantization/precision for Whisper inference. CPU fallback: `int8`. |
+| `KOOKR_STT_DEVICE` | `auto` | `auto`, `cpu`, `gpu` | Inference device for the bundled STT stack. `auto` probes `docker info` for an nvidia runtime and resolves to `gpu` (CUDA Whisper image, `large-v3`, float16 + GPU device reservation) or `cpu` (CPU Whisper image, `base`, int8). Set explicitly to override the auto choice. |
+| `WHISPER_IMAGE` | per-device default | Container image reference | Override the Whisper sidecar image. Defaults: `fedirz/faster-whisper-server:latest-cuda` on GPU, `fedirz/faster-whisper-server:latest-cpu` on CPU. |
+| `WHISPER_MODEL` | per-device default | Faster-Whisper model id (`tiny`, `base`, `small`, `medium`, `large-v3`, ...) | Override the Whisper model. Defaults: `large-v3` on GPU (~3 GB first-run download), `base` on CPU (~150 MB). |
+| `WHISPER_DEVICE` | per-device default | `cuda` or `cpu` | Override the Whisper inference device. Defaults: `cuda` on GPU, `cpu` on CPU. |
+| `WHISPER_COMPUTE_TYPE` | per-device default | `float16`, `int8`, `int8_float16`, ... | Override Whisper inference precision. Defaults: `float16` on GPU, `int8` on CPU. |
 | `KOOKR_TTS` | unset | `true` to enable | Starts bundled text-to-speech services when no `KOOKR_TTS_URL` is provided. |
 | `KOOKR_TTS_URL` | unset | HTTP/WebSocket URL expected by the client | Uses an external text-to-speech service and skips bundled startup. |
 | `KOOKR_TTS_PORT` | `8004` | Integer port | Port for the bundled text-to-speech service. Also injected into the TTS child process. |
