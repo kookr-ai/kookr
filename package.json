@@ -13,7 +13,9 @@
     "bin",
     "dist",
     "README.md",
-    "CLAUDE.md"
+    "CLAUDE.md",
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "test": "vitest run",
@@ -43,8 +45,8 @@
     "prepare": "git config core.hooksPath .hooks && pnpm build:dtach"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Jean Ibarz",
+  "license": "Apache-2.0",
   "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=22"

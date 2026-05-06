@@ -4,6 +4,8 @@
   "type": "module",
   "private": true,
   "description": "Speech-to-text service for Kookr — bundled from aegiscore/packages/stt",
+  "author": "Jean Ibarz",
+  "license": "Apache-2.0",
   "scripts": {
     "start": "node src/server.js",
     "test": "vitest run",

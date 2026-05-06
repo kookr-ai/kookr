@@ -4,7 +4,7 @@
 
 **A smart attention router for developers running multiple AI coding agents.**
 
-[![Status: V1](https://img.shields.io/badge/status-V1_functional-green)](#) [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](#) [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](#) [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](UNLICENSE)
+[![Status: V1](https://img.shields.io/badge/status-V1_functional-green)](#) [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](#) [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](#) [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 
 [Features](docs/features.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md) · [ADRs](docs/adr/README.md)
 
@@ -433,6 +433,14 @@ Contributions are welcome! This project uses:
 
 Before submitting a PR, make sure `pnpm test` passes. The pre-push hook enforces this automatically.
 
+### Contributor License Agreement
+
+Contributions to Kookr require signing the [Contributor License Agreement](CLA.md). When you open your first pull request, the CLA Assistant bot will comment with a link to the agreement and instructions for signing — typically a one-line comment posted on the PR. You only need to sign once; future contributions are covered automatically.
+
+The CLA grants the project owner a broad license to use and relicense your contributions, which keeps the door open to dual-licensing and commercial offerings while ensuring the publicly-released versions remain freely available under Apache 2.0.
+
 ## License
 
-Kookr is released into the public domain under [The Unlicense](UNLICENSE). You may copy, modify, distribute, and use the software, in source or compiled form, for any purpose, with no restrictions. See [unlicense.org](https://unlicense.org) for details.
+Kookr is licensed under the [Apache License 2.0](LICENSE). You may use, modify, distribute, and sublicense the software for any purpose — including commercial use — subject to the terms of the license. See the [LICENSE](LICENSE) file for the full legal text and the [NOTICE](NOTICE) file for required attribution.
+
+Copyright 2026 Jean Ibarz.
