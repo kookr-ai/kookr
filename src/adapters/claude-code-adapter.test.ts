@@ -273,6 +273,47 @@ describe('ClaudeCodeAdapter', () => {
     expect(backend.getWrittenText(sessionId)).toBe('yes, continue\r');
   });
 
+  test('sendInput records the submitted text in keysReceived', async () => {
+    // Regression guard: writeSequence([text, ENTER]) must surface as a single
+    // keysReceived entry containing the text. Before the fix, the text payload
+    // (no trailing newline) bypassed keysReceived and the bare Enter pushed an
+    // empty string, producing [""]. See #57.
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+    await adapter.sendInput(sessionId, 'yes, continue');
+
+    expect(backend.sessions.get(sessionId)!.keysReceived).toEqual(['yes, continue']);
+  });
+
+  test('multiple sendInput calls record separate keysReceived entries in order', async () => {
+    // Two-call regression guard: each writeSequence call is its own logical
+    // submission; the second must not carry text from the first. See #57.
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+    await adapter.sendInput(sessionId, 'first input');
+    await adapter.sendInput(sessionId, 'second input');
+
+    expect(backend.sessions.get(sessionId)!.keysReceived).toEqual([
+      'first input',
+      'second input',
+    ]);
+  });
+
+  test('sendKeystroke before sendInput does not contaminate keysReceived', async () => {
+    // Permission-prompt keystrokes go through `backend.write` (no newline)
+    // and must not bleed into a subsequent sendInput's keysReceived entry.
+    // See #57.
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+    await adapter.sendKeystroke(sessionId, '1');
+    await adapter.sendInput(sessionId, 'follow-up message');
+
+    expect(backend.sessions.get(sessionId)!.keysReceived).toEqual(['follow-up message']);
+  });
+
   test('stop terminates the backend session', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
