@@ -12,6 +12,7 @@ interface RefreshResponse {
 export function createOssAttemptsSlice(set: StoreSet, get: StoreGet): OssAttemptsSlice {
   return {
     ossAttempts: [],
+    ossRegistryActiveRepos: [],
     ossLastRefreshAt: null,
     ossShowView: false,
     ossRefreshLoading: false,
@@ -22,6 +23,7 @@ export function createOssAttemptsSlice(set: StoreSet, get: StoreGet): OssAttempt
     handleOssAttempts: (snapshot) => {
       set({
         ossAttempts: snapshot.attempts,
+        ossRegistryActiveRepos: snapshot.registryActiveRepos ?? [],
         ossLastRefreshAt: snapshot.lastRefreshAt,
         ossLastRefreshIssueCheckErrors: snapshot.lastRefreshIssueCheckErrors ?? [],
       });

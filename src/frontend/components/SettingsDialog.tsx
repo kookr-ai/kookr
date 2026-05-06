@@ -7,6 +7,7 @@ import { HookInventorySection } from './HookInventorySection.js';
 interface ServerSettings {
   githubPollingEnabled: boolean;
   githubPollingIntervalSec: number;
+  autoWatchOssSources: boolean;
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
@@ -338,6 +339,26 @@ export function SettingsDialog({ onClose }: Props) {
                         />
                         <span className="settings-unit">sec</span>
                       </div>
+                    </div>
+                  </div>
+
+                  <div className="settings-section">
+                    <div className="settings-section-title">OSS Sources</div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Auto-watch local sources</span>
+                        <span className="settings-desc">
+                          Watch OSS registry and recon report files for local edits, then update the
+                          sidebar and OSS panel without running GitHub refresh calls.
+                        </span>
+                      </div>
+                      <button
+                        className={`settings-toggle ${settings.autoWatchOssSources ? 'active' : ''}`}
+                        onClick={() => handleToggle('autoWatchOssSources')}
+                        aria-label="Toggle OSS source auto-watch"
+                      >
+                        <span className="settings-toggle-knob" />
+                      </button>
                     </div>
                   </div>
                 </>

@@ -80,9 +80,17 @@ describe('validateSettings', () => {
 
   it('fills missing new fields with defaults', () => {
     const result = validateSettings({ githubPollingEnabled: false, githubPollingIntervalSec: 120 });
+    expect(result.autoWatchOssSources).toBe(true);
     expect(result.watchdogStaleThresholdSec).toBe(30);
     expect(result.repeatedErrorThreshold).toBe(3);
     expect(result.maxActiveTasks).toBe(10);
+  });
+
+  it('accepts valid boolean for autoWatchOssSources', () => {
+    expect(validateSettings({ autoWatchOssSources: false })).toEqual({
+      ...DEFAULT_SETTINGS,
+      autoWatchOssSources: false,
+    });
   });
 });
 
@@ -124,6 +132,7 @@ describe('loadSettings / saveSettings', () => {
     const settings = {
       githubPollingEnabled: false,
       githubPollingIntervalSec: 120,
+      autoWatchOssSources: false,
       watchdogStaleThresholdSec: 45,
       repeatedErrorThreshold: 5,
       maxActiveTasks: 15,
@@ -160,6 +169,7 @@ describe('loadSettings / saveSettings', () => {
     const result = await loadSettings(filePath);
     expect(result.settings.watchdogStaleThresholdSec).toBe(30);
     expect(result.settings.repeatedErrorThreshold).toBe(3);
+    expect(result.settings.autoWatchOssSources).toBe(true);
     expect(result.settings.maxActiveTasks).toBe(10);
     expect(result.loadedFromDefaults).toBe(false);
   });

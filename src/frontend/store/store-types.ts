@@ -280,6 +280,7 @@ export interface WorkspaceSlice {
 
 export interface OssAttemptsSlice {
   ossAttempts: ContributionAttempt[];
+  ossRegistryActiveRepos: string[];
   ossLastRefreshAt: string | null;
   ossShowView: boolean;
   ossRefreshLoading: boolean;

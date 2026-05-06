@@ -15,6 +15,7 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       ledgerAnalytics: deps.ledgerAnalytics,
       projectConfigStore: deps.projectConfigStore,
       getSkillTrackedProjects: () => deps.skillDiscoveryState?.getProjects() ?? [],
+      getRegistryActiveProjects: deps.getRegistryActiveProjects,
       prLessonsHolder: deps.prLessonsState,
     });
     return c.json(summaries);

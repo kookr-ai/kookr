@@ -67,7 +67,7 @@ import { HttpPushTracker } from '../core/http-push-tracker.js';
 import { ProjectConfigStore } from '../core/project-config-store.js';
 import { OssAttemptStore } from '../core/oss-attempt-store.js';
 import { LedgerAnalytics } from '../core/ledger-analytics.js';
-import { OssRefresher } from './oss-refresh.js';
+import { OssRefresher, loadExternalReposFromRegistry } from './oss-refresh.js';
 import { toOssAttemptsSnapshot } from './oss-attempts-snapshot.js';
 import { SkillDiscoveryStateHolder, SkillTrackedRepoDiscovery } from '../core/skill-tracked-repo-discovery.js';
 import { PrLessonsDiscovery, PrLessonsStateHolder } from '../core/pr-lessons-discovery.js';
@@ -100,6 +100,12 @@ import type { KookrServerInternal } from './server-test-helpers.js';
 import { createSnapshotMessage, getProjectSummaries } from './use-cases/get-snapshot.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
 import { RalphLoopService } from './ralph-loop-service.js';
+import {
+  OssRegistryWatcher,
+  ReconReportWatcher,
+  type OssSourceWatcherFs,
+} from './oss-source-watcher.js';
+import { projectIdForRepo } from '../core/oss-attempt-store.js';
 
 // --- Exported types ---
 
@@ -150,6 +156,10 @@ export interface KookrConfig {
   preflightOnFatal?: (snapshot: AgentPreflightSnapshot & { status: 'absent' }) => never;
   /** Test seam for capturing preflight log lines. */
   preflightLogger?: PreflightLogger;
+  /** Test seam for OSS source fs.watch wiring. */
+  ossSourceWatcherFs?: Partial<OssSourceWatcherFs>;
+  /** Test seam for OSS source watcher debounce. Defaults to 250 ms. */
+  ossSourceWatcherDebounceMs?: number;
 }
 
 /** Narrow public interface — only what production consumers need. */
@@ -214,6 +224,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd, frontendDir, saveIntervalMs, livenessIntervalMs,
     terminalBackend, sttUrl, useFakeTerminalBridge, agentBin, codexBin, bypassAllPermissions,
     claudeDir, preflightOnFatal, preflightLogger,
+    ossSourceWatcherFs, ossSourceWatcherDebounceMs,
   } = config;
 
   // Ensure directories exist
@@ -347,7 +358,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   await ossAttemptStore.load();
   await ossAttemptStore.loadFromLedger(); // Authoritative source: contribution-ledger.jsonl
   const ledgerAnalytics = new LedgerAnalytics(ossAttemptStore);
-  const ossRefresher = new OssRefresher({ store: ossAttemptStore, kookrDir });
+  const ossRegistryPath = join(kookrDir, 'oss-repos.json');
+  let ossRegistryActiveRepos = await loadExternalReposFromRegistry(
+    ossRegistryPath,
+    ossAttemptStore.getOwnNamespaces(),
+  );
+  const getRegistryActiveProjects = () => ossRegistryActiveRepos.map(projectIdForRepo);
+  const getRegistryActiveRepos = () => [...ossRegistryActiveRepos];
+  const ossRefresher = new OssRefresher({ store: ossAttemptStore, kookrDir, registryPath: ossRegistryPath });
 
   // Skill-tracked OSS discovery (read-only scan of ~/.claude/*-recon/recon-report.md).
   // One server-owned snapshot with last-known-good semantics.
@@ -603,6 +621,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       ledgerAnalytics,
       projectConfigStore,
       getSkillTrackedProjects: () => skillDiscoveryState.getProjects(),
+      getRegistryActiveProjects,
       prLessonsHolder: prLessonsState,
     });
     // Always broadcast — user-initiated mutations (track/untrack/rescan) can
@@ -612,7 +631,46 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   /** Broadcast the current OSS attempts snapshot to all connected clients. */
   function broadcastOssAttempts(): void {
-    broadcastToAll({ type: 'ossAttempts', store: toOssAttemptsSnapshot(ossAttemptStore) });
+    broadcastToAll({
+      type: 'ossAttempts',
+      store: toOssAttemptsSnapshot(ossAttemptStore, ossRegistryActiveRepos),
+    });
+  }
+
+  async function reloadOssRegistryActiveRepos(): Promise<void> {
+    ossRegistryActiveRepos = await loadExternalReposFromRegistry(
+      ossRegistryPath,
+      ossAttemptStore.getOwnNamespaces(),
+    );
+    broadcastProjectSummaries();
+    broadcastOssAttempts();
+  }
+
+  const ossRegistryWatcher = new OssRegistryWatcher({
+    registryPath: ossRegistryPath,
+    enabled: () => currentSettings.autoWatchOssSources,
+    debounceMs: ossSourceWatcherDebounceMs,
+    runFs: ossSourceWatcherFs,
+    onChange: reloadOssRegistryActiveRepos,
+  });
+  const reconReportWatcher = new ReconReportWatcher({
+    claudeDir: resolvedClaudeDir,
+    enabled: () => currentSettings.autoWatchOssSources,
+    debounceMs: ossSourceWatcherDebounceMs,
+    runFs: ossSourceWatcherFs,
+    onChange: async () => {
+      const snapshot = await skillDiscoveryState.rescan();
+      if (snapshot.lastError) {
+        console.warn(`[skill-discovery] Auto rescan failed: ${snapshot.lastError}`);
+      }
+      broadcastProjectSummaries();
+    },
+  });
+  if (currentSettings.autoWatchOssSources) {
+    ossRegistryWatcher.start();
+    reconReportWatcher.start();
+  } else {
+    console.log('[settings] OSS source auto-watch disabled by user settings');
   }
 
   // --- Auto-naming helper ---
@@ -779,8 +837,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd, serverPort: port, frontendDir, broadcastToAll,
     shadowRegistry, httpPushTracker, launchServiceDeps, sttUrl,
     projectConfigStore, circuitBreakerRegistry,
-    ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts,
-    skillDiscoveryState, prLessonsState, broadcastProjectSummaries,
+    ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
+    skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,
     autonomyOrchestrator, suppressionTracker, scheduleService, scheduleRunner,
     diagnosticRunner,
     terminalBackend,
@@ -795,6 +853,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         const prev = currentSettings;
         currentSettings = newSettings;
         settingsLoadedFromDefaults = false;
+        if (prev.autoWatchOssSources !== newSettings.autoWatchOssSources) {
+          if (newSettings.autoWatchOssSources) {
+            ossRegistryWatcher.start();
+            reconReportWatcher.start();
+          } else {
+            ossRegistryWatcher.close();
+            reconReportWatcher.close();
+          }
+        }
         return applySettingsSideEffects({
           prevSettings: prev,
           newSettings,
@@ -927,7 +994,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcastProjectSummaries,
     launchTask: (opts) => launchTask(launchServiceDeps, opts),
     githubStateStore, ledgerAnalytics, projectConfigStore,
-    skillDiscoveryState, prLessonsState,
+    skillDiscoveryState, prLessonsState, getRegistryActiveProjects,
     achievementWatcher,
     getQuotaStatus: () => quotaAdapter.getLatest(),
     circuitBreakerRegistry,
@@ -1004,6 +1071,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     // Stop hook watchers and trackers
     hookWatcher.stopAll();
+    ossRegistryWatcher.close();
+    reconReportWatcher.close();
     httpPushTracker.dispose();
     circuitBreakerRegistry.dispose();
 

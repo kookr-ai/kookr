@@ -44,6 +44,8 @@ export type CrossProjectSweepProjectResult =
  */
 export interface OssAttemptsSnapshot {
   attempts: ContributionAttempt[];
+  /** External active repos from ~/.kookr/oss-repos.json; refreshed without gh calls. */
+  registryActiveRepos: string[];
   lastRefreshAt: string | null;
   lastRefreshIssueCheckErrors: IssueCheckError[];
 }

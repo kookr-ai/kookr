@@ -37,6 +37,8 @@ export interface ProjectSummaryDeps {
   configStore: ProjectConfigStore;
   /** Project IDs discovered from skill recon reports (read-only). */
   skillTrackedProjects?: string[];
+  /** Project IDs derived from active external repos in ~/.kookr/oss-repos.json. */
+  registryActiveProjects?: string[];
   prLessonsHolder?: PrLessonsStateHolder;
 }
 
@@ -57,7 +59,7 @@ export function configSeedsMembership(config: ProjectConfig): boolean {
  * Groups agents by projectId, computes aggregate stats per project.
  */
 export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummary[] {
-  const { agents, ledgerAnalytics, configStore, skillTrackedProjects, prLessonsHolder } = deps;
+  const { agents, ledgerAnalytics, configStore, skillTrackedProjects, registryActiveProjects, prLessonsHolder } = deps;
 
   // Group agents by projectId (derived from task data)
   const projectAgents = new Map<string, AgentState[]>();
@@ -88,6 +90,16 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
   // Include skill-discovered projects even with no agents or contributions.
   if (skillTrackedProjects) {
     for (const project of skillTrackedProjects) {
+      if (!projectAgents.has(project)) {
+        projectAgents.set(project, []);
+      }
+    }
+  }
+
+  // Include active registry repos so ~/.kookr/oss-repos.json edits are
+  // reflected in the sidebar even before a manual GH refresh creates PR rows.
+  if (registryActiveProjects) {
+    for (const project of registryActiveProjects) {
       if (!projectAgents.has(project)) {
         projectAgents.set(project, []);
       }

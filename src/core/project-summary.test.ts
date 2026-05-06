@@ -152,6 +152,17 @@ describe('computeProjectSummaries', () => {
     expect(ids).toEqual(['github.com/grafana/grafana', 'github.com/n8n-io/n8n']);
   });
 
+  test('includes active registry projects with no agents or contributions', () => {
+    const summaries = computeProjectSummaries({
+      agents: [],
+      ledgerAnalytics,
+      configStore,
+      registryActiveProjects: ['github.com/grafana/grafana'],
+    });
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].project).toBe('github.com/grafana/grafana');
+  });
+
   test('deduplicates between skill-discovered and manual config', () => {
     configStore.setConfig('github.com/org/repo', { tracked: true });
     const summaries = computeProjectSummaries({

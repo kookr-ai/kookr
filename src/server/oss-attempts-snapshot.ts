@@ -9,9 +9,13 @@ import type { OssAttemptsSnapshot } from '../shared/contracts/messages.js';
  * place to hang version/compat shims if the wire shape diverges from the
  * stored shape later.
  */
-export function toOssAttemptsSnapshot(store: OssAttemptStore): OssAttemptsSnapshot {
+export function toOssAttemptsSnapshot(
+  store: OssAttemptStore,
+  registryActiveRepos: readonly string[] = [],
+): OssAttemptsSnapshot {
   return {
     attempts: store.getAllAttempts(),
+    registryActiveRepos: [...registryActiveRepos],
     lastRefreshAt: store.getLastRefreshAt(),
     lastRefreshIssueCheckErrors: store.getLastRefreshIssueCheckErrors(),
   };

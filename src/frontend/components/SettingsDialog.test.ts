@@ -9,6 +9,7 @@ import { SettingsDialog } from './SettingsDialog.js';
 interface MockSettings {
   githubPollingEnabled: boolean;
   githubPollingIntervalSec: number;
+  autoWatchOssSources: boolean;
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
@@ -17,6 +18,7 @@ interface MockSettings {
 const DEFAULT_SETTINGS: MockSettings = {
   githubPollingEnabled: true,
   githubPollingIntervalSec: 60,
+  autoWatchOssSources: true,
   watchdogStaleThresholdSec: 30,
   repeatedErrorThreshold: 3,
   maxActiveTasks: 10,

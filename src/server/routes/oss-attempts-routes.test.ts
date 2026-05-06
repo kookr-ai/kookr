@@ -43,6 +43,7 @@ describe('registerOssAttemptRoutes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.attempts).toEqual([]);
+    expect(body.registryActiveRepos).toEqual([]);
     expect(body.lastRefreshAt).toBeNull();
     expect(body.lastRefreshIssueCheckErrors).toEqual([]);
   });
@@ -56,10 +57,14 @@ describe('registerOssAttemptRoutes', () => {
       prTitle: 'Fix',
       source: 'posttool_hook',
     });
-    const { app } = mkApp({ ossAttemptStore: store });
+    const { app } = mkApp({
+      ossAttemptStore: store,
+      getRegistryActiveRepos: () => ['grafana/grafana'],
+    });
     const res = await app.request('/api/oss-attempts');
     const body = await res.json();
     expect(body.attempts).toHaveLength(1);
+    expect(body.registryActiveRepos).toEqual(['grafana/grafana']);
     expect(body.attempts[0].id).toBe('grafana/grafana#1');
   });
 

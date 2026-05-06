@@ -102,6 +102,22 @@ describe('computeRepoRows — stale column math (T-F1, T-F2)', () => {
     expect(row.open).toBe(2);
   });
 
+  it('includes active registry repos even before they have PR records', () => {
+    const rows = computeRepoRows([], [], ['grafana/grafana']);
+    expect(rows).toEqual([
+      {
+        repo: 'grafana/grafana',
+        opened: 0,
+        merged: 0,
+        closed: 0,
+        open: 0,
+        stale: 0,
+        mergeRate: null,
+        truncated: false,
+      },
+    ]);
+  });
+
   it('terminal records are never stale even with closed linked issue', () => {
     const attempts = [
       mkPr({ repo: 'grafana/grafana', prNumber: 1, state: 'merged', linkedIssue: closedByDifferentPR }),

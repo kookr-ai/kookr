@@ -3,6 +3,7 @@ import { readFile, writeFile, rename } from 'node:fs/promises';
 export interface KookrSettings {
   githubPollingEnabled: boolean;
   githubPollingIntervalSec: number;
+  autoWatchOssSources: boolean;
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
@@ -11,6 +12,7 @@ export interface KookrSettings {
 export const DEFAULT_SETTINGS: KookrSettings = {
   githubPollingEnabled: true,
   githubPollingIntervalSec: 60,
+  autoWatchOssSources: true,
   watchdogStaleThresholdSec: 30,
   repeatedErrorThreshold: 3,
   maxActiveTasks: 10,
@@ -36,6 +38,10 @@ export function validateSettings(raw: Record<string, unknown>): KookrSettings {
     interval = Math.max(MIN_POLLING_INTERVAL, Math.min(MAX_POLLING_INTERVAL, Math.round(raw.githubPollingIntervalSec)));
   }
 
+  const autoWatchOssSources = typeof raw.autoWatchOssSources === 'boolean'
+    ? raw.autoWatchOssSources
+    : DEFAULT_SETTINGS.autoWatchOssSources;
+
   let staleThreshold = DEFAULT_SETTINGS.watchdogStaleThresholdSec;
   if (typeof raw.watchdogStaleThresholdSec === 'number' && Number.isFinite(raw.watchdogStaleThresholdSec)) {
     staleThreshold = Math.max(MIN_STALE_THRESHOLD, Math.min(MAX_STALE_THRESHOLD, Math.round(raw.watchdogStaleThresholdSec)));
@@ -54,6 +60,7 @@ export function validateSettings(raw: Record<string, unknown>): KookrSettings {
   return {
     githubPollingEnabled: enabled,
     githubPollingIntervalSec: interval,
+    autoWatchOssSources,
     watchdogStaleThresholdSec: staleThreshold,
     repeatedErrorThreshold: errorThreshold,
     maxActiveTasks: maxTasks,
