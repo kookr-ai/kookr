@@ -8,6 +8,14 @@ CHECK_INTERVAL_SECONDS="${KOOKR_STARTUP_CHECK_INTERVAL_SECONDS:-2}"
 APP_DIR="$(pwd -P)"
 PID_FILE="/tmp/kookr-prod-${PORT}.pid"
 
+# Mirror src/server/start.ts: port 4800 → ~/.kookr, other ports → ~/.kookr-<port>.
+if [[ "$PORT" == "4800" ]]; then
+  KOOKR_DIR="${HOME}/.kookr"
+else
+  KOOKR_DIR="${HOME}/.kookr-${PORT}"
+fi
+LOG_FILE="${KOOKR_DIR}/server.log"
+
 get_process_cwd() {
   local pid="$1"
   local cwd=""
@@ -148,8 +156,15 @@ stop_existing_server() {
 
 start_server() {
   rm -f "$PID_FILE"
+  mkdir -p "$KOOKR_DIR"
+  if [[ -s "$LOG_FILE" ]]; then
+    echo "--- last 20 lines of previous ${LOG_FILE} ---"
+    tail -n 20 "$LOG_FILE" || true
+    echo "--- end of previous log ---"
+  fi
   echo "Starting Kookr prod server from ${APP_DIR}"
-  setsid -f sh -c "echo \$\$ > \"$PID_FILE\"; exec node dist/server/start.js > kookr.log 2>&1 < /dev/null"
+  echo "Server stdout/stderr → ${LOG_FILE}"
+  setsid -f sh -c "echo \$\$ > \"$PID_FILE\"; exec node dist/server/start.js > \"$LOG_FILE\" 2>&1 < /dev/null"
 }
 
 wait_for_health() {
@@ -173,7 +188,8 @@ wait_for_health() {
     sleep "$CHECK_INTERVAL_SECONDS"
     if ! kill -0 "$start_pid" 2>/dev/null; then
       echo "Kookr prod server exited before becoming healthy"
-      tail -n 100 kookr.log || true
+      echo "--- last 100 lines of ${LOG_FILE} ---"
+      tail -n 100 "$LOG_FILE" || true
       exit 1
     fi
     if curl -sf "$HEALTH_URL"; then
