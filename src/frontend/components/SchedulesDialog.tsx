@@ -49,9 +49,9 @@ function nextRunLabel(schedule: ScheduleResponse): string {
 }
 
 function quotaLabel(schedule: ScheduleResponse): string {
-  if (schedule.maxTriggers === undefined) return 'Cron quota: unlimited';
-  if (schedule.stopReason === 'trigger_limit_reached') return `Cron quota: exhausted (${schedule.maxTriggers}/${schedule.maxTriggers})`;
-  return `Cron quota: ${schedule.remainingTriggers ?? schedule.maxTriggers} remaining of ${schedule.maxTriggers}`;
+  if (schedule.maxTriggers === undefined) return 'Scheduled runs: unlimited';
+  if (schedule.stopReason === 'trigger_limit_reached') return `Scheduled runs: exhausted (${schedule.maxTriggers}/${schedule.maxTriggers})`;
+  return `Scheduled runs: ${schedule.remainingTriggers ?? schedule.maxTriggers} left of ${schedule.maxTriggers}`;
 }
 
 async function parseJson(res: Response) {
@@ -296,7 +296,7 @@ export function SchedulesDialog({ onClose }: Props) {
               </label>
 
               <label className="schedule-form-field">
-                <span>Max Cron Runs</span>
+                <span>Stop after N scheduled runs (optional)</span>
                 <input
                   type="number"
                   min="1"
