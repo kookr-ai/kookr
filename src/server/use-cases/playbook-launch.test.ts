@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { preparePlaybookLaunch } from './playbook-launch.js';
 
 describe('preparePlaybookLaunch', () => {
@@ -97,6 +97,30 @@ Work on {{repoFullName}}
       });
 
       expect(launch.projectId).toBe('github.com/grafana/grafana');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('expands $HOME in playbook cwd metadata', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'home-cwd.md'), `---
+name: Home CWD Task
+cwd: $HOME
+---
+
+Work from home.
+`);
+
+      const launch = await preparePlaybookLaunch({
+        cwd,
+        playbookPath: 'home-cwd.md',
+        parameterValues: {},
+      });
+
+      expect(launch.cwd).toBe(homedir());
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

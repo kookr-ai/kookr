@@ -22,7 +22,7 @@ related: oss-task-checkpointing, rfc-iterative-review
 └── plugin/skills/       ← PUBLISHED PLUGIN: shipped via the kookr-toolkit marketplace plugin to every project that installs it
 ```
 
-A skill in `.claude/skills/` is invisible to other projects — it only loads when Claude Code is opened inside `/home/jean/git/kookr/`. Anything that should be reusable across all projects MUST live in `plugin/skills/`.
+A skill in `.claude/skills/` is invisible to other projects — it only loads when Claude Code is opened inside `$HOME/git/kookr/`. Anything that should be reusable across all projects MUST live in `plugin/skills/`.
 
 ## The naming rule
 

@@ -84,8 +84,8 @@ Note on matchers: `Stop`, `StopFailure`, `Notification`, `UserPromptSubmit`, `Se
 ```json
 {
   "session_id": "8ee8ff7c-...",
-  "transcript_path": "/home/jean/.claude/projects/.../8ee8ff7c-....jsonl",
-  "cwd": "/home/jean/git/kookr",
+  "transcript_path": "~/.claude/projects/.../8ee8ff7c-....jsonl",
+  "cwd": "$HOME/git/kookr",
   "permission_mode": "acceptEdits",
   "hook_event_name": "UserPromptSubmit",
   "prompt": "say hello"
@@ -96,8 +96,8 @@ Note on matchers: `Stop`, `StopFailure`, `Notification`, `UserPromptSubmit`, `Se
 ```json
 {
   "session_id": "8ee8ff7c-...",
-  "transcript_path": "/home/jean/.claude/projects/.../8ee8ff7c-....jsonl",
-  "cwd": "/home/jean/git/kookr",
+  "transcript_path": "~/.claude/projects/.../8ee8ff7c-....jsonl",
+  "cwd": "$HOME/git/kookr",
   "hook_event_name": "Notification",
   "message": "Claude is waiting for your input",
   "notification_type": "idle_prompt"
@@ -108,8 +108,8 @@ Note on matchers: `Stop`, `StopFailure`, `Notification`, `UserPromptSubmit`, `Se
 ```json
 {
   "session_id": "43871e1c-...",
-  "transcript_path": "/home/jean/.claude/projects/.../43871e1c-....jsonl",
-  "cwd": "/home/jean/git/kookr",
+  "transcript_path": "~/.claude/projects/.../43871e1c-....jsonl",
+  "cwd": "$HOME/git/kookr",
   "hook_event_name": "StopFailure",
   "error": "billing_error",
   "last_assistant_message": "Credit balance is too low"
@@ -122,8 +122,8 @@ Known `error` values (from documentation + binary): `rate_limit`, `authenticatio
 ```json
 {
   "session_id": "8ee8ff7c-...",
-  "transcript_path": "/home/jean/.claude/projects/.../8ee8ff7c-....jsonl",
-  "cwd": "/home/jean/git/kookr",
+  "transcript_path": "~/.claude/projects/.../8ee8ff7c-....jsonl",
+  "cwd": "$HOME/git/kookr",
   "hook_event_name": "SessionEnd",
   "reason": "prompt_input_exit"
 }
@@ -135,10 +135,10 @@ Known `reason` values: `clear`, `resume`, `logout`, `prompt_input_exit`, `bypass
 ```json
 {
   "session_id": "8ee8ff7c-...",
-  "transcript_path": "/home/jean/.claude/projects/.../8ee8ff7c-....jsonl",
-  "cwd": "/home/jean/git/kookr",
+  "transcript_path": "~/.claude/projects/.../8ee8ff7c-....jsonl",
+  "cwd": "$HOME/git/kookr",
   "hook_event_name": "InstructionsLoaded",
-  "file_path": "/home/jean/.claude/CLAUDE.md",
+  "file_path": "~/.claude/CLAUDE.md",
   "memory_type": "User",
   "load_reason": "session_start"
 }

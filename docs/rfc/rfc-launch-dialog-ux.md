@@ -190,7 +190,7 @@ Sanitization steps 4 (curly quotes) and 6 (control-byte rejection) from v3 are d
 
 A small button adjacent to the cwd input populates it with the server cwd. Hidden when the field's current value already equals the server cwd.
 
-**Production-worktree guard.** When `serverCwd` matches `isProtectedWorktreePath()`, the button label is `↩ kookr (server cwd is protected — use parent repo)` and clicking populates the cwd input with the parent path derived by stripping the trailing `-prod` segment (`/home/jean/git/kookr-prod` → `/home/jean/git/kookr`).
+**Production-worktree guard.** When `serverCwd` matches `isProtectedWorktreePath()`, the button label is `↩ kookr (server cwd is protected — use parent repo)` and clicking populates the cwd input with the parent path derived by stripping the trailing `-prod` segment (`$HOME/git/kookr-prod` → `$HOME/git/kookr`).
 
 If `isProtectedWorktreePath` is later extended to other suffixes (e.g. `-staging`), this derivation will need updating in lockstep. The validation badge from PR 3 (when shipped) is the safety net for any wrong derivation — `not-found` will fire and the user sees it before clicking Launch. Until PR 3 ships, the user's submit attempt fails with the standard launch error if the parent path doesn't exist. (round-3 finding — v3's `git rev-parse --git-common-dir` approach was empirically asymmetric: returns relative `.git` from main repo, absolute path from linked worktrees, and fails for non-Kookr repos that happen to be named `kookr-prod`. Suffix-strip is simpler and the failure mode is bounded.)
 
@@ -341,7 +341,7 @@ E2E:
 - **Submodule path typed as cwd.** `isGitRepo=true`; `worktrees` of a submodule resolve to the parent repo's worktrees (git's actual behavior). Round-2 F27 — leave as-is; unlikely user flow, low impact.
 - **Field interaction telemetry vs MRU hit rate.** PR 2 emits both `launch_dialog_cwd_field_used` (method) and `launch_submitted.wasInMru: boolean`. The `wasInMru` flag is what the threshold gate consumes.
 - **Telemetry from concurrent tabs after PR 1.** No migration; events keep their existing names. No race possible.
-- **`git -C <path>` invocation.** Verified: `git -C /home/jean/git/kookr worktree list --porcelain` works. No `--` separator.
+- **`git -C <path>` invocation.** Verified: `git -C $HOME/git/kookr worktree list --porcelain` works. No `--` separator.
 
 ## Alternatives considered
 

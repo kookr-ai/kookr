@@ -104,6 +104,7 @@ fi
 
 # --- Scan targets ------------------------------------------------------------
 PATTERN='(~|\$HOME|\$\{HOME\}|/home/jean)/\.(claude|codex|kookr)/'
+MAINTAINER_HOME_PATTERN='/home/jean/'  # portability-ok (test fixture)
 
 TARGETS=()
 [ -e "CLAUDE.md" ] && TARGETS+=("CLAUDE.md")
@@ -120,6 +121,22 @@ for f in "${TARGETS[@]}"; do
       grep -nE "$PATTERN" "$f" | head -3 | sed 's/^/    /' >&2
       VIOLATIONS=$((VIOLATIONS + 1))
     fi
+  fi
+done
+
+# These files are distributed directly to users or surfaced in the launcher.
+# They must never carry maintainer-machine paths, even if another allowlist
+# entry permits runtime-global paths such as ~/.claude elsewhere.
+STRICT_TARGETS=()
+[ -e ".env.example" ] && STRICT_TARGETS+=(".env.example")
+while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files '.kookr/playbooks/*.md' 2>/dev/null | sort)
+while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files '.claude/agents/*.md' 2>/dev/null | sort)
+
+for f in "${STRICT_TARGETS[@]}"; do
+  if grep -qF "$MAINTAINER_HOME_PATTERN" "$f"; then
+    printf 'FAIL: %s contains maintainer-specific path %s.\n' "$f" "$MAINTAINER_HOME_PATTERN" >&2
+    grep -nF "$MAINTAINER_HOME_PATTERN" "$f" | head -3 | sed 's/^/    /' >&2
+    VIOLATIONS=$((VIOLATIONS + 1))
   fi
 done
 

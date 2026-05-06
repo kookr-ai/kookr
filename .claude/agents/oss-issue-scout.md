@@ -280,7 +280,7 @@ And in the evidence note at `/tmp/scout-repro-${SLUG}-${ISSUE_NUM}.md`, under "H
 
 This gate exists because two scout runs on 2026-04-13 — on langgenius/dify #34827 and n8n-io/n8n #28378 — both surfaced issues that were *scored high on clarity/size/acceptance/competition* but turned out to be unverifiable in practice. The dify fix contradicted existing test assertions; the n8n fix required live Telegram webhook infrastructure. In both cases the scout never tried to reproduce the bug or prove verifiability before recommending it. The user had to roll one claim back and reluctantly accept the other. The rule is now: **no reproducibility evidence, no recommendation**.
 
-For the top-ranked surviving candidate, you MUST establish at least one of the following lines of evidence. Run the checks in your own isolated context, on the actual checkout at `/home/jean/git/{repo_name}`. Write a short evidence note — your return value has to cite it.
+For the top-ranked surviving candidate, you MUST establish at least one of the following lines of evidence. Run the checks in your own isolated context, on the actual checkout at `$HOME/git/{repo_name}`. Write a short evidence note — your return value has to cite it.
 
 **Pass conditions (any ONE is sufficient — but prefer the earliest):**
 

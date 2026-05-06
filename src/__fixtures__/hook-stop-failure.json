@@ -1,7 +1,7 @@
 {
   "session_id": "43871e1c-0f8f-4e21-9fc3-59b18e4a5585",
-  "transcript_path": "/home/jean/.claude/projects/-home-jean-git-kookr/43871e1c-0f8f-4e21-9fc3-59b18e4a5585.jsonl",
-  "cwd": "/home/jean/git/kookr",
+  "transcript_path": "~/.claude/projects/-home-jean-git-kookr/43871e1c-0f8f-4e21-9fc3-59b18e4a5585.jsonl",
+  "cwd": "/workspace/kookr",
   "hook_event_name": "StopFailure",
   "error": "billing_error",
   "last_assistant_message": "Credit balance is too low"

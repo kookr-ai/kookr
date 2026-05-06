@@ -252,14 +252,14 @@ Body.
     const content = `---
 name: Cross-project task
 description: Runs in another repo
-cwd: /home/jean/git/codex
+cwd: /workspace/codex
 ---
 
 Do the thing in codex.
 `;
-    const pb = parsePlaybook(content, 'cross.md', '/home/jean/git/kookr');
-    expect(pb.cwd).toBe('/home/jean/git/codex');
-    expect(pb.sourceCwd).toBe('/home/jean/git/kookr');
+    const pb = parsePlaybook(content, 'cross.md', '/workspace/kookr');
+    expect(pb.cwd).toBe('/workspace/codex');
+    expect(pb.sourceCwd).toBe('/workspace/kookr');
   });
 
   test('cwd is undefined when not specified in frontmatter', () => {

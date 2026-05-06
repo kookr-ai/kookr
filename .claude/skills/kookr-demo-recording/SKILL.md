@@ -18,7 +18,7 @@ When you need to generate or regenerate the Kookr demo video, with or without vo
 The `.env` file in the repo root has `HF_TOKEN` and `KOOKR_TTS=true`. Copy it to the worktree if needed, then record with TTS:
 
 ```bash
-cp /home/jean/git/kookr/.env .env  # if in a worktree
+cp $HOME/git/kookr/.env .env  # if in a worktree
 pnpm demo:record                    # reads .env automatically
 ```
 

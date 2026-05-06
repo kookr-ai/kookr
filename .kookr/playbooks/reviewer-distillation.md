@@ -1,7 +1,7 @@
 ---
 name: Reviewer Distillation
 description: Measure and improve AI code review prediction accuracy for a repository by running blind reviews, judging against human feedback, and mutating the reviewer skill
-cwd: /home/jean/git/kookr
+cwd: $HOME/git/kookr
 parameters:
   - name: repo
     description: "GitHub owner/repo (e.g., grafana/grafana)"

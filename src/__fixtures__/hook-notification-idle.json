@@ -1,7 +1,7 @@
 {
   "session_id": "8ee8ff7c-c7ef-4abf-8b03-ff8777ff8916",
-  "transcript_path": "/home/jean/.claude/projects/-home-jean-git-kookr/8ee8ff7c-c7ef-4abf-8b03-ff8777ff8916.jsonl",
-  "cwd": "/home/jean/git/kookr",
+  "transcript_path": "~/.claude/projects/-home-jean-git-kookr/8ee8ff7c-c7ef-4abf-8b03-ff8777ff8916.jsonl",
+  "cwd": "/workspace/kookr",
   "hook_event_name": "Notification",
   "message": "Claude is waiting for your input",
   "notification_type": "idle_prompt"

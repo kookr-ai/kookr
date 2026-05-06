@@ -1,7 +1,7 @@
 ---
 name: Codex CLI Bug Fix
 description: Pick the highest-priority triaged bug, reproduce it, implement and test the fix, then mark the triage issue as ready for human review
-cwd: /home/jean/git/codex
+cwd: $HOME/git/codex
 checklist:
   - Selected highest-priority open triage issue without "ready" or "in-progress" label
   - Read upstream issue and triage issue thoroughly

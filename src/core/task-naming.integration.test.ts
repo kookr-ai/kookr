@@ -12,7 +12,7 @@ describe.skipIf(!hasApiKey)('task-naming integration (real API)', () => {
     const name = await generateTaskName(
       client,
       'Fix the authentication bug in the login flow where expired JWT tokens are not being properly invalidated, causing users to remain logged in after their session should have expired',
-      '/home/jean/git/kookr',
+      '/workspace/kookr',
     );
 
     expect(name).not.toBeNull();
@@ -32,7 +32,7 @@ describe.skipIf(!hasApiKey)('task-naming integration (real API)', () => {
     const name = await generateTaskName(
       client,
       'Add pagination to the /api/users endpoint',
-      '/home/jean/git/webapp',
+      '/workspace/webapp',
       'All existing tests pass and new pagination tests cover edge cases',
     );
 

@@ -24,8 +24,8 @@ describe('slugifyForCheckpointKey', () => {
 
 describe('repoKeyFor (internal)', () => {
   it('produces a slug + 8-char hash suffix', () => {
-    const key = __test__.repoKeyFor('/home/jean/git/kookr-feat/.git');
-    expect(key).toMatch(/^-home-jean-git-kookr-feat-\.git-[0-9a-f]{8}$/);
+    const key = __test__.repoKeyFor('/workspace/kookr-feat/.git');
+    expect(key).toMatch(/^-workspace-kookr-feat-\.git-[0-9a-f]{8}$/);
   });
 
   it('truncates very long paths but stays unique via the hash', () => {

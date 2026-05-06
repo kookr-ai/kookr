@@ -18,9 +18,9 @@ describe('Hook Event Parser', () => {
       type: 'session_start',
       sessionId: 'ecdffeda-e0fc-490d-9efe-3347d80fb85e',
       transcriptPath:
-        '/home/jean/.claude/projects/-home-jean-git-kookr/ecdffeda-e0fc-490d-9efe-3347d80fb85e.jsonl',
+        '~/.claude/projects/-home-jean-git-kookr/ecdffeda-e0fc-490d-9efe-3347d80fb85e.jsonl',
       model: 'claude-sonnet-4-20250514',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     });
   });
 
@@ -28,7 +28,7 @@ describe('Hook Event Parser', () => {
     const raw = JSON.stringify({
       session_id: 'codex-session-123',
       transcript_path: '/path/to/transcript.jsonl',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
       hook_event_name: 'SessionStart',
       source: 'startup',
       model: 'gpt-5.4',
@@ -45,7 +45,7 @@ describe('Hook Event Parser', () => {
       sessionId: 'codex-session-123',
       transcriptPath: '/path/to/transcript.jsonl',
       model: 'gpt-5.4',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
       codexHookCapabilities: {
         surfaceVersion: 2,
         supportedEvents: ['SessionStart', 'Notification', 'Stop'],
@@ -64,7 +64,7 @@ describe('Hook Event Parser', () => {
       toolName: 'Bash',
       toolInput: { command: 'ls -la', description: 'List files' },
       toolUseId: 'toolu_01ABC123',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     });
   });
 
@@ -81,7 +81,7 @@ describe('Hook Event Parser', () => {
           'total 8\ndrwxr-xr-x 2 user user 4096 Mar 24 10:00 .\ndrwxr-xr-x 3 user user 4096 Mar 24 10:00 ..',
       },
       toolUseId: 'toolu_01ABC123',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     });
   });
 
@@ -94,7 +94,7 @@ describe('Hook Event Parser', () => {
       sessionId: 'ecdffeda-e0fc-490d-9efe-3347d80fb85e',
       lastMessage:
         'There are **4 hook types** in this file: PreToolUse, PostToolUse, Stop, and SessionStart.',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     });
   });
 
@@ -122,7 +122,7 @@ describe('Hook Event Parser', () => {
           destination: 'session',
         },
       ],
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     });
   });
 
@@ -135,7 +135,7 @@ describe('Hook Event Parser', () => {
       sessionId: '8ee8ff7c-c7ef-4abf-8b03-ff8777ff8916',
       notificationType: 'idle_prompt',
       message: 'Claude is waiting for your input',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     });
   });
 
@@ -147,7 +147,7 @@ describe('Hook Event Parser', () => {
       type: 'user_prompt',
       sessionId: '8ee8ff7c-c7ef-4abf-8b03-ff8777ff8916',
       prompt: 'say hello',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     });
   });
 
@@ -160,7 +160,7 @@ describe('Hook Event Parser', () => {
       sessionId: '43871e1c-0f8f-4e21-9fc3-59b18e4a5585',
       error: 'billing_error',
       lastMessage: 'Credit balance is too low',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     });
   });
 
@@ -176,7 +176,7 @@ describe('Hook Event Parser', () => {
       toolUseId: 'toolu_01KZT2BTx2q68JSaK5hCJDkv',
       error: 'File does not exist.',
       isInterrupt: false,
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     });
   });
 
@@ -189,7 +189,7 @@ describe('Hook Event Parser', () => {
       sessionId: 'ef2bb325-8a22-4eec-a5df-708b6a00a609',
       agentId: 'a9af72eb6cf1b8c97',
       agentType: 'Explore',
-      cwd: '/home/jean/git/kookr',
+      cwd: '/workspace/kookr',
     });
   });
 
@@ -203,8 +203,8 @@ describe('Hook Event Parser', () => {
       agentId: 'a9af72eb6cf1b8c97',
       agentType: 'Explore',
       lastMessage: 'Found 1 .json file in /tmp/kookr-poc-003/',
-      agentTranscriptPath: '/home/jean/.claude/projects/-home-jean-git-kookr/ef2bb325/subagents/agent-a9af72eb6cf1b8c97.jsonl',
-      cwd: '/home/jean/git/kookr',
+      agentTranscriptPath: '~/.claude/projects/-home-jean-git-kookr/ef2bb325/subagents/agent-a9af72eb6cf1b8c97.jsonl',
+      cwd: '/workspace/kookr',
     });
   });
 

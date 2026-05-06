@@ -92,7 +92,7 @@ REPO="{{repoFullName}}"
 SLUG=$(echo "$REPO" | tr '/' '-' | tr '.' '-')
 REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
 FORK="jeanibarz/${REPO_NAME}"
-LOCAL="/home/jean/git/${REPO_NAME}"
+LOCAL="$HOME/git/${REPO_NAME}"
 echo "REPO=$REPO SLUG=$SLUG FORK=$FORK LOCAL=$LOCAL"
 ```
 
@@ -104,7 +104,7 @@ If `{{phase}}` is `auto`, determine the next phase:
 SLUG=$(echo "{{repoFullName}}" | tr '/' '-' | tr '.' '-')
 REPO_NAME=$(echo "{{repoFullName}}" | cut -d/ -f2)
 FORK="jeanibarz/${REPO_NAME}"
-LOCAL="/home/jean/git/${REPO_NAME}"
+LOCAL="$HOME/git/${REPO_NAME}"
 
 # Sanity check: warn if prior work exists at a non-standard path (e.g. legacy slash-separated).
 # This protects against blindly starting a phase that's already done under a different layout.
@@ -147,7 +147,7 @@ fi
 REPO="{{repoFullName}}"
 REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
 FORK="jeanibarz/${REPO_NAME}"
-LOCAL="/home/jean/git/${REPO_NAME}"
+LOCAL="$HOME/git/${REPO_NAME}"
 
 # Create fork if needed
 if ! gh api "repos/${FORK}" --jq '.full_name' 2>/dev/null; then

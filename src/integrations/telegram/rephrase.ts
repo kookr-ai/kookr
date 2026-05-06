@@ -32,14 +32,14 @@ Allowed projects (exact paths):
 {{allowedProjects}}
 
 Examples:
-  user: "fix sweep button"  with one project /home/jean/git/kookr
-  → { "prompt": "Investigate why the sweep button is misplaced and fix it. Create a worktree, follow the standard PR workflow.", "cwd": "/home/jean/git/kookr", "suggestedBranch": "fix/sweep-button" }
+  user: "fix sweep button"  with one project /workspace/kookr
+  → { "prompt": "Investigate why the sweep button is misplaced and fix it. Create a worktree, follow the standard PR workflow.", "cwd": "/workspace/kookr", "suggestedBranch": "fix/sweep-button" }
 
-  user: "use codex to fix sweep button"  with one project /home/jean/git/kookr
-  → { "prompt": "Investigate why the sweep button is misplaced and fix it. Create a worktree, follow the standard PR workflow.", "cwd": "/home/jean/git/kookr", "agentType": "codex-cli", "suggestedBranch": "fix/sweep-button" }
+  user: "use codex to fix sweep button"  with one project /workspace/kookr
+  → { "prompt": "Investigate why the sweep button is misplaced and fix it. Create a worktree, follow the standard PR workflow.", "cwd": "/workspace/kookr", "agentType": "codex-cli", "suggestedBranch": "fix/sweep-button" }
 
-  user: "rebase 547"  with one project /home/jean/git/kookr
-  → { "prompt": "Rebase PR #547 on main, resolve any conflicts, force-push.", "cwd": "/home/jean/git/kookr" }
+  user: "rebase 547"  with one project /workspace/kookr
+  → { "prompt": "Rebase PR #547 on main, resolve any conflicts, force-push.", "cwd": "/workspace/kookr" }
 
   user: "fix the thing"  with multiple projects
   → { "ambiguous": "Which project? Available: kookr, codex" }`;

@@ -7,6 +7,7 @@ import type { AgentType } from '../../core/agent-types.js';
 import type { AutonomyLevel } from '../../core/tasks.js';
 import type { LaunchOpts } from '../launch-service.js';
 import { normalizePromptFileReferences } from '../prompt-file-paths.js';
+import { expandConfiguredCwd } from '../cwd-paths.js';
 
 export interface PreparePlaybookLaunchInput {
   cwd: string;
@@ -38,7 +39,7 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
     ? playbook.checklist.map((item) => `- ${item}`).join('\n')
     : undefined;
 
-  const effectiveCwd = playbook.cwd ?? input.cwd;
+  const effectiveCwd = expandConfiguredCwd(playbook.cwd ?? input.cwd);
   if (effectiveCwd && !existsSync(effectiveCwd)) {
     throw new Error(
       `Playbook "${playbook.name}" requires working directory ${effectiveCwd} which does not exist. `

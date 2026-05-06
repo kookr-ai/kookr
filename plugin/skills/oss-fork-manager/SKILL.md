@@ -32,7 +32,7 @@ Handle the fork-based contribution workflow that external open-source repos requ
 - **repoFullName**: `owner/repo` (upstream)
 - **repoSlug**: URL-safe slug for state directory
 - **forkName**: `jeanibarz/repo` (your fork)
-- **localPath**: `/home/jean/git/repo` (local clone)
+- **localPath**: `$HOME/git/repo` (local clone)
 - **defaultBranch**: `main` (or `master`, `develop`)
 
 ## Fork State Schema
@@ -44,7 +44,7 @@ File: `~/.claude/{repoSlug}-recon/fork-state.json`
   "version": 1,
   "upstream": "owner/repo",
   "fork": "jeanibarz/repo",
-  "local_path": "/home/jean/git/repo",
+  "local_path": "$HOME/git/repo",
   "default_branch": "main",
   "last_upstream_sync": "2026-03-28T00:00:00Z",
   "active_branches": []

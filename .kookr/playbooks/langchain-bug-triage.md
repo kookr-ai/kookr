@@ -1,7 +1,7 @@
 ---
 name: LangChain Bug Triage
 description: Browse upstream langchain-ai/langchain bug reports, score by confidence and reproducibility, maintain ranked triage issues in jeanibarz/langchain fork
-cwd: /home/jean/git/langchain
+cwd: $HOME/git/langchain
 checklist:
   - Fetched current triage issues from jeanibarz/langchain
   - Fetched recent upstream bug reports from langchain-ai/langchain (open + recently closed)

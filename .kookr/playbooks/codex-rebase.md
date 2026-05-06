@@ -1,7 +1,7 @@
 ---
 name: Codex CLI Daily Upstream Rebase
 description: Sync the fork's feat/claude-compat branch with the latest openai/codex main, rebuild the binary, and report any conflicts that need human attention
-cwd: /home/jean/git/codex
+cwd: $HOME/git/codex
 checklist:
   - Working tree was clean before starting (or stopped early with a clear message)
   - Fetched upstream/main and checked for new commits
@@ -13,7 +13,7 @@ checklist:
   - cargo test -p codex-core-skills -p codex-hooks passes
   - Any post-rebase fix-ups amended onto the rebase tip (no separate "chore: rebase fixups" commits)
   - Release binary built (path resolved via `cargo metadata … | jq -r .target_directory`)
-  - Binary installed at /home/jean/bin/codex
+  - Binary installed at $HOME/bin/codex
   - codex --version shows a +kookr.<sha> stamp matching the rebased tip
   - Pushed feat/claude-compat to origin with --force-with-lease
   - Final report includes a conflict-resolution log (tier | file | fork-commit | decision) — even if empty
@@ -25,11 +25,11 @@ Keep the Codex fork's `feat/claude-compat` branch rebased on the latest `openai/
 
 ## Context
 
-- **Fork**: `jeanibarz/codex` — sibling at `/home/jean/git/codex` with `origin = jeanibarz/codex` and `upstream = openai/codex`.
+- **Fork**: `jeanibarz/codex` — sibling checkout at `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}` with `origin = jeanibarz/codex` and `upstream = openai/codex`.
 - **Branch**: `feat/claude-compat` is the persistent fork branch; never push to `main`.
 - **Rust toolchain**: pinned at 1.93.0 in `codex-rs/rust-toolchain.toml`. Available at `~/.rustup/toolchains/1.93.0-x86_64-unknown-linux-gnu/bin/`.
 - **WSL quirk**: `cargo` via `/snap/bin/cargo` fails because `/run/user/1000` is not writable. Always export `XDG_RUNTIME_DIR=/tmp` and put the rustup toolchain bin first on `PATH`.
-- **Kookr integration**: the binary at `/home/jean/bin/codex` is what Kookr spawns when the user runs Codex CLI tasks. Build version format is `0.125.0-alpha.3+kookr.<short-sha>` (or `.dirty` if the worktree is dirty at build time).
+- **Kookr integration**: the binary at `${KOOKR_CODEX_BIN:-$HOME/bin/codex}` is what Kookr spawns when the user runs Codex CLI tasks. Build version format is `0.125.0-alpha.3+kookr.<short-sha>` (or `.dirty` if the worktree is dirty at build time).
 - **Skill reference**: see `~/git/kookr-prod/.claude/skills/codex-claude-compatibility/SKILL.md` for the broader fork operating model.
 
 ## Setup (every phase below assumes these env vars)
@@ -40,7 +40,9 @@ export PATH=$HOME/.rustup/toolchains/1.93.0-x86_64-unknown-linux-gnu/bin:$PATH
 export CARGO_PROFILE_RELEASE_LTO=thin
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 export CARGO_PROFILE_RELEASE_INCREMENTAL=true
-cd /home/jean/git/codex
+export KOOKR_CODEX_CHECKOUT="${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}"
+export KOOKR_CODEX_BIN="${KOOKR_CODEX_BIN:-$HOME/bin/codex}"
+cd "$KOOKR_CODEX_CHECKOUT"
 ```
 
 ## Phase 1: Pre-flight
@@ -139,7 +141,7 @@ echo "new upstream commits: $NEW_COMMITS"
 
 When Tier 3 fires and the user has approved escalation (don't do this unprompted — it costs a subagent run), spawn a `general-purpose` subagent to draft a hand-merged candidate. The agent produces full files at `/tmp/codex-merge-<commit-short-sha>/<filename>` plus a `RATIONALE.md`. On the next rebase pass, the user resolves the same Tier 3 conflict by `cp`ing the candidate files in instead of resolving from scratch.
 
-**Subagent briefing template**: include all THREE sources of truth (pre-rebase fork file, upstream/main file, the fork commit's diff via `git show`) and the EXACT semantic intent of the merge ("keep fork's refactor; honor upstream's new guard; preserve upstream's new helper; thread X through Y"). Tell the agent NOT to run cargo (cargo state is per-worktree and the agent shouldn't pollute), NOT to modify the working tree of `/home/jean/git/codex`, and to deliver candidate files + rationale to `/tmp/codex-merge-<commit>/`. See the conversation history of the 2026-04-30 rebase (PR #31 / commit `42a54090a8`) for a worked example briefing.
+**Subagent briefing template**: include all THREE sources of truth (pre-rebase fork file, upstream/main file, the fork commit's diff via `git show`) and the EXACT semantic intent of the merge ("keep fork's refactor; honor upstream's new guard; preserve upstream's new helper; thread X through Y"). Tell the agent NOT to run cargo (cargo state is per-worktree and the agent shouldn't pollute), NOT to modify the working tree of `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}`, and to deliver candidate files + rationale to `/tmp/codex-merge-<commit>/`. See the conversation history of the 2026-04-30 rebase (PR #31 / commit `42a54090a8`) for a worked example briefing.
 
 **Re-applying the candidate**: when the rebase reaches the same conflict next pass, `cp /tmp/codex-merge-<commit>/<file> codex-rs/<file>` for each file, `git add` them, then `git rebase --continue`. The candidate often produces compile errors that surface in Phase 4 — those are typically mechanical fallout (signature drift) and patch-and-amend per the broadened classification in Phase 4.
 
@@ -167,7 +169,7 @@ These surfaces conflict on most rebase days because the fork extends arrays/impo
 2. `cargo check --workspace`:
 
    ```bash
-   cd /home/jean/git/codex/codex-rs
+   cd "${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}/codex-rs"
    cargo check --workspace --offline 2>&1 | tail -30
    ```
 
@@ -226,13 +228,13 @@ These surfaces conflict on most rebase days because the fork extends arrays/impo
        echo "  Did the build actually finish? Re-check the build log."
        exit 1
    fi
-   install -m 755 "$BIN" /home/jean/bin/codex
+   install -m 755 "$BIN" "$KOOKR_CODEX_BIN"
    ```
 
 3. Sanity-check:
 
    ```bash
-   /home/jean/bin/codex --version
+   "$KOOKR_CODEX_BIN" --version
    ```
 
    The output must be `codex-cli 0.125.0-alpha.3+kookr.<short-sha>`. Verify the `<short-sha>` matches:
@@ -273,7 +275,7 @@ State clearly in the final summary:
 - **Post-rebase fix-ups amended onto the tip**, if any (e.g. `Config.settings_file: None` added to upstream-new sample crate; HOOK_EVENT_NAMES synced; Cargo.lock version normalization).
 - Test results (counts: passed / failed / ignored for each crate).
 - The new `+kookr.<sha>` version stamp.
-- That the binary is installed at `/home/jean/bin/codex` but the production Kookr instance has **not** been auto-restarted — the user must run `pnpm prod:update` (or `pnpm prod:restart`) themselves to pick up the new binary in their running dashboard.
+- That the binary is installed at `${KOOKR_CODEX_BIN:-$HOME/bin/codex}` but the production Kookr instance has **not** been auto-restarted — the user must run `pnpm prod:update` (or `pnpm prod:restart`) themselves to pick up the new binary in their running dashboard.
 
 ## Idempotency rules
 
@@ -299,11 +301,11 @@ This is a ONE-TIME rewrite of `feat/claude-compat` — high-friction (force-push
 - **Do not** auto-resolve Tier 3 (semantic) conflicts. Tier 1/2 are authorized; Tier 3 must abort and report. When in doubt about classification, treat as Tier 3.
 - **Do not** create a separate "chore: rebase fixups" or "fix: post-rebase" commit. Rebase-induced compile fixes and array reconciliations are amended onto the rebase tip via `git commit --amend --no-edit`. The fork commit count must stay stable across rebases.
 - **Do not** roll the branch back on a `cargo check` failure without first classifying the error. Mechanical fork-extension fallout (missing fields in upstream-new crates' literals) is patchable; only real regressions warrant a roll-back.
-- **Do not** modify any file outside `/home/jean/git/codex` — no Kookr code, no scripts, no docs.
+- **Do not** modify any file outside `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}` — no Kookr code, no scripts, no docs.
 - **Do not** create a Kookr child task for the rebuild — this playbook is the rebuild.
 - **Do not** push to `main` or to upstream. The only valid push target is `origin/feat/claude-compat`.
 - **Do not** delete the backup tags created on previous days, even if disk pressure suggests it. The tags are the recovery path.
-- **Do not** restart the Kookr production instance (no `pnpm prod:update`, no `pnpm prod:restart`). The deployed binary at `/home/jean/bin/codex` is updated, but Kookr itself uses whatever it cached at start-up; deciding when to restart is the user's call.
+- **Do not** restart the Kookr production instance (no `pnpm prod:update`, no `pnpm prod:restart`). The deployed binary at `${KOOKR_CODEX_BIN:-$HOME/bin/codex}` is updated, but Kookr itself uses whatever it cached at start-up; deciding when to restart is the user's call.
 - **Do not** retry a `--force-with-lease` rejection by switching to plain `--force`. A rejection means someone else pushed; investigate before overwriting.
 - **Do not** assume the binary is at `codex-rs/target/release/codex`. Always resolve via `cargo metadata --format-version=1 --no-deps --offline | jq -r .target_directory`. The repo's `codex-rs/.cargo/config.toml` sets `build.target-dir = "/mnt/d/cargo-cache/target"`, which `${CARGO_TARGET_DIR:-…}` does NOT see — `CARGO_TARGET_DIR` env-var fallback is wrong here.
 - **Do not** amend unknown working-tree changes onto the rebase tip. Before `git commit --amend`, `git status --short` must show only the files you intentionally edited in Phase 4. Unexpected files mean an upstream change you didn't account for — stop and report.

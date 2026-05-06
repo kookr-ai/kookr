@@ -54,19 +54,19 @@ describe('healthyStatusLabel', () => {
 
 describe('projectLabel', () => {
   test('extracts last path segment from absolute path', () => {
-    expect(projectLabel('/home/jean/git/kookr')).toBe('kookr');
+    expect(projectLabel('/workspace/kookr')).toBe('kookr');
   });
 
   test('extracts last segment from deeply nested path', () => {
-    expect(projectLabel('/home/jean/git/projects/frontend/my-app')).toBe('my-app');
+    expect(projectLabel('/workspace/projects/frontend/my-app')).toBe('my-app');
   });
 
   test('handles trailing slash', () => {
-    expect(projectLabel('/home/jean/git/kookr/')).toBe('kookr');
+    expect(projectLabel('/workspace/kookr/')).toBe('kookr');
   });
 
   test('handles multiple trailing slashes', () => {
-    expect(projectLabel('/home/jean/git/kookr///')).toBe('kookr');
+    expect(projectLabel('/workspace/kookr///')).toBe('kookr');
   });
 
   test('handles root path', () => {
@@ -86,20 +86,20 @@ describe('projectLabel', () => {
   });
 
   test('handles path with spaces', () => {
-    expect(projectLabel('/home/jean/my projects/cool app')).toBe('cool app');
+    expect(projectLabel('/workspace/my projects/cool app')).toBe('cool app');
   });
 
   test('handles path with dots', () => {
-    expect(projectLabel('/home/jean/.config/nvim')).toBe('nvim');
+    expect(projectLabel('/workspace/.config/nvim')).toBe('nvim');
   });
 });
 
 describe('projectColor', () => {
   test('returns a number between 0 and 7', () => {
     const paths = [
-      '/home/jean/git/kookr',
-      '/home/jean/git/openclaw',
-      '/home/jean/git/aegiscore',
+      '/workspace/kookr',
+      '/workspace/openclaw',
+      '/workspace/aegiscore',
       '/tmp/test',
       '/usr/local/bin',
     ];
@@ -111,7 +111,7 @@ describe('projectColor', () => {
   });
 
   test('returns the same color for the same path (deterministic)', () => {
-    const path = '/home/jean/git/kookr';
+    const path = '/workspace/kookr';
     const first = projectColor(path);
     const second = projectColor(path);
     expect(first).toBe(second);
@@ -120,9 +120,9 @@ describe('projectColor', () => {
   test('returns different colors for different paths (likely)', () => {
     // Not guaranteed but with enough variety we expect at least some different colors
     const colors = new Set([
-      projectColor('/home/jean/git/kookr'),
-      projectColor('/home/jean/git/openclaw'),
-      projectColor('/home/jean/git/aegiscore'),
+      projectColor('/workspace/kookr'),
+      projectColor('/workspace/openclaw'),
+      projectColor('/workspace/aegiscore'),
       projectColor('/tmp/project-a'),
       projectColor('/tmp/project-b'),
     ]);
