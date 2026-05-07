@@ -466,6 +466,11 @@ function FindingCard({ agent, selected, send }: {
               {projectLabel(agent.cwd)}
             </span>
           )}
+          {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
+            <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={agent.worktreeRegistryStale ? 'Worktree registry refresh failed; showing stale git state' : `Worktree is ${agent.worktreeHealth}`}>
+              {agent.worktreeRegistryStale ? 'git stale' : agent.worktreeHealth}
+            </span>
+          )}
           {agent.gitBranch && (
             <>
               {agent.cwd && <span className="finding-context-sep">{'·'}</span>}
@@ -559,6 +564,11 @@ function HealthyRow({ agent, selected, send }: {
           {agent.cwd && (
             <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
               {projectLabel(agent.cwd)}
+            </span>
+          )}
+          {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
+            <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={agent.worktreeRegistryStale ? 'Worktree registry refresh failed; showing stale git state' : `Worktree is ${agent.worktreeHealth}`}>
+              {agent.worktreeRegistryStale ? 'git stale' : agent.worktreeHealth}
             </span>
           )}
           {agent.gitBranch && (

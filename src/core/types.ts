@@ -194,6 +194,8 @@ export interface GitInfo {
   isDetached: boolean;
 }
 
+export type WorktreeHealth = 'ok' | 'missing' | 'stale';
+
 // Agent status — used as metadata on persisted sessions (SessionInfo.lastStatus),
 // not as a live state machine. See architecture.md for details.
 export type AgentStatus =

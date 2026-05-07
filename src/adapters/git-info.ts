@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { GitInfo } from '../core/types.js';
+import type { WorktreeRegistry } from './git-worktree-registry.js';
 
 export type { GitInfo };
 
@@ -8,7 +9,17 @@ export type { GitInfo };
  * Read git info from a directory via filesystem (no git CLI needed).
  * Returns null if the directory is not a git repository.
  */
-export async function getGitInfo(cwd: string): Promise<GitInfo | null> {
+export async function getGitInfo(cwd: string, registry?: Pick<WorktreeRegistry, 'byPath'>): Promise<GitInfo | null> {
+  const registryEntry = registry?.byPath(cwd);
+  if (registryEntry) {
+    return {
+      branch: registryEntry.branch,
+      commit: registryEntry.head.slice(0, 7),
+      isWorktree: !registryEntry.isMain,
+      isDetached: registryEntry.isDetached,
+    };
+  }
+
   const gitPath = join(cwd, '.git');
 
   let gitStat;

@@ -485,6 +485,11 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
               {projectLabel(agent.cwd)}
             </span>
           )}
+          {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
+            <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={agent.worktreeRegistryStale ? 'Worktree registry refresh failed; showing stale git state' : `Worktree is ${agent.worktreeHealth}`}>
+              {agent.worktreeRegistryStale ? 'git stale' : agent.worktreeHealth}
+            </span>
+          )}
           {agent.gitBranch && (
             <span className="detail-branch" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : 'Git branch'}>
               {'\u2387'} {formatBranch(agent.gitBranch)}

@@ -14,6 +14,7 @@ import type { ShadowDetectorRegistry } from '../core/shadow-detector.js';
 import type { QuotaAdapter } from '../adapters/quota-adapter.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import { reconcile } from './reconciliation.js';
+import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
 import { saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
 import { cleanupSessionResources, promotePendingTasks, type LifecycleDeps, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
@@ -55,6 +56,12 @@ export interface TimerDeps {
    * levels. Reactive only — may overshoot by one turn.
    */
   budgetChecker?: BudgetChecker;
+  /** Authoritative git worktree registry, refreshed when dashboard clients are connected. */
+  worktreeRegistry?: WorktreeRegistry;
+  /** Repo path used for single-repo worktree registry refreshes. */
+  worktreeRegistryRepoPath?: string;
+  /** Live dashboard client count; registry polling is skipped when zero. */
+  getDashboardClientCount?: () => number;
 }
 
 export interface TimerHandles {
@@ -242,7 +249,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
 
   const livenessInterval = setInterval(async () => {
     try {
-      const result = await reconcile(taskStore, terminalBackend);
+      if (
+        deps.worktreeRegistry
+        && deps.worktreeRegistryRepoPath
+        && (deps.getDashboardClientCount?.() ?? 0) > 0
+      ) {
+        await deps.worktreeRegistry.refresh(deps.worktreeRegistryRepoPath);
+      }
+      const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
 
       // Clean up resources for dead sessions via centralized lifecycle
       for (const tmuxName of result.markedCompleted) {
@@ -253,6 +267,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         result.markedCompleted.length > 0
         || result.tasksCompleted.length > 0
         || result.tasksTerminated.length > 0
+        || result.worktreesMissing.length > 0
+        || result.worktreesStale.length > 0
+        || result.worktreesChanged.length > 0
       ) {
         // Promote pending tasks when slots open from auto-transitioned sessions
         // (completed via backfill, or terminated via the new dead-session path).
