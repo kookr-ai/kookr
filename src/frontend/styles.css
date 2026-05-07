@@ -2839,6 +2839,20 @@ textarea::-webkit-resizer { background: transparent; }
   font-size: 11px;
   color: var(--text-muted);
 }
+.confirm-dialog-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.confirm-dialog-checkbox input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
 
 /* --- Focus Zone Indicator --- */
 .statusbar-left {
