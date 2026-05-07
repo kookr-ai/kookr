@@ -20,10 +20,12 @@ import { AdapterRegistry } from '../adapters/agent-adapter.js';
 // Mock MAX_ACTIVE_TASKS to 2 for concurrency tests
 vi.mock('./config.js', () => ({ MAX_ACTIVE_TASKS: 2 }));
 
-// Mock getProjectId so we can control its behavior
+// Mock getProjectId and deriveCanonicalPath so we can control their behavior
 const mockGetProjectId = vi.fn();
+const mockDeriveCanonicalPath = vi.fn();
 vi.mock('../core/project-identity.js', () => ({
   getProjectId: (...args: unknown[]) => mockGetProjectId(...args),
+  deriveCanonicalPath: (...args: unknown[]) => mockDeriveCanonicalPath(...args),
 }));
 
 // Mock cleanupTaskWorktrees (fire-and-forget in completeTask/cancelTask)
@@ -66,6 +68,10 @@ function makeDeps(overrides: Partial<AgentLifecycleDeps> = {}): AgentLifecycleDe
 describe('registerNewAgent', () => {
   beforeEach(() => {
     mockGetProjectId.mockReset();
+    mockDeriveCanonicalPath.mockReset();
+    // Default: pass cwd through unchanged so the auto-stamp branch can fire
+    // when a projectConfigStore is supplied.
+    mockDeriveCanonicalPath.mockImplementation((cwd: string) => cwd);
   });
 
   test('registers all sessions with monitor', async () => {
@@ -228,6 +234,65 @@ describe('registerNewAgent', () => {
         agentId: 'task-1',
       }),
     );
+  });
+
+  test('stamps ProjectConfig.localPath on first task start when configStore is provided', async () => {
+    const setLocalPathIfUnset = vi.fn().mockResolvedValue(true);
+    const deps = makeDeps({
+      taskStore: { setProjectId: vi.fn() } as any,
+      projectConfigStore: { setLocalPathIfUnset } as any,
+    });
+    mockGetProjectId.mockResolvedValue('github.com/org/repo');
+    mockDeriveCanonicalPath.mockReturnValue('/canonical/repo');
+
+    const task = makeTask({ projectId: undefined, cwd: '/canonical/repo-prod' });
+    await registerNewAgent(task, deps);
+
+    await vi.waitFor(() => {
+      expect(setLocalPathIfUnset).toHaveBeenCalledWith(
+        'github.com/org/repo',
+        '/canonical/repo',
+      );
+    });
+    // Pin that the indirection through deriveCanonicalPath actually happened
+    // — a refactor that bypassed the helper and stamped task.cwd directly
+    // would still satisfy the previous assertion (since mocks fall through).
+    expect(mockDeriveCanonicalPath).toHaveBeenCalledWith('/canonical/repo-prod');
+  });
+
+  test('skips localPath stamp when deriveCanonicalPath returns null', async () => {
+    const setLocalPathIfUnset = vi.fn().mockResolvedValue(false);
+    const deps = makeDeps({
+      taskStore: { setProjectId: vi.fn() } as any,
+      projectConfigStore: { setLocalPathIfUnset } as any,
+    });
+    mockGetProjectId.mockResolvedValue('github.com/org/repo');
+    mockDeriveCanonicalPath.mockReturnValue(null);
+
+    const task = makeTask({ projectId: undefined, cwd: '/missing' });
+    await registerNewAgent(task, deps);
+
+    // Wait for the projectId resolution to complete so the canonical-path
+    // branch has had a chance to run too.
+    await vi.waitFor(() => {
+      expect(mockDeriveCanonicalPath).toHaveBeenCalledWith('/missing');
+    });
+    expect(setLocalPathIfUnset).not.toHaveBeenCalled();
+  });
+
+  test('does not touch localPath when no projectConfigStore is provided', async () => {
+    const deps = makeDeps({
+      taskStore: { setProjectId: vi.fn() } as any,
+    });
+    mockGetProjectId.mockResolvedValue('github.com/org/repo');
+
+    const task = makeTask({ projectId: undefined });
+    await registerNewAgent(task, deps);
+
+    await vi.waitFor(() => {
+      expect(deps.taskStore!.setProjectId).toHaveBeenCalled();
+    });
+    expect(mockDeriveCanonicalPath).not.toHaveBeenCalled();
   });
 });
 

@@ -29,6 +29,13 @@ export interface ProjectSummary {
   prLessonsProcessed?: number;
   prLessonsDistillations?: number;
   prLessonsRawLines?: number;
+  /**
+   * Absolute local checkout path, mirrored from ProjectConfig.localPath. Used
+   * by the launch dialog to pre-fill the cwd field when "Run playbook…" is
+   * invoked from the project drawer. Stamped server-side on first task
+   * start; absent until then.
+   */
+  localPath?: string;
 }
 
 export interface ProjectSummaryDeps {
@@ -158,6 +165,7 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       prLessonsProcessed: prLessons?.totalProcessed,
       prLessonsDistillations: prLessons?.distillationCount,
       prLessonsRawLines: prLessons?.rawLearningsLines,
+      localPath: config?.localPath,
     });
   }
 

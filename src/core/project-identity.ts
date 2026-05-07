@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename } from 'node:path';
+import { existsSync } from 'node:fs';
+import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from './worktree-protection.js';
 
 const execFileAsync = promisify(execFile);
 const NESTED_GIT_ENV_VARS = [
@@ -161,6 +163,34 @@ export async function getProjectId(cwd: string): Promise<string> {
     // Not a git repo or no remote — fall through to basename
   }
   return `local/${basename(cwd)}`;
+}
+
+/**
+ * Pick the canonical local-checkout path to record for a project, given a
+ * task's cwd. Used by agent-lifecycle to stamp ProjectConfig.localPath on
+ * first task start.
+ *
+ * - cwd missing on disk → null (skip stamping; the cwd is unusable).
+ * - cwd ends with the kookr-prod self-hosting suffix:
+ *   - parent exists → parent (prefer the canonical clone over the worktree).
+ *   - parent missing → cwd itself (something is better than nothing).
+ * - otherwise → cwd.
+ *
+ * Deliberately narrow: the only suffix-aware rule is the literal "kookr-prod"
+ * carve-out for Kookr's own self-hosting layout. Generic worktree-suffix
+ * stripping was dropped after review showed false-positives on adversarial
+ * names (e.g. `bandwidth-surgery-m1-harness` next to `bandwidth-surgery`).
+ * Users with multi-worktree layouts use the launch dialog's explicit
+ * "Set as default for this project" affordance instead.
+ */
+export function deriveCanonicalPath(cwd: string): string | null {
+  if (!existsSync(cwd)) return null;
+  if (endsWithProtectedSuffix(cwd)) {
+    const parent = deriveParentRepoFromProtected(cwd);
+    if (parent !== cwd && existsSync(parent)) return parent;
+    return cwd;
+  }
+  return cwd;
 }
 
 /**

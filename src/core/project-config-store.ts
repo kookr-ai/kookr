@@ -18,6 +18,15 @@ export interface ProjectConfig {
   dailyPrLimit?: number; // Default: 2
   weeklyPrLimit?: number;
   notes?: string;        // Developer notes about contribution strategy
+  /**
+   * Absolute local checkout path for this project. Stamped on first task
+   * start so the launch dialog can pre-fill the cwd when "Run playbook…"
+   * is invoked from the project drawer.
+   *
+   * Machine-local — not meaningful when ~/.kookr/project-configs.json is
+   * synced across machines.
+   */
+  localPath?: string;
 }
 
 /**
@@ -120,6 +129,28 @@ export class ProjectConfigStore {
     const updated = { ...existing, ...patch, project };
     this.configs.set(project, updated);
     return updated;
+  }
+
+  /**
+   * Stamp the project's localPath if no value is currently set. First-write-
+   * wins under serial calls: the second call is a no-op once the field is
+   * populated. Concurrent first-calls within the same process race on the
+   * read-then-write — last writer wins — but the race is benign because
+   * both writers stamp from a real (just-launched) task.cwd.
+   *
+   * Awaits save() before returning so a process crash immediately after the
+   * first stamp does not silently drop the value on restart.
+   *
+   * Returns true when a write happened, false when localPath was already
+   * populated or when candidatePath is falsy.
+   */
+  async setLocalPathIfUnset(project: string, candidatePath: string): Promise<boolean> {
+    if (!candidatePath) return false;
+    const existing = this.configs.get(project);
+    if (existing?.localPath) return false;
+    this.setConfig(project, { localPath: candidatePath });
+    await this.save();
+    return true;
   }
 
   /** Remove a project config entirely. Returns true if a row was removed. */

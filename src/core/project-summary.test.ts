@@ -93,6 +93,21 @@ describe('computeProjectSummaries', () => {
     expect(summaries[0].dailyLimit).toBe(3);
   });
 
+  test('mirrors ProjectConfig.localPath onto ProjectSummary.localPath', () => {
+    configStore.setConfig('github.com/org/repo', {
+      tracked: true,
+      localPath: '/work/repo',
+    });
+    const summaries = computeProjectSummaries({ agents: [], ledgerAnalytics, configStore });
+    expect(summaries[0].localPath).toBe('/work/repo');
+  });
+
+  test('omits localPath on ProjectSummary when ProjectConfig has none', () => {
+    configStore.setConfig('github.com/org/repo', { tracked: true });
+    const summaries = computeProjectSummaries({ agents: [], ledgerAnalytics, configStore });
+    expect(summaries[0].localPath).toBeUndefined();
+  });
+
   test('includes daily limit from config', () => {
     configStore.setConfig('github.com/org/repo', { dailyPrLimit: 2 });
     const agents: AgentState[] = [
