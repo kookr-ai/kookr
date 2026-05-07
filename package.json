@@ -39,6 +39,7 @@
     "prod:restart": "ROOT_DIR=$(pwd) && cd ../kookr-prod && bash \"$ROOT_DIR/scripts/prod-restart.sh\"",
     "prod:logs": "bash scripts/prod-logs.sh",
     "telemetry:report": "node --import tsx scripts/telemetry-report.ts",
+    "kb:usage": "node --import tsx scripts/kb-usage-report.ts",
     "shadow:report": "node --import tsx scripts/shadow-report.ts",
     "test:onboarding": "bash scripts/onboarding-smoke-test.sh",
     "test:hooks": "for t in .claude/hooks-tests/*.test.sh; do echo \"== $t ==\"; bash \"$t\" || exit 1; done",
