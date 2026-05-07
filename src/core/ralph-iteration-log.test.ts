@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   appendIterationRecord,
   iterationLogPath,
+  parseIterationRecord,
   type RalphIterationRecord,
 } from './ralph-iteration-log.js';
 
@@ -92,5 +93,40 @@ describe('appendIterationRecord', () => {
       .split('\n')
       .map((line) => (JSON.parse(line) as RalphIterationRecord).iterationNumber);
     expect(numbers).toEqual([1, 2, 3, 4, 5]);
+  });
+});
+
+describe('parseIterationRecord', () => {
+  function row(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      iterationNumber: 1,
+      startedAt: 100,
+      endedAt: 200,
+      exitReason: 'continued',
+      cumulativeCostUsd: null,
+      gitBaselineRef: null,
+      diffStats: null,
+      ...overrides,
+    });
+  }
+
+  it('parses the new replaced_by_user exit reason', () => {
+    const parsed = parseIterationRecord(row({ exitReason: 'replaced_by_user' }));
+    expect(parsed?.exitReason).toBe('replaced_by_user');
+  });
+
+  it('maps unknown exit reasons to "unknown" instead of dropping the row', () => {
+    const parsed = parseIterationRecord(row({ exitReason: 'something_a_future_kookr_invented' }));
+    expect(parsed).not.toBeNull();
+    expect(parsed?.exitReason).toBe('unknown');
+    // Other fields preserved verbatim.
+    expect(parsed?.iterationNumber).toBe(1);
+  });
+
+  it('still rejects rows with missing or malformed fields (only the exit reason is forward-compat)', () => {
+    expect(parseIterationRecord('not json at all')).toBeNull();
+    expect(parseIterationRecord(row({ iterationNumber: 'one' }))).toBeNull();
+    expect(parseIterationRecord(row({ startedAt: 'soon' }))).toBeNull();
+    expect(parseIterationRecord(row({ exitReason: 42 }))).toBeNull();
   });
 });

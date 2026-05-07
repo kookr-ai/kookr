@@ -44,6 +44,8 @@ const EXIT_REASONS: ReadonlySet<RalphIterationExitReason> = new Set([
   'session_dead',
   'predicate_error',
   'continued',
+  'replaced_by_user',
+  'unknown',
 ]);
 
 /**
@@ -83,16 +85,24 @@ export function parseIterationRecord(line: string): RalphIterationRecord | null 
   if (typeof iterationNumber !== 'number' || !Number.isInteger(iterationNumber)) return null;
   if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) return null;
   if (typeof endedAt !== 'number' || !Number.isFinite(endedAt)) return null;
-  if (typeof exitReason !== 'string' || !EXIT_REASONS.has(exitReason as RalphIterationExitReason)) return null;
+  if (typeof exitReason !== 'string') return null;
   if (cumulativeCostUsd !== null && (typeof cumulativeCostUsd !== 'number' || !Number.isFinite(cumulativeCostUsd))) return null;
   if (gitBaselineRef !== null && typeof gitBaselineRef !== 'string') return null;
   if (diffStats !== null && !isDiffStats(diffStats)) return null;
+
+  // Forward-compat: unknown exit reasons emitted by a newer Kookr writer are
+  // mapped to 'unknown' instead of dropping the row entirely. Older readers
+  // on newer logs surface these as iterations rather than as malformed lines.
+  const normalizedExitReason: RalphIterationExitReason =
+    EXIT_REASONS.has(exitReason as RalphIterationExitReason)
+      ? (exitReason as RalphIterationExitReason)
+      : 'unknown';
 
   return {
     iterationNumber,
     startedAt,
     endedAt,
-    exitReason: exitReason as RalphIterationExitReason,
+    exitReason: normalizedExitReason,
     cumulativeCostUsd,
     gitBaselineRef,
     diffStats,

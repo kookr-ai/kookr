@@ -64,6 +64,8 @@ On each hook event, the supervisor:
 
 A separate 5-second liveness interval reconciles session state against the dtach backend (detecting dead sessions), but event monitoring is purely event-driven.
 
+**Ralph-loop startup probe:** `RalphLoopService.reconcileStartupLoops` runs once at server boot for each task whose `ralphLoop.status === 'running'`. It calls `probeStartupLiveness`, a startup-only helper that asks `terminalBackend.isAlive` per session with a 500 ms per-probe timeout. Loops with a probe-confirmed-alive session are preserved; the rest are marked `failed` with `exitReason: 'kookr_crash'`. The probe catches the dtach-master-killed phantom shape (WSL/OS crashes) but not the agent-child-exited shape; the latter still goes through the user-facing Replace dialog (`POST /api/tasks/:taskId/ralph-loop/replace-with-new`). See `docs/rfc/rfc-ralph-loop-crash-restart-recovery.md`.
+
 **Startup replay:** On startup, after reconciliation identifies resumed sessions, hook files are replayed from offset 0 via `HookFileWatcher.watch(sessionId, { replayExisting: true })` to rebuild anomaly state from persisted hook history. This ensures anomalies (e.g., a permission block) are not lost across Kookr restarts. Each resumed session is also registered with the monitor via `monitor.registerAgent(sessionId)` before hook replay begins.
 
 **Stop event suppression:** When an agent's last event is `stop` (indicating the agent finished its turn and is waiting for input), the detector skips `permission_blocked` and `repeated_error` checks. Only `needs_input` detection proceeds after a stop event. This prevents false positives from errors encountered during prior work phases that completed successfully.

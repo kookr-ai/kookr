@@ -7,12 +7,14 @@ import { deleteTask } from '../use-cases/delete-task.js';
 import { launchTask } from '../launch-service.js';
 import { cancelTask as cancelTaskLifecycle } from '../agent-lifecycle.js';
 import { detectStandalonePlugin } from '../../core/ralph-plugin-coexistence.js';
-import { DEFAULT_RALPH_ITERATION_READ_LIMIT, MAX_RALPH_ITERATION_READ_LIMIT, formatIterationLogCsv, readIterationLog } from '../../core/ralph-iteration-log.js';
+import { DEFAULT_RALPH_ITERATION_READ_LIMIT, MAX_RALPH_ITERATION_READ_LIMIT, appendIterationRecord, formatIterationLogCsv, readIterationLog } from '../../core/ralph-iteration-log.js';
 import { validateRalphLoopRequest } from '../ralph-loop-service.js';
 import {
   launchLoopedPlaybook,
   LoopedPlaybookLaunchError,
+  replaceLoopedPlaybook,
 } from '../use-cases/looped-playbook-launch.js';
+import { nowISO } from '../../core/interaction-log.js';
 import type { RouteDeps } from './shared.js';
 
 /** Shape of the /api/agents/:id/edit-events/:toolUseId response.
@@ -454,6 +456,131 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
       return c.json({ ...result.task, ...(result.queued ? { queued: true } : {}) }, 201);
+    } catch (err) {
+      if (err instanceof LoopedPlaybookLaunchError) {
+        return c.json({ error: err.message, ...err.details }, err.status);
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  /**
+   * Replace the Ralph loop attached to `:taskId` with a fresh launch using
+   * the supplied playbook+cwd+parameters. Cancels the old runtime + loop,
+   * then launches anew. The in-flight key is held across both steps so
+   * concurrent calls with the same key serialize.
+   *
+   * See docs/rfc/rfc-ralph-loop-crash-restart-recovery.md.
+   */
+  app.post('/api/tasks/:taskId/ralph-loop/replace-with-new', async (c) => {
+    const replacedTaskId = c.req.param('taskId');
+
+    let body: {
+      playbookPath?: unknown;
+      cwd?: unknown;
+      parameterValues?: unknown;
+      autonomy?: string;
+      agentType?: string;
+    };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    if (typeof body.playbookPath !== 'string' || body.playbookPath.trim().length === 0) {
+      return c.json({ error: 'playbookPath is required and must be a string' }, 400);
+    }
+    if (typeof body.cwd !== 'string' || body.cwd.trim().length === 0) {
+      return c.json({ error: 'cwd is required and must be a string' }, 400);
+    }
+    if (!isStringRecord(body.parameterValues)) {
+      return c.json({ error: 'parameterValues is required and must be an object of strings' }, 400);
+    }
+
+    try {
+      const rawSource = c.req.header('X-Kookr-Launch-Source');
+      const launchSource: 'cli' | 'ui' | 'api' =
+        rawSource === 'cli' || rawSource === 'ui' ? rawSource : 'api';
+      const autonomy = body.autonomy === 'autonomous' ? 'autonomous' as const : undefined;
+
+      console.info(
+        `[ralph-replace] replacedTaskId=${replacedTaskId} playbook=${body.playbookPath} source=${launchSource}`,
+      );
+
+      const lifecycleOpts = {
+        adapter,
+        monitor,
+        taskStore,
+        interactionLog,
+        hookWatcher,
+        watchdog,
+        shadowRegistry: deps.shadowRegistry,
+        tokenTracker: deps.tokenTracker,
+        autonomyOrchestrator: deps.autonomyOrchestrator,
+        suppressionTracker: deps.suppressionTracker,
+      };
+
+      const { result, oldIteration } = await replaceLoopedPlaybook({
+        taskStore,
+        ralphLoopService,
+        launchTask: (opts) => launchTask(deps.launchServiceDeps, opts),
+        getMaxActiveTasks: deps.launchServiceDeps.getMaxActiveTasks,
+        cleanupFailedTask: (taskId) => cancelTaskLifecycle(taskId, lifecycleOpts),
+        cancelReplacedTask: (taskId) => cancelTaskLifecycle(taskId, lifecycleOpts),
+        writeReplaceAudit: async (info) => {
+          const ts = Date.now();
+          await interactionLog?.append({
+            type: 'ralph_loop_replaced',
+            replacedTaskId: info.replacedTaskId,
+            newTaskId: info.newTaskId,
+            oldIteration: info.oldIteration,
+            playbookPath: info.playbookPath,
+            cwd: info.cwd,
+            source: info.source,
+            timestamp: nowISO(),
+          });
+          // Per-task iteration-log terminal record. Without this, a loop
+          // cancelled via Replace has no closing row in its iteration log.
+          // Best-effort; warn-log on failure.
+          try {
+            await appendIterationRecord(info.cwd, {
+              iterationNumber: info.oldIteration,
+              startedAt: ts,
+              endedAt: ts,
+              exitReason: 'replaced_by_user',
+              cumulativeCostUsd: null,
+              gitBaselineRef: null,
+              diffStats: null,
+            });
+          } catch (err) {
+            console.warn(
+              `[ralph-replace] iteration-log append failed for replacedTaskId=${info.replacedTaskId}:`,
+              err,
+            );
+          }
+        },
+      }, {
+        replacedTaskId,
+        cwd: body.cwd,
+        playbookPath: body.playbookPath,
+        parameterValues: body.parameterValues,
+        autonomy,
+        agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
+        launchSource,
+      });
+
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      return c.json(
+        {
+          ...result.task,
+          ...(result.queued ? { queued: true } : {}),
+          replacedTaskId,
+          oldIteration,
+        },
+        201,
+      );
     } catch (err) {
       if (err instanceof LoopedPlaybookLaunchError) {
         return c.json({ error: err.message, ...err.details }, err.status);

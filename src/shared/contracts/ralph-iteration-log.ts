@@ -21,7 +21,15 @@ export type RalphIterationExitReason =
   /** Predicate process error, spawn failure, or exec error. */
   | 'predicate_error'
   /** Iteration ran to completion and the next one was injected. */
-  | 'continued';
+  | 'continued'
+  /** User replaced the loop with a fresh one via the UI conflict dialog. */
+  | 'replaced_by_user'
+  /**
+   * Forward-compat fallback for exit reasons emitted by a newer Kookr that
+   * this reader doesn't recognize. `parseIterationRecord` maps unknown
+   * strings to this value so rows are not silently dropped.
+   */
+  | 'unknown';
 
 export interface RalphIterationDiffStats {
   filesChanged: number;

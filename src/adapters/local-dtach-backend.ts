@@ -38,6 +38,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { access as fsAccess } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn, type IPty } from 'node-pty';
@@ -332,7 +333,13 @@ export class LocalDtachBackend implements TerminalBackend {
   async isAlive(id: SessionId): Promise<boolean> {
     const entry = await this.readEntry(id);
     if (!entry || entry.status === 'pending') return false;
-    if (!existsSync(entry.sock)) return false;
+    // Use async fs so a stuck filesystem (WSL fuse, NFS) does not block the
+    // event loop and so callers can race the probe against a timeout.
+    try {
+      await fsAccess(entry.sock);
+    } catch {
+      return false;
+    }
     if (entry.pid > 0) {
       try {
         process.kill(entry.pid, 0);

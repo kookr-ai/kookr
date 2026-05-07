@@ -61,6 +61,16 @@ export type InteractionEvent =
       previousPrompt: string;
       prompt: string;
       timestamp: string;
+    }
+  | {
+      type: 'ralph_loop_replaced';
+      replacedTaskId: string;
+      newTaskId: string;
+      oldIteration: number;
+      playbookPath: string;
+      cwd: string;
+      source: 'cli' | 'ui' | 'api';
+      timestamp: string;
     };
 
 // --- Substantive event detection ---
