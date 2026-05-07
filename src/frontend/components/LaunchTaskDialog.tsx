@@ -35,9 +35,11 @@ interface Props {
   relaunchParameterValues?: Record<string, string>;
   /** When launched from a project drawer, pre-fill source-matching params */
   projectContext?: ProjectSummary;
+  /** When launched from a selected project, pre-fill cwd with that project's local checkout. */
+  projectCwd?: string;
 }
 
-export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext }: Props) {
+export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext, projectCwd }: Props) {
   const serverCwd = useKookrStore((s) => s.serverCwd);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
@@ -63,9 +65,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     && (initialDraft.prompt.trim().length > 0 || initialDraft.criteria.trim().length > 0);
   // `||` (not `??`) for the cwd fallback chain: a persisted empty-string cwd
   // must fall through to the recentPaths default rather than leave the field
-  // blank on reopen.
+  // blank on reopen. `projectCwd` slots above the draft so launching from a
+  // project drawer overrides the persisted draft path with that project's cwd.
   const resolvedInitialCwd =
-    defaultCwd ?? (initialDraft?.cwd || recentPaths.getAll()[0] || serverCwd);
+    defaultCwd ?? projectCwd ?? (initialDraft?.cwd || recentPaths.getAll()[0] || serverCwd);
   const [prompt, setPrompt] = useState(defaultPrompt ?? initialDraft?.prompt ?? '');
   const [cwd, setCwd] = useState(resolvedInitialCwd);
   const [criteria, setCriteria] = useState(defaultCriteria ?? initialDraft?.criteria ?? '');
