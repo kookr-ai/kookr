@@ -5,8 +5,8 @@ import { TaskStore } from './tasks.js';
 import { AttentionQueue } from './attention-queue.js';
 import { getDetectionStats, resetDetectionStats } from './detection-stats.js';
 
-function makeToolUse(sessionId: string, toolName: string): AgentEvent {
-  return { type: 'tool_use', sessionId, toolName };
+function makeToolUse(sessionId: string, toolName: string, toolInput?: unknown, toolUseId?: string): AgentEvent {
+  return { type: 'tool_use', sessionId, toolName, toolInput, toolUseId };
 }
 
 function makeStop(sessionId: string, lastMessage = ''): AgentEvent {
@@ -17,8 +17,8 @@ function makePermissionRequest(sessionId: string, toolName: string): AgentEvent 
   return { type: 'permission_request', sessionId, toolName };
 }
 
-function makeToolResult(sessionId: string, toolName: string): AgentEvent {
-  return { type: 'tool_result', sessionId, toolName };
+function makeToolResult(sessionId: string, toolName: string, toolUseId?: string, toolResponse?: unknown): AgentEvent {
+  return { type: 'tool_result', sessionId, toolName, toolUseId, toolResponse };
 }
 
 describe('Monitor', () => {
@@ -27,6 +27,7 @@ describe('Monitor', () => {
   let monitor: Monitor;
 
   beforeEach(() => {
+    resetDetectionStats();
     taskStore = new TaskStore();
     queue = new AttentionQueue();
     monitor = new Monitor(taskStore, queue);
@@ -120,6 +121,48 @@ describe('Monitor', () => {
     const next = queue.next();
     expect(next).not.toBeNull();
     expect(next!.anomaly.type).toBe('needs_input');
+  });
+
+  test('processEvents records detection telemetry, but getSnapshot does not', () => {
+    monitor.processEvents('agent-1', [makeStop('s1', 'Waiting')]);
+
+    const afterWrite = getDetectionStats();
+    expect(afterWrite.checks.needs_input).toBe(1);
+    expect(afterWrite.fires.needs_input).toBe(1);
+
+    monitor.getSnapshot();
+    monitor.getSnapshot();
+
+    const afterReads = getDetectionStats();
+    expect(afterReads.checks.needs_input).toBe(1);
+    expect(afterReads.fires.needs_input).toBe(1);
+  });
+
+  test('unchanged active anomaly does not record repeated fires', () => {
+    monitor.processEvents('agent-1', [makeStop('s1', 'Waiting')]);
+    monitor.processEvents('agent-1', [
+      { type: 'notification', sessionId: 's1', notificationType: 'idle_prompt', message: 'Claude is waiting for your input' },
+    ]);
+
+    const stats = getDetectionStats();
+    expect(stats.checks.needs_input).toBe(2);
+    expect(stats.fires.needs_input).toBe(1);
+  });
+
+  test('merge_conflict telemetry fires once for the conflicting git result', () => {
+    monitor.processEvents('agent-1', [
+      makeToolUse('s1', 'Bash', { command: 'git merge feature' }, 'toolu_1'),
+      makeToolResult(
+        's1',
+        'Bash',
+        'toolu_1',
+        'CONFLICT (content): Merge conflict in src/index.ts\nAutomatic merge failed; fix conflicts and then commit the result.',
+      ),
+    ]);
+    monitor.processEvents('agent-1', [makeToolUse('s1', 'Read')]);
+
+    const stats = getDetectionStats();
+    expect(stats.fires.merge_conflict).toBe(1);
   });
 
   test('processEvents caps at window size', () => {

@@ -211,53 +211,33 @@ describe('Anomaly Detector', () => {
   });
 
   describe('detection telemetry', () => {
-    test('tracks checks and fires for needs_input (stop)', () => {
+    test('detectAnomalies is pure telemetry-wise', () => {
       const events: AgentEvent[] = [makeStop('s1', 'Waiting')];
       detectAnomalies(events, agentId);
-      const stats = getDetectionStats();
-      expect(stats.checks.needs_input).toBe(1);
-      expect(stats.fires.needs_input).toBe(1);
-    });
-
-    test('tracks checks and fires for permission_blocked', () => {
-      const events: AgentEvent[] = [makePermissionRequest('s1', 'Bash')];
-      detectAnomalies(events, agentId);
-      const stats = getDetectionStats();
-      expect(stats.checks.permission_blocked).toBe(1);
-      expect(stats.fires.permission_blocked).toBe(1);
-    });
-
-    test('tracks checks without fires when no anomaly', () => {
-      const events: AgentEvent[] = [makeToolUse('s1', 'Read')];
-      detectAnomalies(events, agentId);
-      const stats = getDetectionStats();
-      expect(stats.checks.permission_blocked).toBe(1);
-      expect(stats.checks.repeated_error).toBe(1);
-      expect(stats.checks.needs_input).toBe(1);
-      expect(stats.fires.permission_blocked).toBe(0);
-      expect(stats.fires.repeated_error).toBe(0);
-      expect(stats.fires.needs_input).toBe(0);
-    });
-
-    test('resetDetectionStats clears all counters', () => {
-      detectAnomalies([makeStop('s1', 'x')], agentId);
-      resetDetectionStats();
       const stats = getDetectionStats();
       expect(stats.checks.needs_input).toBe(0);
       expect(stats.fires.needs_input).toBe(0);
     });
+
+    test('resetDetectionStats clears all counters', () => {
+      recordFalsePositive('needs_input');
+      resetDetectionStats();
+      const stats = getDetectionStats();
+      expect(stats.checks.needs_input).toBe(0);
+      expect(stats.fires.needs_input).toBe(0);
+      expect(stats.falsePositives.needs_input).toBe(0);
+    });
   });
 
   describe('merge_conflict detection', () => {
-    test('CONFLICT in tool_result triggers merge_conflict anomaly', () => {
+    test('CONFLICT in Bash git tool_result triggers merge_conflict anomaly', () => {
       const events: AgentEvent[] = [
-        makeToolUse('s1', 'Bash'),
-        makeToolResult('s1', 'Bash', 'toolu_1'),
-        makeToolUse('s1', 'Bash'),
+        makeToolUse('s1', 'Bash', { command: 'git merge feature' }, 'toolu_1'),
         {
           type: 'tool_result',
           sessionId: 's1',
           toolName: 'Bash',
+          toolUseId: 'toolu_1',
           toolResponse: `Merging branch 'feature' into main\nCONFLICT (content): Merge conflict in src/index.ts\nAutomatic merge failed; fix conflicts and then commit the result.`,
         },
       ];
@@ -271,10 +251,12 @@ describe('Anomaly Detector', () => {
 
     test('multiple conflicting files are listed', () => {
       const events: AgentEvent[] = [
+        makeToolUse('s1', 'Bash', { command: 'git merge feature' }, 'toolu_1'),
         {
           type: 'tool_result',
           sessionId: 's1',
           toolName: 'Bash',
+          toolUseId: 'toolu_1',
           toolResponse: `CONFLICT (content): Merge conflict in src/a.ts\nCONFLICT (content): Merge conflict in src/b.ts\nAutomatic merge failed; fix conflicts and then commit the result.`,
         },
       ];
@@ -287,10 +269,12 @@ describe('Anomaly Detector', () => {
 
     test('Automatic merge failed without file names still triggers', () => {
       const events: AgentEvent[] = [
+        makeToolUse('s1', 'Bash', { command: 'git merge feature' }, 'toolu_1'),
         {
           type: 'tool_result',
           sessionId: 's1',
           toolName: 'Bash',
+          toolUseId: 'toolu_1',
           toolResponse: `Automatic merge failed; fix conflicts and then commit the result.`,
         },
       ];
@@ -302,10 +286,12 @@ describe('Anomaly Detector', () => {
 
     test('rebase conflict triggers detection', () => {
       const events: AgentEvent[] = [
+        makeToolUse('s1', 'Bash', { command: 'git rebase main' }, 'toolu_1'),
         {
           type: 'tool_result',
           sessionId: 's1',
           toolName: 'Bash',
+          toolUseId: 'toolu_1',
           toolResponse: `CONFLICT (content): Merge conflict in package.json\nFailed to merge in the changes`,
         },
       ];
@@ -343,10 +329,12 @@ describe('Anomaly Detector', () => {
 
     test('stop event after merge conflict returns needs_input not merge_conflict', () => {
       const events: AgentEvent[] = [
+        makeToolUse('s1', 'Bash', { command: 'git merge feature' }, 'toolu_1'),
         {
           type: 'tool_result',
           sessionId: 's1',
           toolName: 'Bash',
+          toolUseId: 'toolu_1',
           toolResponse: `CONFLICT (content): Merge conflict in src/index.ts\nAutomatic merge failed; fix conflicts and then commit the result.`,
         },
         makeStop('s1', 'I encountered a merge conflict.'),
@@ -358,20 +346,37 @@ describe('Anomaly Detector', () => {
       expect(anomaly!.type).toBe('needs_input');
     });
 
-    test('tracks merge_conflict in detection stats', () => {
+    test('Read tool_result containing detector source text does not trigger merge_conflict', () => {
       const events: AgentEvent[] = [
         {
           type: 'tool_result',
           sessionId: 's1',
+          toolName: 'Read',
+          toolResponse: `const MERGE_CONFLICT_PATTERNS = [
+  /CONFLICT \\(content\\): Merge conflict in (.+)/,
+  /Automatic merge failed; fix conflicts and then commit/,
+];`,
+        },
+      ];
+
+      const anomaly = detectAnomalies(events, agentId);
+      expect(anomaly).toBeNull();
+    });
+
+    test('Bash grep output containing detector source text does not trigger merge_conflict', () => {
+      const events: AgentEvent[] = [
+        makeToolUse('s1', 'Bash', { command: 'rg "CONFLICT" src/core/anomaly-detector.ts' }, 'toolu_1'),
+        {
+          type: 'tool_result',
+          sessionId: 's1',
           toolName: 'Bash',
+          toolUseId: 'toolu_1',
           toolResponse: `CONFLICT (content): Merge conflict in src/index.ts\nAutomatic merge failed; fix conflicts and then commit the result.`,
         },
       ];
 
-      detectAnomalies(events, agentId);
-      const stats = getDetectionStats();
-      expect(stats.checks.merge_conflict).toBe(1);
-      expect(stats.fires.merge_conflict).toBe(1);
+      const anomaly = detectAnomalies(events, agentId);
+      expect(anomaly).toBeNull();
     });
   });
 
@@ -413,15 +418,6 @@ describe('Anomaly Detector', () => {
       expect(anomaly!.severity).toBe('warning');
     });
 
-    test('tracks api_error in detection stats', () => {
-      const events: AgentEvent[] = [
-        { type: 'stop_failure', sessionId: 's1', error: 'billing_error', lastMessage: '' },
-      ];
-      detectAnomalies(events, agentId);
-      const stats = getDetectionStats();
-      expect(stats.checks.api_error).toBe(1);
-      expect(stats.fires.api_error).toBe(1);
-    });
   });
 
   describe('notification(idle_prompt) preserves needs_input', () => {

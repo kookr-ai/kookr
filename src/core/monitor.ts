@@ -1,11 +1,13 @@
-import type { AgentEvent, Anomaly, TokenUsage } from './types.js';
+import type { AgentEvent, Anomaly, AnomalyType, TokenUsage } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { TaskStore } from './tasks.js';
 import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
-import { detectAnomalies } from './anomaly-detector.js';
+import { detectAnomalies, evaluateAnomalies } from './anomaly-detector.js';
 import {
+  recordDetectionCheck,
+  recordDetectionFire,
   recordSubagentOrphans,
   recordSubagentTtlEviction,
   recordSuppression,
@@ -48,12 +50,17 @@ const DEFAULT_WINDOW_SIZE = 50;
  */
 const SUBAGENT_TTL_MS = 30 * 60 * 1000;
 
+function anomalyFingerprint(anomaly: Anomaly): string {
+  return `${anomaly.type}:${anomaly.subType ?? ''}:${anomaly.explanation}`;
+}
+
 export class Monitor {
   private agentEvents = new Map<string, AgentEvent[]>();
   private stoppedAgents = new Set<string>();
   private windowSize: number;
   /** Monotonic per-agent event counts for self-diagnostic rate checks. */
   private _eventCounts = new Map<string, number>();
+  private lastRecordedAnomalyFingerprint = new Map<string, string>();
   /**
    * Outstanding background subagents per parent agent. Each subagent tracked with
    * its Date.now() at SubagentStart so a lazy TTL eviction caps suppression
@@ -109,8 +116,10 @@ export class Monitor {
     // recordSuppression fires only here (the write path), not inside the helper —
     // getEventAnomaly is read by snapshot/timer paths and would otherwise inflate
     // the counter once per snapshot tick instead of once per suppressed Stop.
-    const rawAnomaly = detectAnomalies(capped, agentId, this.anomalyConfig);
+    const evaluation = evaluateAnomalies(capped, agentId, this.anomalyConfig);
+    const rawAnomaly = evaluation.anomaly;
     const anomaly = this.suppressIfSubagentsRunning(rawAnomaly, agentId);
+    this.recordDetectionTelemetry(agentId, evaluation.checkedTypes, anomaly);
     if (rawAnomaly?.type === 'needs_input' && anomaly === null) {
       recordSuppression('needs_input');
     }
@@ -129,6 +138,7 @@ export class Monitor {
    */
   registerAgent(agentId: string): void {
     this.stoppedAgents.delete(agentId);
+    this.lastRecordedAnomalyFingerprint.delete(agentId);
     if (!this.agentEvents.has(agentId)) {
       this.agentEvents.set(agentId, []);
     }
@@ -301,9 +311,31 @@ export class Monitor {
   unregisterAgent(agentId: string): void {
     this.agentEvents.delete(agentId);
     this._eventCounts.delete(agentId);
+    this.lastRecordedAnomalyFingerprint.delete(agentId);
     this.attentionQueue.purge(agentId);
     this.flushAndDeleteSubagents(agentId);
     this.stoppedAgents.add(agentId);
+  }
+
+  private recordDetectionTelemetry(
+    agentId: string,
+    checkedTypes: AnomalyType[],
+    anomaly: Anomaly | null,
+  ): void {
+    for (const type of checkedTypes) {
+      recordDetectionCheck(type);
+    }
+
+    if (!anomaly) {
+      this.lastRecordedAnomalyFingerprint.delete(agentId);
+      return;
+    }
+
+    const fingerprint = anomalyFingerprint(anomaly);
+    if (this.lastRecordedAnomalyFingerprint.get(agentId) === fingerprint) return;
+
+    recordDetectionFire(anomaly.type);
+    this.lastRecordedAnomalyFingerprint.set(agentId, fingerprint);
   }
 
   /**

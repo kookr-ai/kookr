@@ -1,9 +1,5 @@
-import type { AgentEvent, Anomaly, AnomalySeverity } from './types.js';
-import {
-  recordDetectionCheck,
-  recordDetectionFire,
-  type AnomalyDetectorConfig,
-} from './detection-stats.js';
+import type { AgentEvent, Anomaly, AnomalySeverity, AnomalyType } from './types.js';
+import type { AnomalyDetectorConfig } from './detection-stats.js';
 
 // Re-export the stats/config surface from its new home so existing import paths
 // keep working while call-sites migrate. The detection module no longer owns
@@ -29,6 +25,11 @@ const SEVERITY_ORDER: Record<AnomalySeverity, number> = {
   info: 2,
 };
 
+export interface AnomalyDetectionEvaluation {
+  anomaly: Anomaly | null;
+  checkedTypes: AnomalyType[];
+}
+
 /**
  * Detect the highest-priority anomaly in a window of events for an agent.
  * Returns the most severe anomaly found, or null if everything looks normal.
@@ -40,10 +41,25 @@ export function detectAnomalies(
   agentId: string,
   config?: Partial<AnomalyDetectorConfig>,
 ): Anomaly | null {
+  return evaluateAnomalies(events, agentId, config).anomaly;
+}
+
+/**
+ * Pure detector evaluation with telemetry metadata.
+ *
+ * Counter mutation belongs at the write boundary (`Monitor.processEvents`), not
+ * here, because snapshots and diagnostics also evaluate current state.
+ */
+export function evaluateAnomalies(
+  events: AgentEvent[],
+  agentId: string,
+  config?: Partial<AnomalyDetectorConfig>,
+): AnomalyDetectionEvaluation {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const window = events.slice(-cfg.windowSize);
+  const checkedTypes: AnomalyType[] = [];
 
-  if (window.length === 0) return null;
+  if (window.length === 0) return { anomaly: null, checkedTypes };
 
   // Trim trailing notification events to find the effective state.
   // Notifications are async signals (idle_prompt, auth_success, etc.) that should
@@ -52,51 +68,47 @@ export function detectAnomalies(
   while (effectiveWindow.length > 0 && effectiveWindow[effectiveWindow.length - 1].type === 'notification') {
     effectiveWindow = effectiveWindow.slice(0, -1);
   }
-  if (effectiveWindow.length === 0) return null;
+  if (effectiveWindow.length === 0) return { anomaly: null, checkedTypes };
 
   const last = effectiveWindow[effectiveWindow.length - 1];
 
   // user_prompt means the agent is actively processing — no anomaly.
-  if (last.type === 'user_prompt') return null;
+  if (last.type === 'user_prompt') return { anomaly: null, checkedTypes };
 
   // session_end means the session is over — no anomaly to report.
-  if (last.type === 'session_end') return null;
+  if (last.type === 'session_end') return { anomaly: null, checkedTypes };
 
   // StopFailure: API error killed the turn.
   if (last.type === 'stop_failure') {
-    recordDetectionCheck('api_error');
-    const apiErr = detectApiError(last, agentId);
-    if (apiErr) recordDetectionFire('api_error');
-    return apiErr;
+    checkedTypes.push('api_error');
+    return { anomaly: detectApiError(last, agentId), checkedTypes };
   }
 
   // If the agent stopped (finished its turn), only check needs_input — not error/permission.
   // A stop event means the agent completed work and is waiting.
   if (last.type === 'stop') {
-    recordDetectionCheck('needs_input');
-    const ni = detectNeedsInput(effectiveWindow, agentId);
-    if (ni) recordDetectionFire('needs_input');
-    return ni;
+    checkedTypes.push('needs_input');
+    return { anomaly: detectNeedsInput(effectiveWindow, agentId), checkedTypes };
   }
 
   // Check in order of severity
-  recordDetectionCheck('permission_blocked');
+  checkedTypes.push('permission_blocked');
   const permBlocked = detectPermissionBlocked(effectiveWindow, agentId);
-  if (permBlocked) { recordDetectionFire('permission_blocked'); return permBlocked; }
+  if (permBlocked) return { anomaly: permBlocked, checkedTypes };
 
-  recordDetectionCheck('merge_conflict');
+  checkedTypes.push('merge_conflict');
   const mergeConflict = detectMergeConflict(effectiveWindow, agentId);
-  if (mergeConflict) { recordDetectionFire('merge_conflict'); return mergeConflict; }
+  if (mergeConflict) return { anomaly: mergeConflict, checkedTypes };
 
-  recordDetectionCheck('repeated_error');
+  checkedTypes.push('repeated_error');
   const repeatedErr = detectRepeatedError(effectiveWindow, agentId, cfg.repeatedErrorThreshold);
-  if (repeatedErr) { recordDetectionFire('repeated_error'); return repeatedErr; }
+  if (repeatedErr) return { anomaly: repeatedErr, checkedTypes };
 
-  recordDetectionCheck('needs_input');
+  checkedTypes.push('needs_input');
   const askUser = detectAskUserQuestion(effectiveWindow, agentId);
-  if (askUser) { recordDetectionFire('needs_input'); return askUser; }
+  if (askUser) return { anomaly: askUser, checkedTypes };
 
-  return null;
+  return { anomaly: null, checkedTypes };
 }
 
 /** Errors that require developer action (not transient). */
@@ -213,12 +225,6 @@ const MERGE_CONFLICT_PATTERNS = [
   /Unmerged paths:/,
 ];
 
-// Patterns that mention "conflict" but are NOT git merge conflicts
-const CONFLICT_FALSE_POSITIVE_PATTERNS = [
-  /merge.conflict/i, // config key like merge.conflictStyle
-  /conflicting/i, // "conflicting arguments" etc.
-];
-
 function extractToolResponseText(toolResponse: unknown): string {
   if (typeof toolResponse === 'string') return toolResponse;
   if (toolResponse && typeof toolResponse === 'object') {
@@ -227,28 +233,62 @@ function extractToolResponseText(toolResponse: unknown): string {
   return '';
 }
 
+function extractCommand(toolInput: unknown): string | null {
+  if (typeof toolInput === 'string') return toolInput;
+  if (toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput)) {
+    const command = (toolInput as Record<string, unknown>).command;
+    return typeof command === 'string' ? command : null;
+  }
+  return null;
+}
+
+function findCommandForResult(
+  events: AgentEvent[],
+  result: Extract<AgentEvent, { type: 'tool_result' }>,
+): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type !== 'tool_use') continue;
+    if (event.toolName !== result.toolName) continue;
+    if (result.toolUseId && event.toolUseId !== result.toolUseId) continue;
+    return extractCommand(event.toolInput);
+  }
+  return null;
+}
+
+function isGitConflictCommand(command: string | null): boolean {
+  if (!command) return false;
+  return /\bgh\s+pr\s+checkout\b/i.test(command)
+    || /\bgit\b[^\n;&|]*\b(?:merge|rebase|pull|cherry-pick|status|diff|checkout|switch|apply|am)\b/i.test(command)
+    || /\bgit\b[^\n;&|]*\bstash\s+(?:pop|apply)\b/i.test(command);
+}
+
 function detectMergeConflict(events: AgentEvent[], agentId: string): Anomaly | null {
-  // Scan tool_result events for git conflict output
+  const last = events[events.length - 1];
+  if (last?.type !== 'tool_result') return null;
+  if (last.toolName !== 'Bash') return null;
+
+  const command = findCommandForResult(events, last);
+  if (!isGitConflictCommand(command)) return null;
+
+  // Scan the current git-related Bash result for conflict output.
   const conflictFiles: string[] = [];
   let foundConflict = false;
 
-  for (const event of events) {
-    if (event.type !== 'tool_result') continue;
-    const text = extractToolResponseText(event.toolResponse);
-    if (!text) continue;
+  const text = extractToolResponseText(last.toolResponse);
+  if (!text) return null;
 
-    // Check each line against conflict patterns to catch multiple CONFLICT lines
-    const lines = text.split('\n');
-    for (const line of lines) {
-      for (const pattern of MERGE_CONFLICT_PATTERNS) {
-        const match = pattern.exec(line);
-        if (match) {
-          foundConflict = true;
-          if (match[1]) {
-            const file = match[1].trim();
-            if (!conflictFiles.includes(file)) {
-              conflictFiles.push(file);
-            }
+  // Check each line against conflict patterns to catch multiple CONFLICT lines
+  const lines = text.split('\n');
+  for (const line of lines) {
+    for (const pattern of MERGE_CONFLICT_PATTERNS) {
+      const match = pattern.exec(line);
+      if (match) {
+        foundConflict = true;
+        if (match[1]) {
+          const file = match[1].trim();
+          if (!conflictFiles.includes(file)) {
+            conflictFiles.push(file);
           }
         }
       }

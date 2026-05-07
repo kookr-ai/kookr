@@ -710,6 +710,22 @@ The system SHALL allow a schedule to define an optional finite number of cron-tr
 
 ---
 
+## R11: Self-Diagnostic Telemetry
+
+### R11.1: Detection Stats Count Write-Path Transitions [F15.3] — SHALL — `done`
+
+The system SHALL record anomaly detection telemetry only when new agent events are ingested.
+
+**Acceptance criteria:**
+- Read-only snapshot and diagnostic paths do not mutate detection-stat counters
+- `checks` count detector evaluations performed by the event-ingestion path
+- `fires` count newly emitted anomaly findings, not repeated reads of the same active finding
+- Merge-conflict detection ignores source-code reads and grep/search output that merely contain detector pattern strings
+
+**Evidence:** `src/core/anomaly-detector.ts` (pure evaluation + narrowed merge-conflict detector), `src/core/monitor.ts` (single telemetry write boundary), `src/core/anomaly-detector.test.ts`, `src/core/monitor.test.ts`.
+
+---
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -766,6 +782,7 @@ The system SHALL allow a schedule to define an optional finite number of cron-tr
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |
 | R7.4 | CLAUDE.md | SHALL | done | package.json |
 | R9.1 | F8.1-F8.3 | SHOULD | done | reflection-recommendation, reflection-task, StatusBar |
+| R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
 
 ---
 
