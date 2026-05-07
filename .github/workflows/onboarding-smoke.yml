@@ -14,7 +14,30 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # Exercises the README "Quick Start → Install & Run" path on a clean
+  # ubuntu-latest runner so missing prerequisites surface before the
+  # heavyweight Docker-based smoke test runs (issue #101).
+  prereq-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies (README "Install & Run")
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm doctor (must exit 0)
+        run: pnpm doctor
+
   onboarding-test:
+    needs: prereq-check
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
