@@ -509,35 +509,26 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         `[ralph-replace] replacedTaskId=${replacedTaskId} playbook=${body.playbookPath} source=${launchSource}`,
       );
 
+      const lifecycleOpts = {
+        adapter,
+        monitor,
+        taskStore,
+        interactionLog,
+        hookWatcher,
+        watchdog,
+        shadowRegistry: deps.shadowRegistry,
+        tokenTracker: deps.tokenTracker,
+        autonomyOrchestrator: deps.autonomyOrchestrator,
+        suppressionTracker: deps.suppressionTracker,
+      };
+
       const { result, oldIteration } = await replaceLoopedPlaybook({
         taskStore,
         ralphLoopService,
         launchTask: (opts) => launchTask(deps.launchServiceDeps, opts),
         getMaxActiveTasks: deps.launchServiceDeps.getMaxActiveTasks,
-        cleanupFailedTask: (taskId) => cancelTaskLifecycle(taskId, {
-          adapter,
-          monitor,
-          taskStore,
-          interactionLog,
-          hookWatcher,
-          watchdog,
-          shadowRegistry: deps.shadowRegistry,
-          tokenTracker: deps.tokenTracker,
-          autonomyOrchestrator: deps.autonomyOrchestrator,
-          suppressionTracker: deps.suppressionTracker,
-        }),
-        cancelReplacedTask: (taskId) => cancelTaskLifecycle(taskId, {
-          adapter,
-          monitor,
-          taskStore,
-          interactionLog,
-          hookWatcher,
-          watchdog,
-          shadowRegistry: deps.shadowRegistry,
-          tokenTracker: deps.tokenTracker,
-          autonomyOrchestrator: deps.autonomyOrchestrator,
-          suppressionTracker: deps.suppressionTracker,
-        }),
+        cleanupFailedTask: (taskId) => cancelTaskLifecycle(taskId, lifecycleOpts),
+        cancelReplacedTask: (taskId) => cancelTaskLifecycle(taskId, lifecycleOpts),
         writeReplaceAudit: async (info) => {
           const ts = Date.now();
           await interactionLog?.append({

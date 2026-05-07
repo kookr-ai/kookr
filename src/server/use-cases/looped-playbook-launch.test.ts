@@ -314,10 +314,69 @@ describe('replaceLoopedPlaybook', () => {
     taskStore,
     launchTask: makeLaunchTask(taskStore),
     ralphLoopService: {
+      cancelLoop: vi.fn((task) => {
+        if (task.ralphLoop && task.ralphLoop.status === 'running') {
+          task.ralphLoop.status = 'cancelled';
+        }
+        return { ok: true, value: 'cancelled', changed: true };
+      }),
       startLoop: vi.fn(async () => ({ ok: true, changed: true, value: undefined })),
     } as unknown as RalphLoopService,
     cancelReplacedTask: vi.fn(async () => undefined),
     ...overrides,
+  });
+
+  it('flips loop.status="cancelled" BEFORE invoking lifecycle cancel', async () => {
+    // Race protection: a buffered Stop event from the old session must see
+    // loop.status='cancelled' (not 'running') by the time it reaches the
+    // cycler, otherwise the cycler spawns iteration N+1 over the doomed
+    // session. Mirrors the precedent in ws-handlers/lifecycle-handler.ts.
+    await withPlaybook(`---
+name: Loopable
+tags: [workflow, loopable]
+---
+
+Loop {{target}}.
+`, async (cwd) => {
+      const taskStore = new TaskStore();
+      const old = setupActiveLoop(taskStore, cwd);
+      const order: string[] = [];
+
+      const ralphLoopService = {
+        cancelLoop: vi.fn((task) => {
+          order.push('cancelLoop');
+          // cancelLoop in production flips loop.status synchronously.
+          if (task.ralphLoop && task.ralphLoop.status === 'running') {
+            task.ralphLoop.status = 'cancelled';
+          }
+          return { ok: true, value: 'cancelled', changed: true };
+        }),
+        startLoop: vi.fn(async () => ({ ok: true, changed: true, value: undefined })),
+      };
+      const cancelReplacedTask = vi.fn(async (taskId) => {
+        order.push('cancelReplacedTask');
+        // At this point loop.status MUST already be 'cancelled' — otherwise
+        // a Stop event arriving during this await spawns iteration N+1.
+        const t = taskStore.getTask(taskId);
+        expect(t?.ralphLoop?.status).toBe('cancelled');
+        taskStore.cancelTask(taskId);
+      });
+
+      await replaceLoopedPlaybook({
+        taskStore,
+        launchTask: makeLaunchTask(taskStore),
+        ralphLoopService: ralphLoopService as unknown as RalphLoopService,
+        cancelReplacedTask,
+      } as never, {
+        replacedTaskId: old.id,
+        cwd,
+        playbookPath: 'workflow.md',
+        parameterValues: { target: 'repo' },
+      });
+
+      expect(order).toEqual(['cancelLoop', 'cancelReplacedTask']);
+      expect(ralphLoopService.cancelLoop).toHaveBeenCalledWith(old);
+    });
   });
 
   it('cancels the old task and launches a new one when keys match', async () => {
@@ -429,6 +488,12 @@ Loop {{target}}.
         taskStore,
         launchTask,
         ralphLoopService: {
+          cancelLoop: vi.fn((task) => {
+            if (task.ralphLoop && task.ralphLoop.status === 'running') {
+              task.ralphLoop.status = 'cancelled';
+            }
+            return { ok: true, value: 'cancelled', changed: true };
+          }),
           startLoop: vi.fn(async () => ({ ok: true, changed: true, value: undefined })),
         } as unknown as RalphLoopService,
         cancelReplacedTask,
@@ -458,21 +523,34 @@ Loop {{target}}.
       const taskStore = new TaskStore();
       const old = setupActiveLoop(taskStore, cwd);
 
-      // First call holds the in-flight key while the cancel is pending.
-      let releaseCancel!: () => void;
-      const cancelOne = vi.fn(() => new Promise<void>((resolve) => {
-        releaseCancel = resolve;
+      // Hold firstP suspended on its launchTask call so the in-flight key
+      // is observably acquired when secondP fires. Using launchTask as the
+      // barrier keeps the test independent of the order of internal awaits
+      // (detectStandalonePlugin, cancelLoop, cancelReplacedTask, etc.).
+      let releaseLaunch!: () => void;
+      const launchOne = vi.fn(() => new Promise<{ task: never; queued: false }>(() => {
+        releaseLaunch = () => { /* never resolves; firstP intentionally leaks */ };
       }));
 
-      const launchTask = makeLaunchTask(taskStore);
+      const sharedRalphService = {
+        cancelLoop: vi.fn((task) => {
+          if (task.ralphLoop && task.ralphLoop.status === 'running') {
+            task.ralphLoop.status = 'cancelled';
+          }
+          return { ok: true, value: 'cancelled', changed: true };
+        }),
+        startLoop: vi.fn(async () => ({ ok: true, changed: true, value: undefined })),
+      };
 
       const firstP = replaceLoopedPlaybook({
         taskStore,
-        launchTask,
-        ralphLoopService: {
-          startLoop: vi.fn(async () => ({ ok: true, changed: true, value: undefined })),
-        } as unknown as RalphLoopService,
-        cancelReplacedTask: cancelOne,
+        launchTask: launchOne,
+        ralphLoopService: sharedRalphService as unknown as RalphLoopService,
+        cancelReplacedTask: vi.fn(async (taskId) => {
+          taskStore.cancelTask(taskId);
+          const t = taskStore.getTask(taskId);
+          if (t?.ralphLoop) t.ralphLoop.status = 'cancelled';
+        }),
       } as never, {
         replacedTaskId: old.id,
         cwd,
@@ -480,18 +558,21 @@ Loop {{target}}.
         parameterValues: { target: 'repo' },
       });
 
-      // Yield once so cancelOne has a chance to start before we fire the second.
-      await new Promise((r) => setImmediate(r));
+      // Avoid an unhandled-rejection warning if firstP is gc'd while pending.
+      firstP.catch(() => undefined);
+
+      // Yield enough times for firstP to traverse all of its synchronous and
+      // microtask boundaries (prepare → validate → in-flight add → detect →
+      // cancelLoop → cancelReplacedTask → launch barrier).
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setImmediate(r));
+      }
 
       const secondP = replaceLoopedPlaybook({
         taskStore,
-        launchTask,
-        ralphLoopService: {
-          startLoop: vi.fn(async () => ({ ok: true, changed: true, value: undefined })),
-        } as unknown as RalphLoopService,
-        cancelReplacedTask: vi.fn(async (taskId) => {
-          taskStore.cancelTask(taskId);
-        }),
+        launchTask: makeLaunchTask(taskStore),
+        ralphLoopService: sharedRalphService as unknown as RalphLoopService,
+        cancelReplacedTask: vi.fn(async () => undefined),
       } as never, {
         replacedTaskId: old.id,
         cwd,
@@ -504,12 +585,10 @@ Loop {{target}}.
         details: { code: 'replace_already_in_progress' },
       } satisfies Partial<LoopedPlaybookLaunchError>);
 
-      // Let the first call complete so we don't leak a hanging Promise.
-      releaseCancel();
-      taskStore.cancelTask(old.id);
-      const t = taskStore.getTask(old.id);
-      if (t?.ralphLoop) t.ralphLoop.status = 'cancelled';
-      await firstP;
+      // firstP intentionally leaks — wherever it suspended, holding the
+      // in-flight key was the only behavior under test. releaseLaunch
+      // exists for documentation; if launchTask ran, calling it is a no-op.
+      if (typeof releaseLaunch === 'function') releaseLaunch();
     });
   });
 });

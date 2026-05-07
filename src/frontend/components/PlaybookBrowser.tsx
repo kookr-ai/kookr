@@ -140,6 +140,15 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   const [launchMode, setLaunchMode] = useState<'standard' | 'looped'>('standard');
   const [submitting, setSubmitting] = useState(false);
   const [conflict, setConflict] = useState<RalphLoopConflict | null>(null);
+  // Clear the conflict whenever a key-affecting input changes — otherwise
+  // the next Replace click would send a key that doesn't match the
+  // replacedTaskId and the server would 400 with replacedTaskId_key_mismatch.
+  // The user has effectively "moved on" from this conflict; let them start
+  // fresh with the new key.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (conflict !== null) setConflict(null);
+  }, [paramValues]);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => usageTracker.getPinned());
   const [agentType, setAgentType] = useState<AgentType>(() =>
     (localStorage.getItem('kookr:defaultAgentType') as AgentType) || defaultAgentType || 'claude-code'

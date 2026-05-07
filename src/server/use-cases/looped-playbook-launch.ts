@@ -229,7 +229,31 @@ export async function replaceLoopedPlaybook(
   const oldIteration = oldTask.ralphLoop.currentIteration;
 
   try {
-    // Cancel the old runtime + loop synchronously. If this throws, abort —
+    // Detect the standalone ralph-wiggum plugin in the cwd. The launch path
+    // does this too (line 53). The replace path is the exact moment the
+    // user re-enters a possibly-misconfigured cwd, so the same guard
+    // applies — a coexistence we missed on launch would now double-fire on
+    // every Stop after the new loop launches.
+    const coexistence = await detectStandalonePlugin(prepared.launchOpts.cwd);
+    if (coexistence.detected) {
+      throw new LoopedPlaybookLaunchError(
+        'standalone ralph-wiggum plugin detected — would double-fire on Stop',
+        409,
+        {
+          matchedFiles: coexistence.matchedFiles,
+          reasons: coexistence.reasons,
+        },
+      );
+    }
+
+    // Flip loop.status='cancelled' BEFORE killing the runtime. Otherwise a
+    // buffered Stop event from the dying session reaches the cycler with
+    // loop.status still 'running' and the cycler spawns iteration N+1
+    // against a doomed session. Mirrors the precedent in
+    // src/server/ws-handlers/lifecycle-handler.ts. cancelLoop is idempotent.
+    deps.ralphLoopService.cancelLoop(oldTask);
+
+    // Cancel the old runtime synchronously. If this throws, abort —
     // launching a new agent over a half-killed runtime risks two agents
     // writing the same cwd.
     try {

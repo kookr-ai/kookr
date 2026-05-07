@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { TaskStore, type SessionInfo } from '../core/tasks.js';
 import { probeStartupLiveness } from './ralph-loop-service.js';
@@ -37,6 +37,10 @@ function withTask(sessions: SessionInfo[]) {
 }
 
 describe('probeStartupLiveness', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('returns the live session when the backend confirms it', async () => {
     const task = withTask([mkSession({ tmuxSession: 'live' })]);
     const backend = fakeBackend((id) => id === 'live');
@@ -52,19 +56,19 @@ describe('probeStartupLiveness', () => {
   });
 
   it('returns null when the per-probe timeout (500ms) fires', async () => {
+    // Fake timers so the test does not wall-clock against the 500ms timeout
+    // (CI flake) and so the probe's pending isAlive does not leak a real
+    // setTimeout after the test resolves.
+    vi.useFakeTimers();
     const task = withTask([mkSession({ tmuxSession: 'slow' })]);
     const backend = fakeBackend(
-      () => new Promise<boolean>((resolve) => {
-        // Resolve well after the probe timeout — the helper must give up first.
-        setTimeout(() => resolve(true), 5_000);
-      }),
+      // Probe never resolves — only the timeout can complete the race.
+      () => new Promise<boolean>(() => { /* never */ }),
     );
-    const start = Date.now();
-    const result = await probeStartupLiveness(task, backend);
-    const elapsed = Date.now() - start;
+    const probe = probeStartupLiveness(task, backend);
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await probe;
     expect(result).toBeNull();
-    // 500ms hardcoded timeout + JS event-loop slop. Allow 800ms upper bound.
-    expect(elapsed).toBeLessThan(800);
   });
 
   it('returns null when isAlive throws (treats backend errors as dead)', async () => {
