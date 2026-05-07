@@ -16,9 +16,12 @@ let playbookOverrides: Map<string, Playbook[]> | null = null;
 
 const PORT = process.env.E2E_PORT !== undefined ? Number(process.env.E2E_PORT) : 4802;
 const tempDir = mkdtempSync(join(tmpdir(), 'kookr-e2e-'));
+const claudeDir = join(tempDir, 'claude');
 const terminal = new FakeTerminalBackend();
 
 async function main() {
+  mkdirSync(claudeDir, { recursive: true });
+
   const server = await createKookrServerInternal({
     port: PORT,
     host: '127.0.0.1',
@@ -32,6 +35,7 @@ async function main() {
     livenessIntervalMs: 600_000,
     terminalBackend: terminal,
     useFakeTerminalBridge: true,
+    claudeDir,
     // Dummy STT URL so the mic button renders in the UI (no real STT service needed)
     sttUrl: 'ws://localhost:9999',
   });
@@ -246,6 +250,12 @@ async function main() {
     // Clear task store
     server.taskStore.loadTasks([]);
 
+    // Clear OSS/project stores so project sidebar tests do not inherit state
+    // from earlier tests sharing the same worker-scoped server.
+    server.projectConfigStore.clearForTests();
+    await server.projectConfigStore.save();
+    await server.ossAttemptStore.clearForTests();
+
     // Stop all hook watchers
     server.hookWatcher.stopAll();
 
@@ -255,6 +265,9 @@ async function main() {
     // Clear fake terminal sessions and content
     terminal.sessions.clear();
     FakeTerminalBridge.clearContent();
+
+    server.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/home/user/projects' });
+    server.broadcastToAll({ type: 'projectSummaries', projects: [] });
 
     return c.json({ ok: true });
   });

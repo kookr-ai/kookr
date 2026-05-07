@@ -13,22 +13,23 @@ async function resetServer(request: APIRequestContext) {
   await request.post('/api/test/reset');
 }
 
-async function getLatestTmuxName(request: APIRequestContext): Promise<string> {
+async function getTmuxNameForPrompt(request: APIRequestContext, prompt: string): Promise<string> {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
     const res = await request.get('/api/tasks');
     const tasks = (await res.json()) as Array<{
+      prompt: string;
       status: string;
       sessions: Array<{ tmuxSession: string }>;
     }>;
-    const inProgress = tasks.filter((t) => t.status === 'inProgress');
-    const last = inProgress[inProgress.length - 1];
-    if (last?.sessions?.length > 0) {
-      return last.sessions[last.sessions.length - 1].tmuxSession;
+    const task = [...tasks].reverse().find((t) => t.prompt === prompt && t.status === 'inProgress');
+    const sessions = task?.sessions;
+    if (sessions && sessions.length > 0) {
+      return sessions[sessions.length - 1].tmuxSession;
     }
     await new Promise((r) => setTimeout(r, 50));
   }
-  throw new Error('Timed out waiting for an inProgress task with sessions');
+  throw new Error(`Timed out waiting for task "${prompt}" with sessions`);
 }
 
 async function injectEvent(request: APIRequestContext, tmuxName: string, event: Record<string, unknown>) {
@@ -42,11 +43,11 @@ async function injectSessionStart(request: APIRequestContext, tmuxName: string) 
   });
 }
 
-async function injectStopEvent(request: APIRequestContext, tmuxName: string) {
+async function injectStopEvent(request: APIRequestContext, tmuxName: string, message = 'I need your help.') {
   await injectEvent(request, tmuxName, {
     session_id: `sess-${Date.now()}`, transcript_path: '/tmp/transcript.jsonl',
     cwd: '/test/project', hook_event_name: 'Stop',
-    stop_hook_active: true, last_assistant_message: 'I need your help.',
+    stop_hook_active: true, last_assistant_message: message,
   });
 }
 
@@ -92,7 +93,7 @@ test.describe('Input stability — no auto-send on state changes', () => {
 
   test('autocomplete is disabled on response input', async ({ page, request }) => {
     await launchViaUI(page, 'AC Test', '/test/ac');
-    const tmux = await getLatestTmuxName(request);
+    const tmux = await getTmuxNameForPrompt(request, 'AC Test');
     await injectSessionStart(request, tmux);
     await injectStopEvent(request, tmux);
     await page.locator('.finding-card').click();
@@ -101,7 +102,7 @@ test.describe('Input stability — no auto-send on state changes', () => {
 
   test('input preserved when suggestions arrive', async ({ page, request }) => {
     await launchViaUI(page, 'Sugg Agent', '/test/sugg');
-    const tmux = await getLatestTmuxName(request);
+    const tmux = await getTmuxNameForPrompt(request, 'Sugg Agent');
     await injectSessionStart(request, tmux);
     await injectStopEvent(request, tmux);
     await page.locator('.finding-card').click();
@@ -121,12 +122,11 @@ test.describe('Input stability — no auto-send on state changes', () => {
 
   test('input preserved when suggestions disappear', async ({ page, request }) => {
     await launchViaUI(page, 'Dis Agent', '/test/dis');
-    const tmux = await getLatestTmuxName(request);
+    const tmux = await getTmuxNameForPrompt(request, 'Dis Agent');
     await injectSessionStart(request, tmux);
-    await injectStopEvent(request, tmux);
+    await injectStopEvent(request, tmux, 'Should I continue with the next step?');
     await page.locator('.finding-card').click();
 
-    await broadcastSuggestion(request, tmux, ['S1'], [{ label: 'A', value: 'A' }]);
     await expect(page.locator('.btn-quick-action').first()).toBeVisible({ timeout: 3000 });
 
     const userText = 'Half-finished thought';
@@ -141,7 +141,7 @@ test.describe('Input stability — no auto-send on state changes', () => {
 
   test('input preserved when anomaly clears externally', async ({ page, request }) => {
     await launchViaUI(page, 'Clear Agent', '/test/clear');
-    const tmux = await getLatestTmuxName(request);
+    const tmux = await getTmuxNameForPrompt(request, 'Clear Agent');
     await injectSessionStart(request, tmux);
     await injectStopEvent(request, tmux);
     await page.locator('.finding-card').click();
@@ -160,12 +160,12 @@ test.describe('Input stability — no auto-send on state changes', () => {
   test('input cleared when switching agents (finding → healthy)', async ({ page, request }) => {
     // Use finding + healthy agent (only 1 stop event) instead of 2 findings
     await launchViaUI(page, 'Finding Agent', '/test/finding');
-    const tmux1 = await getLatestTmuxName(request);
+    const tmux1 = await getTmuxNameForPrompt(request, 'Finding Agent');
     await injectSessionStart(request, tmux1);
     await injectStopEvent(request, tmux1);
 
     await launchViaUI(page, 'Healthy Agent', '/test/healthy');
-    const tmux2 = await getLatestTmuxName(request);
+    const tmux2 = await getTmuxNameForPrompt(request, 'Healthy Agent');
     await injectSessionStart(request, tmux2);
     await injectToolUse(request, tmux2); // healthy, no anomaly
 
@@ -186,10 +186,10 @@ test.describe('Input stability — no auto-send on state changes', () => {
     expect(await getKeysReceived(request, tmux2)).not.toContain('Message for finding');
   });
 
-  test('Tab key does NOT steal focus from response input', async ({ page, request }) => {
+  test('Tab key does not send or skip when response input is focused', async ({ page, request }) => {
     // Only 1 agent needed — Tab behavior is in the global handler
     await launchViaUI(page, 'Tab Agent', '/test/tab');
-    const tmux = await getLatestTmuxName(request);
+    const tmux = await getTmuxNameForPrompt(request, 'Tab Agent');
     await injectSessionStart(request, tmux);
     await injectStopEvent(request, tmux);
 
@@ -199,9 +199,11 @@ test.describe('Input stability — no auto-send on state changes', () => {
 
     await page.keyboard.press('Tab');
 
-    // Input still focused and text preserved (Tab didn't steal focus)
-    await expect(page.locator('.response-row input')).toBeFocused();
+    // Text and selection are preserved. Browser focus may move normally, but
+    // Kookr must not treat Tab as the global "skip finding" shortcut here.
     await expect(page.locator('.response-row input')).toHaveValue('Typing here');
+    await expect(page.locator('.finding-card.selected')).toBeVisible();
+    expect(await getKeysReceived(request, tmux)).not.toContain('Typing here');
   });
 
 });

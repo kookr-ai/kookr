@@ -535,6 +535,10 @@ test.describe('sidebar collapsible sections', () => {
     await page.locator('.finding-actions .btn-xs:has-text("Snooze")').click();
     await page.locator('.snooze-dialog-btn:has-text("5m")').click();
     await expect(page.locator('.snoozed-section')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.snoozed-label')).toContainText('Snoozed (1)');
+    if (await page.locator('.snoozed-section .section-chevron').textContent() === '\u25B8') {
+      await page.locator('.snoozed-section .section-header').click();
+    }
     await expect(page.locator('.snoozed-row')).toBeVisible();
 
     // Collapse snoozed section

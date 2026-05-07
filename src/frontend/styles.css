@@ -706,7 +706,9 @@ kbd {
 .healthy-row-top {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
 }
 .healthy-row-name {
   font-weight: 600;
@@ -714,11 +716,30 @@ kbd {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
+  flex: 1 1 90px;
+  min-width: 84px;
 }
 .healthy-row-meta {
   font-size: 11px;
   color: var(--text-muted);
+}
+.healthy-row-details {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.healthy-row-controls,
+.ralph-loop-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.healthy-row-controls {
+  margin-left: auto;
 }
 .healthy-dot-wrap {
   position: relative;

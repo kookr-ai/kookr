@@ -10,6 +10,7 @@ import {
   resetServer,
   launchViaUI,
   getLatestTmuxName,
+  getTmuxNameForPrompt,
   getTasks,
   injectSessionStart,
   injectStopEvent,
@@ -44,12 +45,12 @@ test.describe('Triage loop', () => {
   test('respond and advance to next finding', async ({ page, request }) => {
     // Create two findings
     await launchViaUI(page, 'Agent A', '/test/a');
-    const tmuxA = await getLatestTmuxName(request);
+    const tmuxA = await getTmuxNameForPrompt(request, 'Agent A');
     await injectSessionStart(request, tmuxA);
     await injectStopEvent(request, tmuxA);
 
     await launchViaUI(page, 'Agent B', '/test/b');
-    const tmuxB = await getLatestTmuxName(request);
+    const tmuxB = await getTmuxNameForPrompt(request, 'Agent B');
     await injectSessionStart(request, tmuxB);
     await injectStopEvent(request, tmuxB);
 
@@ -177,19 +178,19 @@ test.describe('Multi-agent prioritization', () => {
   test('three agents with different severities are ordered correctly', async ({ page, request }) => {
     // Agent A: needs_input (info)
     await launchViaUI(page, 'Agent info', '/test/a');
-    const tmuxA = await getLatestTmuxName(request);
+    const tmuxA = await getTmuxNameForPrompt(request, 'Agent info');
     await injectSessionStart(request, tmuxA);
     await injectStopEvent(request, tmuxA);
 
     // Agent B: permission_blocked (warning)
     await launchViaUI(page, 'Agent warning', '/test/b');
-    const tmuxB = await getLatestTmuxName(request);
+    const tmuxB = await getTmuxNameForPrompt(request, 'Agent warning');
     await injectSessionStart(request, tmuxB);
     await injectPermissionEvent(request, tmuxB);
 
     // Agent C: AskUserQuestion needs_input (warning)
     await launchViaUI(page, 'Agent askuser', '/test/c');
-    const tmuxC = await getLatestTmuxName(request);
+    const tmuxC = await getTmuxNameForPrompt(request, 'Agent askuser');
     await injectSessionStart(request, tmuxC);
     await injectAskUserQuestion(request, tmuxC);
 
@@ -206,19 +207,19 @@ test.describe('Multi-agent prioritization', () => {
   test('Ctrl+N cycles through all findings', async ({ page, request }) => {
     // Use mixed anomaly types to avoid finding grouping (≥3 same type → group)
     await launchViaUI(page, 'Agent 1', '/test/a');
-    const tmux1 = await getLatestTmuxName(request);
+    const tmux1 = await getTmuxNameForPrompt(request, 'Agent 1');
     await injectSessionStart(request, tmux1);
     await injectStopEvent(request, tmux1);
     await expect(page.locator('.finding-card')).toHaveCount(1, { timeout: 10000 });
 
     await launchViaUI(page, 'Agent 2', '/test/b');
-    const tmux2 = await getLatestTmuxName(request);
+    const tmux2 = await getTmuxNameForPrompt(request, 'Agent 2');
     await injectSessionStart(request, tmux2);
     await injectPermissionEvent(request, tmux2);
     await expect(page.locator('.finding-card')).toHaveCount(2, { timeout: 10000 });
 
     await launchViaUI(page, 'Agent 3', '/test/c');
-    const tmux3 = await getLatestTmuxName(request);
+    const tmux3 = await getTmuxNameForPrompt(request, 'Agent 3');
     await injectSessionStart(request, tmux3);
     await injectStopEvent(request, tmux3);
     await expect(page.locator('.finding-card')).toHaveCount(3, { timeout: 10000 });
@@ -375,12 +376,12 @@ test.describe('Snoozed agents', () => {
 
   test('snoozing with multiple agents only snoozes the target', async ({ page, request }) => {
     await launchViaUI(page, 'Agent stay', '/test/a');
-    const tmuxA = await getLatestTmuxName(request);
+    const tmuxA = await getTmuxNameForPrompt(request, 'Agent stay');
     await injectSessionStart(request, tmuxA);
     await injectStopEvent(request, tmuxA);
 
     await launchViaUI(page, 'Agent snooze', '/test/b');
-    const tmuxB = await getLatestTmuxName(request);
+    const tmuxB = await getTmuxNameForPrompt(request, 'Agent snooze');
     await injectSessionStart(request, tmuxB);
     await injectStopEvent(request, tmuxB);
 

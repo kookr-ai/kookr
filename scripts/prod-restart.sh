@@ -85,7 +85,7 @@ terminate_pids() {
 }
 
 find_port_pids() {
-  lsof -ti:"$PORT" 2>/dev/null || true
+  lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true
 }
 
 wait_for_port_to_clear() {
@@ -93,7 +93,7 @@ wait_for_port_to_clear() {
   local deadline=$((SECONDS + timeout_seconds))
 
   while (( SECONDS < deadline )); do
-    if ! lsof -ti:"$PORT" >/dev/null 2>&1; then
+    if ! lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -148,7 +148,7 @@ stop_existing_server() {
     wait_for_port_to_clear 5 || true
   fi
 
-  if lsof -ti:"$PORT" >/dev/null 2>&1; then
+  if lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Port ${PORT} is still busy after shutdown attempt"
     exit 1
   fi

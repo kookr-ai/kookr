@@ -299,8 +299,9 @@ test.describe('Multi-Project Tracking', () => {
     await broadcastProjectSummaries(request);
     await expect(page.locator('[data-testid="project-sidebar"]')).toBeVisible({ timeout: 5000 });
 
-    // Select project A with Alt+1
-    await page.keyboard.press('Alt+1');
+    // Select project A with the current project-sidebar shortcut range.
+    // Alt+1..3 are reserved for terminal send-and-next actions.
+    await page.keyboard.press('Alt+4');
     await expect(page.locator('.finding-card')).toHaveCount(1, { timeout: 3000 });
 
     // Alt+0 goes back to All Projects

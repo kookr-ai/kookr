@@ -598,17 +598,16 @@ test.describe('Kookr E2E — nominal paths', () => {
     expect(keysData.keysReceived).toContain('Hello from REST');
   });
 
-  // --- Terminal mouse option (xterm.js owns wheel/selection/right-click) ---
+  // --- Removed tmux option endpoint ---
 
-  test('launched agent tmux session has mouse mode disabled so xterm.js owns wheel and selection', async ({ page, request }) => {
+  test('launched dtach agent does not expose removed tmux session options', async ({ page, request }) => {
     await launchViaUI(page, 'Scroll test task', '/test/project');
     const tmuxName = await getLatestTmuxName(request);
 
-    // Verify via the fake's tracked options (real tmux behavior validated by canary test)
+    // V8 removed tmux; dtach has no mouse-mode option surface.
     const res = await request.get(`/api/test/session-option/${encodeURIComponent(tmuxName)}/mouse`);
-    expect(res.status()).toBe(200);
+    expect(res.status()).toBe(410);
     const data = await res.json();
-
-    expect(data.value).toBe('off');
+    expect(data.error).toContain('dtach');
   });
 });
