@@ -463,6 +463,20 @@ If you run Claude Code or Codex CLI agents on this repo and want the PR-workflow
 | [Hooks setup](docs/hooks-setup.md) | Repo + Claude Code hook install, inventory, verification, troubleshooting |
 | [ADRs](docs/adr/README.md) | Accepted decisions — TypeScript, managed dtach sessions, session bridge |
 
+## Roadmap
+
+A snapshot of where Kookr is headed. See [`docs/roadmap.md`](docs/roadmap.md) for the full phase-by-phase plan.
+
+| Recently shipped | In progress | Coming up | Exploring |
+|------------------|-------------|-----------|-----------|
+| Use cases section in README ([#123](https://github.com/kookr-ai/kookr/pull/123)) | Public-launch governance docs — CONTRIBUTING/SECURITY/COC ([#91](https://github.com/kookr-ai/kookr/issues/91), [#92](https://github.com/kookr-ai/kookr/issues/92), [#93](https://github.com/kookr-ai/kookr/issues/93)) | Codex session discovery (date-partitioned `~/.codex/sessions/`) | Plugin / `SKILL.md` extension SDK |
+| Auto-watch OSS registry sources ([#122](https://github.com/kookr-ai/kookr/pull/122)) | Restoring green CI on `main` ([#89](https://github.com/kookr-ai/kookr/issues/89)) | Dark / light theme | Session persistence and history |
+| Onboarding portability — strip maintainer paths ([#121](https://github.com/kookr-ai/kookr/pull/121)) | Codex CLI adapter — per-session routing + hook gaps ([PoC 003](docs/poc/003-codex-compatibility-gaps.md)) | Long-form Getting-started guide | Windows + Gemini CLI adapters |
+| Live badges, Community & Support, Privacy, Star History ([#119](https://github.com/kookr-ai/kookr/pull/119)) | Three-pillar README rewrite + alternatives comparison ([#110](https://github.com/kookr-ai/kookr/issues/110), [#111](https://github.com/kookr-ai/kookr/issues/111)) | Publish `kookr` to npm | Team mode and cloud deployment option |
+| CLA + Apache 2.0 relicensing ([#73](https://github.com/kookr-ai/kookr/pull/73), [#83](https://github.com/kookr-ai/kookr/pull/83)) | | Issue templates + Dependabot + secret scanning ([#94](https://github.com/kookr-ai/kookr/issues/94), [#97](https://github.com/kookr-ai/kookr/issues/97)) | |
+
+> Maintenance note: this snapshot is meant to be refreshed after each release. A formal cadence will be tracked in [`CONTRIBUTING.md`](https://github.com/kookr-ai/kookr/issues/93) once that file lands.
+
 ## Contributing
 
 Contributions are welcome! This project uses:
