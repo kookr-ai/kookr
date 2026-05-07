@@ -133,9 +133,59 @@ interface Props {
   relaunchParameterValues?: Record<string, string>;
   /** When launched from a project detail drawer, pre-fill source-matching params */
   projectContext?: ProjectSummary;
+  /**
+   * Switch the parent dialog back to the manual tab so the user can edit the
+   * cwd. The "Change…" link in the resolved-cwd label invokes this.
+   */
+  onRequestEditCwd?: () => void;
 }
 
-export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaunchParameterValues, projectContext }: Props) {
+function ResolvedCwdLabel({
+  cwd,
+  overrideCwd,
+  onRequestEdit,
+}: {
+  cwd: string;
+  /** When set, the playbook's own `cwd:` overrides the dialog cwd. */
+  overrideCwd?: string;
+  onRequestEdit?: () => void;
+}): React.ReactElement {
+  const effective = overrideCwd ?? cwd;
+  return (
+    <div className="playbook-resolved-cwd">
+      <span className="playbook-resolved-cwd-label">Running in:</span>
+      <span
+        className={`project-badge color-${projectColor(effective)}`}
+        title={effective}
+      >
+        {projectLabel(effective)}
+      </span>
+      <span className="playbook-resolved-cwd-path" title={effective}>
+        {effective}
+      </span>
+      {overrideCwd !== undefined ? (
+        <span
+          className="playbook-resolved-cwd-override"
+          title={`This playbook pins its working directory to ${overrideCwd}, overriding the project default.`}
+        >
+          <span aria-hidden="true">ⓘ </span>overridden by playbook
+        </span>
+      ) : (
+        onRequestEdit && (
+          <button
+            type="button"
+            className="link-button playbook-resolved-cwd-change"
+            onClick={onRequestEdit}
+          >
+            Change…
+          </button>
+        )
+      )}
+    </div>
+  );
+}
+
+export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaunchParameterValues, projectContext, onRequestEditCwd }: Props) {
   const { playbooks, playbooksLoading, availableAgentTypes, defaultAgentType, projectSummaries } = useKookrStore();
   const agentOptions = availableAgentTypes.length > 0
     ? availableAgentTypes
@@ -512,7 +562,6 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
 
   // --- Detail view (selected playbook) ---
   if (selected) {
-    const effectiveCwd = selected.cwd ?? cwd;
     const isLoopable = selected.tags.includes('loopable');
     const loopDisabledReason = selected.loopValidationError
       ?? (!isLoopable ? 'Looping unavailable: this playbook is not tagged loopable.' : '');
@@ -526,17 +575,13 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
           </button>
           <span className="playbook-detail-name">{selected.name}</span>
           {renderPlaybookTags(selected.tags)}
-          <span
-            className={`project-badge color-${projectColor(effectiveCwd)}`}
-            title={effectiveCwd}
-          >
-            {projectLabel(effectiveCwd)}
-          </span>
         </div>
         {selected.description && <p className="playbook-detail-desc">{selected.description}</p>}
-        <div className="playbook-cwd" title={effectiveCwd}>
-          {effectiveCwd}
-        </div>
+        <ResolvedCwdLabel
+          cwd={cwd}
+          overrideCwd={selected.cwd ?? undefined}
+          onRequestEdit={onRequestEditCwd}
+        />
 
         <div className="launch-mode-toggle playbook-launch-mode" role="group" aria-label="Playbook launch mode">
           <button
@@ -756,11 +801,14 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   // --- Empty state ---
   if (playbooks.length === 0) {
     return (
-      <div className="playbook-empty">
-        No playbooks found.
-        <br />
-        Create <code>.kookr/playbooks/*.md</code> in your project.
-      </div>
+      <>
+        <ResolvedCwdLabel cwd={cwd} onRequestEdit={onRequestEditCwd} />
+        <div className="playbook-empty">
+          No playbooks found.
+          <br />
+          Create <code>.kookr/playbooks/*.md</code> in your project.
+        </div>
+      </>
     );
   }
 
@@ -770,6 +818,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
 
   return (
     <div>
+      <ResolvedCwdLabel cwd={cwd} onRequestEdit={onRequestEditCwd} />
       <div className="playbook-search">
         <input
           ref={searchRef}
