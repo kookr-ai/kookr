@@ -234,16 +234,11 @@ Update with `/plugin marketplace update kookr`. See [`plugin/README.md`](plugin/
 
 ## Why Kookr?
 
-Developer tooling evolved in waves: searching Stack Overflow → asking ChatGPT → IDE-integrated AI (Cursor, Copilot) → autonomous CLI agents (Claude Code, Codex CLI, Gemini CLI). The current frontier: **multiple agents in parallel** to multiply throughput.
+Developer tooling evolved in waves — Stack Overflow → ChatGPT → IDE-integrated AI (Cursor, Copilot) → autonomous CLI agents. The current frontier is **running multiple agents in parallel**, which creates a new bottleneck: managing the agents themselves.
 
-But this creates a new bottleneck — **managing the agents themselves:**
-
-- An agent gets **stuck in a loop** — retrying the same broken approach 20 times — and you don't notice for 10 minutes
-- An agent **needs something from you** — credentials, a file path, a design decision — and sits idle
-- An agent **drifts off-task** — it was supposed to fix auth but started refactoring the database layer
-- An agent **burns through budget** on a dead-end approach while a simple hint would have unblocked it
-
-The problem isn't just "which agent needs me" — it's **understanding what each agent is doing well enough to intervene at the right moment**.
+- **Local-first** — Runs on your machine. No cloud, no telemetry, no vendor lock-in.
+- **Multi-agent native** — Built from day one for parallel Claude Code / Codex CLI agents, not bolted on.
+- **Open & extensible** — Apache 2.0, plugin-based skills and playbooks, hooks-driven detection you can audit.
 
 ### How Detection Works
 
