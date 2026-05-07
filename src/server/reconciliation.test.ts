@@ -44,6 +44,83 @@ describe('Startup Reconciliation', () => {
     expect(result.markedCompleted).toHaveLength(0);
   });
 
+  test('marks live session worktree missing when registry no longer contains cwd', async () => {
+    const task = taskStore.createTask('Fix bug', '/repo-missing');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-missing',
+      agentType: 'claude-code',
+      cwd: '/repo-missing',
+      createdAt: new Date(),
+      lastStatus: 'running',
+    });
+    await backend.createSession(spec('kookr-missing'));
+
+    const result = await reconcile(taskStore, backend, {
+      byPath: () => null,
+      snapshot: () => ({ entries: [], refreshedAt: new Date().toISOString(), lastError: null }),
+    });
+
+    expect(result.worktreesMissing).toContain('kookr-missing');
+    expect(taskStore.getTask(task.id)!.sessions[0].worktreeHealth).toBe('missing');
+  });
+
+  test('marks live session worktree stale when registry refresh failed', async () => {
+    const task = taskStore.createTask('Fix bug', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-stale',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+      lastStatus: 'running',
+    });
+    await backend.createSession(spec('kookr-stale'));
+
+    const result = await reconcile(taskStore, backend, {
+      byPath: () => null,
+      snapshot: () => ({ entries: [], refreshedAt: new Date().toISOString(), lastError: 'git failed' }),
+    });
+
+    expect(result.worktreesStale).toContain('kookr-stale');
+    expect(taskStore.getTask(task.id)!.sessions[0]).toMatchObject({
+      worktreeHealth: 'stale',
+      worktreeRegistryStale: true,
+    });
+  });
+
+  test('updates git metadata when branch changed since launch', async () => {
+    const task = taskStore.createTask('Fix bug', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-branch',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+      lastStatus: 'running',
+      gitBranch: 'old-branch',
+      gitCommit: '1111111',
+      gitIsWorktree: true,
+    });
+    await backend.createSession(spec('kookr-branch'));
+
+    const result = await reconcile(taskStore, backend, {
+      byPath: () => ({
+        path: '/repo',
+        branch: 'new-branch',
+        head: '2222222222222222222222222222222222222222',
+        isDetached: false,
+        isPrunable: false,
+        isMain: false,
+      }),
+      snapshot: () => ({ entries: [], refreshedAt: new Date().toISOString(), lastError: null }),
+    });
+
+    expect(result.worktreesChanged).toContain('kookr-branch');
+    expect(taskStore.getTask(task.id)!.sessions[0]).toMatchObject({
+      gitBranch: 'new-branch',
+      gitCommit: '2222222',
+      worktreeHealth: 'ok',
+    });
+  });
+
   test('task has session + backend dead - mark session completed, task auto-completes', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     taskStore.addSession(task.id, {

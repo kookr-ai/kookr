@@ -1,4 +1,4 @@
-import type { AgentEvent, Anomaly, AnomalyType, TokenUsage } from './types.js';
+import type { AgentEvent, Anomaly, AnomalyType, TokenUsage, WorktreeHealth } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { TaskStore } from './tasks.js';
 import type { AttentionQueue } from './attention-queue.js';
@@ -33,6 +33,9 @@ export interface AgentState {
   gitBranch?: string;
   gitCommit?: string;
   gitIsWorktree?: boolean;
+  worktreeHealth?: WorktreeHealth;
+  worktreeHealthObservedAt?: string;
+  worktreeRegistryStale?: boolean;
   projectId?: string;
   completionDigest?: CompletionDigest;
   completionFeedback?: import('./tasks.js').TaskCompletionFeedback;
@@ -426,7 +429,7 @@ export class Monitor {
    */
   getSnapshot(): AgentState[] {
     // Build a lookup: tmuxSession → { task, session } for O(1) enrichment
-    const sessionIndex = new Map<string, { taskId: string; name?: string; prompt: string; cwd: string; agentType: import('./agent-types.js').AgentType; createdAt: Date; playbookId?: string; playbookParameterValues?: Record<string, string>; projectId?: string; gitBranch?: string; gitCommit?: string; gitIsWorktree?: boolean }>();
+    const sessionIndex = new Map<string, { taskId: string; name?: string; prompt: string; cwd: string; agentType: import('./agent-types.js').AgentType; createdAt: Date; playbookId?: string; playbookParameterValues?: Record<string, string>; projectId?: string; gitBranch?: string; gitCommit?: string; gitIsWorktree?: boolean; worktreeHealth?: WorktreeHealth; worktreeHealthObservedAt?: string; worktreeRegistryStale?: boolean }>();
     for (const task of this.taskStore.getAllTasks()) {
       for (const session of task.sessions) {
         sessionIndex.set(session.tmuxSession, {
@@ -442,6 +445,9 @@ export class Monitor {
           gitBranch: session.gitBranch,
           gitCommit: session.gitCommit,
           gitIsWorktree: session.gitIsWorktree,
+          worktreeHealth: session.worktreeHealth,
+          worktreeHealthObservedAt: session.worktreeHealthObservedAt,
+          worktreeRegistryStale: session.worktreeRegistryStale,
         });
       }
     }
@@ -480,6 +486,9 @@ export class Monitor {
         state.gitBranch = meta.gitBranch;
         state.gitCommit = meta.gitCommit;
         state.gitIsWorktree = meta.gitIsWorktree;
+        state.worktreeHealth = meta.worktreeHealth;
+        state.worktreeHealthObservedAt = meta.worktreeHealthObservedAt;
+        state.worktreeRegistryStale = meta.worktreeRegistryStale;
         state.projectId = meta.projectId;
         // Enrich with token usage, task status, and autonomy from the task
         const task = this.taskStore.getTask(meta.taskId);
@@ -543,6 +552,9 @@ export class Monitor {
             gitBranch: lastSession?.gitBranch,
             gitCommit: lastSession?.gitCommit,
             gitIsWorktree: lastSession?.gitIsWorktree,
+            worktreeHealth: lastSession?.worktreeHealth,
+            worktreeHealthObservedAt: lastSession?.worktreeHealthObservedAt,
+            worktreeRegistryStale: lastSession?.worktreeRegistryStale,
             completionDigest: task.completionDigest,
             completionFeedback: task.completionFeedback,
             autonomy: task.autonomy,

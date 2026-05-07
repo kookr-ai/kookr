@@ -1,6 +1,7 @@
 import type { TaskStore } from '../core/tasks.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { getGitInfo } from '../adapters/git-info.js';
+import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
 
 export interface ReconciliationResult {
   /** Sessions that are alive and monitoring can resume */
@@ -25,6 +26,12 @@ export interface ReconciliationResult {
   tasksTerminated: string[];
   /** Backend sessions not found in tasks (orphans from a prior run) */
   orphans: string[];
+  /** Sessions whose cwd no longer appears in the git worktree registry */
+  worktreesMissing: string[];
+  /** Sessions whose worktree registry entry is prunable/stale */
+  worktreesStale: string[];
+  /** Sessions whose git/worktree metadata changed */
+  worktreesChanged: string[];
 }
 
 /**
@@ -47,6 +54,7 @@ export interface ReconciliationResult {
 export async function reconcile(
   taskStore: TaskStore,
   backend: TerminalBackend,
+  worktreeRegistry?: Pick<WorktreeRegistry, 'byPath' | 'snapshot'>,
 ): Promise<ReconciliationResult> {
   const result: ReconciliationResult = {
     resumed: [],
@@ -54,6 +62,9 @@ export async function reconcile(
     tasksCompleted: [],
     tasksTerminated: [],
     orphans: [],
+    worktreesMissing: [],
+    worktreesStale: [],
+    worktreesChanged: [],
   };
 
   const liveSessions = new Set(await backend.listSessions());
@@ -70,14 +81,36 @@ export async function reconcile(
 
       if (liveSessions.has(session.tmuxSession)) {
         result.resumed.push(session.tmuxSession);
-        if (!session.gitBranch && !session.gitIsDetached) {
-          getGitInfo(session.cwd)
-            .then((info) => {
-              if (info) {
-                taskStore.updateSessionGitInfo(task.id, session.tmuxSession, info);
-              }
-            })
-            .catch(() => { /* graceful degradation */ });
+        const registryEntry = worktreeRegistry?.byPath(session.cwd);
+        const registrySnapshot = worktreeRegistry?.snapshot();
+        if (registrySnapshot?.lastError) {
+          taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'stale', { registryStale: true });
+          result.worktreesStale.push(session.tmuxSession);
+        } else if (worktreeRegistry && registrySnapshot?.refreshedAt && !registryEntry) {
+          taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'missing');
+          result.worktreesMissing.push(session.tmuxSession);
+        } else if (registryEntry?.isPrunable) {
+          taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'stale');
+          result.worktreesStale.push(session.tmuxSession);
+        } else if (registryEntry) {
+          taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'ok');
+        }
+
+        if ((!session.gitBranch && !session.gitIsDetached) || registryEntry) {
+          try {
+            const info = await getGitInfo(session.cwd, worktreeRegistry);
+            if (info) {
+              const changed =
+                session.gitBranch !== (info.branch ?? undefined)
+                || session.gitCommit !== (info.commit ?? undefined)
+                || session.gitIsWorktree !== (info.isWorktree || undefined)
+                || session.gitIsDetached !== (info.isDetached || undefined);
+              taskStore.updateSessionGitInfo(task.id, session.tmuxSession, info);
+              if (changed) result.worktreesChanged.push(session.tmuxSession);
+            }
+          } catch {
+            // graceful degradation
+          }
         }
       } else {
         taskStore.updateSession(task.id, session.tmuxSession, {

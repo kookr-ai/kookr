@@ -133,6 +133,26 @@ describe('getGitInfo', () => {
       rmSync(dir, { recursive: true });
     }
   });
+
+  test('uses worktree registry entry before filesystem fallback', async () => {
+    const result = await getGitInfo('/missing-from-disk', {
+      byPath: () => ({
+        path: '/missing-from-disk',
+        branch: 'feature/live',
+        head: 'abcdef1234567890abcdef1234567890abcdef12',
+        isDetached: false,
+        isPrunable: false,
+        isMain: false,
+      }),
+    });
+
+    expect(result).toEqual({
+      branch: 'feature/live',
+      commit: 'abcdef1',
+      isWorktree: true,
+      isDetached: false,
+    });
+  });
 });
 
 describe('isGitBranchCommand', () => {

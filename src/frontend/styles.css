@@ -849,6 +849,24 @@ kbd {
 .project-badge.color-6 { background: rgba(244,114,182,0.12); color: #f589b7; }
 .project-badge.color-7 { background: rgba(163,163,163,0.12); color: #b0b0b0; }
 
+.worktree-health {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.worktree-health--missing {
+  background: rgba(248, 113, 113, 0.14);
+  color: #f98e8e;
+}
+.worktree-health--stale {
+  background: rgba(251, 191, 36, 0.14);
+  color: #f5c542;
+}
+
 /* --- Branch Labels --- */
 .branch-label {
   font-size: 11px;

@@ -106,6 +106,7 @@ import {
   type OssSourceWatcherFs,
 } from './oss-source-watcher.js';
 import { projectIdForRepo } from '../core/oss-attempt-store.js';
+import { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
 
 // --- Exported types ---
 
@@ -273,6 +274,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   circuitBreakerRegistry.register(hookWatcherBreaker);
 
   const taskStore = new TaskStore();
+  const worktreeRegistry = new WorktreeRegistry();
   // Snoozes are keyed by taskId so they survive session rotation (Ralph
   // iterations, crash-recovery launches, redeploys mid-gap between iterations).
   // See src/core/attention-queue.ts and src/core/task-persistence.ts.
@@ -479,8 +481,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     console.log(`Loaded ${persisted.tasks.length} task(s) from ${tasksFile} (lifetime spend: $${taskStore.getLifetimeSpendUsd().toFixed(2)})`);
   }
 
+  await worktreeRegistry.refresh(serverCwd);
+
   // Reconcile with live backend sessions
-  const reconcileResult = await reconcile(taskStore, terminalBackend);
+  const reconcileResult = await reconcile(taskStore, terminalBackend, worktreeRegistry);
   if (reconcileResult.resumed.length > 0) {
     console.log(`Resumed monitoring: ${reconcileResult.resumed.join(', ')}`);
   }
@@ -1082,6 +1086,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       shadowRegistry, agentLifecycleDeps: lifecycleDeps,
       quotaAdapter, getMaxActiveTasks, suppressionTracker,
       checkpointCycler, budgetChecker,
+      worktreeRegistry,
+      worktreeRegistryRepoPath: serverCwd,
+      getDashboardClientCount: () => clients.size,
     },
   });
 

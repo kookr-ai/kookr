@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { TaskStatus, AgentStatus, TokenUsage, GitInfo, CodexHookCapabilities } from './types.js';
+import type { TaskStatus, AgentStatus, TokenUsage, GitInfo, CodexHookCapabilities, WorktreeHealth } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 
@@ -134,6 +134,9 @@ export interface SessionInfo {
   gitCommit?: string;
   gitIsWorktree?: boolean;
   gitIsDetached?: boolean;
+  worktreeHealth?: WorktreeHealth;
+  worktreeHealthObservedAt?: string;
+  worktreeRegistryStale?: boolean;
   /** Set to true when this session was terminated by a crash and a replacement was launched. */
   crashRecovered?: boolean;
   /** How many times this session chain has been relaunched (0 = original). */
@@ -444,6 +447,22 @@ export class TaskStore {
     session.gitCommit = gitInfo.commit ?? undefined;
     session.gitIsWorktree = gitInfo.isWorktree || undefined;
     session.gitIsDetached = gitInfo.isDetached || undefined;
+    task.updatedAt = new Date();
+  }
+
+  updateSessionWorktreeHealth(
+    taskId: string,
+    tmuxSession: string,
+    health: WorktreeHealth,
+    opts: { registryStale?: boolean } = {},
+  ): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    const session = task.sessions.find((s) => s.tmuxSession === tmuxSession);
+    if (!session) return;
+    session.worktreeHealth = health;
+    session.worktreeHealthObservedAt = new Date().toISOString();
+    session.worktreeRegistryStale = opts.registryStale || undefined;
     task.updatedAt = new Date();
   }
 

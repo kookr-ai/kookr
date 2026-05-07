@@ -60,6 +60,19 @@ The system MAY automatically detect when new agents start or existing agents exi
 
 **Rationale for deferral:** Depends on R1.4 (agent discovery). V1 tracks only Kookr-launched agents.
 
+### R1.6: Reconcile Agent Worktree Health [F1.4] — SHOULD — `partial`
+
+The system SHOULD reconcile Kookr-managed task sessions against the live `git worktree list` registry.
+
+**Acceptance criteria:**
+- At startup, the backend refreshes the worktree registry before task/session reconciliation.
+- While dashboard clients are connected, the backend refreshes the registry on the liveness tick.
+- A live session whose `cwd` is absent from the refreshed registry is marked `missing` without stopping the terminal session.
+- A prunable worktree or failed registry refresh is surfaced as stale metadata in the agent snapshot.
+- Agent snapshots carry worktree health so the frontend can render a compact warning near project/branch metadata.
+
+**Evidence:** `src/adapters/git-worktree-registry.ts`, `src/server/reconciliation.ts`, `src/server/lifecycle-timers.ts`, `src/core/monitor.ts`, `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/FindingsPanel.tsx`.
+
 ---
 
 ## R2: Anomaly Detection
