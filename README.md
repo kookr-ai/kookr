@@ -255,6 +255,23 @@ Kookr says: *"Agent #3 — same error repeated 8 times: `TypeError: token.verify
 
 > **V2 goal:** LLM-powered analysis for nuanced issues — trajectory drift, budget burn, strategic dead ends — with natural-language explanations like: *"Agent #3 keeps editing `auth.ts` but hasn't tried changing the import. It seems to be importing from the wrong module. Want to give it a hint?"*
 
+### Compared to alternatives
+
+How Kookr stacks up against the supervision approaches developers reach for today. ✅ = built-in, ⚠️ = partial / DIY, ❌ = not addressed. Combinations like `tmux` + `ccusage` + hand-rolled hooks can cover more cells than any single column below — Kookr's value is bundling them behind one attention surface.
+
+| Capability | Kookr | `tmux` + manual switching | [`ccusage`](https://github.com/ryoppippi/ccusage) | Hand-rolled Claude Code hooks |
+|---|---|---|---|---|
+| Anomaly detection (stuck loops, idle, repeated errors, permission blocks) | ✅ | ❌ | ❌ | ⚠️ one script per pattern |
+| Attention routing / queue across agents | ✅ | ❌ | ❌ | ❌ |
+| Multi-CLI support (Claude Code + Codex CLI) | ✅ | ✅ runs any binary | ❌ Claude Code only | ❌ Claude Code only |
+| Voice (STT/TTS) integration | ✅ optional | ❌ | ❌ | ❌ |
+| Scheduled tasks (cron) | ✅ | ⚠️ via system `cron` | ❌ | ⚠️ DIY |
+| GitHub PR status integration | ✅ | ❌ | ❌ | ⚠️ DIY |
+| Cost / token tracking | ✅ | ❌ | ✅ | ⚠️ DIY |
+| Local-first (no cloud required) | ✅ | ✅ | ✅ | ✅ |
+
+> Maintenance note: comparison tables go stale fast — vendor capabilities change. Refresh this table before each release; if you spot something inaccurate, please open an issue or PR. A formal review cadence will live in [`CONTRIBUTING.md`](https://github.com/kookr-ai/kookr/issues/93) once that file lands.
+
 ## Architecture
 
 ```
