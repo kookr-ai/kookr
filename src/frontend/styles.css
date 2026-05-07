@@ -1486,6 +1486,56 @@ kbd {
   text-overflow: ellipsis;
 }
 
+.playbook-resolved-cwd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  margin-bottom: 12px;
+  padding: 6px 8px;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: 4px;
+}
+.playbook-resolved-cwd-label {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.playbook-resolved-cwd-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.playbook-resolved-cwd-override {
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: help;
+}
+.playbook-resolved-cwd-change {
+  font-size: 11px;
+}
+
+.set-as-project-default {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.set-as-project-default input[type="checkbox"] {
+  margin: 0;
+}
+.playbook-set-as-default {
+  margin-top: -4px;
+}
+
 .playbook-params {
   display: flex;
   flex-direction: column;

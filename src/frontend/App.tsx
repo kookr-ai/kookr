@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import type { ProjectSummary } from '../core/project-summary.js';
 import { isTerminalStatus, isActiveStatus } from '../core/tasks.js';
 import type { TaskStatus } from '../core/types.js';
-import { deriveProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useNotifications } from './hooks/useNotifications.js';
@@ -72,7 +71,6 @@ export function App() {
   const [showSchedules, setShowSchedules] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
-  const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
   const [reflectionSuggestion, setReflectionSuggestion] = useState<ReflectionSuggestion | null>(null);
   const {
     agents,
@@ -130,18 +128,16 @@ export function App() {
   function handleCloseLaunch() {
     setShowLaunch(false);
     setLaunchProjectContext(null);
-    setLaunchProjectCwd(null);
     clearRelaunchTask();
   }
 
   const handleRunPlaybook = useCallback(() => {
     if (selectedProjectSummary) {
       setLaunchProjectContext(selectedProjectSummary);
-      setLaunchProjectCwd(deriveProjectCwd(agents, selectedProjectSummary.project));
       track({ type: 'launch_dialog_opened', method: 'project_drawer' });
       setShowLaunch(true);
     }
-  }, [selectedProjectSummary, agents]);
+  }, [selectedProjectSummary]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -649,7 +645,6 @@ export function App() {
           relaunchPlaybookId={relaunchTask?.playbookId}
           relaunchParameterValues={relaunchTask?.playbookParameterValues}
           projectContext={launchProjectContext ?? undefined}
-          projectCwd={launchProjectCwd ?? undefined}
         />
       )}
     </div>

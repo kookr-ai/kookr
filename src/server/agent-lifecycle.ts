@@ -35,13 +35,31 @@ export interface AgentLifecycleDeps {
 }
 
 /**
+ * Per-call options for registerNewAgent. Distinct from AgentLifecycleDeps,
+ * which is shared across launches.
+ */
+export interface RegisterNewAgentOpts {
+  /**
+   * When true, the launch was issued with the explicit "Set as default for
+   * this project" checkbox ticked. After projectId resolves, overwrite the
+   * project's localPath to task.cwd (instead of the first-write-wins
+   * auto-stamp). Used only by the manual launch and launchPlaybook paths.
+   */
+  updateProjectLocalPath?: boolean;
+}
+
+/**
  * Performs the full post-launch registration sequence for a newly launched task.
  *
  * This is the single place that registers an agent with the monitor, watchdog,
  * hook file watcher, interaction log, GitHub scanner, and AI task naming.
  * All code paths that launch agents (WS messages, REST API) call this function.
  */
-export async function registerNewAgent(task: Task, deps: AgentLifecycleDeps): Promise<void> {
+export async function registerNewAgent(
+  task: Task,
+  deps: AgentLifecycleDeps,
+  opts: RegisterNewAgentOpts = {},
+): Promise<void> {
   const { monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask } = deps;
 
   // Register only live sessions — skip completed, aborted, or crash-recovered ones.
@@ -77,23 +95,44 @@ export async function registerNewAgent(task: Task, deps: AgentLifecycleDeps): Pr
     autoNameTask(task.id, task.prompt, task.cwd, task.criteria);
   }
 
-  // Resolve project identity (fire-and-forget — non-blocking).
-  // Also stamp ProjectConfig.localPath on first task start so the launch
-  // dialog can pre-fill the cwd for project-drawer launches. The store
-  // call awaits its own save, so a process crash immediately after stamping
-  // does not lose the value.
-  if (!task.projectId && deps.taskStore) {
+  // Resolve project identity and stamp ProjectConfig.localPath.
+  //
+  // Identity resolution is fire-and-forget — non-blocking — and skipped when
+  // task.projectId is already set (e.g. by a playbook with a tracked-projects
+  // parameter; see preparePlaybookLaunch).
+  //
+  // localPath stamping runs in either case so playbook-driven launches with
+  // a known projectId can also persist the cwd. It is first-write-wins by
+  // default; the explicit "Set as default for this project" checkbox sends
+  // updateProjectLocalPath: true and overwrites instead. Store calls await
+  // their own save so a process crash immediately after stamping does not
+  // lose the value.
+  const configStore = deps.projectConfigStore;
+  const updatePath = opts.updateProjectLocalPath === true;
+  const stampLocalPath = async (projectId: string): Promise<void> => {
+    if (!configStore) return;
+    if (updatePath) {
+      // Explicit user intent — overwrite without the canonical-path rewrite,
+      // since the user typed the path they want stored.
+      await configStore.setLocalPath(projectId, task.cwd);
+    } else {
+      const canonical = deriveCanonicalPath(task.cwd);
+      if (canonical) {
+        await configStore.setLocalPathIfUnset(projectId, canonical);
+      }
+    }
+  };
+
+  if (task.projectId) {
+    void stampLocalPath(task.projectId).catch(() => {
+      // Best-effort — surface nothing user-facing if save fails.
+    });
+  } else if (deps.taskStore) {
     const store = deps.taskStore;
-    const configStore = deps.projectConfigStore;
     getProjectId(task.cwd)
       .then(async (projectId) => {
         store.setProjectId(task.id, projectId);
-        if (configStore) {
-          const canonical = deriveCanonicalPath(task.cwd);
-          if (canonical) {
-            await configStore.setLocalPathIfUnset(projectId, canonical);
-          }
-        }
+        await stampLocalPath(projectId);
       })
       .catch((err) => {
         // Best-effort — git failures (no remote) and config-store save

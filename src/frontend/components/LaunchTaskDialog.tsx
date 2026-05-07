@@ -33,13 +33,14 @@ interface Props {
   relaunchPlaybookId?: string;
   /** Parameter values to pre-fill when relaunching a playbook task. */
   relaunchParameterValues?: Record<string, string>;
-  /** When launched from a project drawer, pre-fill source-matching params */
+  /**
+   * When launched from a project drawer, pre-fill source-matching params and
+   * seed the cwd from the project's recorded `localPath`.
+   */
   projectContext?: ProjectSummary;
-  /** When launched from a selected project, pre-fill cwd with that project's local checkout. */
-  projectCwd?: string;
 }
 
-export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext, projectCwd }: Props) {
+export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext }: Props) {
   const serverCwd = useKookrStore((s) => s.serverCwd);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
@@ -65,10 +66,11 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     && (initialDraft.prompt.trim().length > 0 || initialDraft.criteria.trim().length > 0);
   // `||` (not `??`) for the cwd fallback chain: a persisted empty-string cwd
   // must fall through to the recentPaths default rather than leave the field
-  // blank on reopen. `projectCwd` slots above the draft so launching from a
-  // project drawer overrides the persisted draft path with that project's cwd.
+  // blank on reopen. `projectContext.localPath` slots above the draft so
+  // launching from a project drawer overrides the persisted draft path with
+  // that project's recorded local checkout.
   const resolvedInitialCwd =
-    defaultCwd ?? projectCwd ?? (initialDraft?.cwd || recentPaths.getAll()[0] || serverCwd);
+    defaultCwd ?? projectContext?.localPath ?? (initialDraft?.cwd || recentPaths.getAll()[0] || serverCwd);
   const [prompt, setPrompt] = useState(defaultPrompt ?? initialDraft?.prompt ?? '');
   const [cwd, setCwd] = useState(resolvedInitialCwd);
   const [criteria, setCriteria] = useState(defaultCriteria ?? initialDraft?.criteria ?? '');
@@ -81,6 +83,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const [ralphZeroDiffThreshold, setRalphZeroDiffThreshold] = useState('');
   const [ralphCostCap, setRalphCostCap] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // Opt-in: when ticked, the next launch persists `cwd` as the project's
+  // localPath. Default off so typos and one-off worktree launches do NOT
+  // clobber the canonical path. Only meaningful when projectContext is set.
+  const [setAsProjectDefault, setSetAsProjectDefault] = useState(false);
   const [agentType, setAgentType] = useState<AgentType>(() => {
     const stored = localStorage.getItem('kookr:defaultAgentType') as AgentType | null;
     return defaultAgentType ?? stored ?? serverDefaultAgentType ?? 'claude-code';
@@ -138,6 +144,15 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
   const ralphCapParsed = parseInt(ralphIterationCap, 10);
   const isRalphCapValid = launchMode !== 'ralph' || (Number.isInteger(ralphCapParsed) && ralphCapParsed > 0);
+
+  // The "Set as default for this project" checkbox is only meaningful when
+  // the dialog was opened from a project drawer AND the current cwd differs
+  // from the project's recorded localPath. When localPath is unset, the
+  // comparison reduces to "is cwd non-empty" — so any non-empty cwd
+  // qualifies as a candidate first stamp.
+  const canOfferSetDefault = projectContext !== undefined
+    && cwd.trim().length > 0
+    && cwd.trim() !== (projectContext.localPath ?? '');
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -208,6 +223,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       criteria: criteria.trim() || undefined,
       autonomy,
       agentType,
+      ...(canOfferSetDefault && setAsProjectDefault
+        ? { updateProjectLocalPath: true }
+        : {}),
     });
     if (sent) {
       // Set the ref *before* clearing so any pending save-effect re-run sees
@@ -426,6 +444,18 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                   </ul>
                 )}
               </div>
+              {canOfferSetDefault && (
+                <label className="set-as-project-default">
+                  <input
+                    type="checkbox"
+                    checked={setAsProjectDefault}
+                    onChange={(e) => setSetAsProjectDefault(e.target.checked)}
+                  />
+                  <span>
+                    Set as default for <strong>{projectContext.displayName}</strong>
+                  </span>
+                </label>
+              )}
             </label>
             <AgentTypeSelector
               value={agentType}
@@ -542,6 +572,13 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
             relaunchPlaybookId={relaunchPlaybookId}
             relaunchParameterValues={relaunchParameterValues}
             projectContext={projectContext}
+            onRequestEditCwd={() => {
+              setTab('manual');
+              setTimeout(() => cwdRef.current?.focus(), 0);
+            }}
+            offerSetAsProjectDefault={canOfferSetDefault}
+            setAsProjectDefault={setAsProjectDefault}
+            onSetAsProjectDefaultChange={setSetAsProjectDefault}
           />
         )}
       </div>

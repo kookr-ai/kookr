@@ -153,6 +153,18 @@ export class ProjectConfigStore {
     return true;
   }
 
+  /**
+   * Overwrite the project's localPath. Used by the explicit "Set as default
+   * for this project" launch-dialog checkbox — distinct from the
+   * first-write-only auto-stamp. Awaits save() for the same durability
+   * reason as setLocalPathIfUnset.
+   */
+  async setLocalPath(project: string, path: string): Promise<void> {
+    if (!path) return;
+    this.setConfig(project, { localPath: path });
+    await this.save();
+  }
+
   /** Remove a project config entirely. Returns true if a row was removed. */
   removeConfig(project: string): boolean {
     return this.configs.delete(project);

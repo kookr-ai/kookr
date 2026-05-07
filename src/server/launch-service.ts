@@ -57,6 +57,11 @@ export interface LaunchOpts {
   projectId?: string;
   /** Where the launch came from — for server-side log provenance. Default: 'api'. */
   launchSource?: 'cli' | 'ui' | 'api' | 'remote-chat-telegram';
+  /**
+   * When true, after launch overwrite the project's localPath to `cwd`. Used
+   * by the explicit "Set as default for this project" launch-dialog checkbox.
+   */
+  updateProjectLocalPath?: boolean;
 }
 
 export interface LaunchResult {
@@ -181,7 +186,9 @@ export async function launchTask(
   }
   const source = opts.launchSource ?? 'api';
   console.log(`[launch] source=${source} agent=${agentType} taskId=${task.id} cwd=${opts.cwd}`);
-  await registerNewAgent(task, lifecycleDeps);
+  await registerNewAgent(task, lifecycleDeps, {
+    updateProjectLocalPath: opts.updateProjectLocalPath,
+  });
   return { task, queued: false };
 }
 
