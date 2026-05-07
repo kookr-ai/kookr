@@ -95,6 +95,8 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
     criteria: z.string().optional(),
     autonomy: autonomyLevel.optional(),
     agentType: agentType.optional(),
+    /** When true, persist `cwd` as the project's localPath after launch. */
+    updateProjectLocalPath: z.boolean().optional(),
   }),
   z.object({
     type: z.literal('completeTask'),
@@ -139,6 +141,8 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
     parameterValues: z.record(z.string(), z.string()),
     autonomy: autonomyLevel.optional(),
     agentType: agentType.optional(),
+    /** When true, persist `cwd` as the project's localPath after launch. */
+    updateProjectLocalPath: z.boolean().optional(),
   }),
   z.object({ type: z.literal('telemetry'), events: z.array(telemetryEvent) }),
   z.object({

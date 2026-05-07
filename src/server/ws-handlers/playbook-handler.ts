@@ -41,6 +41,9 @@ export class PlaybookHandler {
             autonomy: msg.autonomy,
             agentType: msg.agentType,
           });
+          if (msg.updateProjectLocalPath) {
+            opts = { ...opts, updateProjectLocalPath: true };
+          }
           result = await this.deps.launchTask?.(opts);
         } catch (e) { err = e; }
         const excerpt = (opts?.name ?? opts?.prompt ?? msg.playbookPath).slice(0, 40);

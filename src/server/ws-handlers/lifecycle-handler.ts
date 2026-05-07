@@ -106,6 +106,7 @@ export class LifecycleHandler {
             criteria: msg.criteria,
             autonomy: msg.autonomy,
             agentType: msg.agentType,
+            updateProjectLocalPath: msg.updateProjectLocalPath,
           });
         } catch (e) { err = e; }
         return handleLaunchResult(this.deps.send, excerpt, result, err);

@@ -150,7 +150,7 @@ export type ClientMessage =
   | { type: 'skipAll'; agentIds: string[] }
   | { type: 'snooze'; agentId: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }
   | { type: 'cancelSnooze'; agentId: string }
-  | { type: 'launch'; prompt: string; cwd: string; criteria?: string; autonomy?: AutonomyLevel; agentType?: AgentType }
+  | { type: 'launch'; prompt: string; cwd: string; criteria?: string; autonomy?: AutonomyLevel; agentType?: AgentType; updateProjectLocalPath?: boolean }
   | { type: 'completeTask'; taskId: string; feedback?: TaskCompletionFeedback }
   | { type: 'setTaskFeedback'; taskId: string; feedback: TaskCompletionFeedback }
   | { type: 'requestTaskReflect'; taskId: string; direction: 'up' | 'down' }
@@ -162,7 +162,7 @@ export type ClientMessage =
   | { type: 'stop'; agentId: string }
   | { type: 'reflect' }
   | { type: 'listPlaybooks'; cwd: string }
-  | { type: 'launchPlaybook'; playbookPath: string; cwd: string; parameterValues: Record<string, string>; autonomy?: AutonomyLevel; agentType?: AgentType }
+  | { type: 'launchPlaybook'; playbookPath: string; cwd: string; parameterValues: Record<string, string>; autonomy?: AutonomyLevel; agentType?: AgentType; updateProjectLocalPath?: boolean }
   | { type: 'telemetry'; events: TelemetryEvent[] }
   | { type: 'setProjectConfig'; project: string; config: Partial<ProjectConfig> }
   | { type: 'clearCompleted'; includeTerminated?: boolean }

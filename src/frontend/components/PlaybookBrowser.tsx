@@ -87,6 +87,39 @@ interface Props {
    * cwd. The "Change…" link in the resolved-cwd label invokes this.
    */
   onRequestEditCwd?: () => void;
+  /**
+   * Whether the parent dialog wants to surface the
+   * "Set as default for this project" affordance. Decided by the parent
+   * because it knows whether `cwd` matches `projectContext.localPath`.
+   */
+  offerSetAsProjectDefault?: boolean;
+  /** Current state of the "Set as default" checkbox; owned by the parent. */
+  setAsProjectDefault?: boolean;
+  /** Notify the parent when the user toggles the checkbox. */
+  onSetAsProjectDefaultChange?: (value: boolean) => void;
+}
+
+function SetAsProjectDefaultRow({
+  projectDisplayName,
+  checked,
+  onChange,
+}: {
+  projectDisplayName: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}): React.ReactElement {
+  return (
+    <label className="set-as-project-default playbook-set-as-default">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span>
+        Set as default for <strong>{projectDisplayName}</strong>
+      </span>
+    </label>
+  );
 }
 
 function ResolvedCwdLabel({
@@ -135,7 +168,7 @@ function ResolvedCwdLabel({
   );
 }
 
-export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaunchParameterValues, projectContext, onRequestEditCwd }: Props) {
+export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaunchParameterValues, projectContext, onRequestEditCwd, offerSetAsProjectDefault, setAsProjectDefault, onSetAsProjectDefaultChange }: Props) {
   const { playbooks, playbooksLoading, availableAgentTypes, defaultAgentType, projectSummaries } = useKookrStore();
   const agentOptions = availableAgentTypes.length > 0
     ? availableAgentTypes
@@ -338,6 +371,14 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
         return;
       }
     } else {
+      // The "Set as default for this project" checkbox is suppressed when
+      // the playbook pins its own cwd: (selected.cwd is set), because the
+      // project's localPath wouldn't apply to that launch anyway. The
+      // updateProjectLocalPath flag is only sent when the box was ticked
+      // AND the playbook has no cwd: directive.
+      const updatePath = offerSetAsProjectDefault === true
+        && setAsProjectDefault === true
+        && !selected.cwd;
       const sent = send({
         type: 'launchPlaybook',
         playbookPath: selected.id,
@@ -345,6 +386,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
         parameterValues: paramValues,
         autonomy,
         agentType,
+        ...(updatePath ? { updateProjectLocalPath: true } : {}),
       });
       if (sent) {
         useKookrStore.getState().handleAlert('', `Starting task: ${excerpt}`, 'info');
@@ -404,6 +446,18 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
     }
   }
 
+  // Pre-selection "Set as default for this project" row, shown above the
+  // playbook list when the parent dialog says it's relevant. In detail view,
+  // the row is hidden when the playbook pins its own cwd: (since the project
+  // default wouldn't apply to that launch anyway).
+  const setDefaultRow = offerSetAsProjectDefault && projectContext && onSetAsProjectDefaultChange ? (
+    <SetAsProjectDefaultRow
+      projectDisplayName={projectContext.displayName}
+      checked={setAsProjectDefault === true}
+      onChange={onSetAsProjectDefaultChange}
+    />
+  ) : null;
+
   // --- Detail view (selected playbook) ---
   if (selected) {
     const isLoopable = selected.tags.includes('loopable');
@@ -425,6 +479,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
           overrideCwd={selected.cwd ?? undefined}
           onRequestEdit={onRequestEditCwd}
         />
+        {!selected.cwd && setDefaultRow}
 
         <div className="launch-mode-toggle playbook-launch-mode" role="group" aria-label="Playbook launch mode">
           <button
@@ -593,6 +648,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
     return (
       <>
         <ResolvedCwdLabel cwd={cwd} onRequestEdit={onRequestEditCwd} />
+        {setDefaultRow}
         <div className="playbook-empty">
           No playbooks found.
           <br />
@@ -609,6 +665,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   return (
     <div>
       <ResolvedCwdLabel cwd={cwd} onRequestEdit={onRequestEditCwd} />
+      {setDefaultRow}
       <div className="playbook-search">
         <input
           ref={searchRef}

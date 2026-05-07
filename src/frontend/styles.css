@@ -1521,6 +1521,21 @@ kbd {
   font-size: 11px;
 }
 
+.set-as-project-default {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.set-as-project-default input[type="checkbox"] {
+  margin: 0;
+}
+.playbook-set-as-default {
+  margin-top: -4px;
+}
+
 .playbook-params {
   display: flex;
   flex-direction: column;
