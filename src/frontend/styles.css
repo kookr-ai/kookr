@@ -1476,16 +1476,6 @@ kbd {
   color: var(--text-secondary);
   margin-bottom: 4px;
 }
-.playbook-cwd {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-bottom: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .playbook-resolved-cwd {
   display: flex;
   align-items: center;

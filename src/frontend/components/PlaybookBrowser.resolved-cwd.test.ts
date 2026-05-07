@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
-import type { ClientMessage, Playbook } from '../../shared/protocol.js';
+import type { Playbook } from '../../shared/protocol.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -139,7 +139,9 @@ describe('PlaybookBrowser resolved-cwd label', () => {
     render();
     await flush();
 
-    expect(container.querySelector('.playbook-resolved-cwd')).toBeTruthy();
+    const label = container.querySelector('.playbook-resolved-cwd');
+    expect(label).toBeTruthy();
+    expect(label!.querySelector('.playbook-resolved-cwd-path')!.textContent).toBe('/work/myrepo');
     expect(container.querySelector('.playbook-empty')).toBeTruthy();
   });
 });

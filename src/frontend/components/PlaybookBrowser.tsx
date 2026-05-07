@@ -116,9 +116,8 @@ function ResolvedCwdLabel({
         <span
           className="playbook-resolved-cwd-override"
           title={`This playbook pins its working directory to ${overrideCwd}, overriding the project default.`}
-          aria-label="Overridden by playbook"
         >
-          ⓘ overridden by playbook
+          <span aria-hidden="true">ⓘ </span>overridden by playbook
         </span>
       ) : (
         onRequestEdit && (

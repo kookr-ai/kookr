@@ -544,6 +544,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
             projectContext={projectContext}
             onRequestEditCwd={() => {
               setTab('manual');
+              // Defer focus past the React commit that mounts the manual
+              // form's <input ref={cwdRef}>. Without the deferral, the focus
+              // call runs while the playbooks tab is still mounted, the
+              // input does not yet exist, and cwdRef.current is null.
               setTimeout(() => cwdRef.current?.focus(), 0);
             }}
           />
