@@ -95,8 +95,12 @@ export async function registerNewAgent(task: Task, deps: AgentLifecycleDeps): Pr
           }
         }
       })
-      .catch(() => {
-        // Best-effort — if git fails, leave projectId unset
+      .catch((err) => {
+        // Best-effort — git failures (no remote) and config-store save
+        // failures (ENOSPC, EROFS) are both non-fatal here; the task has
+        // already launched. Log so a real disk problem does not stay
+        // silent for ops.
+        console.error('[lifecycle] projectId/localPath resolution failed:', err);
       });
   }
 }

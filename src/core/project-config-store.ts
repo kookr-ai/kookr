@@ -133,12 +133,16 @@ export class ProjectConfigStore {
 
   /**
    * Stamp the project's localPath if no value is currently set. First-write-
-   * wins: subsequent calls are no-ops. The await-save guarantees durability
-   * across crashes — fire-and-forget would silently drop first-task stamps
-   * on restart.
+   * wins under serial calls: the second call is a no-op once the field is
+   * populated. Concurrent first-calls within the same process race on the
+   * read-then-write — last writer wins — but the race is benign because
+   * both writers stamp from a real (just-launched) task.cwd.
    *
-   * Returns true when a write happened, false when the field was already set
-   * (or when candidatePath is empty).
+   * Awaits save() before returning so a process crash immediately after the
+   * first stamp does not silently drop the value on restart.
+   *
+   * Returns true when a write happened, false when localPath was already
+   * populated or when candidatePath is falsy.
    */
   async setLocalPathIfUnset(project: string, candidatePath: string): Promise<boolean> {
     if (!candidatePath) return false;

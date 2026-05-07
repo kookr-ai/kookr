@@ -254,6 +254,10 @@ describe('registerNewAgent', () => {
         '/canonical/repo',
       );
     });
+    // Pin that the indirection through deriveCanonicalPath actually happened
+    // — a refactor that bypassed the helper and stamped task.cwd directly
+    // would still satisfy the previous assertion (since mocks fall through).
+    expect(mockDeriveCanonicalPath).toHaveBeenCalledWith('/canonical/repo-prod');
   });
 
   test('skips localPath stamp when deriveCanonicalPath returns null', async () => {
