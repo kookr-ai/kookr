@@ -561,7 +561,7 @@ test.describe('Supervisor flow — task lifecycle', () => {
     await clearBtn.click();
 
     // First click opens the inline confirmation; second click on Confirm commits.
-    const confirmBtn = completedSection.locator('.btn-clear-completed-confirm');
+    const confirmBtn = page.getByRole('dialog', { name: 'Clear completed tasks' }).getByRole('button', { name: 'Delete' });
     await expect(confirmBtn).toBeVisible({ timeout: 2000 });
     await confirmBtn.click();
 

@@ -454,6 +454,7 @@ export class Monitor {
         if (task) {
           state.taskStatus = task.status;
           state.autonomy = task.autonomy;
+          state.ralphLoop = task.ralphLoop;
           if (task.tokenUsage) {
             state.tokenUsage = task.tokenUsage;
           }
@@ -481,6 +482,7 @@ export class Monitor {
           playbookParameterValues: task.playbookParameterValues,
           projectId: task.projectId,
           autonomy: task.autonomy,
+          ralphLoop: task.ralphLoop,
         });
       } else if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'terminated') {
         // Terminal-state tasks included as synthetic entries so they surface
@@ -512,6 +514,7 @@ export class Monitor {
             completionDigest: task.completionDigest,
             completionFeedback: task.completionFeedback,
             autonomy: task.autonomy,
+            ralphLoop: task.ralphLoop,
           });
         }
       }

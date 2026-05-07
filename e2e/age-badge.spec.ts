@@ -10,22 +10,23 @@ async function resetServer(request: APIRequestContext) {
   await request.post('/api/test/reset');
 }
 
-async function getLatestTmuxName(request: APIRequestContext): Promise<string> {
+async function getTmuxNameForPrompt(request: APIRequestContext, prompt: string): Promise<string> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const res = await request.get('/api/tasks');
     const tasks = (await res.json()) as Array<{
+      prompt: string;
       status: string;
       sessions: Array<{ tmuxSession: string }>;
     }>;
-    const inProgress = tasks.filter((t) => t.status === 'inProgress');
-    const last = inProgress[inProgress.length - 1];
-    if (last?.sessions?.length > 0) {
-      return last.sessions[last.sessions.length - 1].tmuxSession;
+    const task = [...tasks].reverse().find((t) => t.prompt === prompt && t.status === 'inProgress');
+    const sessions = task?.sessions;
+    if (sessions && sessions.length > 0) {
+      return sessions[sessions.length - 1].tmuxSession;
     }
     await new Promise((r) => setTimeout(r, 50));
   }
-  throw new Error('Timed out waiting for an inProgress task with sessions');
+  throw new Error(`Timed out waiting for task "${prompt}" with sessions`);
 }
 
 async function injectEvent(
@@ -103,7 +104,7 @@ async function launchWithFinding(
   prompt: string,
 ): Promise<string> {
   await launchViaUI(page, prompt, '/test/project');
-  const tmuxName = await getLatestTmuxName(request);
+  const tmuxName = await getTmuxNameForPrompt(request, prompt);
   await injectSessionStart(request, tmuxName);
   await injectStopEvent(request, tmuxName);
   await expect(page.locator('.finding-card')).toBeVisible({ timeout: 5000 });
@@ -175,7 +176,7 @@ test.describe('Initial-load sort and auto-scroll suppression', () => {
     const prompts = ['Agent A', 'Agent B', 'Agent C'];
     for (let i = 0; i < prompts.length; i++) {
       await launchViaUI(page, prompts[i], '/test/project');
-      const tmux = await getLatestTmuxName(request);
+      const tmux = await getTmuxNameForPrompt(request, prompts[i]);
       names.push(tmux);
       await injectSessionStart(request, tmux);
       if (i === 0) {
@@ -220,7 +221,7 @@ test.describe('Initial-load sort and auto-scroll suppression', () => {
     // Launch a second agent with a finding (should NOT auto-scroll)
     // Use permission_blocked to avoid grouping with the first agent's needs_input
     await launchViaUI(page, 'Agent 2', '/test/project');
-    const tmux2 = await getLatestTmuxName(request);
+    const tmux2 = await getTmuxNameForPrompt(request, 'Agent 2');
     await injectSessionStart(request, tmux2);
     await injectPermissionEvent(request, tmux2);
     await expect(page.locator('.finding-card')).toHaveCount(2, { timeout: 10000 });
@@ -234,7 +235,7 @@ test.describe('Initial-load sort and auto-scroll suppression', () => {
 
     // Now launch a third agent — auto-scroll should be re-enabled
     await launchViaUI(page, 'Agent 3', '/test/project');
-    const tmux3 = await getLatestTmuxName(request);
+    const tmux3 = await getTmuxNameForPrompt(request, 'Agent 3');
     await injectSessionStart(request, tmux3);
     await injectStopEvent(request, tmux3);
     await expect(page.locator('.finding-card')).toHaveCount(3, { timeout: 10000 });

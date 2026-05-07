@@ -1,4 +1,4 @@
-import { readFile, access } from 'node:fs/promises';
+import { readFile, access, writeFile } from 'node:fs/promises';
 import { join, isAbsolute, resolve } from 'node:path';
 import {
   extractRepoSpecifierFromGhCommand,
@@ -357,6 +357,16 @@ export class OssAttemptStore {
     } finally {
       release();
     }
+  }
+
+  /** Test helper: reset all attempts and ledger-derived counters. */
+  async clearForTests(): Promise<void> {
+    this.attempts = [];
+    this.ledgerEntries = [];
+    this.lastRefreshAt = null;
+    this.lastRefreshIssueCheckErrors = [];
+    await this.save();
+    await writeFile(this.ledgerPath, '');
   }
 
   /** Set the last-refresh timestamp (called at the end of a successful refresh). */

@@ -28,7 +28,7 @@ async function injectNeedsInput(request: APIRequestContext, task: LaunchedTask):
   const sessionId = await waitForTaskSession(request, task.id);
   const res = await request.post('/api/test/inject-event', {
     data: {
-      sessionId,
+      tmuxName: sessionId,
       event: {
         session_id: `sess-${Date.now()}`,
         transcript_path: '/tmp/ralph-compact-controls.jsonl',

@@ -34,6 +34,21 @@ export async function getLatestTmuxName(request: APIRequestContext): Promise<str
   throw new Error('Timed out waiting for an inProgress task with sessions');
 }
 
+/** Polls until the launched task with the given prompt has an attached session. */
+export async function getTmuxNameForPrompt(request: APIRequestContext, prompt: string): Promise<string> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const tasks = await getTasks(request);
+    const task = [...tasks].reverse().find((t) => t.prompt === prompt && t.status === 'inProgress');
+    const sessions = task?.sessions;
+    if (sessions && sessions.length > 0) {
+      return sessions[sessions.length - 1].tmuxSession;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`Timed out waiting for task "${prompt}" with sessions`);
+}
+
 export async function getTasks(request: APIRequestContext) {
   const res = await request.get('/api/tasks');
   return (await res.json()) as Array<{

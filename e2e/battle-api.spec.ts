@@ -9,6 +9,7 @@ import {
   launchViaUI,
   getTasks,
   getLatestTmuxName,
+  getTmuxNameForPrompt,
   injectSessionStart,
   injectStopEvent,
   injectPermissionEvent,
@@ -95,13 +96,13 @@ test.describe('API endpoints', () => {
 
     // Agent A: needs_input (info)
     await launchViaUI(page, 'Agent A', '/test/a');
-    const tmuxA = await getLatestTmuxName(request);
+    const tmuxA = await getTmuxNameForPrompt(request, 'Agent A');
     await injectSessionStart(request, tmuxA);
     await injectStopEvent(request, tmuxA);
 
     // Agent B: permission_blocked (warning)
     await launchViaUI(page, 'Agent B', '/test/b');
-    const tmuxB = await getLatestTmuxName(request);
+    const tmuxB = await getTmuxNameForPrompt(request, 'Agent B');
     await injectSessionStart(request, tmuxB);
     await injectPermissionEvent(request, tmuxB);
 

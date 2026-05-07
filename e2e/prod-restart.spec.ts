@@ -2,7 +2,7 @@
  * E2E tests for build version info display and server restart mechanics.
  *
  * - Build info UI: verifies the TopBar badge and popover show real commit data
- * - Restart: verifies the `kill $(lsof -ti:PORT)` approach works to restart
+ * - Restart: verifies the `kill $(lsof -tiTCP:PORT -sTCP:LISTEN)` approach works to restart
  *   the server, preserving build info with a new serverStartedAt
  */
 import { test, expect } from './fixtures.js';
@@ -81,49 +81,85 @@ test.describe('Build version info', () => {
 // ─── Server restart via lsof kill ───────────────────────────────────────
 
 test.describe('Server restart via lsof kill', () => {
-  // Dedicated port — separate from the Playwright webServer (4802)
-  const PORT = 4803;
-  const URL = `http://127.0.0.1:${PORT}`;
   let proc: ChildProcess | null = null;
+  let currentPort: number | null = null;
 
   function killPort() {
+    if (currentPort === null) return;
     try {
-      execSync(`kill $(lsof -ti:${PORT}) 2>/dev/null`, { stdio: 'pipe' });
+      execSync(`kill $(lsof -tiTCP:${currentPort} -sTCP:LISTEN) 2>/dev/null`, { stdio: 'pipe' });
     } catch {
       // nothing listening — fine
     }
   }
 
-  function startServer(): ChildProcess {
+  function startServer(port: number | '0'): ChildProcess {
     return spawn('node', ['--import', 'tsx', 'e2e/test-server.ts'], {
-      env: { ...process.env, E2E_PORT: String(PORT) },
+      env: { ...process.env, E2E_PORT: String(port) },
       stdio: 'pipe',
     });
   }
 
-  async function waitForUp(timeoutMs = 15_000) {
+  async function waitForStartedPort(child: ChildProcess, timeoutMs = 15_000): Promise<number> {
+    return await new Promise<number>((resolve, reject) => {
+      let stdout = '';
+      let stderr = '';
+      const timeout = setTimeout(() => {
+        child.kill();
+        reject(new Error(
+          `Test server did not start within ${timeoutMs}ms.\nstdout: ${stdout}\nstderr: ${stderr}`,
+        ));
+      }, timeoutMs);
+
+      child.stdout!.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString();
+        const match = stdout.match(/E2E_PORT=(\d+)/);
+        if (match) {
+          clearTimeout(timeout);
+          resolve(Number(match[1]));
+        }
+      });
+
+      child.stderr!.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+
+      child.on('exit', (code) => {
+        if (!stdout.includes('E2E_PORT=')) {
+          clearTimeout(timeout);
+          reject(new Error(
+            `Test server exited with code ${code} before ready.\nstdout: ${stdout}\nstderr: ${stderr}`,
+          ));
+        }
+      });
+    });
+  }
+
+  async function waitForUp(port: number, timeoutMs = 15_000) {
     const deadline = Date.now() + timeoutMs;
+    const url = `http://127.0.0.1:${port}`;
     while (Date.now() < deadline) {
       try {
-        const r = await fetch(`${URL}/api/health`);
+        const r = await fetch(`${url}/api/health`);
         if (r.ok) return;
       } catch {}
       await sleep(250);
     }
-    throw new Error(`Server on port ${PORT} not healthy within ${timeoutMs}ms`);
+    throw new Error(`Server on port ${port} not healthy within ${timeoutMs}ms`);
   }
 
-  async function waitForDown(timeoutMs = 10_000) {
+  async function waitForDown(port: number, timeoutMs = 10_000) {
     const deadline = Date.now() + timeoutMs;
+    const url = `http://127.0.0.1:${port}`;
     while (Date.now() < deadline) {
       try {
-        await fetch(`${URL}/api/health`);
+        await fetch(`${url}/api/health`);
       } catch {
         return; // connection refused → server is down
       }
       await sleep(250);
     }
-    throw new Error(`Server on port ${PORT} still alive after ${timeoutMs}ms`);
+    throw new Error(`Server on port ${port} still alive after ${timeoutMs}ms`);
   }
 
   test.afterEach(() => {
@@ -134,16 +170,18 @@ test.describe('Server restart via lsof kill', () => {
   test('kill + restart yields healthy server with new serverStartedAt', async () => {
     test.setTimeout(30_000);
 
-    // Ensure port is free from any prior failed run
+    // Ensure the previous dynamic port is free from any prior failed run
     killPort();
-    await sleep(500);
 
-    // Start initial server
-    proc = startServer();
-    await waitForUp();
+    // Start initial server on an OS-assigned port so this test cannot collide
+    // with the per-worker fixture server.
+    proc = startServer('0');
+    currentPort = await waitForStartedPort(proc);
+    await waitForUp(currentPort);
+    const url = `http://127.0.0.1:${currentPort}`;
 
     // Capture initial state
-    const before = await fetch(`${URL}/api/health`).then((r) => r.json()) as {
+    const before = await fetch(`${url}/api/health`).then((r) => r.json()) as {
       build: { commitHash: string; commitShort: string };
       serverStartedAt: string;
     };
@@ -151,16 +189,19 @@ test.describe('Server restart via lsof kill', () => {
     expect(before.build.commitShort).not.toBe('dev');
     expect(before.serverStartedAt).toBeTruthy();
 
-    // Kill using the exact same approach as prod:restart
-    execSync(`kill $(lsof -ti:${PORT})`, { stdio: 'pipe' });
-    await waitForDown();
+    // Kill only the listening server process, matching prod:restart.
+    execSync(`kill $(lsof -tiTCP:${currentPort} -sTCP:LISTEN)`, { stdio: 'pipe' });
+    await waitForDown(currentPort);
+    proc = null;
 
     // Restart on same port
-    proc = startServer();
-    await waitForUp();
+    proc = startServer(currentPort);
+    const restartedPort = await waitForStartedPort(proc);
+    expect(restartedPort).toBe(currentPort);
+    await waitForUp(currentPort);
 
     // Verify: same build info, new serverStartedAt
-    const after = await fetch(`${URL}/api/health`).then((r) => r.json()) as typeof before;
+    const after = await fetch(`${url}/api/health`).then((r) => r.json()) as typeof before;
     expect(after.build.commitHash).toBe(before.build.commitHash);
     expect(after.build.commitShort).toBe(before.build.commitShort);
     expect(after.serverStartedAt).not.toBe(before.serverStartedAt);

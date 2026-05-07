@@ -127,6 +127,13 @@ export class ProjectConfigStore {
     return this.configs.delete(project);
   }
 
+  /** Test helper: clear persisted project membership and rate-limit state. */
+  clearForTests(): void {
+    this.configs.clear();
+    this.rateLimits = null;
+    this.blockedRepos.clear();
+  }
+
   getAllConfigs(): ProjectConfig[] {
     return Array.from(this.configs.values());
   }

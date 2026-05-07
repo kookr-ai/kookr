@@ -9,6 +9,7 @@ import {
   resetServer,
   launchViaUI,
   getLatestTmuxName,
+  getTmuxNameForPrompt,
   getTasks,
   injectSessionStart,
   injectStopEvent,
@@ -78,15 +79,15 @@ test.describe('WebSocket real-time updates', () => {
 
   test('multiple agents tracked independently', async ({ page, request }) => {
     await launchViaUI(page, 'Agent 1', '/test/a');
-    const tmux1 = await getLatestTmuxName(request);
+    const tmux1 = await getTmuxNameForPrompt(request, 'Agent 1');
     await injectSessionStart(request, tmux1);
 
     await launchViaUI(page, 'Agent 2', '/test/b');
-    const tmux2 = await getLatestTmuxName(request);
+    const tmux2 = await getTmuxNameForPrompt(request, 'Agent 2');
     await injectSessionStart(request, tmux2);
 
     await launchViaUI(page, 'Agent 3', '/test/c');
-    const tmux3 = await getLatestTmuxName(request);
+    const tmux3 = await getTmuxNameForPrompt(request, 'Agent 3');
     await injectSessionStart(request, tmux3);
 
     await waitForAgentCount(page, 3);
