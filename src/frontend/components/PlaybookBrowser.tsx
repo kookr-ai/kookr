@@ -10,12 +10,21 @@ import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/pl
 import { RecentPaths } from '../store/recent-paths.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { FilterableSelect } from './FilterableSelect.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 
 const usageTracker = new PlaybookUsageTracker();
 const recentPaths = new RecentPaths();
 
 /** Threshold: use filterable dropdown when option count exceeds this */
 const FILTERABLE_THRESHOLD = 5;
+
+/**
+ * Playbook id (relative path) that gates the other-author warning. The
+ * playbook itself enforces the author filter; this UI gate exists to make sure
+ * the user has acknowledged the prompt-injection risk before opting in.
+ */
+const IMPLEMENT_GITHUB_ISSUE_ID = 'implement-github-issue.md';
+const SUPPRESS_OTHER_AUTHOR_WARNING_KEY = 'kookr:suppressOtherAuthorWarning';
 
 function TagIcon({ tag }: { tag: 'workflow' | 'loopable' }): React.ReactElement {
   if (tag === 'loopable') {
@@ -104,6 +113,8 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   const [autonomy, setAutonomy] = useState<AutonomyLevel>(() =>
     (localStorage.getItem('kookr:defaultAutonomy') as AutonomyLevel) || 'supervised'
   );
+  const [showOtherAuthorWarning, setShowOtherAuthorWarning] = useState(false);
+  const [suppressOtherAuthorWarning, setSuppressOtherAuthorWarning] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -241,10 +252,40 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
     setTimeout(() => searchRef.current?.focus(), 0);
   }
 
-  async function handleLaunch(e: React.FormEvent) {
+  /**
+   * Whether to gate this launch behind the other-author warning. True when
+   * the implement-github-issue playbook is opting into other-author issues
+   * AND the user has not previously dismissed the warning permanently.
+   */
+  function needsOtherAuthorWarning(): boolean {
+    if (!selected) return false;
+    if (selected.id !== IMPLEMENT_GITHUB_ISSUE_ID) return false;
+    if (paramValues.allowOtherAuthors !== 'true') return false;
+    return localStorage.getItem(SUPPRESS_OTHER_AUTHOR_WARNING_KEY) !== '1';
+  }
+
+  function handleLaunch(e: React.FormEvent) {
     e.preventDefault();
     if (!selected) return;
     if (!canLaunch()) return;
+    if (needsOtherAuthorWarning()) {
+      setSuppressOtherAuthorWarning(false);
+      setShowOtherAuthorWarning(true);
+      return;
+    }
+    void proceedLaunch();
+  }
+
+  async function confirmOtherAuthorWarning() {
+    if (suppressOtherAuthorWarning) {
+      localStorage.setItem(SUPPRESS_OTHER_AUTHOR_WARNING_KEY, '1');
+    }
+    setShowOtherAuthorWarning(false);
+    await proceedLaunch();
+  }
+
+  async function proceedLaunch() {
+    if (!selected) return;
     setSubmitting(true);
     usageTracker.recordLaunch(selected.id);
     usageTracker.recordParams(selected.id, selected.sourceCwd, paramValues);
@@ -361,6 +402,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
       ?? (!isLoopable ? 'Looping unavailable: this playbook is not tagged loopable.' : '');
 
     return (
+      <>
       <form onSubmit={handleLaunch}>
         <div className="playbook-detail-header">
           <button type="button" className="btn-xs" onClick={handleBack}>
@@ -534,6 +576,26 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
           </button>
         </div>
       </form>
+      {showOtherAuthorWarning && (
+        <ConfirmDialog
+          title="Implementing issues from other authors"
+          message="You're about to allow this playbook to implement issues opened by other GitHub users. Their issue body will flow into the agent's context — a known prompt-injection surface that could push the agent to take actions you did not intend. Only continue for repos and authors you trust."
+          confirmLabel="Continue anyway"
+          confirmClass="btn-danger"
+          onConfirm={() => { void confirmOtherAuthorWarning(); }}
+          onClose={() => setShowOtherAuthorWarning(false)}
+        >
+          <label className="confirm-dialog-checkbox">
+            <input
+              type="checkbox"
+              checked={suppressOtherAuthorWarning}
+              onChange={(e) => setSuppressOtherAuthorWarning(e.target.checked)}
+            />
+            Don't show this warning again
+          </label>
+        </ConfirmDialog>
+      )}
+      </>
     );
   }
 
