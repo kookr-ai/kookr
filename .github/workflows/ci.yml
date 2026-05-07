@@ -20,7 +20,7 @@ jobs:
       matrix:
         node-version: [22]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: pnpm/action-setup@v4
 
@@ -49,7 +49,7 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.58.2-noble
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Inside the playwright container the working tree is owned by a
       # different uid than the user running the steps; without this, every
