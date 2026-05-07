@@ -86,15 +86,23 @@ const AchievementFileSchema = z.object({
   schemaVersion: z.literal(2).default(2),
 });
 
-export type AchievementCounters = z.infer<typeof AchievementCountersSchema>;
+type AchievementCounters = z.infer<typeof AchievementCountersSchema>;
 export type AchievementStreak = z.infer<typeof AchievementStreakSchema>;
-export type AchievementFile = z.infer<typeof AchievementFileSchema>;
+type AchievementFile = z.infer<typeof AchievementFileSchema>;
+
+/**
+ * Broadcast-safe view of counters: numeric fields only. The internal
+ * `stuck_together_runs` rolling window is server-state and is intentionally
+ * absent from this shape so callers can't accidentally ship it over the wire.
+ */
+export type BroadcastCounters = Omit<AchievementCounters, 'stuck_together_runs'>;
 
 /**
  * Looser shape accepted by the constructor — only `unlocked` is required.
- * Tests and v1 callers pass `{ unlocked: {} }`; the constructor fills in defaults.
+ * Tests and v1 callers pass `{ unlocked: {} }`; the constructor fills in
+ * defaults. Internal type — not exported.
  */
-export type AchievementFileInput = {
+type AchievementFileInput = {
   unlocked: Record<string, string>;
   counters?: Partial<AchievementCounters>;
   streak?: Partial<AchievementStreak>;
@@ -218,32 +226,24 @@ export class AchievementWatcher {
     return { ...this.unlockedMap };
   }
 
-  /** Get counter snapshot — used by snapshot broadcast (Phase 1c). */
-  getCounters(): AchievementCounters {
+  /**
+   * Broadcast-safe counter snapshot. Excludes the server-only
+   * `stuck_together_runs` rolling map so callers can't leak it over the wire.
+   */
+  getCounters(): BroadcastCounters {
     return {
-      ...this.counters,
-      stuck_together_runs: { ...this.counters.stuck_together_runs },
+      repeated_error_resolutions: this.counters.repeated_error_resolutions,
+      permission_blocked_resolutions: this.counters.permission_blocked_resolutions,
+      merge_conflict_resolutions: this.counters.merge_conflict_resolutions,
+      api_error_resolutions: this.counters.api_error_resolutions,
+      needs_input_resolutions: this.counters.needs_input_resolutions,
+      session_start_total: this.counters.session_start_total,
     };
   }
 
   /** Get streak snapshot — used by snapshot broadcast (Phase 1c). */
   getStreak(): AchievementStreak {
     return { ...this.streak };
-  }
-
-  /** Whether the one-time retroactive back-fill has run on this file. */
-  isBackfillCompleted(): boolean {
-    return this.backfillCompleted;
-  }
-
-  /**
-   * Mark back-fill as completed and persist. Called by the post-init back-fill
-   * runner once it has evaluated all boolean preconditions exactly once.
-   */
-  async markBackfillComplete(): Promise<void> {
-    if (this.backfillCompleted) return;
-    this.backfillCompleted = true;
-    await this.persistFullState();
   }
 
   setEnabled(enabled: boolean): void {
@@ -289,23 +289,6 @@ export class AchievementWatcher {
       this.pendingPersist = p;
       void p;
     }
-  }
-
-  /**
-   * Public unlock entry for paths that compute their own conditions
-   * (e.g., the post-init back-fill runner). Idempotent — already-unlocked
-   * IDs are no-ops. Honors the enabled flag.
-   */
-  tryUnlockPublic(id: string): boolean {
-    if (!this.enabled) return false;
-    if (id in this.unlockedMap) return false;
-    const ts = new Date().toISOString();
-    this.unlockedMap[id] = ts;
-    this.onUnlock({ id, unlockedAt: ts });
-    const p = this.persistFullState();
-    this.pendingPersist = p;
-    void p;
-    return true;
   }
 
   private tryUnlock(id: string, unlocks: string[]): void {

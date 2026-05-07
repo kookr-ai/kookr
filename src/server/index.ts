@@ -561,20 +561,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         totalSpendUsd: taskStore.getLifetimeSpendUsd(),
         achievements: achievementWatcher?.getUnlocked(),
         ...(achievementWatcher
-          ? (() => {
-              const c = achievementWatcher.getCounters();
-              return {
-                achievementCounters: {
-                  repeated_error_resolutions: c.repeated_error_resolutions,
-                  permission_blocked_resolutions: c.permission_blocked_resolutions,
-                  merge_conflict_resolutions: c.merge_conflict_resolutions,
-                  api_error_resolutions: c.api_error_resolutions,
-                  needs_input_resolutions: c.needs_input_resolutions,
-                  session_start_total: c.session_start_total,
-                },
-                achievementStreak: achievementWatcher.getStreak(),
-              };
-            })()
+          ? {
+              achievementCounters: achievementWatcher.getCounters(),
+              achievementStreak: achievementWatcher.getStreak(),
+            }
           : {}),
       };
       msg = {

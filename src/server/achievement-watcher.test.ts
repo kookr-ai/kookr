@@ -193,12 +193,13 @@ describe('AchievementWatcher', () => {
       expect(result.backfillCompleted).toBe(false);
 
       const dirEntries = await readdir(tmpDir);
-      const quarantined = dirEntries.find((f) => f.includes('.quarantined-'));
-      expect(quarantined).toBeDefined();
-      // Original path was renamed away (or fresh state lives at original path)
-      // We only assert the quarantine file exists — the content is unchanged
-      // bad JSON, useful for forensic recovery.
-      const quarantinedRaw = await readFile(join(tmpDir, quarantined!), 'utf-8');
+      const quarantined = dirEntries.filter((f) => f.includes('.quarantined-'));
+      // Exactly one quarantine file was created
+      expect(quarantined).toHaveLength(1);
+      // Original path was renamed away — must not exist after the rename
+      await expect(access(filePath)).rejects.toThrow();
+      // Quarantined content is the original unparseable JSON, useful for forensic recovery
+      const quarantinedRaw = await readFile(join(tmpDir, quarantined[0]), 'utf-8');
       expect(quarantinedRaw).toBe('not json!!!');
     });
 
@@ -392,16 +393,18 @@ describe('AchievementWatcher', () => {
       const day4 = Date.parse('2026-05-04T10:00:00Z');
 
       watcher.recordResolution({ agentId: 'a1', body: 'fix this', activeAnomaly: makeAnomaly('needs_input'), nowMs: day1 });
-      expect(watcher.getStreak().currentStreak).toBe(1);
+      expect(watcher.getStreak()).toEqual({ lastActiveDate: '2026-05-01', currentStreak: 1 });
 
       watcher.recordResolution({ agentId: 'a1', body: 'fix this', activeAnomaly: makeAnomaly('needs_input'), nowMs: day1 });
-      expect(watcher.getStreak().currentStreak).toBe(1);  // same-day no-op
+      expect(watcher.getStreak()).toEqual({ lastActiveDate: '2026-05-01', currentStreak: 1 });  // same-day no-op
 
       watcher.recordResolution({ agentId: 'a1', body: 'fix this', activeAnomaly: makeAnomaly('needs_input'), nowMs: day2 });
-      expect(watcher.getStreak().currentStreak).toBe(2);
+      expect(watcher.getStreak()).toEqual({ lastActiveDate: '2026-05-02', currentStreak: 2 });
 
       watcher.recordResolution({ agentId: 'a1', body: 'fix this', activeAnomaly: makeAnomaly('needs_input'), nowMs: day4 });
-      expect(watcher.getStreak().currentStreak).toBe(1);  // gap resets to 1
+      // Gap of 2 days resets streak; lastActiveDate must update to the resolution day,
+      // otherwise a +1-day check from the wrong base would mis-resume the streak.
+      expect(watcher.getStreak()).toEqual({ lastActiveDate: '2026-05-04', currentStreak: 1 });
     });
 
     test('iron-streak unlocks at 7 consecutive days', () => {
