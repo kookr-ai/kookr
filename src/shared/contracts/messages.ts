@@ -60,6 +60,21 @@ export type SnapshotMessage = {
   sttUrl?: string;
   totalSpendUsd?: number;
   achievements?: Record<string, string>;
+  /**
+   * Counter snapshot for tier achievements (Loop Buster, Permission Whisperer,
+   * forty-two). Phase 2 frontend renders progress bars from these. Server-only
+   * counters (e.g. stuck_together_runs) are stripped before broadcast.
+   */
+  achievementCounters?: {
+    repeated_error_resolutions: number;
+    permission_blocked_resolutions: number;
+    merge_conflict_resolutions: number;
+    api_error_resolutions: number;
+    needs_input_resolutions: number;
+    session_start_total: number;
+  };
+  /** Streak counter for Iron Streak (consecutive days with a user-resolved anomaly). */
+  achievementStreak?: { lastActiveDate: string | null; currentStreak: number };
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentType;
   /** Server capability: contribution workspace is available. */

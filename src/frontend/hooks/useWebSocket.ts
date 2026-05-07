@@ -77,6 +77,14 @@ export function useWebSocket() {
               msg.workspaceEnabled,
               msg.sweepRunning,
             );
+            // Counters / streak ride alongside achievements but live on the
+            // achievements slice — write them directly via setState.
+            if (msg.achievementCounters || msg.achievementStreak) {
+              useKookrStore.setState({
+                ...(msg.achievementCounters ? { achievementCounters: msg.achievementCounters } : {}),
+                ...(msg.achievementStreak ? { achievementStreak: msg.achievementStreak } : {}),
+              });
+            }
             // Fetch schedules on initial snapshot (connection established)
             fetch('/api/schedules').then(r => r.json()).then(handleSchedules).catch(() => {});
             break;

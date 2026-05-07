@@ -13,9 +13,9 @@ interface Props {
 
 const CATEGORY_LABELS: Record<AchievementDefinition['category'], string> = {
   'first-steps': 'First Steps',
-  'feature-discovery': 'Feature Discovery',
-  'multi-agent': 'Multi-Agent Mastery',
-  'easter-egg': 'Easter Eggs',
+  'feature-discovery': 'Field Guide',
+  'multi-agent': 'Battle Honors',
+  'easter-egg': 'Folklore',
 };
 
 const CATEGORY_ORDER: AchievementDefinition['category'][] = [
@@ -32,6 +32,8 @@ function formatDate(iso: string): string {
 
 export function AchievementsPanel({ onClose, send }: Props) {
   const achievements = useKookrStore((s) => s.achievements);
+  const counters = useKookrStore((s) => s.achievementCounters);
+  const streak = useKookrStore((s) => s.achievementStreak);
   const achievementsEnabled = useKookrStore((s) => s.achievementsEnabled);
   const setAchievementsEnabled = useKookrStore((s) => s.setAchievementsEnabled);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -142,10 +144,26 @@ export function AchievementsPanel({ onClose, send }: Props) {
                     <div key={a.id} className={`achievement-item ${unlocked ? 'unlocked' : 'locked'}`}>
                       <span className="achievement-emoji">{a.emoji}</span>
                       <div className="achievement-info">
-                        <span className="achievement-name">{a.name}</span>
+                        <span className="achievement-name">
+                          {a.name}
+                          {a.id === 'iron-streak' && streak.currentStreak > 0 && !unlocked && (
+                            <span className="achievement-streak"> \ud83d\udd25 {streak.currentStreak} day{streak.currentStreak === 1 ? '' : 's'}</span>
+                          )}
+                        </span>
                         <span className="achievement-desc">
                           {unlocked || !isEasterEgg ? a.description : 'A surprise awaits...'}
                         </span>
+                        {!unlocked && a.tier && (
+                          <span className="achievement-tier-progress">
+                            {Math.min(counters[a.tier.counterKey] ?? 0, a.tier.target)} / {a.tier.target}
+                            <span className="achievement-tier-bar">
+                              <span
+                                className="achievement-tier-bar-fill"
+                                style={{ width: `${Math.min(100, ((counters[a.tier.counterKey] ?? 0) / a.tier.target) * 100)}%` }}
+                              />
+                            </span>
+                          </span>
+                        )}
                         {unlocked ? (
                           <span className="achievement-meta earned">
                             Earned {formatDate(achievements[a.id])}
