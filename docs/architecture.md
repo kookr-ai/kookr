@@ -137,7 +137,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 - Serves the frontend SPA
 - Pushes real-time updates + supervisor insights via WebSocket
 
-### 2. Frontend (SPA served by backend, opened in browser) — [Proposal 33](../gui-proposals/33-supervisor-first-triage.html)
+### 2. Frontend (SPA served by backend, opened in browser) — [Proposal 33](spikes/gui-proposals/33-supervisor-first-triage.html)
 
 **Chosen design:** Supervisor-first triage layout. The UI is organized around the supervisor's **findings** (anomalies detected) rather than a flat agent list. Two-panel layout: findings feed (left), interactive terminal (right).
 

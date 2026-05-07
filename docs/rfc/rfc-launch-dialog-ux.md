@@ -35,7 +35,7 @@ A future RFC will retrofit Origin+Host validation onto pre-existing endpoints. T
 ### Rename
 
 - The dialog header SHALL read **"Launch New Task"** instead of "Launch New Agent".
-- All user-visible copy SHALL be updated, including `SettingsDialog.tsx:277` and `gui-proposals/23-command-palette.html:337`.
+- All user-visible copy SHALL be updated, including `SettingsDialog.tsx:277` and `docs/spikes/gui-proposals/23-command-palette.html:337`.
 - All test assertions on the header text SHALL be updated in the same commit.
 - The component file and exported symbol SHALL be renamed (`LaunchDialog.tsx` → `LaunchTaskDialog.tsx`, `export LaunchDialog` → `export LaunchTaskDialog`) plus its test files. The store helper file likewise (`launch-dialog-draft.ts` → `launch-task-dialog-draft.ts`, function names `*LaunchDialogDraft` → `*LaunchTaskDialogDraft`).
 - **Telemetry event names SHALL NOT be renamed.** They remain `launch_dialog_opened` / `launch_dialog_closed` / `launch_dialog_draft_restored` / `launch_dialog_draft_discarded` / `launch_submitted`. They are internal identifiers, not user copy. (round-2 design-minimalist finding — the dual-acceptance migration window in v2 was overengineered for invisible benefit.)
@@ -83,7 +83,7 @@ The route file is HTTP glue only. Filesystem and git logic live in `src/core` an
 **User-copy changes:**
 - `LaunchDialog.tsx:217` `Launch New Agent` → `Launch New Task`.
 - `SettingsDialog.tsx:277` `launching new agents` → `launching new tasks`.
-- `gui-proposals/23-command-palette.html:337` `Launch new agent` → `Launch new task`.
+- `docs/spikes/gui-proposals/23-command-palette.html:337` `Launch new agent` → `Launch new task`.
 
 **File and symbol renames:**
 - `src/frontend/components/LaunchDialog.tsx` → `LaunchTaskDialog.tsx`, default export `LaunchDialog` → `LaunchTaskDialog`.
@@ -107,7 +107,7 @@ The route file is HTTP glue only. Filesystem and git logic live in `src/core` an
 User-copy / header tests:
 - `src/frontend/components/LaunchDialog.tsx` *(file rename + content)*
 - `src/frontend/components/SettingsDialog.tsx` *(copy)*
-- `gui-proposals/23-command-palette.html` *(copy)*
+- `docs/spikes/gui-proposals/23-command-palette.html` *(copy)*
 - `e2e/battle-ui.spec.ts` *(line 150 assertion)*
 - `src/server/ws.test.ts` *(line 194 test name)*
 
@@ -276,7 +276,7 @@ The four layers don't honestly decompose: Layer 1's allowlist is reused by 3 and
 
 - `src/frontend/components/LaunchDialog.tsx` *(rename + content)*
 - `src/frontend/components/SettingsDialog.tsx` *(copy line 277)*
-- `gui-proposals/23-command-palette.html` *(line 337)*
+- `docs/spikes/gui-proposals/23-command-palette.html` *(line 337)*
 - `e2e/battle-ui.spec.ts` *(line 150 assertion)*
 - `src/server/ws.test.ts` *(line 194 test name)*
 - `src/frontend/components/LaunchDialog.dismiss.test.ts` *(rename + import updates)*
@@ -427,7 +427,7 @@ Rejected in v3 (round-2 design-minimalist). The endpoint composes worktrees into
 
 ### Round 1 (v1 → v2 highlights, see v2 git history)
 
-Falsified empirical claims caught early without `design-experimenter`: header-text test assertions exist (`battle-ui.spec.ts:150`); `worktree-protection.ts` is not an allowlist helper; user-copy "agent" survives in `SettingsDialog.tsx:277` and `gui-proposals/23-command-palette.html:337`. v2 fixed all three.
+Falsified empirical claims caught early without `design-experimenter`: header-text test assertions exist (`battle-ui.spec.ts:150`); `worktree-protection.ts` is not an allowlist helper; user-copy "agent" survives in `SettingsDialog.tsx:277` and `docs/spikes/gui-proposals/23-command-palette.html:337`. v2 fixed all three.
 
 Added: Threat Model section, Origin validation, NFC normalization, allowlist comparator spec, subprocess discipline, `path-allowlist.ts` + `fs-inspect.ts` extraction, response types in shared protocol, drag-and-drop killed, clipboard paste added, prod-worktree guard, code-symbol rename considered.
 

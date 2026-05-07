@@ -32,7 +32,7 @@ Now informed by concrete research: agents run in interactive mode inside managed
 
 **Goal:** Browser GUI for managing multiple agents with full task lifecycle.
 
-**GUI design:** [Proposal 33 — Supervisor-First Triage](../gui-proposals/33-supervisor-first-triage.html) selected from 27 evaluated proposals. Two-panel layout: supervisor findings feed (left), interactive terminal (right), with respond-and-advance triage loop.
+**GUI design:** [Proposal 33 — Supervisor-First Triage](spikes/gui-proposals/33-supervisor-first-triage.html) selected from 27 evaluated proposals. Two-panel layout: supervisor findings feed (left), interactive terminal (right), with respond-and-advance triage loop.
 
 - [x] Local HTTP server (Hono) + WebSocket for real-time updates
 - [x] Frontend SPA: findings panel + terminal panel
