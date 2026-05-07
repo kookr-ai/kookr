@@ -542,6 +542,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
             relaunchPlaybookId={relaunchPlaybookId}
             relaunchParameterValues={relaunchParameterValues}
             projectContext={projectContext}
+            onRequestEditCwd={() => {
+              setTab('manual');
+              setTimeout(() => cwdRef.current?.focus(), 0);
+            }}
           />
         )}
       </div>
