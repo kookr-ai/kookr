@@ -88,6 +88,13 @@
     "zustand": "^5.0.13"
   },
   "pnpm": {
+    "packageExtensions": {
+      "node-pty@1.1.0": {
+        "dependencies": {
+          "node-gyp": "^12.3.0"
+        }
+      }
+    },
     "onlyBuiltDependencies": [
       "esbuild",
       "node-pty",
