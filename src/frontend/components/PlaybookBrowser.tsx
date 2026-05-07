@@ -14,6 +14,48 @@ import { FilterableSelect } from './FilterableSelect.js';
 const usageTracker = new PlaybookUsageTracker();
 const recentPaths = new RecentPaths();
 
+/** Shape of the 409 body when the launch hits an active loop with the same key. */
+interface RalphLoopConflict {
+  taskId: string;
+  currentIteration: number;
+  /** Epoch ms; 0 means the loop never started its first iteration. */
+  lastIterationStartedAt: number;
+  loopStatus: 'running' | 'paused';
+}
+
+/** Extract a typed conflict from a 409 response body. Returns null if the
+ *  shape isn't recognized so old backends fall through to the generic toast. */
+function parseRalphLoopConflict(body: unknown): RalphLoopConflict | null {
+  if (typeof body !== 'object' || body === null) return null;
+  const obj = body as Record<string, unknown>;
+  if (obj.conflictKind !== 'duplicate_active_loop') return null;
+  if (typeof obj.taskId !== 'string') return null;
+  const ralphLoop = obj.ralphLoop as Record<string, unknown> | null | undefined;
+  if (!ralphLoop || typeof ralphLoop !== 'object') return null;
+  const status = ralphLoop.status;
+  if (status !== 'running' && status !== 'paused') return null;
+  const currentIteration = typeof ralphLoop.currentIteration === 'number'
+    ? ralphLoop.currentIteration
+    : 0;
+  const lastIterationStartedAt = typeof ralphLoop.lastIterationStartedAt === 'number'
+    ? ralphLoop.lastIterationStartedAt
+    : 0;
+  return { taskId: obj.taskId, currentIteration, lastIterationStartedAt, loopStatus: status };
+}
+
+/** Render a friendly relative-time string from an epoch-ms timestamp. */
+function formatRelativeTime(ms: number, nowMs = Date.now()): string {
+  if (ms === 0) return 'iteration 0 (not yet started)';
+  const seconds = Math.max(0, Math.round((nowMs - ms) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
 /** Threshold: use filterable dropdown when option count exceeds this */
 const FILTERABLE_THRESHOLD = 5;
 
@@ -97,6 +139,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   const [focusIdx, setFocusIdx] = useState(-1);
   const [launchMode, setLaunchMode] = useState<'standard' | 'looped'>('standard');
   const [submitting, setSubmitting] = useState(false);
+  const [conflict, setConflict] = useState<RalphLoopConflict | null>(null);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => usageTracker.getPinned());
   const [agentType, setAgentType] = useState<AgentType>(() =>
     (localStorage.getItem('kookr:defaultAgentType') as AgentType) || defaultAgentType || 'claude-code'
@@ -267,10 +310,21 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
           }),
         });
         if (!res.ok) {
-          const body = await res.json().catch(() => ({})) as { error?: string };
+          const body = await res.json().catch(() => ({})) as Record<string, unknown>;
+          // 409 with a recognized conflict shape → show the in-place dialog
+          // so the user can replace the old loop or attach to it. Old
+          // backends won't return `conflictKind`, so we fall through.
+          if (res.status === 409) {
+            const detected = parseRalphLoopConflict(body);
+            if (detected) {
+              setConflict(detected);
+              setSubmitting(false);
+              return;
+            }
+          }
           useKookrStore.getState().handleAlert(
             '',
-            `Could not start looped playbook: ${body.error ?? `HTTP ${res.status}`}. ${excerpt}`,
+            `Could not start looped playbook: ${(body.error as string | undefined) ?? `HTTP ${res.status}`}. ${excerpt}`,
             'error',
           );
           setSubmitting(false);
@@ -307,6 +361,59 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
         return;
       }
     }
+    onClose();
+  }
+
+  async function handleReplace() {
+    if (!selected || !conflict) return;
+    setSubmitting(true);
+    const excerpt = selected.name.slice(0, 40) + (selected.name.length > 40 ? '…' : '');
+    try {
+      const res = await fetch(
+        `/api/tasks/${encodeURIComponent(conflict.taskId)}/ralph-loop/replace-with-new`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'ui' },
+          body: JSON.stringify({
+            playbookPath: selected.id,
+            cwd,
+            parameterValues: paramValues,
+            autonomy,
+            agentType,
+          }),
+        },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        useKookrStore.getState().handleAlert(
+          '',
+          `Could not replace looped playbook: ${body.error ?? `HTTP ${res.status}`}. ${excerpt}`,
+          'error',
+        );
+        setSubmitting(false);
+        return;
+      }
+      useKookrStore.getState().handleAlert(
+        '',
+        `Replaced looped playbook: ${excerpt}`,
+        'info',
+      );
+      setConflict(null);
+      onClose();
+    } catch (err) {
+      useKookrStore.getState().handleAlert(
+        '',
+        `Could not replace looped playbook: ${err instanceof Error ? err.message : String(err)}. ${excerpt}`,
+        'error',
+      );
+      setSubmitting(false);
+    }
+  }
+
+  function handleOpenExisting() {
+    if (!conflict) return;
+    useKookrStore.getState().selectAgent(conflict.taskId);
+    setConflict(null);
     onClose();
   }
 
@@ -525,11 +632,44 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
               : 'Auto-proceeds after 3 min when the agent stops (max 2 retries, then switches to supervised).'}
           </div>
         </label>
+        {conflict && (
+          <div className="ralph-conflict-banner" role="alertdialog" aria-label="Loop already running">
+            <div className="ralph-conflict-title">A loop is already running for this playbook.</div>
+            <div className="ralph-conflict-detail">
+              Task <code>{conflict.taskId.slice(0, 8)}</code>, iteration {conflict.currentIteration}.
+              {' '}
+              Last iteration started {formatRelativeTime(conflict.lastIterationStartedAt)}.
+            </div>
+            <div className="ralph-conflict-actions">
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleReplace}
+                disabled={submitting}
+              >
+                Replace it (start fresh)
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={handleOpenExisting}
+                disabled={submitting}
+              >
+                Open the running loop
+              </button>
+            </div>
+            <div className="ralph-conflict-hint">
+              <em>Replace it</em> stops the old agent and starts a new one with the same prompt; the
+              previous conversation is not carried over. <em>Open the running loop</em> takes you to
+              the existing task.
+            </div>
+          </div>
+        )}
         <div className="dialog-actions">
           <button type="button" className="btn-secondary" onClick={handleBack}>
             Cancel
           </button>
-          <button type="submit" className="btn-primary" disabled={!canLaunch()}>
+          <button type="submit" className="btn-primary" disabled={!canLaunch() || conflict !== null}>
             {launchMode === 'looped' ? 'Launch Looped' : 'Launch Playbook'}
           </button>
         </div>

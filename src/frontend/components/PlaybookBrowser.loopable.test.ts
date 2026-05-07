@@ -256,4 +256,100 @@ describe('PlaybookBrowser loopable workflows', () => {
     });
     expect(closeCount).toBe(1);
   });
+
+  test('shows the conflict dialog and replaces via the new endpoint when 409 carries conflictKind', async () => {
+    // First call (Launch) returns the new conflict body. Second call (Replace)
+    // returns 201. We confirm the dialog renders, then the Replace button
+    // triggers POST /api/tasks/:id/ralph-loop/replace-with-new.
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/playbooks/ralph-loop') {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: 'matching looped playbook task already exists: existing-1',
+            taskId: 'existing-1',
+            conflictKind: 'duplicate_active_loop',
+            ralphLoop: {
+              status: 'running',
+              currentIteration: 4,
+              lastIterationStartedAt: Date.now() - 30_000,
+            },
+          }),
+        };
+      }
+      if (url === '/api/tasks/existing-1/ralph-loop/replace-with-new') {
+        return { ok: true, status: 201, json: async () => ({ id: 'task-new' }) };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    await flush();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLElement>('.playbook-card'))
+        .find((card) => card.textContent?.includes('Workflow'))!
+        .click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('.launch-mode-option'))
+        .find((b) => b.textContent === 'Run looped')!
+        .click();
+    });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    // Conflict dialog rendered with the iteration count from the body.
+    const banner = container.querySelector('.ralph-conflict-banner');
+    expect(banner).toBeTruthy();
+    expect(banner!.textContent).toContain('iteration 4');
+
+    // Click "Replace it (start fresh)".
+    const replaceBtn = Array.from(banner!.querySelectorAll<HTMLButtonElement>('button'))
+      .find((b) => b.textContent?.includes('Replace it'));
+    expect(replaceBtn).toBeTruthy();
+    await act(async () => { replaceBtn!.click(); });
+    await flush();
+
+    // Replace endpoint was called.
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/tasks/existing-1/ralph-loop/replace-with-new',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(closeCount).toBe(1);
+  });
+
+  test('falls through to the generic toast when 409 lacks conflictKind (old backend)', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        // No conflictKind field — the new frontend should NOT show the
+        // dialog and should fall back to the existing alert behavior.
+        error: 'matching looped playbook task already exists: legacy-1',
+        taskId: 'legacy-1',
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLElement>('.playbook-card'))
+        .find((c) => c.textContent?.includes('Workflow'))!
+        .click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('.launch-mode-option'))
+        .find((b) => b.textContent === 'Run looped')!
+        .click();
+    });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('.ralph-conflict-banner')).toBeNull();
+    // The dialog stays open because the launch errored — `onClose` not called.
+    expect(closeCount).toBe(0);
+  });
 });
