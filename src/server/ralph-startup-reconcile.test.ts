@@ -50,7 +50,14 @@ function reconcileStartupLoops(
       /* no-op */
     },
   });
-  return service.reconcileStartupLoops(opts);
+  // Default the probe to today's lastStatus-only logic so existing tests that
+  // don't register sessions in the fake backend still pass. Tests that exercise
+  // the probe itself live in ralph-loop-service.test.ts and pass their own.
+  const stub: ReconcileRalphLoopsOptions['probeStartupLiveness'] = async (task) =>
+    task.sessions.find(
+      (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted' && !s.crashRecovered,
+    ) ?? null;
+  return service.reconcileStartupLoops({ probeStartupLiveness: stub, ...opts });
 }
 
 describe('RalphLoopService.reconcileStartupLoops', () => {

@@ -78,6 +78,65 @@ export interface ReconcileRalphLoopsOptions {
   appendIterationRecord?: typeof appendIterationRecord;
   /** Test seam: clock for the `endedAt` field on the crash record. */
   now?: () => number;
+  /**
+   * Test seam: substitute the startup liveness probe so unit tests don't
+   * have to drive a real TerminalBackend. The default uses
+   * `terminalBackend.isAlive` with a 500 ms per-probe timeout.
+   */
+  probeStartupLiveness?: (
+    task: Task,
+    backend: TerminalBackend,
+  ) => Promise<SessionInfo | null>;
+}
+
+/** Per-probe timeout for `probeStartupLiveness` (ms). Hardcoded; not configurable. */
+const STARTUP_PROBE_TIMEOUT_MS = 500;
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  fallback: T,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Startup-only liveness probe. Iterates a task's sessions newest-first and
+ * returns the first session whose backing process is probe-confirmed alive.
+ *
+ * Independent from the runtime `findLiveSession` helper because this one
+ * carries a per-probe timeout — adding the timeout to the runtime helper
+ * would risk misclassifying slow-but-alive sessions on the cycler hot path.
+ *
+ * Coverage: catches the dtach-master-killed phantom shape (the WSL/OS-crash
+ * case). Does not catch the agent-child-exited phantom — see
+ * docs/rfc/rfc-ralph-loop-crash-restart-recovery.md.
+ */
+export async function probeStartupLiveness(
+  task: Task,
+  backend: TerminalBackend,
+): Promise<SessionInfo | null> {
+  const candidates = task.sessions.filter(isLiveRalphSession);
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const session = candidates[i]!;
+    const alive = await withTimeout(
+      backend.isAlive(session.tmuxSession).catch(() => false),
+      STARTUP_PROBE_TIMEOUT_MS,
+      false,
+    );
+    if (alive) return session;
+  }
+  return null;
 }
 
 function sameTokenUsage(a: TokenUsage | undefined, b: TokenUsage): boolean {
@@ -353,6 +412,7 @@ export class RalphLoopService {
   ): Promise<RalphReconcileSummary> {
     const writeRecord = opts.appendIterationRecord ?? appendIterationRecord;
     const now = (opts.now ?? Date.now)();
+    const probe = opts.probeStartupLiveness ?? probeStartupLiveness;
     const summary: RalphReconcileSummary = {
       examined: 0,
       preserved: 0,
@@ -366,7 +426,7 @@ export class RalphLoopService {
 
       summary.examined++;
 
-      const liveSession = task.sessions.find(isLiveRalphSession);
+      const liveSession = await probe(task, this.deps.terminalBackend);
       if (liveSession) {
         claimRalphLoopOwner(task, liveSession, { allowTransfer: !hasLiveRalphOwner(task) });
         summary.preserved++;
