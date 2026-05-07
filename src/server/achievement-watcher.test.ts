@@ -1,6 +1,6 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdtemp, rm, readFile, access } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, readdir, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { AchievementWatcher, loadAchievements } from './achievement-watcher.js';
 import type { AchievementUnlock } from './achievement-watcher.js';
@@ -176,16 +176,74 @@ describe('AchievementWatcher', () => {
   });
 
   describe('persistence', () => {
-    test('loadAchievements returns empty for missing file', async () => {
+    test('loadAchievements returns full default state for missing file', async () => {
       const result = await loadAchievements(join(tmpDir, 'nonexistent.json'));
-      expect(result).toEqual({ unlocked: {} });
+      expect(result.unlocked).toEqual({});
+      expect(result.counters.repeated_error_resolutions).toBe(0);
+      expect(result.counters.session_start_total).toBe(0);
+      expect(result.streak).toEqual({ lastActiveDate: null, currentStreak: 0 });
+      expect(result.backfillCompleted).toBe(false);
+      expect(result.schemaVersion).toBe(2);
     });
 
-    test('loadAchievements returns empty for corrupt file', async () => {
-      const { writeFile } = await import('node:fs/promises');
+    test('loadAchievements quarantines invalid JSON and returns defaults', async () => {
       await writeFile(filePath, 'not json!!!');
       const result = await loadAchievements(filePath);
-      expect(result).toEqual({ unlocked: {} });
+      expect(result.unlocked).toEqual({});
+      expect(result.backfillCompleted).toBe(false);
+
+      const dirEntries = await readdir(tmpDir);
+      const quarantined = dirEntries.find((f) => f.includes('.quarantined-'));
+      expect(quarantined).toBeDefined();
+      const quarantinedRaw = await readFile(join(tmpDir, quarantined!), 'utf-8');
+      expect(quarantinedRaw).toBe('not json!!!');
+    });
+
+    test('loadAchievements quarantines schema-invalid JSON and returns defaults', async () => {
+      await writeFile(filePath, JSON.stringify({ unlocked: 'not an object' }));
+      const result = await loadAchievements(filePath);
+      expect(result.unlocked).toEqual({});
+
+      const dirEntries = await readdir(tmpDir);
+      const quarantined = dirEntries.find((f) => f.includes('.quarantined-'));
+      expect(quarantined).toBeDefined();
+    });
+
+    test('loadAchievements migrates v1 file (only `unlocked`) by populating defaults', async () => {
+      await writeFile(
+        filePath,
+        JSON.stringify({ unlocked: { 'first-agent': '2026-04-01T00:00:00Z' } }),
+      );
+      const result = await loadAchievements(filePath);
+      expect(result.unlocked).toEqual({ 'first-agent': '2026-04-01T00:00:00Z' });
+      expect(result.counters.repeated_error_resolutions).toBe(0);
+      expect(result.streak).toEqual({ lastActiveDate: null, currentStreak: 0 });
+      expect(result.backfillCompleted).toBe(false);
+      expect(result.schemaVersion).toBe(2);
+
+      const dirEntries = await readdir(tmpDir);
+      expect(dirEntries.some((f) => f.includes('.quarantined-'))).toBe(false);
+    });
+
+    test('loadAchievements roundtrips a fully-populated v2 file', async () => {
+      const fullState = {
+        unlocked: { 'first-agent': '2026-04-01T00:00:00Z' },
+        counters: {
+          repeated_error_resolutions: 7,
+          permission_blocked_resolutions: 12,
+          merge_conflict_resolutions: 0,
+          api_error_resolutions: 0,
+          needs_input_resolutions: 0,
+          session_start_total: 41,
+          stuck_together_runs: { 'agent-1:repeated_error': ['2026-05-07T10:00:00.000Z'] },
+        },
+        streak: { lastActiveDate: '2026-05-06', currentStreak: 3 },
+        backfillCompleted: true,
+        schemaVersion: 2 as const,
+      };
+      await writeFile(filePath, JSON.stringify(fullState));
+      const result = await loadAchievements(filePath);
+      expect(result).toEqual(fullState);
     });
 
     test('unlocks are persisted to file', async () => {

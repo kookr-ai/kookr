@@ -13,9 +13,9 @@ interface Props {
 
 const CATEGORY_LABELS: Record<AchievementDefinition['category'], string> = {
   'first-steps': 'First Steps',
-  'feature-discovery': 'Feature Discovery',
-  'multi-agent': 'Multi-Agent Mastery',
-  'easter-egg': 'Easter Eggs',
+  'feature-discovery': 'Field Guide',
+  'multi-agent': 'Battle Honors',
+  'easter-egg': 'Folklore',
 };
 
 const CATEGORY_ORDER: AchievementDefinition['category'][] = [
