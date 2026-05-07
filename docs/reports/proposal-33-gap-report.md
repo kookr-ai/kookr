@@ -1,6 +1,6 @@
 # Proposal 33 — Gap Report
 
-Visual comparison of the running app (`http://localhost:5173/`) against the reference mockup (`gui-proposals/33-supervisor-first-triage.html`), performed 2026-03-24.
+Visual comparison of the running app (`http://localhost:5173/`) against the reference mockup (`docs/spikes/gui-proposals/33-supervisor-first-triage.html`), performed 2026-03-24.
 
 **Approach:** Spec-driven development + TDD. For each gap:
 1. Update `docs/requirements.md` with testable acceptance criteria

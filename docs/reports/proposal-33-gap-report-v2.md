@@ -1,6 +1,6 @@
 # Proposal 33 — Gap Report v2
 
-E2E validation of the running app (`http://localhost:5173/`) against the reference mockup (`gui-proposals/33-supervisor-first-triage.html`), performed 2026-03-25 via Playwright.
+E2E validation of the running app (`http://localhost:5173/`) against the reference mockup (`docs/spikes/gui-proposals/33-supervisor-first-triage.html`), performed 2026-03-25 via Playwright.
 
 **Context:** All 9 gaps from the original gap report are closed. This report captures remaining visual/behavioral gaps found during E2E testing.
 

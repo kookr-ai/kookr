@@ -113,7 +113,7 @@ The decision came down to React vs. Svelte 5. Both are viable for Kookr's needs,
 
 ## GUI Layout Decision (2026-03-24)
 
-**[Proposal 33 — Supervisor-First Triage](../../gui-proposals/33-supervisor-first-triage.html)** selected as the implementation target after evaluating 27 HTML prototypes across 3 iterations of a generate/critique loop.
+**[Proposal 33 — Supervisor-First Triage](../spikes/gui-proposals/33-supervisor-first-triage.html)** selected as the implementation target after evaluating 27 HTML prototypes across 3 iterations of a generate/critique loop.
 
 **Key layout decisions:**
 - **Supervisor-first framing:** The left panel shows supervisor findings (anomalies) ordered by urgency — not a flat agent list. Healthy agents are collapsed into a compact section. This matches Kookr's core value proposition: the supervisor's explanations are the product.
@@ -121,4 +121,4 @@ The decision came down to React vs. Svelte 5. Both are viable for Kookr's needs,
 - **Respond-and-advance loop:** "Send & Next" as the primary action. Queue dots in the top bar track triage progress. Sent-confirmation overlay shows advancement.
 - **Inline quick-reply on finding cards:** For fast triage without needing to drill into the detail panel.
 
-See `gui-proposals/` for the full set of evaluated prototypes. (The original `critique-1.md` / `critique-2.md` scoring criteria files have been removed; the scoring matrix from those documents informed the evaluation below.)
+See `docs/spikes/gui-proposals/` for the full set of evaluated prototypes. (The original `critique-1.md` / `critique-2.md` scoring criteria files have been removed; the scoring matrix from those documents informed the evaluation below.)

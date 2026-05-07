@@ -103,7 +103,7 @@ Kookr's supervisor is an AI that watches agent streams and **understands** what 
 | F4.10 | **Parent/child task linking** | Tasks can reference a parent task via `parentTaskId`. Child task IDs are tracked on the parent. Enables task hierarchies for complex workflows. |
 | F4.11 | **Launch from terminal (`kookr-spawn`)** | A CLI binary that creates a task from any working directory by POSTing to `/api/tasks`. Uses `$PWD` as the task's cwd; prompt comes from positional argv, piped stdin, or `--prompt-file`. Discovers the running instance via `KOOKR_API_BASE_URL` / `KOOKR_PORT` or by probing 4800/4801 with an ambiguity exit-3 when both respond. Hook-safe mode via `--prompt-file` for prompts containing strings that PreToolUse hooks match on. |
 
-### F5: GUI Layout — Supervisor-First Triage ([Proposal 33](../gui-proposals/33-supervisor-first-triage.html))
+### F5: GUI Layout — Supervisor-First Triage ([Proposal 33](spikes/gui-proposals/33-supervisor-first-triage.html))
 
 The chosen layout is a two-panel "supervisor-first" design. The UI is organized around **what the supervisor found** (findings/anomalies) rather than a flat agent list. This directly reflects Kookr's core product: the supervisor's explanations are the primary content, not the agent list.
 
