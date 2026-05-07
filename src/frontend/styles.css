@@ -4757,6 +4757,35 @@ textarea::-webkit-resizer { background: transparent; }
   color: var(--green);
 }
 
+.achievement-tier-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.achievement-tier-bar {
+  display: inline-block;
+  width: 80px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.achievement-tier-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--green);
+  transition: width 0.3s ease;
+}
+.achievement-streak {
+  margin-left: 6px;
+  font-size: 11px;
+  color: #ff8c42;
+  font-weight: normal;
+}
+
 .achievements-footer {
   display: flex;
   justify-content: space-between;

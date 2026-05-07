@@ -217,8 +217,24 @@ export interface DiagnosticReport {
   findings: DiagnosticFinding[];
 }
 
+export interface AchievementCountersState {
+  repeated_error_resolutions: number;
+  permission_blocked_resolutions: number;
+  merge_conflict_resolutions: number;
+  api_error_resolutions: number;
+  needs_input_resolutions: number;
+  session_start_total: number;
+}
+
+export interface AchievementStreakState {
+  lastActiveDate: string | null;
+  currentStreak: number;
+}
+
 export interface AchievementsSystemSlice {
   achievements: Record<string, string>;
+  achievementCounters: AchievementCountersState;
+  achievementStreak: AchievementStreakState;
   achievementToasts: AchievementToast[];
   achievementsEnabled: boolean;
   showAchievements: boolean;

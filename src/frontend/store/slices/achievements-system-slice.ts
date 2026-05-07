@@ -7,6 +7,15 @@ import type {
 export function createAchievementsSystemSlice(set: StoreSet, get: StoreGet): AchievementsSystemSlice {
   return {
     achievements: {},
+    achievementCounters: {
+      repeated_error_resolutions: 0,
+      permission_blocked_resolutions: 0,
+      merge_conflict_resolutions: 0,
+      api_error_resolutions: 0,
+      needs_input_resolutions: 0,
+      session_start_total: 0,
+    },
+    achievementStreak: { lastActiveDate: null, currentStreak: 0 },
     achievementToasts: [],
     achievementsEnabled: typeof localStorage !== 'undefined' ? localStorage.getItem('kookr-achievements-enabled') !== 'false' : true,
     showAchievements: false,
