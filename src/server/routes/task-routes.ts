@@ -377,6 +377,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         watchdog,
         shadowRegistry: deps.shadowRegistry,
         suppressionTracker: deps.suppressionTracker,
+        queue: deps.queue,
       }, id);
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
       return c.json({ ok: true });

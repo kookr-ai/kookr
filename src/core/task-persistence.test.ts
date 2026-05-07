@@ -159,11 +159,17 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
     const deserialized = deserializeSnoozed(serialized, taskStore);
     expect(deserialized).toHaveLength(1);
     expect(deserialized[0].agentId).toBe('kookr-abc');
+    // The persistence layer hands the queue a taskId-shaped key so the
+    // round-trip never re-derives it through the resolver.
+    expect(deserialized[0].key).toBe(task.id);
     expect(deserialized[0].anomaly.detectedAt).toBeInstanceOf(Date);
     expect(deserialized[0].reason).toBe('investigating');
 
-    // Import into fresh queue
-    const queue2 = new AttentionQueue();
+    // Import into a fresh queue. Use the production-style resolver so the
+    // restored snooze (keyed by taskId) is reachable via agentId lookups.
+    const queue2 = new AttentionQueue({
+      taskIdFor: (agentId) => taskStore.findTaskBySession(agentId)?.id ?? null,
+    });
     queue2.importSnoozed(deserialized);
     expect(queue2.getSnoozedUntil('kookr-abc')).not.toBeNull();
   });
@@ -189,7 +195,12 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
     expect(result).toHaveLength(0);
   });
 
-  test('task with no live session: snooze dropped', () => {
+  test('task with no live session: snooze retained (rebinds on next session)', () => {
+    // Regression: Ralph loops park between iterations with every recorded
+    // session marked completed. A redeploy in that window used to drop the
+    // snooze; now the snooze is retained against the original agentId, and
+    // the queue's task-keyed resolver carries it onto whatever session the
+    // task launches next.
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Task', '/cwd');
     taskStore.addSession(task.id, {
@@ -207,7 +218,66 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
     }];
 
     const result = deserializeSnoozed(persisted, taskStore);
+    expect(result).toHaveLength(1);
+    // Falls back to the anomaly's original agentId when no live session exists.
+    expect(result[0].agentId).toBe('kookr-old');
+  });
+
+  test('deleted task: snooze dropped with warn line', () => {
+    const taskStore = new TaskStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const persisted: PersistedSnooze[] = [{
+      taskId: 'task-that-was-deleted',
+      anomaly: { agentId: 'kookr-x', type: 'repeated_error', severity: 'critical', explanation: 'test', detectedAt: '2026-01-01T00:00:00.000Z' },
+      expiresAt: Date.now() + 60000,
+    }];
+
+    const result = deserializeSnoozed(persisted, taskStore);
     expect(result).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('deleted task task-that-was-deleted'));
+
+    warn.mockRestore();
+  });
+
+  test('round-trip survives even when anomaly.agentId is no longer in any task', () => {
+    // Defensive check (failure-mode-analyst): if anomaly.agentId was a
+    // session that has since been pruned from task.sessions (not done today,
+    // but might be later), the snooze must still rebind to the right task.
+    // The persistence layer passes taskId through as `key` directly; the
+    // queue does not re-derive the key from agentId on import.
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/cwd');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-current',
+      agentType: 'claude',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    const persisted: PersistedSnooze[] = [{
+      taskId: task.id,
+      anomaly: {
+        agentId: 'kookr-pruned-long-ago',
+        type: 'repeated_error',
+        severity: 'critical',
+        explanation: 'test',
+        detectedAt: '2026-01-01T00:00:00.000Z',
+      },
+      expiresAt: Date.now() + 60000,
+    }];
+
+    const deserialized = deserializeSnoozed(persisted, taskStore);
+    expect(deserialized).toHaveLength(1);
+    expect(deserialized[0].key).toBe(task.id); // taskId, not the dead agent
+
+    const queue = new AttentionQueue({
+      taskIdFor: (agentId) => taskStore.findTaskBySession(agentId)?.id ?? null,
+    });
+    queue.importSnoozed(deserialized);
+
+    // The live session of the same task is suppressed.
+    expect(queue.getSnoozedUntil('kookr-current')).not.toBeNull();
   });
 
   test('multi-session task: selects correct active session', () => {
@@ -270,11 +340,14 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
   test('serialize skips orphan snoozes (no matching task)', () => {
     const taskStore = new TaskStore();
     const queue = new AttentionQueue();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     queue.enqueue('orphan-agent', makeAnomaly('orphan-agent'));
     queue.snooze('orphan-agent', 60000);
 
     const serialized = serializeSnoozed(queue, taskStore);
     expect(serialized).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('orphan snooze for agent orphan-agent'));
+    warn.mockRestore();
   });
 
 });

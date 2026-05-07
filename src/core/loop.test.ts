@@ -197,7 +197,10 @@ describe('The Loop — Integration', () => {
     ]);
 
     queue.snooze('agent-1', 5000);
-    queue.purge('agent-1'); // Agent completed while snoozed — purge clears both maps
+    // Agent completed while snoozed — purge() drops entries; purgeTask() clears
+    // the pending snooze (key === agentId in no-resolver mode).
+    queue.purge('agent-1');
+    queue.purgeTask('agent-1');
 
     vi.advanceTimersByTime(5001);
 

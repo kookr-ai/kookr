@@ -280,18 +280,39 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
 
 /**
  * Serialize snoozed findings from the attention queue for persistence.
- * Maps agentId (tmux session name) → taskId.
+ *
+ * The queue's snooze entry already carries its map `key` — taskId in
+ * production, agentId for orphans/no-resolver tests. We trust that key
+ * when it points to a known task, so the persisted record stays
+ * authoritative even if `findTaskBySession` would no longer find the
+ * recorded agentId (e.g. the original session was pruned).
+ *
+ * Falls back to `findTaskBySession(agentId)` only when the cached key is
+ * not a known taskId (orphan path / tests). Snoozes that don't resolve
+ * to any task are dropped with a warn line so the disappearance is
+ * debuggable.
  */
 export function serializeSnoozed(queue: AttentionQueue, taskStore: TaskStore): PersistedSnooze[] {
   const snoozed = queue.getSnoozed();
   const result: PersistedSnooze[] = [];
 
   for (const entry of snoozed) {
-    const task = taskStore.findTaskBySession(entry.agentId);
-    if (!task) continue; // orphan snooze — skip
+    let taskId: string | undefined;
+    if (taskStore.getTask(entry.key)) {
+      taskId = entry.key;
+    } else {
+      const task = taskStore.findTaskBySession(entry.agentId);
+      taskId = task?.id;
+    }
+    if (!taskId) {
+      console.warn(
+        `[snooze] Dropping orphan snooze for agent ${entry.agentId} (no owning task)`,
+      );
+      continue;
+    }
 
     result.push({
-      taskId: task.id,
+      taskId,
       anomaly: {
         agentId: entry.anomaly.agentId,
         type: entry.anomaly.type,
@@ -309,40 +330,58 @@ export function serializeSnoozed(queue: AttentionQueue, taskStore: TaskStore): P
 }
 
 /**
- * Deserialize persisted snoozes back to attention queue format.
- * Filters expired snoozes and maps taskId → current active agentId (tmux session).
- * For a task with multiple sessions, selects the last session that is not completed/aborted
- * and not crash-recovered.
+ * Deserialize persisted snoozes back to attention-queue format.
+ *
+ * Snoozes are keyed by taskId in persistence, so survival across redeploys
+ * does NOT depend on a live session existing at restore time. We pass the
+ * taskId through as the queue's snooze map `key` directly — that bypasses
+ * the queue's resolver on import and keeps the round-trip robust against
+ * future TaskStore changes (e.g. session pruning).
+ *
+ * The `agentId` we plug in is "best-known": the latest live session if
+ * one exists (so `getSnoozedUntil(liveAgent)` answers immediately after
+ * restore), otherwise the anomaly's original agentId. Either way, the
+ * snooze sits under taskId in the queue; subsequent sessions of the task
+ * will resolve to the same key and be suppressed.
+ *
+ * Drops only when the task itself no longer exists, or when the snooze has
+ * already expired. A deleted-task drop is logged so the disappearance is
+ * debuggable.
  */
 export function deserializeSnoozed(
   persisted: PersistedSnooze[] | undefined,
   taskStore: TaskStore,
-): Array<{ agentId: string; anomaly: Anomaly; expiresAt: number; reason?: string }> {
+): Array<{ agentId: string; key: string; anomaly: Anomaly; expiresAt: number; reason?: string }> {
   if (!persisted || persisted.length === 0) return [];
 
   const now = Date.now();
-  const result: Array<{ agentId: string; anomaly: Anomaly; expiresAt: number; reason?: string }> = [];
+  const result: Array<{ agentId: string; key: string; anomaly: Anomaly; expiresAt: number; reason?: string }> = [];
 
   for (const entry of persisted) {
-    // Filter expired
     if (entry.expiresAt <= now) continue;
 
     const task = taskStore.getTask(entry.taskId);
-    if (!task) continue; // task deleted
+    if (!task) {
+      console.warn(
+        `[snooze] Dropping snooze for deleted task ${entry.taskId} `
+        + `(was ${entry.anomaly.type} on agent ${entry.anomaly.agentId})`,
+      );
+      continue;
+    }
 
-    // Find the last live session: not completed/aborted, not crash-recovered
-    let liveSession: string | undefined;
+    let chosenAgentId: string | undefined;
     for (let i = task.sessions.length - 1; i >= 0; i--) {
       const s = task.sessions[i];
       if (s.lastStatus !== 'completed' && s.lastStatus !== 'aborted' && !s.crashRecovered) {
-        liveSession = s.tmuxSession;
+        chosenAgentId = s.tmuxSession;
         break;
       }
     }
-    if (!liveSession) continue; // no live session
+    if (!chosenAgentId) chosenAgentId = entry.anomaly.agentId;
 
     result.push({
-      agentId: liveSession,
+      agentId: chosenAgentId,
+      key: entry.taskId,
       anomaly: {
         agentId: entry.anomaly.agentId,
         type: entry.anomaly.type,

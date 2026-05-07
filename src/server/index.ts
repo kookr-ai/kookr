@@ -273,7 +273,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   circuitBreakerRegistry.register(hookWatcherBreaker);
 
   const taskStore = new TaskStore();
-  const queue = new AttentionQueue();
+  // Snoozes are keyed by taskId so they survive session rotation (Ralph
+  // iterations, crash-recovery launches, redeploys mid-gap between iterations).
+  // See src/core/attention-queue.ts and src/core/task-persistence.ts.
+  const queue = new AttentionQueue({
+    taskIdFor: (agentId) => taskStore.findTaskBySession(agentId)?.id ?? null,
+  });
   const suppressionTracker = new SnoozeSuppressionTracker();
   const monitor = new Monitor(taskStore, queue, {
     repeatedErrorThreshold: currentSettings.repeatedErrorThreshold,

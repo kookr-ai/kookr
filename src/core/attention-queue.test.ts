@@ -161,7 +161,8 @@ describe('AttentionQueue', () => {
     test('agent completes while snoozed - stays completed', () => {
       queue.enqueue('a1', makeAnomaly('a1', 'repeated_error', 'critical'));
       queue.snooze('a1', 5000);
-      queue.purge('a1'); // agent completed while snoozed — purge clears both maps
+      queue.purge('a1'); // session ended — entries gone, snooze still pending
+      queue.purgeTask('a1'); // task deleted — clear the snooze (key=agentId in no-resolver mode)
 
       vi.useFakeTimers();
       vi.advanceTimersByTime(5001);
@@ -241,16 +242,26 @@ describe('AttentionQueue', () => {
       vi.useRealTimers();
     });
 
-    test('purge() clears both entries and snoozed', () => {
+    test('purge() clears entries; purgeTask() also clears snoozed', () => {
       vi.useFakeTimers();
       queue.enqueue('a1', makeAnomaly('a1', 'repeated_error', 'critical'));
       queue.snooze('a1', 5000);
 
       queue.purge('a1');
+      queue.purgeTask('a1'); // in no-resolver mode the key IS the agentId
 
       vi.advanceTimersByTime(5001);
       expect(queue.next()).toBeNull();
       vi.useRealTimers();
+    });
+
+    test('purge() alone does not drop a pending snooze', () => {
+      // Regression: session-end cleanup used to wipe the snooze. With
+      // task-keyed snoozes the snooze must survive — only purgeTask() clears.
+      queue.enqueue('a1', makeAnomaly('a1', 'repeated_error', 'critical'));
+      queue.snooze('a1', 60000);
+      queue.purge('a1');
+      expect(queue.getSnoozedUntil('a1')).not.toBeNull();
     });
 
     test('remove() clears active entry', () => {
@@ -311,8 +322,10 @@ describe('AttentionQueue', () => {
       const fallback = queue.getAnomaly('a1');
       queue.snooze('a1', 5000, undefined, fallback ?? undefined);
 
-      // After snooze consumes it, purge the snooze too
+      // After snooze consumes lastRemoved, dropping the snooze too should
+      // leave getAnomaly with nothing to return.
       queue.purge('a1');
+      queue.purgeTask('a1');
 
       // Now getAnomaly should return null — lastRemoved was consumed
       expect(queue.getAnomaly('a1')).toBeNull();
@@ -363,16 +376,30 @@ describe('AttentionQueue', () => {
   });
 
   describe('getSnoozed() and importSnoozed()', () => {
-    test('getSnoozed() returns snoozed entries with agentId', () => {
+    test('getSnoozed() returns snoozed entries with agentId and key', () => {
       queue.enqueue('a1', makeAnomaly('a1', 'repeated_error', 'critical'));
       queue.snooze('a1', 5000, 'investigating');
 
       const snoozed = queue.getSnoozed();
       expect(snoozed).toHaveLength(1);
       expect(snoozed[0].agentId).toBe('a1');
+      // No resolver configured → snooze key falls back to the agentId.
+      expect(snoozed[0].key).toBe('a1');
       expect(snoozed[0].anomaly.type).toBe('repeated_error');
       expect(snoozed[0].reason).toBe('investigating');
       expect(snoozed[0].expiresAt).toBeGreaterThan(Date.now());
+    });
+
+    test('getSnoozed() reports the resolved taskId as key when a resolver is configured', () => {
+      const taskQueue = new AttentionQueue({
+        taskIdFor: (agentId) => (agentId === 'sess-A' ? 'task-1' : null),
+      });
+      taskQueue.enqueue('sess-A', makeAnomaly('sess-A', 'repeated_error', 'critical'));
+      taskQueue.snooze('sess-A', 5000);
+
+      const [entry] = taskQueue.getSnoozed();
+      expect(entry.agentId).toBe('sess-A');
+      expect(entry.key).toBe('task-1');
     });
 
     test('getSnoozed() returns empty array when nothing snoozed', () => {
@@ -382,7 +409,7 @@ describe('AttentionQueue', () => {
     test('importSnoozed() populates snoozed map', () => {
       const anomaly = makeAnomaly('a1', 'repeated_error', 'critical');
       queue.importSnoozed([
-        { agentId: 'a1', anomaly, expiresAt: Date.now() + 60000, reason: 'test' },
+        { agentId: 'a1', key: 'a1', anomaly, expiresAt: Date.now() + 60000, reason: 'test' },
       ]);
 
       expect(queue.getSnoozedUntil('a1')).not.toBeNull();
@@ -395,7 +422,7 @@ describe('AttentionQueue', () => {
 
       const anomaly = makeAnomaly('a1', 'repeated_error', 'critical');
       queue.importSnoozed([
-        { agentId: 'a1', anomaly, expiresAt: Date.now() + 60000 },
+        { agentId: 'a1', key: 'a1', anomaly, expiresAt: Date.now() + 60000 },
       ]);
 
       // Active entry should be gone, only snoozed remains
@@ -405,12 +432,94 @@ describe('AttentionQueue', () => {
 
     test('importSnoozed() is idempotent', () => {
       const anomaly = makeAnomaly('a1', 'repeated_error', 'critical');
-      const entry = { agentId: 'a1', anomaly, expiresAt: Date.now() + 60000, reason: 'r' };
+      const entry = { agentId: 'a1', key: 'a1', anomaly, expiresAt: Date.now() + 60000, reason: 'r' };
 
       queue.importSnoozed([entry]);
       queue.importSnoozed([entry]);
 
       expect(queue.getSnoozed()).toHaveLength(1);
+    });
+
+    test('task-keyed snooze: new session inherits snooze from prior session of same task', () => {
+      // Regression: a Ralph loop's iteration N+1 used to pop a fresh
+      // budget_exceeded finding because the snooze was keyed on iteration N's
+      // session id. With task-keyed snoozes, every session of the same task
+      // shares the snooze.
+      const sessionToTask: Record<string, string> = {
+        'sess-A': 'task-1',
+        'sess-B': 'task-1',
+        'sess-C': 'task-2',
+      };
+      const taskQueue = new AttentionQueue({
+        taskIdFor: (agentId) => sessionToTask[agentId] ?? null,
+      });
+
+      taskQueue.enqueue('sess-A', makeAnomaly('sess-A', 'repeated_error', 'critical'));
+      taskQueue.snooze('sess-A', 60000, 'investigating');
+
+      // Iteration N ends. New iteration starts on sess-B (same task).
+      taskQueue.enqueue('sess-B', makeAnomaly('sess-B', 'repeated_error', 'critical'));
+
+      // The snooze should swallow the new finding — sess-B doesn't show up.
+      expect(taskQueue.getAll()).toEqual([]);
+      expect(taskQueue.getSnoozedUntil('sess-B')).not.toBeNull();
+      expect(taskQueue.getSnoozedUntil('sess-A')).not.toBeNull();
+
+      // A different task's session is unaffected.
+      taskQueue.enqueue('sess-C', makeAnomaly('sess-C', 'repeated_error', 'critical'));
+      expect(taskQueue.getAll().map((e) => e.agentId)).toEqual(['sess-C']);
+
+      // Cancelling on the live session restores the finding under that session.
+      const cancelled = taskQueue.cancelSnooze('sess-B');
+      expect(cancelled).toBe(true);
+      expect(taskQueue.getAll().map((e) => e.agentId).sort()).toEqual(['sess-B', 'sess-C']);
+    });
+
+    test('purge() of a session does not lose a task-keyed snooze', () => {
+      // Regression: Ralph iteration end → cleanupSessionResources →
+      // monitor.unregisterAgent → queue.purge — used to wipe the snooze.
+      const taskQueue = new AttentionQueue({
+        taskIdFor: (agentId) => (agentId.startsWith('sess-') ? 'task-1' : null),
+      });
+
+      taskQueue.enqueue('sess-A', makeAnomaly('sess-A', 'repeated_error', 'critical'));
+      taskQueue.snooze('sess-A', 60000);
+
+      // sess-A ends; cleanup purges it from the queue. Snooze must persist.
+      taskQueue.purge('sess-A');
+      expect(taskQueue.getSnoozedUntil('sess-A')).not.toBeNull();
+
+      // Next session inherits the snooze via the resolver.
+      taskQueue.enqueue('sess-B', makeAnomaly('sess-B', 'repeated_error', 'critical'));
+      expect(taskQueue.getAll()).toEqual([]);
+
+      // purgeTask() is the way to actually clear the snooze (full task delete).
+      taskQueue.purgeTask('task-1');
+      taskQueue.enqueue('sess-B', makeAnomaly('sess-B', 'repeated_error', 'critical'));
+      expect(taskQueue.getAll().map((e) => e.agentId)).toEqual(['sess-B']);
+    });
+
+    test('expired task-keyed snooze drops without leaving a dead-session entry', () => {
+      // Regression of failure-mode-analyst finding: restoring under
+      // snooze.agentId after expiry would write a ghost entry under a
+      // long-dead session id when in task-keyed mode.
+      vi.useFakeTimers();
+      const taskQueue = new AttentionQueue({
+        taskIdFor: (agentId) => (agentId.startsWith('sess-') ? 'task-1' : null),
+      });
+
+      taskQueue.enqueue('sess-A', makeAnomaly('sess-A', 'repeated_error', 'critical'));
+      taskQueue.snooze('sess-A', 5000);
+      taskQueue.purge('sess-A'); // sess-A dies during snooze
+
+      vi.advanceTimersByTime(5001);
+
+      // Snooze expired and dropped. No ghost entry under sess-A — the
+      // supervisor's next tick will re-detect on the live session.
+      expect(taskQueue.getAll()).toEqual([]);
+      expect(taskQueue.getSnoozedUntil('sess-A')).toBeNull();
+      expect(taskQueue.getSnoozedUntil('sess-B')).toBeNull();
+      vi.useRealTimers();
     });
 
     test('round-trip: getSnoozed -> importSnoozed produces same state', () => {
