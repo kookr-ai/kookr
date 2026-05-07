@@ -62,6 +62,44 @@ describe('ProjectConfigStore', () => {
     store.setConfig('b', { dailyPrLimit: 2 });
     expect(store.getAllConfigs()).toHaveLength(2);
   });
+
+  test('setLocalPathIfUnset writes when unset and persists synchronously', async () => {
+    await store.load();
+    const wrote = await store.setLocalPathIfUnset('github.com/org/repo', '/work/repo');
+    expect(wrote).toBe(true);
+    expect(store.getConfig('github.com/org/repo')?.localPath).toBe('/work/repo');
+
+    // Reload from disk to confirm the save was awaited.
+    const store2 = new ProjectConfigStore(tempDir);
+    await store2.load();
+    expect(store2.getConfig('github.com/org/repo')?.localPath).toBe('/work/repo');
+  });
+
+  test('setLocalPathIfUnset is a no-op when the field is already set', async () => {
+    await store.load();
+    await store.setLocalPathIfUnset('p', '/first/path');
+    const wrote = await store.setLocalPathIfUnset('p', '/second/path');
+    expect(wrote).toBe(false);
+    expect(store.getConfig('p')?.localPath).toBe('/first/path');
+  });
+
+  test('setLocalPathIfUnset preserves other fields', async () => {
+    await store.load();
+    store.setConfig('p', { tracked: true, notes: 'hi' });
+    const wrote = await store.setLocalPathIfUnset('p', '/work/repo');
+    expect(wrote).toBe(true);
+    const config = store.getConfig('p')!;
+    expect(config.localPath).toBe('/work/repo');
+    expect(config.tracked).toBe(true);
+    expect(config.notes).toBe('hi');
+  });
+
+  test('setLocalPathIfUnset rejects empty string', async () => {
+    await store.load();
+    const wrote = await store.setLocalPathIfUnset('p', '');
+    expect(wrote).toBe(false);
+    expect(store.getConfig('p')).toBeUndefined();
+  });
 });
 
 describe('ProjectConfigStore — rate limits', () => {

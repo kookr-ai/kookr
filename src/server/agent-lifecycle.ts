@@ -10,7 +10,8 @@ import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { MAX_ACTIVE_TASKS } from './config.js';
 import { cleanupTaskWorktrees } from '../adapters/git-worktree.js';
-import { getProjectId } from '../core/project-identity.js';
+import { getProjectId, deriveCanonicalPath } from '../core/project-identity.js';
+import type { ProjectConfigStore } from '../core/project-config-store.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 
 // ---------------------------------------------------------------------------
@@ -25,6 +26,12 @@ export interface AgentLifecycleDeps {
   githubScanner: GitHubScannerService;
   autoNameTask: (taskId: string, prompt: string, cwd: string, criteria?: string) => void;
   taskStore?: TaskStore;
+  /**
+   * Optional project-config store. When supplied, the lifecycle stamps
+   * ProjectConfig.localPath on first task start so the launch dialog can
+   * pre-fill the cwd field for project-drawer launches.
+   */
+  projectConfigStore?: ProjectConfigStore;
 }
 
 /**
@@ -70,12 +77,23 @@ export async function registerNewAgent(task: Task, deps: AgentLifecycleDeps): Pr
     autoNameTask(task.id, task.prompt, task.cwd, task.criteria);
   }
 
-  // Resolve project identity (fire-and-forget — non-blocking)
+  // Resolve project identity (fire-and-forget — non-blocking).
+  // Also stamp ProjectConfig.localPath on first task start so the launch
+  // dialog can pre-fill the cwd for project-drawer launches. The store
+  // call awaits its own save, so a process crash immediately after stamping
+  // does not lose the value.
   if (!task.projectId && deps.taskStore) {
     const store = deps.taskStore;
+    const configStore = deps.projectConfigStore;
     getProjectId(task.cwd)
-      .then((projectId) => {
+      .then(async (projectId) => {
         store.setProjectId(task.id, projectId);
+        if (configStore) {
+          const canonical = deriveCanonicalPath(task.cwd);
+          if (canonical) {
+            await configStore.setLocalPathIfUnset(projectId, canonical);
+          }
+        }
       })
       .catch(() => {
         // Best-effort — if git fails, leave projectId unset

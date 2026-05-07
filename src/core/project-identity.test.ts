@@ -1,6 +1,6 @@
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -12,6 +12,7 @@ import {
   extractShellCwd,
   getProjectId,
   projectIdFromPrUrl,
+  deriveCanonicalPath,
 } from './project-identity.js';
 
 function runGit(args: string[]): string {
@@ -207,5 +208,52 @@ describe('projectColorIndex', () => {
     }
     // With 20 inputs and 8 colors, we should have at least 3 distinct colors
     expect(colors.size).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('deriveCanonicalPath', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'canonical-path-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('returns null when cwd does not exist', () => {
+    expect(deriveCanonicalPath(join(tempDir, 'missing'))).toBeNull();
+  });
+
+  test('returns cwd verbatim when it exists and has no carve-out suffix', () => {
+    const checkout = join(tempDir, 'grafana');
+    mkdirSync(checkout);
+    expect(deriveCanonicalPath(checkout)).toBe(checkout);
+  });
+
+  test('strips kookr-prod suffix when the parent (un-suffixed) clone exists', () => {
+    const parent = join(tempDir, 'kookr');
+    const worktree = join(tempDir, 'kookr-prod');
+    mkdirSync(parent);
+    mkdirSync(worktree);
+    expect(deriveCanonicalPath(worktree)).toBe(parent);
+  });
+
+  test('returns the suffixed cwd when parent is missing (regression for v2 spec gap)', () => {
+    const worktree = join(tempDir, 'kookr-prod');
+    mkdirSync(worktree);
+    // No `kookr` parent.
+    expect(deriveCanonicalPath(worktree)).toBe(worktree);
+  });
+
+  test('does NOT strip non-kookr-prod suffixes — generic worktree heuristic dropped', () => {
+    const parent = join(tempDir, 'bandwidth-surgery');
+    const worktree = join(tempDir, 'bandwidth-surgery-m1-harness');
+    mkdirSync(parent);
+    mkdirSync(worktree);
+    // Even though `bandwidth-surgery` exists, the literal kookr-prod
+    // suffix rule does not apply, so cwd is returned verbatim.
+    expect(deriveCanonicalPath(worktree)).toBe(worktree);
   });
 });

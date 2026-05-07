@@ -745,6 +745,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Shared post-launch registration deps — used by both WS handler and REST routes
   const lifecycleDeps: AgentLifecycleDeps = {
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
+    projectConfigStore,
   };
 
   // Live getter for max active tasks — reads from current settings.
