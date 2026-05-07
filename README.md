@@ -223,6 +223,15 @@ Update with `/plugin marketplace update kookr`. See [`plugin/README.md`](plugin/
 
 **Optional OSS extension** — Several bundled skills (`pre-pr-review`, `oss-pr-distill`, `codex-pr-distill`, `oss-issue-scout`, `oss-repo-recon`) and the `oss-contribute` playbook depend on an OSS contribution layer that lives as user-global scripts and data outside this repo (`~/.claude/reviewer-specialists/`, `~/.claude/skills/pr-contribution-excellence/`, `~/.claude/hooks/{pr-workflow-gate,oss-contribution-gate,…}.sh`). The extension is **not bundled** — its distribution mechanism is still pending. Without it, the affected skills are still safe to invoke — they detect the missing dependencies and stop rather than fabricating output. Read [`docs/hooks-setup.md`](docs/hooks-setup.md) for the full status.
 
+## Use cases
+
+- **Bug-fix swarms** — launch N agents on N flaky tests in parallel and surface the one that gets stuck on a permission prompt or the same error.
+- **Overnight refactors** — leave a long-running agent working a multi-step migration; check in from your phone via Telegram or voice when it actually needs you.
+- **OSS contribution farms** — supervise several PRs across multiple upstream repos in parallel, driven by the bundled `oss-contribute` playbook.
+- **Multi-repo audits** — register the project directories you care about and watch contributions, findings, and CI state across all of them from one dashboard.
+- **Scheduled supervision** — cron-style triggers for nightly dependency scans, periodic security reviews, or recurring housekeeping agents.
+- **Pair programming with AI** — use the dashboard as a single attention surface so you can stay focused on the one agent in front of you while the rest run in the background.
+
 ## Why Kookr?
 
 Developer tooling evolved in waves: searching Stack Overflow → asking ChatGPT → IDE-integrated AI (Cursor, Copilot) → autonomous CLI agents (Claude Code, Codex CLI, Gemini CLI). The current frontier: **multiple agents in parallel** to multiply throughput.
