@@ -195,11 +195,15 @@ describe('AchievementWatcher', () => {
       const dirEntries = await readdir(tmpDir);
       const quarantined = dirEntries.find((f) => f.includes('.quarantined-'));
       expect(quarantined).toBeDefined();
+      // Original path was renamed away (or fresh state lives at original path)
+      // We only assert the quarantine file exists — the content is unchanged
+      // bad JSON, useful for forensic recovery.
       const quarantinedRaw = await readFile(join(tmpDir, quarantined!), 'utf-8');
       expect(quarantinedRaw).toBe('not json!!!');
     });
 
     test('loadAchievements quarantines schema-invalid JSON and returns defaults', async () => {
+      // valid JSON, but `unlocked` is the wrong type (string instead of record)
       await writeFile(filePath, JSON.stringify({ unlocked: 'not an object' }));
       const result = await loadAchievements(filePath);
       expect(result.unlocked).toEqual({});
@@ -210,6 +214,7 @@ describe('AchievementWatcher', () => {
     });
 
     test('loadAchievements migrates v1 file (only `unlocked`) by populating defaults', async () => {
+      // v1 shape — only `unlocked`, no counters/streak/backfillCompleted/schemaVersion
       await writeFile(
         filePath,
         JSON.stringify({ unlocked: { 'first-agent': '2026-04-01T00:00:00Z' } }),
@@ -221,6 +226,7 @@ describe('AchievementWatcher', () => {
       expect(result.backfillCompleted).toBe(false);
       expect(result.schemaVersion).toBe(2);
 
+      // No quarantine — v1 file is a valid migration source
       const dirEntries = await readdir(tmpDir);
       expect(dirEntries.some((f) => f.includes('.quarantined-'))).toBe(false);
     });
@@ -272,6 +278,204 @@ describe('AchievementWatcher', () => {
       const map = watcher.getUnlocked();
       expect(map).toHaveProperty('first-response');
       expect(typeof map['first-response']).toBe('string');
+    });
+  });
+
+  describe('snapshot state checks', () => {
+    test('first-cron unlocks when scheduleCount > 0', () => {
+      watcher.check({
+        type: 'snapshot',
+        state: {
+          scheduleCount: 1, projectCount: 0,
+          hasCodexTask: false, hasFeedbackTask: false,
+          hasSnoozedFinding: false, hasKookrSubject: false,
+          unsnoozedFindingCount: 0,
+        },
+      });
+      expect(unlocks.map((u) => u.id)).toContain('first-cron');
+    });
+
+    test('first-multi-project unlocks when projectCount >= 2', () => {
+      watcher.check({
+        type: 'snapshot',
+        state: {
+          scheduleCount: 0, projectCount: 2,
+          hasCodexTask: false, hasFeedbackTask: false,
+          hasSnoozedFinding: false, hasKookrSubject: false,
+          unsnoozedFindingCount: 0,
+        },
+      });
+      expect(unlocks.map((u) => u.id)).toContain('first-multi-project');
+    });
+
+    test('first-codex / first-feedback / first-snooze / self-aware all unlock from snapshot', () => {
+      watcher.check({
+        type: 'snapshot',
+        state: {
+          scheduleCount: 0, projectCount: 0,
+          hasCodexTask: true, hasFeedbackTask: true,
+          hasSnoozedFinding: true, hasKookrSubject: true,
+          unsnoozedFindingCount: 0,
+        },
+      });
+      const ids = unlocks.map((u) => u.id);
+      expect(ids).toEqual(expect.arrayContaining(['first-codex', 'first-feedback', 'first-snooze', 'self-aware']));
+    });
+
+    test('tab-hoarder unlocks when 10+ unsnoozed findings observable in a snapshot', () => {
+      watcher.check({
+        type: 'snapshot',
+        state: {
+          scheduleCount: 0, projectCount: 0,
+          hasCodexTask: false, hasFeedbackTask: false,
+          hasSnoozedFinding: false, hasKookrSubject: false,
+          unsnoozedFindingCount: 10,
+        },
+      });
+      expect(unlocks.map((u) => u.id)).toContain('tab-hoarder');
+    });
+
+    test('tab-hoarder does NOT unlock at 9 findings', () => {
+      watcher.check({
+        type: 'snapshot',
+        state: {
+          scheduleCount: 0, projectCount: 0,
+          hasCodexTask: false, hasFeedbackTask: false,
+          hasSnoozedFinding: false, hasKookrSubject: false,
+          unsnoozedFindingCount: 9,
+        },
+      });
+      expect(unlocks.map((u) => u.id)).not.toContain('tab-hoarder');
+    });
+  });
+
+  describe('recordResolution', () => {
+    function makeAnomaly(type: 'repeated_error' | 'permission_blocked' | 'needs_input', detectedAt = new Date('2026-05-07T10:00:00Z')) {
+      return { agentId: 'a1', type, severity: 'critical' as const, explanation: 'x', detectedAt };
+    }
+
+    test('skips when body is shorter than 3 non-whitespace chars', () => {
+      watcher.recordResolution({ agentId: 'a1', body: 'ok', activeAnomaly: makeAnomaly('repeated_error') });
+      watcher.recordResolution({ agentId: 'a1', body: '   ', activeAnomaly: makeAnomaly('repeated_error') });
+      expect(unlocks).toHaveLength(0);
+      expect(watcher.getCounters().repeated_error_resolutions).toBe(0);
+    });
+
+    test('skips when no active anomaly is provided', () => {
+      watcher.recordResolution({ agentId: 'a1', body: 'fix this', activeAnomaly: null });
+      expect(unlocks).toHaveLength(0);
+      expect(watcher.getCounters().repeated_error_resolutions).toBe(0);
+    });
+
+    test('increments the type-keyed counter on a valid resolution', () => {
+      watcher.recordResolution({ agentId: 'a1', body: 'try again', activeAnomaly: makeAnomaly('repeated_error') });
+      expect(watcher.getCounters().repeated_error_resolutions).toBe(1);
+    });
+
+    test('loop-buster-i unlocks at 10 repeated_error resolutions', () => {
+      for (let i = 0; i < 10; i++) {
+        watcher.recordResolution({ agentId: `a${i}`, body: 'try again', activeAnomaly: makeAnomaly('repeated_error') });
+      }
+      expect(unlocks.map((u) => u.id)).toContain('loop-buster-i');
+    });
+
+    test('permission-whisperer unlocks at 25 permission_blocked resolutions', () => {
+      for (let i = 0; i < 25; i++) {
+        watcher.recordResolution({ agentId: `a${i}`, body: 'allow it', activeAnomaly: makeAnomaly('permission_blocked') });
+      }
+      expect(unlocks.map((u) => u.id)).toContain('permission-whisperer');
+    });
+
+    test('streak increments daily, resets after a gap, no-ops same-day', () => {
+      const day1 = Date.parse('2026-05-01T10:00:00Z');
+      const day2 = Date.parse('2026-05-02T10:00:00Z');
+      const day4 = Date.parse('2026-05-04T10:00:00Z');
+
+      watcher.recordResolution({ agentId: 'a1', body: 'fix this', activeAnomaly: makeAnomaly('needs_input'), nowMs: day1 });
+      expect(watcher.getStreak().currentStreak).toBe(1);
+
+      watcher.recordResolution({ agentId: 'a1', body: 'fix this', activeAnomaly: makeAnomaly('needs_input'), nowMs: day1 });
+      expect(watcher.getStreak().currentStreak).toBe(1);  // same-day no-op
+
+      watcher.recordResolution({ agentId: 'a1', body: 'fix this', activeAnomaly: makeAnomaly('needs_input'), nowMs: day2 });
+      expect(watcher.getStreak().currentStreak).toBe(2);
+
+      watcher.recordResolution({ agentId: 'a1', body: 'fix this', activeAnomaly: makeAnomaly('needs_input'), nowMs: day4 });
+      expect(watcher.getStreak().currentStreak).toBe(1);  // gap resets to 1
+    });
+
+    test('iron-streak unlocks at 7 consecutive days', () => {
+      for (let i = 0; i < 7; i++) {
+        const dayMs = Date.parse(`2026-05-0${i + 1}T10:00:00Z`);
+        watcher.recordResolution({ agentId: 'a1', body: 'keep going', activeAnomaly: makeAnomaly('repeated_error'), nowMs: dayMs });
+      }
+      expect(watcher.getStreak().currentStreak).toBe(7);
+      expect(unlocks.map((u) => u.id)).toContain('iron-streak');
+    });
+
+    test('stuck-together unlocks on 3 resolutions of same (agentId, type) within 1h', () => {
+      const t0 = Date.parse('2026-05-07T10:00:00Z');
+      watcher.recordResolution({ agentId: 'a1', body: 'try', activeAnomaly: makeAnomaly('repeated_error'), nowMs: t0 });
+      watcher.recordResolution({ agentId: 'a1', body: 'try', activeAnomaly: makeAnomaly('repeated_error'), nowMs: t0 + 5 * 60_000 });
+      watcher.recordResolution({ agentId: 'a1', body: 'try', activeAnomaly: makeAnomaly('repeated_error'), nowMs: t0 + 10 * 60_000 });
+      expect(unlocks.map((u) => u.id)).toContain('stuck-together');
+    });
+
+    test('stuck-together does NOT unlock when 3rd resolution is past the 1h window', () => {
+      const t0 = Date.parse('2026-05-07T10:00:00Z');
+      watcher.recordResolution({ agentId: 'a1', body: 'try', activeAnomaly: makeAnomaly('repeated_error'), nowMs: t0 });
+      watcher.recordResolution({ agentId: 'a1', body: 'try', activeAnomaly: makeAnomaly('repeated_error'), nowMs: t0 + 30 * 60_000 });
+      watcher.recordResolution({ agentId: 'a1', body: 'try', activeAnomaly: makeAnomaly('repeated_error'), nowMs: t0 + 90 * 60_000 });
+      // Only 2 entries are within the window from the third resolution's perspective.
+      expect(unlocks.map((u) => u.id)).not.toContain('stuck-together');
+    });
+
+    test('afk unlocks when resolution arrives 30+ minutes after detection', () => {
+      const detectedAt = new Date('2026-05-07T10:00:00Z');
+      const nowMs = detectedAt.getTime() + 31 * 60_000;
+      watcher.recordResolution({ agentId: 'a1', body: 'sorry got distracted', activeAnomaly: makeAnomaly('needs_input', detectedAt), nowMs });
+      expect(unlocks.map((u) => u.id)).toContain('afk');
+    });
+
+    test('disabled watcher does not mutate counters', () => {
+      watcher.setEnabled(false);
+      watcher.recordResolution({ agentId: 'a1', body: 'try again', activeAnomaly: makeAnomaly('repeated_error') });
+      expect(watcher.getCounters().repeated_error_resolutions).toBe(0);
+    });
+  });
+
+  describe('forty-two', () => {
+    test('counter increments on session_start', () => {
+      const taskStore = new TaskStore();
+      const event: AgentEvent = { type: 'session_start', sessionId: 's1', transcriptPath: '/tmp/t' };
+      watcher.check({ type: 'agent', event, taskStore, serverCwd: '/srv' });
+      expect(watcher.getCounters().session_start_total).toBe(1);
+    });
+
+    test('unlocks at 42 lifetime sessions', () => {
+      // Pre-seed counter via fully-populated initial state, then trigger one more
+      const filePath = join(tmpDir, 'preloaded.json');
+      const local: AchievementUnlock[] = [];
+      const preloaded = new AchievementWatcher(
+        filePath,
+        {
+          unlocked: {},
+          counters: {
+            repeated_error_resolutions: 0,
+            permission_blocked_resolutions: 0,
+            merge_conflict_resolutions: 0,
+            api_error_resolutions: 0,
+            needs_input_resolutions: 0,
+            session_start_total: 41,
+            stuck_together_runs: {},
+          },
+        },
+        (u) => local.push(u),
+      );
+      const taskStore = new TaskStore();
+      const event: AgentEvent = { type: 'session_start', sessionId: 's42', transcriptPath: '/tmp/t' };
+      preloaded.check({ type: 'agent', event, taskStore, serverCwd: '/srv' });
+      expect(local.map((u) => u.id)).toContain('forty-two');
     });
   });
 

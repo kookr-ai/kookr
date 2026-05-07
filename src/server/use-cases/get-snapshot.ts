@@ -20,6 +20,15 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   sttUrl?: string;
   totalSpendUsd?: number;
   achievements?: Record<string, string>;
+  achievementCounters?: {
+    repeated_error_resolutions: number;
+    permission_blocked_resolutions: number;
+    merge_conflict_resolutions: number;
+    api_error_resolutions: number;
+    needs_input_resolutions: number;
+    session_start_total: number;
+  };
+  achievementStreak?: { lastActiveDate: string | null; currentStreak: number };
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentType;
   workspaceEnabled?: boolean;
@@ -68,6 +77,8 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ...(deps.sttUrl ? { sttEnabled: true, sttUrl: deps.sttUrl } : {}),
     ...(deps.totalSpendUsd !== undefined ? { totalSpendUsd: deps.totalSpendUsd } : {}),
     ...(deps.achievements ? { achievements: deps.achievements } : {}),
+    ...(deps.achievementCounters ? { achievementCounters: deps.achievementCounters } : {}),
+    ...(deps.achievementStreak ? { achievementStreak: deps.achievementStreak } : {}),
     ...(deps.availableAgentTypes ? { availableAgentTypes: deps.availableAgentTypes } : {}),
     ...(deps.defaultAgentType ? { defaultAgentType: deps.defaultAgentType } : {}),
     ...(deps.workspaceEnabled ? { workspaceEnabled: true } : {}),

@@ -513,6 +513,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   let achievementWatcher: AchievementWatcher;
 
   let wsBroadcastCount = 0;
+  // Set to true once scheduleStore (line 783) and other late-init stores are
+  // ready, so the snapshot achievement check can read them without TDZ risk.
+  let snapshotAchievementsReady = false;
 
   function broadcastToAll(msg: ServerMessage): void {
     wsBroadcastCount++;
@@ -527,7 +530,53 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           }
         }
       }
-      msg = { ...msg, totalSpendUsd: taskStore.getLifetimeSpendUsd(), achievements: achievementWatcher?.getUnlocked() };
+      // Run snapshot-derived achievement check before reading getUnlocked() so
+      // any new unlocks land in this same snapshot's achievements field.
+      if (snapshotAchievementsReady && achievementWatcher) {
+        try {
+          const tasks = taskStore.listTasks();
+          const distinctProjectIds = new Set(
+            tasks.map((t) => t.projectId).filter((p): p is string => !!p),
+          );
+          achievementWatcher.check({
+            type: 'snapshot',
+            state: {
+              scheduleCount: scheduleStore.list().length,
+              projectCount: distinctProjectIds.size,
+              hasCodexTask: tasks.some((t) => t.agentType === 'codex-cli'),
+              hasFeedbackTask: tasks.some((t) => !!t.completionFeedback),
+              hasSnoozedFinding: queue.getSnoozed().length > 0,
+              hasKookrSubject: tasks.some(
+                (t) => /\bkookr\b/i.test(t.name ?? '') || /\bkookr\b/i.test(t.prompt ?? ''),
+              ),
+              unsnoozedFindingCount: queue.getAll().length,
+            },
+          });
+        } catch (err) {
+          console.warn('[achievements] Snapshot state check failed, continuing', err);
+        }
+      }
+      msg = {
+        ...msg,
+        totalSpendUsd: taskStore.getLifetimeSpendUsd(),
+        achievements: achievementWatcher?.getUnlocked(),
+        ...(achievementWatcher
+          ? (() => {
+              const c = achievementWatcher.getCounters();
+              return {
+                achievementCounters: {
+                  repeated_error_resolutions: c.repeated_error_resolutions,
+                  permission_blocked_resolutions: c.permission_blocked_resolutions,
+                  merge_conflict_resolutions: c.merge_conflict_resolutions,
+                  api_error_resolutions: c.api_error_resolutions,
+                  needs_input_resolutions: c.needs_input_resolutions,
+                  session_start_total: c.session_start_total,
+                },
+                achievementStreak: achievementWatcher.getStreak(),
+              };
+            })()
+          : {}),
+      };
       msg = {
         ...msg,
         availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
@@ -782,6 +831,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Schedule system — load schedules and start the cron runner
   const scheduleStore = new ScheduleStore(kookrDir);
   await scheduleStore.load();
+  // scheduleStore is now safe to read from broadcastToAll's snapshot branch.
+  snapshotAchievementsReady = true;
   const scheduleValidator = new ScheduleValidator();
   const scheduleService = new ScheduleService({
     store: scheduleStore,

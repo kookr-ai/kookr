@@ -248,9 +248,18 @@ export function handleWsConnection(
       }
 
       const isLaunchMsg = msg.type === 'launch' || msg.type === 'launchPlaybook' || msg.type === 'relaunch';
+      const isFeedbackMsg = msg.type === 'completeTask' || msg.type === 'setTaskFeedback';
 
-      // Capture pre-response anomaly state for achievement detection
+      // Capture pre-response anomaly state for achievement detection.
+      // recordResolution needs the active anomaly captured BEFORE the router
+      // runs, since respond/directReply paths may clear the queue entry.
       const hadAnomaly = (msg.type === 'respond') ? !!queue.getAnomaly(msg.agentId) : undefined;
+      const preActiveAnomaly =
+        (msg.type === 'respond' || msg.type === 'directReply')
+          ? queue.getActiveAnomaly(msg.agentId)
+          : null;
+      const respondBody =
+        (msg.type === 'respond' || msg.type === 'directReply') ? msg.input : '';
 
       await router.handleMessageSafe(msg);
 
@@ -259,10 +268,28 @@ export function handleWsConnection(
       try {
         if (msg.type === 'respond') {
           achievementWatcher.check({ type: 'client', action: 'respond', hadAnomaly });
+          achievementWatcher.recordResolution({
+            agentId: msg.agentId,
+            body: respondBody,
+            activeAnomaly: preActiveAnomaly,
+          });
         } else if (msg.type === 'directReply') {
           achievementWatcher.check({ type: 'client', action: 'directReply' });
+          achievementWatcher.recordResolution({
+            agentId: msg.agentId,
+            body: respondBody,
+            activeAnomaly: preActiveAnomaly,
+          });
         } else if (isLaunchMsg && !router.lastLaunchDuplicate) {
           achievementWatcher.check({ type: 'client', action: 'launchTask' });
+        } else if (msg.type === 'snooze') {
+          achievementWatcher.check({ type: 'client', action: 'snooze' });
+        } else if (isFeedbackMsg) {
+          // Skip if completeTask was sent without feedback; setTaskFeedback always carries it.
+          const hasFeedback = msg.type === 'setTaskFeedback' || (msg.type === 'completeTask' && !!msg.feedback);
+          if (hasFeedback) {
+            achievementWatcher.check({ type: 'client', action: 'feedback' });
+          }
         } else if (msg.type === 'telemetry') {
           for (const event of msg.events) {
             achievementWatcher.check({ type: 'telemetry', event });
