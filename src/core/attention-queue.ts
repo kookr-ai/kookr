@@ -12,18 +12,61 @@ interface QueueEntry {
   skipped: boolean;
 }
 
+interface SnoozeEntry {
+  /** Original agent/session ID passed at snooze time. Reported by getSnoozed. */
+  agentId: string;
+  /**
+   * The map key under which this entry is stored. Either the resolved taskId
+   * (snooze followed a real task) or `agentId` (orphan / no-resolver test).
+   * Cached so cancelSnooze and purgeTask don't have to re-resolve through
+   * a TaskStore that may have moved on.
+   */
+  key: string;
+  anomaly: Anomaly;
+  expiresAt: number;
+  reason?: string;
+}
+
+export interface AttentionQueueOpts {
+  /**
+   * Resolves a session/agent ID to its owning task ID. When provided, snoozes
+   * are keyed internally by taskId so they survive session rotation (Ralph
+   * iterations, crash-recovery launches, redeploys mid-gap between iterations).
+   * When omitted, snoozes are keyed by the agentId — fine for tests that
+   * exercise the queue without a TaskStore.
+   */
+  taskIdFor?: (agentId: string) => string | null;
+}
+
 export class AttentionQueue {
   private entries = new Map<string, QueueEntry>();
-  private snoozed = new Map<string, { anomaly: Anomaly; expiresAt: number; reason?: string }>();
+  /**
+   * Snoozed map. Key is the taskId when a `taskIdFor` resolver is configured
+   * AND the agent has an owning task; otherwise the agentId. Keying by taskId
+   * lets a single snooze cover every session of the task (Ralph iterations,
+   * crash-relaunched sessions, etc.).
+   */
+  private snoozed = new Map<string, SnoozeEntry>();
   /** Anomaly preserved from the last remove() call — fallback for snooze race. */
   private lastRemoved = new Map<string, Anomaly>();
+  private taskIdFor: (agentId: string) => string | null;
+
+  constructor(opts: AttentionQueueOpts = {}) {
+    this.taskIdFor = opts.taskIdFor ?? (() => null);
+  }
+
+  /** Resolve the snooze map key for a given agent: taskId if available, else the agentId. */
+  private snoozeKey(agentId: string): string {
+    return this.taskIdFor(agentId) ?? agentId;
+  }
 
   enqueue(agentId: string, anomaly: Anomaly): void {
     this.lastRemoved.delete(agentId); // New anomaly supersedes any stale removed one
 
-    // If snoozed, update the snoozed entry but don't add to active queue
-    if (this.snoozed.has(agentId)) {
-      const snoozed = this.snoozed.get(agentId)!;
+    // If snoozed (by task or agent), update the snoozed entry but don't add to active queue
+    const key = this.snoozeKey(agentId);
+    const snoozed = this.snoozed.get(key);
+    if (snoozed) {
       // Preserve original detectedAt when anomaly type hasn't changed
       if (snoozed.anomaly.type === anomaly.type) {
         anomaly = { ...anomaly, detectedAt: snoozed.anomaly.detectedAt };
@@ -61,7 +104,10 @@ export class AttentionQueue {
     const anomaly = entry?.anomaly ?? fallbackAnomaly;
     if (!anomaly) return; // No anomaly anywhere — nothing to snooze
 
-    this.snoozed.set(agentId, {
+    const key = this.snoozeKey(agentId);
+    this.snoozed.set(key, {
+      agentId,
+      key,
       anomaly,
       expiresAt: Date.now() + durationMs,
       reason,
@@ -72,7 +118,8 @@ export class AttentionQueue {
 
   /** Cancel snooze — move agent from snoozed map back to active entries. Returns true if the agent was snoozed. */
   cancelSnooze(agentId: string): boolean {
-    const snoozed = this.snoozed.get(agentId);
+    const key = this.snoozeKey(agentId);
+    const snoozed = this.snoozed.get(key);
     if (!snoozed) return false;
 
     this.entries.set(agentId, {
@@ -80,7 +127,7 @@ export class AttentionQueue {
       anomaly: snoozed.anomaly,
       skipped: false,
     });
-    this.snoozed.delete(agentId);
+    this.snoozed.delete(snoozed.key);
     return true;
   }
 
@@ -93,26 +140,57 @@ export class AttentionQueue {
     this.entries.delete(agentId);
   }
 
-  /** Purge from both entries and snoozed maps. Use for session cleanup / unregister. */
+  /**
+   * Drop this agent's active entry and lastRemoved fallback. Use for session
+   * cleanup. Snooze state is intentionally preserved — a snooze must survive
+   * session rotation (Ralph iterations, crash-recovery relaunches). Use
+   * `purgeTask(taskId)` when the entire task is going away.
+   */
   purge(agentId: string): void {
     this.entries.delete(agentId);
-    this.snoozed.delete(agentId);
     this.lastRemoved.delete(agentId);
   }
 
-  /** Returns all snoozed entries (for persistence). */
-  getSnoozed(): Array<{ agentId: string; anomaly: Anomaly; expiresAt: number; reason?: string }> {
-    const result: Array<{ agentId: string; anomaly: Anomaly; expiresAt: number; reason?: string }> = [];
-    for (const [agentId, entry] of this.snoozed) {
-      result.push({ agentId, anomaly: entry.anomaly, expiresAt: entry.expiresAt, reason: entry.reason });
+  /** Clear the snooze for a task (or, for tests/orphans, an agentId acting as the snooze key). */
+  purgeTask(taskIdOrKey: string): void {
+    this.snoozed.delete(taskIdOrKey);
+  }
+
+  /**
+   * Returns all snoozed entries (for persistence).
+   *
+   * Each entry's `key` is the snooze map key — taskId in production, agentId
+   * in resolver-less tests. Persistence layers should use that key directly
+   * rather than re-deriving it from agentId, so a stored snooze always
+   * round-trips back to the same map slot.
+   */
+  getSnoozed(): Array<{ agentId: string; key: string; anomaly: Anomaly; expiresAt: number; reason?: string }> {
+    const result: Array<{ agentId: string; key: string; anomaly: Anomaly; expiresAt: number; reason?: string }> = [];
+    for (const entry of this.snoozed.values()) {
+      result.push({
+        agentId: entry.agentId,
+        key: entry.key,
+        anomaly: entry.anomaly,
+        expiresAt: entry.expiresAt,
+        reason: entry.reason,
+      });
     }
     return result;
   }
 
-  /** Import snoozed entries (from persistence). Clears any conflicting active entries. */
-  importSnoozed(entries: Array<{ agentId: string; anomaly: Anomaly; expiresAt: number; reason?: string }>): void {
+  /**
+   * Import snoozed entries from persistence. Each entry carries an explicit
+   * `key` (taskId in production, agentId for orphans) so the import never has
+   * to re-derive the map slot through the resolver — that protects the fix's
+   * correctness from future TaskStore changes (e.g. session pruning).
+   */
+  importSnoozed(
+    entries: Array<{ agentId: string; key: string; anomaly: Anomaly; expiresAt: number; reason?: string }>,
+  ): void {
     for (const entry of entries) {
-      this.snoozed.set(entry.agentId, {
+      this.snoozed.set(entry.key, {
+        agentId: entry.agentId,
+        key: entry.key,
         anomaly: entry.anomaly,
         expiresAt: entry.expiresAt,
         reason: entry.reason,
@@ -124,7 +202,7 @@ export class AttentionQueue {
 
   /** Returns the snooze expiration timestamp (ms since epoch) if the agent is actively snoozed, null otherwise. */
   getSnoozedUntil(agentId: string): number | null {
-    const entry = this.snoozed.get(agentId);
+    const entry = this.snoozed.get(this.snoozeKey(agentId));
     if (!entry) return null;
     if (Date.now() >= entry.expiresAt) return null; // expired
     return entry.expiresAt;
@@ -133,7 +211,7 @@ export class AttentionQueue {
   /** Get the stored anomaly for an agent (with persisted detectedAt), or null. */
   getAnomaly(agentId: string): Anomaly | null {
     return this.entries.get(agentId)?.anomaly
-      ?? this.snoozed.get(agentId)?.anomaly
+      ?? this.snoozed.get(this.snoozeKey(agentId))?.anomaly
       ?? this.lastRemoved.get(agentId)
       ?? null;
   }
@@ -141,7 +219,7 @@ export class AttentionQueue {
   /** Get the active or snoozed anomaly only; excludes lastRemoved fallback. */
   peek(agentId: string): Anomaly | null {
     return this.entries.get(agentId)?.anomaly
-      ?? this.snoozed.get(agentId)?.anomaly
+      ?? this.snoozed.get(this.snoozeKey(agentId))?.anomaly
       ?? null;
   }
 
@@ -182,15 +260,27 @@ export class AttentionQueue {
 
   private restoreExpiredSnoozes(): void {
     const now = Date.now();
-    for (const [agentId, snooze] of this.snoozed) {
-      if (now >= snooze.expiresAt) {
-        this.entries.set(agentId, {
-          agentId,
+    for (const [key, snooze] of this.snoozed) {
+      if (now < snooze.expiresAt) continue;
+
+      // When the snooze is keyed by agentId (no resolver / orphan), restore
+      // the anomaly under that same agentId — preserves the legacy "snooze
+      // expires, finding pops back" UX that callers and tests rely on.
+      //
+      // When the snooze is keyed by taskId, the recorded agentId may now be
+      // a long-dead session. Putting it into `entries` would leave a ghost
+      // finding the supervisor never overwrites (the next live enqueue uses
+      // a different agentId). Drop instead and let the supervisor's next
+      // tick re-detect on the current session if the anomaly still applies.
+      const isAgentKeyed = key === snooze.agentId;
+      if (isAgentKeyed) {
+        this.entries.set(snooze.agentId, {
+          agentId: snooze.agentId,
           anomaly: snooze.anomaly,
           skipped: false,
         });
-        this.snoozed.delete(agentId);
       }
+      this.snoozed.delete(key);
     }
   }
 

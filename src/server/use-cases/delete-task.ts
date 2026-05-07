@@ -1,6 +1,7 @@
 import type { TaskStore } from '../../core/tasks.js';
 import type { Monitor } from '../../core/monitor.js';
 import type { AgentAdapter } from '../../adapters/agent-adapter.js';
+import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { HookFileWatcher } from '../hook-watcher.js';
 import type { Watchdog } from '../../core/watchdog.js';
 import type { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
@@ -15,6 +16,8 @@ export interface DeleteTaskDeps {
   watchdog?: Pick<Watchdog, 'unregisterAgent'>;
   shadowRegistry?: Pick<ShadowDetectorRegistry, 'unregisterAgent'>;
   suppressionTracker?: Pick<SnoozeSuppressionTracker, 'reset'>;
+  /** Optional queue — used to clear the task's task-keyed snooze. */
+  queue?: Pick<AttentionQueue, 'purgeTask'>;
 }
 
 export async function deleteTask(deps: DeleteTaskDeps, taskId: string): Promise<boolean> {
@@ -27,6 +30,9 @@ export async function deleteTask(deps: DeleteTaskDeps, taskId: string): Promise<
     }
   }
 
+  // Snoozes are keyed by taskId — clear the task's snooze before the task
+  // record disappears (otherwise the next save logs an orphan-snooze warning).
+  deps.queue?.purgeTask(taskId);
   deps.taskStore.deleteTask(taskId);
   return true;
 }
