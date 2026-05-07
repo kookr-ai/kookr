@@ -466,4 +466,48 @@ describe('AttentionQueue', () => {
       expect(queue.isAllClear()).toBe(false);
     });
   });
+
+  describe('getActiveAnomaly', () => {
+    test('returns the active anomaly for an enqueued agent', () => {
+      queue.enqueue('a1', makeAnomaly('a1', 'repeated_error', 'critical'));
+      const active = queue.getActiveAnomaly('a1');
+      expect(active).not.toBeNull();
+      expect(active!.type).toBe('repeated_error');
+    });
+
+    test('returns null for an unknown agent', () => {
+      expect(queue.getActiveAnomaly('nope')).toBeNull();
+    });
+
+    test('returns null when the agent is snoozed', () => {
+      queue.enqueue('a1', makeAnomaly('a1', 'permission_blocked', 'warning'));
+      queue.snooze('a1', 60_000);
+      expect(queue.getActiveAnomaly('a1')).toBeNull();
+    });
+
+    test('returns null after remove (does not fall back to lastRemoved)', () => {
+      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
+      queue.remove('a1');
+      // getAnomaly() would return the lastRemoved fallback; getActiveAnomaly must not.
+      expect(queue.getAnomaly('a1')).not.toBeNull();
+      expect(queue.getActiveAnomaly('a1')).toBeNull();
+    });
+
+    test('expired snoozes become observable as active', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(FIXED_TIME);
+      try {
+        queue.enqueue('a1', makeAnomaly('a1', 'repeated_error', 'critical'));
+        queue.snooze('a1', 60_000);
+        expect(queue.getActiveAnomaly('a1')).toBeNull();
+
+        vi.advanceTimersByTime(61_000);
+        const active = queue.getActiveAnomaly('a1');
+        expect(active).not.toBeNull();
+        expect(active!.type).toBe('repeated_error');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

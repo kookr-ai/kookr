@@ -145,6 +145,20 @@ export class AttentionQueue {
       ?? null;
   }
 
+  /**
+   * Get the currently-*active* (non-snoozed, non-removed) anomaly for this
+   * agent, or null. Used by the achievement watcher's recordResolution helper
+   * to identify which anomaly the user is intervening on.
+   *
+   * Calls restoreExpiredSnoozes() so that an anomaly whose snooze just expired
+   * is correctly observable as active. Mirrors the side-effect of next() /
+   * getAll() / isAllClear().
+   */
+  getActiveAnomaly(agentId: string): Anomaly | null {
+    this.restoreExpiredSnoozes();
+    return this.entries.get(agentId)?.anomaly ?? null;
+  }
+
   /** Backdate an anomaly's detectedAt (for testing). */
   backdateAnomaly(agentId: string, detectedAt: Date): boolean {
     const entry = this.entries.get(agentId);
