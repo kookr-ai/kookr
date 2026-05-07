@@ -146,8 +146,7 @@ describe('LaunchTaskDialog "Set as default for this project" checkbox', () => {
     });
     await flush();
 
-    const submitBtn = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((b) => b.textContent === 'Launch') as HTMLButtonElement;
+    const submitBtn = container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
     expect(submitBtn).toBeTruthy();
     act(() => submitBtn.click());
     await flush();
@@ -187,8 +186,7 @@ describe('LaunchTaskDialog "Set as default for this project" checkbox', () => {
     act(() => checkbox!.click());
     await flush();
 
-    const submitBtn = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((b) => b.textContent === 'Launch') as HTMLButtonElement;
+    const submitBtn = container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
     act(() => submitBtn.click());
     await flush();
 

@@ -147,8 +147,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
   // The "Set as default for this project" checkbox is only meaningful when
   // the dialog was opened from a project drawer AND the current cwd differs
-  // from the project's recorded localPath. Otherwise it's either redundant
-  // (cwd matches) or there is no project to update.
+  // from the project's recorded localPath. When localPath is unset, the
+  // comparison reduces to "is cwd non-empty" — so any non-empty cwd
+  // qualifies as a candidate first stamp.
   const canOfferSetDefault = projectContext !== undefined
     && cwd.trim().length > 0
     && cwd.trim() !== (projectContext.localPath ?? '');
