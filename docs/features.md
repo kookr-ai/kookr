@@ -149,6 +149,7 @@ Playbooks are reusable task templates stored as Markdown files in `.kookr/playbo
 | F6.4 | **Checklist as criteria** | Playbook checklist items become the task's completion criteria. |
 | F6.5 | **Playbook badge** | Tasks launched from playbooks show a "Playbook" badge in the detail header. |
 | F6.6 | **Multi-CWD support** | Playbooks are resolved per-CWD. The browser lets the user select which project's playbooks to browse. |
+| F6.7 | **Crash-restart for looped playbooks** | After a Kookr or system crash, relaunching a looped playbook with the same playbook+cwd+parameters is one click: a startup liveness probe auto-fails dtach-master-killed phantoms, and the launch dialog surfaces an inline "Replace it (start fresh) / Open the running loop" prompt for any residual conflict. See `docs/rfc/rfc-ralph-loop-crash-restart-recovery.md`. |
 
 **V1 scope:** Manual trigger only. File-based definitions. No auto-proposal or scheduling.
 
