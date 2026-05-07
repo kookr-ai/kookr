@@ -15,8 +15,8 @@ importers:
         specifier: ^1.47.0
         version: 1.47.0
       '@hono/node-server':
-        specifier: ^1.19.11
-        version: 1.19.11(hono@4.12.16)
+        specifier: ^1.19.13
+        version: 1.19.13(hono@4.12.16)
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -335,8 +335,8 @@ packages:
       '@modelcontextprotocol/sdk':
         optional: true
 
-  '@hono/node-server@1.19.11':
-    resolution: {integrity: sha512-dr8/3zEaB+p0D2n/IUrlPF1HZm586qgJNXK1a9fhg/PzdtkK7Ksd5l312tJX2yBuALqDYBlG20QEbayqPyxn+g==}
+  '@hono/node-server@1.19.13':
+    resolution: {integrity: sha512-TsQLe4i2gvoTtrHje625ngThGBySOgSK3Xo2XRYOdqGN1teR8+I7vchQC46uLJi8OF62YTYA3AhSpumtkhsaKQ==}
     engines: {node: '>=18.14.1'}
     peerDependencies:
       hono: ^4
@@ -1371,7 +1371,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@hono/node-server@1.19.11(hono@4.12.16)':
+  '@hono/node-server@1.19.13(hono@4.12.16)':
     dependencies:
       hono: 4.12.16
 
