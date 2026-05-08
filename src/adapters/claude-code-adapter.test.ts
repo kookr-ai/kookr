@@ -103,6 +103,132 @@ describe('ClaudeCodeAdapter', () => {
     expect(spec.args[sourcesIdx + 1]).toBe('');
   });
 
+  test('launch injects --agents <json> when bypassAllPermissions is true and file-based agents exist', async () => {
+    // Synthetic loader returning a user-scope and project-scope agent. The
+    // adapter must serialize them to a JSON argv entry so they survive the
+    // --setting-sources "" strip. See docs/poc/007-bypass-keeps-file-based-agents.md.
+    const bypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      bypassAllPermissions: true,
+      loadFileBasedAgents: () => ({
+        'oss-issue-scout': {
+          description: 'Project-scope scout',
+          prompt: 'You are the scout.',
+          model: 'opus',
+        },
+        'kb-scout': {
+          description: 'User-scope kb scout',
+          prompt: 'You are the kb scout.',
+          model: 'haiku',
+        },
+      }),
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await bypassAdapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+
+    const agentsIdx = spec.args.indexOf('--agents');
+    expect(agentsIdx).toBeGreaterThanOrEqual(0);
+    const sourcesIdx = spec.args.indexOf('--setting-sources');
+    // --agents must come AFTER --setting-sources '' so the strip-then-inject
+    // ordering matches the empirical recipe in PoC 007.
+    expect(agentsIdx).toBeGreaterThan(sourcesIdx);
+    // --agents must come BEFORE --settings so the CLI parses it as a flag,
+    // mirroring how --dangerously-skip-permissions is positioned.
+    const settingsIdx = spec.args.indexOf('--settings');
+    expect(settingsIdx).toBeGreaterThan(agentsIdx);
+
+    const agentsJson = JSON.parse(spec.args[agentsIdx + 1]);
+    expect(agentsJson).toHaveProperty('oss-issue-scout');
+    expect(agentsJson).toHaveProperty('kb-scout');
+    expect(agentsJson['oss-issue-scout'].model).toBe('opus');
+    expect(agentsJson['oss-issue-scout'].prompt).toBe('You are the scout.');
+    expect(agentsJson['kb-scout'].description).toBe('User-scope kb scout');
+  });
+
+  test('launch omits --agents when bypassAllPermissions is true but no file-based agents found', async () => {
+    // Empty loader → no --agents argv entry. Passing an empty JSON object
+    // would be harmless but noisy; skipping keeps argv minimal.
+    const bypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      bypassAllPermissions: true,
+      loadFileBasedAgents: () => ({}),
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await bypassAdapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).not.toContain('--agents');
+    // Sanity: the rest of the bypass argv is intact.
+    expect(spec.args).toContain('--dangerously-skip-permissions');
+    expect(spec.args).toContain('--setting-sources');
+  });
+
+  test('launch does NOT call the file-based agents loader when bypassAllPermissions is false', async () => {
+    // The fix is gated on bypass mode. In normal mode --setting-sources is
+    // not stripped, so file-based agents already load via Claude Code's
+    // built-in discovery — re-injecting them would duplicate everything.
+    const loader = vi.fn(() => ({ foo: { description: '', prompt: 'x' } }));
+    const noBypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      bypassAllPermissions: false,
+      loadFileBasedAgents: loader,
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await noBypassAdapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(loader).not.toHaveBeenCalled();
+    expect(spec.args).not.toContain('--agents');
+  });
+
+  test('resumed launches with bypassAllPermissions still inject --agents between --setting-sources and --resume', async () => {
+    // Regression guard for a future refactor that moves the agents block
+    // into the non-resume branch. Resumed sessions must still see file-based
+    // agents — the spawned Claude has the same need to invoke them.
+    const bypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      bypassAllPermissions: true,
+      loadFileBasedAgents: () => ({
+        'oss-issue-scout': {
+          description: 'scout',
+          prompt: 'You are the scout.',
+          model: 'opus',
+        },
+      }),
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await bypassAdapter.launch(task.id, 'Fix bug', '/cwd', {
+      sessionId: '00000000-0000-0000-0000-000000000002',
+    });
+    const spec = backend.sessions.get(sessionId)!.spec;
+    const sourcesIdx = spec.args.indexOf('--setting-sources');
+    const agentsIdx = spec.args.indexOf('--agents');
+    const resumeIdx = spec.args.indexOf('--resume');
+    expect(sourcesIdx).toBeGreaterThanOrEqual(0);
+    expect(agentsIdx).toBeGreaterThan(sourcesIdx);
+    expect(resumeIdx).toBeGreaterThan(agentsIdx);
+    // The injected JSON for resumed sessions matches the fresh-launch shape.
+    const agentsJson = JSON.parse(spec.args[agentsIdx + 1]);
+    expect(agentsJson['oss-issue-scout'].model).toBe('opus');
+  });
+
+  test('launch serialises agent prompts containing shell-special characters into a single argv element', async () => {
+    // The fix passes --agents <json> as one argv element, so prompt bodies
+    // do not need shell escaping. Round-tripping a body with backticks,
+    // quotes, newlines, and dollar signs catches any regression that tries
+    // to interpolate the JSON through a shell.
+    const trickyPrompt = '`backticks` "double" \'single\' $VAR\n```bash\necho ${PATH}\n```';
+    const bypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      bypassAllPermissions: true,
+      loadFileBasedAgents: () => ({
+        tricky: { description: 'has $special chars', prompt: trickyPrompt },
+      }),
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await bypassAdapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    const agentsIdx = spec.args.indexOf('--agents');
+    expect(agentsIdx).toBeGreaterThanOrEqual(0);
+    const agentsJson = JSON.parse(spec.args[agentsIdx + 1]);
+    expect(agentsJson.tricky.prompt).toBe(trickyPrompt);
+    expect(agentsJson.tricky.description).toBe('has $special chars');
+  });
+
   test('generated settings file path is included in the launch argv', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');

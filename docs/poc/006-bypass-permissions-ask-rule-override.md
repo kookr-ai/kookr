@@ -93,3 +93,14 @@ Spawned sessions no longer see user-level `deny` rules, project hooks, or `.clau
 | `--allowedTools <wide list>` alone | Rule #3 (allow) loses to rule #2 (ask) in evaluation order. Doesn't help. |
 | Inject `permissions.ask: []` into the per-task `--settings` file | `--settings` MERGES with file-based settings (does not replace them). The user `ask` array survives the merge. |
 | Document the limitation only | The autonomous Ralph use case requires the bypass to actually work, not just be documented as broken. |
+
+## Superseded by PoC 007 (in part)
+
+> **Date:** 2026-05-08
+
+`--setting-sources ""` was later found to ALSO disable file-based subagent
+discovery from `~/.claude/agents/` and `<cwd>/.claude/agents/`. PoC 007 keeps
+both flags from this PoC (the permission-bypass requirement is unchanged) and
+adds `--agents <json>` to re-inject file-based agents inline. The original
+permission rationale documented here still holds — see PoC 007 for the
+agent-discovery layer on top.
