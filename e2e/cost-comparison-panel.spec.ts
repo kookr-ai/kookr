@@ -1,9 +1,9 @@
 /**
  * E2E verification for the Cost Comparison panel.
- * Run with: KOOKR_COST_PANEL=1 npx playwright test cost-comparison-panel
+ * Run with: npx playwright test cost-comparison-panel
  *
  * Verifies:
- *   - The "$" icon is visible in TopBar when KOOKR_COST_PANEL=1
+ *   - The "$" icon is visible in TopBar
  *   - Clicking it opens the panel with the expected sections
  *   - Escape closes the panel
  *   - Agent chips toggle aria-pressed
@@ -12,7 +12,7 @@
 import { test, expect } from './fixtures.js';
 
 test.describe('CostComparisonPanel', () => {
-  test('shows the $ icon in TopBar when KOOKR_COST_PANEL=1', async ({ page }) => {
+  test('shows the $ icon in TopBar', async ({ page }) => {
     await page.goto('/');
     const icon = page.getByRole('button', { name: /cost comparison/i });
     await expect(icon).toBeVisible();
@@ -90,9 +90,9 @@ test.describe('CostComparisonPanel', () => {
   });
 
   test('notes-stack expander uses aria-expanded', async ({ page }) => {
-    // The flag-on backend in this fixture has no Codex tasks pre-populated, so the
-    // notes stack will be empty — we verify the contract holds by not crashing
-    // and by the absence of a stale aria-expanded button.
+    // The fixture's backend has no Codex tasks pre-populated, so the notes stack
+    // is typically empty — we verify the contract holds by not crashing and by
+    // the absence of a stale aria-expanded button.
     await page.goto('/');
     await page.getByRole('button', { name: /cost comparison/i }).click();
     const expander = page.locator('.cost-notes-expander');
