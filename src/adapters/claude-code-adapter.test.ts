@@ -555,4 +555,36 @@ describe('ClaudeCodeAdapter', () => {
       }
     });
   });
+
+  describe('extraEnv propagation (rfc-ralph-loop-stall-handling.md §8)', () => {
+    test('passes extraEnv through to SessionSpec.env', async () => {
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd', undefined, {
+        extraEnv: { RALPH_VERDICT_FILE: '/tmp/test/.ralph-verdict-aaaaaaaa.json', FOO: 'bar' },
+      });
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(spec.env?.RALPH_VERDICT_FILE).toBe('/tmp/test/.ralph-verdict-aaaaaaaa.json');
+      expect(spec.env?.FOO).toBe('bar');
+      // Existing launch-context env keys still present (KOOKR_TASK_ID is set by buildAgentLaunchContext).
+      expect(spec.env?.KOOKR_TASK_ID).toBe(task.id);
+    });
+
+    test('extraEnv overrides launch-context env when keys collide', async () => {
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd', undefined, {
+        extraEnv: { KOOKR_TASK_ID: 'forced-override' },
+      });
+      const spec = backend.sessions.get(sessionId)!.spec;
+      // Documented precedence: extraEnv wins (caller intent is explicit).
+      expect(spec.env?.KOOKR_TASK_ID).toBe('forced-override');
+    });
+
+    test('omitted extraEnv leaves env identical to today', async () => {
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(spec.env?.RALPH_VERDICT_FILE).toBeUndefined();
+      expect(spec.env?.KOOKR_TASK_ID).toBe(task.id);
+    });
+  });
 });

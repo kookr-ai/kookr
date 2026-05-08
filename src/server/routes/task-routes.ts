@@ -9,6 +9,8 @@ import { cancelTask as cancelTaskLifecycle } from '../agent-lifecycle.js';
 import { detectStandalonePlugin } from '../../core/ralph-plugin-coexistence.js';
 import { DEFAULT_RALPH_ITERATION_READ_LIMIT, MAX_RALPH_ITERATION_READ_LIMIT, appendIterationRecord, formatIterationLogCsv, readIterationLog } from '../../core/ralph-iteration-log.js';
 import { validateRalphLoopRequest } from '../ralph-loop-service.js';
+import { canonicalizeTarget } from '../../core/ralph-iteration-verdict.js';
+import { resolveStallConfig } from '../../shared/contracts/ralph.js';
 import {
   launchLoopedPlaybook,
   LoopedPlaybookLaunchError,
@@ -116,8 +118,10 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       agentType?: string;
       iterationCap?: unknown;
       stopPredicate?: unknown;
+      stallPredicate?: unknown;
       zeroDiffConvergence?: unknown;
       costCapUsd?: unknown;
+      stallConfig?: unknown;
     };
     try {
       body = await c.req.json();
@@ -192,8 +196,10 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
    *   - prompt is missing, empty, or non-string
    *   - iterationCap is missing, non-integer, or non-positive
    *   - stopPredicate (when present) is non-string
+   *   - stallPredicate (when present) is non-string
    *   - zeroDiffConvergence.consecutiveIterations (when present) is not a positive integer
    *   - costCapUsd (when present) is not a positive finite number
+   *   - stallConfig (when present) has invalid fields — see `validateRalphLoopRequest`
    */
   app.post('/api/tasks/:id/ralph-loop', async (c) => {
     const id = c.req.param('id');
@@ -204,8 +210,10 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       prompt?: unknown;
       iterationCap?: unknown;
       stopPredicate?: unknown;
+      stallPredicate?: unknown;
       zeroDiffConvergence?: unknown;
       costCapUsd?: unknown;
+      stallConfig?: unknown;
     };
     try {
       body = await c.req.json();
@@ -284,6 +292,96 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
+  });
+
+  /**
+   * Read-only inspection of the Ralph loop state, with effective stallConfig
+   * (defaults merged) so operators see the values the engine actually uses.
+   * No JSONL access — call /iterations for history. See rfc §8.
+   */
+  app.get('/api/tasks/:id/ralph-loop', (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    if (!task.ralphLoop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
+
+    return c.json({
+      ralphLoop: task.ralphLoop,
+      effectiveStallConfig: resolveStallConfig(task.ralphLoop.stallConfig),
+    });
+  });
+
+  /**
+   * Modify burned-out targets — operator unblock path. Idempotent. Every
+   * mutation fires a `ralph_burned_targets_modified` interaction-log event
+   * for audit. See rfc §8.
+   */
+  app.patch('/api/tasks/:id/ralph-loop/burned-targets', async (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    const loop = task.ralphLoop;
+    if (!loop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
+
+    let body: { remove?: unknown; clear?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    const remove = Array.isArray(body.remove) ? body.remove : [];
+    if (!remove.every((t) => typeof t === 'string')) {
+      return c.json({ error: 'remove, when present, must be an array of strings' }, 400);
+    }
+    const clear = body.clear === true;
+
+    if (remove.length === 0 && !clear) {
+      // Empty no-op: return current state without firing an audit event.
+      return c.json({ ok: true, burnedOutTargets: loop.burnedOutTargets ?? [] });
+    }
+
+    // Snapshot the FULL prior shape so the audit log can reproduce state if
+    // the operator needs to roll back manually.
+    const previous = (loop.burnedOutTargets ?? []).map((t) => ({ ...t }));
+
+    if (clear) {
+      loop.burnedOutTargets = [];
+    } else {
+      const removeSet = new Set(remove.map((t) => canonicalizeTarget(t as string)));
+      loop.burnedOutTargets = (loop.burnedOutTargets ?? []).filter((t) => !removeSet.has(t.target));
+    }
+
+    // `removed` is the actual delta of canonicalized targets that left the
+    // burned list, not the operator's input. Operators may submit unknown or
+    // already-clean targets; the audit should reflect what changed.
+    const remaining = new Set((loop.burnedOutTargets ?? []).map((t) => t.target));
+    const actuallyRemoved = previous
+      .map((t) => t.target)
+      .filter((target) => !remaining.has(target));
+
+    // Audit trail (operability §9). Awaited so the on-disk record order
+    // matches mutation order; a concurrent PATCH cannot interleave its
+    // append before this one. Best-effort failure: log but don't fail the
+    // operator's mutation, which is already committed in memory.
+    if (interactionLog) {
+      try {
+        await interactionLog.append({
+          type: 'ralph_burned_targets_modified',
+          taskId: id,
+          removed: actuallyRemoved,
+          cleared: clear,
+          previousBurnedOutTargets: previous,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.warn(`[task-routes] ralph_burned_targets_modified audit append failed for task ${id}:`, err);
+      }
+    }
+
+    task.updatedAt = new Date();
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    return c.json({ ok: true, burnedOutTargets: loop.burnedOutTargets });
   });
 
   /**

@@ -221,7 +221,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       id: tmuxName,
       command: this.agentBin,
       args,
-      env: launchContext.env,
+      env: { ...launchContext.env, ...(opts?.extraEnv ?? {}) },
       cwd,
       size: { cols: 200, rows: 50 },
     });

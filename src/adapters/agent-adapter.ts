@@ -43,6 +43,13 @@ export interface AdapterLaunchOptions {
    * only.
    */
   bypassPermissions?: boolean;
+  /**
+   * Generic env-variable extension point. Each adapter MUST merge these into
+   * the spawned process's environment. Used by Ralph stall handling to inject
+   * `RALPH_VERDICT_FILE`, but kept generic to avoid leaking caller-specific
+   * concerns into the adapter interface. See rfc-ralph-loop-stall-handling.md §8.
+   */
+  extraEnv?: Record<string, string>;
 }
 
 /**

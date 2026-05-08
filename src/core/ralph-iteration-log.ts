@@ -8,6 +8,7 @@ import type {
   RalphIterationExitReason,
   RalphIterationLogReadModel,
   RalphIterationRecord,
+  RalphIterationVerdict,
 } from '../shared/contracts/ralph-iteration-log.js';
 export type {
   RalphIterationDiffStats,
@@ -15,6 +16,7 @@ export type {
   RalphIterationLogReadModel,
   RalphIterationLogSummary,
   RalphIterationRecord,
+  RalphIterationVerdict,
 } from '../shared/contracts/ralph-iteration-log.js';
 
 /**
@@ -44,6 +46,9 @@ const EXIT_REASONS: ReadonlySet<RalphIterationExitReason> = new Set([
   'session_dead',
   'predicate_error',
   'continued',
+  'target_stalled',
+  'all_targets_stalled',
+  'iteration_cost_cap',
   'replaced_by_user',
   'unknown',
 ]);
@@ -81,7 +86,7 @@ export function parseIterationRecord(line: string): RalphIterationRecord | null 
   }
   if (parsed === null || typeof parsed !== 'object') return null;
   const obj = parsed as Record<string, unknown>;
-  const { iterationNumber, startedAt, endedAt, exitReason, cumulativeCostUsd, gitBaselineRef, diffStats } = obj;
+  const { iterationNumber, startedAt, endedAt, exitReason, cumulativeCostUsd, gitBaselineRef, diffStats, verdict, costDeltaUsd } = obj;
   if (typeof iterationNumber !== 'number' || !Number.isInteger(iterationNumber)) return null;
   if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) return null;
   if (typeof endedAt !== 'number' || !Number.isFinite(endedAt)) return null;
@@ -98,7 +103,7 @@ export function parseIterationRecord(line: string): RalphIterationRecord | null 
       ? (exitReason as RalphIterationExitReason)
       : 'unknown';
 
-  return {
+  const record: RalphIterationRecord = {
     iterationNumber,
     startedAt,
     endedAt,
@@ -107,6 +112,43 @@ export function parseIterationRecord(line: string): RalphIterationRecord | null 
     gitBaselineRef,
     diffStats,
   };
+
+  // Optional fields — silently dropped if malformed (forward-compat for older
+  // logs written before these fields existed). Adding fields is additive;
+  // never reject a record that's valid in the legacy schema.
+  if (verdict !== undefined && isValidVerdict(verdict)) {
+    record.verdict = verdict;
+  }
+  if (costDeltaUsd === null) {
+    record.costDeltaUsd = null;
+  } else if (typeof costDeltaUsd === 'number' && Number.isFinite(costDeltaUsd)) {
+    record.costDeltaUsd = costDeltaUsd;
+  }
+
+  return record;
+}
+
+function isValidVerdict(value: unknown): value is RalphIterationVerdict {
+  if (value === null || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.iteration !== 'number' || !Number.isInteger(obj.iteration)) return false;
+  switch (obj.verdict) {
+    case 'progress':
+      return (obj.target === undefined || typeof obj.target === 'string')
+        && (obj.reason === undefined || typeof obj.reason === 'string');
+    case 'complete':
+      return obj.reason === undefined || typeof obj.reason === 'string';
+    case 'stalled':
+      if (typeof obj.target !== 'string' || obj.target.length === 0) return false;
+      if (typeof obj.reason !== 'string') return false;
+      if (obj.blockers !== undefined) {
+        if (!Array.isArray(obj.blockers)) return false;
+        if (!obj.blockers.every((b) => typeof b === 'string')) return false;
+      }
+      return true;
+    default:
+      return false;
+  }
 }
 
 export async function readIterationLog(
