@@ -16,6 +16,12 @@ interface Props {
   onSettings: () => void;
   onShowShortcuts: () => void;
   onOssView: () => void;
+  /**
+   * Set only when the backend is built with KOOKR_COST_PANEL=1 (App probes the
+   * route on mount). When undefined, the icon is hidden so users on
+   * default-flag deployments never see it.
+   */
+  onCostComparison?: () => void;
   /** Optional slot rendered in the right-side action cluster, hidden in compact mode. */
   sweepSlot?: React.ReactNode;
 }
@@ -50,7 +56,7 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, sweepSlot }: Props) {
+export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onCostComparison, sweepSlot }: Props) {
   const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
@@ -312,6 +318,11 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
                 <circle cx="12" cy="12" r="9" />
                 <polyline points="12 7 12 12 15 14" />
               </svg>
+            </button>
+          )}
+          {!compact && onCostComparison && (
+            <button className="btn-icon" onClick={onCostComparison} title="Cost comparison (Claude vs Codex)" aria-label="Cost comparison">
+              $
             </button>
           )}
           <button className="btn-icon" onClick={onSettings} title="Settings" aria-label="Settings">
