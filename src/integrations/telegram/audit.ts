@@ -50,6 +50,7 @@ export type AuditEvent =
   // Startup warmup — see issue #584 and integrations/telegram/warmup.ts.
   | { kind: 'voice_warmup'; okMs: number }
   | { kind: 'voice_warmup'; errMs: number; reason: string }
+  | { kind: 'voice_warmup'; cancelledMs: number; cancelled: 'shutdown' }
   | { kind: 'audio_received'; source: 'voice' | 'audio' | 'video_note' | 'document'; sender: number; durationSec?: number; bytes: number; mimeType?: string }
   | { kind: 'transcribed'; source: 'voice' | 'audio' | 'video_note' | 'document'; durationSec?: number; len: number }
   | { kind: 'transcription_failed'; err: string }
