@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useId } from 'react';
 import { track } from '../telemetry.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 
@@ -20,8 +20,20 @@ export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
   const [manual, setManual] = useState(false);
   const [manualValue, setManualValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const firstPresetRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const titleId = useId();
 
   useEscapeToClose(onClose);
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    (firstPresetRef.current ?? dialogRef.current)?.focus();
+    return () => {
+      previousFocusRef.current?.focus();
+    };
+  }, []);
 
   useEffect(() => {
     if (manual) {
@@ -59,15 +71,24 @@ export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
-      <div className="snooze-dialog" onClick={(e) => e.stopPropagation()}>
-        <div className="snooze-dialog-title">
+      <div
+        ref={dialogRef}
+        className="snooze-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div id={titleId} className="snooze-dialog-title">
           Snooze <strong>{agentName}</strong>
         </div>
         {!manual ? (
           <div className="snooze-dialog-options">
-            {PRESETS.map((p) => (
+            {PRESETS.map((p, index) => (
               <button
                 key={p.key}
+                ref={index === 0 ? firstPresetRef : undefined}
                 className="snooze-dialog-btn"
                 onClick={() => {
                   track({ type: 'finding_snoozed', agentId, anomalyType: null, durationMs: p.ms, method: 'shortcut' });

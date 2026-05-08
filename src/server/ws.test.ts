@@ -28,7 +28,9 @@ describe('WebSocket MessageRouter', () => {
 
   beforeEach(() => {
     taskStore = new TaskStore();
-    queue = new AttentionQueue();
+    queue = new AttentionQueue({
+      taskIdFor: (agentId) => taskStore.findTaskBySession(agentId)?.id ?? null,
+    });
     monitor = new Monitor(taskStore, queue);
     terminal = new FakeTerminalBackend();
     adapter = new ClaudeCodeAdapter(terminal, taskStore);
@@ -1200,7 +1202,9 @@ describe('WebSocket MessageRouter — Interaction Logging', () => {
 
   beforeEach(() => {
     taskStore = new TaskStore();
-    queue = new AttentionQueue();
+    queue = new AttentionQueue({
+      taskIdFor: (agentId) => taskStore.findTaskBySession(agentId)?.id ?? null,
+    });
     monitor = new Monitor(taskStore, queue);
     terminal = new FakeTerminalBackend();
     adapter = new ClaudeCodeAdapter(terminal, taskStore);
@@ -1959,7 +1963,9 @@ describe('WebSocket MessageRouter — cancelSnooze', () => {
 
   beforeEach(() => {
     taskStore = new TaskStore();
-    queue = new AttentionQueue();
+    queue = new AttentionQueue({
+      taskIdFor: (agentId) => taskStore.findTaskBySession(agentId)?.id ?? null,
+    });
     monitor = new Monitor(taskStore, queue);
     terminal = new FakeTerminalBackend();
     adapter = new ClaudeCodeAdapter(terminal, taskStore);
@@ -2009,6 +2015,357 @@ describe('WebSocket MessageRouter — cancelSnooze', () => {
   test('cancelSnooze on a non-snoozed agent is a no-op (no log entry)', async () => {
     await router.handleMessage({ type: 'cancelSnooze', agentId: 'not-snoozed' });
 
+    expect(loggedEvents.filter((e) => e.type === 'finding_resolved')).toHaveLength(0);
+  });
+
+  test('snooze stores a running task without a finding and does not log finding events', async () => {
+    const task = taskStore.createTask('Long task', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Long task', '/cwd');
+
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: tmuxName,
+      taskId: task.id,
+      durationMs: 60_000,
+    });
+
+    expect(queue.getSnoozedUntil(tmuxName)).not.toBeNull();
+    expect(queue.getSnoozed()[0].kind).toBe('task');
+    expect(queue.getSnoozed()[0].anomaly).toBeUndefined();
+    expect(loggedEvents.filter((e) => e.type === 'finding_snoozed' || e.type === 'finding_resolved')).toHaveLength(0);
+  });
+
+  test('snooze rejects a no-anomaly running task when taskId does not match', async () => {
+    const task = taskStore.createTask('Long task', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Long task', '/cwd');
+    const sentMessages: ServerMessage[] = [];
+    router = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+    });
+
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: tmuxName,
+      taskId: 'other-task',
+      durationMs: 60_000,
+    });
+
+    expect(queue.getSnoozedUntil(tmuxName)).toBeNull();
+    expect(sentMessages).toContainEqual(expect.objectContaining({
+      type: 'alert',
+      agentId: tmuxName,
+      summary: 'Cannot snooze this task',
+    }));
+  });
+
+  test('snooze rejects a no-anomaly unknown agent', async () => {
+    const sentMessages: ServerMessage[] = [];
+    router = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+    });
+
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: 'unknown-agent',
+      durationMs: 60_000,
+    });
+
+    expect(queue.getSnoozedUntil('unknown-agent')).toBeNull();
+    expect(sentMessages).toContainEqual(expect.objectContaining({
+      type: 'alert',
+      agentId: 'unknown-agent',
+      summary: 'Cannot snooze this task',
+    }));
+  });
+
+  test('snooze rejects a no-anomaly open task with no live session', async () => {
+    const task = taskStore.createTask('Open task', '/cwd');
+    const sentMessages: ServerMessage[] = [];
+    router = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+    });
+
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: task.id,
+      taskId: task.id,
+      durationMs: 60_000,
+    });
+
+    expect(queue.getSnoozed()).toHaveLength(0);
+    expect(sentMessages).toContainEqual(expect.objectContaining({
+      type: 'alert',
+      agentId: task.id,
+      summary: 'Cannot snooze this task',
+    }));
+  });
+
+  test('snooze rejects a no-anomaly task after it reaches a terminal status', async () => {
+    const task = taskStore.createTask('Done task', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Done task', '/cwd');
+    taskStore.completeTask(task.id);
+    const sentMessages: ServerMessage[] = [];
+    router = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+    });
+
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: tmuxName,
+      taskId: task.id,
+      durationMs: 60_000,
+    });
+
+    expect(queue.getSnoozedUntil(tmuxName)).toBeNull();
+    expect(sentMessages).toContainEqual(expect.objectContaining({
+      type: 'alert',
+      agentId: tmuxName,
+      summary: 'Cannot snooze this task',
+    }));
+  });
+
+  test('snooze rejects a stale no-anomaly session after task session rotation', async () => {
+    const task = taskStore.createTask('Long task', '/cwd');
+    const oldSession = await adapter.launch(task.id, 'Long task', '/cwd');
+    taskStore.updateSession(task.id, oldSession, { lastStatus: 'completed' });
+    const liveSession = await adapter.launch(task.id, 'Long task', '/cwd');
+    const sentMessages: ServerMessage[] = [];
+    router = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+    });
+
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: oldSession,
+      taskId: task.id,
+      durationMs: 60_000,
+    });
+
+    expect(queue.getSnoozedUntil(oldSession)).toBeNull();
+    expect(queue.getSnoozedUntil(liveSession)).toBeNull();
+    expect(sentMessages).toContainEqual(expect.objectContaining({
+      type: 'alert',
+      agentId: oldSession,
+      summary: 'Cannot snooze this task',
+    }));
+  });
+
+  test('snooze accepts the current live no-anomaly session after task session rotation', async () => {
+    const task = taskStore.createTask('Long task', '/cwd');
+    const oldSession = await adapter.launch(task.id, 'Long task', '/cwd');
+    taskStore.updateSession(task.id, oldSession, { lastStatus: 'completed' });
+    const liveSession = await adapter.launch(task.id, 'Long task', '/cwd');
+
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: liveSession,
+      taskId: task.id,
+      durationMs: 60_000,
+    });
+
+    expect(queue.getSnoozedUntil(liveSession)).not.toBeNull();
+    expect(queue.getSnoozed()[0]).toMatchObject({ key: task.id, kind: 'task' });
+  });
+
+  test('cancelSnooze resumes a task snooze without restoring a finding or logging resolution', async () => {
+    const task = taskStore.createTask('Long task', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Long task', '/cwd');
+
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: tmuxName,
+      taskId: task.id,
+      durationMs: 60_000,
+    });
+    loggedEvents.length = 0;
+
+    await router.handleMessage({ type: 'cancelSnooze', agentId: tmuxName, taskId: task.id });
+
+    expect(queue.getSnoozedUntil(tmuxName)).toBeNull();
+    expect(queue.next()).toBeNull();
+    expect(loggedEvents.filter((e) => e.type === 'finding_resolved')).toHaveLength(0);
+  });
+
+  test('cancelSnooze rejects task-keyed snooze when taskId is omitted', async () => {
+    const task = taskStore.createTask('Long task', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Long task', '/cwd');
+    const sentMessages: ServerMessage[] = [];
+    router = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+    });
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: tmuxName,
+      taskId: task.id,
+      durationMs: 60_000,
+    });
+
+    await router.handleMessage({ type: 'cancelSnooze', agentId: tmuxName });
+
+    expect(queue.getSnoozedUntil(tmuxName)).not.toBeNull();
+    expect(sentMessages).toContainEqual(expect.objectContaining({
+      type: 'alert',
+      agentId: tmuxName,
+      summary: 'Cannot resume monitoring',
+    }));
+  });
+
+  test('cancelSnooze rejects omitted taskId from latest live session after anomaly-backed rotation', async () => {
+    const task = taskStore.createTask('Long task', '/cwd');
+    const oldSession = await adapter.launch(task.id, 'Long task', '/cwd');
+    monitor.processEvents(oldSession, [
+      { type: 'stop', sessionId: 's1', lastMessage: 'Need help' },
+    ]);
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: oldSession,
+      taskId: task.id,
+      durationMs: 60_000,
+    });
+    taskStore.updateSession(task.id, oldSession, { lastStatus: 'completed' });
+    const liveSession = await adapter.launch(task.id, 'Long task', '/cwd');
+    const sentMessages: ServerMessage[] = [];
+    router = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+    });
+
+    await router.handleMessage({ type: 'cancelSnooze', agentId: liveSession });
+
+    expect(queue.next()).toBeNull();
+    expect(queue.getSnoozed()).toHaveLength(1);
+    expect(sentMessages).toContainEqual(expect.objectContaining({
+      type: 'alert',
+      agentId: liveSession,
+      summary: 'Cannot resume monitoring',
+    }));
+  });
+
+  test('cancelSnooze rejects mismatched taskId without clearing the snooze', async () => {
+    const task = taskStore.createTask('Long task', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Long task', '/cwd');
+    const sentMessages: ServerMessage[] = [];
+    router = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+    });
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: tmuxName,
+      taskId: task.id,
+      durationMs: 60_000,
+    });
+
+    await router.handleMessage({ type: 'cancelSnooze', agentId: tmuxName, taskId: 'other-task' });
+
+    expect(queue.getSnoozedUntil(tmuxName)).not.toBeNull();
+    expect(sentMessages).toContainEqual(expect.objectContaining({
+      type: 'alert',
+      agentId: tmuxName,
+      summary: 'Cannot resume monitoring',
+    }));
+  });
+
+  test('cancelSnooze rejects another existing snoozed taskId without clearing either snooze', async () => {
+    const taskA = taskStore.createTask('Task A', '/cwd');
+    const sessionA = await adapter.launch(taskA.id, 'Task A', '/cwd');
+    const taskB = taskStore.createTask('Task B', '/cwd');
+    const sessionB = await adapter.launch(taskB.id, 'Task B', '/cwd');
+    const sentMessages: ServerMessage[] = [];
+    router = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+    });
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: sessionA,
+      taskId: taskA.id,
+      durationMs: 60_000,
+    });
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: sessionB,
+      taskId: taskB.id,
+      durationMs: 60_000,
+    });
+
+    await router.handleMessage({ type: 'cancelSnooze', agentId: sessionA, taskId: taskB.id });
+
+    expect(queue.getSnoozedUntil(sessionA)).not.toBeNull();
+    expect(queue.getSnoozedUntil(sessionB)).not.toBeNull();
+    expect(sentMessages).toContainEqual(expect.objectContaining({
+      type: 'alert',
+      agentId: sessionA,
+      summary: 'Cannot resume monitoring',
+    }));
+  });
+
+  test('cancelSnooze restores a task-keyed hidden finding on the latest live session', async () => {
+    const task = taskStore.createTask('Long task', '/cwd');
+    const oldSession = await adapter.launch(task.id, 'Long task', '/cwd');
+    monitor.processEvents(oldSession, [
+      { type: 'stop', sessionId: 's1', lastMessage: 'Need help' },
+    ]);
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: oldSession,
+      taskId: task.id,
+      durationMs: 60_000,
+    });
+    taskStore.updateSession(task.id, oldSession, { lastStatus: 'completed' });
+    const liveSession = await adapter.launch(task.id, 'Long task', '/cwd');
+    loggedEvents.length = 0;
+
+    await router.handleMessage({ type: 'cancelSnooze', agentId: oldSession, taskId: task.id });
+
+    const next = queue.next();
+    expect(next?.agentId).toBe(liveSession);
+    expect(next?.anomaly.agentId).toBe(liveSession);
+    expect(loggedEvents).toContainEqual(expect.objectContaining({
+      type: 'finding_resolved',
+      agentId: liveSession,
+    }));
+  });
+
+  test('cancelSnooze keeps hidden finding parked when task has no live session', async () => {
+    const task = taskStore.createTask('Long task', '/cwd');
+    const oldSession = await adapter.launch(task.id, 'Long task', '/cwd');
+    monitor.processEvents(oldSession, [
+      { type: 'stop', sessionId: 's1', lastMessage: 'Need help' },
+    ]);
+    await router.handleMessage({
+      type: 'snooze',
+      agentId: oldSession,
+      taskId: task.id,
+      durationMs: 60_000,
+    });
+    taskStore.updateSession(task.id, oldSession, { lastStatus: 'completed' });
+    loggedEvents.length = 0;
+
+    await router.handleMessage({ type: 'cancelSnooze', agentId: oldSession, taskId: task.id });
+
+    expect(queue.next()).toBeNull();
+    expect(queue.getSnoozed()).toHaveLength(1);
+    expect(queue.getSnoozed()[0]).toMatchObject({
+      agentId: oldSession,
+      key: task.id,
+      kind: 'finding',
+    });
     expect(loggedEvents.filter((e) => e.type === 'finding_resolved')).toHaveLength(0);
   });
 });

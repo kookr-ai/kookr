@@ -1031,14 +1031,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // complete, the caller (clearCompleted) MUST abort the destructive op.
     // Letting the delete proceed without a snapshot recreates the exact
     // silent-data-loss pipeline this RFC set out to prevent.
-    const snoozedFindings = serializeSnoozed(queue, taskStore);
+    const snoozes = serializeSnoozed(queue, taskStore);
     const suppressionState = suppressionTracker?.export();
     await saveTasksWithSnapshotPolicy(
       taskStore.getAllTasks(),
       tasksFile,
       'predelete',
       taskStore.getLifetimeSpendUsd(),
-      snoozedFindings,
+      snoozes,
       suppressionState,
     );
   };

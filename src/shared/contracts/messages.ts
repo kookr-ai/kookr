@@ -148,8 +148,8 @@ export type ClientMessage =
   | { type: 'getNext' }
   | { type: 'skip'; agentId: string }
   | { type: 'skipAll'; agentIds: string[] }
-  | { type: 'snooze'; agentId: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }
-  | { type: 'cancelSnooze'; agentId: string }
+  | { type: 'snooze'; agentId: string; taskId?: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }
+  | { type: 'cancelSnooze'; agentId: string; taskId?: string }
   | { type: 'launch'; prompt: string; cwd: string; criteria?: string; autonomy?: AutonomyLevel; agentType?: AgentType }
   | { type: 'completeTask'; taskId: string; feedback?: TaskCompletionFeedback }
   | { type: 'setTaskFeedback'; taskId: string; feedback: TaskCompletionFeedback }

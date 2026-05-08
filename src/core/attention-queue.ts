@@ -12,7 +12,9 @@ interface QueueEntry {
   skipped: boolean;
 }
 
-interface SnoozeEntry {
+export type SnoozeKind = 'finding' | 'task';
+
+export interface SnoozeEntry {
   /** Original agent/session ID passed at snooze time. Reported by getSnoozed. */
   agentId: string;
   /**
@@ -22,8 +24,11 @@ interface SnoozeEntry {
    * a TaskStore that may have moved on.
    */
   key: string;
-  anomaly: Anomaly;
+  kind: SnoozeKind;
+  anomaly?: Anomaly;
   expiresAt: number;
+  createdAt: number;
+  expiredPendingRestore?: boolean;
   reason?: string;
 }
 
@@ -63,12 +68,17 @@ export class AttentionQueue {
   enqueue(agentId: string, anomaly: Anomaly): void {
     this.lastRemoved.delete(agentId); // New anomaly supersedes any stale removed one
 
-    // If snoozed (by task or agent), update the snoozed entry but don't add to active queue
     const key = this.snoozeKey(agentId);
+    this.dropExpiredForKey(key);
+
+    // If snoozed (by task or agent), update the snoozed entry but don't add to active queue.
+    // Expired entries are dropped when a fresh anomaly arrives; the fresh
+    // signal is a better source of truth than a stale hidden anomaly waiting
+    // for the server expiry timer.
     const snoozed = this.snoozed.get(key);
-    if (snoozed) {
+    if (snoozed && Date.now() < snoozed.expiresAt) {
       // Preserve original detectedAt when anomaly type hasn't changed
-      if (snoozed.anomaly.type === anomaly.type) {
+      if (snoozed.anomaly?.type === anomaly.type) {
         anomaly = { ...anomaly, detectedAt: snoozed.anomaly.detectedAt };
       }
       snoozed.anomaly = anomaly;
@@ -99,34 +109,43 @@ export class AttentionQueue {
     }
   }
 
-  snooze(agentId: string, durationMs: number, reason?: string, fallbackAnomaly?: Anomaly): void {
+  snooze(agentId: string, durationMs: number, reason?: string, fallbackAnomaly?: Anomaly): SnoozeEntry | null {
     const entry = this.entries.get(agentId);
     const anomaly = entry?.anomaly ?? fallbackAnomaly;
-    if (!anomaly) return; // No anomaly anywhere — nothing to snooze
-
     const key = this.snoozeKey(agentId);
-    this.snoozed.set(key, {
+    const isTaskKeyed = key !== agentId;
+    if (!anomaly && !isTaskKeyed) return null; // No anomaly and no durable task identity — nothing to snooze
+
+    const snooze: SnoozeEntry = {
       agentId,
       key,
-      anomaly,
+      kind: anomaly ? 'finding' : 'task',
       expiresAt: Date.now() + durationMs,
+      createdAt: Date.now(),
       reason,
-    });
+    };
+    if (anomaly) {
+      snooze.anomaly = anomaly;
+    }
+    this.snoozed.set(key, snooze);
     this.entries.delete(agentId); // No-op if entry was already absent
     this.lastRemoved.delete(agentId); // Consumed — no longer needed
+    return snooze;
   }
 
   /** Cancel snooze — move agent from snoozed map back to active entries. Returns true if the agent was snoozed. */
-  cancelSnooze(agentId: string): boolean {
+  cancelSnooze(agentId: string, restoreAgentId = agentId): boolean {
     const key = this.snoozeKey(agentId);
     const snoozed = this.snoozed.get(key);
     if (!snoozed) return false;
 
-    this.entries.set(agentId, {
-      agentId,
-      anomaly: snoozed.anomaly,
-      skipped: false,
-    });
+    if (snoozed.anomaly) {
+      this.entries.set(restoreAgentId, {
+        agentId: restoreAgentId,
+        anomaly: { ...snoozed.anomaly, agentId: restoreAgentId },
+        skipped: false,
+      });
+    }
     this.snoozed.delete(snoozed.key);
     return true;
   }
@@ -164,16 +183,10 @@ export class AttentionQueue {
    * rather than re-deriving it from agentId, so a stored snooze always
    * round-trips back to the same map slot.
    */
-  getSnoozed(): Array<{ agentId: string; key: string; anomaly: Anomaly; expiresAt: number; reason?: string }> {
-    const result: Array<{ agentId: string; key: string; anomaly: Anomaly; expiresAt: number; reason?: string }> = [];
+  getSnoozed(): SnoozeEntry[] {
+    const result: SnoozeEntry[] = [];
     for (const entry of this.snoozed.values()) {
-      result.push({
-        agentId: entry.agentId,
-        key: entry.key,
-        anomaly: entry.anomaly,
-        expiresAt: entry.expiresAt,
-        reason: entry.reason,
-      });
+      result.push({ ...entry });
     }
     return result;
   }
@@ -185,14 +198,26 @@ export class AttentionQueue {
    * correctness from future TaskStore changes (e.g. session pruning).
    */
   importSnoozed(
-    entries: Array<{ agentId: string; key: string; anomaly: Anomaly; expiresAt: number; reason?: string }>,
+    entries: Array<{
+      agentId: string;
+      key: string;
+      kind?: SnoozeKind;
+      anomaly?: Anomaly;
+      expiresAt: number;
+      createdAt?: number;
+      expiredPendingRestore?: boolean;
+      reason?: string;
+    }>,
   ): void {
     for (const entry of entries) {
       this.snoozed.set(entry.key, {
         agentId: entry.agentId,
         key: entry.key,
+        kind: entry.kind ?? (entry.anomaly ? 'finding' : 'task'),
         anomaly: entry.anomaly,
         expiresAt: entry.expiresAt,
+        createdAt: entry.createdAt ?? Date.now(),
+        expiredPendingRestore: entry.expiredPendingRestore,
         reason: entry.reason,
       });
       // Remove from active entries to avoid duplicates (race: events arrived before import)
@@ -210,16 +235,18 @@ export class AttentionQueue {
 
   /** Get the stored anomaly for an agent (with persisted detectedAt), or null. */
   getAnomaly(agentId: string): Anomaly | null {
+    const snoozed = this.snoozed.get(this.snoozeKey(agentId));
     return this.entries.get(agentId)?.anomaly
-      ?? this.snoozed.get(this.snoozeKey(agentId))?.anomaly
+      ?? (snoozed && Date.now() < snoozed.expiresAt ? snoozed.anomaly : undefined)
       ?? this.lastRemoved.get(agentId)
       ?? null;
   }
 
   /** Get the active or snoozed anomaly only; excludes lastRemoved fallback. */
   peek(agentId: string): Anomaly | null {
+    const snoozed = this.snoozed.get(this.snoozeKey(agentId));
     return this.entries.get(agentId)?.anomaly
-      ?? this.snoozed.get(this.snoozeKey(agentId))?.anomaly
+      ?? (snoozed && Date.now() < snoozed.expiresAt ? snoozed.anomaly : undefined)
       ?? null;
   }
 
@@ -272,29 +299,47 @@ export class AttentionQueue {
     return this.entries.size === 0;
   }
 
+  expireDue(now = Date.now()): SnoozeEntry[] {
+    const expired: SnoozeEntry[] = [];
+    for (const [key, snooze] of this.snoozed) {
+      if (now < snooze.expiresAt) continue;
+      this.snoozed.delete(key);
+      expired.push({ ...snooze });
+    }
+    return expired;
+  }
+
+  private dropExpiredForKey(key: string): void {
+    const snooze = this.snoozed.get(key);
+    if (!snooze || Date.now() < snooze.expiresAt) return;
+    this.snoozed.delete(key);
+  }
+
   private restoreExpiredSnoozes(): void {
     const now = Date.now();
     for (const [key, snooze] of this.snoozed) {
       if (now < snooze.expiresAt) continue;
+      if (!snooze.anomaly) {
+        this.snoozed.delete(key);
+        continue;
+      }
 
       // When the snooze is keyed by agentId (no resolver / orphan), restore
       // the anomaly under that same agentId — preserves the legacy "snooze
       // expires, finding pops back" UX that callers and tests rely on.
       //
       // When the snooze is keyed by taskId, the recorded agentId may now be
-      // a long-dead session. Putting it into `entries` would leave a ghost
-      // finding the supervisor never overwrites (the next live enqueue uses
-      // a different agentId). Drop instead and let the supervisor's next
-      // tick re-detect on the current session if the anomaly still applies.
-      const isAgentKeyed = key === snooze.agentId;
+      // a long-dead session. The server expiry path owns live-session
+      // restoration, so the queue leaves task-keyed hidden anomalies pending.
+      const isAgentKeyed = snooze.key === snooze.agentId;
       if (isAgentKeyed) {
         this.entries.set(snooze.agentId, {
           agentId: snooze.agentId,
           anomaly: snooze.anomaly,
           skipped: false,
         });
+        this.snoozed.delete(key);
       }
-      this.snoozed.delete(key);
     }
   }
 

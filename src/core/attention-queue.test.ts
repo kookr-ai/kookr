@@ -158,6 +158,20 @@ describe('AttentionQueue', () => {
       expect(queue.getSnoozedUntil('a1')).toBeNull();
     });
 
+    test('snooze without anomaly stores a task snooze when task identity resolves', () => {
+      const taskQueue = new AttentionQueue({
+        taskIdFor: (agentId) => (agentId === 'sess-A' ? 'task-1' : null),
+      });
+
+      const result = taskQueue.snooze('sess-A', 5000);
+
+      expect(result).not.toBeNull();
+      expect(result!.kind).toBe('task');
+      expect(taskQueue.getSnoozedUntil('sess-A')).not.toBeNull();
+      expect(taskQueue.getSnoozed()[0].key).toBe('task-1');
+      expect(taskQueue.getSnoozed()[0].anomaly).toBeUndefined();
+    });
+
     test('agent completes while snoozed - stays completed', () => {
       queue.enqueue('a1', makeAnomaly('a1', 'repeated_error', 'critical'));
       queue.snooze('a1', 5000);
@@ -400,6 +414,35 @@ describe('AttentionQueue', () => {
       const [entry] = taskQueue.getSnoozed();
       expect(entry.agentId).toBe('sess-A');
       expect(entry.key).toBe('task-1');
+    });
+
+    test('expired no-anomaly task snooze does not suppress a newly enqueued anomaly', () => {
+      vi.useFakeTimers({ now: FIXED_TIME });
+      const taskQueue = new AttentionQueue({
+        taskIdFor: (agentId) => (agentId === 'sess-A' ? 'task-1' : null),
+      });
+
+      taskQueue.snooze('sess-A', 5000);
+      vi.advanceTimersByTime(5001);
+      taskQueue.enqueue('sess-A', makeAnomaly('sess-A', 'repeated_error', 'critical'));
+
+      expect(taskQueue.getAll().map((e) => e.agentId)).toEqual(['sess-A']);
+      expect(taskQueue.getSnoozedUntil('sess-A')).toBeNull();
+    });
+
+    test('expired task snooze with hidden anomaly does not suppress a new post-expiry anomaly', () => {
+      vi.useFakeTimers({ now: FIXED_TIME });
+      const taskQueue = new AttentionQueue({
+        taskIdFor: (agentId) => (agentId === 'sess-A' ? 'task-1' : null),
+      });
+
+      taskQueue.snooze('sess-A', 5000);
+      taskQueue.enqueue('sess-A', makeAnomaly('sess-A', 'needs_input', 'info'));
+      vi.advanceTimersByTime(5001);
+      taskQueue.enqueue('sess-A', makeAnomaly('sess-A', 'repeated_error', 'critical'));
+
+      expect(taskQueue.getAll().map((e) => e.agentId)).toEqual(['sess-A']);
+      expect(taskQueue.getSnoozed()).toHaveLength(0);
     });
 
     test('getSnoozed() returns empty array when nothing snoozed', () => {

@@ -1,5 +1,5 @@
 import type { Monitor } from '../core/monitor.js';
-import type { Task, TaskStore } from '../core/tasks.js';
+import { isActiveStatus, type Task, type TaskStore } from '../core/tasks.js';
 import type { Anomaly } from '../core/types.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
@@ -68,6 +68,7 @@ export interface TimerHandles {
   tokenScanInterval: ReturnType<typeof setInterval>;
   watchdogInterval: ReturnType<typeof setInterval>;
   livenessInterval: ReturnType<typeof setInterval>;
+  snoozeExpiryInterval: ReturnType<typeof setInterval>;
   saveInterval: ReturnType<typeof setInterval>;
   quotaPollTimeout: ReturnType<typeof setTimeout> | null;
 }
@@ -98,6 +99,45 @@ export function runBudgetCheck(
   if (!anomaly) return false;
   enqueue(activeSession.tmuxSession, anomaly);
   return true;
+}
+
+export function restoreExpiredSnoozes(queue: AttentionQueue, taskStore: TaskStore): boolean {
+  const expired = queue.expireDue();
+  if (expired.length === 0) return false;
+  let changed = false;
+
+  for (const entry of expired) {
+    if (!entry.anomaly) {
+      changed = true;
+      continue;
+    }
+
+    if (entry.key === entry.agentId) {
+      queue.enqueue(entry.agentId, entry.anomaly);
+      changed = true;
+      continue;
+    }
+
+    const task = taskStore.getTask(entry.key);
+    if (!task || !isActiveStatus(task.status)) {
+      changed = true;
+      continue;
+    }
+
+    const liveSession = [...task.sessions].reverse().find(
+      (session) => session.lastStatus !== 'completed'
+        && session.lastStatus !== 'aborted'
+        && !session.crashRecovered,
+    );
+    if (liveSession) {
+      queue.enqueue(liveSession.tmuxSession, { ...entry.anomaly, agentId: liveSession.tmuxSession });
+      changed = true;
+    } else {
+      queue.importSnoozed([{ ...entry, expiredPendingRestore: true }]);
+    }
+  }
+
+  return changed;
 }
 
 export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
@@ -243,6 +283,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // --- Periodic liveness check ---
   const lifecycleDeps: LifecycleDeps = {
     adapter, monitor, taskStore, hookWatcher, watchdog, shadowRegistry, tokenTracker,
+    queue,
     suppressionTracker: deps.suppressionTracker,
     checkpointCycler: deps.checkpointCycler,
   };
@@ -289,20 +330,30 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }
   }, livenessIntervalMs);
 
+  const snoozeExpiryInterval = setInterval(() => {
+    try {
+      if (restoreExpiredSnoozes(queue, taskStore)) {
+        broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      }
+    } catch (err) {
+      console.error('Error expiring snoozes:', err);
+    }
+  }, 1_000);
+
   // --- Periodic task persistence ---
   // Uses saveTasksWithSnapshotPolicy with 'daily' so the first successful
   // save of each local day copies tasks.json to tasks.json.daily.YYYYMMDD.
   // Snapshot failures are logged inside the helper and never block the save.
   const saveInterval = setInterval(async () => {
     try {
-      const snoozedFindings = serializeSnoozed(queue, taskStore);
+      const snoozes = serializeSnoozed(queue, taskStore);
       const suppressionState = deps.suppressionTracker?.export();
       await saveTasksWithSnapshotPolicy(
         taskStore.getAllTasks(),
         tasksFile,
         'daily',
         taskStore.getLifetimeSpendUsd(),
-        snoozedFindings,
+        snoozes,
         suppressionState,
       );
     } catch (err) {
@@ -339,6 +390,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     tokenScanInterval,
     watchdogInterval,
     livenessInterval,
+    snoozeExpiryInterval,
     saveInterval,
     quotaPollTimeout,
   };
@@ -348,6 +400,7 @@ export function clearAllTimers(handles: TimerHandles): void {
   clearInterval(handles.watchdogInterval);
   clearInterval(handles.tokenScanInterval);
   clearInterval(handles.livenessInterval);
+  clearInterval(handles.snoozeExpiryInterval);
   clearInterval(handles.saveInterval);
   if (handles.quotaPollTimeout) clearTimeout(handles.quotaPollTimeout);
 }

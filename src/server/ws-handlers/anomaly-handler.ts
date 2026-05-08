@@ -4,6 +4,7 @@ import type { Monitor } from '../../core/monitor.js';
 import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
 import type { SnoozeSuppressionTracker } from '../../core/snooze-suppression.js';
+import type { Task, TaskStore } from '../../core/tasks.js';
 import type { AutonomyOrchestrator } from '../autonomy-orchestrator.js';
 import { nowISO } from '../../core/interaction-log.js';
 import { recordFalsePositive } from '../../core/anomaly-detector.js';
@@ -20,6 +21,7 @@ import { sendDirectAgentInput } from '../use-cases/agent-input.js';
 export interface AnomalyHandlerDeps {
   send: (msg: ServerMessage) => void;
   adapter: AgentAdapter;
+  taskStore: TaskStore;
   monitor: Monitor;
   queue: AttentionQueue;
   interactionLog?: DeferredInteractionLogWriter;
@@ -41,6 +43,14 @@ type AnomalyMessage = Extract<ClientMessage, {
     | 'permissionChoice'
     | 'cancelAutoProceed'
 }>;
+
+function latestLiveSession(task: Task): Task['sessions'][number] | undefined {
+  return [...task.sessions].reverse().find(
+    (session) => session.lastStatus !== 'completed'
+      && session.lastStatus !== 'aborted'
+      && !session.crashRecovered,
+  );
+}
 
 /**
  * Handles anomaly/triage client messages.
@@ -172,16 +182,40 @@ export class AnomalyHandler {
           return;
         }
 
-        this.deps.queue.snooze(msg.agentId, msg.durationMs, msg.reason, snoozeAnomaly ?? undefined);
+        if (!snoozeAnomaly) {
+          const task = msg.taskId
+            ? this.deps.taskStore.getTask(msg.taskId)
+            : this.deps.taskStore.findTaskBySession(msg.agentId);
+          const sessionTask = this.deps.taskStore.findTaskBySession(msg.agentId);
+          const liveSession = task ? latestLiveSession(task) : undefined;
+          const validTask = task
+            && task.status === 'inProgress'
+            && sessionTask?.id === task.id
+            && liveSession?.tmuxSession === msg.agentId
+            && (msg.taskId === undefined || msg.taskId === task.id);
+          if (!validTask) {
+            this.deps.send({
+              type: 'alert',
+              agentId: msg.agentId,
+              summary: 'Cannot snooze this task',
+              details: 'Only active running tasks and findings can be snoozed.',
+              severity: 'warning',
+            });
+            return;
+          }
+        }
+
+        const snooze = this.deps.queue.snooze(msg.agentId, msg.durationMs, msg.reason, snoozeAnomaly ?? undefined);
+        if (!snooze) return;
         const snoozeTs = nowISO();
-        await this.deps.interactionLog?.append({
-          type: 'finding_snoozed',
-          agentId: msg.agentId,
-          durationMs: msg.durationMs,
-          anomalyType: snoozeAnomaly?.type,
-          timestamp: snoozeTs,
-        });
         if (snoozeAnomaly) {
+          await this.deps.interactionLog?.append({
+            type: 'finding_snoozed',
+            agentId: msg.agentId,
+            durationMs: msg.durationMs,
+            anomalyType: snoozeAnomaly.type,
+            timestamp: snoozeTs,
+          });
           await this.deps.interactionLog?.append({
             type: 'finding_resolved',
             agentId: msg.agentId,
@@ -209,12 +243,52 @@ export class AnomalyHandler {
       }
 
       case 'cancelSnooze': {
-        const wasSnoozing = this.deps.queue.cancelSnooze(msg.agentId);
-        if (wasSnoozing) {
+        const snoozedEntries = this.deps.queue.getSnoozed();
+        const sessionTask = this.deps.taskStore.findTaskBySession(msg.agentId);
+        const agentSnooze = snoozedEntries.find(
+          (entry) => entry.agentId === msg.agentId || (sessionTask && entry.key === sessionTask.id),
+        );
+        const isTaskKeyedSnooze = Boolean(agentSnooze && agentSnooze.key !== agentSnooze.agentId);
+        if (isTaskKeyedSnooze && msg.taskId === undefined) {
+          this.deps.send({
+            type: 'alert',
+            agentId: msg.agentId,
+            summary: 'Cannot resume monitoring',
+            details: 'Task snoozes require a matching task identity to resume.',
+            severity: 'warning',
+          });
+          return;
+        }
+
+        let cancelAgentId = msg.agentId;
+        let restoreAgentId = msg.agentId;
+        if (msg.taskId !== undefined) {
+          const task = this.deps.taskStore.getTask(msg.taskId);
+          const snoozedTask = snoozedEntries.find((entry) => entry.key === msg.taskId);
+          if (!task || !snoozedTask || sessionTask?.id !== task.id) {
+            this.deps.send({
+              type: 'alert',
+              agentId: msg.agentId,
+              summary: 'Cannot resume monitoring',
+              details: 'The selected task session no longer matches the requested task.',
+              severity: 'warning',
+            });
+            return;
+          }
+          const liveSession = latestLiveSession(task);
+          if (!liveSession && snoozedTask.anomaly) {
+            return;
+          }
+          cancelAgentId = liveSession?.tmuxSession ?? msg.agentId;
+          restoreAgentId = liveSession?.tmuxSession ?? msg.agentId;
+        }
+        const preAnomaly = this.deps.queue.getAnomaly(cancelAgentId);
+        const wasSnoozing = this.deps.queue.cancelSnooze(cancelAgentId, restoreAgentId);
+        if (wasSnoozing && preAnomaly) {
           await this.deps.interactionLog?.append({
             type: 'finding_resolved',
-            agentId: msg.agentId,
-            anomalyType: this.deps.queue.getAnomaly(msg.agentId)?.type ?? 'needs_input',
+            agentId: cancelAgentId,
+            anomalyType: preAnomaly.type,
             method: 'input',
             durationMs: 0,
             timestamp: nowISO(),

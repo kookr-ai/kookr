@@ -1,11 +1,8 @@
-import { resolve } from 'node:path';
-
 const PROTECTED_SUFFIX = 'kookr-prod';
 
 /**
- * Pure predicate over an already-absolute path. Frontend-safe — no node:path
- * dependency. Server callers that may receive a relative path should use
- * `isProtectedWorktreePath` instead, which canonicalizes first.
+ * Pure predicate over an already-normalized path. Frontend-safe — no node:path
+ * dependency.
  */
 export function endsWithProtectedSuffix(absPath: string): boolean {
   return absPath.endsWith(PROTECTED_SUFFIX);
@@ -18,5 +15,5 @@ export function deriveParentRepoFromProtected(absPath: string): string {
 
 /** Worktrees that Kookr must never remove automatically or from the workspace UI. */
 export function isProtectedWorktreePath(worktreePath: string): boolean {
-  return endsWithProtectedSuffix(resolve(worktreePath));
+  return endsWithProtectedSuffix(worktreePath.replace(/[/\\]+$/, ''));
 }

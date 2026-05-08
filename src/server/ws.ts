@@ -125,6 +125,7 @@ export class MessageRouter {
     this.anomalyHandler = new AnomalyHandler({
       send: this.deps.send,
       adapter: this.deps.adapter,
+      taskStore: this.deps.taskStore,
       monitor: this.deps.monitor,
       queue: this.deps.queue,
       interactionLog: this.deps.interactionLog,
@@ -187,6 +188,7 @@ export class MessageRouter {
       adapter: this.deps.adapter,
       monitor: this.deps.monitor,
       taskStore: this.deps.taskStore,
+      queue: this.deps.queue,
       interactionLog: this.deps.interactionLog,
       suppressionTracker: this.deps.suppressionTracker,
       leaseService: this.deps.leaseService,

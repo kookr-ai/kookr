@@ -13,6 +13,27 @@ function makeAnomaly(agentId: string, type: Anomaly['type'] = 'repeated_error', 
   return { agentId, type, severity, explanation: `${type} for ${agentId}`, detectedAt: FIXED_TIME };
 }
 
+function makePersistedFinding(
+  taskId: string,
+  agentId: string,
+  expiresAt = Date.now() + 60000,
+): PersistedSnooze {
+  return {
+    taskId,
+    agentId,
+    kind: 'finding',
+    anomaly: {
+      agentId,
+      type: 'repeated_error',
+      severity: 'critical',
+      explanation: 'test',
+      detectedAt: '2026-01-01T00:00:00.000Z',
+    },
+    expiresAt,
+    createdAt: Date.now(),
+  };
+}
+
 describe('Task Persistence', () => {
   let tempDir: string;
   let filePath: string;
@@ -102,29 +123,53 @@ describe('Task Persistence', () => {
     expect(store2.getLifetimeSpendUsd()).toBeCloseTo(3.75);
   });
 
-  test('loadTasks with no snoozedFindings field returns empty array', async () => {
-    // v2 envelope without snoozedFindings
+  test('loadTasks with no snoozes field returns empty arrays', async () => {
+    // v2 envelope without snoozes/snoozedFindings
     const data = JSON.stringify({ version: 2, lifetimeSpendUsd: 0, tasks: [] });
     writeFileSync(filePath, data);
 
     const result = await loadTasks(filePath);
+    expect(result.snoozes).toEqual([]);
     expect(result.snoozedFindings).toEqual([]);
   });
 
-  test('snoozedFindings round-trips through save/load', async () => {
+  test('snoozes round-trips through save/load', async () => {
     const snoozed: PersistedSnooze[] = [{
       taskId: 'task-1',
+      agentId: 'agent-1',
+      kind: 'finding',
       anomaly: { agentId: 'agent-1', type: 'repeated_error', severity: 'critical', explanation: 'test', detectedAt: '2026-01-01T00:00:00.000Z' },
       expiresAt: Date.now() + 60000,
+      createdAt: Date.now(),
       reason: 'investigating',
     }];
 
     await saveTasks([], filePath, 0, snoozed);
     const result = await loadTasks(filePath);
 
+    expect(result.snoozes).toHaveLength(1);
+    expect(result.snoozes![0].taskId).toBe('task-1');
+    expect(result.snoozes![0].reason).toBe('investigating');
+    expect(result.snoozedFindings).toEqual([]);
+  });
+
+  test('legacy snoozedFindings still loads', async () => {
+    const data = JSON.stringify({
+      version: 2,
+      lifetimeSpendUsd: 0,
+      tasks: [],
+      snoozedFindings: [{
+        taskId: 'task-1',
+        anomaly: { agentId: 'agent-1', type: 'repeated_error', severity: 'critical', explanation: 'test', detectedAt: '2026-01-01T00:00:00.000Z' },
+        expiresAt: Date.now() + 60000,
+        reason: 'investigating',
+      }],
+    });
+    writeFileSync(filePath, data);
+
+    const result = await loadTasks(filePath);
     expect(result.snoozedFindings).toHaveLength(1);
     expect(result.snoozedFindings![0].taskId).toBe('task-1');
-    expect(result.snoozedFindings![0].reason).toBe('investigating');
   });
 });
 
@@ -174,7 +219,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
     expect(queue2.getSnoozedUntil('kookr-abc')).not.toBeNull();
   });
 
-  test('expired snoozes filtered on deserialize', () => {
+  test('expired no-anomaly task snoozes filtered on deserialize', () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Task', '/cwd');
     taskStore.addSession(task.id, {
@@ -186,13 +231,36 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
 
     const persisted: PersistedSnooze[] = [{
       taskId: task.id,
-      anomaly: { agentId: 'kookr-x', type: 'repeated_error', severity: 'critical', explanation: 'test', detectedAt: '2026-01-01T00:00:00.000Z' },
-      expiresAt: Date.now() - 1000, // already expired
+      agentId: 'kookr-x',
+      kind: 'task',
+      expiresAt: Date.now() - 1000,
+      createdAt: Date.now() - 60_000,
       reason: 'old',
     }];
 
     const result = deserializeSnoozed(persisted, taskStore);
     expect(result).toHaveLength(0);
+  });
+
+  test('expired anomaly-backed snooze for active task is retained as pending restoration', () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/cwd');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-x',
+      agentType: 'claude',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'completed',
+    });
+
+    const persisted: PersistedSnooze[] = [
+      makePersistedFinding(task.id, 'kookr-x', Date.now() - 1000),
+    ];
+
+    const result = deserializeSnoozed(persisted, taskStore);
+    expect(result).toHaveLength(1);
+    expect(result[0].expiredPendingRestore).toBe(true);
+    expect(result[0].key).toBe(task.id);
   });
 
   test('task with no live session: snooze retained (rebinds on next session)', () => {
@@ -211,11 +279,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
       lastStatus: 'completed',
     });
 
-    const persisted: PersistedSnooze[] = [{
-      taskId: task.id,
-      anomaly: { agentId: 'kookr-old', type: 'repeated_error', severity: 'critical', explanation: 'test', detectedAt: '2026-01-01T00:00:00.000Z' },
-      expiresAt: Date.now() + 60000,
-    }];
+    const persisted: PersistedSnooze[] = [makePersistedFinding(task.id, 'kookr-old')];
 
     const result = deserializeSnoozed(persisted, taskStore);
     expect(result).toHaveLength(1);
@@ -227,11 +291,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
     const taskStore = new TaskStore();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const persisted: PersistedSnooze[] = [{
-      taskId: 'task-that-was-deleted',
-      anomaly: { agentId: 'kookr-x', type: 'repeated_error', severity: 'critical', explanation: 'test', detectedAt: '2026-01-01T00:00:00.000Z' },
-      expiresAt: Date.now() + 60000,
-    }];
+    const persisted: PersistedSnooze[] = [makePersistedFinding('task-that-was-deleted', 'kookr-x')];
 
     const result = deserializeSnoozed(persisted, taskStore);
     expect(result).toHaveLength(0);
@@ -255,17 +315,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
       createdAt: new Date(),
     });
 
-    const persisted: PersistedSnooze[] = [{
-      taskId: task.id,
-      anomaly: {
-        agentId: 'kookr-pruned-long-ago',
-        type: 'repeated_error',
-        severity: 'critical',
-        explanation: 'test',
-        detectedAt: '2026-01-01T00:00:00.000Z',
-      },
-      expiresAt: Date.now() + 60000,
-    }];
+    const persisted: PersistedSnooze[] = [makePersistedFinding(task.id, 'kookr-pruned-long-ago')];
 
     const deserialized = deserializeSnoozed(persisted, taskStore);
     expect(deserialized).toHaveLength(1);
@@ -300,11 +350,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
       createdAt: new Date(),
     });
 
-    const persisted: PersistedSnooze[] = [{
-      taskId: task.id,
-      anomaly: { agentId: 'kookr-old', type: 'repeated_error', severity: 'critical', explanation: 'test', detectedAt: '2026-01-01T00:00:00.000Z' },
-      expiresAt: Date.now() + 60000,
-    }];
+    const persisted: PersistedSnooze[] = [makePersistedFinding(task.id, 'kookr-old')];
 
     const result = deserializeSnoozed(persisted, taskStore);
     expect(result).toHaveLength(1);

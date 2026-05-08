@@ -356,7 +356,7 @@ function FindingCard({ agent, selected, send }: {
   send: (msg: ClientMessage) => void;
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
-  const { selectAgent, nextBottleneck, snoozeAgent } = useKookrStore();
+  const { selectAgent, nextBottleneck } = useKookrStore();
   const dnd = useDnd();
   const cls = severityClass(agent);
   const autoProceedingAt = agent.anomaly?.autoProceedingAt;
@@ -402,8 +402,7 @@ function FindingCard({ agent, selected, send }: {
 
   function handleSnooze(durationMs: number) {
     trackClick('snooze');
-    send({ type: 'snooze', agentId: agent.agentId, durationMs });
-    snoozeAgent(agent.agentId, durationMs);
+    send({ type: 'snooze', agentId: agent.agentId, taskId: agent.taskId, durationMs });
   }
 
   const tooltipText = [agent.description, agent.anomaly?.explanation].filter(Boolean).join('\n\n');
@@ -540,6 +539,7 @@ function HealthyRow({ agent, selected, send }: {
   selected: boolean;
   send: (msg: ClientMessage) => void;
 }) {
+  const [showSnooze, setShowSnooze] = useState(false);
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
 
@@ -552,6 +552,11 @@ function HealthyRow({ agent, selected, send }: {
       const input = document.querySelector('.response-area input') as HTMLInputElement | null;
       input?.focus();
     });
+  }
+
+  function handleSnooze(durationMs: number) {
+    trackClick('snooze');
+    send({ type: 'snooze', agentId: agent.agentId, taskId: agent.taskId, durationMs });
   }
 
   return (
@@ -597,6 +602,13 @@ function HealthyRow({ agent, selected, send }: {
           >
             Reply
           </button>
+          <button
+            className="btn-reply"
+            onClick={(e) => { e.stopPropagation(); setShowSnooze(true); }}
+            title={`Snooze ${agent.taskName ?? agent.agentId}`}
+          >
+            Snooze
+          </button>
         </div>
         <div className="healthy-row-details">
           {agent.gitBranch && (
@@ -617,6 +629,14 @@ function HealthyRow({ agent, selected, send }: {
           {agent.tokenUsage ? ' · ' : ''}
           {healthyStatusLabel(agent.events, agent.startedAt)}
         </div>
+        {showSnooze && (
+          <SnoozeDialog
+            agentId={agent.agentId}
+            agentName={agent.taskName ?? agent.agentId}
+            onSnooze={(durationMs) => { handleSnooze(durationMs); setShowSnooze(false); }}
+            onClose={() => setShowSnooze(false)}
+          />
+        )}
       </div>
     </Tooltip>
   );
@@ -775,9 +795,10 @@ function PendingRow({ agent, selected, send }: {
   );
 }
 
-function SnoozedRow({ agent, selected }: {
+function SnoozedRow({ agent, selected, send }: {
   agent: AgentState;
   selected: boolean;
+  send: (msg: ClientMessage) => void;
 }) {
   const [, setTick] = useState(0);
   const projectLabelText = agentProjectLabel(agent);
@@ -812,6 +833,17 @@ function SnoozedRow({ agent, selected }: {
         </div>
         <div className="snoozed-countdown">
           {agent.suppressed ? 'Paused' : `Snoozed · ${formatCountdown(agent.snoozedUntil!)}`}
+          {!agent.suppressed && (
+            <button
+              className="btn-xs"
+              onClick={(e) => {
+                e.stopPropagation();
+                send({ type: 'cancelSnooze', agentId: agent.agentId, taskId: agent.taskId });
+              }}
+            >
+              Resume now
+            </button>
+          )}
         </div>
       </div>
     </Tooltip>
@@ -1130,6 +1162,7 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
                   key={agent.agentId}
                   agent={agent}
                   selected={agent.agentId === selectedAgentId}
+                  send={send}
                 />
               ))}
             </div>
