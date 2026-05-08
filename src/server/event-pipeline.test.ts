@@ -604,3 +604,80 @@ describe('wireEventPipeline – Ralph fresh-runtime wiring on Stop (integration)
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// R13: subagent_stop registers the agent transcript with the parent task
+// (rfc-cost-comparison-panel.md). `tokenTracker.register` is idempotent on
+// path; this regression locks that contract so the cost-comparison panel
+// can't double-count subagent tokens if SubagentStop fires twice.
+// ---------------------------------------------------------------------------
+
+describe('event-pipeline: R13 subagent_stop registration', () => {
+  test('registers the agent transcript path against the parent task', () => {
+    const { deps, fireEvent } = createMockDeps();
+    (deps.taskStore as any).findTaskBySession = vi.fn().mockReturnValue({
+      id: 'parent-task-1',
+      sessions: [{ tmuxSession: 'kookr-parent' }],
+    });
+    wireEventPipeline(deps);
+
+    fireEvent('kookr-parent', {
+      type: 'subagent_stop',
+      sessionId: 'sess-1',
+      agentId: 'sub-1',
+      agentType: 'reviewer',
+      lastMessage: '',
+      agentTranscriptPath: '/tmp/sidechain-1.jsonl',
+    });
+
+    expect(deps.tokenTracker.register).toHaveBeenCalledWith('/tmp/sidechain-1.jsonl', 'parent-task-1');
+  });
+
+  test('does not register when agentTranscriptPath is missing', () => {
+    const { deps, fireEvent } = createMockDeps();
+    (deps.taskStore as any).findTaskBySession = vi.fn().mockReturnValue({ id: 'parent-task-1', sessions: [] });
+    wireEventPipeline(deps);
+
+    fireEvent('kookr-parent', {
+      type: 'subagent_stop',
+      sessionId: 'sess-1',
+      agentId: 'sub-1',
+      agentType: 'reviewer',
+      lastMessage: '',
+      // no agentTranscriptPath
+    });
+
+    expect(deps.tokenTracker.register).not.toHaveBeenCalled();
+  });
+
+  test('idempotent on path: real TokenTracker drops a second register for the same path', async () => {
+    // This test uses the REAL TokenTracker (not the mock) to lock in the
+    // idempotency contract `event-pipeline.ts` relies on. If TokenTracker.register
+    // ever stops being a no-op on duplicate paths, subagent tokens would be
+    // counted twice in the cost-comparison panel.
+    const { TokenTracker } = await import('../core/token-tracker.js');
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { randomUUID } = await import('node:crypto');
+
+    const dir = join(tmpdir(), `event-pipe-r13-${randomUUID()}`);
+    mkdirSync(dir, { recursive: true });
+    const sidechainPath = join(dir, 'sidechain.jsonl');
+    // Single assistant turn worth 1000 input + 500 output Sonnet tokens.
+    writeFileSync(sidechainPath, JSON.stringify({
+      type: 'assistant',
+      message: { id: 'msg-1', model: 'claude-sonnet-4-6', usage: { input_tokens: 1000, output_tokens: 500 } },
+    }) + '\n', 'utf-8');
+
+    const tracker = new TokenTracker();
+    tracker.register(sidechainPath, 'parent-task-1');
+    tracker.register(sidechainPath, 'parent-task-1');                 // R13's idempotency contract
+    await tracker.scanAll();
+
+    const usage = tracker.getUsage('parent-task-1');
+    expect(usage).toBeDefined();
+    expect(usage!.inputTokens).toBe(1000);                            // not 2000
+    expect(usage!.outputTokens).toBe(500);                            // not 1000
+  });
+});

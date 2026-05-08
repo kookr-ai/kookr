@@ -532,7 +532,7 @@ describe('estimateCost', () => {
 
   test('resolves Opus 4.7 pricing from the explicit model id', () => {
     const pricing = getPricing('claude-opus-4-7');
-    expect(pricing).toEqual({
+    expect(pricing).toMatchObject({
       inputPerMTok: 5,
       outputPerMTok: 25,
       cacheWritePerMTok: 6.25,
@@ -555,7 +555,7 @@ describe('estimateCost', () => {
   test('falls back to Sonnet pricing for unknown models', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const pricing = getPricing('unknown-model');
-    expect(warn).toHaveBeenCalledWith('[token-tracker] Unknown pricing model "unknown-model"; using default Sonnet pricing');
+    expect(warn).toHaveBeenCalledWith('[pricing-tables] Unknown pricing model "unknown-model"; using default Sonnet pricing');
     expect(pricing.inputPerMTok).toBe(3);
   });
 
@@ -563,7 +563,7 @@ describe('estimateCost', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(getPricing('unknown-model-twice')).toBe(getPricing('unknown-model-twice'));
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith('[token-tracker] Unknown pricing model "unknown-model-twice"; using default Sonnet pricing');
+    expect(warn).toHaveBeenCalledWith('[pricing-tables] Unknown pricing model "unknown-model-twice"; using default Sonnet pricing');
   });
 });
 

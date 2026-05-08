@@ -119,6 +119,18 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
       }
     }
 
+    // Register subagent transcripts so their tokens are summed into the parent
+    // task (rfc-cost-comparison-panel.md R13). `tokenTracker.register` is
+    // idempotent on path — calling it a second time with the same path is a
+    // no-op, so multiple SubagentStop events for the same isSidechain
+    // transcript do not double-count.
+    if (event.type === 'subagent_stop' && event.agentTranscriptPath) {
+      const parentTask = taskStore.findTaskBySession(tmuxName);
+      if (parentTask) {
+        tokenTracker.register(event.agentTranscriptPath, parentTask.id);
+      }
+    }
+
     // Retry pending registration on any subsequent event
     if (pendingTranscriptRegistrations.has(tmuxName)) {
       const task = taskStore.findTaskBySession(tmuxName);
