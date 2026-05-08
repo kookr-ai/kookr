@@ -86,6 +86,12 @@ export interface RouteDeps {
   ralphCycler?: RalphCycler;
   /** Token tracker — used by ralph routes to read cumulative cost. */
   tokenTracker?: TokenTracker;
+  /**
+   * Path to the live `~/.kookr/tasks.json`. Used by the cost-comparison route
+   * to read sibling `tasks.json.daily.*` and `tasks.json.predelete.*` snapshots
+   * (rfc-cost-comparison-coverage-and-perf.md §Change 1).
+   */
+  tasksFile?: string;
   /** Singleton Ralph loop orchestration service. */
   ralphLoopService: RalphLoopService;
 }
