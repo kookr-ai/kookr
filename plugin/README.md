@@ -43,6 +43,8 @@ claude --plugin-dir ~/git/kookr/plugin
 
 Kookr's `ClaudeCodeAdapter` already injects `--plugin-dir` automatically for every spawned Claude Code agent, so any Kookr-spawned task sees the toolkit regardless of the consumer's plugin install state.
 
+Content under `plugin/` must stay portable for developers who install the toolkit outside the Kookr repo. Do not add Kookr runtime variables, local Kookr state paths, or Kookr development commands here, even behind fallback guards. Kookr-aware personal playbooks belong in the user playbook tier; Kookr project-only skills, agents, and playbooks belong in the repo's project-scope directories.
+
 ## Versioning
 
 `plugin.json#version` is bumped on every PR that changes `plugin/skills/**` or `plugin/agents/**`. Without a version bump, installed-plugin users would not receive updates. The repo's pre-push hook enforces the bump.

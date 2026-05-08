@@ -188,7 +188,9 @@ if [ -d plugin ]; then
     echo ""
     echo "Push rejected: plugin/ contains Kookr-internal references."
     echo "These break the toolkit when other developers install it via /plugin install."
-    echo "Move the offending skill/agent back to .claude/, or sanitize the reference."
+    echo "Guarded or fallback-only Kookr integrations still make the file Kookr-specific."
+    echo "Move the offending skill/agent/playbook to .claude/ or ~/.kookr/playbooks,"
+    echo "or remove the Kookr-specific behavior before shipping it in plugin/."
     echo ""
     echo "$BAD" | head -20
     exit 1
