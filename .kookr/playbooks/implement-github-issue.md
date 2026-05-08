@@ -156,10 +156,10 @@ For each candidate `N` in selector order, in this exact order:
 
    ```bash
    gh pr list -R "$REPO" --state open --limit 100 --json number,headRefName -q '.[].headRefName' \
-     | grep -E "(^|[-_./])issue[-_.]${N}([-_.]|$)" | head -1
+     | grep -qE "(^|[-_./])issue[-_.]${N}([-_.]|$)"
    ```
 
-   If a match exists, an earlier iteration shipped this — skip silently. The exact flag set is the only contract — do **NOT** add `--search`, `--author`, `--label`, `--draft`, or `--assignee`; any of those silently switches to GitHub's lag-prone Search backend.
+   If this command exits 0, an earlier iteration shipped this — skip silently. If it exits 1, no matching open PR branch exists and the candidate may continue. The exact flag set is the only contract — do **NOT** add `--search`, `--author`, `--label`, `--draft`, or `--assignee`; any of those silently switches to GitHub's lag-prone Search backend.
 
 4. **Attempts under cap?**
 
