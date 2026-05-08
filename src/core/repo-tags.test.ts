@@ -105,14 +105,25 @@ async function initGitWithRemote(dir: string, url: string): Promise<void> {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   const exec = promisify(execFile);
-  await exec('git', ['-C', dir, 'init', '-q']);
+  // Strip inherited GIT_* env so subprocess respects -C and doesn't write
+  // into the parent repo. Critical when this test runs inside a git hook
+  // (which sets GIT_DIR/GIT_WORK_TREE on the test process) — without this,
+  // `git -C tmp init` would silently operate on the parent repo and
+  // contaminate its config. Found the hard way during pre-push.
+  const cleanEnv: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('GIT_')) continue;
+    cleanEnv[key] = value;
+  }
+  const opts = { env: cleanEnv };
+  await exec('git', ['-C', dir, 'init', '-q'], opts);
   // Some environments (init.templateDir, gitconfig hooks) pre-create an
   // origin on `git init`; remove it (ignore "no such remote") so `add`
   // always succeeds.
   try {
-    await exec('git', ['-C', dir, 'remote', 'remove', 'origin']);
+    await exec('git', ['-C', dir, 'remote', 'remove', 'origin'], opts);
   } catch {
     // origin didn't exist; that's fine
   }
-  await exec('git', ['-C', dir, 'remote', 'add', 'origin', url]);
+  await exec('git', ['-C', dir, 'remote', 'add', 'origin', url], opts);
 }

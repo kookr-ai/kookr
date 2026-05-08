@@ -71,9 +71,29 @@ async function isGithubRepo(cwd: string): Promise<boolean> {
   try {
     const { stdout } = await execFileAsync('git', ['-C', cwd, 'remote', 'get-url', 'origin'], {
       timeout: GIT_REMOTE_TIMEOUT_MS,
+      // Strip inherited git env so we read the *cwd's* repo, not whichever
+      // repo the parent process happens to be operating on. Critical when
+      // detection runs inside a git hook (which sets GIT_DIR/GIT_WORK_TREE)
+      // — without this, `-C cwd` would be ignored.
+      env: gitCleanEnv(),
     });
     return /github\.com/i.test(stdout);
   } catch {
     return false;
   }
+}
+
+/**
+ * Process env with all `GIT_*` and `GIT_DIR`-related vars stripped, so a git
+ * subprocess respects only its `-C` cwd argument. Otherwise an inherited
+ * GIT_DIR (e.g. from a pre-push hook context) overrides cwd discovery and
+ * the subprocess silently operates on the wrong repo.
+ */
+function gitCleanEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('GIT_')) continue;
+    env[key] = value;
+  }
+  return env;
 }
