@@ -63,7 +63,7 @@ Implement GitHub issues end-to-end. In standard launch mode, handle the specifie
 
 ## Ralph loop contract
 
-This playbook is loopable because GitHub issue/PR state, Kookr issue-claim leases, and the workdir files `.batch-attempted` / `.batch-stop` are the durable state. Each fresh runtime must re-read all of them before doing anything.
+This playbook is loopable because GitHub issue/PR state, Kookr issue-claim leases, and the workdir file `.batch-stop` are the durable state. Per-target retry counting moved to the engine in PR3 (it now lives on `task.ralphLoop.burnedOutTargets` and is surfaced via `{{ralph.burnedOutTargets}}`), so each fresh runtime needs only the external + `.batch-stop` state.
 
 One Ralph iteration should advance exactly one issue by one durable step:
 
@@ -91,7 +91,7 @@ BATCH_CWD="$(pwd)"
 rm -f "$BATCH_CWD/.batch-stop"
 ```
 
-`rm -f` is unconditional: a stale `.batch-stop` is leftover from a prior single-shot or aborted run, since a satisfied predicate would have stopped the loop before this iteration started. Removing it protects against cross-launch contamination in a reused workdir. Use `"$BATCH_CWD/.batch-attempted"` and `"$BATCH_CWD/.batch-stop"` for every read/write below.
+`rm -f` is unconditional: a stale `.batch-stop` is leftover from a prior single-shot or aborted run, since a satisfied predicate would have stopped the loop before this iteration started. Removing it protects against cross-launch contamination in a reused workdir. Use `"$BATCH_CWD/.batch-stop"` for every read/write below — the per-target retry counter is now the engine's `burnedOutTargets` list, surfaced via `{{ralph.burnedOutTargets}}` in Step 0c.5.
 
 ### Step 0b: Resolve target repo and current user
 
@@ -141,7 +141,7 @@ else
 fi
 ```
 
-When iterating candidates in Step 0d, skip any candidate whose canonicalized form (`trim`, `lowercase`, strip leading `#`, NFC-normalize) appears in `BURNED_FILTER`. This is the engine's complement to the per-issue `.batch-attempted` counter — `.batch-attempted` caps retries within one launch; the burned-target list survives across the whole loop and is dashboard-visible.
+When iterating candidates in Step 0d, skip any candidate whose canonicalized form (`trim`, `lowercase`, strip leading `#`, NFC-normalize) appears in `BURNED_FILTER`. The engine accrues a stall row per target across the whole loop, is dashboard-visible, and integrates with `PATCH /ralph-loop/burned-targets` for operator unblock without losing iteration history.
 
 If every candidate is filtered out by burned targets, fall through to Step 0e — the loop has no eligible work left.
 
@@ -179,16 +179,9 @@ For each candidate `N` in selector order, in this exact order:
 
    If this command exits 0, an earlier iteration shipped this — skip silently. If it exits 1, no matching open PR branch exists and the candidate may continue. The exact flag set is the only contract — do **NOT** add `--search`, `--author`, `--label`, `--draft`, or `--assignee`; any of those silently switches to GitHub's lag-prone Search backend.
 
-4. **Attempts under cap?**
+The first candidate passing all three checks is the target. Capture as `TARGET`.
 
-   ```bash
-   COUNT=$(grep -c "^${N}$" "$BATCH_CWD/.batch-attempted" 2>/dev/null || true)
-   [ "${COUNT:-0}" -lt 3 ]
-   ```
-
-   `grep -c` prints the count to stdout AND exits 1 when the count is 0; capturing into `COUNT` and defaulting via `${COUNT:-0}` handles the missing-file case (empty stdout) and the zero-match case (`COUNT="0"`) without producing a `0\n0` shell-arithmetic error. If at or above 3, skip silently. The count is mechanical — the agent does NOT judge "have I tried this twice." Ralph re-injects the prompt with no carryover memory; only the file count is reliable.
-
-The first candidate passing all four checks is the target. Capture as `TARGET`.
+Per-target retry capping is now the engine's responsibility: when the agent reports `verdict: stalled` for the same canonicalized target `consecutiveStallsPerTarget` times in a row (default 2), Kookr burns the target and Step 0c.5 filters it out of subsequent iterations. The previous playbook-internal `.batch-attempted` counter is gone — the engine's burned-out targets list survives across the whole loop, is dashboard-visible, and integrates with `PATCH /ralph-loop/burned-targets` for operator unblock. See `ralph-loop.md` Phase 3.5 for the full vocabulary.
 
 ### Step 0e: No target
 
@@ -198,17 +191,7 @@ If no candidate passes:
 echo "STOP: COMPLETE" > "$BATCH_CWD/.batch-stop"
 ```
 
-Stop. The Ralph loop predicate fires on the next Stop hook and the loop exits cleanly. (For the blank-shape single-shot path with no Ralph loop, `.batch-stop` simply persists until the next looped launch's Step 0a cleanup — harmless.)
-
-### Step 0f: Record the attempt
-
-**Before any side effects** (claim acquisition, worktree creation, code edits, `gh pr create`):
-
-```bash
-echo "$TARGET" >> "$BATCH_CWD/.batch-attempted"
-```
-
-Append-only. One line per attempt. A crash between this step and `gh pr create` burns one of three slots; with cap=3 a single phantom + two genuine flakes still allows two real tries.
+Stop. The Ralph loop predicate fires on the next Stop hook and the loop exits cleanly. (For the blank-shape single-shot path with no Ralph loop, `.batch-stop` simply persists until the next looped launch's Step 0a cleanup — harmless.) Phase 9 also writes `verdict: complete` to `$RALPH_VERDICT_FILE` for the engine's per-iteration channel — the engine treats that as a clean termination signal.
 
 ## Phase 1: Read the target issue
 
@@ -312,7 +295,7 @@ Branch naming rules:
 
 Example: Issue #42 "Add dark mode toggle" → branch `feat-issue-42-dark-mode-toggle`, worktree at `../kookr-feat-issue-42-dark-mode-toggle`.
 
-If the worktree path already exists or the branch is checked out elsewhere, the iteration aborts. Step 0f already recorded the attempt; after three collisions the issue auto-skips.
+If the worktree path already exists or the branch is checked out elsewhere, the iteration aborts. Phase 9 must report `verdict: stalled` with `target: $TARGET` and blockers `["worktree_collision"]` so the engine accrues a stall row; after `consecutiveStallsPerTarget` (default 2) consecutive stalls Kookr burns the target and Step 0c.5 filters it out of subsequent iterations.
 
 ## Phase 5: Implement
 
@@ -446,9 +429,11 @@ EOF
 mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 
 # C) COMPLETE — no eligible candidate remains in the batch (Step 0e fired,
-#    or every candidate was filtered by `.batch-attempted` cap, or every
-#    candidate is in the burned-targets list). Replaces the legacy
-#    `STOP: COMPLETE` write — keep both during the migration window.
+#    or every candidate is in the engine's burned-targets list). Phase 9
+#    writes verdict.complete AND Step 0e writes `STOP: COMPLETE` to
+#    .batch-stop — the verdict is the engine signal, .batch-stop is read
+#    by the legacy stopPredicate. Keeping both is harmless: either fires
+#    a clean termination on the next Stop hook.
 cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
 {"verdict":"complete","iteration":${RALPH_ITERATION:-0},"reason":"no eligible candidates"}
 EOF
@@ -465,7 +450,7 @@ Default mapping for this playbook:
 | Phase 4: worktree collision after retries | `stalled` (with target + blockers `["worktree_collision"]`) |
 | Phase 6: tests fail after best-effort fix | `stalled` (with target + reason naming the failing test) |
 | Phase 0c selector validation failure (filter rejected) | DON'T write a verdict — Phase 0c already wrote `STOP: FAILED` to `.batch-stop`; the loop terminates next Stop |
-| Phase 0e: no eligible candidates | `complete` (alongside the existing `.batch-stop` write) |
+| Phase 0e: no eligible candidates | `complete` (alongside Step 0e's `.batch-stop` write — both signal clean termination) |
 
 The `RALPH_ITERATION` env var is also injected by the engine; use it for the `iteration` field. The `target` field MUST be the canonicalized issue number (the integer; canonicalization strips `#` and lowercases) so the engine accrues counts on the right key across iterations.
 
@@ -473,8 +458,7 @@ The `RALPH_ITERATION` env var is also injected by the engine; use it for the `it
 
 - **Don't put dependent issues in one selector** — branches diverge from `main`, so issue 566 won't see 565's open PR if 566 depends on 565's changes. Run dependent issues sequentially in separate launches.
 - **Don't pre-create branches matching `*-issue-N-*`** for issues you don't want the agent to touch — Step 0d will skip them. Use `gh issue close N` to remove an issue from a batch permanently.
-- **Don't edit `.batch-attempted` by hand** mid-loop — append-only is the contract.
-- **Don't relaunch against an existing `.batch-attempted` if you want a fresh start** — `rm .batch-attempted` first. (`.batch-stop` is auto-cleaned by Step 0a.)
+- **Don't manually edit `task.ralphLoop.burnedOutTargets`.** To unblock a burned target, use `PATCH /api/tasks/:id/ralph-loop/burned-targets` with `{remove: [...]}` or `{clear: true}` (audit-logged, both are documented in `ralph-loop.md` Phase 3.5). Or wait for the agent to report `verdict: progress` for the target — the engine un-burns automatically. There is no operator-facing burn endpoint by design — to force-burn a target, the agent must write `verdict: stalled` for it `consecutiveStallsPerTarget` times.
 - **Don't add `--search`, `--author`, `--label`, `--draft`, or `--assignee`** to the duplicate-PR check — silently switches to GitHub's lag-prone Search backend.
 - **Don't start coding before understanding the issue** — read the full issue body and any linked context.
 - **Don't work an issue without owning or resuming its Kookr claim** — skip claimed issues instead.
