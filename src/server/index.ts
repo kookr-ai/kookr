@@ -903,6 +903,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     startupRecoverySummary,
     ralphCycler,
     tokenTracker,
+    tasksFile,
     ralphLoopService,
     settings: {
       get: () => currentSettings,

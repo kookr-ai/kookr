@@ -1,6 +1,6 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
-import { access, readFile, mkdir, rm } from 'node:fs/promises';
+import { access, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { Task, TaskStore } from '../../core/tasks.js';
@@ -14,6 +14,12 @@ const execFile = promisify(execFileCb);
  * Bumped when the skill's contract with the spawn use-case changes.
  */
 const EXPECTED_SKILL_SCHEMA_VERSION = 1;
+
+/** Identity file marking a reflect worktree. Cleanup keys off file presence. */
+export const REFLECT_IDENTITY_FILE = '.kookr-reflect.json';
+export const REFLECT_IDENTITY_SCHEMA = 1;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface RequestTaskReflectDeps {
   taskStore: TaskStore;
@@ -106,6 +112,19 @@ export async function requestTaskReflect(
     await execFile('git', ['-C', sourceRepoRoot, 'worktree', 'add', '--detach', worktreePath, 'main']);
   } catch (err) {
     return { spawned: false, reason: `worktree_create_failed: ${(err as Error).message}` };
+  }
+
+  try {
+    const identity = {
+      schema: REFLECT_IDENTITY_SCHEMA,
+      sourceTaskId: input.sourceTaskId,
+      createdAt: new Date().toISOString(),
+    };
+    await writeFile(join(worktreePath, REFLECT_IDENTITY_FILE), JSON.stringify(identity, null, 2));
+  } catch (err) {
+    await execFile('git', ['worktree', 'remove', '--force', worktreePath]).catch(() => {});
+    await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+    return { spawned: false, reason: `identity_write_failed: ${(err as Error).message}` };
   }
 
   // 5-line spawn prompt — the skill owns all the workflow logic.
@@ -207,6 +226,58 @@ function nowSlug(): string {
 }
 
 /**
+ * Resolve the sourceTaskId for a candidate reflect worktree directory.
+ *
+ * Classification is keyed off `.kookr-reflect.json` presence: that file is the
+ * marker that a directory is a reflect worktree. If the file is missing, fall
+ * back to basename parsing for legacy worktrees created before identity files,
+ * and only when the parsed segment is a UUID — manually-named directories
+ * shaped `*-*` must not be misclassified.
+ */
+async function readReflectIdentity(
+  dirPath: string,
+  dirName: string,
+): Promise<{ sourceTaskId: string; legacy: boolean } | null> {
+  const identityPath = join(dirPath, REFLECT_IDENTITY_FILE);
+  let raw: string;
+  try {
+    raw = await readFile(identityPath, 'utf-8');
+  } catch {
+    // File missing — try legacy basename parse, but only accept UUIDs.
+    const candidate = dirName.split('-', 5).join('-');
+    if (UUID_RE.test(candidate)) {
+      console.warn('[reflect-sweep] legacy worktree without identity file', {
+        dir: dirPath,
+        sourceTaskId: candidate,
+      });
+      return { sourceTaskId: candidate, legacy: true };
+    }
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.warn('[reflect-sweep] identity file parse error', {
+      dir: dirPath,
+      error: (err as Error).message,
+    });
+    return null;
+  }
+  const sourceTaskId =
+    parsed && typeof parsed === 'object' && 'sourceTaskId' in parsed
+      ? (parsed as { sourceTaskId?: unknown }).sourceTaskId
+      : undefined;
+  if (typeof sourceTaskId !== 'string' || !UUID_RE.test(sourceTaskId)) {
+    console.warn('[reflect-sweep] identity file missing valid sourceTaskId', {
+      dir: dirPath,
+    });
+    return null;
+  }
+  return { sourceTaskId, legacy: false };
+}
+
+/**
  * Startup sweep: remove any ephemeral reflect worktree whose linked task is
  * no longer present in the task store, plus a 7-day TTL backstop. Called from
  * startup recovery so crashes between worktree creation and reflect-task
@@ -237,9 +308,13 @@ export async function sweepReflectWorktrees(deps: {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dirPath = join(deps.reflectWorktreesDir, entry.name);
-    // Worktree dir name format: <sourceTaskId>-<bundleSlug>
-    const sourceTaskId = entry.name.split('-')[0];
-    const linkedTaskAlive = liveReflectSourceTaskIds.has(sourceTaskId);
+    const identity = await readReflectIdentity(dirPath, entry.name);
+    if (!identity) {
+      // Not a reflect worktree (or unparseable identity). Leave it alone.
+      kept++;
+      continue;
+    }
+    const linkedTaskAlive = liveReflectSourceTaskIds.has(identity.sourceTaskId);
 
     let stale = !linkedTaskAlive;
     if (!stale) {

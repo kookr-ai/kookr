@@ -2,6 +2,8 @@
 
 Thanks for your interest in Kookr! This guide covers everything you need to ship a PR — local setup, the verification matrix, conventions, and how the merge gates work. For the project overview, what Kookr does, and design rationale, start with the [README](README.md).
 
+All contributors are expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Dev environment
 
 Setup, prerequisites, and the daily-use vs. development split are documented once, in the [README's Quick Start](README.md#quick-start). The short version:

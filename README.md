@@ -491,7 +491,7 @@ A snapshot of where Kookr is headed. See [`docs/roadmap.md`](docs/roadmap.md) fo
 
 ## Contributing
 
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide (verification matrix, branch naming, Conventional Commits, and how the pre-push gates work). Contributions require signing the [CLA](CLA.md); the CLA Assistant bot walks you through it on your first PR.
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide (verification matrix, branch naming, Conventional Commits, and how the pre-push gates work). Contributions require signing the [CLA](CLA.md); the CLA Assistant bot walks you through it on your first PR. All contributors are expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Community & Support
 

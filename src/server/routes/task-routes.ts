@@ -4,6 +4,7 @@ import { normalizeAgentType } from '../../core/agent-types.js';
 import { CodexRolloutScanner } from '../../adapters/codex-rollout-scanner.js';
 import { aggregate as aggregateCostComparison } from '../../core/cost-comparison-aggregator.js';
 import type { CostAgent, TimeWindow } from '../../shared/contracts/cost-comparison.js';
+import { clampScanStart, loadHistoricalTasks } from '../use-cases/load-historical-tasks.js';
 import { createSnapshotMessage, getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
 import { deleteTask } from '../use-cases/delete-task.js';
@@ -857,7 +858,14 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     // Codex side: scan + bind. The scanner is a per-route singleton so its
     // (path, mtime) cache survives across requests.
     const scanner = costScannerSingleton;
-    const tasks = taskStore.listTasks();
+    // Union live + on-disk snapshots. The live store only holds currently-visible
+    // tasks; everything swept lives in tasks.json.daily.* / tasks.json.predelete.*.
+    // Without this union the panel renders structurally empty against any swept
+    // task history (rfc-cost-comparison-coverage-and-perf.md §Change 1).
+    const liveTasks = taskStore.listTasks();
+    const tasks = deps.tasksFile
+      ? await loadHistoricalTasks(liveTasks, deps.tasksFile)
+      : liveTasks;
     const codexTasks = tasks
       .filter(t => t.agentType === 'codex-cli')
       .map(t => {
@@ -868,8 +876,12 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         return { taskId: t.id, cwd: sessionCwd ?? t.cwd, createdAtMs: created };
       });
 
+    // Clamp the directory walk so window=all stops walking 57 years of empty
+    // UTC date directories (rfc-cost-comparison-coverage-and-perf.md §Change 3).
+    const effectiveScanStartMs = clampScanStart(windowStartMs, windowEndMs, tasks);
+
     const scanStart = Date.now();
-    const scan = await scanner.scan(windowStartMs, windowEndMs);
+    const scan = await scanner.scan(effectiveScanStartMs, windowEndMs);
     const { outcomes, orphanRollouts } = scanner.bindTasks(scan.rollouts, codexTasks);
 
     // Claude side: pull live token usage and the resolved model id (used by the aggregator
