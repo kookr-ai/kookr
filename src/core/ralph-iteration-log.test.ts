@@ -130,3 +130,76 @@ describe('parseIterationRecord', () => {
     expect(parseIterationRecord(row({ exitReason: 42 }))).toBeNull();
   });
 });
+
+describe('parseIterationRecord — new stall-handling exit reasons', () => {
+  it('round-trips target_stalled', () => {
+    const record = sampleRecord({ exitReason: 'target_stalled' });
+    const line = JSON.stringify(record);
+    expect(parseIterationRecord(line)).toEqual(record);
+  });
+
+  it('round-trips all_targets_stalled', () => {
+    const record = sampleRecord({ exitReason: 'all_targets_stalled' });
+    const line = JSON.stringify(record);
+    expect(parseIterationRecord(line)).toEqual(record);
+  });
+
+  it('round-trips iteration_cost_cap', () => {
+    const record = sampleRecord({ exitReason: 'iteration_cost_cap' });
+    const line = JSON.stringify(record);
+    expect(parseIterationRecord(line)).toEqual(record);
+  });
+
+  it('round-trips a record with a stalled verdict', () => {
+    const record = sampleRecord({
+      exitReason: 'target_stalled',
+      verdict: { verdict: 'stalled', iteration: 1, target: '154', reason: 'tests fail to compile', blockers: ['missing dep:foo'] },
+    });
+    const line = JSON.stringify(record);
+    expect(parseIterationRecord(line)).toEqual(record);
+  });
+
+  it('round-trips a record with a progress verdict (target only)', () => {
+    const record = sampleRecord({
+      verdict: { verdict: 'progress', iteration: 1, target: '153' },
+    });
+    expect(parseIterationRecord(JSON.stringify(record))).toEqual(record);
+  });
+
+  it('round-trips a record with a complete verdict (no target)', () => {
+    const record = sampleRecord({
+      exitReason: 'predicate_satisfied',
+      verdict: { verdict: 'complete', iteration: 1, reason: 'all targets shipped' },
+    });
+    expect(parseIterationRecord(JSON.stringify(record))).toEqual(record);
+  });
+
+  it('round-trips costDeltaUsd including null', () => {
+    const known = sampleRecord({ costDeltaUsd: 0.05 });
+    expect(parseIterationRecord(JSON.stringify(known))?.costDeltaUsd).toBe(0.05);
+
+    const unknown = sampleRecord({ costDeltaUsd: null });
+    expect(parseIterationRecord(JSON.stringify(unknown))?.costDeltaUsd).toBeNull();
+  });
+
+  it('drops malformed verdict but keeps the rest of the record', () => {
+    // Legacy log records (no verdict field) parse cleanly.
+    const legacy = sampleRecord();
+    expect(parseIterationRecord(JSON.stringify(legacy))?.verdict).toBeUndefined();
+
+    // Future-or-corrupt verdict shape: silently dropped, record otherwise valid.
+    const withGarbage = { ...sampleRecord(), verdict: { verdict: 'unknown', iteration: 1 } };
+    const parsed = parseIterationRecord(JSON.stringify(withGarbage));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.verdict).toBeUndefined();
+    expect(parsed!.iterationNumber).toBe(1);
+  });
+
+  it('rejects stalled verdict missing required target field', () => {
+    // A "stalled" verdict without `target` is malformed by schema; the field
+    // is dropped. The surrounding record stays valid.
+    const record = { ...sampleRecord(), verdict: { verdict: 'stalled', iteration: 1, reason: 'no target' } };
+    const parsed = parseIterationRecord(JSON.stringify(record));
+    expect(parsed?.verdict).toBeUndefined();
+  });
+});

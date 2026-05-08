@@ -22,6 +22,13 @@ export type RalphIterationExitReason =
   | 'predicate_error'
   /** Iteration ran to completion and the next one was injected. */
   | 'continued'
+  /** Agent reported `verdict: stalled` for a single target; for single-target
+   *  loops this is also the terminal exit reason once the threshold is reached. */
+  | 'target_stalled'
+  /** Multi-target loop with all `declaredTargets` burned. Loop stops cleanly. */
+  | 'all_targets_stalled'
+  /** Per-iteration cost cap exceeded for `consecutiveIterationCostCapHits` in a row. */
+  | 'iteration_cost_cap'
   /** User replaced the loop with a fresh one via the UI conflict dialog. */
   | 'replaced_by_user'
   /**
@@ -36,6 +43,15 @@ export interface RalphIterationDiffStats {
   insertions: number;
   deletions: number;
 }
+
+/**
+ * Discriminated union written by the agent to `$RALPH_VERDICT_FILE`.
+ * See `rfc-ralph-loop-stall-handling.md` §1.
+ */
+export type RalphIterationVerdict =
+  | { verdict: 'progress'; iteration: number; target?: string; reason?: string }
+  | { verdict: 'complete'; iteration: number; reason?: string }
+  | { verdict: 'stalled'; iteration: number; target: string; reason: string; blockers?: string[] };
 
 export interface RalphIterationRecord {
   iterationNumber: number;
@@ -57,6 +73,19 @@ export interface RalphIterationRecord {
    * unavailable, distinct from zero changed files.
    */
   diffStats: RalphIterationDiffStats | null;
+  /**
+   * Optional verdict copied from the agent's `RALPH_VERDICT_FILE` for this
+   * iteration. Absent when the agent did not write a verdict, or when the
+   * file was malformed/oversize/wrong-iteration (recorded as a verdict
+   * warning instead — see `RalphLoopState.verdictWarningCount`).
+   */
+  verdict?: RalphIterationVerdict;
+  /**
+   * Per-iteration cost delta in USD, computed at Stop time as
+   * `cumulativeCostUsd - prevCumulativeCostUsd`. `null` when the source is
+   * unavailable. Used by the per-iteration cost cap check.
+   */
+  costDeltaUsd?: number | null;
 }
 
 export interface RalphIterationLogSummary {

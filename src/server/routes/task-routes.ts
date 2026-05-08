@@ -9,6 +9,8 @@ import { cancelTask as cancelTaskLifecycle } from '../agent-lifecycle.js';
 import { detectStandalonePlugin } from '../../core/ralph-plugin-coexistence.js';
 import { DEFAULT_RALPH_ITERATION_READ_LIMIT, MAX_RALPH_ITERATION_READ_LIMIT, appendIterationRecord, formatIterationLogCsv, readIterationLog } from '../../core/ralph-iteration-log.js';
 import { validateRalphLoopRequest } from '../ralph-loop-service.js';
+import { canonicalizeTarget } from '../../core/ralph-iteration-verdict.js';
+import { resolveStallConfig } from '../../shared/contracts/ralph.js';
 import {
   launchLoopedPlaybook,
   LoopedPlaybookLaunchError,
@@ -284,6 +286,84 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
+  });
+
+  /**
+   * Read-only inspection of the Ralph loop state, with effective stallConfig
+   * (defaults merged) so operators see the values the engine actually uses.
+   * No JSONL access — call /iterations for history. See rfc §8.
+   */
+  app.get('/api/tasks/:id/ralph-loop', (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    if (!task.ralphLoop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
+
+    return c.json({
+      ralphLoop: task.ralphLoop,
+      effectiveStallConfig: resolveStallConfig(task.ralphLoop.stallConfig),
+    });
+  });
+
+  /**
+   * Modify burned-out targets — operator unblock path. Idempotent. Every
+   * mutation fires a `ralph_burned_targets_modified` interaction-log event
+   * for audit. See rfc §8.
+   */
+  app.patch('/api/tasks/:id/ralph-loop/burned-targets', async (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    const loop = task.ralphLoop;
+    if (!loop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
+
+    let body: { remove?: unknown; clear?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    const remove = Array.isArray(body.remove) ? body.remove : [];
+    if (!remove.every((t) => typeof t === 'string')) {
+      return c.json({ error: 'remove, when present, must be an array of strings' }, 400);
+    }
+    const clear = body.clear === true;
+
+    if (remove.length === 0 && !clear) {
+      // Empty no-op: return current state without firing an audit event.
+      return c.json({ ok: true, burnedOutTargets: loop.burnedOutTargets ?? [] });
+    }
+
+    const previous = (loop.burnedOutTargets ?? []).map((t) => ({
+      target: t.target,
+      consecutiveStallCount: t.consecutiveStallCount,
+      burned: t.burned,
+    }));
+
+    if (clear) {
+      loop.burnedOutTargets = [];
+    } else {
+      const removeSet = new Set(remove.map((t) => canonicalizeTarget(t as string)));
+      loop.burnedOutTargets = (loop.burnedOutTargets ?? []).filter((t) => !removeSet.has(t.target));
+    }
+
+    // Audit trail (operability §9). Best-effort — don't fail the request if
+    // the interaction log is unavailable.
+    if (interactionLog) {
+      void interactionLog.append({
+        type: 'ralph_burned_targets_modified',
+        taskId: id,
+        removed: clear ? [] : remove.map((t) => canonicalizeTarget(t as string)),
+        cleared: clear,
+        previousBurnedOutTargets: previous,
+        timestamp: new Date().toISOString(),
+      }).catch(() => undefined);
+    }
+
+    task.updatedAt = new Date();
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    return c.json({ ok: true, burnedOutTargets: loop.burnedOutTargets });
   });
 
   /**

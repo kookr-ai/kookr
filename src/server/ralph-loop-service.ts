@@ -26,8 +26,11 @@ export interface RalphLoopRequest {
   prompt: string;
   iterationCap: number;
   stopPredicate?: string;
+  /** Engine-only stall channel — exit 0 = treat iteration as a stall verdict. */
+  stallPredicate?: string;
   zeroDiffConvergence?: { consecutiveIterations: number };
   costCapUsd?: number;
+  stallConfig?: import('../core/tasks.js').RalphStallConfig;
 }
 
 export type RalphLoopValidation =
@@ -154,8 +157,10 @@ export function validateRalphLoopRequest(body: {
   prompt?: unknown;
   iterationCap?: unknown;
   stopPredicate?: unknown;
+  stallPredicate?: unknown;
   zeroDiffConvergence?: unknown;
   costCapUsd?: unknown;
+  stallConfig?: unknown;
 }): RalphLoopValidation {
   if (typeof body.prompt !== 'string' || body.prompt.trim().length === 0) {
     return { ok: false, error: 'prompt is required and must be a non-empty string' };
@@ -165,6 +170,9 @@ export function validateRalphLoopRequest(body: {
   }
   if (body.stopPredicate !== undefined && typeof body.stopPredicate !== 'string') {
     return { ok: false, error: 'stopPredicate, when present, must be a string' };
+  }
+  if (body.stallPredicate !== undefined && typeof body.stallPredicate !== 'string') {
+    return { ok: false, error: 'stallPredicate, when present, must be a string' };
   }
   if (body.zeroDiffConvergence !== undefined) {
     if (!isPlainObject(body.zeroDiffConvergence)) {
@@ -193,12 +201,20 @@ export function validateRalphLoopRequest(body: {
     return { ok: false, error: 'costCapUsd, when present, must be a positive finite number' };
   }
 
+  let parsedStallConfig: import('../core/tasks.js').RalphStallConfig | undefined;
+  if (body.stallConfig !== undefined) {
+    const result = validateStallConfig(body.stallConfig);
+    if (!result.ok) return { ok: false, error: result.error };
+    parsedStallConfig = result.value;
+  }
+
   return {
     ok: true,
     value: {
       prompt: body.prompt,
       iterationCap: body.iterationCap,
       ...(body.stopPredicate !== undefined ? { stopPredicate: body.stopPredicate } : {}),
+      ...(body.stallPredicate !== undefined ? { stallPredicate: body.stallPredicate } : {}),
       ...(body.zeroDiffConvergence !== undefined
         ? {
             zeroDiffConvergence: {
@@ -207,8 +223,77 @@ export function validateRalphLoopRequest(body: {
           }
         : {}),
       ...(body.costCapUsd !== undefined ? { costCapUsd: body.costCapUsd } : {}),
+      ...(parsedStallConfig ? { stallConfig: parsedStallConfig } : {}),
     },
   };
+}
+
+function validateStallConfig(value: unknown):
+  | { ok: true; value: import('../core/tasks.js').RalphStallConfig }
+  | { ok: false; error: string } {
+  if (!isPlainObject(value)) {
+    return { ok: false, error: 'stallConfig, when present, must be an object' };
+  }
+  const cfg = value as Record<string, unknown>;
+  const out: import('../core/tasks.js').RalphStallConfig = {};
+
+  if (cfg.consecutiveStallsPerTarget !== undefined) {
+    if (!isPositiveInt(cfg.consecutiveStallsPerTarget)) {
+      return { ok: false, error: 'stallConfig.consecutiveStallsPerTarget must be a positive integer' };
+    }
+    out.consecutiveStallsPerTarget = cfg.consecutiveStallsPerTarget;
+  }
+  if (cfg.loopShape !== undefined) {
+    if (cfg.loopShape !== 'single-target' && cfg.loopShape !== 'multi-target') {
+      return { ok: false, error: "stallConfig.loopShape must be 'single-target' or 'multi-target'" };
+    }
+    out.loopShape = cfg.loopShape;
+  }
+  if (cfg.consecutiveStallsForSingleTargetTermination !== undefined) {
+    if (!isPositiveInt(cfg.consecutiveStallsForSingleTargetTermination)) {
+      return { ok: false, error: 'stallConfig.consecutiveStallsForSingleTargetTermination must be a positive integer' };
+    }
+    out.consecutiveStallsForSingleTargetTermination = cfg.consecutiveStallsForSingleTargetTermination;
+  }
+  if (cfg.declaredTargets !== undefined) {
+    if (!Array.isArray(cfg.declaredTargets)) {
+      return { ok: false, error: 'stallConfig.declaredTargets, when present, must be an array of strings' };
+    }
+    if (!cfg.declaredTargets.every((t) => typeof t === 'string' && t.length > 0)) {
+      return { ok: false, error: 'stallConfig.declaredTargets must contain only non-empty strings' };
+    }
+    const seen = new Set<string>();
+    for (const t of cfg.declaredTargets) {
+      if (seen.has(t)) {
+        return { ok: false, error: `stallConfig.declaredTargets contains duplicate entry: ${t}` };
+      }
+      seen.add(t);
+    }
+    out.declaredTargets = cfg.declaredTargets as string[];
+  }
+  if (cfg.burnedTargetDecayIterations !== undefined) {
+    if (!isPositiveInt(cfg.burnedTargetDecayIterations)) {
+      return { ok: false, error: 'stallConfig.burnedTargetDecayIterations must be a positive integer' };
+    }
+    out.burnedTargetDecayIterations = cfg.burnedTargetDecayIterations;
+  }
+  if (cfg.iterationCostCapUsd !== undefined) {
+    if (typeof cfg.iterationCostCapUsd !== 'number' || !Number.isFinite(cfg.iterationCostCapUsd) || cfg.iterationCostCapUsd <= 0) {
+      return { ok: false, error: 'stallConfig.iterationCostCapUsd, when present, must be a positive finite number' };
+    }
+    out.iterationCostCapUsd = cfg.iterationCostCapUsd;
+  }
+  if (cfg.consecutiveIterationCostCapHits !== undefined) {
+    if (!isPositiveInt(cfg.consecutiveIterationCostCapHits)) {
+      return { ok: false, error: 'stallConfig.consecutiveIterationCostCapHits must be a positive integer' };
+    }
+    out.consecutiveIterationCostCapHits = cfg.consecutiveIterationCostCapHits;
+  }
+  return { ok: true, value: out };
+}
+
+function isPositiveInt(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
 export class RalphLoopService {
@@ -646,6 +731,7 @@ function assignRalphLoop(task: Task, input: RalphLoopRequest): void {
     prompt: input.prompt,
     iterationCap: input.iterationCap,
     ...(input.stopPredicate !== undefined ? { stopPredicate: input.stopPredicate } : {}),
+    ...(input.stallPredicate !== undefined ? { stallPredicate: input.stallPredicate } : {}),
     ...(input.zeroDiffConvergence !== undefined
       ? {
           zeroDiffConvergence: input.zeroDiffConvergence,
@@ -653,6 +739,7 @@ function assignRalphLoop(task: Task, input: RalphLoopRequest): void {
         }
       : {}),
     ...(input.costCapUsd !== undefined ? { costCapUsd: input.costCapUsd } : {}),
+    ...(input.stallConfig !== undefined ? { stallConfig: input.stallConfig } : {}),
     currentIteration: 0,
     status: 'running',
     lastIterationStartedAt: 0,

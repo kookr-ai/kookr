@@ -131,7 +131,7 @@ export class CodexCliAdapter implements AgentAdapter {
     };
   }
 
-  async launch(taskId: string, prompt: string, cwd: string, resume?: import('./agent-adapter.js').ResumeContext, _opts?: AdapterLaunchOptions): Promise<string> {
+  async launch(taskId: string, prompt: string, cwd: string, resume?: import('./agent-adapter.js').ResumeContext, opts?: AdapterLaunchOptions): Promise<string> {
     if (resume?.sessionId) {
       // Codex resume is deferred until the Codex fork emits hooks reliably;
       // without hooks, claudeSessionId is never populated for Codex sessions
@@ -202,7 +202,7 @@ export class CodexCliAdapter implements AgentAdapter {
       id: tmuxName,
       command: this.agentBin,
       args,
-      env: launchContext.env,
+      env: { ...launchContext.env, ...(opts?.extraEnv ?? {}) },
       cwd,
       size: { cols: 200, rows: 50 },
     });

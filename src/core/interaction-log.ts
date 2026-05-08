@@ -71,6 +71,65 @@ export type InteractionEvent =
       cwd: string;
       source: 'cli' | 'ui' | 'api';
       timestamp: string;
+    }
+  // --- Ralph stall-handling events (rfc-ralph-loop-stall-handling.md §9) ---
+  | {
+      type: 'ralph_verdict_warning';
+      taskId: string;
+      iteration: number;
+      failure: 'symlink' | 'oversize' | 'malformed_json' | 'schema_invalid' | 'iteration_mismatch';
+      reason: string;
+      timestamp: string;
+    }
+  | {
+      type: 'ralph_predicate_disagree';
+      taskId: string;
+      iteration: number;
+      /** Why the predicate disagreed: clean non-zero exit. */
+      predicateExitCode: number;
+      timestamp: string;
+    }
+  | {
+      type: 'ralph_burned_targets_modified';
+      taskId: string;
+      removed: string[];
+      cleared: boolean;
+      previousBurnedOutTargets: Array<{ target: string; consecutiveStallCount: number; burned: boolean }>;
+      actor?: string;
+      timestamp: string;
+    }
+  | {
+      type: 'ralph_stale_verdict_unlinked';
+      taskId: string;
+      path: string;
+      iteration: number;
+      timestamp: string;
+    }
+  | {
+      type: 'ralph_iteration_cost_warning';
+      taskId: string;
+      iteration: number;
+      costDeltaUsd: number;
+      capUsd: number;
+      consecutiveStreak: number;
+      timestamp: string;
+    }
+  | {
+      type: 'ralph_target_burned';
+      taskId: string;
+      target: string;
+      iteration: number;
+      stallCount: number;
+      reason: string;
+      timestamp: string;
+    }
+  | {
+      type: 'ralph_target_unburned';
+      taskId: string;
+      target: string;
+      iteration: number;
+      via: 'progress_verdict' | 'patch_burned_targets' | 'decay';
+      timestamp: string;
     };
 
 // --- Substantive event detection ---

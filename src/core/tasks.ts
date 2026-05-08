@@ -64,6 +64,69 @@ export interface RalphZeroDiffConvergenceConfig {
   consecutiveIterations: number;
 }
 
+/**
+ * Per-loop stall configuration. See rfc-ralph-loop-stall-handling.md.
+ *
+ * `loopShape` defaults to 'single-target' (fail-safe — production-observed
+ * failure pattern is single-target loops spinning to iteration cap; safe
+ * default terminates eagerly).
+ */
+export interface RalphStallConfig {
+  /** Default 2 — consecutive stall verdicts before a target is burned. */
+  consecutiveStallsPerTarget?: number;
+  /** Default 'single-target'. */
+  loopShape?: 'single-target' | 'multi-target';
+  /**
+   * Default 3. Only applies when loopShape='single-target'. The terminal
+   * threshold for single-target loops.
+   */
+  consecutiveStallsForSingleTargetTermination?: number;
+  /**
+   * For multi-target loops only. When every declared target has been burned,
+   * the engine terminates with `all_targets_stalled` instead of spinning to
+   * iteration cap. Without this list, multi-target loops have no all-burned
+   * signal and rely on `verdict.complete` or iteration cap.
+   */
+  declaredTargets?: string[];
+  /**
+   * Optional iterations-since-last-attempt threshold for un-burning a target.
+   * Default undefined (no decay). Useful for transient blockers (CI flake).
+   */
+  burnedTargetDecayIterations?: number;
+  /**
+   * Optional per-iteration cost cap in USD. Decoupled from stall machinery —
+   * over-cap iterations have their own counter and exit reason.
+   */
+  iterationCostCapUsd?: number;
+  /** Default 2. Consecutive over-cap iterations before terminating. */
+  consecutiveIterationCostCapHits?: number;
+}
+
+/**
+ * Per-target stall record. The engine maintains one row per canonicalized
+ * target the agent has reported `verdict: stalled` for. `consecutiveStallCount`
+ * is the burn-threshold counter; `totalStallCount` is for dashboard display.
+ */
+export interface BurnedOutTarget {
+  /** Canonicalized: trim().toLowerCase().replace(/^#/, ''). */
+  target: string;
+  /**
+   * Consecutive stall count for this specific target. Resets to 0 on any
+   * `progress` verdict for the same canonicalized target. Stalls on different
+   * targets do NOT reset this counter (different targets are independent).
+   */
+  consecutiveStallCount: number;
+  /** Lifetime total — never decremented. */
+  totalStallCount: number;
+  firstStalledAtIteration: number;
+  lastStallReason: string;
+  lastStallBlockers: string[];
+  /** True once consecutiveStallCount >= consecutiveStallsPerTarget. */
+  burned: boolean;
+  /** Iteration number when this target was last stalled (for decay). */
+  lastAttemptedIteration: number;
+}
+
 export interface RalphLoopState {
   /** Verbatim user prompt re-injected on every iteration. No length cap. */
   prompt: string;
@@ -76,6 +139,13 @@ export interface RalphLoopState {
    * by the controller (not encoded here).
    */
   stopPredicate?: string;
+  /**
+   * Optional engine-only stall predicate. Exit 0 = treat the iteration as a
+   * stall verdict (single-target attribution). Sibling of `stopPredicate`,
+   * same execution semantics. Only fires when `stopPredicate` did not exit 0
+   * and no `verdict.stalled` was produced via the verdict file.
+   */
+  stallPredicate?: string;
   /** Optional convergence config — stop when N consecutive iterations produce zero diff. */
   zeroDiffConvergence?: RalphZeroDiffConvergenceConfig;
   /** Optional best-effort cost cap in USD. Fails closed when cost is unknown. */
@@ -99,6 +169,22 @@ export interface RalphLoopState {
    * counter is not.
    */
   cumulativeIterations: number;
+  /** Stall detection configuration. Defaults applied at attach time. */
+  stallConfig?: RalphStallConfig;
+  /** One row per target the agent has reported stalled. */
+  burnedOutTargets?: BurnedOutTarget[];
+  /**
+   * Number of consecutive iterations whose cost delta exceeded
+   * `stallConfig.iterationCostCapUsd`. Reset to 0 on any iteration whose
+   * delta is below the cap (or whose delta is unknown).
+   */
+  consecutiveIterationCostCapStreak?: number;
+  /** Cumulative count of malformed/oversize/etc verdict files (operability). */
+  verdictWarningCount?: number;
+  /** Cumulative count of over-cap iterations (operability). */
+  iterationCostWarningCount?: number;
+  /** The most recent verdict warning reason — for quick triage in the API/dashboard. */
+  lastVerdictWarningReason?: string;
 }
 
 export interface CreateTaskOptions {
