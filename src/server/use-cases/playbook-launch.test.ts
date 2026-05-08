@@ -159,4 +159,97 @@ Deploy to {{target}}
       parameterValues: {},
     })).rejects.toThrow('Invalid playbook path');
   });
+
+  it('reads from user dir when scope=user, runs in dialog cwd', async () => {
+    const projectCwd = await mkdtemp(join(tmpdir(), 'playbook-project-'));
+    const userDir = await mkdtemp(join(tmpdir(), 'kookr-user-'));
+    const previous = process.env.KOOKR_USER_PLAYBOOKS_DIR;
+    process.env.KOOKR_USER_PLAYBOOKS_DIR = userDir;
+    try {
+      await writeFile(join(userDir, 'audit.md'), `---
+name: Audit
+description: Run an audit
+parameters:
+  - name: repo
+    required: true
+---
+
+Audit ${'{{repo}}'}.
+`);
+
+      const launch = await preparePlaybookLaunch({
+        cwd: projectCwd,
+        playbookPath: 'audit.md',
+        parameterValues: { repo: 'foo' },
+        scope: 'user',
+      });
+
+      // Reads file from userDir, but the task still runs in projectCwd
+      // (no `cwd:` override in the playbook).
+      expect(launch.cwd).toBe(projectCwd);
+      expect(launch.name).toBe('Audit');
+      expect(launch.prompt).toBe('Audit foo.');
+    } finally {
+      if (previous === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
+      else process.env.KOOKR_USER_PLAYBOOKS_DIR = previous;
+      await rm(projectCwd, { recursive: true, force: true });
+      await rm(userDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads from plugin dir when scope=plugin, runs in dialog cwd', async () => {
+    const projectCwd = await mkdtemp(join(tmpdir(), 'playbook-project-'));
+    const pluginRoot = await mkdtemp(join(tmpdir(), 'kookr-plugin-'));
+    const previous = process.env.KOOKR_PLUGIN_DIR;
+    try {
+      // Build a minimal plugin tree
+      await mkdir(join(pluginRoot, 'plugin', '.claude-plugin'), { recursive: true });
+      await writeFile(
+        join(pluginRoot, 'plugin', '.claude-plugin', 'plugin.json'),
+        JSON.stringify({ name: 'fake', version: '0.0.0' }),
+      );
+      const playbooksDir = join(pluginRoot, 'plugin', 'playbooks');
+      await mkdir(playbooksDir, { recursive: true });
+      await writeFile(join(playbooksDir, 'oss-bug-fix.md'), `---
+name: OSS Bug Fix
+---
+
+Generic body.
+`);
+      process.env.KOOKR_PLUGIN_DIR = join(pluginRoot, 'plugin');
+
+      const launch = await preparePlaybookLaunch({
+        cwd: projectCwd,
+        playbookPath: 'oss-bug-fix.md',
+        parameterValues: {},
+        scope: 'plugin',
+      });
+
+      expect(launch.cwd).toBe(projectCwd);
+      expect(launch.name).toBe('OSS Bug Fix');
+    } finally {
+      if (previous === undefined) delete process.env.KOOKR_PLUGIN_DIR;
+      else process.env.KOOKR_PLUGIN_DIR = previous;
+      await rm(projectCwd, { recursive: true, force: true });
+      await rm(pluginRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects path traversal for scope=user as well', async () => {
+    const userDir = await mkdtemp(join(tmpdir(), 'kookr-user-'));
+    const previous = process.env.KOOKR_USER_PLAYBOOKS_DIR;
+    process.env.KOOKR_USER_PLAYBOOKS_DIR = userDir;
+    try {
+      await expect(preparePlaybookLaunch({
+        cwd: '/tmp/project',
+        playbookPath: '../escape.md',
+        parameterValues: {},
+        scope: 'user',
+      })).rejects.toThrow('Invalid playbook path');
+    } finally {
+      if (previous === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
+      else process.env.KOOKR_USER_PLAYBOOKS_DIR = previous;
+      await rm(userDir, { recursive: true, force: true });
+    }
+  });
 });

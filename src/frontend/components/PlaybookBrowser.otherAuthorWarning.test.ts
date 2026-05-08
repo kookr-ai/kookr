@@ -37,6 +37,7 @@ const implementIssuePlaybook: Playbook = {
   tags: ['workflow'],
   body: 'Body.',
   sourceCwd: '/repo',
+  scope: 'project',
 };
 
 const otherPlaybook: Playbook = {
@@ -50,6 +51,7 @@ const otherPlaybook: Playbook = {
   tags: [],
   body: 'Body.',
   sourceCwd: '/repo',
+  scope: 'project',
 };
 
 describe('PlaybookBrowser other-author warning', () => {

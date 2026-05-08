@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { access } from 'node:fs/promises';
-import { resolve } from 'node:path';
 import type { TerminalBackend } from './terminal-backend.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
@@ -81,38 +79,11 @@ export interface ClaudeCodeAdapterOptions {
 /** Env var that overrides the default Claude Code binary path. */
 export const CLAUDE_AGENT_BIN_ENV = 'KOOKR_AGENT_BIN';
 
-// CommonJS context — `__dirname` is auto-defined.
-const adapterDir = __dirname;
-
-/**
- * Resolve the kookr-toolkit plugin tree. Tries (in order): the explicit
- * option, the `KOOKR_PLUGIN_DIR` env var, and finally `<repo-root>/plugin`
- * inferred from the adapter's compiled-output location. Returns `undefined`
- * if no candidate contains `.claude-plugin/plugin.json` so the caller can
- * skip injection rather than passing a bad path.
- */
-export function resolvePluginDir(
-  explicit: string | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-  baseDir: string = adapterDir,
-): string | undefined {
-  // Explicit option (including empty string = disable)
-  if (explicit !== undefined) {
-    return explicit && pluginDirIsValid(explicit) ? explicit : undefined;
-  }
-  const fromEnv = env.KOOKR_PLUGIN_DIR;
-  if (fromEnv !== undefined) {
-    return fromEnv && pluginDirIsValid(fromEnv) ? fromEnv : undefined;
-  }
-  // Auto-resolve. Compiled output: dist/adapters/...js → ../../plugin.
-  // Source (dev/test): src/adapters/...ts → ../../plugin. Same depth.
-  const candidate = resolve(baseDir, '..', '..', 'plugin');
-  return pluginDirIsValid(candidate) ? candidate : undefined;
-}
-
-function pluginDirIsValid(p: string): boolean {
-  return existsSync(resolve(p, '.claude-plugin', 'plugin.json'));
-}
+// Re-exported here so legacy `import { resolvePluginDir } from '...claude-code-adapter.js'`
+// keeps working. Source of truth lives in core/plugin-paths to allow other
+// layers (core/playbook-discovery) to share the same resolution logic.
+import { resolvePluginDir } from '../core/plugin-paths.js';
+export { resolvePluginDir } from '../core/plugin-paths.js';
 
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly agentType = 'claude-code';

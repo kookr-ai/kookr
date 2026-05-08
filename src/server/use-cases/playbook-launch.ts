@@ -2,8 +2,10 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { parsePlaybook, interpolateParameters } from '../../core/playbook-parser.js';
+import { userPlaybooksDir, pluginPlaybooksDir } from '../../core/playbook-discovery.js';
 import { projectIdFromRepoSpecifier } from '../../core/project-identity.js';
 import type { AgentType } from '../../core/agent-types.js';
+import type { PlaybookScope } from '../../core/playbook.js';
 import type { AutonomyLevel } from '../../core/tasks.js';
 import type { LaunchOpts } from '../launch-service.js';
 import { normalizePromptFileReferences } from '../prompt-file-paths.js';
@@ -15,6 +17,8 @@ export interface PreparePlaybookLaunchInput {
   parameterValues: Record<string, string>;
   autonomy?: AutonomyLevel;
   agentType?: AgentType;
+  /** Where to read the playbook file from. Defaults to 'project' for back-compat. */
+  scope?: PlaybookScope;
 }
 
 export interface PreparedPlaybookLaunch {
@@ -27,14 +31,21 @@ export async function preparePlaybookLaunch(input: PreparePlaybookLaunchInput): 
 }
 
 export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLaunchInput): Promise<PreparedPlaybookLaunch> {
-  const playbooksDir = join(input.cwd, '.kookr', 'playbooks');
+  const scope: PlaybookScope = input.scope ?? 'project';
+  const playbooksDir = resolvePlaybooksDir(scope, input.cwd);
+  if (playbooksDir === undefined) {
+    throw new Error(`No playbooks directory available for scope "${scope}" — is the kookr-toolkit plugin installed?`);
+  }
   const filePath = join(playbooksDir, input.playbookPath);
   if (!filePath.startsWith(playbooksDir + '/')) {
     throw new Error(`Invalid playbook path: ${input.playbookPath}`);
   }
 
   const content = await readFile(filePath, 'utf-8');
-  const playbook = parsePlaybook(content, input.playbookPath, input.cwd);
+  // Non-project scopes use the playbooks dir itself as sourceCwd so that
+  // per-scope param-snapshot keys (sourceCwd::id) stay stable across cwds.
+  const sourceCwd = scope === 'project' ? input.cwd : playbooksDir;
+  const playbook = parsePlaybook(content, input.playbookPath, sourceCwd, scope);
   const criteria = playbook.checklist.length > 0
     ? playbook.checklist.map((item) => `- ${item}`).join('\n')
     : undefined;
@@ -78,4 +89,12 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       projectId,
     },
   };
+}
+
+function resolvePlaybooksDir(scope: PlaybookScope, projectCwd: string): string | undefined {
+  switch (scope) {
+    case 'project': return join(projectCwd, '.kookr', 'playbooks');
+    case 'user':    return userPlaybooksDir();
+    case 'plugin':  return pluginPlaybooksDir();
+  }
 }

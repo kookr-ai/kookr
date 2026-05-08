@@ -44,6 +44,7 @@ const loopablePlaybook: Playbook = {
   },
   body: 'Do it.',
   sourceCwd: '/repo',
+  scope: 'project',
 };
 
 const plainPlaybook: Playbook = {
@@ -55,6 +56,7 @@ const plainPlaybook: Playbook = {
   tags: [],
   body: 'Do it once.',
   sourceCwd: '/repo',
+  scope: 'project',
 };
 
 describe('PlaybookBrowser loopable workflows', () => {

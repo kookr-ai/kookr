@@ -1,6 +1,7 @@
 ---
 name: Issue Triage
 description: Triage open GitHub issues — assess relevance, close resolved issues with explanation, comment on valid issues with status update
+repo-tags: [github]
 parameters:
   - name: repoFullName
     description: "Repository (owner/repo, e.g., kookr-ai/kookr)"

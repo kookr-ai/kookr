@@ -11,4 +11,5 @@ export type {
   PlaybookParameterOption,
   PlaybookLoopConfig,
   EffectivePlaybookLoop,
+  PlaybookScope,
 } from '../shared/contracts/playbook.js';

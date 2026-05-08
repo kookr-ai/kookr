@@ -547,6 +547,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       parameterValues?: unknown;
       autonomy?: string;
       agentType?: string;
+      scope?: unknown;
     };
     try {
       body = await c.req.json();
@@ -563,6 +564,10 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     if (!isStringRecord(body.parameterValues)) {
       return c.json({ error: 'parameterValues is required and must be an object of strings' }, 400);
     }
+    if (body.scope !== undefined && body.scope !== 'project' && body.scope !== 'user' && body.scope !== 'plugin') {
+      return c.json({ error: 'scope must be "project", "user", or "plugin"' }, 400);
+    }
+    const scope = body.scope as 'project' | 'user' | 'plugin' | undefined;
 
     try {
       const rawSource = c.req.header('X-Kookr-Launch-Source');
@@ -593,6 +598,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         autonomy,
         agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
         launchSource,
+        scope,
       });
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
@@ -623,6 +629,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       parameterValues?: unknown;
       autonomy?: string;
       agentType?: string;
+      scope?: unknown;
     };
     try {
       body = await c.req.json();
@@ -639,6 +646,10 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     if (!isStringRecord(body.parameterValues)) {
       return c.json({ error: 'parameterValues is required and must be an object of strings' }, 400);
     }
+    if (body.scope !== undefined && body.scope !== 'project' && body.scope !== 'user' && body.scope !== 'plugin') {
+      return c.json({ error: 'scope must be "project", "user", or "plugin"' }, 400);
+    }
+    const scope = body.scope as 'project' | 'user' | 'plugin' | undefined;
 
     try {
       const rawSource = c.req.header('X-Kookr-Launch-Source');
@@ -710,6 +721,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         autonomy,
         agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
         launchSource,
+        scope,
       });
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
