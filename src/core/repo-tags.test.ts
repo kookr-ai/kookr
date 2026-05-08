@@ -106,5 +106,13 @@ async function initGitWithRemote(dir: string, url: string): Promise<void> {
   const { promisify } = await import('node:util');
   const exec = promisify(execFile);
   await exec('git', ['-C', dir, 'init', '-q']);
-  await exec('git', ['-C', dir, 'config', 'remote.origin.url', url]);
+  // Some environments (init.templateDir, gitconfig hooks) pre-create an
+  // origin on `git init`; remove it (ignore "no such remote") so `add`
+  // always succeeds.
+  try {
+    await exec('git', ['-C', dir, 'remote', 'remove', 'origin']);
+  } catch {
+    // origin didn't exist; that's fine
+  }
+  await exec('git', ['-C', dir, 'remote', 'add', 'origin', url]);
 }
