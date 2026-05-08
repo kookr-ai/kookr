@@ -1,8 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { RalphIterationLogReadModel, RalphIterationRecord, RalphLoopReadModel } from '../../shared/protocol.js';
+import type { BurnedOutTarget, RalphIterationLogReadModel, RalphIterationRecord, RalphLoopState, RalphStallConfig } from '../../shared/protocol.js';
 import { formatCost } from '../presentation.js';
 
-type RalphLoopPanelData = RalphIterationLogReadModel & { ralphLoop?: RalphLoopReadModel };
+type RalphLoopPanelData = RalphIterationLogReadModel & {
+  /** Full RalphLoopState — narrowed to what the panel actually reads. */
+  ralphLoop?: RalphLoopState;
+  /** Defaults-merged stall config (always present alongside ralphLoop). */
+  effectiveStallConfig?: RalphStallConfig;
+};
 
 type RalphLoopPanelState =
   | { status: 'loading'; data: null; error: null }
@@ -70,12 +75,17 @@ export function RalphLoopPanel({ taskId }: Props) {
     return <div className="ralph-panel ralph-panel-state error">{state.error}</div>;
   }
 
-  const { iterations, summary, ralphLoop } = state.data;
+  const { iterations, summary, ralphLoop, effectiveStallConfig } = state.data;
   const exportBase = `/api/tasks/${encodeURIComponent(taskId)}/ralph-loop/iterations/export`;
   const promptCanSave = promptDirty && !promptSaving && promptDraft.trim().length > 0;
   const promptId = `ralph-prompt-${taskId}`;
   const promptHintId = `ralph-prompt-hint-${taskId}`;
   const promptMessageIsError = Boolean(promptMessage && promptMessage !== 'Saved for future iterations.');
+
+  const burnedTargets = (ralphLoop?.burnedOutTargets ?? []).filter((t) => t.burned);
+  const verdictWarningCount = ralphLoop?.verdictWarningCount ?? 0;
+  const lastVerdictWarningReason = ralphLoop?.lastVerdictWarningReason;
+  const iterationCostWarningCount = ralphLoop?.iterationCostWarningCount ?? 0;
 
   const updatePrompt = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -112,6 +122,39 @@ export function RalphLoopPanel({ taskId }: Props) {
     const dirty = value !== (ralphLoop?.prompt ?? '');
     promptDirtyRef.current = dirty;
     setPromptDirty(dirty);
+  };
+
+  const clearBurnedTargets = async () => {
+    // Confirm before destroying recovery memory — operator may have intended
+    // to remove a single target via curl PATCH.
+    if (!window.confirm('Clear all burned-out targets? Targets that previously stalled will be re-attempted next iteration.')) {
+      return;
+    }
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/ralph-loop/burned-targets`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clear: true }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `Request failed with ${res.status}`);
+      }
+      // Optimistic local clear; the next 5s poll will refresh authoritatively.
+      setState((current) => current.status === 'ready' && current.data.ralphLoop
+        ? {
+            ...current,
+            data: {
+              ...current.data,
+              ralphLoop: { ...current.data.ralphLoop, burnedOutTargets: [] },
+            },
+          }
+        : current);
+    } catch (err) {
+      // Surface via prompt-message slot — sharing the message channel keeps
+      // the UI surface area small for now.
+      setPromptMessage(err instanceof Error ? err.message : String(err));
+    }
   };
 
   return (
@@ -167,6 +210,62 @@ export function RalphLoopPanel({ taskId }: Props) {
         <SummaryItem label="Avg iter" value={formatMs(summary.averageIterationDurationMs)} />
         <SummaryItem label="ETA" value={formatMs(summary.etaMs)} />
       </div>
+
+      {(burnedTargets.length > 0 || effectiveStallConfig || verdictWarningCount > 0) && (
+        <div className="ralph-stall-section">
+          {burnedTargets.length > 0 && (
+            <div className="ralph-burned-row">
+              <span className="ralph-burned-label">Burned-out targets:</span>
+              <span className="ralph-burned-list">
+                {burnedTargets.map((t: BurnedOutTarget) => (
+                  <span
+                    key={t.target}
+                    className="ralph-burned-chip"
+                    title={`${t.totalStallCount} total stall(s); reason: ${t.lastStallReason}`}
+                  >
+                    {t.target}
+                  </span>
+                ))}
+              </span>
+              <button
+                type="button"
+                className="ralph-burned-clear"
+                onClick={clearBurnedTargets}
+                aria-label="Clear all burned-out targets"
+              >
+                Clear
+              </button>
+            </div>
+          )}
+          {verdictWarningCount > 0 && (
+            <div className="ralph-warning" role="status">
+              <span className="ralph-verdict-warning-badge">{verdictWarningCount}</span>{' '}
+              verdict warning{verdictWarningCount === 1 ? '' : 's'}
+              {lastVerdictWarningReason ? ` — last: ${lastVerdictWarningReason}` : ''}
+            </div>
+          )}
+          {iterationCostWarningCount > 0 && (
+            <div className="ralph-warning" role="status">
+              {iterationCostWarningCount} iteration{iterationCostWarningCount === 1 ? '' : 's'} exceeded the per-iteration cost cap
+            </div>
+          )}
+          {effectiveStallConfig && (
+            <div className="ralph-stall-config" aria-label="Effective stall config">
+              <span>Loop shape: <strong>{effectiveStallConfig.loopShape}</strong></span>
+              <span>Stalls per target: <strong>{effectiveStallConfig.consecutiveStallsPerTarget}</strong></span>
+              {effectiveStallConfig.loopShape === 'single-target' && (
+                <span>Termination threshold: <strong>{effectiveStallConfig.consecutiveStallsForSingleTargetTermination}</strong></span>
+              )}
+              {effectiveStallConfig.iterationCostCapUsd !== undefined && (
+                <span>Per-iter cost cap: <strong>{formatCost(effectiveStallConfig.iterationCostCapUsd)}</strong></span>
+              )}
+              {effectiveStallConfig.burnedTargetDecayIterations !== undefined && (
+                <span>Decay: <strong>{effectiveStallConfig.burnedTargetDecayIterations} iter</strong></span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {summary.malformedLines > 0 && (
         <div className="ralph-warning">

@@ -255,6 +255,10 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       return c.json({
         taskId: task.id,
         ralphLoop: task.ralphLoop,
+        // Resolve stallConfig defaults so the frontend doesn't need to know
+        // the engine's defaults — operators see the actual values the cycler
+        // uses. Same shape as GET /ralph-loop's `effectiveStallConfig`.
+        effectiveStallConfig: resolveStallConfig(task.ralphLoop.stallConfig),
         ...model,
       });
     } catch (err) {

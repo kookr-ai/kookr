@@ -1,4 +1,4 @@
-import type { Task, TaskStore, RalphLoopState } from './tasks.js';
+import type { Task, TaskStore, RalphLoopState, BurnedOutTarget } from './tasks.js';
 import { runStopPredicate, type PredicateResult } from './ralph-predicate.js';
 import { createBaselineTag, computeDiffStats } from './ralph-git-baseline.js';
 import {
@@ -6,41 +6,81 @@ import {
   type RalphIterationExitReason,
   type RalphIterationDiffStats,
   type RalphIterationRecord,
+  type RalphIterationVerdict,
 } from './ralph-iteration-log.js';
+import { canonicalizeTarget } from './ralph-iteration-verdict.js';
+import { resolveStallConfig } from '../shared/contracts/ralph.js';
 
 /**
  * Per-Stop controller for Ralph Wiggum iteration loops (issue #440).
  *
- * Unlike `CheckpointCycler`, this controller is stateless and reads/writes
- * the loop state directly on `task.ralphLoop`. The loop *is* the persisted
- * data — there is no ephemeral side-state to forget on session lifecycle
- * events. This is why it's a peer module rather than a CheckpointCycler
- * config variant: the two have orthogonal state-ownership models.
+ * Pure-computation contract: the cycler does no FS / network IO directly. The
+ * service layer parses the verdict file, computes the per-iteration cost
+ * delta, and passes both via `RalphCyclerHandleStopOptions`. The cycler
+ * decides what to do, persists the iteration record (via the IO seam), and
+ * returns an action plus any pending interaction-log events the service
+ * layer should fire.
  *
- * Lifecycle:
- *   1. Caller (event-pipeline.ts) receives a Stop event.
- *   2. Caller invokes `handleStop(taskId, ...)`.
- *   3. We read the loop, decide what to do, persist the iteration record,
- *      mutate `task.ralphLoop`, and return an action for the caller to
- *      dispatch by launching a fresh agent runtime.
+ * Decision order (cheapest-first, see `rfc-ralph-loop-stall-handling.md` §4):
+ *   1. terminal/paused          → noop
+ *   2. iteration cap            → terminate(iteration_cap)
+ *   3. apply decay              → un-burn any target whose lastAttemptedIteration is stale
+ *   4. stopPredicate exit 0     → terminate(predicate_satisfied)
+ *   5. verdict.complete + predicate compatible → terminate(predicate_satisfied)
+ *   6. verdict.complete + predicate exit≠0 (clean) → continue + predicate_disagree event
+ *   7. verdict.stalled OR stallPredicate exit 0 → record stall, check thresholds
+ *      - single-target: stallCount ≥ N → terminate(target_stalled)
+ *      - multi-target with all declaredTargets burned → terminate(all_targets_stalled)
+ *      - else → continue, iteration recorded as target_stalled
+ *   8. iteration cost-cap consecutive ≥ N → terminate(iteration_cost_cap)
+ *   9. cumulative cost cap      → terminate(cost_cap)
+ *  10. zero-diff convergence    → terminate(zero_diff_convergence)
+ *  11. else                     → continue
  *
- * Decision order (cheapest-first per issue spec):
- *   - manual cancel/pause states (terminal or do-nothing)
- *   - iteration cap reached → terminate
- *   - predicate satisfied   → terminate
- *   - cost cap reached      → terminate (only when cost is known)
- *   - zero-diff convergence → terminate
- *   - else                  → continue (fresh runtime)
+ * `verdict.progress` does not by itself terminate; it un-burns its target as a
+ * side effect before the rest of the chain runs.
  */
+
+/**
+ * Interaction-log events the cycler decides should fire. The service layer
+ * actually appends them (the cycler stays IO-free for testability).
+ */
+export type RalphCyclerEvent =
+  | {
+      type: 'ralph_predicate_disagree';
+      taskId: string;
+      iteration: number;
+      predicateExitCode: number;
+    }
+  | {
+      type: 'ralph_target_burned';
+      taskId: string;
+      target: string;
+      iteration: number;
+      stallCount: number;
+      reason: string;
+    }
+  | {
+      type: 'ralph_target_unburned';
+      taskId: string;
+      target: string;
+      iteration: number;
+      via: 'progress_verdict' | 'patch_burned_targets' | 'decay';
+    }
+  | {
+      type: 'ralph_iteration_cost_warning';
+      taskId: string;
+      iteration: number;
+      costDeltaUsd: number;
+      capUsd: number;
+      consecutiveStreak: number;
+    };
 
 /** Action returned to the caller. */
 export type RalphCyclerAction =
-  /** Launch `task.ralphLoop.prompt` as the first instruction in a fresh runtime. */
-  | { kind: 'launch_fresh'; taskId: string; text: string }
-  /** Loop has reached a terminal state — caller need not dispatch anything. */
-  | { kind: 'terminate'; reason: RalphIterationExitReason }
-  /** Nothing to do (no loop, paused, or already terminal). */
-  | { kind: 'noop' };
+  | { kind: 'launch_fresh'; taskId: string; text: string; events: RalphCyclerEvent[] }
+  | { kind: 'terminate'; reason: RalphIterationExitReason; events: RalphCyclerEvent[] }
+  | { kind: 'noop'; events: RalphCyclerEvent[] };
 
 export interface RalphCyclerHandleStopOptions {
   /** Task ID emitting Stop. */
@@ -51,23 +91,28 @@ export interface RalphCyclerHandleStopOptions {
    * Cumulative cost for this iteration, best-effort from the Stop hook event.
    * `null` (not omitted) when the source is unavailable so readers can tell
    * "free" from "unknown" — see issue #440 §"Cost source".
+   *
+   * The cycler computes the per-iteration delta as
+   * `cumulativeCostUsd - loop.lastCumulativeCostUsd` (when both known) and
+   * persists it on the iteration record. After append, the cycler updates
+   * `loop.lastCumulativeCostUsd` so the NEXT iteration's delta is correct.
    */
   cumulativeCostUsd?: number | null;
   /**
+   * Parsed verdict file for this iteration, or undefined when the agent did
+   * not write one (or the file was malformed and the service layer logged a
+   * warning). Cycler treats undefined as legacy `continued`.
+   */
+  verdict?: RalphIterationVerdict;
+  /**
    * Optional path to the just-finished agent turn's output, exposed to the
-   * predicate as `$RALPH_LAST_OUTPUT_FILE`. Undefined when no such file is
-   * available.
+   * predicate as `$RALPH_LAST_OUTPUT_FILE`.
    */
   lastOutputFile?: string;
   /** Override clock for tests. */
   now?: number;
 }
 
-/**
- * Pluggable I/O surface so the cycler can be unit-tested without spawning
- * shells, hitting git, or writing to disk. Production wiring uses real
- * implementations; tests inject fakes.
- */
 export interface RalphCyclerIO {
   runPredicate: typeof runStopPredicate;
   createBaselineTag: typeof createBaselineTag;
@@ -89,35 +134,37 @@ export class RalphCycler {
     taskStore: TaskStore,
     opts: RalphCyclerHandleStopOptions,
   ): Promise<RalphCyclerAction> {
+    const events: RalphCyclerEvent[] = [];
     const task = taskStore.getTask(opts.taskId);
-    if (!task) return { kind: 'noop' };
+    if (!task) return { kind: 'noop', events };
     const loop = task.ralphLoop;
-    if (!loop) return { kind: 'noop' };
-
-    // Terminal states: nothing to do. Pause is also non-acting (loop stays
-    // alive but does not launch the next runtime); resume must be explicit.
-    if (loop.status !== 'running') return { kind: 'noop' };
+    if (!loop) return { kind: 'noop', events };
+    if (loop.status !== 'running') return { kind: 'noop', events };
 
     const now = opts.now ?? Date.now();
-    const startedAt = loop.lastIterationStartedAt > 0
-      ? loop.lastIterationStartedAt
-      : now;
+    const startedAt = loop.lastIterationStartedAt > 0 ? loop.lastIterationStartedAt : now;
+    const stallConfig = resolveStallConfig(loop.stallConfig);
+    const verdict = opts.verdict;
+    const cost = opts.cumulativeCostUsd ?? null;
+    // Compute per-iteration cost delta from state; null when either bound is
+    // unknown (first iteration after a fresh attach, or cost source absent).
+    const costDelta = computeCostDelta(cost, loop.lastCumulativeCostUsd);
 
-    // FAST CHECK: iteration cap. Always-checked, separate from the predicate
-    // so a 5s predicate timeout never delays a hard-stop.
+    // 1. iteration cap (always-checked, separate from predicate).
     if (loop.currentIteration >= loop.iterationCap) {
       await this.finishIteration(task, loop, {
-        startedAt,
-        endedAt: now,
-        exitReason: 'iteration_cap',
-        cumulativeCostUsd: opts.cumulativeCostUsd ?? null,
+        startedAt, endedAt: now, exitReason: 'iteration_cap',
+        cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
       });
       this.terminate(loop, 'completed');
-      return { kind: 'terminate', reason: 'iteration_cap' };
+      return { kind: 'terminate', reason: 'iteration_cap', events };
     }
 
-    // SLOW CHECK: optional shell predicate. Failures (timeout, error) keep
-    // the loop alive — only a clean `exit 0` terminates.
+    // 2. apply decay BEFORE stall checks, so a freshly-decayed target can be
+    //    re-burned in the same iteration if the agent reports it stalled again.
+    this.applyDecay(loop, stallConfig, opts.taskId, events);
+
+    // 3. predicate (slow check). Failures keep the loop alive.
     let predicateOutcome: PredicateResult | null = null;
     if (loop.stopPredicate) {
       predicateOutcome = await this.io.runPredicate(loop.stopPredicate, {
@@ -127,66 +174,184 @@ export class RalphCycler {
       });
       if (predicateOutcome.satisfied) {
         await this.finishIteration(task, loop, {
-          startedAt,
-          endedAt: now,
-          exitReason: 'predicate_satisfied',
-          cumulativeCostUsd: opts.cumulativeCostUsd ?? null,
+          startedAt, endedAt: now, exitReason: 'predicate_satisfied',
+          cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
         });
         this.terminate(loop, 'completed');
-        return { kind: 'terminate', reason: 'predicate_satisfied' };
+        return { kind: 'terminate', reason: 'predicate_satisfied', events };
       }
+    }
+
+    // 4. verdict.complete handling per the predicate-vs-verdict matrix.
+    if (verdict?.verdict === 'complete') {
+      // Predicate clean exit≠0 (not error/timeout) blocks the agent's
+      // self-declared completion. The loop continues and the disagreement is
+      // surfaced as an interaction-log event.
+      const predicateExplicitlyDisagrees =
+        predicateOutcome !== null
+        && !predicateOutcome.satisfied
+        && !predicateOutcome.timedOut
+        && !predicateOutcome.errored;
+      if (predicateExplicitlyDisagrees) {
+        events.push({
+          type: 'ralph_predicate_disagree',
+          taskId: opts.taskId,
+          iteration: loop.currentIteration,
+          predicateExitCode: predicateOutcome!.exitCode ?? -1,
+        });
+        // Fall through to the `continue` branch below — the predicate's
+        // disagreement is the load-bearing signal.
+      } else {
+        // No predicate, or predicate matched, or predicate failed (error/
+        // timeout — can't tell us either way). Trust the agent.
+        await this.finishIteration(task, loop, {
+          startedAt, endedAt: now, exitReason: 'predicate_satisfied',
+          cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
+        });
+        this.terminate(loop, 'completed');
+        return { kind: 'terminate', reason: 'predicate_satisfied', events };
+      }
+    }
+
+    // 5. progress verdict un-burns its target before stall checks below.
+    //    A `progress` for the same target an iteration recently reported
+    //    `stalled` for is the agent saying "made it through this time."
+    if (verdict?.verdict === 'progress' && verdict.target) {
+      this.unburnTarget(loop, canonicalizeTarget(verdict.target), 'progress_verdict', opts.taskId, events);
+    }
+
+    // 6. stall handling. Sources: agent verdict.stalled (richer), or
+    //    stallPredicate exit 0 (engine-only fallback). Verdict wins when both
+    //    fire — it carries target attribution. The stallPredicate is only
+    //    evaluated when no verdict.stalled was supplied.
+    let stallTarget: string | undefined;
+    let stallReason: string | undefined;
+    let stallBlockers: string[] = [];
+
+    if (verdict?.verdict === 'stalled') {
+      stallTarget = canonicalizeTarget(verdict.target);
+      stallReason = verdict.reason;
+      stallBlockers = verdict.blockers ?? [];
+    } else if (loop.stallPredicate) {
+      const stallOutcome = await this.io.runPredicate(loop.stallPredicate, {
+        cwd: task.cwd,
+        iteration: loop.currentIteration,
+        lastOutputFile: opts.lastOutputFile,
+      });
+      if (stallOutcome.satisfied) {
+        // No target attribution from a shell predicate. Single-target loops
+        // get a synthetic key so the threshold can fire; multi-target loops
+        // accumulate a generic stall row that persists across iterations.
+        stallTarget = '__stall_predicate__';
+        stallReason = 'stallPredicate exited 0';
+      }
+    }
+
+    if (stallTarget !== undefined) {
+      const burned = this.recordStall(loop, stallTarget, stallReason ?? '', stallBlockers, stallConfig, opts.taskId, events);
+      // Single-target termination check: when the loop is declared
+      // single-target and any one target reaches its termination threshold,
+      // terminate the loop.
+      if (
+        stallConfig.loopShape === 'single-target'
+        && burned.consecutiveStallCount >= stallConfig.consecutiveStallsForSingleTargetTermination
+      ) {
+        await this.finishIteration(task, loop, {
+          startedAt, endedAt: now, exitReason: 'target_stalled',
+          cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
+        });
+        this.terminate(loop, 'completed');
+        return { kind: 'terminate', reason: 'target_stalled', events };
+      }
+      // Multi-target all-burned check.
+      if (
+        stallConfig.loopShape === 'multi-target'
+        && stallConfig.declaredTargets
+        && stallConfig.declaredTargets.length > 0
+        && this.allDeclaredBurned(loop, stallConfig.declaredTargets)
+      ) {
+        await this.finishIteration(task, loop, {
+          startedAt, endedAt: now, exitReason: 'all_targets_stalled',
+          cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
+        });
+        this.terminate(loop, 'completed');
+        return { kind: 'terminate', reason: 'all_targets_stalled', events };
+      }
+    }
+
+    // 7. iteration cost cap (decoupled from stall semantics — has its own
+    //    counter, threshold, exit reason, and warning event). See
+    //    rfc-ralph-loop-stall-handling.md §6.
+    const iterationCostCap = stallConfig.iterationCostCapUsd;
+    if (iterationCostCap !== undefined && costDelta !== null && costDelta > iterationCostCap) {
+      const streak = (loop.consecutiveIterationCostCapStreak ?? 0) + 1;
+      loop.consecutiveIterationCostCapStreak = streak;
+      loop.iterationCostWarningCount = (loop.iterationCostWarningCount ?? 0) + 1;
+      events.push({
+        type: 'ralph_iteration_cost_warning',
+        taskId: opts.taskId,
+        iteration: loop.currentIteration,
+        costDeltaUsd: costDelta,
+        capUsd: iterationCostCap,
+        consecutiveStreak: streak,
+      });
+      if (streak >= stallConfig.consecutiveIterationCostCapHits) {
+        await this.finishIteration(task, loop, {
+          startedAt, endedAt: now, exitReason: 'iteration_cost_cap',
+          cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
+        });
+        this.terminate(loop, 'completed');
+        return { kind: 'terminate', reason: 'iteration_cost_cap', events };
+      }
+    } else if (iterationCostCap !== undefined && costDelta !== null) {
+      // Within-cap iteration: reset streak.
+      loop.consecutiveIterationCostCapStreak = 0;
     }
 
     const diff = await this.computeIterationDiff(task, loop);
     const nextZeroDiffStreak = nextZeroDiffStreakFor(loop, diff.diffStats);
-    const cost = opts.cumulativeCostUsd ?? null;
 
+    // 8. cumulative cost cap (existing behavior).
     if (isCostCapReached(loop, cost)) {
       loop.zeroDiffStreak = nextZeroDiffStreak;
       await this.appendFinishedIteration(task, loop, {
-        startedAt,
-        endedAt: now,
-        exitReason: 'cost_cap',
-        cumulativeCostUsd: cost,
-        gitBaselineRef: diff.gitBaselineRef,
-        diffStats: diff.diffStats,
+        startedAt, endedAt: now, exitReason: 'cost_cap',
+        cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
+        gitBaselineRef: diff.gitBaselineRef, diffStats: diff.diffStats,
       });
       this.terminate(loop, 'completed');
       task.updatedAt = new Date(now);
-      return { kind: 'terminate', reason: 'cost_cap' };
+      return { kind: 'terminate', reason: 'cost_cap', events };
     }
 
+    // 9. zero-diff convergence (existing).
     if (isZeroDiffConverged(loop, nextZeroDiffStreak)) {
       loop.zeroDiffStreak = nextZeroDiffStreak;
       await this.appendFinishedIteration(task, loop, {
-        startedAt,
-        endedAt: now,
-        exitReason: 'zero_diff_convergence',
-        cumulativeCostUsd: cost,
-        gitBaselineRef: diff.gitBaselineRef,
-        diffStats: diff.diffStats,
+        startedAt, endedAt: now, exitReason: 'zero_diff_convergence',
+        cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
+        gitBaselineRef: diff.gitBaselineRef, diffStats: diff.diffStats,
       });
       this.terminate(loop, 'completed');
       task.updatedAt = new Date(now);
-      return { kind: 'terminate', reason: 'zero_diff_convergence' };
+      return { kind: 'terminate', reason: 'zero_diff_convergence', events };
     }
 
-    // CONTINUE: persist the just-finished iteration, advance the counter,
-    // tag a new baseline, return the fresh-runtime launch action.
-    const exitReason: RalphIterationExitReason = predicateOutcome?.timedOut
-      ? 'predicate_timeout'
-      : predicateOutcome?.errored
-      ? 'predicate_error'
+    // 10. continue. The iteration's exit reason reflects what happened:
+    //     stall recorded but threshold not yet reached → 'target_stalled';
+    //     predicate timed out / errored → preserved;
+    //     otherwise → 'continued'.
+    const exitReason: RalphIterationExitReason =
+      stallTarget !== undefined ? 'target_stalled'
+      : predicateOutcome?.timedOut ? 'predicate_timeout'
+      : predicateOutcome?.errored ? 'predicate_error'
       : 'continued';
 
     loop.zeroDiffStreak = nextZeroDiffStreak;
     await this.appendFinishedIteration(task, loop, {
-      startedAt,
-      endedAt: now,
-      exitReason,
-      cumulativeCostUsd: cost,
-      gitBaselineRef: diff.gitBaselineRef,
-      diffStats: diff.diffStats,
+      startedAt, endedAt: now, exitReason,
+      cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
+      gitBaselineRef: diff.gitBaselineRef, diffStats: diff.diffStats,
     });
 
     const nextIteration = loop.currentIteration + 1;
@@ -195,23 +360,123 @@ export class RalphCycler {
     loop.lastIterationStartedAt = now;
     task.updatedAt = new Date(now);
 
-    // Best-effort baseline tag for the iteration we are about to start. The
-    // tag's success/failure is observed by the *next* iteration's diff stats,
-    // not this one — we don't await the diff here.
     void this.io.createBaselineTag(nextIteration, { cwd: task.cwd });
 
-    return { kind: 'launch_fresh', taskId: task.id, text: loop.prompt };
+    return { kind: 'launch_fresh', taskId: task.id, text: loop.prompt, events };
   }
 
   /**
-   * Write the iteration record to the JSONL log + compute its diff stats.
-   * Failures here never throw — the audit trail is best-effort and must
-   * never break the live loop.
+   * Record one stall against the canonicalized target. Updates per-target
+   * counters, sets `burned: true` when the threshold is crossed, and emits a
+   * `ralph_target_burned` event on the burn transition. Returns the row.
    */
+  private recordStall(
+    loop: RalphLoopState,
+    target: string,
+    reason: string,
+    blockers: string[],
+    stallConfig: ReturnType<typeof resolveStallConfig>,
+    taskId: string,
+    events: RalphCyclerEvent[],
+  ): BurnedOutTarget {
+    if (!loop.burnedOutTargets) loop.burnedOutTargets = [];
+    let row = loop.burnedOutTargets.find((t) => t.target === target);
+    if (!row) {
+      row = {
+        target,
+        consecutiveStallCount: 0,
+        totalStallCount: 0,
+        firstStalledAtIteration: loop.currentIteration,
+        lastStallReason: reason,
+        lastStallBlockers: blockers,
+        burned: false,
+        lastAttemptedIteration: loop.currentIteration,
+      };
+      loop.burnedOutTargets.push(row);
+    }
+    row.consecutiveStallCount += 1;
+    row.totalStallCount += 1;
+    row.lastStallReason = reason;
+    row.lastStallBlockers = blockers;
+    row.lastAttemptedIteration = loop.currentIteration;
+
+    const justBurned = !row.burned && row.consecutiveStallCount >= stallConfig.consecutiveStallsPerTarget;
+    if (justBurned) {
+      row.burned = true;
+      events.push({
+        type: 'ralph_target_burned',
+        taskId,
+        target,
+        iteration: loop.currentIteration,
+        stallCount: row.consecutiveStallCount,
+        reason,
+      });
+    }
+    return row;
+  }
+
+  /**
+   * Reset a target's stallCount to 0 and remove the burn flag. Idempotent —
+   * a no-op if the target was never burned. Emits `ralph_target_unburned` only
+   * when the target was actually burned and is now being un-burned.
+   */
+  private unburnTarget(
+    loop: RalphLoopState,
+    target: string,
+    via: 'progress_verdict' | 'patch_burned_targets' | 'decay',
+    taskId: string,
+    events: RalphCyclerEvent[],
+  ): void {
+    if (!loop.burnedOutTargets) return;
+    const idx = loop.burnedOutTargets.findIndex((t) => t.target === target);
+    if (idx < 0) return;
+    const row = loop.burnedOutTargets[idx];
+    const wasBurned = row.burned;
+    // Remove the row entirely so the burned list is clean. Pre-burn rows that
+    // got reset by `progress` also disappear — the agent reported success;
+    // the engine has nothing useful to remember about earlier stalls.
+    loop.burnedOutTargets.splice(idx, 1);
+    if (wasBurned) {
+      events.push({
+        type: 'ralph_target_unburned',
+        taskId,
+        target,
+        iteration: loop.currentIteration,
+        via,
+      });
+    }
+  }
+
+  private applyDecay(
+    loop: RalphLoopState,
+    stallConfig: ReturnType<typeof resolveStallConfig>,
+    taskId: string,
+    events: RalphCyclerEvent[],
+  ): void {
+    const decay = (stallConfig as { burnedTargetDecayIterations?: number }).burnedTargetDecayIterations;
+    if (decay === undefined || !loop.burnedOutTargets) return;
+    const stale = loop.burnedOutTargets.filter(
+      (t) => loop.currentIteration - t.lastAttemptedIteration >= decay,
+    );
+    for (const row of stale) {
+      this.unburnTarget(loop, row.target, 'decay', taskId, events);
+    }
+  }
+
+  private allDeclaredBurned(loop: RalphLoopState, declared: string[]): boolean {
+    const burnedSet = new Set(
+      (loop.burnedOutTargets ?? []).filter((t) => t.burned).map((t) => t.target),
+    );
+    return declared.every((d) => burnedSet.has(canonicalizeTarget(d)));
+  }
+
   private async finishIteration(
     task: Task,
     loop: RalphLoopState,
-    fields: Pick<RalphIterationRecord, 'startedAt' | 'endedAt' | 'exitReason' | 'cumulativeCostUsd'>,
+    fields: Pick<
+      RalphIterationRecord,
+      'startedAt' | 'endedAt' | 'exitReason' | 'cumulativeCostUsd' | 'costDeltaUsd' | 'verdict'
+    >,
   ): Promise<void> {
     const diff = await this.computeIterationDiff(task, loop);
     loop.zeroDiffStreak = nextZeroDiffStreakFor(loop, diff.diffStats);
@@ -228,8 +493,6 @@ export class RalphCycler {
   ): Promise<Pick<RalphIterationRecord, 'gitBaselineRef' | 'diffStats'>> {
     const baselineRef = `ralph/iter-${loop.currentIteration}-start`;
     const diffStats = await this.io.computeDiffStats(baselineRef, { cwd: task.cwd });
-    // If the baseline tag never existed (the diff returned null on the first
-    // iteration before any tag was created), persist null for the ref too.
     const refForRecord = diffStats === null ? null : baselineRef;
     return { gitBaselineRef: refForRecord, diffStats };
   }
@@ -237,7 +500,10 @@ export class RalphCycler {
   private async appendFinishedIteration(
     task: Task,
     loop: RalphLoopState,
-    fields: Pick<RalphIterationRecord, 'startedAt' | 'endedAt' | 'exitReason' | 'cumulativeCostUsd' | 'gitBaselineRef' | 'diffStats'>,
+    fields: Pick<
+      RalphIterationRecord,
+      'startedAt' | 'endedAt' | 'exitReason' | 'cumulativeCostUsd' | 'gitBaselineRef' | 'diffStats' | 'costDeltaUsd' | 'verdict'
+    >,
   ): Promise<void> {
     const record: RalphIterationRecord = {
       iterationNumber: loop.currentIteration,
@@ -247,11 +513,21 @@ export class RalphCycler {
       cumulativeCostUsd: fields.cumulativeCostUsd,
       gitBaselineRef: fields.gitBaselineRef,
       diffStats: fields.diffStats,
+      ...(fields.verdict !== undefined ? { verdict: fields.verdict } : {}),
+      ...(fields.costDeltaUsd !== undefined ? { costDeltaUsd: fields.costDeltaUsd } : {}),
     };
     try {
       await this.io.appendIterationRecord(task.cwd, record);
     } catch (err) {
       console.warn(`[ralph-cycler] iteration log append failed for task ${task.id}:`, err);
+    }
+    // Persist the cumulative cost so the NEXT iteration's delta is computable.
+    // Only update when known — preserves the "unknown" sentinel through gaps
+    // in the cost source (e.g., a transient cost-tracker outage on iteration
+    // N still lets iteration N+1 compute a delta against iteration N-1 once
+    // the source recovers).
+    if (fields.cumulativeCostUsd !== null) {
+      loop.lastCumulativeCostUsd = fields.cumulativeCostUsd;
     }
   }
 
@@ -277,9 +553,15 @@ function isZeroDiffConverged(loop: RalphLoopState, nextZeroDiffStreak: number): 
 }
 
 function isCostCapReached(loop: RalphLoopState, cumulativeCostUsd: number | null): boolean {
-  // Cost telemetry is best-effort. Unknown cost fails closed: do not stop
-  // solely on cost unless the Stop event provided a concrete cumulative value.
   return loop.costCapUsd !== undefined
     && cumulativeCostUsd !== null
     && cumulativeCostUsd >= loop.costCapUsd;
+}
+
+function computeCostDelta(
+  current: number | null,
+  prior: number | undefined,
+): number | null {
+  if (current === null || prior === undefined) return null;
+  return current - prior;
 }

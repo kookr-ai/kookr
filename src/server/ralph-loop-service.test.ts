@@ -194,9 +194,12 @@ describe('RalphLoopService', () => {
       sessionId: 'agent-1',
       cumulativeCostUsd: 1.25,
     }));
-    expect(launchFreshTaskSession).toHaveBeenCalledWith(task, 'continue', {
+    expect(launchFreshTaskSession).toHaveBeenCalledWith(task, 'continue', expect.objectContaining({
       tmuxName: expect.stringMatching(/^kookr-[0-9a-f]{8}$/),
-    });
+      // PR2: env var pointing at the task's verdict file is injected on every
+      // launch so the agent can write its verdict regardless of `cd`.
+      extraEnv: expect.objectContaining({ RALPH_VERDICT_FILE: expect.stringMatching(/\.ralph-verdict-.+\.json$/) }),
+    }));
     const launchedTmuxName = launchFreshTaskSession.mock.calls[0]?.[2]?.tmuxName;
     expect(task.ralphLoop).toMatchObject({
       ownerSessionId: launchedTmuxName,

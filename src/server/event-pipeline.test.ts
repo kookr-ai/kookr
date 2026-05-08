@@ -594,7 +594,13 @@ describe('wireEventPipeline – Ralph fresh-runtime wiring on Stop (integration)
     expect(launchFreshTaskSession).toHaveBeenCalledWith(
       expect.objectContaining({ id: task.id }),
       'iterate again',
-      { tmuxName: expect.stringMatching(/^kookr-[0-9a-f]{8}$/) },
+      expect.objectContaining({
+        tmuxName: expect.stringMatching(/^kookr-[0-9a-f]{8}$/),
+        // PR2: verdict-file env var injected on every fresh-runtime launch.
+        extraEnv: expect.objectContaining({
+          RALPH_VERDICT_FILE: expect.stringMatching(/\.ralph-verdict-.+\.json$/),
+        }),
+      }),
     );
   });
 });

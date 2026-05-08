@@ -106,10 +106,68 @@ The iteration cap is always enforced first. Built-in guards are evaluated after 
 
 - `zeroDiffConvergence.consecutiveIterations` stops repeated no-op file iterations with exit reason `zero_diff_convergence`.
 - `costCapUsd` stops with exit reason `cost_cap` only when `cumulativeCostUsd` is a concrete number.
+- `stallConfig.iterationCostCapUsd` is a per-iteration spend cap, decoupled from stall machinery: when the iteration's cost delta exceeds the cap for `consecutiveIterationCostCapHits` (default 2) iterations in a row, the loop terminates with `iteration_cost_cap`. Single hits emit a `ralph_iteration_cost_warning` event but don't terminate.
 
 `zeroDiffConvergence` only measures local git-file no-op convergence. It is useful for file-backed implementation loops, but may be irrelevant when progress lives in external issue labels, PR state, CI checks, queues, or databases. For those loops, prefer a shell predicate that queries the external state directly.
 
-Cost cap is deliberately fail-closed: `cumulativeCostUsd: null` means the source is unknown, so Kookr keeps looping unless another stop condition fires.
+Cost caps are deliberately fail-closed: `cumulativeCostUsd: null` means the source is unknown, so Kookr keeps looping unless another stop condition fires. The same applies to per-iteration cost cap when the prior iteration's cost was unknown.
+
+## Phase 3.5: Stall handling (optional, recommended for batch loops)
+
+The Ralph engine has two complementary stall channels: the **agent verdict file** (richer; agent-cooperative) and the **`stallPredicate`** shell command (engine-only; legacy- or third-party-agent-friendly). Both feed the same per-target stall counter.
+
+### Agent verdict file (`$RALPH_VERDICT_FILE`)
+
+Kookr injects `$RALPH_VERDICT_FILE` as an env var pointing to an absolute path (default: `<task.cwd>/.ralph-verdict-<taskIdShort>.json`). The agent writes a JSON document there before emitting Stop, then the engine reads, deletes, and acts on it:
+
+```json
+{"verdict":"progress","iteration":3,"target":"154"}
+{"verdict":"stalled","iteration":3,"target":"154","reason":"tests fail to compile","blockers":["missing-dep:foo"]}
+{"verdict":"complete","iteration":3,"reason":"all candidates shipped"}
+```
+
+- **`progress`** for a canonicalized target resets that target's stall counter and removes it from the burned-out list.
+- **`stalled`** with a target increments that target's `consecutiveStallCount`. After `stallConfig.consecutiveStallsPerTarget` (default 2) it's burned out.
+- **`complete`** terminates the loop with `predicate_satisfied` — unless an explicit `stopPredicate` is configured AND its clean exit code is non-zero, in which case the engine logs a `ralph_predicate_disagree` interaction-log event and continues.
+
+Atomic-write contract: the agent should write `${RALPH_VERDICT_FILE}.tmp` then rename, so a Stop firing mid-write doesn't expose partial JSON. Malformed / oversize (>16KB) / wrong-iteration files are recorded as warnings on `RalphLoopState.verdictWarningCount` and treated as legacy `continued`.
+
+### `stallPredicate` (engine-only)
+
+A sibling of `stopPredicate` — same shell-command shape, same 5s timeout. Exit 0 = treat the iteration as a stall (single-target attribution under a synthetic `__stall_predicate__` key). Useful when the agent doesn't write verdicts: e.g. a third-party agent or a legacy playbook you can't easily modify. Verdict-from-file beats `stallPredicate` when both fire in the same iteration.
+
+### `loopShape`, `consecutiveStallsForSingleTargetTermination`, `declaredTargets`
+
+- `stallConfig.loopShape` defaults to `'single-target'` (the production-observed failure shape — fail safe). Set to `'multi-target'` for batch loops over multiple work items.
+- `'single-target'` loops terminate with `target_stalled` once any one target reaches `consecutiveStallsForSingleTargetTermination` (default 3).
+- `'multi-target'` loops keep running on stall alone. To enable an "all targets exhausted" safety net, set `stallConfig.declaredTargets: ['149','153',...]` — the loop terminates with `all_targets_stalled` when every declared target is burned.
+- `stallConfig.burnedTargetDecayIterations` (optional) auto-un-burns a target after N iterations without an attempt — useful for transient blockers (CI flake) where you want the loop to retry the target later in the run.
+
+### Per-iteration prompt template
+
+When the prompt body contains any `{{ralph.<token>}}` marker, the engine substitutes per-iteration values at iteration-launch time. Tokens:
+
+- `{{ralph.iteration}}` — current iteration number (0-based).
+- `{{ralph.cumulativeIterations}}` — across resumes.
+- `{{ralph.burnedOutTargets}}` — comma-separated canonicalized target ids; the literal `(none)` when the list is empty.
+- `{{ralph.lastStallReason}}` — the most recent stall reason, or empty.
+- `{{ralph.recentVerdicts}}` — last 5 verdicts as a one-line summary.
+
+Substitution is unconditional with empty-string / `(none)` fallback. There is no `{{#if}}` syntax — write the surrounding prose so it reads naturally either way (e.g. `Burned: {{ralph.burnedOutTargets}}` reads as `Burned: (none)` when none are burned). A prompt with no `{{ralph.x}}` markers is forwarded unchanged — opt-in by marker presence.
+
+### Operator unblock
+
+To retry a burned target without restarting the loop:
+
+```bash
+curl -X PATCH http://localhost:4800/api/tasks/<TASK_ID>/ralph-loop/burned-targets \
+  -H 'Content-Type: application/json' \
+  -d '{"remove": ["154"]}'
+```
+
+`{ "clear": true }` empties the entire burned list. Every PATCH fires a `ralph_burned_targets_modified` interaction-log event with the prior state snapshot for audit.
+
+The dashboard's Ralph panel shows the burned-targets row, a Clear button, the verdict-warning count, and the effective `stallConfig` (defaults merged) so operators can verify the live values without inspecting the loop request.
 
 ## Phase 4: Launch a task
 

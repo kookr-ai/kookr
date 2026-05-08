@@ -1,12 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { generateCompletionDigest } from '../core/completion-digest.js';
-import type { RalphCycler } from '../core/ralph-cycler.js';
-import { nowISO, type DeferredInteractionLogWriter } from '../core/interaction-log.js';
+import type { RalphCycler, RalphCyclerEvent } from '../core/ralph-cycler.js';
+import { nowISO, type DeferredInteractionLogWriter, type InteractionEvent } from '../core/interaction-log.js';
 import {
   appendIterationRecord,
+  readIterationLog,
   type RalphIterationRecord,
 } from '../core/ralph-iteration-log.js';
+import {
+  defaultVerdictPath,
+  readVerdictFile,
+  unlinkVerdictFile,
+} from '../core/ralph-iteration-verdict.js';
+import { renderIterationPrompt } from '../core/ralph-iteration-template.js';
 import { isStopFromMainTaskSession, ralphStopFingerprint } from './ralph-stop.js';
 import type { Monitor } from '../core/monitor.js';
 import {
@@ -50,7 +57,7 @@ export interface RalphLoopServiceDeps {
   ralphCycler: RalphCycler | undefined;
   terminalBackend: TerminalBackend;
   tokenTracker: TokenTracker;
-  launchFreshTaskSession: (task: Task, prompt: string, opts?: { tmuxName?: string }) => Promise<string>;
+  launchFreshTaskSession: (task: Task, prompt: string, opts?: { tmuxName?: string; extraEnv?: Record<string, string> }) => Promise<string>;
   completeTask: (taskId: string) => Promise<void>;
 }
 
@@ -614,11 +621,22 @@ export class RalphLoopService {
       const cumulativeCostUsd = options.cumulativeCostUsd !== undefined
         ? await options.cumulativeCostUsd
         : await this.scanCatchUpUsage(task);
+
+      // Read + consume the agent's verdict file (if any) BEFORE invoking the
+      // cycler. The cycler stays IO-free (boundary-critic STRUCTURAL): it
+      // receives the parsed verdict via options and decides what to do.
+      // Malformed / oversize / wrong-iteration files are recorded as warnings
+      // on RalphLoopState and treated as legacy `continued`.
+      const verdict = await this.readAndConsumeVerdictFile(task);
+
       const action = await ralphCycler.handleStop(this.deps.taskStore, {
         taskId: task.id,
         sessionId,
         cumulativeCostUsd,
+        verdict,
       });
+      // Fire any interaction-log events the cycler decided should fire.
+      this.fireCyclerEvents(action.events);
       const currentLoop = this.deps.taskStore.getTask(task.id)?.ralphLoop;
       if (
         !currentLoop
@@ -691,11 +709,29 @@ export class RalphLoopService {
     const loop = currentTask.ralphLoop;
     if (!loop) throw new Error(`Task ${task.id} has no Ralph loop`);
 
+    // Pre-launch verdict-file unlink — closes cross-iteration carryover by
+    // construction. If a stale file was present (e.g., from a kookr_crash
+    // mid-iteration), emit `ralph_stale_verdict_unlinked` so the operator
+    // can see the recovery path fired. Idempotent: missing file is a no-op.
+    const verdictPath = defaultVerdictPath(currentTask.cwd, currentTask.id);
+    await this.unlinkAndAuditVerdictFile(currentTask, verdictPath);
+
+    // Per-iteration template render — substitutes {{ralph.x}} tokens. Pure
+    // function with marker-presence opt-in: a prompt without any {{ralph.x}}
+    // is forwarded unchanged.
+    const renderedPrompt = await this.renderForLaunch(currentTask, loop, prompt);
+
     const newTmuxName = `kookr-${randomUUID().slice(0, 8)}`;
     loop.ownerSessionId = newTmuxName;
 
     try {
-      await this.deps.launchFreshTaskSession(currentTask, prompt, { tmuxName: newTmuxName });
+      await this.deps.launchFreshTaskSession(currentTask, renderedPrompt, {
+        tmuxName: newTmuxName,
+        // Generic env-extension point. The agent reads `$RALPH_VERDICT_FILE`
+        // and writes its verdict JSON to that absolute path — works
+        // regardless of any `cd` the agent does mid-iteration.
+        extraEnv: { RALPH_VERDICT_FILE: verdictPath },
+      });
     } catch (err) {
       if (currentTask.ralphLoop?.ownerSessionId === newTmuxName) {
         delete currentTask.ralphLoop.ownerSessionId;
@@ -716,6 +752,114 @@ export class RalphLoopService {
     }
 
     return newTmuxName;
+  }
+
+  /**
+   * Delete the verdict file at `path` and emit `ralph_stale_verdict_unlinked`
+   * if a file actually existed (i.e. we had to remove it, indicating prior
+   * recovery state). Best-effort.
+   */
+  private async unlinkAndAuditVerdictFile(task: Task, path: string): Promise<void> {
+    let existed = false;
+    try {
+      const { lstat } = await import('node:fs/promises');
+      await lstat(path);
+      existed = true;
+    } catch {
+      // ENOENT: no stale file; nothing to audit.
+    }
+    await unlinkVerdictFile(path);
+    if (existed && this.deps.interactionLog) {
+      void this.deps.interactionLog.append({
+        type: 'ralph_stale_verdict_unlinked',
+        taskId: task.id,
+        path,
+        iteration: task.ralphLoop?.currentIteration ?? -1,
+        timestamp: nowISO(),
+      }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Apply per-iteration template substitution to `prompt`. Reads recent
+   * iteration records from the JSONL log only when the prompt contains a
+   * `{{ralph.recentVerdicts}}` token — cheap-fail fast otherwise.
+   */
+  private async renderForLaunch(task: Task, loop: RalphLoopState, prompt: string): Promise<string> {
+    let recentRecords: RalphIterationRecord[] | undefined;
+    if (prompt.includes('{{ralph.recentVerdicts}}')) {
+      try {
+        const model = await readIterationLog(task.cwd, { limit: 50, loop });
+        recentRecords = model.iterations;
+      } catch {
+        // Log-read failure should not break iteration launch. The token
+        // expands to '' which is what the playbook author opted into.
+        recentRecords = [];
+      }
+    }
+    return renderIterationPrompt(prompt, {
+      iteration: loop.currentIteration,
+      cumulativeIterations: loop.cumulativeIterations,
+      burnedOutTargets: loop.burnedOutTargets,
+      recentRecords,
+    });
+  }
+
+  /**
+   * Read + delete the agent's verdict file. Returns the parsed verdict on
+   * success; on any failure (missing, malformed, oversize, symlink, wrong
+   * iteration) returns undefined and updates the loop's verdictWarningCount
+   * + lastVerdictWarningReason fields, plus emits a `ralph_verdict_warning`
+   * interaction-log event when applicable. Missing-file is NOT a warning.
+   */
+  private async readAndConsumeVerdictFile(task: Task) {
+    const loop = task.ralphLoop;
+    if (!loop) return undefined;
+    const path = defaultVerdictPath(task.cwd, task.id);
+    let result;
+    try {
+      result = await readVerdictFile(path, loop.currentIteration);
+    } catch (err) {
+      console.warn(`[ralph-loop-service] verdict file read failed for task ${task.id}:`, err);
+      return undefined;
+    }
+    // Always unlink after read — closes the file's lifecycle on the read
+    // side, mirroring the launch-side pre-unlink. Idempotent.
+    await unlinkVerdictFile(path).catch(() => undefined);
+
+    if (result.failure === 'missing' || result.failure === null) {
+      return result.verdict ?? undefined;
+    }
+    // Real warning: mismatch / malformed / oversize / symlink / schema.
+    loop.verdictWarningCount = (loop.verdictWarningCount ?? 0) + 1;
+    loop.lastVerdictWarningReason = result.reason ?? `verdict file ${result.failure}`;
+    if (this.deps.interactionLog) {
+      void this.deps.interactionLog.append({
+        type: 'ralph_verdict_warning',
+        taskId: task.id,
+        iteration: loop.currentIteration,
+        failure: result.failure,
+        reason: result.reason ?? 'unknown',
+        timestamp: nowISO(),
+      }).catch(() => undefined);
+    }
+    return undefined;
+  }
+
+  /**
+   * Forward cycler-decided events to the interaction log. The cycler stays
+   * IO-free; the service is the single point of audit-trail emission.
+   */
+  private fireCyclerEvents(events: RalphCyclerEvent[] | undefined): void {
+    // Defensive: legacy/test cycler stubs may return without an `events`
+    // array. The cycler contract guarantees `events: RalphCyclerEvent[]`,
+    // but being lenient here keeps test doubles simple.
+    if (!events || events.length === 0 || !this.deps.interactionLog) return;
+    const ts = nowISO();
+    for (const e of events) {
+      const event: InteractionEvent = { ...e, timestamp: ts };
+      void this.deps.interactionLog.append(event).catch(() => undefined);
+    }
   }
 
   private broadcastSnapshot(): void {

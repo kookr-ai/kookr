@@ -94,7 +94,7 @@ describe('RalphCycler', () => {
     const task = store.createTask('plain task', workDir);
     const cycler = new RalphCycler(buildIO().io);
     const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1' });
-    expect(action).toEqual({ kind: 'noop' });
+    expect(action).toEqual({ kind: 'noop', events: [] });
   });
 
   it('returns noop when the loop status is not running', async () => {
@@ -102,7 +102,7 @@ describe('RalphCycler', () => {
     task.ralphLoop = baseLoop({ status: 'paused' });
     const cycler = new RalphCycler(buildIO().io);
     const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1' });
-    expect(action).toEqual({ kind: 'noop' });
+    expect(action).toEqual({ kind: 'noop', events: [] });
   });
 
   it('requests a fresh runtime launch and advances the counter on a normal continue', async () => {
@@ -113,7 +113,7 @@ describe('RalphCycler', () => {
 
     const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1', now: 1_000 });
 
-    expect(action).toEqual({ kind: 'launch_fresh', taskId: task.id, text: 'Continue working.' });
+    expect(action).toEqual({ kind: 'launch_fresh', taskId: task.id, text: 'Continue working.', events: [] });
     expect(task.ralphLoop?.currentIteration).toBe(3);
     expect(task.ralphLoop?.cumulativeIterations).toBe(1);
     expect(task.ralphLoop?.lastIterationStartedAt).toBe(1_000);
@@ -138,7 +138,7 @@ describe('RalphCycler', () => {
 
     const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1', now: 1_000 });
 
-    expect(action).toEqual({ kind: 'launch_fresh', taskId: task.id, text: 'Edited prompt for the next turn.' });
+    expect(action).toEqual({ kind: 'launch_fresh', taskId: task.id, text: 'Edited prompt for the next turn.', events: [] });
     expect(task.ralphLoop?.currentIteration).toBe(3);
     expect(task.ralphLoop?.cumulativeIterations).toBe(8);
   });
@@ -151,7 +151,7 @@ describe('RalphCycler', () => {
 
     const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1', now: 2_000 });
 
-    expect(action).toEqual({ kind: 'terminate', reason: 'iteration_cap' });
+    expect(action).toEqual({ kind: 'terminate', reason: 'iteration_cap', events: [] });
     expect(task.ralphLoop?.status).toBe('completed');
     // Counter must not advance past the cap.
     expect(task.ralphLoop?.currentIteration).toBe(5);
@@ -174,7 +174,7 @@ describe('RalphCycler', () => {
 
     const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1' });
 
-    expect(action).toEqual({ kind: 'terminate', reason: 'predicate_satisfied' });
+    expect(action).toEqual({ kind: 'terminate', reason: 'predicate_satisfied', events: [] });
     expect(task.ralphLoop?.status).toBe('completed');
     expect(recorder.predicateCalls[0].command).toBe('grep -q DONE prompt.md');
     expect(recorder.predicateCalls[0].iteration).toBe(3);
@@ -291,7 +291,7 @@ describe('RalphCycler', () => {
       cumulativeCostUsd: 3,
     });
 
-    expect(action).toEqual({ kind: 'terminate', reason: 'cost_cap' });
+    expect(action).toEqual({ kind: 'terminate', reason: 'cost_cap', events: [] });
     expect(task.ralphLoop?.status).toBe('completed');
     expect(recorder.appendCalls[0].record.exitReason).toBe('cost_cap');
   });
@@ -327,7 +327,7 @@ describe('RalphCycler', () => {
 
     const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1' });
 
-    expect(action).toEqual({ kind: 'terminate', reason: 'zero_diff_convergence' });
+    expect(action).toEqual({ kind: 'terminate', reason: 'zero_diff_convergence', events: [] });
     expect(task.ralphLoop?.status).toBe('completed');
     expect(task.ralphLoop?.zeroDiffStreak).toBe(2);
     expect(recorder.appendCalls[0].record.exitReason).toBe('zero_diff_convergence');
@@ -388,7 +388,7 @@ describe('RalphCycler', () => {
       cumulativeCostUsd: 999,
     });
 
-    expect(action).toEqual({ kind: 'terminate', reason: 'iteration_cap' });
+    expect(action).toEqual({ kind: 'terminate', reason: 'iteration_cap', events: [] });
     expect(recorder.predicateCalls).toHaveLength(0);
     expect(recorder.appendCalls[0].record.exitReason).toBe('iteration_cap');
   });
@@ -413,7 +413,7 @@ describe('RalphCycler', () => {
       cumulativeCostUsd: 999,
     });
 
-    expect(action).toEqual({ kind: 'terminate', reason: 'predicate_satisfied' });
+    expect(action).toEqual({ kind: 'terminate', reason: 'predicate_satisfied', events: [] });
     expect(recorder.appendCalls[0].record.exitReason).toBe('predicate_satisfied');
   });
 
@@ -451,5 +451,322 @@ describe('RalphCycler', () => {
     expect(parsed.iterationNumber).toBe(1);
     expect(parsed.endedAt).toBe(555);
     expect(parsed.exitReason).toBe('continued');
+  });
+});
+
+describe('RalphCycler — stall handling (PR2)', () => {
+  let store: TaskStore;
+  let workDir: string;
+
+  beforeEach(async () => {
+    store = new TaskStore();
+    workDir = await mkdtemp(join(tmpdir(), 'ralph-cyc-stall-'));
+  });
+
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  it('verdict.complete + no predicate → terminate predicate_satisfied with verdict on the iteration record', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('verdict complete', workDir);
+    task.ralphLoop = baseLoop({ currentIteration: 1, iterationCap: 5 });
+    const cycler = new RalphCycler(recorder.io);
+
+    const action = await cycler.handleStop(store, {
+      taskId: task.id,
+      sessionId: 's1',
+      verdict: { verdict: 'complete', iteration: 1, reason: 'all done' },
+    });
+
+    expect(action.kind).toBe('terminate');
+    expect((action as { reason?: string }).reason).toBe('predicate_satisfied');
+    expect(recorder.appendCalls[0].record.verdict).toEqual({ verdict: 'complete', iteration: 1, reason: 'all done' });
+  });
+
+  it('verdict.complete + clean predicate exit ≠ 0 → continue with predicate_disagree event', async () => {
+    const recorder = buildIO();
+    recorder.setPredicateResult({ satisfied: false, exitCode: 1, timedOut: false, errored: false });
+    const task = store.createTask('disagree', workDir);
+    task.ralphLoop = baseLoop({ stopPredicate: 'false', currentIteration: 2, iterationCap: 5 });
+    const cycler = new RalphCycler(recorder.io);
+
+    const action = await cycler.handleStop(store, {
+      taskId: task.id,
+      sessionId: 's1',
+      verdict: { verdict: 'complete', iteration: 2 },
+    });
+
+    expect(action.kind).toBe('launch_fresh');
+    expect(action.events).toContainEqual(expect.objectContaining({ type: 'ralph_predicate_disagree', taskId: task.id, iteration: 2, predicateExitCode: 1 }));
+    expect(task.ralphLoop?.status).toBe('running');
+  });
+
+  it('verdict.complete + predicate timeout → terminate predicate_satisfied (predicate could not speak)', async () => {
+    const recorder = buildIO();
+    recorder.setPredicateResult({ satisfied: false, exitCode: null, timedOut: true, errored: false });
+    const task = store.createTask('predicate timeout', workDir);
+    task.ralphLoop = baseLoop({ stopPredicate: 'sleep 10', currentIteration: 1, iterationCap: 5 });
+    const cycler = new RalphCycler(recorder.io);
+
+    const action = await cycler.handleStop(store, {
+      taskId: task.id,
+      sessionId: 's1',
+      verdict: { verdict: 'complete', iteration: 1 },
+    });
+
+    expect(action.kind).toBe('terminate');
+    expect((action as { reason?: string }).reason).toBe('predicate_satisfied');
+  });
+
+  it('verdict.stalled (single-target, default config) burns the target on threshold and terminates target_stalled', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('single stall', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 10,
+      stallConfig: { loopShape: 'single-target', consecutiveStallsForSingleTargetTermination: 2 },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    // First stall — records but does not terminate.
+    let action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      verdict: { verdict: 'stalled', iteration: 1, target: '154', reason: 'tests fail' },
+    });
+    expect(action.kind).toBe('launch_fresh');
+    expect(task.ralphLoop?.burnedOutTargets).toHaveLength(1);
+    expect(task.ralphLoop?.burnedOutTargets?.[0].consecutiveStallCount).toBe(1);
+    // Second stall on same target — threshold reached → terminate target_stalled.
+    action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's2',
+      verdict: { verdict: 'stalled', iteration: 2, target: '154', reason: 'still failing' },
+    });
+    expect(action.kind).toBe('terminate');
+    expect((action as { reason?: string }).reason).toBe('target_stalled');
+  });
+
+  it('verdict.stalled (multi-target, no declaredTargets) records but never auto-terminates on stall alone', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('multi stall', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 10,
+      stallConfig: { loopShape: 'multi-target', consecutiveStallsPerTarget: 2 },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    for (let i = 1; i <= 4; i++) {
+      const action = await cycler.handleStop(store, {
+        taskId: task.id, sessionId: `s${i}`,
+        verdict: { verdict: 'stalled', iteration: i, target: '154', reason: 'r' },
+        now: 1_000_000_000_000 + i * 1000,
+      });
+      // Multi-target with no declaredTargets keeps running until iteration cap.
+      expect(action.kind).toBe('launch_fresh');
+    }
+    expect(task.ralphLoop?.burnedOutTargets?.[0].burned).toBe(true);
+    expect(task.ralphLoop?.burnedOutTargets?.[0].consecutiveStallCount).toBe(4);
+  });
+
+  it('multi-target with declaredTargets: terminates all_targets_stalled when every declared target is burned', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('all burned', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 100,
+      stallConfig: {
+        loopShape: 'multi-target',
+        consecutiveStallsPerTarget: 1, // burn-on-first-stall to keep the test short
+        declaredTargets: ['149', '154'],
+      },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    // First target burned, second still alive.
+    let action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      verdict: { verdict: 'stalled', iteration: 1, target: '149', reason: 'a' },
+    });
+    expect(action.kind).toBe('launch_fresh');
+    // Second target burned → all declared burned → terminate.
+    action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's2',
+      verdict: { verdict: 'stalled', iteration: 2, target: '154', reason: 'b' },
+    });
+    expect(action.kind).toBe('terminate');
+    expect((action as { reason?: string }).reason).toBe('all_targets_stalled');
+  });
+
+  it('canonicalizes target keys: "#154" and " 154 " accrue on the same row', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('canonical', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 10,
+      stallConfig: { loopShape: 'single-target', consecutiveStallsForSingleTargetTermination: 99 },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      verdict: { verdict: 'stalled', iteration: 1, target: '#154', reason: 'a' },
+    });
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's2',
+      verdict: { verdict: 'stalled', iteration: 2, target: ' 154 ', reason: 'b' },
+    });
+    expect(task.ralphLoop?.burnedOutTargets).toHaveLength(1);
+    expect(task.ralphLoop?.burnedOutTargets?.[0].target).toBe('154');
+    expect(task.ralphLoop?.burnedOutTargets?.[0].consecutiveStallCount).toBe(2);
+  });
+
+  it('progress verdict for the same canonicalized target un-burns it and emits ralph_target_unburned', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('unburn', workDir);
+    // No declaredTargets so the all-burned terminator can't race the un-burn
+    // path. Use multi-target so single-target threshold doesn't terminate either.
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 100,
+      stallConfig: { loopShape: 'multi-target', consecutiveStallsPerTarget: 2 },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    // Burn the target across two iterations.
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      verdict: { verdict: 'stalled', iteration: 1, target: '154', reason: 'a' },
+    });
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's2',
+      verdict: { verdict: 'stalled', iteration: 2, target: '154', reason: 'b' },
+    });
+    expect(task.ralphLoop?.burnedOutTargets?.[0].burned).toBe(true);
+    expect(task.ralphLoop?.status).toBe('running');
+
+    // Agent reports progress on the burned target — un-burns it.
+    const action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's3',
+      verdict: { verdict: 'progress', iteration: 3, target: '#154' },
+    });
+    expect(action.kind).toBe('launch_fresh');
+    expect(task.ralphLoop?.burnedOutTargets ?? []).toHaveLength(0);
+    expect(action.events).toContainEqual(expect.objectContaining({
+      type: 'ralph_target_unburned', target: '154', via: 'progress_verdict',
+    }));
+  });
+
+  it('decay un-burns a stale target after burnedTargetDecayIterations elapsed', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('decay', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 5, iterationCap: 100,
+      burnedOutTargets: [{
+        target: '154',
+        consecutiveStallCount: 2,
+        totalStallCount: 2,
+        firstStalledAtIteration: 1,
+        lastStallReason: 'old',
+        lastStallBlockers: [],
+        burned: true,
+        lastAttemptedIteration: 1, // 5 - 1 = 4 iterations stale
+      }],
+      stallConfig: { loopShape: 'multi-target', burnedTargetDecayIterations: 3 },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1' });
+    expect(action.kind).toBe('launch_fresh');
+    expect(task.ralphLoop?.burnedOutTargets ?? []).toHaveLength(0);
+    expect(action.events).toContainEqual(expect.objectContaining({
+      type: 'ralph_target_unburned', target: '154', via: 'decay',
+    }));
+  });
+
+  it('iteration cost cap: single hit warns, two consecutive hits terminate iteration_cost_cap', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('iter cost cap', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 10,
+      stallConfig: { iterationCostCapUsd: 0.50, consecutiveIterationCostCapHits: 2 },
+      lastCumulativeCostUsd: 0, // prior iteration ended at $0
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    // First over-cap iteration: delta = 1.00 - 0 = 1.00 → warn, continue.
+    let action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      cumulativeCostUsd: 1.00,
+    });
+    expect(action.kind).toBe('launch_fresh');
+    expect(action.events).toContainEqual(expect.objectContaining({
+      type: 'ralph_iteration_cost_warning', costDeltaUsd: 1.00, capUsd: 0.50, consecutiveStreak: 1,
+    }));
+    expect(task.ralphLoop?.consecutiveIterationCostCapStreak).toBe(1);
+    expect(task.ralphLoop?.iterationCostWarningCount).toBe(1);
+    expect(task.ralphLoop?.lastCumulativeCostUsd).toBe(1.00);
+
+    // Second over-cap iteration: delta = 2.00 - 1.00 = 1.00 → streak 2, terminate.
+    action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's2',
+      cumulativeCostUsd: 2.00,
+    });
+    expect(action.kind).toBe('terminate');
+    expect((action as { reason?: string }).reason).toBe('iteration_cost_cap');
+  });
+
+  it('iteration cost cap: a within-cap iteration resets the consecutive streak', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('cost reset', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 10,
+      stallConfig: { iterationCostCapUsd: 0.50, consecutiveIterationCostCapHits: 2 },
+      consecutiveIterationCostCapStreak: 1,
+      lastCumulativeCostUsd: 1.00,
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    // Delta = 1.30 - 1.00 = 0.30, under cap → streak reset.
+    const action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      cumulativeCostUsd: 1.30,
+    });
+    expect(action.kind).toBe('launch_fresh');
+    expect(task.ralphLoop?.consecutiveIterationCostCapStreak).toBe(0);
+  });
+
+  it('iteration cost cap: never fires when prior cost is unknown (first iteration after attach)', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('cost unknown prior', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 10,
+      stallConfig: { iterationCostCapUsd: 0.10, consecutiveIterationCostCapHits: 1 },
+      // lastCumulativeCostUsd: undefined — no prior
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    // Even with a $5 cumulative cost on this iteration, the delta is unknown
+    // (no prior baseline) so the cost-cap check is skipped — fail-closed.
+    const action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      cumulativeCostUsd: 5.00,
+    });
+    expect(action.kind).toBe('launch_fresh');
+    expect(task.ralphLoop?.iterationCostWarningCount ?? 0).toBe(0);
+    // But the cycler now records the cumulative cost so iteration 2's delta works.
+    expect(task.ralphLoop?.lastCumulativeCostUsd).toBe(5.00);
+  });
+
+  it('stallPredicate (no verdict file) records a stall under the synthetic key', async () => {
+    const recorder = buildIO();
+    recorder.setPredicateResult({ satisfied: true, exitCode: 0, timedOut: false, errored: false });
+    const task = store.createTask('stall pred', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 10,
+      stallPredicate: 'true', // simulated
+      stallConfig: { loopShape: 'single-target', consecutiveStallsForSingleTargetTermination: 2 },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1' });
+    expect(action.kind).toBe('launch_fresh');
+    expect(task.ralphLoop?.burnedOutTargets).toHaveLength(1);
+    expect(task.ralphLoop?.burnedOutTargets?.[0].target).toBe('__stall_predicate__');
   });
 });

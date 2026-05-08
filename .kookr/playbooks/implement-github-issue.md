@@ -127,6 +127,24 @@ gh issue list --state open --limit 100 -R "$REPO" --search "<original line>" --j
 
 If the result is empty: write `STOP: FAILED — selector resolves to no open issues` to `"$BATCH_CWD/.batch-stop"` and stop.
 
+### Step 0c.5: Filter out engine-burned targets
+
+The Ralph loop engine tracks per-target stall counts across iterations. When a target burns (default: 2 consecutive `verdict: stalled` reports), Kookr injects its canonicalized id into the prompt template variable `{{ralph.burnedOutTargets}}`, formatted as a comma-separated list. The literal `(none)` is substituted when none are burned.
+
+```bash
+BURNED='{{ralph.burnedOutTargets}}'
+# Normalize: trim, drop the (none) sentinel, split on commas + whitespace.
+if [ "$BURNED" = "(none)" ] || [ -z "$BURNED" ]; then
+  BURNED_FILTER=()
+else
+  IFS=', ' read -ra BURNED_FILTER <<< "$BURNED"
+fi
+```
+
+When iterating candidates in Step 0d, skip any candidate whose canonicalized form (`trim`, `lowercase`, strip leading `#`, NFC-normalize) appears in `BURNED_FILTER`. This is the engine's complement to the per-issue `.batch-attempted` counter — `.batch-attempted` caps retries within one launch; the burned-target list survives across the whole loop and is dashboard-visible.
+
+If every candidate is filtered out by burned targets, fall through to Step 0e — the loop has no eligible work left.
+
 ### Step 0d: Pick the target (mechanical)
 
 For each candidate `N` in selector order, in this exact order:
@@ -397,6 +415,59 @@ fi
 ```
 
 If no further action is possible because external review/checks are pending, leave a concise status note in the PR only if there is new evidence, heartbeat the claim if appropriate, and stop. The next Ralph iteration will re-check the external state.
+
+## Phase 9: Report verdict to the engine
+
+Every iteration MUST write a JSON verdict file to `$RALPH_VERDICT_FILE` (an absolute path Kookr provides via env var) before emitting Stop. The engine reads it once per iteration to track per-target progress, drive the burned-out-targets list, and decide when to terminate the loop. Missing or malformed verdict files revert the engine to legacy "always continue" behavior — your stall judgment is silently dropped.
+
+Map the iteration outcome to one verdict variant. Use atomic write: write `${RALPH_VERDICT_FILE}.tmp` then rename, so a Stop event firing mid-write doesn't expose partial JSON.
+
+```bash
+# At the end of every iteration, exactly one of these calls runs:
+
+# A) PROGRESS — agent advanced this target. Includes both "shipped a PR this
+#    iteration" and "PR exists from a prior iteration and we're polling for
+#    merge". A `progress` for a previously-burned target un-burns it.
+cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
+{"verdict":"progress","iteration":${RALPH_ITERATION:-0},"target":"$TARGET","reason":"$REASON"}
+EOF
+mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
+
+# B) STALLED — agent picked a target but couldn't make progress this
+#    iteration. Use for transient external failures (CI red, mergeStateStatus
+#    unsupported, claim refused after retries) AND permanent blockers (issue
+#    body missing required context, sustained worktree collisions). The
+#    engine increments stallCount on the canonicalized target; after the
+#    threshold (default 2) the target is burned out and excluded by Step 0c.5
+#    of subsequent iterations.
+cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
+{"verdict":"stalled","iteration":${RALPH_ITERATION:-0},"target":"$TARGET","reason":"$REASON","blockers":[$BLOCKERS_JSON]}
+EOF
+mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
+
+# C) COMPLETE — no eligible candidate remains in the batch (Step 0e fired,
+#    or every candidate was filtered by `.batch-attempted` cap, or every
+#    candidate is in the burned-targets list). Replaces the legacy
+#    `STOP: COMPLETE` write — keep both during the migration window.
+cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
+{"verdict":"complete","iteration":${RALPH_ITERATION:-0},"reason":"no eligible candidates"}
+EOF
+mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
+```
+
+Default mapping for this playbook:
+
+| End state | Verdict |
+|---|---|
+| Phase 7: PR successfully created or updated | `progress` (with target) |
+| Phase 8: PR merged or auto-merge enabled | `progress` (with target) |
+| Phase 8: external CI/review pending — no new evidence to post | `stalled` (with target + blockers like `["ci_pending"]` or `["review_pending"]`) |
+| Phase 4: worktree collision after retries | `stalled` (with target + blockers `["worktree_collision"]`) |
+| Phase 6: tests fail after best-effort fix | `stalled` (with target + reason naming the failing test) |
+| Phase 0c selector validation failure (filter rejected) | DON'T write a verdict — Phase 0c already wrote `STOP: FAILED` to `.batch-stop`; the loop terminates next Stop |
+| Phase 0e: no eligible candidates | `complete` (alongside the existing `.batch-stop` write) |
+
+The `RALPH_ITERATION` env var is also injected by the engine; use it for the `iteration` field. The `target` field MUST be the canonicalized issue number (the integer; canonicalization strips `#` and lowercases) so the engine accrues counts on the right key across iterations.
 
 ## Anti-Patterns
 
