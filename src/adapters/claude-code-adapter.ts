@@ -19,6 +19,7 @@ import { buildAgentLaunchContext } from './agent-launch-context.js';
 import { resolveAndPrepareCheckpointDir, CHECKPOINT_LOAD_INSTRUCTION } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
+import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -69,6 +70,12 @@ export interface ClaudeCodeAdapterOptions {
    * Production callers should leave this unset.
    */
   probeExec?: ProbeExecRunner;
+  /**
+   * Test seam for the file-based-agents loader. When provided, replaces the
+   * default {@link loadFileBasedAgents} call so tests can inject synthetic
+   * agent maps without touching `~/.claude/agents` or the cwd.
+   */
+  loadFileBasedAgents?: (cwd: string) => Record<string, InlineAgentDef>;
 }
 
 /** Env var that overrides the default Claude Code binary path. */
@@ -123,6 +130,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private kookrDataDir?: string;
   private pluginDir?: string;
   private probeExec?: ProbeExecRunner;
+  private loadAgents: (cwd: string) => Record<string, InlineAgentDef>;
 
   constructor(
     private backend: TerminalBackend,
@@ -139,6 +147,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     this.kookrDataDir = options?.kookrDataDir;
     this.pluginDir = resolvePluginDir(options?.pluginDir);
     this.probeExec = options?.probeExec;
+    this.loadAgents = options?.loadFileBasedAgents ?? ((cwd) => loadFileBasedAgents(cwd));
   }
 
   async preflight(): Promise<PreflightResult> {
@@ -199,10 +208,19 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // on checkpointing being wired (see docs/poc/005-checkpoint-cycle-mechanics.md).
     const args: string[] = [];
     if (this.bypassAllPermissions) {
-      // Both flags required: ask-rules in user settings would otherwise match
-      // before bypass mode is consulted. See docs/poc/006-bypass-permissions-ask-rule-override.md.
+      // --dangerously-skip-permissions + --setting-sources '' are both required:
+      // ask-rules in user settings would otherwise match before bypass mode is
+      // consulted. See docs/poc/006-bypass-permissions-ask-rule-override.md.
       args.push('--dangerously-skip-permissions');
       args.push('--setting-sources', '');
+      // --setting-sources '' also strips file-based agent discovery from
+      // ~/.claude/agents and <cwd>/.claude/agents. Re-inject those agents
+      // inline so they survive bypass mode without losing their original
+      // names. See docs/poc/007-bypass-keeps-file-based-agents.md.
+      const agents = this.loadAgents(cwd);
+      if (Object.keys(agents).length > 0) {
+        args.push('--agents', JSON.stringify(agents));
+      }
     }
     if (this.pluginDir) args.push('--plugin-dir', this.pluginDir);
     if (useResume) {
