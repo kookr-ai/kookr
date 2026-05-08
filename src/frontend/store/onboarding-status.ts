@@ -9,6 +9,8 @@
 
 export const STORAGE_KEY = 'kookr:onboarding:seen-v1';
 
+declare const __KOOKR_DISABLE_ONBOARDING__: string | undefined;
+
 let inMemorySeen = false;
 
 function pickStorage(): Storage | null {
@@ -25,6 +27,7 @@ function pickStorage(): Storage | null {
 const storage: Storage | null = pickStorage();
 
 export function shouldShow(): boolean {
+  if (isOnboardingDisabled()) return false;
   // In-memory wins as the "seen" sentinel even when localStorage is available,
   // because it's only set when a localStorage write failed — meaning storage
   // does not have the key but the user has actually seen the tour.
@@ -57,3 +60,18 @@ export function reset(): void {
 export const __test = {
   getInMemorySeen: () => inMemorySeen,
 };
+
+function isOnboardingDisabled(): boolean {
+  if (
+    typeof __KOOKR_DISABLE_ONBOARDING__ !== 'undefined'
+    && __KOOKR_DISABLE_ONBOARDING__ === '1'
+  ) {
+    return true;
+  }
+
+  try {
+    return new URLSearchParams(window.location.search).get('onboarding') === '0';
+  } catch {
+    return false;
+  }
+}

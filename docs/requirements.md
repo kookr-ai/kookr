@@ -536,6 +536,18 @@ The system SHALL update all panels live as agent states change, with no manual r
 
 **Evidence:** `src/frontend/hooks/useWebSocket.ts` (connection + reconnect), `src/server/ws.ts` (snapshot on connect, broadcast on change), `src/frontend/store/useStore.ts` (state handlers).
 
+### R5.6: Onboarding Tour Test Controls — SHOULD — `done`
+
+The system SHOULD expose deterministic controls for automated tests to identify or suppress the first-run onboarding tour without relying on CSS classes or persisted browser state.
+
+**Acceptance criteria:**
+- The onboarding overlay exposes a stable `data-testid="onboarding-overlay"` selector
+- The Skip/Close button exposes a stable `data-testid="onboarding-skip"` selector
+- `?onboarding=0` suppresses the first-run onboarding tour even when localStorage has no seen marker
+- `KOOKR_DISABLE_ONBOARDING=1` suppresses the first-run onboarding tour at frontend build/test time
+
+**Evidence:** `src/frontend/components/OnboardingTour.tsx`, `src/frontend/store/onboarding-status.ts`, `src/frontend/store/onboarding-status.test.ts`, `e2e/onboarding-tour.spec.ts`.
+
 ---
 
 ## R6: Infrastructure & Platform

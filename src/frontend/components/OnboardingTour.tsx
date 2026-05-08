@@ -151,6 +151,7 @@ export function OnboardingTour() {
   return (
     <div
       className="dialog-overlay onboarding-overlay"
+      data-testid="onboarding-overlay"
       onClick={(e) => {
         // Backdrop click closes without falling through to underlying affordances.
         if (e.target === e.currentTarget) {
@@ -168,6 +169,7 @@ export function OnboardingTour() {
           <button
             type="button"
             className="onboarding-skip"
+            data-testid="onboarding-skip"
             onClick={handleClose}
             aria-label={isLast ? 'Close tour' : 'Skip tour'}
           >
