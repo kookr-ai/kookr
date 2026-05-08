@@ -352,4 +352,103 @@ describe('PlaybookBrowser loopable workflows', () => {
     // The dialog stays open because the launch errored — `onClose` not called.
     expect(closeCount).toBe(0);
   });
+
+  test('shows a standalone-plugin conflict inline when 409 carries conflictKind', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: 'standalone ralph-wiggum plugin detected — would double-fire on Stop',
+        conflictKind: 'standalone_ralph_plugin',
+        matchedFiles: ['/repo/.claude/settings.local.json'],
+        reasons: ['enabledPlugins["ralph-wiggum@claude-code-plugins"] is true'],
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLElement>('.playbook-card'))
+        .find((c) => c.textContent?.includes('Workflow'))!
+        .click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('.launch-mode-option'))
+        .find((b) => b.textContent === 'Run looped')!
+        .click();
+    });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    const banner = container.querySelector('.ralph-conflict-banner');
+    expect(banner).toBeTruthy();
+    expect(banner!.textContent).toContain('Standalone Ralph plugin is enabled');
+    expect(banner!.textContent).toContain('/repo/.claude/settings.local.json');
+    expect(banner!.textContent).toContain('enabledPlugins["ralph-wiggum@claude-code-plugins"] is true');
+    expect(closeCount).toBe(0);
+  });
+
+  test('shows standalone-plugin conflict when Replace is blocked by the guard', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/playbooks/ralph-loop') {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: 'matching looped playbook task already exists: existing-1',
+            taskId: 'existing-1',
+            conflictKind: 'duplicate_active_loop',
+            ralphLoop: {
+              status: 'running',
+              currentIteration: 4,
+              lastIterationStartedAt: Date.now() - 30_000,
+            },
+          }),
+        };
+      }
+      if (url === '/api/tasks/existing-1/ralph-loop/replace-with-new') {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: 'standalone ralph-wiggum plugin detected — would double-fire on Stop',
+            conflictKind: 'standalone_ralph_plugin',
+            matchedFiles: ['/repo/.claude/settings.local.json'],
+            reasons: ['enabledPlugins["ralph-wiggum@claude-code-plugins"] is true'],
+          }),
+        };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    await flush();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLElement>('.playbook-card'))
+        .find((card) => card.textContent?.includes('Workflow'))!
+        .click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('.launch-mode-option'))
+        .find((b) => b.textContent === 'Run looped')!
+        .click();
+    });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    const duplicateBanner = container.querySelector('.ralph-conflict-banner')!;
+    expect(duplicateBanner.textContent).toContain('A loop is already running');
+    const replaceBtn = Array.from(duplicateBanner.querySelectorAll<HTMLButtonElement>('button'))
+      .find((b) => b.textContent?.includes('Replace it'));
+    expect(replaceBtn).toBeTruthy();
+    await act(async () => { replaceBtn!.click(); });
+    await flush();
+
+    const pluginBanner = container.querySelector('.ralph-conflict-banner')!;
+    expect(pluginBanner.textContent).toContain('Standalone Ralph plugin is enabled');
+    expect(pluginBanner.textContent).toContain('/repo/.claude/settings.local.json');
+    expect(closeCount).toBe(0);
+  });
 });

@@ -16,7 +16,8 @@ const usageTracker = new PlaybookUsageTracker();
 const recentPaths = new RecentPaths();
 
 /** Shape of the 409 body when the launch hits an active loop with the same key. */
-interface RalphLoopConflict {
+interface DuplicateRalphLoopConflict {
+  kind: 'duplicate_active_loop';
   taskId: string;
   currentIteration: number;
   /** Epoch ms; 0 means the loop never started its first iteration. */
@@ -24,11 +25,29 @@ interface RalphLoopConflict {
   loopStatus: 'running' | 'paused';
 }
 
+/** Shape of the 409 body when the standalone Ralph plugin would double-fire. */
+interface StandaloneRalphPluginConflict {
+  kind: 'standalone_ralph_plugin';
+  matchedFiles: string[];
+  reasons: string[];
+}
+
+type RalphLoopConflict = DuplicateRalphLoopConflict | StandaloneRalphPluginConflict;
+
 /** Extract a typed conflict from a 409 response body. Returns null if the
  *  shape isn't recognized so old backends fall through to the generic toast. */
 function parseRalphLoopConflict(body: unknown): RalphLoopConflict | null {
   if (typeof body !== 'object' || body === null) return null;
   const obj = body as Record<string, unknown>;
+  if (obj.conflictKind === 'standalone_ralph_plugin') {
+    const matchedFiles = Array.isArray(obj.matchedFiles)
+      ? obj.matchedFiles.filter((value): value is string => typeof value === 'string')
+      : [];
+    const reasons = Array.isArray(obj.reasons)
+      ? obj.reasons.filter((value): value is string => typeof value === 'string')
+      : [];
+    return { kind: 'standalone_ralph_plugin', matchedFiles, reasons };
+  }
   if (obj.conflictKind !== 'duplicate_active_loop') return null;
   if (typeof obj.taskId !== 'string') return null;
   const ralphLoop = obj.ralphLoop as Record<string, unknown> | null | undefined;
@@ -41,7 +60,7 @@ function parseRalphLoopConflict(body: unknown): RalphLoopConflict | null {
   const lastIterationStartedAt = typeof ralphLoop.lastIterationStartedAt === 'number'
     ? ralphLoop.lastIterationStartedAt
     : 0;
-  return { taskId: obj.taskId, currentIteration, lastIterationStartedAt, loopStatus: status };
+  return { kind: 'duplicate_active_loop', taskId: obj.taskId, currentIteration, lastIterationStartedAt, loopStatus: status };
 }
 
 /** Render a friendly relative-time string from an epoch-ms timestamp. */
@@ -465,7 +484,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   }
 
   async function handleReplace() {
-    if (!selected || !conflict) return;
+    if (!selected || !conflict || conflict.kind !== 'duplicate_active_loop') return;
     setSubmitting(true);
     const excerpt = selected.name.slice(0, 40) + (selected.name.length > 40 ? '…' : '');
     try {
@@ -484,10 +503,18 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
         },
       );
       if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { error?: string };
+        const body = await res.json().catch(() => ({})) as Record<string, unknown>;
+        if (res.status === 409) {
+          const detected = parseRalphLoopConflict(body);
+          if (detected) {
+            setConflict(detected);
+            setSubmitting(false);
+            return;
+          }
+        }
         useKookrStore.getState().handleAlert(
           '',
-          `Could not replace looped playbook: ${body.error ?? `HTTP ${res.status}`}. ${excerpt}`,
+          `Could not replace looped playbook: ${(body.error as string | undefined) ?? `HTTP ${res.status}`}. ${excerpt}`,
           'error',
         );
         setSubmitting(false);
@@ -511,10 +538,16 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   }
 
   function handleOpenExisting() {
-    if (!conflict) return;
+    if (!conflict || conflict.kind !== 'duplicate_active_loop') return;
     useKookrStore.getState().selectAgent(conflict.taskId);
     setConflict(null);
     onClose();
+  }
+
+  function handleRetryAfterPluginChange() {
+    if (!conflict || conflict.kind !== 'standalone_ralph_plugin') return;
+    setConflict(null);
+    void proceedLaunch();
   }
 
   function canLaunch(): boolean {
@@ -729,37 +762,79 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
           </div>
         </label>
         {conflict && (
-          <div className="ralph-conflict-banner" role="alertdialog" aria-label="Loop already running">
-            <div className="ralph-conflict-title">A loop is already running for this playbook.</div>
-            <div className="ralph-conflict-detail">
-              Task <code>{conflict.taskId.slice(0, 8)}</code>, iteration {conflict.currentIteration}.
-              {' '}
-              Last iteration started {formatRelativeTime(conflict.lastIterationStartedAt)}.
+          conflict.kind === 'duplicate_active_loop' ? (
+            <div className="ralph-conflict-banner" role="alertdialog" aria-label="Loop already running">
+              <div className="ralph-conflict-title">A loop is already running for this playbook.</div>
+              <div className="ralph-conflict-detail">
+                Task <code>{conflict.taskId.slice(0, 8)}</code>, iteration {conflict.currentIteration}.
+                {' '}
+                Last iteration started {formatRelativeTime(conflict.lastIterationStartedAt)}.
+              </div>
+              <div className="ralph-conflict-actions">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleReplace}
+                  disabled={submitting}
+                >
+                  Replace it (start fresh)
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={handleOpenExisting}
+                  disabled={submitting}
+                >
+                  Open the running loop
+                </button>
+              </div>
+              <div className="ralph-conflict-hint">
+                <em>Replace it</em> stops the old agent and starts a new one with the same prompt; the
+                previous conversation is not carried over. <em>Open the running loop</em> takes you to
+                the existing task.
+              </div>
             </div>
-            <div className="ralph-conflict-actions">
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={handleReplace}
-                disabled={submitting}
-              >
-                Replace it (start fresh)
-              </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={handleOpenExisting}
-                disabled={submitting}
-              >
-                Open the running loop
-              </button>
+          ) : (
+            <div className="ralph-conflict-banner" role="alertdialog" aria-label="Standalone Ralph plugin enabled">
+              <div className="ralph-conflict-title">Standalone Ralph plugin is enabled.</div>
+              <div className="ralph-conflict-detail">
+                Kookr cannot start its Ralph loop while the standalone plugin is active because both controllers react to Stop events.
+              </div>
+              {conflict.matchedFiles.length > 0 && (
+                <div className="ralph-conflict-detail">
+                  Disable it in {conflict.matchedFiles.map((file, index) => (
+                    <React.Fragment key={file}>
+                      {index > 0 ? ', ' : ''}
+                      <code>{file}</code>
+                    </React.Fragment>
+                  ))}.
+                </div>
+              )}
+              {conflict.reasons.length > 0 && (
+                <div className="ralph-conflict-hint">
+                  {conflict.reasons.join('; ')}
+                </div>
+              )}
+              <div className="ralph-conflict-actions">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleRetryAfterPluginChange}
+                  disabled={submitting}
+                >
+                  Retry
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setConflict(null)}
+                  disabled={submitting}
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
-            <div className="ralph-conflict-hint">
-              <em>Replace it</em> stops the old agent and starts a new one with the same prompt; the
-              previous conversation is not carried over. <em>Open the running loop</em> takes you to
-              the existing task.
-            </div>
-          </div>
+          )
         )}
         <div className="dialog-actions">
           <button type="button" className="btn-secondary" onClick={handleBack}>

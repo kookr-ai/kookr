@@ -144,6 +144,8 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     if (coexistence.detected) {
       return c.json({
         error: 'standalone ralph-wiggum plugin detected — would double-fire on Stop',
+        conflictKind: 'standalone_ralph_plugin',
+        code: 'standalone_ralph_plugin_detected',
         matchedFiles: coexistence.matchedFiles,
         reasons: coexistence.reasons,
       }, 409);
@@ -218,6 +220,8 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     if (coexistence.detected) {
       return c.json({
         error: 'standalone ralph-wiggum plugin detected — would double-fire on Stop',
+        conflictKind: 'standalone_ralph_plugin',
+        code: 'standalone_ralph_plugin_detected',
         matchedFiles: coexistence.matchedFiles,
         reasons: coexistence.reasons,
       }, 409);
