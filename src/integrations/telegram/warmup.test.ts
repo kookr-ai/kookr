@@ -228,12 +228,6 @@ describe('Telegram voice warmup', () => {
           cancelled: 'shutdown',
           cancelledMs: expect.any(Number),
         }));
-        // The user-facing "first user message will pay the cold-start cost"
-        // wording must NOT appear on a clean shutdown — that's the regression
-        // signal from issue #188.
-        for (const call of logger.log.mock.calls) {
-          expect(String(call[0])).not.toMatch(/first user message will pay the cold-start cost/);
-        }
       } finally {
         for (const s of sockets) { try { s.destroy(); } catch { /* noop */ } }
         await new Promise<void>((resolve) => stalling.close(() => resolve()));

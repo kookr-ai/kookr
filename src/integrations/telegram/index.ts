@@ -113,12 +113,7 @@ export interface StartTelegramTriggerDeps {
    * uses the default `transcribeVoice` from `./transcribe.ts`.
    */
   transcribeVoice?: typeof defaultTranscribeVoice;
-  /**
-   * Server-lifecycle abort signal. When aborted, the integration cancels its
-   * in-flight whisper warmup before STT containers are torn down so a racing
-   * `TypeError: fetch failed` does not surface as a startup health failure.
-   * See issue #188.
-   */
+  /** Server-lifecycle abort signal — see `VoiceWarmupOpts.lifecycleSignal` and issue #188. */
   lifecycleSignal?: AbortSignal;
 }
 

@@ -63,14 +63,7 @@ interface VoiceWarmupHandle {
   stop(): Promise<void>;
 }
 
-interface WarmupRunOpts {
-  whisperUrl: string;
-  timeoutMs: number;
-  audit: AuditWriter;
-  logger?: WarmupLogger;
-  signal: AbortSignal;
-  lifecycleSignal?: AbortSignal;
-}
+type WarmupRunOpts = VoiceWarmupOpts & { signal: AbortSignal };
 
 async function warmupWhisper(opts: WarmupRunOpts): Promise<void> {
   const startedAt = Date.now();
@@ -137,14 +130,7 @@ export function startVoiceWarmup(opts: VoiceWarmupOpts): VoiceWarmupHandle {
       resolveDone();
       return;
     }
-    void warmupWhisper({
-      whisperUrl: opts.whisperUrl,
-      timeoutMs: opts.timeoutMs,
-      audit: opts.audit,
-      logger: opts.logger,
-      signal: controller.signal,
-      lifecycleSignal: opts.lifecycleSignal,
-    }).finally(() => {
+    void warmupWhisper({ ...opts, signal: controller.signal }).finally(() => {
       opts.lifecycleSignal?.removeEventListener('abort', onLifecycleAbort);
       resolveDone();
     });

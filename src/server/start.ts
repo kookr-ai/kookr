@@ -143,9 +143,6 @@ async function main(): Promise<void> {
   const terminalBackend = new LocalDtachBackend({ instanceId: INSTANCE_ID, dtachBinary });
   console.log(`[terminal] backend=dtach instanceId=${INSTANCE_ID} dtach=${dtachBinary}`);
 
-  // Aborted on SIGINT/SIGTERM before docker teardown so background services
-  // (Telegram whisper warmup, future cancellable startup work) unwind cleanly
-  // instead of racing STT/TTS container shutdown. See issue #188.
   const lifecycleAc = new AbortController();
 
   const server = await createKookrServer({
