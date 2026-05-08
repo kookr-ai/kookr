@@ -70,6 +70,7 @@ The system SHOULD reconcile Kookr-managed task sessions against the live `git wo
 - A live session whose `cwd` is absent from the refreshed registry is marked `missing` without stopping the terminal session.
 - A prunable worktree or failed registry refresh is surfaced as stale metadata in the agent snapshot.
 - Agent snapshots carry worktree health so the frontend can render a compact warning near project/branch metadata.
+- Agent snapshots carry a server-computed project display label so per-agent badges do not re-derive project identity from `cwd` basenames.
 
 **Evidence:** `src/adapters/git-worktree-registry.ts`, `src/server/reconciliation.ts`, `src/server/lifecycle-timers.ts`, `src/core/monitor.ts`, `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/FindingsPanel.tsx`.
 

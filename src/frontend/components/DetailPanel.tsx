@@ -25,6 +25,10 @@ function isTerminalTaskStatus(status: TaskStatus | undefined): boolean {
   return status !== undefined && isTerminalStatus(status);
 }
 
+function agentProjectLabel(agent: AgentState): string {
+  return agent.projectDisplayLabel ?? projectLabel(agent.cwd);
+}
+
 /** Strip markdown formatting artifacts from suggestion text */
 function stripMarkdown(text: string): string {
   return text
@@ -480,9 +484,9 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
               </button>
             </span>
           )}
-          {agent.cwd && (
-            <span className={`project-badge color-${projectColor(agent.cwd)}`} title={agent.cwd}>
-              {projectLabel(agent.cwd)}
+          {agentProjectLabel(agent) && (
+            <span className={`project-badge color-${projectColor(agent.projectId ?? agent.cwd)}`} title={agent.cwd}>
+              {agentProjectLabel(agent)}
             </span>
           )}
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (

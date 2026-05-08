@@ -10,6 +10,7 @@ import {
   projectIdFromRepoSpecifier,
   extractRepoSpecifierFromGhCommand,
   extractShellCwd,
+  projectDisplayLabel,
   getProjectId,
   projectIdFromPrUrl,
   deriveCanonicalPath,
@@ -94,6 +95,38 @@ describe('projectDisplayName', () => {
 
   test('deep path returns everything after host', () => {
     expect(projectDisplayName('github.com/org/sub/repo')).toBe('org/sub/repo');
+  });
+});
+
+describe('projectDisplayLabel', () => {
+  test('uses the repo name from a remote project ID', () => {
+    expect(projectDisplayLabel({ projectId: 'github.com/kookr-ai/kookr' })).toBe('kookr');
+  });
+
+  test('uses the local name from a local project ID', () => {
+    expect(projectDisplayLabel({ projectId: 'local/my-project' })).toBe('my-project');
+  });
+
+  test('falls back to cwd basename when project ID is missing', () => {
+    expect(projectDisplayLabel({ cwd: '/workspace/tools/my-app' })).toBe('my-app');
+  });
+
+  test('falls back to an empty string when no identity input is available', () => {
+    expect(projectDisplayLabel({})).toBe('');
+  });
+
+  test('uses canonical protected parent when only cwd is available', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'project-display-label-test-'));
+    const parent = join(tempDir, 'kookr');
+    const protectedWorktree = join(tempDir, 'kookr-prod');
+    mkdirSync(parent);
+    mkdirSync(protectedWorktree);
+
+    try {
+      expect(projectDisplayLabel({ cwd: protectedWorktree })).toBe('kookr');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 
