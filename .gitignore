@@ -172,7 +172,3 @@ vendor/
 
 # Graphify per-session artifact directory.
 graphify-out/
-
-# Cost-comparison RFC Phase 0 prototype — gitignored; deleted before PR 1 ships.
-# See docs/rfc/rfc-cost-comparison-panel.md §Phase 0.
-scripts/cost-comparison-prototype.ts
