@@ -1,6 +1,6 @@
 import type { AgentEvent, Anomaly, AnomalyType, TokenUsage, WorktreeHealth } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
-import type { TaskStore } from './tasks.js';
+import { isTerminalStatus, type TaskStore } from './tasks.js';
 import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
@@ -43,6 +43,27 @@ export interface AgentState {
   completionFeedback?: import('./tasks.js').TaskCompletionFeedback;
   autonomy?: import('./tasks.js').AutonomyLevel;
   ralphLoop?: import('./tasks.js').RalphLoopState;
+}
+
+interface SessionSnapshotMeta {
+  taskId: string;
+  name?: string;
+  prompt: string;
+  cwd: string;
+  agentType: import('./agent-types.js').AgentType;
+  createdAt: Date;
+  taskStatus: import('./types.js').TaskStatus;
+  sessionStatus?: import('./types.js').AgentStatus | 'completed' | 'aborted';
+  playbookId?: string;
+  playbookParameterValues?: Record<string, string>;
+  projectId?: string;
+  projectDisplayLabel: string;
+  gitBranch?: string;
+  gitCommit?: string;
+  gitIsWorktree?: boolean;
+  worktreeHealth?: WorktreeHealth;
+  worktreeHealthObservedAt?: string;
+  worktreeRegistryStale?: boolean;
 }
 
 const DEFAULT_WINDOW_SIZE = 50;
@@ -431,7 +452,7 @@ export class Monitor {
    */
   getSnapshot(): AgentState[] {
     // Build a lookup: tmuxSession → { task, session } for O(1) enrichment
-    const sessionIndex = new Map<string, { taskId: string; name?: string; prompt: string; cwd: string; agentType: import('./agent-types.js').AgentType; createdAt: Date; playbookId?: string; playbookParameterValues?: Record<string, string>; projectId?: string; projectDisplayLabel: string; gitBranch?: string; gitCommit?: string; gitIsWorktree?: boolean; worktreeHealth?: WorktreeHealth; worktreeHealthObservedAt?: string; worktreeRegistryStale?: boolean }>();
+    const sessionIndex = new Map<string, SessionSnapshotMeta>();
     for (const task of this.taskStore.getAllTasks()) {
       for (const session of task.sessions) {
         sessionIndex.set(session.tmuxSession, {
@@ -441,6 +462,8 @@ export class Monitor {
           cwd: session.cwd,
           agentType: session.agentType,
           createdAt: session.createdAt,
+          taskStatus: task.status,
+          sessionStatus: session.lastStatus,
           playbookId: task.playbookId,
           playbookParameterValues: task.playbookParameterValues,
           projectId: task.projectId,
@@ -457,6 +480,16 @@ export class Monitor {
 
     const states: AgentState[] = [];
     for (const [agentId, events] of this.agentEvents) {
+      const meta = sessionIndex.get(agentId);
+      if (
+        meta
+        && (isTerminalStatus(meta.taskStatus)
+          || meta.sessionStatus === 'completed'
+          || meta.sessionStatus === 'aborted')
+      ) {
+        continue;
+      }
+
       const anomaly = this.getCurrentAnomaly(agentId);
       const state: AgentState = { agentId, events, anomaly };
 
@@ -476,7 +509,6 @@ export class Monitor {
         }
       }
 
-      const meta = sessionIndex.get(agentId);
       if (meta) {
         state.taskId = meta.taskId;
         state.taskName = meta.name ?? truncatePrompt(meta.prompt, 60);

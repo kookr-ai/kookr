@@ -109,6 +109,64 @@ describe('Monitor', () => {
     expect(queue.next()).toBeNull();
   });
 
+  test('getSnapshot excludes stale anomaly state for completed tasks', () => {
+    const task = taskStore.createTask({ prompt: 'ship it', cwd: '/repo' });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-08T10:00:00Z'),
+      lastStatus: 'completed',
+    });
+    taskStore.completeTask(task.id);
+
+    monitor.processEvents('agent-1', [makeStop('s1', 'done')]);
+
+    const snapshot = monitor.getSnapshot();
+    const terminalEntry = snapshot.find((state) => state.taskId === task.id);
+    expect(snapshot.filter((state) => state.agentId === 'agent-1')).toHaveLength(1);
+    expect(terminalEntry).toBeDefined();
+    expect(terminalEntry!.taskStatus).toBe('completed');
+    expect(terminalEntry!.anomaly).toBeNull();
+  });
+
+  test('getSnapshot hides completed Ralph iteration sessions while keeping live owner visible', () => {
+    const task = taskStore.createTask({ prompt: 'loop', cwd: '/repo' });
+    task.ralphLoop = {
+      prompt: 'again',
+      iterationCap: 5,
+      currentIteration: 2,
+      status: 'running',
+      lastIterationStartedAt: 0,
+      cumulativeIterations: 2,
+      ownerSessionId: 'agent-live',
+    };
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-old',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-08T10:00:00Z'),
+      lastStatus: 'completed',
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-live',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-08T10:05:00Z'),
+    });
+
+    monitor.processEvents('agent-old', [makeStop('s1', 'iteration done')]);
+    monitor.registerAgent('agent-live');
+
+    const snapshot = monitor.getSnapshot();
+    expect(snapshot.some((state) => state.agentId === 'agent-old')).toBe(false);
+    const live = snapshot.find((state) => state.agentId === 'agent-live');
+    expect(live).toBeDefined();
+    expect(live!.taskId).toBe(task.id);
+    expect(live!.anomaly).toBeNull();
+    expect(live!.ralphLoop?.ownerSessionId).toBe('agent-live');
+  });
+
   test('processEvents accumulates events across calls', () => {
     // Send events one at a time (as the live server does)
     for (let i = 0; i < 6; i++) {
@@ -281,12 +339,12 @@ describe('Monitor', () => {
   });
 
   test('getSnapshot uses projectId for stable display label across worktrees', () => {
-    const task = taskStore.createTask('Investigate prod issue', '/home/user/kookr-prod');
+    const task = taskStore.createTask('Investigate prod issue', '/path/to/kookr-prod');
     taskStore.setProjectId(task.id, 'github.com/kookr-ai/kookr');
     taskStore.addSession(task.id, {
       tmuxSession: 'agent-1',
       agentType: 'claude-code',
-      cwd: '/home/user/kookr-prod',
+      cwd: '/path/to/kookr-prod',
       createdAt: new Date('2026-03-24T10:00:00Z'),
     });
     monitor.processEvents('agent-1', [makeToolUse('s1', 'Bash')]);

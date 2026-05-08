@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { DiagnosticFinding } from '../store/store-types.js';
+import { formatDetectionStatsSummary } from './detection-stats-format.js';
 
 interface DetectionStats {
   checks: Record<string, number>;
@@ -144,14 +145,6 @@ export function DetectionStatsPanel() {
   // Nothing detected yet — don't clutter the panel
   if (totalChecks === 0) return null;
 
-  // Compute findings per hour
-  const uptimeHours = serverStartedAt
-    ? (Date.now() - new Date(serverStartedAt).getTime()) / 3_600_000
-    : null;
-  const perHour = uptimeHours && uptimeHours > 0
-    ? (totalFires / uptimeHours).toFixed(1)
-    : null;
-
   // Only show types that have fired at least once
   const firedTypes = Object.entries(stats.fires)
     .filter(([, count]) => count > 0)
@@ -173,8 +166,7 @@ export function DetectionStatsPanel() {
             </span>
           )}
           <span className="stats-summary">
-            {totalFires} finding{totalFires !== 1 ? 's' : ''}
-            {perHour !== null && ` \u00B7 ${perHour}/hr`}
+            {formatDetectionStatsSummary(totalFires, serverStartedAt)}
           </span>
         </span>
       </div>

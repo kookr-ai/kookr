@@ -166,6 +166,18 @@ The system SHOULD alert the user when an agent needs attention.
 
 **Evidence:** `src/frontend/components/Toasts.tsx` (in-app toasts — done). Browser Notification API not yet integrated (todo).
 
+### R2.10: Suppress Stale Terminal Session Findings [F2.9] — SHALL — `done`
+
+The system SHALL exclude stale anomaly state from completed, cancelled, terminated, and completed-session agent records when computing supervisor findings.
+
+**Acceptance criteria:**
+- Completed, cancelled, and terminated tasks do not appear in the active findings list even if an old session still has anomaly state in memory
+- Completed Ralph iteration sessions do not appear as active findings after a successor owner session starts
+- Terminal tasks remain visible in the completed section with their completion metadata
+- Detection statistics do not display a per-hour rate during the initial startup window, when the rate would be dominated by restart timing rather than useful detector behavior
+
+**Evidence:** `src/core/monitor.test.ts` (terminal/Ralph session snapshot filtering), `src/frontend/store/finding-helpers.test.ts` (terminal active-finding filtering), `src/frontend/components/DetectionStatsPanel.test.ts` (startup-window rate formatting).
+
 ---
 
 ## R3: The Loop — Respond & Advance
