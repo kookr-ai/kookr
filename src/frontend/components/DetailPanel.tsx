@@ -8,7 +8,7 @@ import { TerminalPanel } from './TerminalPanel.js';
 import { GitHubPanel } from './GitHubPanel.js';
 import { ActivityPanel, type DiffClickTarget } from './ActivityPanel.js';
 import { DiffPane } from './DiffPane.js';
-import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, formatBranch } from '../presentation.js';
+import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, formatBranch, agentProviderPresentation } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { EffectiveHookSettingsModal } from './EffectiveHookSettingsModal.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
@@ -94,6 +94,29 @@ function EditableHeading({ agent, send }: { agent: AgentState; send: (msg: Clien
     <h2 onDoubleClick={agent.taskId ? startEditing : undefined}>
       {agent.taskName ?? agent.agentId}
     </h2>
+  );
+}
+
+function AgentProviderBadge({
+  agentType,
+  provider,
+}: {
+  agentType: NonNullable<AgentState['agentType']>;
+  provider: ReturnType<typeof agentProviderPresentation>;
+}) {
+  const title = `${provider.label} by ${provider.provider}`;
+
+  return (
+    <span
+      className={`detail-agent-provider detail-agent-provider--${agentType}`}
+      title={title}
+    >
+      <svg className="detail-agent-provider-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d={provider.iconPath} />
+      </svg>
+      <span className="detail-agent-provider-label">{provider.label}</span>
+      <span className="sr-only"> by {provider.provider}</span>
+    </span>
   );
 }
 
@@ -431,6 +454,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
   const badgeLabel = agent.anomaly
     ? agent.anomaly.type.replace('_', ' ').toUpperCase()
     : 'RUNNING';
+  const agentProvider = agent.agentType ? agentProviderPresentation(agent.agentType) : null;
 
   return (
     <div className="detail-panel kookr-tour-target-layout">
@@ -470,14 +494,14 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
               {formatTokens(agent.tokenUsage.inputTokens + agent.tokenUsage.outputTokens)} tok
             </span>
           )}
-          {agent.agentType && (
+          {agent.agentType && agentProvider && (
             <span className="detail-agent-type-group">
-              <span>{agent.agentType}</span>
+              <AgentProviderBadge agentType={agent.agentType} provider={agentProvider} />
               <button
                 ref={hookSettingsTriggerRef}
                 type="button"
                 className="detail-hook-settings-btn"
-                aria-label={`View effective hook settings for ${agent.agentType} session`}
+                aria-label={`Hooks: view effective hook settings for ${agentProvider.label} session`}
                 onClick={() => setShowHookSettings(true)}
               >
                 hooks
