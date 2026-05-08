@@ -18,7 +18,7 @@ import type { RepoPolicyResolver } from '../../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js';
 import { gitIn } from '../../core/git-helpers.js';
 import { getProjectId } from '../../core/project-identity.js';
-import { isProtectedWorktreePath } from '../../core/worktree-protection.js';
+import { isProtectedWorktreePath } from '../../adapters/worktree-marker.js';
 import { deriveCleanupCapabilities } from '../../core/workspace-cleanup-policy.js';
 import { parsePorcelainStatus, runCommitEnrichment } from './cleanup-enrichment.js';
 

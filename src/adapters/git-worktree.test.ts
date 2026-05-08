@@ -87,7 +87,7 @@ beforeEach(() => {
 
 describe('cleanupTaskWorktrees', () => {
   function setupCleanWorktree() {
-    mockExistsSync.mockReturnValue(true);
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
       'log': '',
@@ -142,7 +142,7 @@ describe('cleanupTaskWorktrees', () => {
     taskStore.cancelTask(task.id);
 
     const { log, events } = makeFakeLog();
-    mockExistsSync.mockReturnValue(true);
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': ' M file.ts\n',
       'symbolic-ref': 'refs/remotes/origin/main\n',
@@ -196,7 +196,7 @@ describe('cleanupTaskWorktrees', () => {
     taskStore.completeTask(task.id);
 
     const { log, events } = makeFakeLog();
-    mockExistsSync.mockReturnValue(true);
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     // Worktree is clean, but task gets reopened before destructive step
     mockGitResponses({
       'status --porcelain': '',
@@ -234,6 +234,7 @@ describe('cleanupTaskWorktrees', () => {
     taskStore.completeTask(task.id);
 
     const { log, events } = makeFakeLog();
+    // Both the worktree path and the .kookr-protected marker exist.
     mockExistsSync.mockReturnValue(true);
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
@@ -270,7 +271,7 @@ describe('cleanupTaskWorktrees', () => {
     taskStore.completeTask(task1.id);
 
     const { log, events } = makeFakeLog();
-    mockExistsSync.mockReturnValue(true);
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
 
     await cleanupTaskWorktrees(taskStore, task1.id, log);
 
@@ -324,7 +325,7 @@ describe('cleanupTaskWorktrees', () => {
     taskStore.completeTask(task.id);
 
     const { log, events } = makeFakeLog();
-    mockExistsSync.mockReturnValue(true);
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
       'log': '',
@@ -356,7 +357,7 @@ describe('cleanupTaskWorktrees', () => {
     taskStore.completeTask(task.id);
 
     const { log, events } = makeFakeLog();
-    mockExistsSync.mockReturnValue(true);
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
@@ -382,7 +383,7 @@ describe('cleanupTaskWorktrees', () => {
     taskStore.completeTask(task.id);
 
     const { log, events } = makeFakeLog();
-    mockExistsSync.mockReturnValue(true);
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
       'log': 'abc1234 Add feature\ndef5678 Fix bug\n',
@@ -421,7 +422,7 @@ describe('cleanupTaskWorktrees', () => {
     taskStore.completeTask(task.id);
 
     const { log, events } = makeFakeLog();
-    mockExistsSync.mockReturnValue(true);
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
       'log': '',
@@ -459,7 +460,7 @@ describe('cleanupTaskWorktrees', () => {
     taskStore.completeTask(task.id);
 
     const { log, events } = makeFakeLog();
-    mockExistsSync.mockReturnValue(true);
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
       'log': '',
@@ -490,7 +491,7 @@ describe('cleanupTaskWorktrees', () => {
     taskStore.completeTask(task.id);
 
     const { log, events } = makeFakeLog();
-    mockExistsSync.mockReturnValue(true);
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
       'symbolic-ref': 'error',

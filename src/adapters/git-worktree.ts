@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import type { TaskStore, Task } from '../core/tasks.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
-import { isProtectedWorktreePath } from '../core/worktree-protection.js';
+import { isProtectedWorktreePath } from './worktree-marker.js';
 
 const execFile = promisify(execFileCb);
 

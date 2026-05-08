@@ -30,6 +30,7 @@ import type { CrashRecoveryResult } from '../crash-recovery.js';
 import type { RalphCycler } from '../../core/ralph-cycler.js';
 import type { TokenTracker } from '../../core/token-tracker.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
+import type { WorktreeRegistry } from '../../adapters/git-worktree-registry.js';
 
 export interface RouteDeps {
   taskStore: TaskStore;
@@ -94,4 +95,12 @@ export interface RouteDeps {
   tasksFile?: string;
   /** Singleton Ralph loop orchestration service. */
   ralphLoopService: RalphLoopService;
+  /**
+   * Worktree registry — surfaced to deploy-routes so `resolveProdDir` can
+   * locate the production runtime via the `.kookr-protected` marker rather
+   * than the legacy `kookr-prod` basename heuristic. Optional so tests and
+   * non-server callers can omit it; absent registry falls back to the legacy
+   * sibling-path resolver.
+   */
+  worktreeRegistry?: Pick<WorktreeRegistry, 'all'>;
 }

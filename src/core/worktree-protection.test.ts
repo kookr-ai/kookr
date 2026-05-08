@@ -1,9 +1,15 @@
 import { describe, test, expect } from 'vitest';
 import {
+  PROTECTED_MARKER,
   endsWithProtectedSuffix,
   deriveParentRepoFromProtected,
-  isProtectedWorktreePath,
 } from './worktree-protection.js';
+
+describe('PROTECTED_MARKER', () => {
+  test('exposes the canonical marker filename', () => {
+    expect(PROTECTED_MARKER).toBe('.kookr-protected');
+  });
+});
 
 describe('endsWithProtectedSuffix', () => {
   test('matches the canonical kookr-prod path', () => {
@@ -33,7 +39,6 @@ describe('deriveParentRepoFromProtected', () => {
   });
 
   test('only strips the trailing -prod, not interior occurrences', () => {
-    // Pathological but defensible: any -prod that is not at the end is left alone.
     expect(deriveParentRepoFromProtected('/foo-prod/bar-prod')).toBe(
       '/foo-prod/bar',
     );
@@ -43,21 +48,5 @@ describe('deriveParentRepoFromProtected', () => {
     expect(deriveParentRepoFromProtected('/workspace/kookr')).toBe(
       '/workspace/kookr',
     );
-  });
-});
-
-describe('isProtectedWorktreePath', () => {
-  test('matches an absolute kookr-prod path', () => {
-    expect(isProtectedWorktreePath('/workspace/kookr-prod')).toBe(true);
-  });
-
-  test('matches a relative path after canonicalization', () => {
-    // resolve('./foo/kookr-prod') becomes <cwd>/foo/kookr-prod, which still ends with the suffix.
-    expect(isProtectedWorktreePath('./kookr-prod')).toBe(true);
-  });
-
-  test('does not match unrelated repos', () => {
-    expect(isProtectedWorktreePath('/workspace/kookr')).toBe(false);
-    expect(isProtectedWorktreePath('/workspace/some-other-repo')).toBe(false);
   });
 });
