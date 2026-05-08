@@ -38,4 +38,17 @@ describe('implement-github-issue playbook', () => {
   test('Step 0b resolves CURRENT_USER from gh', () => {
     expect(pb.body).toMatch(/CURRENT_USER=\$\(gh api user -q \.login\)/);
   });
+
+  test('Phase 0 skips non-automatable labels before implementation', () => {
+    expect(pb.body).toContain('automation-blocked');
+    expect(pb.body).toContain('question');
+    expect(pb.body).toMatch(/skip issues with labels.*automation-blocked.*question/i);
+  });
+
+  test('defines an automation-quarantine path for trusted non-implementable issues', () => {
+    expect(pb.body).toMatch(/automation-quarantine/i);
+    expect(pb.body).toContain('gh issue comment "$TARGET"');
+    expect(pb.body).toContain('gh issue edit "$TARGET"');
+    expect(pb.body).toContain('"permanent":true');
+  });
 });

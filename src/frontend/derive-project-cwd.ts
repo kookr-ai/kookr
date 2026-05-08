@@ -1,4 +1,5 @@
 import type { AgentState } from '../core/monitor.js';
+import type { ProjectSummary } from '../core/project-summary.js';
 import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../core/worktree-protection.js';
 
 /**
@@ -20,4 +21,8 @@ export function deriveProjectCwd(agents: AgentState[], projectId: string): strin
   return endsWithProtectedSuffix(best.cwd)
     ? deriveParentRepoFromProtected(best.cwd)
     : best.cwd;
+}
+
+export function deriveLaunchProjectCwd(agents: AgentState[], project: ProjectSummary): string | null {
+  return deriveProjectCwd(agents, project.project) ?? project.localPath ?? null;
 }

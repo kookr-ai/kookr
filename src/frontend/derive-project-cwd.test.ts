@@ -1,12 +1,24 @@
 import { describe, expect, test } from 'vitest';
-import { deriveProjectCwd } from './derive-project-cwd.js';
+import { deriveLaunchProjectCwd, deriveProjectCwd } from './derive-project-cwd.js';
 import type { AgentState } from '../core/monitor.js';
+import type { ProjectSummary } from '../core/project-summary.js';
 
 function agent(over: Partial<AgentState>): AgentState {
   return {
     agentId: 'a',
     events: [],
     anomaly: null,
+    ...over,
+  };
+}
+
+function project(over: Partial<ProjectSummary>): ProjectSummary {
+  return {
+    project: 'github.com/me/repo',
+    displayName: 'repo',
+    activeAgents: 0,
+    attentionScore: 0,
+    recentTasks: [],
     ...over,
   };
 }
@@ -58,5 +70,24 @@ describe('deriveProjectCwd', () => {
       agent({ projectId: 'p', cwd: '/work/repo' }),
     ];
     expect(deriveProjectCwd(agents, 'p')).toBe('/work/repo');
+  });
+});
+
+describe('deriveLaunchProjectCwd', () => {
+  test('falls back to project localPath when the project has no agent cwd', () => {
+    expect(deriveLaunchProjectCwd([], project({ localPath: '/work/repo' }))).toBe('/work/repo');
+  });
+
+  test('keeps the agent-derived cwd ahead of project localPath', () => {
+    const agents = [
+      agent({ projectId: 'github.com/me/repo', cwd: '/work/repo-from-agent' }),
+    ];
+
+    expect(deriveLaunchProjectCwd(agents, project({ localPath: '/work/repo-from-config' })))
+      .toBe('/work/repo-from-agent');
+  });
+
+  test('returns null when neither agents nor project localPath provide a cwd', () => {
+    expect(deriveLaunchProjectCwd([], project({ localPath: undefined }))).toBeNull();
   });
 });

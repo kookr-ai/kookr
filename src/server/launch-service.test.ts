@@ -537,7 +537,7 @@ describe('launchTask', () => {
   });
 
   describe('ralphVerdictEnv (PR4 — first-iteration fix)', () => {
-    it('injects RALPH_VERDICT_FILE into adapter env when ralphVerdictEnv is true', async () => {
+    it('injects verdict file and iteration env into adapter env when ralphVerdictEnv is true', async () => {
       const result = await launchTask(deps, {
         prompt: 'iterate',
         cwd: '/tmp',
@@ -555,6 +555,7 @@ describe('launchTask', () => {
       expect(launchOpts.extraEnv.RALPH_VERDICT_FILE).toMatch(
         new RegExp(`/\\.ralph-verdict-${expectedSuffix}\\.json$`),
       );
+      expect(launchOpts.extraEnv.RALPH_ITERATION).toBe('0');
     });
 
     it('omits adapter opts entirely when ralphVerdictEnv is unset (no regression for non-ralph launches)', async () => {
