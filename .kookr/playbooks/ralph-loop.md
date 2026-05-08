@@ -100,6 +100,8 @@ test -f dist/bundle.js
 
 The predicate runs in the task's cwd with `RALPH_ITERATION` and `RALPH_LAST_OUTPUT_FILE` exposed as env vars.
 
+The launched agent runtime also receives `RALPH_VERDICT_FILE` (absolute path to the per-iteration verdict file) and `RALPH_ITERATION` (current iteration number, 0-based). Agents writing verdict files in bash should use `${RALPH_ITERATION}` directly without a `:-0` fallback — an unset value should fail loudly (malformed JSON or `iteration_mismatch` warning) rather than silently report `iteration:0` every iteration, which leaves stall counts at 1 and the loop runs to its iteration cap. The `{{ralph.iteration}}` template token in the prompt is the equivalent prompt-side mechanism.
+
 ## Phase 3: Choose built-in stop guards (optional)
 
 The iteration cap is always enforced first. Built-in guards are evaluated after the optional shell predicate:
