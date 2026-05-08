@@ -83,11 +83,12 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('snooze'),
     agentId: z.string(),
+    taskId: z.string().optional(),
     durationMs: z.number(),
     reason: z.string().optional(),
     resumeMonitoring: z.boolean().optional(),
   }),
-  z.object({ type: z.literal('cancelSnooze'), agentId: z.string() }),
+  z.object({ type: z.literal('cancelSnooze'), agentId: z.string(), taskId: z.string().optional() }),
   z.object({
     type: z.literal('launch'),
     prompt: z.string(),

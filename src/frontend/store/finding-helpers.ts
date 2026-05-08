@@ -1,5 +1,5 @@
 import type { AgentState } from '../../shared/protocol.js';
-import { isTerminalStatus } from '../../core/tasks.js';
+import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 
 /**
  * Returns true if the agent has an active finding that needs attention.

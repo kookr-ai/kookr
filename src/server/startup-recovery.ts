@@ -103,10 +103,14 @@ export async function runStartupRecoveryPhase({
     }
   }
 
-  const deserialized = deserializeSnoozed(persisted.snoozedFindings, taskStore);
+  const persistedSnoozes = [
+    ...(persisted.snoozes ?? []),
+    ...(persisted.snoozedFindings ?? []),
+  ];
+  const deserialized = deserializeSnoozed(persistedSnoozes, taskStore);
   if (deserialized.length > 0) {
     queue.importSnoozed(deserialized);
-    console.log(`[snooze] Restored ${deserialized.length} snoozed finding(s)`);
+    console.log(`[snooze] Restored ${deserialized.length} snooze(s)`);
   }
 
   if (persisted.suppressionState && persisted.suppressionState.length > 0) {

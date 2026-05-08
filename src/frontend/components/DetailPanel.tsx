@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage, AutonomyLevel } from '../../shared/protocol.js';
-import { isTerminalStatus } from '../../core/tasks.js';
+import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TaskStatus } from '../../core/types.js';
 import { track, trackClick } from '../telemetry.js';
 import { TerminalPanel } from './TerminalPanel.js';

@@ -266,9 +266,20 @@ export interface PersistedAnomaly {
 }
 
 /** Persisted snooze state — stored in the task file envelope. */
-export interface PersistedSnooze {
+export interface LegacyPersistedSnooze {
   taskId: string;
   anomaly: PersistedAnomaly;
   expiresAt: number; // ms since epoch
+  reason?: string;
+}
+
+export interface PersistedSnooze {
+  taskId: string;
+  agentId?: string;
+  kind: 'finding' | 'task';
+  anomaly?: PersistedAnomaly;
+  expiresAt: number; // ms since epoch
+  createdAt: number; // ms since epoch
+  expiredPendingRestore?: boolean;
   reason?: string;
 }

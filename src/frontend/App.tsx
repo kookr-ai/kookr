@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import type { ProjectSummary } from '../core/project-summary.js';
-import { isTerminalStatus, isActiveStatus } from '../core/tasks.js';
+import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import type { TaskStatus } from '../core/types.js';
 import { deriveProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
@@ -82,7 +82,6 @@ export function App() {
     nextBottleneck,
     nextTask,
     previousTask,
-    snoozeAgent,
     relaunchTask,
     clearRelaunchTask,
     selectedProject,
@@ -191,8 +190,8 @@ export function App() {
         if (state.selectedAgentId) {
           const durationMs = 5 * 60 * 1000; // 5-minute default snooze
           track({ type: 'shortcut_used', key: 'Alt+Z', action: 'quick_snooze', context: 'global' });
-          send({ type: 'snooze', agentId: state.selectedAgentId, durationMs });
-          snoozeAgent(state.selectedAgentId, durationMs);
+          const selected = useKookrStore.getState().agents.find((agent) => agent.agentId === state.selectedAgentId);
+          send({ type: 'snooze', agentId: state.selectedAgentId, taskId: selected?.taskId, durationMs });
         }
       }
       if (e.altKey && e.key === 'r') {
@@ -320,21 +319,20 @@ export function App() {
   }, [agents, selectedProject]);
 
   const selectedAgent = agents.find((a) => a.agentId === selectedAgentId) ?? null;
-  const findings = filteredAgents.filter(isActiveFinding);
   // Exhaustiveness helper: treats undefined as "no task → not terminal".
   const isTerminal = (s: TaskStatus | undefined): boolean => s !== undefined && isTerminalStatus(s);
-
-  // 'healthy' = actively running tasks (not pending, not in any terminal state).
-  // Terminal states include 'terminated' after rfc-task-loss-prevention.
-  const healthy = filteredAgents.filter((a) => a.anomaly === null && !a.snoozedUntil && !a.suppressed && a.taskStatus !== 'pending' && !isTerminal(a.taskStatus));
   const pending = filteredAgents.filter((a) => a.taskStatus === 'pending');
   // 'completed' pane surfaces every task the user is "done with": completed,
   // cancelled, AND terminated. The distinction matters for the ack flow and
   // clearCompleted scoping (see D2), but visually they're grouped.
   const completed = filteredAgents.filter((a) => isTerminal(a.taskStatus));
   const snoozed = filteredAgents
-    .filter((a) => !!a.snoozedUntil || a.suppressed)
+    .filter((a) => a.taskStatus !== 'pending' && !isTerminal(a.taskStatus) && (!!a.snoozedUntil || a.suppressed))
     .sort((a, b) => (a.snoozedUntil ?? 0) - (b.snoozedUntil ?? 0));
+  const findings = filteredAgents.filter((a) => a.taskStatus !== 'pending' && !isTerminal(a.taskStatus) && isActiveFinding(a));
+  // 'healthy' = actively running tasks (not pending, not in any terminal state).
+  // Terminal states include 'terminated' after rfc-task-loss-prevention.
+  const healthy = filteredAgents.filter((a) => a.anomaly === null && !a.snoozedUntil && !a.suppressed && a.taskStatus !== 'pending' && !isTerminal(a.taskStatus));
   const activeTaskCount = agents.filter((agent) => !isTerminal(agent.taskStatus)).length;
   const completedTaskCount = agents.filter((agent) => isTerminal(agent.taskStatus)).length;
 
@@ -575,8 +573,7 @@ export function App() {
           agentId={selectedAgent.agentId}
           agentName={selectedAgent.taskName ?? selectedAgent.agentId}
           onSnooze={(durationMs) => {
-            send({ type: 'snooze', agentId: selectedAgent.agentId, durationMs });
-            snoozeAgent(selectedAgent.agentId, durationMs);
+            send({ type: 'snooze', agentId: selectedAgent.agentId, taskId: selectedAgent.taskId, durationMs });
             setShowSnooze(false);
           }}
           onClose={() => setShowSnooze(false)}

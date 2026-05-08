@@ -1,5 +1,6 @@
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { Monitor } from '../core/monitor.js';
+import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { HookFileWatcher } from './hook-watcher.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
@@ -165,6 +166,8 @@ export interface LifecycleDeps {
   tokenTracker?: { unregister(transcriptPath: string): void };
   autonomyOrchestrator?: { onSessionCleanup(agentId: string): void };
   suppressionTracker?: { reset(agentId: string): void };
+  /** Optional queue — used to clear task-keyed snoozes on terminal transitions. */
+  queue?: Pick<AttentionQueue, 'purgeTask'>;
   /** v5 checkpoint cycler — forget per-session state on cleanup to avoid leaks. */
   checkpointCycler?: { forget(tmuxName: string): void };
   /** Workspace lease service — releases leases on task completion (Phase 1b). */
@@ -234,6 +237,7 @@ export async function completeTask(
   if (!task) throw new Error(`Task not found: ${taskId}`);
 
   await stopAllLiveSessions(task, deps, 'completed');
+  deps.queue?.purgeTask(taskId);
   deps.taskStore.completeTask(taskId);
 
   await deps.interactionLog?.append({
@@ -268,6 +272,7 @@ export async function terminateTask(
   if (!task) throw new Error(`Task not found: ${taskId}`);
 
   await stopAllLiveSessions(task, deps, 'completed');
+  deps.queue?.purgeTask(taskId);
   deps.taskStore.terminateTask(taskId);
 
   await deps.interactionLog?.append({
@@ -298,6 +303,7 @@ export async function cancelTask(
   if (!task) throw new Error(`Task not found: ${taskId}`);
 
   await stopAllLiveSessions(task, deps, 'aborted');
+  deps.queue?.purgeTask(taskId);
 
   // Release worktree leases for this task
   releaseTaskLeases(task, taskId, deps);

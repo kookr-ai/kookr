@@ -1,7 +1,20 @@
 import { describe, expect, test, vi } from 'vitest';
-import { runBudgetCheck } from './lifecycle-timers.js';
+import { restoreExpiredSnoozes, runBudgetCheck } from './lifecycle-timers.js';
 import { BudgetChecker } from '../core/budget-checker.js';
 import type { Task } from '../core/tasks.js';
+import { TaskStore } from '../core/tasks.js';
+import { AttentionQueue } from '../core/attention-queue.js';
+import type { Anomaly } from '../core/types.js';
+
+function makeAnomaly(agentId: string): Anomaly {
+  return {
+    agentId,
+    type: 'needs_input',
+    severity: 'info',
+    explanation: 'Agent needs input',
+    detectedAt: new Date('2026-04-15T00:00:00Z'),
+  };
+}
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -111,5 +124,108 @@ describe('runBudgetCheck', () => {
     expect(runBudgetCheck(task, 11, checker, enqueue)).toBe(true);
     expect(enqueue).toHaveBeenCalledTimes(2);
     expect(enqueue.mock.calls[1][1].severity).toBe('critical');
+  });
+});
+
+describe('restoreExpiredSnoozes', () => {
+  test('rebinds an expired task-keyed finding to the latest live session', () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/tmp');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'old-session',
+      agentType: 'claude',
+      cwd: '/tmp',
+      createdAt: new Date('2026-04-15T00:00:00Z'),
+      lastStatus: 'completed',
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'live-session',
+      agentType: 'claude',
+      cwd: '/tmp',
+      createdAt: new Date('2026-04-15T00:01:00Z'),
+      lastStatus: 'running',
+    });
+    const queue = new AttentionQueue({ taskIdFor: (agentId) => taskStore.findTaskBySession(agentId)?.id ?? null });
+    queue.importSnoozed([{
+      agentId: 'old-session',
+      key: task.id,
+      kind: 'finding',
+      anomaly: makeAnomaly('old-session'),
+      expiresAt: Date.now() - 1,
+      createdAt: Date.now() - 60_000,
+    }]);
+
+    expect(restoreExpiredSnoozes(queue, taskStore)).toBe(true);
+
+    const next = queue.next();
+    expect(next?.agentId).toBe('live-session');
+    expect(next?.anomaly.agentId).toBe('live-session');
+    expect(queue.getSnoozed()).toHaveLength(0);
+  });
+
+  test('keeps an expired active-task finding pending when no live session exists', () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/tmp');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'old-session',
+      agentType: 'claude',
+      cwd: '/tmp',
+      createdAt: new Date('2026-04-15T00:00:00Z'),
+      lastStatus: 'completed',
+    });
+    const queue = new AttentionQueue({ taskIdFor: (agentId) => taskStore.findTaskBySession(agentId)?.id ?? null });
+    queue.importSnoozed([{
+      agentId: 'old-session',
+      key: task.id,
+      kind: 'finding',
+      anomaly: makeAnomaly('old-session'),
+      expiresAt: Date.now() - 1,
+      createdAt: Date.now() - 60_000,
+    }]);
+
+    expect(restoreExpiredSnoozes(queue, taskStore)).toBe(false);
+
+    expect(queue.next()).toBeNull();
+    expect(queue.getSnoozed()).toMatchObject([{
+      agentId: 'old-session',
+      key: task.id,
+      expiredPendingRestore: true,
+    }]);
+  });
+
+  test('drops expired snoozes for terminal or deleted tasks', () => {
+    const taskStore = new TaskStore();
+    const terminalTask = taskStore.createTask('Done', '/tmp');
+    taskStore.addSession(terminalTask.id, {
+      tmuxSession: 'terminal-session',
+      agentType: 'claude',
+      cwd: '/tmp',
+      createdAt: new Date('2026-04-15T00:00:00Z'),
+      lastStatus: 'completed',
+    });
+    taskStore.completeTask(terminalTask.id);
+    const queue = new AttentionQueue({ taskIdFor: (agentId) => taskStore.findTaskBySession(agentId)?.id ?? null });
+    queue.importSnoozed([
+      {
+        agentId: 'terminal-session',
+        key: terminalTask.id,
+        kind: 'finding',
+        anomaly: makeAnomaly('terminal-session'),
+        expiresAt: Date.now() - 1,
+        createdAt: Date.now() - 60_000,
+      },
+      {
+        agentId: 'deleted-session',
+        key: 'deleted-task',
+        kind: 'task',
+        expiresAt: Date.now() - 1,
+        createdAt: Date.now() - 60_000,
+      },
+    ]);
+
+    expect(restoreExpiredSnoozes(queue, taskStore)).toBe(true);
+
+    expect(queue.next()).toBeNull();
+    expect(queue.getSnoozed()).toHaveLength(0);
   });
 });

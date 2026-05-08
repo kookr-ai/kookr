@@ -1,8 +1,8 @@
 import { readFile, access, copyFile, readdir, unlink } from 'node:fs/promises';
 import { join, dirname, basename } from 'node:path';
-import type { Task } from './tasks.js';
-import type { Anomaly, PersistedSnooze } from './types.js';
-import type { AttentionQueue } from './attention-queue.js';
+import { isActiveStatus, type Task } from './tasks.js';
+import type { Anomaly, LegacyPersistedSnooze, PersistedSnooze } from './types.js';
+import type { AttentionQueue, SnoozeEntry } from './attention-queue.js';
 import type { TaskStore } from './tasks.js';
 import type { PersistedSuppressionEntry } from './snooze-suppression.js';
 import { normalizeAgentType } from './agent-types.js';
@@ -21,7 +21,8 @@ interface TaskFileEnvelope {
   version: 2;
   lifetimeSpendUsd: number;
   tasks: Task[];
-  snoozedFindings?: PersistedSnooze[];
+  snoozes?: PersistedSnooze[];
+  snoozedFindings?: LegacyPersistedSnooze[];
   suppressionState?: PersistedSuppressionEntry[];
 }
 
@@ -34,7 +35,7 @@ export async function saveTasks(
   tasks: Task[],
   filePath: string,
   lifetimeSpendUsd?: number,
-  snoozedFindings?: PersistedSnooze[],
+  snoozes?: PersistedSnooze[],
   suppressionState?: PersistedSuppressionEntry[],
 ): Promise<void> {
   const envelope: TaskFileEnvelope = {
@@ -42,8 +43,8 @@ export async function saveTasks(
     lifetimeSpendUsd: lifetimeSpendUsd ?? 0,
     tasks,
   };
-  if (snoozedFindings && snoozedFindings.length > 0) {
-    envelope.snoozedFindings = snoozedFindings;
+  if (snoozes && snoozes.length > 0) {
+    envelope.snoozes = snoozes;
   }
   if (suppressionState && suppressionState.length > 0) {
     envelope.suppressionState = suppressionState;
@@ -204,10 +205,10 @@ export async function saveTasksWithSnapshotPolicy(
   filePath: string,
   policy: SnapshotPolicy,
   lifetimeSpendUsd?: number,
-  snoozedFindings?: PersistedSnooze[],
+  snoozes?: PersistedSnooze[],
   suppressionState?: PersistedSuppressionEntry[],
 ): Promise<void> {
-  await saveTasks(tasks, filePath, lifetimeSpendUsd, snoozedFindings, suppressionState);
+  await saveTasks(tasks, filePath, lifetimeSpendUsd, snoozes, suppressionState);
   switch (policy) {
     case 'daily':
       await applyDailySnapshot(filePath);
@@ -225,7 +226,8 @@ export async function saveTasksWithSnapshotPolicy(
 export interface LoadTasksResult {
   tasks: Task[];
   lifetimeSpendUsd?: number;
-  snoozedFindings?: PersistedSnooze[];
+  snoozes?: PersistedSnooze[];
+  snoozedFindings?: LegacyPersistedSnooze[];
   suppressionState?: PersistedSuppressionEntry[];
 }
 
@@ -247,7 +249,8 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
     // Detect format: v2 envelope has a "version" field, v1 is a plain array
     let tasks: Task[];
     let lifetimeSpendUsd: number | undefined;
-    let snoozedFindings: PersistedSnooze[] | undefined;
+    let snoozes: PersistedSnooze[] | undefined;
+    let snoozedFindings: LegacyPersistedSnooze[] | undefined;
     let suppressionState: PersistedSuppressionEntry[] | undefined;
     if (Array.isArray(parsed)) {
       // v1 format: plain array of tasks
@@ -256,6 +259,7 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
       // v2 format: envelope
       tasks = parsed.tasks as Task[];
       lifetimeSpendUsd = parsed.lifetimeSpendUsd;
+      snoozes = parsed.snoozes ?? [];
       snoozedFindings = parsed.snoozedFindings ?? [];
       suppressionState = parsed.suppressionState;
     } else {
@@ -272,7 +276,7 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
         session.createdAt = new Date(session.createdAt);
       }
     }
-    return { tasks, lifetimeSpendUsd, snoozedFindings, suppressionState };
+    return { tasks, lifetimeSpendUsd, snoozes, snoozedFindings, suppressionState };
   } catch (err) {
     throw new CorruptTaskFileError(filePath, err);
   }
@@ -313,15 +317,21 @@ export function serializeSnoozed(queue: AttentionQueue, taskStore: TaskStore): P
 
     result.push({
       taskId,
-      anomaly: {
-        agentId: entry.anomaly.agentId,
-        type: entry.anomaly.type,
-        severity: entry.anomaly.severity,
-        explanation: entry.anomaly.explanation,
-        detectedAt: entry.anomaly.detectedAt.toISOString(),
-        count: entry.anomaly.count,
-      },
+      agentId: entry.agentId,
+      kind: entry.kind,
+      ...(entry.anomaly ? {
+        anomaly: {
+          agentId: entry.anomaly.agentId,
+          type: entry.anomaly.type,
+          severity: entry.anomaly.severity,
+          explanation: entry.anomaly.explanation,
+          detectedAt: entry.anomaly.detectedAt.toISOString(),
+          count: entry.anomaly.count,
+        },
+      } : {}),
       expiresAt: entry.expiresAt,
+      createdAt: entry.createdAt,
+      expiredPendingRestore: entry.expiredPendingRestore,
       reason: entry.reason,
     });
   }
@@ -344,30 +354,35 @@ export function serializeSnoozed(queue: AttentionQueue, taskStore: TaskStore): P
  * snooze sits under taskId in the queue; subsequent sessions of the task
  * will resolve to the same key and be suppressed.
  *
- * Drops only when the task itself no longer exists, or when the snooze has
- * already expired. A deleted-task drop is logged so the disappearance is
- * debuggable.
+ * Drops when the task itself no longer exists, when an expired no-anomaly
+ * task snooze no longer needs suppression, or when an expired finding belongs
+ * to a terminal task. Expired findings for active tasks are retained as
+ * pending restoration so the server can rebind them to a live session.
  */
 export function deserializeSnoozed(
-  persisted: PersistedSnooze[] | undefined,
+  persisted: Array<PersistedSnooze | LegacyPersistedSnooze> | undefined,
   taskStore: TaskStore,
-): Array<{ agentId: string; key: string; anomaly: Anomaly; expiresAt: number; reason?: string }> {
+): SnoozeEntry[] {
   if (!persisted || persisted.length === 0) return [];
 
   const now = Date.now();
-  const result: Array<{ agentId: string; key: string; anomaly: Anomaly; expiresAt: number; reason?: string }> = [];
+  const result: SnoozeEntry[] = [];
 
   for (const entry of persisted) {
-    if (entry.expiresAt <= now) continue;
+    const kind = 'kind' in entry ? entry.kind : 'finding';
+    const anomaly = 'anomaly' in entry ? entry.anomaly : undefined;
+    const expired = entry.expiresAt <= now;
+    if (expired && !anomaly) continue;
 
     const task = taskStore.getTask(entry.taskId);
     if (!task) {
       console.warn(
         `[snooze] Dropping snooze for deleted task ${entry.taskId} `
-        + `(was ${entry.anomaly.type} on agent ${entry.anomaly.agentId})`,
+        + (anomaly ? `(was ${anomaly.type} on agent ${anomaly.agentId})` : '(no anomaly)'),
       );
       continue;
     }
+    if (expired && !isActiveStatus(task.status)) continue;
 
     let chosenAgentId: string | undefined;
     for (let i = task.sessions.length - 1; i >= 0; i--) {
@@ -377,20 +392,25 @@ export function deserializeSnoozed(
         break;
       }
     }
-    if (!chosenAgentId) chosenAgentId = entry.anomaly.agentId;
+    if (!chosenAgentId) chosenAgentId = ('agentId' in entry ? entry.agentId : undefined) ?? anomaly?.agentId ?? entry.taskId;
 
     result.push({
       agentId: chosenAgentId,
       key: entry.taskId,
-      anomaly: {
-        agentId: entry.anomaly.agentId,
-        type: entry.anomaly.type,
-        severity: entry.anomaly.severity,
-        explanation: entry.anomaly.explanation,
-        detectedAt: new Date(entry.anomaly.detectedAt),
-        count: entry.anomaly.count,
-      },
+      kind,
+      ...(anomaly ? {
+        anomaly: {
+          agentId: anomaly.agentId,
+          type: anomaly.type,
+          severity: anomaly.severity,
+          explanation: anomaly.explanation,
+          detectedAt: new Date(anomaly.detectedAt),
+          count: anomaly.count,
+        },
+      } : {}),
       expiresAt: entry.expiresAt,
+      createdAt: 'createdAt' in entry ? entry.createdAt : now,
+      expiredPendingRestore: ('expiredPendingRestore' in entry ? entry.expiredPendingRestore : undefined) ?? expired,
       reason: entry.reason,
     });
   }

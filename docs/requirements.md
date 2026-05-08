@@ -249,15 +249,19 @@ The system SHALL allow the developer to deprioritize an agent to the back of the
 
 ### R3.7: Snooze Agent [F3.7] — SHALL — `done`
 
-The system SHALL allow the developer to pause monitoring of an agent for a chosen duration.
+The system SHALL allow the developer to snooze a finding or active running task for a chosen duration.
 
 **Acceptance criteria:**
-- Snooze action pauses monitoring for the specified duration (milliseconds)
+- Snooze action removes the agent from attention routing for the specified duration (milliseconds)
+- Snooze action is available for active running tasks even when they have no supervisor finding
+- Snoozing a no-anomaly running task requires a real task identity; unresolved agent-only task snoozes are rejected
 - Optional reason can be attached
 - On timer expiry, supervisor re-evaluates and re-queues if anomaly persists
+- If a finding appears while a running task is snoozed, it remains hidden until the snooze expires or the user resumes monitoring
 - Agent that completes while snoozed stays completed (no re-entry)
+- User snoozes can be ended early with Resume now
 
-**Evidence:** `src/core/attention-queue.ts` (snooze with timer), `src/server/ws.ts` (snooze handler), `src/core/loop.test.ts` ("snooze agent for duration -> after duration, agent re-evaluated", "agent completes while snoozed -> stays completed, no re-entry").
+**Evidence:** `src/core/attention-queue.ts` (task/finding snooze state), `src/server/ws-handlers/anomaly-handler.ts` (snooze handler), `src/core/attention-queue.test.ts`, `src/core/task-persistence.test.ts`, `src/server/ws.test.ts`.
 
 ### R3.8: Sent Confirmation Overlay — SHOULD — `done`
 
