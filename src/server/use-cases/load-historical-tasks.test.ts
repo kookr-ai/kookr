@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadHistoricalTasks } from './load-historical-tasks.js';
+import { clampScanStart, loadHistoricalTasks } from './load-historical-tasks.js';
 import type { Task } from '../../core/tasks.js';
 
 function makeTask(overrides: Partial<Task> & { id: string }): Task {
@@ -147,6 +147,18 @@ describe('loadHistoricalTasks', () => {
     expect(result.map(t => t.id)).toEqual(['OK']);
   });
 
+  test('100k tasks: derives earliest createdAt without stack overflow', async () => {
+    // Regression: original implementation used Math.min(...tasks.map(...)) which
+    // RangeErrors on V8 around ~125k spread args. Reduce-style traversal must
+    // handle the full retention upper bound on a long-running install.
+    const live: Task[] = [];
+    for (let i = 0; i < 100_000; i++) {
+      live.push(makeTask({ id: `T${i}`, createdAt: new Date(2026, 0, 1 + (i % 28)) }));
+    }
+    const result = await loadHistoricalTasks(live, tasksFile);
+    expect(result).toHaveLength(100_000);
+  });
+
   test('mixed daily + predelete: ordered by mtime, live wins, snapshot tail-merges', async () => {
     const live = [makeTask({ id: 'L', prompt: 'live' })];
     writeSnapshot(
@@ -169,5 +181,74 @@ describe('loadHistoricalTasks', () => {
     expect([...byId.keys()].sort()).toEqual(['A', 'B', 'C', 'L']);
     expect(byId.get('L')!.prompt).toBe('live');           // live wins
     expect(byId.get('A')!.prompt).toBe('A-newer');         // last-seen wins among snapshots
+  });
+});
+
+describe('clampScanStart', () => {
+  const windowEndMs = Date.parse('2026-05-08T18:00:00Z');
+  const oneDay = 86_400_000;
+  const sevenDays = 7 * oneDay;
+
+  test('empty task list: returns windowStartMs unchanged', () => {
+    const start = windowEndMs - 30 * oneDay;
+    expect(clampScanStart(start, windowEndMs, [])).toBe(start);
+  });
+
+  test('window=all (start=0) with recent earliest task: clamps to earliest - 7d', () => {
+    const earliest = Date.parse('2026-05-01T00:00:00Z');
+    const tasks = [makeTask({ id: 'T', createdAt: new Date(earliest) })];
+    const result = clampScanStart(0, windowEndMs, tasks);
+    expect(result).toBe(earliest - sevenDays);
+  });
+
+  test('windowStartMs more recent than (earliest - 7d): windowStartMs wins', () => {
+    const earliest = Date.parse('2026-04-01T00:00:00Z');
+    const tasks = [makeTask({ id: 'T', createdAt: new Date(earliest) })];
+    // user requested 24h, earliest task is 37 days ago — keep the user's window.
+    const windowStartMs = windowEndMs - oneDay;
+    expect(clampScanStart(windowStartMs, windowEndMs, tasks)).toBe(windowStartMs);
+  });
+
+  test('future-dated tasks must not invert the scan range (silent-zero guard)', () => {
+    // Real scenario: backup restored from a clock-skewed machine puts every
+    // task's createdAt in 2027. earliest - 7d > windowEndMs would invert the
+    // collectPaths cursor and silently return [] — producing a $0 Codex
+    // aggregate with zero diagnostic.
+    const futureMs = windowEndMs + 30 * oneDay;
+    const tasks = [makeTask({ id: 'T', createdAt: new Date(futureMs) })];
+    const windowStartMs = windowEndMs - 30 * oneDay;
+    const result = clampScanStart(windowStartMs, windowEndMs, tasks);
+    expect(result).toBeLessThan(windowEndMs);
+    expect(result).toBeGreaterThanOrEqual(windowStartMs);
+  });
+
+  test('non-finite createdAt is skipped without crashing', () => {
+    const tasks = [
+      makeTask({ id: 'A', createdAt: new Date('not-a-date') }),  // NaN
+      makeTask({ id: 'B', createdAt: new Date('2026-04-01T00:00:00Z') }),
+    ];
+    const result = clampScanStart(0, windowEndMs, tasks);
+    expect(result).toBe(Date.parse('2026-04-01T00:00:00Z') - sevenDays);
+  });
+
+  test('all-NaN createdAts: falls back to windowStartMs', () => {
+    const tasks = [
+      makeTask({ id: 'A', createdAt: new Date('bad') }),
+      makeTask({ id: 'B', createdAt: new Date('also-bad') }),
+    ];
+    expect(clampScanStart(123, windowEndMs, tasks)).toBe(123);
+  });
+
+  test('takes minimum across many tasks (regression: no spread-overflow)', () => {
+    // Same regression as the loadHistoricalTasks 100k test, but exercises
+    // the clamp's traversal path rather than the merge.
+    const earliest = Date.parse('2026-01-01T00:00:00Z');
+    const tasks: Task[] = [];
+    for (let i = 0; i < 50_000; i++) {
+      // Most are in May; one is in January.
+      const day = i === 7 ? new Date(earliest) : new Date(2026, 4, 1 + (i % 28));
+      tasks.push(makeTask({ id: `T${i}`, createdAt: day }));
+    }
+    expect(clampScanStart(0, windowEndMs, tasks)).toBe(earliest - sevenDays);
   });
 });
