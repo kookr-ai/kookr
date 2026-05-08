@@ -53,3 +53,13 @@ export type {
   RalphIterationLogSummary,
   RalphIterationLogReadModel,
 } from './contracts/ralph-iteration-log.js';
+export type {
+  CostAgent,
+  CostDataQuality,
+  TimeWindow,
+  AggregateMetrics,
+  PerPlaybookRow,
+  PerTaskRow,
+  CostComparisonNote,
+  CostComparisonResponse,
+} from './contracts/cost-comparison.js';

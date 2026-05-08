@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import type { TokenUsage } from './types.js';
+import { getPricing, estimateCost, type ModelPricing } from './pricing-tables.js';
 
 /**
  * Shape of transcript JSONL entries that carry cost/token data.
@@ -33,61 +34,6 @@ interface UsageBlock {
   output_tokens?: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
-}
-
-/**
- * Per-model pricing in USD per million tokens.
- * Based on published Anthropic API pricing.
- */
-interface ModelPricing {
-  inputPerMTok: number;
-  outputPerMTok: number;
-  cacheWritePerMTok: number;
-  cacheReadPerMTok: number;
-}
-
-const MODEL_PRICING: Record<string, ModelPricing> = {
-  'claude-opus-4-6':   { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.875 },
-  // Verified 2026-04-24: Anthropic lists Opus 4.7 at $5/$25 per MTok, and prompt caching remains 1.25x write / 0.1x read of input.
-  // Sources: https://www.anthropic.com/news/claude-opus-4-7 and https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
-  'claude-opus-4-7':   { inputPerMTok: 5,  outputPerMTok: 25, cacheWritePerMTok: 6.25,  cacheReadPerMTok: 0.5 },
-  'claude-sonnet-4-6': { inputPerMTok: 3,  outputPerMTok: 15, cacheWritePerMTok: 3.75,  cacheReadPerMTok: 0.30 },
-  'claude-haiku-4-5':  { inputPerMTok: 0.80, outputPerMTok: 4, cacheWritePerMTok: 1,     cacheReadPerMTok: 0.08 },
-};
-
-// Default pricing when model is unknown — use Sonnet as a reasonable middle ground
-const DEFAULT_PRICING: ModelPricing = MODEL_PRICING['claude-sonnet-4-6'];
-const warnedUnknownPricingModels = new Set<string>();
-
-/** Look up pricing by model ID (supports partial match for dated model IDs). */
-function getPricing(model: string): ModelPricing {
-  // Exact match first
-  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
-  // Prefix match for dated IDs like "claude-opus-4-6-20250514"
-  for (const [prefix, pricing] of Object.entries(MODEL_PRICING)) {
-    if (model.startsWith(prefix)) return pricing;
-  }
-  if (!warnedUnknownPricingModels.has(model)) {
-    warnedUnknownPricingModels.add(model);
-    console.warn(`[token-tracker] Unknown pricing model ${JSON.stringify(model)}; using default Sonnet pricing`);
-  }
-  return DEFAULT_PRICING;
-}
-
-/** Estimate cost from token counts and model pricing. */
-function estimateCost(
-  inputTokens: number,
-  outputTokens: number,
-  cacheWriteTokens: number,
-  cacheReadTokens: number,
-  pricing: ModelPricing,
-): number {
-  return (
-    (inputTokens / 1_000_000) * pricing.inputPerMTok +
-    (outputTokens / 1_000_000) * pricing.outputPerMTok +
-    (cacheWriteTokens / 1_000_000) * pricing.cacheWritePerMTok +
-    (cacheReadTokens / 1_000_000) * pricing.cacheReadPerMTok
-  );
 }
 
 interface TranscriptState {
@@ -215,6 +161,21 @@ export class TokenTracker {
       ids.add(state.taskId);
     }
     return Array.from(ids);
+  }
+
+  /**
+   * First non-null model observed across the task's registered transcripts.
+   * Used by the cost-comparison surface to drive the R17 pricing-staleness
+   * banner for Claude rows (the row's `model` field on the wire stays null
+   * because Anthropic transcripts carry dated model ids that don't round-trip
+   * cleanly across the panel's exact-match pricing path).
+   */
+  getModel(taskId: string): string | null {
+    for (const state of this.transcripts.values()) {
+      if (state.taskId !== taskId) continue;
+      if (state.model) return state.model;
+    }
+    return null;
   }
 
   private async scanOne(path: string, state: TranscriptState): Promise<void> {
@@ -419,5 +380,7 @@ export async function computeContextFillFromTranscript(
   return null;
 }
 
-// Export for testing
+// Re-export pricing helpers for backward compat — callers historically imported these from
+// `./token-tracker`. New code SHOULD import from `./pricing-tables` directly; in particular,
+// the cost-comparison surface uses `lookupPricing` (strict null) instead of `getPricing`.
 export { estimateCost, getPricing, type ModelPricing };

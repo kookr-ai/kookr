@@ -7308,3 +7308,187 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
     justify-content: space-between;
   }
 }
+
+/* ============================================================
+   Cost Comparison panel (rfc-cost-comparison-panel.md)
+   ============================================================ */
+
+.cost-comparison-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 32px;
+  z-index: 1000;
+  overflow-y: auto;
+}
+
+.cost-comparison-panel {
+  background: var(--bg, #0c0c10);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  width: 100%;
+  max-width: 1180px;
+  padding: 18px 24px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cost-comparison-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.cost-comparison-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.cost-est-badge {
+  font-size: 0.7rem;
+  opacity: 0.6;
+  margin-left: 6px;
+  font-weight: 400;
+}
+
+.cost-comparison-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cost-window-select,
+.cost-search {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: inherit;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.cost-search { width: 200px; }
+
+.cost-agent-chips { display: flex; gap: 4px; }
+.cost-agent-chip {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: inherit;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.cost-agent-chip.selected {
+  background: rgba(120, 200, 255, 0.18);
+  border-color: rgba(120, 200, 255, 0.45);
+}
+
+.cost-comparison-meta {
+  font-size: 0.75rem;
+  opacity: 0.55;
+}
+
+.cost-notes-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cost-note {
+  background: rgba(251, 191, 36, 0.07);
+  border-left: 3px solid rgba(251, 191, 36, 0.6);
+  padding: 6px 10px;
+  font-size: 0.82rem;
+}
+.cost-notes-expander {
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 0.75rem;
+  align-self: flex-start;
+  opacity: 0.7;
+}
+
+.cost-loading,
+.cost-empty {
+  padding: 16px;
+  font-size: 0.85rem;
+  opacity: 0.6;
+}
+.cost-comparison-error {
+  background: rgba(239, 68, 68, 0.12);
+  border-left: 3px solid rgba(239, 68, 68, 0.7);
+  padding: 8px 12px;
+  font-size: 0.82rem;
+}
+
+.cost-per-playbook,
+.cost-aggregate,
+.cost-per-task {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cost-per-playbook h3,
+.cost-aggregate h3,
+.cost-per-task h3 {
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin: 0;
+  opacity: 0.75;
+}
+
+.cost-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.cost-table th,
+.cost-table td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.cost-table th {
+  font-weight: 500;
+  opacity: 0.65;
+}
+.cost-row.dq-codex-parse-error  td,
+.cost-row.dq-unknown-pricing    td,
+.cost-row.dq-codex-rollout-not-found td,
+.cost-row.dq-codex-rollout-abandoned td,
+.cost-row.dq-codex-no-tokens    td {
+  opacity: 0.6;
+}
+
+.cost-aggregate-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.cost-aggregate-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+.cost-aggregate-card h4 {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+}
+.cost-stat {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.82rem;
+  padding: 1px 0;
+}
+.cost-stat-label { opacity: 0.55; }
+.cost-stat-val   { font-variant-numeric: tabular-nums; }
