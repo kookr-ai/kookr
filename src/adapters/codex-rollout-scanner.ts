@@ -24,6 +24,46 @@ import type { Stats } from 'node:fs';
 
 const SIXTY_S_MS = 60_000;
 const ONE_DAY_MS = 86_400_000;
+
+/**
+ * Sum tokens, model, and quality flags across a parent rollout + its
+ * sub-agent thread. Shared by the bound-task and orphan-parent paths so
+ * the recursive-sum rule (RFC §Token aggregation rule) is enforced once.
+ */
+function sumThread(
+  parent: CodexRolloutMeta,
+  subagents: CodexRolloutMeta[],
+): {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCachedInputTokens: number;
+  model: string | null;
+  hasTokenData: boolean;
+  hasParseError: boolean;
+} {
+  let totalInput = 0, totalOutput = 0, totalCached = 0;
+  let model: string | null = null;
+  let hasTokenData = false;
+  let hasParseError = false;
+  for (const r of [parent, ...subagents]) {
+    if (r.parseError) hasParseError = true;
+    if (r.totalUsage) {
+      hasTokenData = true;
+      totalInput += r.totalUsage.inputTokens;
+      totalOutput += r.totalUsage.outputTokens;
+      totalCached += r.totalUsage.cachedInputTokens;
+    }
+    if (model == null && r.model) model = r.model;
+  }
+  return {
+    totalInputTokens: totalInput,
+    totalOutputTokens: totalOutput,
+    totalCachedInputTokens: totalCached,
+    model,
+    hasTokenData,
+    hasParseError,
+  };
+}
 /**
  * mtime gate for skipping the last line of a rollout that may still be
  * actively written by Codex. Round-2 F27.
@@ -90,6 +130,24 @@ export interface BoundTaskTokens {
   /** True iff at least one rollout in the binding had non-null `totalUsage`. */
   hasTokenData: boolean;
   /** True iff at least one rollout in the binding raised a parse error. */
+  hasParseError: boolean;
+}
+
+/**
+ * Top-level rollout chain that no Kookr task claimed — same shape as
+ * `BoundTaskTokens` minus the taskId. Sub-agents reachable via
+ * `parent_thread_id` from the orphan parent are summed in (matches the binding
+ * rule), so an interactive Codex session that spawned 3 sub-agents counts as
+ * one orphan binding with the full thread total, not 1 + 3 = 4 separate items.
+ */
+export interface OrphanBinding {
+  parent: CodexRolloutMeta;
+  subagents: CodexRolloutMeta[];
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCachedInputTokens: number;
+  model: string | null;
+  hasTokenData: boolean;
   hasParseError: boolean;
 }
 
@@ -215,8 +273,14 @@ export class CodexRolloutScanner {
   bindTasks(rollouts: CodexRolloutMeta[], tasks: KookrCodexTaskInput[]): {
     bindings: Map<string, BoundTaskTokens>;
     outcomes: Map<string, DiscoveryOutcome>;
-    /** Top-level rollouts (parent_thread_id null) that no Kookr task claimed. */
-    orphanRollouts: CodexRolloutMeta[];
+    /**
+     * Top-level rollouts (parent_thread_id null) that no Kookr task claimed,
+     * each summed with its recursively-reachable sub-agents — same accounting
+     * rule as a bound task. Counts and totals here drive the panel's
+     * "Unbound Codex" aggregate card (rfc-cost-comparison-coverage-and-perf.md
+     * §Change 2).
+     */
+    orphanBindings: OrphanBinding[];
   } {
     // Index rollouts by (cwd, valid-non-abandoned-non-error parent rollout) for fast lookup.
     const candidateParents = rollouts.filter(r =>
@@ -270,66 +334,65 @@ export class CodexRolloutScanner {
       const parent = sorted[0];
       usedRolloutIds.add(parent.id);
 
-      // Recursively bind sub-agents whose parent_thread_id chain reaches `parent.id`.
-      const subagents: CodexRolloutMeta[] = [];
-      const visited = new Set<string>([parent.id]);
-      let frontier = [parent.id];
-      while (frontier.length) {
-        const next: string[] = [];
-        for (const pid of frontier) {
-          const children = childrenByParent.get(pid);
-          if (!children) continue;
-          for (const c of children) {
-            if (visited.has(c.id)) continue;
-            visited.add(c.id);
-            usedRolloutIds.add(c.id);
-            subagents.push(c);
-            next.push(c.id);
-          }
-        }
-        frontier = next;
-      }
-
-      // Sum tokens across the binding.
-      const all = [parent, ...subagents];
-      let totalInput = 0, totalOutput = 0, totalCached = 0;
-      let model: string | null = null;
-      let hasTokenData = false;
-      let hasParseError = false;
-      for (const r of all) {
-        if (r.parseError) hasParseError = true;
-        if (r.totalUsage) {
-          hasTokenData = true;
-          totalInput += r.totalUsage.inputTokens;
-          totalOutput += r.totalUsage.outputTokens;
-          totalCached += r.totalUsage.cachedInputTokens;
-        }
-        if (model == null && r.model) model = r.model;
-      }
+      const subagents = this.walkSubagents(parent, childrenByParent, usedRolloutIds);
+      const summed = sumThread(parent, subagents);
 
       const binding: BoundTaskTokens = {
         taskId: task.taskId,
         parent,
         subagents,
-        totalInputTokens: totalInput,
-        totalOutputTokens: totalOutput,
-        totalCachedInputTokens: totalCached,
-        model,
-        hasTokenData,
-        hasParseError,
+        ...summed,
       };
       bindings.set(task.taskId, binding);
       outcomes.set(task.taskId, { kind: 'bound', binding });
     }
 
-    const orphanRollouts = rollouts.filter(r =>
-      !r.parseError
-      && r.parentThreadId == null
-      && !this.isAbandoned(r)
-      && !usedRolloutIds.has(r.id),
-    );
+    // Orphan parents — top-level non-error non-abandoned rollouts not claimed
+    // by any task. Walk their sub-agent trees with the same recursive sum so
+    // an unbound parent + 3 children counts as one orphan with the full
+    // thread total, not 4 separate items.
+    const orphanBindings: OrphanBinding[] = [];
+    for (const r of rollouts) {
+      if (r.parseError) continue;
+      if (r.parentThreadId != null) continue;
+      if (this.isAbandoned(r)) continue;
+      if (usedRolloutIds.has(r.id)) continue;
+      const subagents = this.walkSubagents(r, childrenByParent, usedRolloutIds);
+      orphanBindings.push({ parent: r, subagents, ...sumThread(r, subagents) });
+    }
 
-    return { bindings, outcomes, orphanRollouts };
+    return { bindings, outcomes, orphanBindings };
+  }
+
+  /**
+   * Walk the sub-agent tree rooted at `parent` via `thread_spawn.parent_thread_id`
+   * (BFS). Each visited child is added to `usedRolloutIds` so subsequent
+   * bind/orphan passes don't double-count it.
+   */
+  private walkSubagents(
+    parent: CodexRolloutMeta,
+    childrenByParent: Map<string, CodexRolloutMeta[]>,
+    usedRolloutIds: Set<string>,
+  ): CodexRolloutMeta[] {
+    const subagents: CodexRolloutMeta[] = [];
+    const visited = new Set<string>([parent.id]);
+    let frontier = [parent.id];
+    while (frontier.length) {
+      const next: string[] = [];
+      for (const pid of frontier) {
+        const children = childrenByParent.get(pid);
+        if (!children) continue;
+        for (const c of children) {
+          if (visited.has(c.id)) continue;
+          visited.add(c.id);
+          usedRolloutIds.add(c.id);
+          subagents.push(c);
+          next.push(c.id);
+        }
+      }
+      frontier = next;
+    }
+    return subagents;
   }
 
   /** True iff no terminal event AND the file has been quiet for ≥ 24 h. */

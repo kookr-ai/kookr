@@ -30,8 +30,9 @@ import type {
   CostDataQuality,
   PerPlaybookRow,
   PerTaskRow,
+  UnboundCodexAggregate,
 } from '../shared/contracts/cost-comparison.js';
-import type { CodexRolloutMeta, DiscoveryOutcome } from '../adapters/codex-rollout-scanner.js';
+import type { DiscoveryOutcome, OrphanBinding } from '../adapters/codex-rollout-scanner.js';
 
 const PRICING_STALE_DAYS = 90;
 
@@ -71,8 +72,13 @@ export interface AggregatorInput {
     rolloutCount: number;
     parseErrorCount: number;
     abandonedCount: number;
-    /** Top-level rollouts not bound to any Kookr task. */
-    orphanRollouts: CodexRolloutMeta[];
+    /**
+     * Top-level Codex threads not bound to any Kookr task — each entry covers
+     * a parent rollout plus its recursively-summed sub-agents. Drives the
+     * `unboundCodex` response field (rfc-cost-comparison-coverage-and-perf.md
+     * §Change 2). Empty list ⇒ no orphan card and no "X rollouts not bound" note.
+     */
+    orphanBindings: OrphanBinding[];
   };
 
   /** Wall-clock for the response envelope. Allows the route to bracket I/O + aggregation. */
@@ -164,13 +170,34 @@ export function aggregate(input: AggregatorInput): CostComparisonResponse {
     aggregateOut[agent] = metrics;
   }
 
+  // Unbound-Codex aggregate (rfc-cost-comparison-coverage-and-perf.md §Change 2).
+  // Suppressed when the user filtered to "claude-code" — under that filter the
+  // user is asking "show me Claude data," and unbound Codex is irrelevant.
+  // Window-filter orphans by parent rollout start time so a 24h view can't
+  // show a 26h-old orphan (collectPaths walks [start-1d, end+1d]).
+  const allOrphanBindings = input.codexStats?.orphanBindings ?? [];
+  const inWindowOrphans = allOrphanBindings.filter(b => {
+    const t = b.parent.startedAt instanceof Date
+      ? b.parent.startedAt.getTime()
+      : new Date(b.parent.startedAt).getTime();
+    return Number.isFinite(t) && t >= windowStartMs && t <= windowEndMs;
+  });
+  const unboundCodex = (agentFilter === 'claude-code' || inWindowOrphans.length === 0)
+    ? undefined
+    : computeUnboundCodexAggregate(inWindowOrphans, input.todayMs, unknownModels, stalePricingByModel);
+
   const notes = buildNotes({
     parseErrorPaths,
     parseErrorCount: input.codexStats?.parseErrorCount ?? 0,
     unknownModels,
     stalePricingByModel,
     abandonedCount: input.codexStats?.abandonedCount ?? 0,
-    orphanRollouts: input.codexStats?.orphanRollouts ?? [],
+    // Always emit the orphan note when there are in-window orphans. The note
+    // and the card complement each other: the card shows summed metrics, the
+    // note states the count + diagnostic. Old clients (pre-PR-2) ignore
+    // `unboundCodex` and rely on the note alone to surface the signal.
+    showOrphanNote: inWindowOrphans.length > 0,
+    orphanCount: inWindowOrphans.length,
     codexHomeMissing: (input.codexStats?.rolloutCount ?? 0) === 0
                       && filteredTasks.some(t => t.agentType === 'codex-cli'),
   });
@@ -182,6 +209,72 @@ export function aggregate(input: AggregatorInput): CostComparisonResponse {
     aggregate: aggregateOut,
     perTask: sortPerTaskByStartedAt(perTask),
     notes,
+    ...(unboundCodex ? { unboundCodex } : {}),
+  };
+}
+
+/**
+ * Sum orphan bindings into the wire-shape `UnboundCodexAggregate`.
+ *
+ * Symmetry with bound `AggregateMetrics`:
+ *   - Only `complete` rows contribute to `totalCostUsd` and the token sums.
+ *     unknown-pricing / no-tokens / parse-error rows are excluded from the
+ *     sums but counted in `dataQualityCounts`.
+ *   - Unknown models flow into the shared `unknownModels` set so the existing
+ *     R17 unknown-pricing banner enumerates them once across bound + unbound.
+ *   - Stale-priced models flow into `stalePricingByModel` so the staleness
+ *     banner fires when only the orphan corpus exercises a stale model.
+ */
+function computeUnboundCodexAggregate(
+  orphanBindings: OrphanBinding[],
+  todayMs: number,
+  unknownModels: Set<string>,
+  stalePricingByModel: Map<string, string>,
+): UnboundCodexAggregate {
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalCached = 0;
+  let totalCostUsd = 0;
+  const dataQualityCounts: UnboundCodexAggregate['dataQualityCounts'] = {
+    'complete': 0,
+    'unknown-pricing': 0,
+    'codex-no-tokens': 0,
+    'codex-parse-error': 0,
+  };
+
+  for (const b of orphanBindings) {
+    if (b.hasParseError) {
+      dataQualityCounts['codex-parse-error']++;
+      continue;
+    }
+    if (!b.hasTokenData) {
+      dataQualityCounts['codex-no-tokens']++;
+      continue;
+    }
+    const pricing = b.model ? lookupPricing(b.model) : null;
+    if (!pricing) {
+      dataQualityCounts['unknown-pricing']++;
+      if (b.model) unknownModels.add(b.model);
+      continue;
+    }
+    if (isPricingStale(pricing, todayMs) && b.model) {
+      stalePricingByModel.set(b.model, pricing.lastVerified);
+    }
+    const billedInput = Math.max(0, b.totalInputTokens - b.totalCachedInputTokens);
+    totalInput += billedInput;
+    totalOutput += b.totalOutputTokens;
+    totalCached += b.totalCachedInputTokens;
+    totalCostUsd += estimateCost(billedInput, b.totalOutputTokens, /* write */ 0, b.totalCachedInputTokens, pricing);
+    dataQualityCounts['complete']++;
+  }
+
+  return {
+    threadCount: orphanBindings.length,
+    totalCostUsd,
+    totalInputTokens: totalInput,
+    totalOutputTokens: totalOutput,
+    totalCachedInputTokens: totalCached,
+    dataQualityCounts,
   };
 }
 
@@ -446,7 +539,9 @@ interface NotesInput {
   unknownModels: Set<string>;
   stalePricingByModel: Map<string, string>;
   abandonedCount: number;
-  orphanRollouts: CodexRolloutMeta[];
+  /** True when the orphan card is suppressed (Claude-only filter) and the count should still surface as a note. */
+  showOrphanNote: boolean;
+  orphanCount: number;
   codexHomeMissing: boolean;
 }
 
@@ -495,9 +590,9 @@ function buildNotes(input: NotesInput): CostComparisonNote[] {
     out.push({
       message: 'Codex session directory not found — only Claude-side data is shown',
     });
-  } else if (input.orphanRollouts.length > 0) {
+  } else if (input.showOrphanNote) {
     out.push({
-      message: `${input.orphanRollouts.length} Codex rollout${input.orphanRollouts.length === 1 ? '' : 's'} not bound to any Kookr task (interactive Codex usage, etc.)`,
+      message: `${input.orphanCount} Codex rollout${input.orphanCount === 1 ? '' : 's'} not bound to any Kookr task (interactive Codex usage, etc.) — see Unbound Codex card on the All filter`,
     });
   }
 
