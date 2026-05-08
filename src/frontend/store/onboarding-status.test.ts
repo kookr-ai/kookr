@@ -47,6 +47,7 @@ describe('onboarding-status', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
   });
 
@@ -59,6 +60,20 @@ describe('onboarding-status', () => {
   test('shouldShow returns false when storage has seen=true', async () => {
     const data = installFakeLocalStorage();
     data.set(KEY, 'true');
+    const m = await import('./onboarding-status.js');
+    expect(m.shouldShow()).toBe(false);
+  });
+
+  test('shouldShow returns false when onboarding=0 is present in the URL', async () => {
+    installFakeLocalStorage();
+    vi.stubGlobal('window', { location: { search: '?onboarding=0' } });
+    const m = await import('./onboarding-status.js');
+    expect(m.shouldShow()).toBe(false);
+  });
+
+  test('shouldShow returns false when KOOKR_DISABLE_ONBOARDING=1 is set at build time', async () => {
+    installFakeLocalStorage();
+    vi.stubGlobal('__KOOKR_DISABLE_ONBOARDING__', '1');
     const m = await import('./onboarding-status.js');
     expect(m.shouldShow()).toBe(false);
   });
