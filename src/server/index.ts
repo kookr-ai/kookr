@@ -162,6 +162,8 @@ export interface KookrConfig {
   ossSourceWatcherFs?: Partial<OssSourceWatcherFs>;
   /** Test seam for OSS source watcher debounce. Defaults to 250 ms. */
   ossSourceWatcherDebounceMs?: number;
+  /** Server-lifecycle abort signal — see `VoiceWarmupOpts.lifecycleSignal` and issue #188. */
+  lifecycleSignal?: AbortSignal;
 }
 
 /** Narrow public interface — only what production consumers need. */
@@ -227,6 +229,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend, sttUrl, useFakeTerminalBridge, agentBin, codexBin, bypassAllPermissions,
     claudeDir, preflightOnFatal, preflightLogger,
     ossSourceWatcherFs, ossSourceWatcherDebounceMs,
+    lifecycleSignal,
   } = config;
 
   // Ensure directories exist
@@ -1265,6 +1268,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           // Unset → audio messages are dropped with `dropped_audio_disabled`.
           // See issues #574 and #585.
           whisperUrl: process.env.KOOKR_STT_WHISPER_URL,
+          // Cascade server shutdown into the warmup so STT teardown does not
+          // race the in-flight whisper request. See issue #188.
+          lifecycleSignal,
         });
         telegramHandle = handle;
         // Install the late-bound R16 callback now that the integration is up.

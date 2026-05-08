@@ -113,6 +113,8 @@ export interface StartTelegramTriggerDeps {
    * uses the default `transcribeVoice` from `./transcribe.ts`.
    */
   transcribeVoice?: typeof defaultTranscribeVoice;
+  /** Server-lifecycle abort signal — see `VoiceWarmupOpts.lifecycleSignal` and issue #188. */
+  lifecycleSignal?: AbortSignal;
 }
 
 export interface TelegramHandle {
@@ -479,6 +481,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       timeoutMs: TRANSCRIBE_TIMEOUT_MS,
       audit,
       logger: console,
+      lifecycleSignal: deps.lifecycleSignal,
     })
     : null;
 

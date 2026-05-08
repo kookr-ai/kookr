@@ -49,7 +49,13 @@ interface VoiceWarmupOpts {
   timeoutMs: number;
   audit: AuditWriter;
   logger?: WarmupLogger;
-  signal?: AbortSignal;
+  /**
+   * External shutdown signal. When aborted, in-flight warmup is cancelled
+   * before STT containers are torn down and the failure is logged distinctly
+   * (info, not warn) so operators don't read it as a user-facing warmup
+   * regression. See issue #188.
+   */
+  lifecycleSignal?: AbortSignal;
 }
 
 interface VoiceWarmupHandle {
@@ -57,7 +63,9 @@ interface VoiceWarmupHandle {
   stop(): Promise<void>;
 }
 
-async function warmupWhisper(opts: VoiceWarmupOpts): Promise<void> {
+type WarmupRunOpts = VoiceWarmupOpts & { signal: AbortSignal };
+
+async function warmupWhisper(opts: WarmupRunOpts): Promise<void> {
   const startedAt = Date.now();
   try {
     await transcribeVoice(SILENT_OGG_OPUS, {
@@ -70,7 +78,20 @@ async function warmupWhisper(opts: VoiceWarmupOpts): Promise<void> {
     opts.audit({ kind: 'voice_warmup', okMs });
     opts.logger?.log(`[telegram] voice warmup: ok in ${(okMs / 1000).toFixed(1)} s`);
   } catch (err) {
-    if (opts.signal?.aborted) return;
+    if (opts.lifecycleSignal?.aborted) {
+      // Shutdown raced the warmup: STT teardown invalidated the in-flight
+      // whisper request. Log at info, not warn — this is expected lifecycle
+      // behaviour, not a startup health failure. The "first user message
+      // will pay the cold-start cost" wording stays out of this branch on
+      // purpose: no real user is going to send a message at this point.
+      const cancelledMs = Date.now() - startedAt;
+      opts.audit({ kind: 'voice_warmup', cancelledMs, cancelled: 'shutdown' });
+      opts.logger?.log(
+        `[telegram] voice warmup cancelled by shutdown after ${(cancelledMs / 1000).toFixed(1)} s`,
+      );
+      return;
+    }
+    if (opts.signal.aborted) return;
     const errMs = Date.now() - startedAt;
     const reason = err instanceof Error ? err.message : String(err);
     opts.audit({ kind: 'voice_warmup', errMs, reason });
@@ -84,9 +105,35 @@ export function startVoiceWarmup(opts: VoiceWarmupOpts): VoiceWarmupHandle {
   const done = new Promise<void>((resolve) => { resolveDone = resolve; });
   const controller = new AbortController();
 
+  // Cascade external shutdown into the internal controller so the in-flight
+  // whisper fetch aborts before STT containers are torn down — transcribeVoice
+  // wires its fetch to opts.signal, so the abort propagates end-to-end.
+  const onLifecycleAbort = (): void => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+      resolveDone();
+    }
+    controller.abort();
+  };
+  if (opts.lifecycleSignal?.aborted) {
+    // Shutdown already in progress before this warmup was scheduled — never
+    // run the request at all.
+    onLifecycleAbort();
+  } else {
+    opts.lifecycleSignal?.addEventListener('abort', onLifecycleAbort, { once: true });
+  }
+
   timer = setTimeout(() => {
     timer = null;
-    void warmupWhisper({ ...opts, signal: controller.signal }).finally(resolveDone);
+    if (controller.signal.aborted) {
+      resolveDone();
+      return;
+    }
+    void warmupWhisper({ ...opts, signal: controller.signal }).finally(() => {
+      opts.lifecycleSignal?.removeEventListener('abort', onLifecycleAbort);
+      resolveDone();
+    });
   }, 0);
   if (typeof timer.unref === 'function') timer.unref();
 
@@ -96,6 +143,7 @@ export function startVoiceWarmup(opts: VoiceWarmupOpts): VoiceWarmupHandle {
       if (timer) {
         clearTimeout(timer);
         timer = null;
+        opts.lifecycleSignal?.removeEventListener('abort', onLifecycleAbort);
         resolveDone();
       }
       controller.abort();

@@ -143,6 +143,8 @@ async function main(): Promise<void> {
   const terminalBackend = new LocalDtachBackend({ instanceId: INSTANCE_ID, dtachBinary });
   console.log(`[terminal] backend=dtach instanceId=${INSTANCE_ID} dtach=${dtachBinary}`);
 
+  const lifecycleAc = new AbortController();
+
   const server = await createKookrServer({
     port: PORT,
     host: HOST,
@@ -159,10 +161,18 @@ async function main(): Promise<void> {
     agentBin: AGENT_BIN,
     codexBin: CODEX_BIN,
     bypassAllPermissions: BYPASS_ALL_PERMISSIONS,
+    lifecycleSignal: lifecycleAc.signal,
   });
 
   async function shutdown(signal: string): Promise<void> {
     console.log(`\n${signal} received. Shutting down...`);
+    // Signal lifecycle abort BEFORE stopping STT/TTS containers so any
+    // in-flight startup-warmup work (Telegram whisper) cancels cleanly. The
+    // catch path inside warmupWhisper turns this into a distinct info-level
+    // log instead of a "warmup FAILED — first user message will pay the
+    // cold-start cost" warning that misleads operators during a clean shutdown.
+    // See issue #188.
+    lifecycleAc.abort();
     // Stop Docker containers BEFORE closing the HTTP server so that the port
     // stays occupied until cleanup is complete. The restart scripts poll the
     // port to decide when to launch the new server — releasing it early caused
