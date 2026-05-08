@@ -227,11 +227,13 @@ export class RalphCycler {
     let stallTarget: string | undefined;
     let stallReason: string | undefined;
     let stallBlockers: string[] = [];
+    let stallPermanent = false;
 
     if (verdict?.verdict === 'stalled') {
       stallTarget = canonicalizeTarget(verdict.target);
       stallReason = verdict.reason;
       stallBlockers = verdict.blockers ?? [];
+      stallPermanent = verdict.permanent === true;
     } else if (loop.stallPredicate) {
       const stallOutcome = await this.io.runPredicate(loop.stallPredicate, {
         cwd: task.cwd,
@@ -248,7 +250,20 @@ export class RalphCycler {
     }
 
     if (stallTarget !== undefined) {
-      const burned = this.recordStall(loop, stallTarget, stallReason ?? '', stallBlockers, stallConfig, opts.taskId, events);
+      const burned = this.recordStall(loop, stallTarget, stallReason ?? '', stallBlockers, stallConfig, opts.taskId, events, stallPermanent);
+      // Permanent-stall short-circuit: in single-target loops, retrying a
+      // structurally-unfit target is pure waste — terminate at count=1
+      // instead of waiting for `consecutiveStallsForSingleTargetTermination`.
+      // Multi-target loops fall through to the all-declared-burned check
+      // (the agent picks a different target next iteration).
+      if (stallPermanent && stallConfig.loopShape === 'single-target') {
+        await this.finishIteration(task, loop, {
+          startedAt, endedAt: now, exitReason: 'target_stalled',
+          cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
+        });
+        this.terminate(loop, 'completed');
+        return { kind: 'terminate', reason: 'target_stalled', events };
+      }
       // Single-target termination check: when the loop is declared
       // single-target and any one target reaches its termination threshold,
       // terminate the loop.
@@ -378,6 +393,7 @@ export class RalphCycler {
     stallConfig: ReturnType<typeof resolveStallConfig>,
     taskId: string,
     events: RalphCyclerEvent[],
+    permanent: boolean = false,
   ): BurnedOutTarget {
     if (!loop.burnedOutTargets) loop.burnedOutTargets = [];
     let row = loop.burnedOutTargets.find((t) => t.target === target);
@@ -400,9 +416,17 @@ export class RalphCycler {
     row.lastStallBlockers = blockers;
     row.lastAttemptedIteration = loop.currentIteration;
 
-    const justBurned = !row.burned && row.consecutiveStallCount >= stallConfig.consecutiveStallsPerTarget;
+    // `permanent: true` short-circuits the count threshold so the agent's
+    // structural-unfitness call (umbrella issue, malformed body, ...) burns
+    // on the first stall instead of wasting another iteration to confirm.
+    // The flag is persisted on the row so applyDecay can skip it (decay
+    // would otherwise silently undo a permanent burn after N idle iterations).
+    const justBurned =
+      !row.burned
+      && (permanent || row.consecutiveStallCount >= stallConfig.consecutiveStallsPerTarget);
     if (justBurned) {
       row.burned = true;
+      if (permanent) row.permanent = true;
       events.push({
         type: 'ralph_target_burned',
         taskId,
@@ -440,6 +464,10 @@ export class RalphCycler {
     // un-burn → re-stall cycles for forensic / dashboard use.
     row.consecutiveStallCount = 0;
     row.burned = false;
+    // Drop the permanent flag too — `progress` is the agent's
+    // self-correction signal, and `patch_burned_targets` is the operator
+    // override; both should fully clear the structural-unfitness claim.
+    delete row.permanent;
     if (wasBurned) {
       events.push({
         type: 'ralph_target_unburned',
@@ -459,8 +487,11 @@ export class RalphCycler {
   ): void {
     const decay = (stallConfig as { burnedTargetDecayIterations?: number }).burnedTargetDecayIterations;
     if (decay === undefined || !loop.burnedOutTargets) return;
+    // Permanent burns survive decay — the agent's structural-unfitness claim
+    // is meant to be sticky, otherwise a long-running loop would re-attempt
+    // a known-dead target every `burnedTargetDecayIterations` iterations.
     const stale = loop.burnedOutTargets.filter(
-      (t) => loop.currentIteration - t.lastAttemptedIteration >= decay,
+      (t) => t.permanent !== true && loop.currentIteration - t.lastAttemptedIteration >= decay,
     );
     for (const row of stale) {
       this.unburnTarget(loop, row.target, 'decay', taskId, events);

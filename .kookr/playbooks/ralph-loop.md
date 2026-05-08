@@ -125,11 +125,16 @@ Kookr injects `$RALPH_VERDICT_FILE` as an env var pointing to an absolute path (
 ```json
 {"verdict":"progress","iteration":3,"target":"154"}
 {"verdict":"stalled","iteration":3,"target":"154","reason":"tests fail to compile","blockers":["missing-dep:foo"]}
+{"verdict":"stalled","iteration":3,"target":"154","reason":"umbrella tracking issue","blockers":["umbrella_tracking_issue_no_implementable_unit"],"permanent":true}
 {"verdict":"complete","iteration":3,"reason":"all candidates shipped"}
 ```
 
 - **`progress`** for a canonicalized target resets that target's stall counter and removes it from the burned-out list.
 - **`stalled`** with a target increments that target's `consecutiveStallCount`. After `stallConfig.consecutiveStallsPerTarget` (default 2) it's burned out.
+- **`stalled`** with `permanent: true` (optional, boolean) burns the target at `consecutiveStallCount=1`, bypassing the count threshold. For single-target loops the engine also terminates immediately with `target_stalled`.
+  - Reserved for structurally-unfit targets where retry cannot help: umbrella issues, malformed bodies, unrecoverable worktree collisions.
+  - The flag is sticky — `applyDecay` skips permanent burns so they don't silently revert. A subsequent `progress` verdict for the same target still un-burns (agent self-correction), and operator `PATCH /ralph-loop/burned-targets` clears it like any other burn.
+  - Don't set on transient blockers (CI red, claim contention, network 5xx) — the count threshold is the retry-tolerance for those.
 - **`complete`** terminates the loop with `predicate_satisfied` — unless an explicit `stopPredicate` is configured AND its clean exit code is non-zero, in which case the engine logs a `ralph_predicate_disagree` interaction-log event and continues.
 
 Atomic-write contract: the agent should write `${RALPH_VERDICT_FILE}.tmp` then rename, so a Stop firing mid-write doesn't expose partial JSON. Malformed / oversize (>16KB) / wrong-iteration files are recorded as warnings on `RalphLoopState.verdictWarningCount` and treated as legacy `continued`.

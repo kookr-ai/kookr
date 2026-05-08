@@ -89,6 +89,37 @@ describe('readVerdictFile', () => {
     expect(r.failure).toBeNull();
   });
 
+  it('reads a valid stalled verdict with permanent:true', async () => {
+    await writeFile(path, JSON.stringify({
+      verdict: 'stalled',
+      iteration: 3,
+      target: '154',
+      reason: 'umbrella tracking issue',
+      blockers: ['umbrella_tracking_issue_no_implementable_unit'],
+      permanent: true,
+    }));
+    const r = await readVerdictFile(path, 3);
+    expect(r.verdict).toMatchObject({ verdict: 'stalled', permanent: true });
+    expect(r.failure).toBeNull();
+  });
+
+  it('reads a stalled verdict with explicit permanent:false (defensive emit)', async () => {
+    await writeFile(path, JSON.stringify({
+      verdict: 'stalled', iteration: 1, target: '154', reason: 'transient', permanent: false,
+    }));
+    const r = await readVerdictFile(path, 1);
+    expect(r.verdict).toMatchObject({ verdict: 'stalled', permanent: false });
+    expect(r.failure).toBeNull();
+  });
+
+  it('rejects stalled verdict with non-boolean permanent field', async () => {
+    await writeFile(path, JSON.stringify({
+      verdict: 'stalled', iteration: 1, target: '1', reason: 'r', permanent: 'yes',
+    }));
+    const r = await readVerdictFile(path, 1);
+    expect(r.failure).toBe('schema_invalid');
+  });
+
   it('reads a valid complete verdict', async () => {
     await writeFile(path, JSON.stringify({ verdict: 'complete', iteration: 5 }));
     const r = await readVerdictFile(path, 5);

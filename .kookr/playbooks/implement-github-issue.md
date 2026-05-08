@@ -428,7 +428,22 @@ cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
 EOF
 mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 
-# C) COMPLETE — no eligible candidate remains in the batch (Step 0e fired,
+# C) STALLED + permanent — same as B but the agent has determined retrying
+#    this target cannot help: umbrella/tracking issues with no implementable
+#    unit, malformed issue body the agent cannot fix, unrecoverable worktree
+#    collisions where the colliding branch carries unrelated stale work.
+#    The engine burns the target at consecutiveStallCount=1 (no second
+#    confirmation iteration) and Step 0c.5 filters it out next iteration.
+#    For single-target loops the engine also terminates immediately.
+#    Don't set permanent:true for transient blockers (CI red, claim
+#    contention, network 5xx) — that bypasses the retry-tolerance the
+#    count-based threshold provides.
+cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
+{"verdict":"stalled","iteration":${RALPH_ITERATION},"target":"$TARGET","reason":"$REASON","blockers":[$BLOCKERS_JSON],"permanent":true}
+EOF
+mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
+
+# D) COMPLETE — no eligible candidate remains in the batch (Step 0e fired,
 #    or every candidate is in the engine's burned-targets list). Phase 9
 #    writes verdict.complete AND Step 0e writes `STOP: COMPLETE` to
 #    .batch-stop — the verdict is the engine signal, .batch-stop is read
@@ -447,7 +462,9 @@ Default mapping for this playbook:
 | Phase 7: PR successfully created or updated | `progress` (with target) |
 | Phase 8: PR merged or auto-merge enabled | `progress` (with target) |
 | Phase 8: external CI/review pending — no new evidence to post | `stalled` (with target + blockers like `["ci_pending"]` or `["review_pending"]`) |
-| Phase 4: worktree collision after retries | `stalled` (with target + blockers `["worktree_collision"]`) |
+| Phase 4: worktree collision after retries (transient — branch may free up) | `stalled` (with target + blockers `["worktree_collision"]`) |
+| Phase 4: worktree collision where the colliding branch holds unrelated stale commits | `stalled` + `permanent:true` (target won't ever resolve until operator intervenes) |
+| Phase 0d: candidate is an umbrella/tracking issue with no implementable unit (sub-issues do the work) | `stalled` + `permanent:true` (with blockers `["umbrella_tracking_issue_no_implementable_unit"]`) |
 | Phase 6: tests fail after best-effort fix | `stalled` (with target + reason naming the failing test) |
 | Phase 0c selector validation failure (filter rejected) | DON'T write a verdict — Phase 0c already wrote `STOP: FAILED` to `.batch-stop`; the loop terminates next Stop |
 | Phase 0e: no eligible candidates | `complete` (alongside Step 0e's `.batch-stop` write — both signal clean termination) |
