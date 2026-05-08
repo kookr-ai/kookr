@@ -15,7 +15,10 @@ describe('canonicalizeTarget', () => {
     ['154', '154'],
     [' 154 ', '154'],
     ['#154', '154'],
-    ['# 154', ' 154'], // strip leading # only, then trim is already done so this is exactly the case
+    // `# 42` strips leading `#` only — after trim the input is `# 42`, so the
+    // result is ` 42`. Pinned to flag any future canonicalization change as
+    // intentional.
+    ['# 42', ' 42'],
     ['  #154', '154'],
     ['ISSUE-42', 'issue-42'],
     ['#issue-42', 'issue-42'],
@@ -23,25 +26,27 @@ describe('canonicalizeTarget', () => {
     expect(canonicalizeTarget(input)).toBe(expected);
   });
 
-  it('treats space-after-hash as a different target than the hashless form', () => {
-    // We strip leading `#` only after trim — `# 42` becomes ` 42` then `# `
-    // is stripped to leave `42` only if a tighter normalization pass were
-    // added. Today's rule is intentionally minimal: `trim().lower().strip(^#)`.
-    // The test pins the behavior so canonicalization changes are intentional.
-    expect(canonicalizeTarget('# 42')).toBe(' 42');
+  it('NFC-normalizes composed vs decomposed Unicode so the same logical target accrues counts', () => {
+    const composed = canonicalizeTarget('café'); // é precomposed (U+00E9)
+    const decomposed = canonicalizeTarget('café'); // e + combining acute (U+0301)
+    expect(composed).toBe(decomposed);
   });
 });
 
 describe('defaultVerdictPath', () => {
-  it('uses the first 8 chars of the task id as a per-task suffix', () => {
+  it('uses the first 12 chars of the task id as a per-task suffix', () => {
     const p = defaultVerdictPath('/tmp/work', '8766cab8-f08d-4501-8d0d-b19ad934edfe');
-    expect(p).toBe('/tmp/work/.ralph-verdict-8766cab8.json');
+    expect(p).toBe('/tmp/work/.ralph-verdict-8766cab8-f08.json');
   });
 
-  it('returns an absolute path even when cwd is relative', () => {
-    const p = defaultVerdictPath('/abs/cwd', 'aaaabbbb-1111');
+  it('resolves a relative cwd against process.cwd()', () => {
+    // When cwd is relative, `path.resolve` joins with process.cwd(). We don't
+    // assert the prefix value (which depends on the test runner's cwd) but we
+    // do assert the result is absolute and ends with the suffix-bearing
+    // basename — i.e. the function never returns a relative path.
+    const p = defaultVerdictPath('relative/sub', 'aaaabbbbccccdddd');
     expect(p.startsWith('/')).toBe(true);
-    expect(p).toContain('aaaabbbb');
+    expect(p.endsWith('/.ralph-verdict-aaaabbbbcccc.json')).toBe(true);
   });
 });
 
@@ -112,11 +117,13 @@ describe('readVerdictFile', () => {
     expect(r.failure).toBe('malformed_json');
   });
 
-  it('rejects partial-write content (truncated JSON)', async () => {
+  it('rejects partial-write content (truncated JSON) with full result shape', async () => {
     // Simulates an agent crashing mid-write before the closing brace.
     await writeFile(path, '{"verdict":"stalled","iteration":1,"target":"154","reason":"test');
     const r = await readVerdictFile(path, 1);
+    expect(r.verdict).toBeNull();
     expect(r.failure).toBe('malformed_json');
+    expect(r.reason).toContain('not valid JSON');
   });
 
   it('rejects schema mismatch (unknown verdict variant)', async () => {
@@ -131,8 +138,11 @@ describe('readVerdictFile', () => {
     expect(r.failure).toBe('schema_invalid');
   });
 
-  it('rejects oversize file via lstat before reading any bytes', async () => {
-    // 17 KB of arbitrary content (exceeds 16 KB cap).
+  it('rejects files larger than MAX_VERDICT_FILE_BYTES', async () => {
+    // 17 KB of arbitrary content (exceeds 16 KB cap). The size check uses
+    // `lstat` before any allocation so a 1 GB file would not OOM the engine —
+    // black-box tests can't directly observe that ordering, but the cap
+    // boundary itself is the user-visible contract.
     const big = 'x'.repeat(MAX_VERDICT_FILE_BYTES + 1024);
     await writeFile(path, big);
     const r = await readVerdictFile(path, 1);

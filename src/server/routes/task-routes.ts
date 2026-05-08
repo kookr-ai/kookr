@@ -118,8 +118,10 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       agentType?: string;
       iterationCap?: unknown;
       stopPredicate?: unknown;
+      stallPredicate?: unknown;
       zeroDiffConvergence?: unknown;
       costCapUsd?: unknown;
+      stallConfig?: unknown;
     };
     try {
       body = await c.req.json();
@@ -194,8 +196,10 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
    *   - prompt is missing, empty, or non-string
    *   - iterationCap is missing, non-integer, or non-positive
    *   - stopPredicate (when present) is non-string
+   *   - stallPredicate (when present) is non-string
    *   - zeroDiffConvergence.consecutiveIterations (when present) is not a positive integer
    *   - costCapUsd (when present) is not a positive finite number
+   *   - stallConfig (when present) has invalid fields — see `validateRalphLoopRequest`
    */
   app.post('/api/tasks/:id/ralph-loop', async (c) => {
     const id = c.req.param('id');
@@ -206,8 +210,10 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       prompt?: unknown;
       iterationCap?: unknown;
       stopPredicate?: unknown;
+      stallPredicate?: unknown;
       zeroDiffConvergence?: unknown;
       costCapUsd?: unknown;
+      stallConfig?: unknown;
     };
     try {
       body = await c.req.json();
@@ -335,11 +341,9 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       return c.json({ ok: true, burnedOutTargets: loop.burnedOutTargets ?? [] });
     }
 
-    const previous = (loop.burnedOutTargets ?? []).map((t) => ({
-      target: t.target,
-      consecutiveStallCount: t.consecutiveStallCount,
-      burned: t.burned,
-    }));
+    // Snapshot the FULL prior shape so the audit log can reproduce state if
+    // the operator needs to roll back manually.
+    const previous = (loop.burnedOutTargets ?? []).map((t) => ({ ...t }));
 
     if (clear) {
       loop.burnedOutTargets = [];
@@ -348,17 +352,31 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       loop.burnedOutTargets = (loop.burnedOutTargets ?? []).filter((t) => !removeSet.has(t.target));
     }
 
-    // Audit trail (operability §9). Best-effort — don't fail the request if
-    // the interaction log is unavailable.
+    // `removed` is the actual delta of canonicalized targets that left the
+    // burned list, not the operator's input. Operators may submit unknown or
+    // already-clean targets; the audit should reflect what changed.
+    const remaining = new Set((loop.burnedOutTargets ?? []).map((t) => t.target));
+    const actuallyRemoved = previous
+      .map((t) => t.target)
+      .filter((target) => !remaining.has(target));
+
+    // Audit trail (operability §9). Awaited so the on-disk record order
+    // matches mutation order; a concurrent PATCH cannot interleave its
+    // append before this one. Best-effort failure: log but don't fail the
+    // operator's mutation, which is already committed in memory.
     if (interactionLog) {
-      void interactionLog.append({
-        type: 'ralph_burned_targets_modified',
-        taskId: id,
-        removed: clear ? [] : remove.map((t) => canonicalizeTarget(t as string)),
-        cleared: clear,
-        previousBurnedOutTargets: previous,
-        timestamp: new Date().toISOString(),
-      }).catch(() => undefined);
+      try {
+        await interactionLog.append({
+          type: 'ralph_burned_targets_modified',
+          taskId: id,
+          removed: actuallyRemoved,
+          cleared: clear,
+          previousBurnedOutTargets: previous,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.warn(`[task-routes] ralph_burned_targets_modified audit append failed for task ${id}:`, err);
+      }
     }
 
     task.updatedAt = new Date();

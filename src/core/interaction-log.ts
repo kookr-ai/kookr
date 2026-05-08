@@ -92,9 +92,21 @@ export type InteractionEvent =
   | {
       type: 'ralph_burned_targets_modified';
       taskId: string;
+      /** Canonicalized targets that actually left the burned list (delta, not input). */
       removed: string[];
       cleared: boolean;
-      previousBurnedOutTargets: Array<{ target: string; consecutiveStallCount: number; burned: boolean }>;
+      /** Full snapshot of every burned-out target at the moment of mutation, so the
+       *  audit log alone is sufficient to reconstruct prior state during a manual rollback. */
+      previousBurnedOutTargets: Array<{
+        target: string;
+        consecutiveStallCount: number;
+        totalStallCount: number;
+        firstStalledAtIteration: number;
+        lastStallReason: string;
+        lastStallBlockers: string[];
+        burned: boolean;
+        lastAttemptedIteration: number;
+      }>;
       actor?: string;
       timestamp: string;
     }

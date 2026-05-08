@@ -174,12 +174,21 @@ describe('parseIterationRecord — new stall-handling exit reasons', () => {
     expect(parseIterationRecord(JSON.stringify(record))).toEqual(record);
   });
 
-  it('round-trips costDeltaUsd including null', () => {
+  it('round-trips costDeltaUsd including null and forward-compat omit', () => {
     const known = sampleRecord({ costDeltaUsd: 0.05 });
     expect(parseIterationRecord(JSON.stringify(known))?.costDeltaUsd).toBe(0.05);
 
     const unknown = sampleRecord({ costDeltaUsd: null });
     expect(parseIterationRecord(JSON.stringify(unknown))?.costDeltaUsd).toBeNull();
+
+    // Legacy log records (pre-PR1, no costDeltaUsd field) parse cleanly with
+    // the field absent — same forward-compat behavior as `verdict`.
+    const legacy = sampleRecord();
+    const legacyJson = JSON.stringify(legacy);
+    expect(legacyJson).not.toContain('costDeltaUsd');
+    const parsed = parseIterationRecord(legacyJson);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.costDeltaUsd).toBeUndefined();
   });
 
   it('drops malformed verdict but keeps the rest of the record', () => {
@@ -195,11 +204,13 @@ describe('parseIterationRecord — new stall-handling exit reasons', () => {
     expect(parsed!.iterationNumber).toBe(1);
   });
 
-  it('rejects stalled verdict missing required target field', () => {
+  it('rejects stalled verdict missing required target field but keeps surrounding record', () => {
     // A "stalled" verdict without `target` is malformed by schema; the field
     // is dropped. The surrounding record stays valid.
     const record = { ...sampleRecord(), verdict: { verdict: 'stalled', iteration: 1, reason: 'no target' } };
     const parsed = parseIterationRecord(JSON.stringify(record));
-    expect(parsed?.verdict).toBeUndefined();
+    expect(parsed).not.toBeNull();
+    expect(parsed!.verdict).toBeUndefined();
+    expect(parsed!.iterationNumber).toBe(1);
   });
 });

@@ -27,9 +27,15 @@ export type { RalphIterationVerdict } from '../shared/contracts/ralph-iteration-
 
 export const MAX_VERDICT_FILE_BYTES = 16 * 1024;
 
-/** Default path for the verdict file: `<task.cwd>/.ralph-verdict-<taskIdShort>.json`. */
+/**
+ * Default path for the verdict file: `<task.cwd>/.ralph-verdict-<taskIdShort>.json`.
+ * Uses 12 hex chars from the task id for the suffix so collisions among
+ * concurrent loops in the same workdir are statistically negligible (~1 in
+ * 4×10^14 per pair). Two concurrent loops in the same cwd would each get a
+ * distinct file.
+ */
 export function defaultVerdictPath(taskCwd: string, taskId: string): string {
-  const short = taskId.slice(0, 8);
+  const short = taskId.slice(0, 12);
   return resolve(taskCwd, `.ralph-verdict-${short}.json`);
 }
 
@@ -151,11 +157,13 @@ export async function unlinkVerdictFile(path: string): Promise<void> {
 
 /**
  * Returns the canonicalized form of a target string: trim, lowercase, strip
- * leading `#`. Applied at every read of an agent-supplied target before any
- * comparison or storage. See RFC §3.
+ * leading `#`, then Unicode-normalize to NFC. NFC matters when an agent emits
+ * one composition form (e.g. `é` U+00E9) on iteration 1 and the decomposed
+ * form (`e` + U+0301) on iteration 2 — without normalization those are
+ * different keys and the burn counter never accrues. See RFC §3.
  */
 export function canonicalizeTarget(raw: string): string {
-  return raw.trim().toLowerCase().replace(/^#/, '');
+  return raw.trim().toLowerCase().replace(/^#/, '').normalize('NFC');
 }
 
 function isValidVerdict(value: unknown): value is RalphIterationVerdict {

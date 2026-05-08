@@ -234,6 +234,10 @@ Renderer is a pure function in `src/core/ralph-iteration-template.ts`, called fr
   ```
   Returns 200 with the updated array. **Audit trail:** every PATCH fires a `ralph_burned_targets_modified` interaction-log event with `taskId`, `removed`, `cleared`, `previousBurnedOutTargets` (full snapshot), `timestamp`, and `actor` (session/IP if available). (operability-reviewer HIGH 2.)
 
+### 8.1. `extraEnv` precedence
+
+`AdapterLaunchOptions.extraEnv` overrides any colliding key from `buildAgentLaunchContext`. Caller-wins is the documented direction: callers passing an explicit env override know what they want, and silently dropping their request would surprise them. Adapters that need to defend a required key set it via `extraEnv` at the call site rather than privileging `launchContext.env`. PR1's per-adapter contract tests pin this direction.
+
 ### 9. Operability surface (in this RFC's PRs, not deferred)
 
 **`RalphLoopState` operability fields:**
