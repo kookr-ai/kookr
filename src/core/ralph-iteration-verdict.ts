@@ -183,6 +183,7 @@ function isValidVerdict(value: unknown): value is RalphIterationVerdict {
         if (!Array.isArray(obj.blockers)) return false;
         if (!obj.blockers.every((b) => typeof b === 'string')) return false;
       }
+      if (obj.permanent !== undefined && typeof obj.permanent !== 'boolean') return false;
       return true;
     default:
       return false;

@@ -51,7 +51,24 @@ export interface RalphIterationDiffStats {
 export type RalphIterationVerdict =
   | { verdict: 'progress'; iteration: number; target?: string; reason?: string }
   | { verdict: 'complete'; iteration: number; reason?: string }
-  | { verdict: 'stalled'; iteration: number; target: string; reason: string; blockers?: string[] };
+  | {
+      verdict: 'stalled';
+      iteration: number;
+      target: string;
+      reason: string;
+      blockers?: string[];
+      /**
+       * Agent's claim that this target is structurally unfit and retrying it
+       * cannot help (e.g. umbrella tracking issue, malformed issue body,
+       * unrecoverable worktree collision). When true, the engine burns the
+       * target at consecutiveStallCount=1 instead of waiting for the
+       * `consecutiveStallsPerTarget` threshold; for single-target loops it
+       * also terminates immediately with `target_stalled`. Use sparingly —
+       * transient blockers (CI red, claim contention, network 5xx) MUST NOT
+       * set this; the count-based threshold exists to absorb those.
+       */
+      permanent?: boolean;
+    };
 
 export interface RalphIterationRecord {
   iterationNumber: number;

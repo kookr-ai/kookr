@@ -576,6 +576,149 @@ describe('RalphCycler — stall handling (PR2)', () => {
     }));
   });
 
+  it('verdict.stalled with permanent:true burns at count=1 and terminates single-target loops immediately', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('permanent stall', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 10,
+      // Use defaults: count threshold = 2, termination threshold = 3. Without
+      // permanent:true this would take 3 iterations to terminate.
+      stallConfig: { loopShape: 'single-target' },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    const action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      verdict: {
+        verdict: 'stalled', iteration: 1, target: '154',
+        reason: 'umbrella tracking issue',
+        blockers: ['umbrella_tracking_issue_no_implementable_unit'],
+        permanent: true,
+      },
+    });
+    expect(action.kind).toBe('terminate');
+    expect((action as { reason?: string }).reason).toBe('target_stalled');
+    expect(task.ralphLoop?.burnedOutTargets?.[0]).toMatchObject({
+      target: '154', burned: true, consecutiveStallCount: 1,
+    });
+    expect(action.events).toContainEqual(expect.objectContaining({
+      type: 'ralph_target_burned', target: '154', iteration: 1, stallCount: 1,
+    }));
+  });
+
+  it('verdict.stalled with permanent:true in multi-target burns at count=1 but does not auto-terminate', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('permanent multi', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 10,
+      stallConfig: { loopShape: 'multi-target', consecutiveStallsPerTarget: 2 },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    const action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      verdict: {
+        verdict: 'stalled', iteration: 1, target: '154',
+        reason: 'umbrella', permanent: true,
+      },
+    });
+    // Multi-target loop continues so the agent can pick a different target;
+    // the engine has already burned #154 so Step 0c.5's
+    // {{ralph.burnedOutTargets}} filter excludes it next iteration.
+    expect(action.kind).toBe('launch_fresh');
+    expect(task.ralphLoop?.burnedOutTargets?.[0]).toMatchObject({
+      target: '154', burned: true, consecutiveStallCount: 1, permanent: true,
+    });
+  });
+
+  it('multi-target with declaredTargets: terminates all_targets_stalled when each declared target is permanent-burned at count=1', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('all permanent', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 100,
+      // Default consecutiveStallsPerTarget=2; the test proves permanent:true
+      // composes with the all-declared-burned check at count=1, not 2.
+      stallConfig: { loopShape: 'multi-target', declaredTargets: ['149', '154'] },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    let action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      verdict: { verdict: 'stalled', iteration: 1, target: '149', reason: 'a', permanent: true },
+    });
+    expect(action.kind).toBe('launch_fresh');
+
+    action = await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's2',
+      verdict: { verdict: 'stalled', iteration: 2, target: '154', reason: 'b', permanent: true },
+    });
+    expect(action.kind).toBe('terminate');
+    expect((action as { reason?: string }).reason).toBe('all_targets_stalled');
+  });
+
+  it('applyDecay skips permanent-burned targets so the structural-unfitness claim stays sticky', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('permanent decay', workDir);
+    // Multi-target with no declaredTargets so the loop doesn't terminate via
+    // `all_targets_stalled` and we get to observe decay at iter 5.
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 100,
+      stallConfig: {
+        loopShape: 'multi-target',
+        consecutiveStallsPerTarget: 1, // make non-permanent burns trivial to trigger
+        burnedTargetDecayIterations: 2,
+      },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    // Burn #149 via permanent:true at iter 1.
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      verdict: { verdict: 'stalled', iteration: 1, target: '149', reason: 'a', permanent: true },
+    });
+    // Burn #154 via the count threshold at iter 2 (consecutiveStallsPerTarget=1).
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's2',
+      verdict: { verdict: 'stalled', iteration: 2, target: '154', reason: 'b' },
+    });
+    // Iter 5 is `decay` past iter 2 for both rows. #154 (count-burned) decays;
+    // #149 (permanent-burned) does NOT — the schema promises stickiness.
+    // Use a `progress` verdict on a third target to keep the loop alive without
+    // touching the burned rows, so applyDecay runs at iter 5.
+    task.ralphLoop!.currentIteration = 5;
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's3',
+      verdict: { verdict: 'progress', iteration: 5, target: '999', reason: 'unrelated' },
+    });
+    const rows = task.ralphLoop?.burnedOutTargets ?? [];
+    expect(rows.find((r) => r.target === '149')).toMatchObject({ burned: true, permanent: true });
+    expect(rows.find((r) => r.target === '154')).toMatchObject({ burned: false });
+  });
+
+  it('progress verdict clears the permanent flag (agent self-correction overrides)', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('permanent then progress', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 10,
+      stallConfig: { loopShape: 'multi-target' },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      verdict: { verdict: 'stalled', iteration: 1, target: '154', reason: 'umbrella', permanent: true },
+    });
+    expect(task.ralphLoop?.burnedOutTargets?.[0]).toMatchObject({ burned: true, permanent: true });
+
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's2',
+      verdict: { verdict: 'progress', iteration: 2, target: '154', reason: 'shipped a PR' },
+    });
+    const row = task.ralphLoop?.burnedOutTargets?.[0];
+    expect(row?.burned).toBe(false);
+    expect(row?.permanent).toBeUndefined();
+  });
+
   it('verdict.stalled (multi-target, no declaredTargets) records but never auto-terminates on stall alone', async () => {
     const recorder = buildIO();
     const task = store.createTask('multi stall', workDir);
