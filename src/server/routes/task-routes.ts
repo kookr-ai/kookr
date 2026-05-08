@@ -361,25 +361,40 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     // already-clean targets; the audit should reflect what changed.
     const remaining = new Set((loop.burnedOutTargets ?? []).map((t) => t.target));
     const actuallyRemoved = previous
-      .map((t) => t.target)
-      .filter((target) => !remaining.has(target));
+      .filter((t) => !remaining.has(t.target));
 
     // Audit trail (operability §9). Awaited so the on-disk record order
     // matches mutation order; a concurrent PATCH cannot interleave its
     // append before this one. Best-effort failure: log but don't fail the
     // operator's mutation, which is already committed in memory.
     if (interactionLog) {
+      const ts = new Date().toISOString();
       try {
         await interactionLog.append({
           type: 'ralph_burned_targets_modified',
           taskId: id,
-          removed: actuallyRemoved,
+          removed: actuallyRemoved.map((t) => t.target),
           cleared: clear,
           previousBurnedOutTargets: previous,
-          timestamp: new Date().toISOString(),
+          timestamp: ts,
         });
       } catch (err) {
         console.warn(`[task-routes] ralph_burned_targets_modified audit append failed for task ${id}:`, err);
+      }
+      // Per-target ralph_target_unburned (RFC §9): one event per *burned*
+      // target the PATCH actually removed. Pre-burn rows aren't unburns.
+      // Mirrors the cycler's contract for progress_verdict / decay un-burns.
+      const iter = loop.currentIteration;
+      for (const t of actuallyRemoved) {
+        if (!t.burned) continue;
+        void interactionLog.append({
+          type: 'ralph_target_unburned',
+          taskId: id,
+          target: t.target,
+          iteration: iter,
+          via: 'patch_burned_targets',
+          timestamp: ts,
+        }).catch(() => undefined);
       }
     }
 

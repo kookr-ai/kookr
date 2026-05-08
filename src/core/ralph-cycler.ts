@@ -432,10 +432,14 @@ export class RalphCycler {
     if (idx < 0) return;
     const row = loop.burnedOutTargets[idx];
     const wasBurned = row.burned;
-    // Remove the row entirely so the burned list is clean. Pre-burn rows that
-    // got reset by `progress` also disappear — the agent reported success;
-    // the engine has nothing useful to remember about earlier stalls.
-    loop.burnedOutTargets.splice(idx, 1);
+    // Reset the burn counter and drop the burned flag, but KEEP the row so
+    // `totalStallCount` and `firstStalledAtIteration` survive across burn
+    // cycles. The dashboard "burned-out targets" rendering filters by
+    // `burned: true` (see RalphLoopPanel.tsx); rendering doesn't depend on
+    // the row being absent. Preserves cumulative attempt history through
+    // un-burn → re-stall cycles for forensic / dashboard use.
+    row.consecutiveStallCount = 0;
+    row.burned = false;
     if (wasBurned) {
       events.push({
         type: 'ralph_target_unburned',

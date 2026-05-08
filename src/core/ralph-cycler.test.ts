@@ -502,6 +502,27 @@ describe('RalphCycler — stall handling (PR2)', () => {
     expect(task.ralphLoop?.status).toBe('running');
   });
 
+  it('verdict.complete + predicate errored → terminate predicate_satisfied (predicate could not speak)', async () => {
+    // Distinguishes the `errored: true` branch from clean exit ≠ 0. A regression
+    // that swaps these (e.g. drops `&& !errored` from the disagreement guard)
+    // would cause real predicate spawn failures to BLOCK agent completion;
+    // this test catches that direction.
+    const recorder = buildIO();
+    recorder.setPredicateResult({ satisfied: false, exitCode: null, timedOut: false, errored: true });
+    const task = store.createTask('predicate errored', workDir);
+    task.ralphLoop = baseLoop({ stopPredicate: 'no-such-cmd', currentIteration: 1, iterationCap: 5 });
+    const cycler = new RalphCycler(recorder.io);
+
+    const action = await cycler.handleStop(store, {
+      taskId: task.id,
+      sessionId: 's1',
+      verdict: { verdict: 'complete', iteration: 1 },
+    });
+
+    expect(action.kind).toBe('terminate');
+    expect((action as { reason?: string }).reason).toBe('predicate_satisfied');
+  });
+
   it('verdict.complete + predicate timeout → terminate predicate_satisfied (predicate could not speak)', async () => {
     const recorder = buildIO();
     recorder.setPredicateResult({ satisfied: false, exitCode: null, timedOut: true, errored: false });
@@ -537,12 +558,22 @@ describe('RalphCycler — stall handling (PR2)', () => {
     expect(task.ralphLoop?.burnedOutTargets).toHaveLength(1);
     expect(task.ralphLoop?.burnedOutTargets?.[0].consecutiveStallCount).toBe(1);
     // Second stall on same target — threshold reached → terminate target_stalled.
+    // The burn-transition fires `ralph_target_burned` exactly once (this iteration),
+    // not on every stall after burn — assert content too so a future drop-the-event
+    // regression doesn't pass on presence-only checks.
     action = await cycler.handleStop(store, {
       taskId: task.id, sessionId: 's2',
       verdict: { verdict: 'stalled', iteration: 2, target: '154', reason: 'still failing' },
     });
     expect(action.kind).toBe('terminate');
     expect((action as { reason?: string }).reason).toBe('target_stalled');
+    expect(action.events).toContainEqual(expect.objectContaining({
+      type: 'ralph_target_burned',
+      target: '154',
+      iteration: 2,
+      stallCount: 2,
+      reason: 'still failing',
+    }));
   });
 
   it('verdict.stalled (multi-target, no declaredTargets) records but never auto-terminates on stall alone', async () => {
@@ -640,16 +671,61 @@ describe('RalphCycler — stall handling (PR2)', () => {
     expect(task.ralphLoop?.burnedOutTargets?.[0].burned).toBe(true);
     expect(task.ralphLoop?.status).toBe('running');
 
-    // Agent reports progress on the burned target — un-burns it.
+    // Agent reports progress on the burned target — un-burns it but the row
+    // survives so totalStallCount / firstStalledAtIteration history is kept
+    // for forensic + dashboard use across burn cycles.
     const action = await cycler.handleStop(store, {
       taskId: task.id, sessionId: 's3',
       verdict: { verdict: 'progress', iteration: 3, target: '#154' },
     });
     expect(action.kind).toBe('launch_fresh');
-    expect(task.ralphLoop?.burnedOutTargets ?? []).toHaveLength(0);
+    const row = task.ralphLoop?.burnedOutTargets?.find((t) => t.target === '154');
+    expect(row).toBeDefined();
+    expect(row!.burned).toBe(false);
+    expect(row!.consecutiveStallCount).toBe(0);
+    // History preserved across the burn cycle.
+    expect(row!.totalStallCount).toBe(2);
+    expect(row!.firstStalledAtIteration).toBe(1);
     expect(action.events).toContainEqual(expect.objectContaining({
       type: 'ralph_target_unburned', target: '154', via: 'progress_verdict',
     }));
+  });
+
+  it('after un-burn → re-stall: row resets consecutive count but keeps totalStallCount + firstStalledAtIteration', async () => {
+    const recorder = buildIO();
+    const task = store.createTask('un-burn re-stall', workDir);
+    task.ralphLoop = baseLoop({
+      currentIteration: 1, iterationCap: 100,
+      stallConfig: { loopShape: 'multi-target', consecutiveStallsPerTarget: 2 },
+    });
+    const cycler = new RalphCycler(recorder.io);
+
+    // Burn at iters 1, 2.
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's1',
+      verdict: { verdict: 'stalled', iteration: 1, target: '154', reason: 'a' },
+    });
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's2',
+      verdict: { verdict: 'stalled', iteration: 2, target: '154', reason: 'b' },
+    });
+    // Un-burn at iter 3.
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's3',
+      verdict: { verdict: 'progress', iteration: 3, target: '154' },
+    });
+    // Re-stall at iter 4.
+    await cycler.handleStop(store, {
+      taskId: task.id, sessionId: 's4',
+      verdict: { verdict: 'stalled', iteration: 4, target: '154', reason: 'c' },
+    });
+
+    const row = task.ralphLoop?.burnedOutTargets?.[0];
+    expect(row).toBeDefined();
+    expect(row!.consecutiveStallCount).toBe(1); // fresh streak
+    expect(row!.burned).toBe(false);            // not burned yet (1 < 2)
+    expect(row!.totalStallCount).toBe(3);       // 2 prior + 1 new
+    expect(row!.firstStalledAtIteration).toBe(1); // unchanged
   });
 
   it('decay un-burns a stale target after burnedTargetDecayIterations elapsed', async () => {
@@ -673,7 +749,10 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
     const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1' });
     expect(action.kind).toBe('launch_fresh');
-    expect(task.ralphLoop?.burnedOutTargets ?? []).toHaveLength(0);
+    // Row survives un-burn (history preserved) but `burned` is false.
+    const row = task.ralphLoop?.burnedOutTargets?.find((t) => t.target === '154');
+    expect(row?.burned).toBe(false);
+    expect(row?.consecutiveStallCount).toBe(0);
     expect(action.events).toContainEqual(expect.objectContaining({
       type: 'ralph_target_unburned', target: '154', via: 'decay',
     }));
