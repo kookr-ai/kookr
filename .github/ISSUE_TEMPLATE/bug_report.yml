@@ -1,0 +1,68 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill out the form below so we can reproduce and diagnose the issue quickly.
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: |
+        Run the following commands and paste the full output.
+
+        ```
+        node --version
+        pnpm --version
+        kookr-status
+        ```
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: e.g. Ubuntu 22.04, macOS 14.4, WSL2 on Windows 11.
+      placeholder: macOS 14.4
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened?
+      description: Include error messages, stack traces, or screenshots if available.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Minimal numbered steps. The smaller the repro, the faster we can fix it.
+      placeholder: |
+        1. Run `pnpm dev`
+        2. Open the dashboard at http://localhost:4801
+        3. Click "..."
+        4. ...
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: pnpm doctor output
+      description: Run `pnpm doctor` from the repo root and paste the full output (optional but very helpful).
+      render: shell
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else that might help — related issues, recent changes, environment quirks.
