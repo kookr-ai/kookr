@@ -257,6 +257,7 @@ describe('Monitor', () => {
 
   test('getSnapshot includes task metadata when task is linked', () => {
     const task = taskStore.createTask('Fix auth token refresh in the login flow', '/home/user/webapp');
+    taskStore.setProjectId(task.id, 'github.com/acme/webapp');
     const sessionCreatedAt = new Date('2026-03-24T10:00:00Z');
     taskStore.addSession(task.id, {
       tmuxSession: 'agent-1',
@@ -275,6 +276,25 @@ describe('Monitor', () => {
     expect(a1!.cwd).toBe('/home/user/webapp');
     expect(a1!.agentType).toBe('claude-code');
     expect(a1!.startedAt).toBe(sessionCreatedAt.toISOString());
+    expect(a1!.projectId).toBe('github.com/acme/webapp');
+    expect(a1!.projectDisplayLabel).toBe('webapp');
+  });
+
+  test('getSnapshot uses projectId for stable display label across worktrees', () => {
+    const task = taskStore.createTask('Investigate prod issue', '/home/user/kookr-prod');
+    taskStore.setProjectId(task.id, 'github.com/kookr-ai/kookr');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: '/home/user/kookr-prod',
+      createdAt: new Date('2026-03-24T10:00:00Z'),
+    });
+    monitor.processEvents('agent-1', [makeToolUse('s1', 'Bash')]);
+
+    const snapshot = monitor.getSnapshot();
+    const a1 = snapshot.find((s) => s.agentId === 'agent-1');
+
+    expect(a1!.projectDisplayLabel).toBe('kookr');
   });
 
   test('getSnapshot uses task.name over truncated prompt when set', () => {

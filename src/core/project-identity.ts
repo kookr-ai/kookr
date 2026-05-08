@@ -144,6 +144,27 @@ export function projectDisplayName(projectId: string): string {
 }
 
 /**
+ * Label for compact per-agent project badges.
+ *
+ * Unlike projectDisplayName(), which includes the owner for sidebar rows,
+ * this intentionally returns the repo/local directory basename so every
+ * worktree for the same project renders the same short label.
+ */
+export function projectDisplayLabel(input: { projectId?: string; cwd?: string }): string {
+  const projectId = input.projectId?.trim();
+  if (projectId) {
+    const parts = projectId.split('/').filter(Boolean);
+    if (parts.length > 0) return parts[parts.length - 1];
+  }
+
+  const cwd = input.cwd?.trim();
+  if (!cwd) return '';
+
+  const canonicalPath = deriveCanonicalPath(cwd) ?? cwd;
+  return basename(canonicalPath.replace(/\/+$/, ''));
+}
+
+/**
  * Resolve the project ID for a working directory.
  *
  * Runs `git remote get-url origin` to get the remote URL, then normalizes it.

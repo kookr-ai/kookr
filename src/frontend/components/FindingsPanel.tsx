@@ -35,6 +35,14 @@ interface Props {
   globalTerminatedCount: number;
 }
 
+function agentProjectLabel(agent: AgentState): string {
+  return agent.projectDisplayLabel ?? projectLabel(agent.cwd);
+}
+
+function agentProjectColor(agent: AgentState): number {
+  return projectColor(agent.projectId ?? agent.cwd);
+}
+
 // ─── Ralph loop helpers ──────────────────────────────────────────────────────
 
 function RalphLoopBadge({ agent }: { agent: AgentState }): React.ReactElement | null {
@@ -461,9 +469,9 @@ function FindingCard({ agent, selected, send }: {
           if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null; }
         }} />
         <div className="finding-context">
-          {agent.cwd && (
-            <span className={`project-badge color-${projectColor(agent.cwd)}`} title={agent.cwd}>
-              {projectLabel(agent.cwd)}
+          {agentProjectLabel(agent) && (
+            <span className={`project-badge color-${agentProjectColor(agent)}`} title={agent.cwd}>
+              {agentProjectLabel(agent)}
             </span>
           )}
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
@@ -532,7 +540,8 @@ function HealthyRow({ agent, selected, send }: {
   selected: boolean;
   send: (msg: ClientMessage) => void;
 }) {
-  const colorIdx = agent.cwd ? projectColor(agent.cwd) : -1;
+  const projectLabelText = agentProjectLabel(agent);
+  const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
 
   function handleReply(e: React.MouseEvent) {
     e.stopPropagation();
@@ -561,9 +570,9 @@ function HealthyRow({ agent, selected, send }: {
             <span className={`healthy-dot ${healthyDotClass(agent.events)}`} />
             {healthyDotClass(agent.events) === 'running' && <span className="healthy-dot-ring" />}
           </span>
-          {agent.cwd && (
+          {projectLabelText && (
             <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
-              {projectLabel(agent.cwd)}
+              {projectLabelText}
             </span>
           )}
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
@@ -728,7 +737,8 @@ function PendingRow({ agent, selected, send }: {
   selected: boolean;
   send: (msg: ClientMessage) => void;
 }) {
-  const colorIdx = agent.cwd ? projectColor(agent.cwd) : -1;
+  const projectLabelText = agentProjectLabel(agent);
+  const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
   return (
     <Tooltip text={agent.description}>
       <div
@@ -741,9 +751,9 @@ function PendingRow({ agent, selected, send }: {
       >
         <div className="pending-row-top">
           <span className="pending-dot" />
-          {agent.cwd && (
+          {projectLabelText && (
             <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
-              {projectLabel(agent.cwd)}
+              {projectLabelText}
             </span>
           )}
           <AutonomyBadge agent={agent} send={send} />
@@ -770,7 +780,8 @@ function SnoozedRow({ agent, selected }: {
   selected: boolean;
 }) {
   const [, setTick] = useState(0);
-  const colorIdx = agent.cwd ? projectColor(agent.cwd) : -1;
+  const projectLabelText = agentProjectLabel(agent);
+  const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
 
   // Update countdown every second
   useEffect(() => {
@@ -790,9 +801,9 @@ function SnoozedRow({ agent, selected }: {
       >
         <div className="snoozed-row-top">
           <span className="snoozed-dot" />
-          {agent.cwd && (
+          {projectLabelText && (
             <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
-              {projectLabel(agent.cwd)}
+              {projectLabelText}
             </span>
           )}
           <span className="snoozed-row-name" title={agent.taskName ?? agent.agentId}>
@@ -883,7 +894,8 @@ function CompletedRow({ agent, selected, send }: {
   selected: boolean;
   send: (msg: ClientMessage) => void;
 }) {
-  const colorIdx = agent.cwd ? projectColor(agent.cwd) : -1;
+  const projectLabelText = agentProjectLabel(agent);
+  const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
   const isCancelled = agent.taskStatus === 'cancelled';
   const isTerminated = agent.taskStatus === 'terminated';
   // The row's style variant: cancelled (user stopped), terminated (session died
@@ -903,9 +915,9 @@ function CompletedRow({ agent, selected, send }: {
       >
         <div className="completed-row-top">
           <span className={`task-status-dot ${rowVariant}`} aria-label={rowVariant} />
-          {agent.cwd && (
+          {projectLabelText && (
             <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
-              {projectLabel(agent.cwd)}
+              {projectLabelText}
             </span>
           )}
           <span className="completed-row-name" title={agent.taskName ?? agent.agentId}>

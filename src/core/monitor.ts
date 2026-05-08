@@ -5,6 +5,7 @@ import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
 import { detectAnomalies, evaluateAnomalies } from './anomaly-detector.js';
+import { projectDisplayLabel } from './project-identity.js';
 import {
   recordDetectionCheck,
   recordDetectionFire,
@@ -37,6 +38,7 @@ export interface AgentState {
   worktreeHealthObservedAt?: string;
   worktreeRegistryStale?: boolean;
   projectId?: string;
+  projectDisplayLabel?: string;
   completionDigest?: CompletionDigest;
   completionFeedback?: import('./tasks.js').TaskCompletionFeedback;
   autonomy?: import('./tasks.js').AutonomyLevel;
@@ -429,7 +431,7 @@ export class Monitor {
    */
   getSnapshot(): AgentState[] {
     // Build a lookup: tmuxSession → { task, session } for O(1) enrichment
-    const sessionIndex = new Map<string, { taskId: string; name?: string; prompt: string; cwd: string; agentType: import('./agent-types.js').AgentType; createdAt: Date; playbookId?: string; playbookParameterValues?: Record<string, string>; projectId?: string; gitBranch?: string; gitCommit?: string; gitIsWorktree?: boolean; worktreeHealth?: WorktreeHealth; worktreeHealthObservedAt?: string; worktreeRegistryStale?: boolean }>();
+    const sessionIndex = new Map<string, { taskId: string; name?: string; prompt: string; cwd: string; agentType: import('./agent-types.js').AgentType; createdAt: Date; playbookId?: string; playbookParameterValues?: Record<string, string>; projectId?: string; projectDisplayLabel: string; gitBranch?: string; gitCommit?: string; gitIsWorktree?: boolean; worktreeHealth?: WorktreeHealth; worktreeHealthObservedAt?: string; worktreeRegistryStale?: boolean }>();
     for (const task of this.taskStore.getAllTasks()) {
       for (const session of task.sessions) {
         sessionIndex.set(session.tmuxSession, {
@@ -442,6 +444,7 @@ export class Monitor {
           playbookId: task.playbookId,
           playbookParameterValues: task.playbookParameterValues,
           projectId: task.projectId,
+          projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: session.cwd }),
           gitBranch: session.gitBranch,
           gitCommit: session.gitCommit,
           gitIsWorktree: session.gitIsWorktree,
@@ -490,6 +493,7 @@ export class Monitor {
         state.worktreeHealthObservedAt = meta.worktreeHealthObservedAt;
         state.worktreeRegistryStale = meta.worktreeRegistryStale;
         state.projectId = meta.projectId;
+        state.projectDisplayLabel = meta.projectDisplayLabel;
         // Enrich with token usage, task status, and autonomy from the task
         const task = this.taskStore.getTask(meta.taskId);
         if (task) {
@@ -522,6 +526,7 @@ export class Monitor {
           playbookId: task.playbookId,
           playbookParameterValues: task.playbookParameterValues,
           projectId: task.projectId,
+          projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: task.cwd }),
           autonomy: task.autonomy,
           ralphLoop: task.ralphLoop,
         });
@@ -548,6 +553,7 @@ export class Monitor {
             playbookId: task.playbookId,
             playbookParameterValues: task.playbookParameterValues,
             projectId: task.projectId,
+            projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: lastSession?.cwd ?? task.cwd }),
             tokenUsage: task.tokenUsage,
             gitBranch: lastSession?.gitBranch,
             gitCommit: lastSession?.gitCommit,
