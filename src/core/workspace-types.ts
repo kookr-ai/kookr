@@ -49,6 +49,9 @@ export interface CleanupCapabilities {
 
 export interface CleanupCandidateAssessment {
   projectId: string;
+  /** Canonical project ID recomputed from the current repo remote when
+   *  it differs from the stored task/project value. */
+  currentProjectId?: string;
   worktreePath?: string;
   branch: string;
   classification: CleanupClassification;
