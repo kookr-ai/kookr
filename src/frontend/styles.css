@@ -7471,7 +7471,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 
 .cost-aggregate-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
 .cost-aggregate-card {
@@ -7492,3 +7492,20 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 .cost-stat-label { opacity: 0.55; }
 .cost-stat-val   { font-variant-numeric: tabular-nums; }
+
+/* Unbound-Codex card: visually separated from the bound Claude/Codex cards
+   so it reads as a labeled "extra" rather than a fourth peer (RFC §Change 2). */
+.cost-unbound-card {
+  border-style: dashed;
+  opacity: 0.92;
+}
+.cost-unbound-sub {
+  font-weight: 400;
+  opacity: 0.6;
+  font-size: 0.78rem;
+  margin-left: 4px;
+}
+.cost-unbound-quality .cost-stat-val {
+  opacity: 0.85;
+  font-size: 0.78rem;
+}

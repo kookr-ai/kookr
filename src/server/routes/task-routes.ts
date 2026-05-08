@@ -882,7 +882,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
 
     const scanStart = Date.now();
     const scan = await scanner.scan(effectiveScanStartMs, windowEndMs);
-    const { outcomes, orphanRollouts } = scanner.bindTasks(scan.rollouts, codexTasks);
+    const { outcomes, orphanBindings } = scanner.bindTasks(scan.rollouts, codexTasks);
 
     // Claude side: pull live token usage and the resolved model id (used by the aggregator
     // to drive the R17 pricing-staleness banner — Claude per-task rows themselves keep
@@ -916,7 +916,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         rolloutCount: scan.stats.rolloutCount,
         parseErrorCount: scan.stats.parseErrorCount,
         abandonedCount: scan.stats.abandonedCount,
-        orphanRollouts,
+        orphanBindings,
       },
       scannedAt: new Date().toISOString(),
       scanDurationMs: Date.now() - scanStart,
