@@ -133,6 +133,12 @@ export async function launchLoopedPlaybook(
       prompt: loopPrompt,
       disableDedup: true,
       launchSource: input.launchSource,
+      // PR4: inject RALPH_VERDICT_FILE on iteration 0 so the agent's first
+      // launch can write a verdict. Subsequent iterations get this via
+      // launchFreshRuntime's extraEnv. Without this, iteration 0 silently
+      // misses the verdict channel and the engine treats it as legacy
+      // `continued`. Applies to BOTH launch and replace flows in this file.
+      ralphVerdictEnv: true,
     });
     if (result.queued) {
       await deps.cleanupFailedTask?.(result.task.id);
@@ -279,6 +285,12 @@ export async function replaceLoopedPlaybook(
       prompt: loopPrompt,
       disableDedup: true,
       launchSource: input.launchSource,
+      // PR4: inject RALPH_VERDICT_FILE on iteration 0 so the agent's first
+      // launch can write a verdict. Subsequent iterations get this via
+      // launchFreshRuntime's extraEnv. Without this, iteration 0 silently
+      // misses the verdict channel and the engine treats it as legacy
+      // `continued`. Applies to BOTH launch and replace flows in this file.
+      ralphVerdictEnv: true,
     });
     if (result.queued) {
       await deps.cleanupFailedTask?.(result.task.id);

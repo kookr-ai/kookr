@@ -169,15 +169,31 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
         launchSource,
         disableDedup: true,
+        // PR4: inject RALPH_VERDICT_FILE on the first agent runtime so
+        // iteration 0 can write a verdict — the launchFreshRuntime path used
+        // for iterations 1+ already does this; this closes the gap.
+        ralphVerdictEnv: true,
       });
 
       if (result.duplicate) {
         return c.json({ error: 'Ralph task launch unexpectedly resolved to an existing task; no loop was attached' }, 409);
       }
+      // PR4: refuse to attach a Ralph loop to a queued task. Promotion via
+      // `promotePendingTasks` calls adapter.launch with no extraEnv, so a
+      // queued ralph launch would silently lose `RALPH_VERDICT_FILE` on
+      // iteration 0 — the very bug PR4 is fixing for fresh launches. Mirrors
+      // the equivalent rejection in `looped-playbook-launch.ts`.
+      if (result.queued) {
+        return c.json({
+          error: 'Ralph task launch was queued (max active tasks reached). Retry when concurrency frees up.',
+          taskId: result.task.id,
+          status: 'pending',
+        }, 503);
+      }
 
       await ralphLoopService.startLoop(result.task, ralphInput.value);
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
-      return c.json({ ...result.task, ...(result.queued ? { queued: true } : {}) }, 201);
+      return c.json({ ...result.task }, 201);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);

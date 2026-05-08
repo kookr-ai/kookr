@@ -413,10 +413,15 @@ describe('launchTask', () => {
     });
 
     expect(result.task.prompt).toBe(`Read ${filePath} before coding.`);
+    // PR4: launchTask now always passes 5 args (taskId, prompt, cwd, resume,
+    // adapterOpts). For non-ralph launches `resume` and `adapterOpts` are
+    // both undefined.
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
       result.task.id,
       `Read ${filePath} before coding.`,
       repoDir,
+      undefined,
+      undefined,
     );
   });
 
@@ -529,6 +534,45 @@ describe('launchTask', () => {
     });
 
     expect(result.task.prompt).toBe(prompt);
+  });
+
+  describe('ralphVerdictEnv (PR4 — first-iteration fix)', () => {
+    it('injects RALPH_VERDICT_FILE into adapter env when ralphVerdictEnv is true', async () => {
+      const result = await launchTask(deps, {
+        prompt: 'iterate',
+        cwd: '/tmp',
+        ralphVerdictEnv: true,
+      });
+      const adapter = deps.adapterRegistry.get('claude-code');
+      const launchCall = (adapter.launch as ReturnType<typeof vi.fn>).mock.calls[0];
+      // launch(taskId, prompt, cwd, resume, opts)
+      expect(launchCall).toBeDefined();
+      const launchOpts = launchCall![4];
+      expect(launchOpts).toBeDefined();
+      expect(launchOpts.extraEnv).toBeDefined();
+      // Path is absolute and uses the per-task suffix (taskId.slice(0, 12)).
+      const expectedSuffix = result.task.id.slice(0, 12);
+      expect(launchOpts.extraEnv.RALPH_VERDICT_FILE).toMatch(
+        new RegExp(`/\\.ralph-verdict-${expectedSuffix}\\.json$`),
+      );
+    });
+
+    it('omits adapter opts entirely when ralphVerdictEnv is unset (no regression for non-ralph launches)', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
+      const adapter = deps.adapterRegistry.get('claude-code');
+      const launchCall = (adapter.launch as ReturnType<typeof vi.fn>).mock.calls[0];
+      // The adapter is called as launch(id, prompt, cwd, undefined, undefined)
+      // so the 5th arg is undefined — preserves the legacy 3-arg call shape
+      // semantically (no env override).
+      expect(launchCall![4]).toBeUndefined();
+    });
+
+    it('omits adapter opts when ralphVerdictEnv is explicit false', async () => {
+      await launchTask(deps, { prompt: 'hello-explicit-false', cwd: '/tmp', ralphVerdictEnv: false });
+      const adapter = deps.adapterRegistry.get('claude-code');
+      const launchCall = (adapter.launch as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(launchCall![4]).toBeUndefined();
+    });
   });
 });
 

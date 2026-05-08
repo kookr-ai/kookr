@@ -171,14 +171,25 @@ describe('RoutingAgentAdapter', () => {
     test('delegates to default adapter', async () => {
       await router.launch('task-1', 'test prompt', '/cwd');
 
-      expect(claudeAdapter.launch).toHaveBeenCalledWith('task-1', 'test prompt', '/cwd', undefined);
+      expect(claudeAdapter.launch).toHaveBeenCalledWith('task-1', 'test prompt', '/cwd', undefined, undefined);
     });
 
     test('forwards ResumeContext to default adapter', async () => {
       const resume = { sessionId: 'session-xyz', transcriptPath: '/tmp/t.jsonl' };
       await router.launch('task-1', 'test prompt', '/cwd', resume);
 
-      expect(claudeAdapter.launch).toHaveBeenCalledWith('task-1', 'test prompt', '/cwd', resume);
+      expect(claudeAdapter.launch).toHaveBeenCalledWith('task-1', 'test prompt', '/cwd', resume, undefined);
+    });
+
+    test('forwards AdapterLaunchOptions (incl. extraEnv) to default adapter — PR4', async () => {
+      // The routing adapter is on the AgentAdapter interface; any future
+      // caller passing opts through it must reach the underlying adapter.
+      // Pins the contract: env vars (e.g. RALPH_VERDICT_FILE) cannot be
+      // silently dropped at the routing layer.
+      const opts = { extraEnv: { RALPH_VERDICT_FILE: '/tmp/.ralph-verdict-aaaa.json' } };
+      await router.launch('task-1', 'test prompt', '/cwd', undefined, opts);
+
+      expect(claudeAdapter.launch).toHaveBeenCalledWith('task-1', 'test prompt', '/cwd', undefined, opts);
     });
   });
 });
