@@ -1,0 +1,21 @@
+name: Question
+description: Ask a question about using or configuring Kookr
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question about Kookr? Fill out the form below.
+
+        Note: GitHub Discussions are not enabled yet. Once they are, please ask there instead — questions usually get faster answers in Discussions than in the issue tracker.
+  - type: textarea
+    id: question
+    attributes:
+      label: What's your question?
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: Commands you ran, docs you read, things that didn't work.
