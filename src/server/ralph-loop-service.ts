@@ -730,7 +730,15 @@ export class RalphLoopService {
         // Generic env-extension point. The agent reads `$RALPH_VERDICT_FILE`
         // and writes its verdict JSON to that absolute path — works
         // regardless of any `cd` the agent does mid-iteration.
-        extraEnv: { RALPH_VERDICT_FILE: verdictPath },
+        // `RALPH_ITERATION` mirrors the `{{ralph.iteration}}` template var so
+        // bash-style verdict writers (`"iteration":${RALPH_ITERATION}`) emit
+        // the current iteration; without this the engine rejects every
+        // post-iter-0 verdict with `iteration_mismatch` and stall counts
+        // never accrue.
+        extraEnv: {
+          RALPH_VERDICT_FILE: verdictPath,
+          RALPH_ITERATION: String(loop.currentIteration),
+        },
       });
     } catch (err) {
       if (currentTask.ralphLoop?.ownerSessionId === newTmuxName) {

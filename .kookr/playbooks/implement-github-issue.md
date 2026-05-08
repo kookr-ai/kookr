@@ -412,7 +412,7 @@ Map the iteration outcome to one verdict variant. Use atomic write: write `${RAL
 #    iteration" and "PR exists from a prior iteration and we're polling for
 #    merge". A `progress` for a previously-burned target un-burns it.
 cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
-{"verdict":"progress","iteration":${RALPH_ITERATION:-0},"target":"$TARGET","reason":"$REASON"}
+{"verdict":"progress","iteration":${RALPH_ITERATION},"target":"$TARGET","reason":"$REASON"}
 EOF
 mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 
@@ -424,7 +424,7 @@ mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 #    threshold (default 2) the target is burned out and excluded by Step 0c.5
 #    of subsequent iterations.
 cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
-{"verdict":"stalled","iteration":${RALPH_ITERATION:-0},"target":"$TARGET","reason":"$REASON","blockers":[$BLOCKERS_JSON]}
+{"verdict":"stalled","iteration":${RALPH_ITERATION},"target":"$TARGET","reason":"$REASON","blockers":[$BLOCKERS_JSON]}
 EOF
 mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 
@@ -435,7 +435,7 @@ mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 #    by the legacy stopPredicate. Keeping both is harmless: either fires
 #    a clean termination on the next Stop hook.
 cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
-{"verdict":"complete","iteration":${RALPH_ITERATION:-0},"reason":"no eligible candidates"}
+{"verdict":"complete","iteration":${RALPH_ITERATION},"reason":"no eligible candidates"}
 EOF
 mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 ```
@@ -452,7 +452,7 @@ Default mapping for this playbook:
 | Phase 0c selector validation failure (filter rejected) | DON'T write a verdict — Phase 0c already wrote `STOP: FAILED` to `.batch-stop`; the loop terminates next Stop |
 | Phase 0e: no eligible candidates | `complete` (alongside Step 0e's `.batch-stop` write — both signal clean termination) |
 
-The `RALPH_ITERATION` env var is also injected by the engine; use it for the `iteration` field. The `target` field MUST be the canonicalized issue number (the integer; canonicalization strips `#` and lowercases) so the engine accrues counts on the right key across iterations.
+The engine injects `RALPH_ITERATION` (the current iteration number, 0-based) alongside `RALPH_VERDICT_FILE`. Use it unquoted for the `iteration` field as shown above. Don't use a `:-0` fallback — if the var is unset for any reason, you want the verdict to fail loudly (engine logs `iteration_mismatch`) rather than silently report `iteration:0` every iteration, which leaves stall counts at 1 and the loop runs to its iteration cap. The `target` field MUST be the canonicalized issue number (the integer; canonicalization strips `#` and lowercases) so the engine accrues counts on the right key across iterations.
 
 ## Anti-Patterns
 
