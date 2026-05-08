@@ -276,6 +276,7 @@ This addresses the CI-flake scenario the `ambition-amplifier` review flagged: a 
 
 - Verdict file: optional. Loops that don't write it behave as today.
 - `.batch-attempted` (v9 batch-mode): kept for one release. PR3 removes it from `implement-github-issue.md`. **Concrete merge gate:** PR3 ships when `ralph_verdict_warning` interaction-log events have been below 1% of iterations for 14 consecutive days in production usage. Documented in PR3's description; implementor verifies via interaction-log query before merging. (`ambition-amplifier` Finding 8.)
+- **In-flight loop transition** (PR3 deploy): a loop running mid-iteration when the playbook update lands has a stale `.batch-attempted` file on disk. The new playbook never reads it, and the engine's `burnedOutTargets` starts empty for any pre-PR2 loop (PR2 is when the field began populating). Net effect: targets that were close to the old `cap=3` ceiling get a fresh runway under the new `consecutiveStallsPerTarget=2` threshold (more permissive for in-flight loops). Operators with in-flight github-issue batch loops should let them complete or relaunch under the new playbook to opt into the engine-tracked retry cap from a clean slate. The `.batch-attempted` file is harmless leftover; remove it manually or leave it (no live code path reads it post-PR3).
 - Existing `stopPredicate` loops: untouched.
 - New exit reasons: PR1 lands the parser update first; partial rollback (revert PR2 only) preserves audit-log readability.
 
