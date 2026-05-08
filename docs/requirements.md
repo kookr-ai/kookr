@@ -445,6 +445,18 @@ The system SHOULD surface actionable inline guidance when a looped playbook laun
 
 **Evidence:** `src/server/use-cases/looped-playbook-launch.ts` (conflict ordering and typed payloads), `src/frontend/components/PlaybookBrowser.tsx` (inline conflict rendering), `src/server/use-cases/looped-playbook-launch.test.ts`, `src/frontend/components/PlaybookBrowser.loopable.test.ts`.
 
+### R4b.7: Ralph Verdict Runtime Environment — SHALL — `done`
+
+The system SHALL expose the full Ralph verdict environment to every loop iteration runtime, including the first runtime created before the loop record is attached.
+
+**Acceptance criteria:**
+- Initial Ralph launches receive `RALPH_VERDICT_FILE` and `RALPH_ITERATION=0`.
+- Subsequent Ralph launches receive `RALPH_VERDICT_FILE` and `RALPH_ITERATION` equal to the current loop iteration.
+- Looped implementation playbooks define non-automatable issue labels that Phase 0 skips before implementation.
+- Looped implementation playbooks define an automation-quarantine path for trusted, non-implementable issue targets.
+
+**Evidence:** `src/server/launch-service.ts`, `src/server/ralph-loop-service.ts`, `.kookr/playbooks/implement-github-issue.md`, `src/server/launch-service.test.ts`, `src/server/ralph-loop-service.test.ts`, `src/core/implement-github-issue-playbook.test.ts`.
+
 ---
 
 ## R4c: Contribution Workspace
@@ -807,6 +819,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R4b.4 | — | SHOULD | done | QuickLaunch, App |
 | R4b.5 | — | SHOULD | done | telegram/index, telegram/rephrase, launch-service |
 | R4b.6 | F6.7 | SHOULD | done | looped-playbook-launch, PlaybookBrowser |
+| R4b.7 | — | SHALL | done | launch-service, ralph-loop-service, implement-github-issue playbook |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |
