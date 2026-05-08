@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { AVAILABLE_AGENT_TYPES, type Playbook, type ClientMessage, type AutonomyLevel, type AgentType } from '../../shared/protocol.js';
-import type { PlaybookParameterOption } from '../../core/playbook.js';
+import type { PlaybookParameterOption, PlaybookScope } from '../../core/playbook.js';
 import type { ProjectSummary } from '../../core/project-summary.js';
 import { useKookrStore } from '../store/useStore.js';
 import { projectLabel, projectColor } from '../presentation.js';
@@ -118,6 +118,19 @@ function PinIcon({ pinned }: { pinned: boolean }): React.ReactElement {
     <svg viewBox="0 0 16 16" aria-hidden="true" className={pinned ? 'filled' : ''}>
       <path d="M5.4 2.4h5.2l-.8 3 2.2 2.2v1.2H8.8L8 14 6.8 8.8H4V7.6l2.2-2.2-.8-3Z" />
     </svg>
+  );
+}
+
+function ScopeBadge({ scope }: { scope: PlaybookScope }): React.ReactElement | null {
+  if (scope === 'project') return null;
+  const label = scope === 'plugin' ? 'plugin' : 'user';
+  const title = scope === 'plugin'
+    ? 'Bundled with kookr-toolkit — visible in every project.'
+    : 'From ~/.kookr/playbooks — visible in every project.';
+  return (
+    <span className={`playbook-scope-badge playbook-scope-${scope}`} title={title}>
+      {label}
+    </span>
   );
 }
 
@@ -426,6 +439,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
             parameterValues: paramValues,
             autonomy,
             agentType,
+            scope: selected.scope,
           }),
         });
         if (!res.ok) {
@@ -467,6 +481,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
         parameterValues: paramValues,
         autonomy,
         agentType,
+        scope: selected.scope,
       });
       if (sent) {
         useKookrStore.getState().handleAlert('', `Starting task: ${excerpt}`, 'info');
@@ -499,6 +514,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
             parameterValues: paramValues,
             autonomy,
             agentType,
+            scope: selected.scope,
           }),
         },
       );
@@ -607,6 +623,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
             Back
           </button>
           <span className="playbook-detail-name">{selected.name}</span>
+          <ScopeBadge scope={selected.scope} />
           {renderPlaybookTags(selected.tags)}
         </div>
         {selected.description && <p className="playbook-detail-desc">{selected.description}</p>}
@@ -957,6 +974,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
                   </span>
                   <span className="playbook-card-meta">
                     {isRecent && <span className="playbook-recent-badge">recent</span>}
+                    <ScopeBadge scope={pb.scope} />
                     {renderPlaybookTags(pb.tags)}
                     <span
                       className={`project-badge color-${projectColor(targetCwd)}`}

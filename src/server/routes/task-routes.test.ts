@@ -41,13 +41,26 @@ function broadcastNoop(_msg: ServerMessage): void {
 
 describe('GET /api/playbooks', () => {
   let tempDir: string;
+  let originalUserEnv: string | undefined;
+  let originalPluginEnv: string | undefined;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'playbooks-test-'));
+    // Isolate the user + plugin tiers — these tests assert exact playbook
+    // counts and would flap if the running machine has populated `~/.kookr/`
+    // or a real plugin tree alongside the project.
+    originalUserEnv = process.env.KOOKR_USER_PLAYBOOKS_DIR;
+    originalPluginEnv = process.env.KOOKR_PLUGIN_DIR;
+    process.env.KOOKR_USER_PLAYBOOKS_DIR = '/nonexistent/kookr-user-playbooks';
+    process.env.KOOKR_PLUGIN_DIR = '/nonexistent/kookr-plugin';
   });
 
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
+    if (originalUserEnv === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
+    else process.env.KOOKR_USER_PLAYBOOKS_DIR = originalUserEnv;
+    if (originalPluginEnv === undefined) delete process.env.KOOKR_PLUGIN_DIR;
+    else process.env.KOOKR_PLUGIN_DIR = originalPluginEnv;
   });
 
   test('returns [] when the cwd has no .kookr/playbooks directory', async () => {

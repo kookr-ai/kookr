@@ -32,7 +32,7 @@ You run 5 Claude Code agents in parallel. One silently loops on the same failing
 - **Multi-project tracking** — register several project directories and see contributions across all of them
 - **Scheduled tasks** — cron-style triggers for recurring agents (nightly scans, periodic supervision)
 - **GitHub integration** — PR status, CI checks, and review threads for agent-created PRs
-- **Playbooks** — reusable task templates from `.kookr/playbooks/`
+- **Playbooks** — reusable task templates discovered from three tiers: bundled with the kookr-toolkit plugin (visible everywhere), `~/.kookr/playbooks/` (per-user), and `<repo>/.kookr/playbooks/` (project-local). See [`docs/playbook-scoping.md`](docs/playbook-scoping.md).
 - **Cost tracking** — token usage and cost per session
 - **Session reflection** — analyze friction patterns across supervision sessions
 

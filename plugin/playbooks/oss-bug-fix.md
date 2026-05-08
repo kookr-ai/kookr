@@ -1,6 +1,7 @@
 ---
 name: OSS Bug Fix
 description: Pick the highest-priority triaged bug from any repository, reproduce, fix, test, and mark ready for review
+repo-tags: [github]
 parameters:
   - name: repoFullName
     description: "Upstream repo (owner/repo)"

@@ -1,6 +1,7 @@
 ---
 name: OSS Contribution Pipeline
 description: End-to-end workflow for contributing a perfect PR to a trending open-source repository — recon, learn, scout, fix, submit
+repo-tags: [github]
 parameters:
   - name: repoFullName
     description: "Target repository (owner/repo)"

@@ -39,6 +39,7 @@ describe('parsePlaybook', () => {
     expect(pb.name).toBe('Create staging MR');
     expect(pb.description).toBe('Open a merge request from staging to main');
     expect(pb.sourceCwd).toBe('/project');
+    expect(pb.scope).toBe('project'); // default when not supplied
     expect(pb.parameters).toEqual([
       { name: 'version', description: 'Release version tag', required: true },
       { name: 'reviewer', description: 'GitHub reviewer handle', required: false, default: '@team-lead' },
@@ -51,6 +52,7 @@ describe('parsePlaybook', () => {
   test('parses a minimal playbook with only name', () => {
     const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/project');
 
+    expect(pb.scope).toBe('project');
     expect(pb.name).toBe('Simple task');
     expect(pb.description).toBe('');
     expect(pb.parameters).toEqual([]);
@@ -58,6 +60,35 @@ describe('parsePlaybook', () => {
     expect(pb.tags).toEqual([]);
     expect(pb.effectiveLoop).toBeUndefined();
     expect(pb.body).toBe('Do the thing.');
+  });
+
+  test('records scope when explicitly set to user', () => {
+    const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/home/u/.kookr/playbooks', 'user');
+
+    expect(pb.scope).toBe('user');
+    expect(pb.sourceCwd).toBe('/home/u/.kookr/playbooks');
+  });
+
+  test('records scope when explicitly set to plugin', () => {
+    const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/opt/kookr-toolkit/playbooks', 'plugin');
+
+    expect(pb.scope).toBe('plugin');
+    expect(pb.sourceCwd).toBe('/opt/kookr-toolkit/playbooks');
+  });
+
+  test('parses inline repo-tags frontmatter', () => {
+    const content = `---
+name: Sample
+repo-tags: [github, oss]
+---
+body.`;
+    const pb = parsePlaybook(content, 'sample.md', '/p');
+    expect(pb.repoTags).toEqual(['github', 'oss']);
+  });
+
+  test('omits repoTags when absent', () => {
+    const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/p');
+    expect(pb.repoTags).toBeUndefined();
   });
 
   test('parses loopable workflow tags and effective loop defaults', () => {

@@ -1,6 +1,7 @@
 ---
 name: OSS Bug PR
 description: Find ready-labeled triage issues and create upstream PRs for any repository
+repo-tags: [github]
 parameters:
   - name: repoFullName
     description: "Upstream repo (owner/repo)"

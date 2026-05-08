@@ -1,6 +1,7 @@
 ---
 name: OSS Bug Triage
 description: Browse upstream bug reports from any repository, score by confidence and reproducibility, maintain ranked triage issues in fork
+repo-tags: [github]
 parameters:
   - name: repoFullName
     description: "Upstream repo (owner/repo, e.g., microsoft/vscode)"

@@ -40,6 +40,7 @@ export class PlaybookHandler {
             parameterValues: msg.parameterValues,
             autonomy: msg.autonomy,
             agentType: msg.agentType,
+            scope: msg.scope,
           });
           result = await this.deps.launchTask?.(opts);
         } catch (e) { err = e; }

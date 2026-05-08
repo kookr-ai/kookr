@@ -1297,8 +1297,19 @@ describe('WebSocket MessageRouter — Playbooks', () => {
   let router: MessageRouter;
   let sentMessages: ServerMessage[];
   let tempDir: string;
+  let originalUserEnv: string | undefined;
+  let originalPluginEnv: string | undefined;
 
   beforeEach(async () => {
+    // Isolate the user and plugin tiers — these tests assert exact playbook
+    // counts assuming a fresh project dir; without isolation the plugin's
+    // shipped playbooks (and the user's personal ~/.kookr/playbooks/) would
+    // bleed in and the assertions would flap.
+    originalUserEnv = process.env.KOOKR_USER_PLAYBOOKS_DIR;
+    originalPluginEnv = process.env.KOOKR_PLUGIN_DIR;
+    process.env.KOOKR_USER_PLAYBOOKS_DIR = '/nonexistent/kookr-user-playbooks';
+    process.env.KOOKR_PLUGIN_DIR = '/nonexistent/kookr-plugin';
+
     taskStore = new TaskStore();
     queue = new AttentionQueue();
     monitor = new Monitor(taskStore, queue);
@@ -1326,6 +1337,10 @@ describe('WebSocket MessageRouter — Playbooks', () => {
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true });
+    if (originalUserEnv === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
+    else process.env.KOOKR_USER_PLAYBOOKS_DIR = originalUserEnv;
+    if (originalPluginEnv === undefined) delete process.env.KOOKR_PLUGIN_DIR;
+    else process.env.KOOKR_PLUGIN_DIR = originalPluginEnv;
   });
 
   test('listPlaybooks returns discovered playbooks', async () => {

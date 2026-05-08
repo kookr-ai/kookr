@@ -2,7 +2,7 @@ import type { AnomalySeverity, AnomalyType } from '../../core/types.js';
 import type { AgentState } from '../../core/monitor.js';
 import type { GitHubPRState, GitHubIssueState, GitHubStateChange } from '../../core/github-types.js';
 import type { BuildInfo } from '../../core/build-info.js';
-import type { Playbook } from '../../core/playbook.js';
+import type { Playbook, PlaybookScope } from '../../core/playbook.js';
 import type { QuickAction } from '../../core/response-assist.js';
 import type { TelemetryEvent } from '../../core/telemetry.js';
 import type { ProjectSummary } from '../../core/project-summary.js';
@@ -162,7 +162,7 @@ export type ClientMessage =
   | { type: 'stop'; agentId: string }
   | { type: 'reflect' }
   | { type: 'listPlaybooks'; cwd: string }
-  | { type: 'launchPlaybook'; playbookPath: string; cwd: string; parameterValues: Record<string, string>; autonomy?: AutonomyLevel; agentType?: AgentType }
+  | { type: 'launchPlaybook'; playbookPath: string; cwd: string; parameterValues: Record<string, string>; autonomy?: AutonomyLevel; agentType?: AgentType; scope?: PlaybookScope }
   | { type: 'telemetry'; events: TelemetryEvent[] }
   | { type: 'setProjectConfig'; project: string; config: Partial<ProjectConfig> }
   | { type: 'clearCompleted'; includeTerminated?: boolean }
