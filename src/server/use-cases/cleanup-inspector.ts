@@ -17,6 +17,7 @@ import { existsSync } from 'node:fs';
 import type { RepoPolicyResolver } from '../../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js';
 import { gitIn } from '../../core/git-helpers.js';
+import { getProjectId } from '../../core/project-identity.js';
 import { isProtectedWorktreePath } from '../../core/worktree-protection.js';
 import { deriveCleanupCapabilities } from '../../core/workspace-cleanup-policy.js';
 import { parsePorcelainStatus, runCommitEnrichment } from './cleanup-enrichment.js';
@@ -93,11 +94,20 @@ export async function inspectCleanupCandidates(
   const worktrees = parseWorktreeList(rawList);
   if (worktrees.length === 0) return [];
 
-  // Resolve baseline for classification
-  const baseline = await policyResolver.resolveBaseline(projectId, repoPath);
-
   // The first worktree is the main checkout — skip it
   const candidates = worktrees.slice(1);
+
+  const currentProjectId = await getProjectId(repoPath);
+  if (currentProjectId !== projectId) {
+    return candidates
+      .filter((wt) => !wt.bare)
+      .map((wt) => classifyProjectRepointedCandidate(wt, projectId, currentProjectId, observedAt));
+  }
+
+  // Resolve baseline for classification only after the current repo still
+  // matches the stored project. A repointed origin makes baseline logic unsafe.
+  const baseline = await policyResolver.resolveBaseline(projectId, repoPath);
+
   const assessments: CleanupCandidateAssessment[] = [];
 
   for (const wt of candidates) {
@@ -110,6 +120,27 @@ export async function inspectCleanupCandidates(
   }
 
   return assessments;
+}
+
+function classifyProjectRepointedCandidate(
+  wt: GitWorktreeInfo,
+  projectId: string,
+  currentProjectId: string,
+  observedAt: string,
+): CleanupCandidateAssessment {
+  return {
+    projectId,
+    currentProjectId,
+    worktreePath: wt.worktree,
+    branch: wt.branch ?? `(detached at ${wt.HEAD?.slice(0, 8) ?? 'unknown'})`,
+    classification: 'unknown',
+    reasonCode: 'project_repointed',
+    source: 'cleanup_inspector',
+    observedAt,
+    recoveryGuidance: `Stored projectId ${projectId} no longer matches current origin ${currentProjectId}. Relaunch or confirm the project before cleanup.`,
+    capabilities: deriveCleanupCapabilities({ classification: 'unknown', reasonCode: 'project_repointed' }),
+    headShortSha: wt.branch ? undefined : wt.HEAD?.slice(0, 7),
+  };
 }
 
 async function classifyCandidate(

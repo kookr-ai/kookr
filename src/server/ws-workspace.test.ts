@@ -46,6 +46,10 @@ function mockGitResponses(handlers: Record<string, string | 'error'>) {
         return;
       }
     }
+    if (argsStr.includes('remote get-url origin')) {
+      cb(null, { stdout: 'local/test-repo', stderr: '' });
+      return;
+    }
     // Default: succeed with empty output
     cb(null, { stdout: '', stderr: '' });
   });

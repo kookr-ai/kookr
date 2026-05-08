@@ -19,6 +19,10 @@ export function formatCleanupSubtext(
 
   const classification = candidate.classification;
 
+  if (candidate.reasonCode === 'project_repointed' && candidate.currentProjectId) {
+    return { text: `${candidate.projectId} -> ${candidate.currentProjectId}`, failed: true };
+  }
+
   // Classifications where no list-level info is meaningful.
   if (classification === 'protected' || classification === 'busy' || classification === 'checked_out_elsewhere' || classification === 'stale_worktree') {
     return null;

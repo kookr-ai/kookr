@@ -62,6 +62,10 @@ function mockGitArgs(rules: Array<{ match: (args: string[], opts?: any) => boole
         return;
       }
     }
+    if (argsArr.includes('remote') && argsArr.includes('get-url') && argsArr.includes('origin')) {
+      cb(null, { stdout: 'https://github.com/org/repo.git' }, '');
+      return;
+    }
     // Default: empty success
     cb(null, { stdout: '' }, '');
   });
@@ -113,6 +117,40 @@ describe('inspectCleanupCandidates', () => {
       policyResolver, leaseService,
     });
     expect(result).toEqual([]);
+  });
+
+  it('surfaces project_repointed and skips baseline merge logic when origin changes', async () => {
+    mockGitArgs([
+      { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
+      { match: (a) => a.includes('-C') && a.includes('/repo') && a.includes('remote') && a.includes('origin'), stdout: 'https://github.com/other/repo.git' },
+      { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'baseline-should-not-resolve' },
+      { match: (a) => a.includes('merge-base'), stdout: '' },
+      { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },
+    ]);
+
+    const result = await inspectCleanupCandidates('/repo', 'github.com/org/repo', {
+      policyResolver, leaseService,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      projectId: 'github.com/org/repo',
+      currentProjectId: 'github.com/other/repo',
+      worktreePath: '/repo-wt',
+      branch: 'feature',
+      classification: 'unknown',
+      reasonCode: 'project_repointed',
+      source: 'cleanup_inspector',
+    });
+    expect(result[0].baselineRef).toBeUndefined();
+    expect(result[0].baselineSha).toBeUndefined();
+    expect(result[0].recoveryGuidance).toContain('github.com/org/repo');
+    expect(result[0].recoveryGuidance).toContain('github.com/other/repo');
+    expect(result[0].capabilities.canSafeRemove).toBe(false);
+    expect(result[0].capabilities.canRemovePathKeepBranch).toBe(false);
+    expect(mockExecFile.mock.calls.some(([, args]) => Array.isArray(args) && args.includes('merge-base'))).toBe(false);
+    expect(mockExecFile.mock.calls.some(([, args]) => Array.isArray(args) && args.includes('status'))).toBe(false);
+    expect(mockExecFile.mock.calls.some(([, args]) => Array.isArray(args) && args.includes('rev-parse'))).toBe(false);
   });
 
   // --- Classification: busy ---
@@ -383,6 +421,7 @@ describe('inspectCleanupCandidates', () => {
 
     mockGitArgs([
       { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
+      { match: (a) => a.includes('remote') && a.includes('get-url') && a.includes('origin'), stdout: 'https://github.com/unknown/repo.git' },
       { match: (a) => a.includes('symbolic-ref'), stdout: null },
       { match: (a) => a.includes('rev-parse') && a.includes('--verify'), stdout: null },
       { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },
@@ -406,6 +445,8 @@ describe('inspectCleanupCandidates', () => {
       const cwd: string = opts?.cwd ?? '';
       if (a.includes('worktree') && a.includes('list')) {
         cb(null, { stdout: MULTI_WT }, '');
+      } else if (a.includes('remote') && a.includes('get-url') && a.includes('origin')) {
+        cb(null, { stdout: 'https://github.com/org/repo.git' }, '');
       } else if (a.includes('rev-parse') && a[a.length - 1] === 'main') {
         cb(null, { stdout: 'abc123' }, '');
       } else if (a.includes('status') && a.includes('--porcelain')) {
@@ -545,6 +586,7 @@ describe('inspectCleanupCandidates', () => {
 
     mockGitArgs([
       { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
+      { match: (a) => a.includes('remote') && a.includes('get-url') && a.includes('origin'), stdout: 'https://github.com/unknown/repo.git' },
       { match: (a) => a.includes('symbolic-ref'), stdout: null },
       { match: (a) => a.includes('rev-parse') && a.includes('--verify'), stdout: null },
       { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },

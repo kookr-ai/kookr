@@ -94,6 +94,19 @@ describe('formatCleanupSubtext', () => {
     }, NOW);
     expect(out).toBeNull();
   });
+
+  it('shows stored and current project ids for repointed projects', () => {
+    const out = formatCleanupSubtext({
+      ...BASE,
+      classification: 'unknown',
+      reasonCode: 'project_repointed',
+      currentProjectId: 'github.com/other/repo',
+    }, NOW);
+    expect(out).toEqual({
+      text: 'p -> github.com/other/repo',
+      failed: true,
+    });
+  });
 });
 
 describe('formatAge', () => {
