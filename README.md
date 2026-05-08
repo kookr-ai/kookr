@@ -510,8 +510,11 @@ The CLA grants the project owner a broad license to use and relicense your contr
 ## Community & Support
 
 - **Bug reports & feature requests** — open a [GitHub issue](https://github.com/kookr-ai/kookr/issues).
-- **Security disclosures** — please use [GitHub Security Advisories](https://github.com/kookr-ai/kookr/security/advisories/new) (private). A formal `SECURITY.md` is tracked in [#91](https://github.com/kookr-ai/kookr/issues/91).
 - **Contributing** — see the [Contributing](#contributing) section above and [`CLA.md`](CLA.md). A dedicated `CONTRIBUTING.md` is tracked in [#93](https://github.com/kookr-ai/kookr/issues/93).
+
+### Security
+
+Please report suspected vulnerabilities privately through [GitHub Security Advisories](https://github.com/kookr-ai/kookr/security/advisories/new). See [`SECURITY.md`](SECURITY.md) for supported versions, response expectations, and scope.
 
 ## Privacy
 
