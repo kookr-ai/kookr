@@ -499,6 +499,8 @@ Contributions are welcome! This project uses:
 
 Before submitting a PR, make sure `pnpm test` passes. The pre-push hook enforces this automatically.
 
+All contributors are expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ### Contributor License Agreement
 
 Contributions to Kookr require signing the [Contributor License Agreement](CLA.md). When you open your first pull request, the CLA Assistant bot will comment with a link to the agreement and instructions for signing — typically a one-line comment posted on the PR. You only need to sign once; future contributions are covered automatically.
