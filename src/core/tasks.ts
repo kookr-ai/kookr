@@ -179,6 +179,13 @@ export interface RalphLoopState {
    * delta is below the cap (or whose delta is unknown).
    */
   consecutiveIterationCostCapStreak?: number;
+  /**
+   * Cumulative cost of the most recent fully-handled iteration. The cycler
+   * uses this to compute per-iteration cost deltas without re-reading the
+   * iteration log. `undefined` when no prior iteration reported a known
+   * cumulative cost (first iteration, or cost source unavailable).
+   */
+  lastCumulativeCostUsd?: number;
   /** Cumulative count of malformed/oversize/etc verdict files (operability). */
   verdictWarningCount?: number;
   /** Cumulative count of over-cap iterations (operability). */

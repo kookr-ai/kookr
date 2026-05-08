@@ -43,6 +43,8 @@ export type {
   RalphLoopStatus,
   RalphLoopState,
   RalphLoopReadModel,
+  RalphStallConfig,
+  BurnedOutTarget,
 } from './contracts/ralph.js';
 export type {
   RalphIterationExitReason,

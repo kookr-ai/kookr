@@ -48,6 +48,7 @@ export interface RalphLoopState {
   stallConfig?: RalphStallConfig;
   burnedOutTargets?: BurnedOutTarget[];
   consecutiveIterationCostCapStreak?: number;
+  lastCumulativeCostUsd?: number;
   verdictWarningCount?: number;
   iterationCostWarningCount?: number;
   lastVerdictWarningReason?: string;
