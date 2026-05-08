@@ -5,8 +5,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { registerDeployRoutes } from './deploy-routes.js';
+import { registerDeployRoutes, resolveProdDir } from './deploy-routes.js';
 import type { RouteDeps } from './shared.js';
+import type { WorktreeEntry } from '../../adapters/git-worktree-registry.js';
 
 /** Strip GIT_DIR so git subprocesses work in test dirs, not the repo. */
 const cleanEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
@@ -157,6 +158,60 @@ describe('deploy-routes', () => {
 
       const res2 = await app.request('/api/deploy/trigger', { method: 'POST' });
       expect(res2.status).toBe(409);
+    });
+  });
+
+  describe('resolveProdDir', () => {
+    function makeEntry(path: string): WorktreeEntry {
+      return { path, branch: null, head: 'abc', isDetached: false, isPrunable: false, isMain: false };
+    }
+
+    it('falls back to legacy sibling path when no registry is provided', () => {
+      const dir = resolveProdDir({ serverCwd: '/home/me/git/kookr' });
+      expect(dir).toBe('/home/me/git/kookr-prod');
+    });
+
+    it('returns the server cwd when its basename matches the legacy convention', () => {
+      const dir = resolveProdDir({ serverCwd: '/home/me/git/kookr-prod' });
+      expect(dir).toBe('/home/me/git/kookr-prod');
+    });
+
+    it('returns the path of the unique worktree carrying the marker', async () => {
+      const prodWt = join(root, 'kookr-runtime');
+      await mkdir(prodWt, { recursive: true });
+      await writeFile(join(prodWt, '.kookr-protected'), 'production runtime\n');
+      const otherWt = join(root, 'kookr-feature');
+      await mkdir(otherWt, { recursive: true });
+
+      const dir = resolveProdDir({
+        serverCwd: mainDir,
+        worktreeRegistry: { all: () => [makeEntry(mainDir), makeEntry(prodWt), makeEntry(otherWt)] },
+      });
+      expect(dir).toBe(prodWt);
+    });
+
+    it('throws when multiple worktrees carry the marker', async () => {
+      const wt1 = join(root, 'kookr-prod');
+      const wt2 = join(root, 'kookr-runtime');
+      await mkdir(wt1, { recursive: true });
+      await mkdir(wt2, { recursive: true });
+      await writeFile(join(wt1, '.kookr-protected'), 'production runtime\n');
+      await writeFile(join(wt2, '.kookr-protected'), 'production runtime\n');
+
+      expect(() =>
+        resolveProdDir({
+          serverCwd: mainDir,
+          worktreeRegistry: { all: () => [makeEntry(wt1), makeEntry(wt2)] },
+        }),
+      ).toThrow(/multiple .kookr-protected worktrees/);
+    });
+
+    it('falls back to legacy resolver when registry has no markers', () => {
+      const dir = resolveProdDir({
+        serverCwd: mainDir,
+        worktreeRegistry: { all: () => [makeEntry(mainDir)] },
+      });
+      expect(dir).toBe(join(root, 'kookr-prod'));
     });
   });
 });

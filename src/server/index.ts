@@ -107,6 +107,7 @@ import {
 } from './oss-source-watcher.js';
 import { projectIdForRepo } from '../core/oss-attempt-store.js';
 import { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
+import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
 
 // --- Exported types ---
 
@@ -482,6 +483,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   }
 
   await worktreeRegistry.refresh(serverCwd);
+
+  // One-time idempotent migration: any worktree whose basename still matches
+  // the legacy `kookr-prod` convention gets a `.kookr-protected` marker so
+  // the marker-aware protection check is authoritative going forward.
+  for (const entry of worktreeRegistry.all()) {
+    try {
+      if (migrateLegacyProtectedWorktree(entry.path)) {
+        console.log(
+          `[worktree-protection] wrote .kookr-protected marker on ${entry.path} (legacy migration)`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[worktree-protection] failed to write marker on ${entry.path}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   // Reconcile with live backend sessions
   const reconcileResult = await reconcile(taskStore, terminalBackend, worktreeRegistry);
@@ -905,6 +923,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     tokenTracker,
     tasksFile,
     ralphLoopService,
+    worktreeRegistry,
     settings: {
       get: () => currentSettings,
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,
