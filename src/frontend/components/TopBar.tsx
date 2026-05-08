@@ -16,11 +16,7 @@ interface Props {
   onSettings: () => void;
   onShowShortcuts: () => void;
   onOssView: () => void;
-  /**
-   * Set only when the backend is built with KOOKR_COST_PANEL=1 (App probes the
-   * route on mount). When undefined, the icon is hidden so users on
-   * default-flag deployments never see it.
-   */
+  /** Open the Cost Comparison panel. Optional — the icon is hidden when undefined. */
   onCostComparison?: () => void;
   /** Optional slot rendered in the right-side action cluster, hidden in compact mode. */
   sweepSlot?: React.ReactNode;

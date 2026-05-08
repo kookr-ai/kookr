@@ -73,17 +73,6 @@ export function App() {
   const [showSchedules, setShowSchedules] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showCostComparison, setShowCostComparison] = useState(false);
-  // KOOKR_COST_PANEL flag detection: probe the route once on mount. The route is
-  // only registered server-side when KOOKR_COST_PANEL=1, so a 404 means the flag
-  // is off and the icon must stay hidden (R11 + RFC PR 3 §Implementation phases).
-  const [costPanelAvailable, setCostPanelAvailable] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/cost-comparison?window=24h')
-      .then(r => { if (!cancelled) setCostPanelAvailable(r.ok); })
-      .catch(() => { /* network error → stay hidden */ });
-    return () => { cancelled = true; };
-  }, []);
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
   const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
   const [reflectionSuggestion, setReflectionSuggestion] = useState<ReflectionSuggestion | null>(null);
@@ -474,7 +463,7 @@ export function App() {
         onSettings={() => setShowSettings(true)}
         onShowShortcuts={() => setShowShortcuts(true)}
         onOssView={toggleOssView}
-        onCostComparison={costPanelAvailable ? () => setShowCostComparison(true) : undefined}
+        onCostComparison={() => setShowCostComparison(true)}
         sweepSlot={workspaceEnabled ? <SweepButton send={send} projectCount={projectSummaries.length} /> : undefined}
       />
       {isMobileViewport ? (
@@ -639,7 +628,7 @@ export function App() {
         <QuickLaunch send={send} onClose={() => setShowQuickLaunch(false)} />
       )}
       {showSchedules && <SchedulesDialog onClose={() => setShowSchedules(false)} />}
-      {showCostComparison && costPanelAvailable && <CostComparisonPanel onClose={() => setShowCostComparison(false)} />}
+      {showCostComparison && <CostComparisonPanel onClose={() => setShowCostComparison(false)} />}
       {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
       {ossShowView && <OssProductivityView onClose={closeOssView} />}
       {showWorkspace && selectedProject && (

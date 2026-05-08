@@ -831,94 +831,91 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
   });
 
   // ---------------------------------------------------------------------------
-  // Cost comparison (rfc-cost-comparison-panel.md). Read-only telemetry route;
-  // flag-gated behind KOOKR_COST_PANEL=1 so half-implemented frontends cannot
-  // poll a partial backend (R11 + PR 3 rollback safety in §Implementation phases).
+  // Cost comparison (rfc-cost-comparison-panel.md). Read-only telemetry route.
+  // Originally flag-gated behind KOOKR_COST_PANEL=1 for PR 3 rollback safety;
+  // ungated post-merge once the panel proved stable.
   // ---------------------------------------------------------------------------
 
-  if (process.env.KOOKR_COST_PANEL === '1') {
-    app.get('/api/cost-comparison', async (c) => {
-      const tokenTracker = deps.tokenTracker;
-      if (!tokenTracker) return c.json({ error: 'token tracker not wired' }, 500);
+  app.get('/api/cost-comparison', async (c) => {
+    const tokenTracker = deps.tokenTracker;
+    if (!tokenTracker) return c.json({ error: 'token tracker not wired' }, 500);
 
-      const window = (c.req.query('window') ?? '7d') as TimeWindow;
-      const agentParam = c.req.query('agent');
-      const agentFilter: CostAgent | undefined =
-        agentParam === 'claude-code' || agentParam === 'codex-cli' ? agentParam : undefined;
-      const taskNameQuery = c.req.query('q');
+    const window = (c.req.query('window') ?? '7d') as TimeWindow;
+    const agentParam = c.req.query('agent');
+    const agentFilter: CostAgent | undefined =
+      agentParam === 'claude-code' || agentParam === 'codex-cli' ? agentParam : undefined;
+    const taskNameQuery = c.req.query('q');
 
-      const now = Date.now();
-      const windowEndMs = now;
-      const windowStartMs =
-        window === '24h' ? now - 24 * 60 * 60 * 1000
-        : window === '7d' ? now - 7 * 24 * 60 * 60 * 1000
-        : window === '30d' ? now - 30 * 24 * 60 * 60 * 1000
-        : 0;                                                          // 'all' → epoch
+    const now = Date.now();
+    const windowEndMs = now;
+    const windowStartMs =
+      window === '24h' ? now - 24 * 60 * 60 * 1000
+      : window === '7d' ? now - 7 * 24 * 60 * 60 * 1000
+      : window === '30d' ? now - 30 * 24 * 60 * 60 * 1000
+      : 0;                                                          // 'all' → epoch
 
-      // Codex side: scan + bind. The scanner is a per-route singleton so its
-      // (path, mtime) cache survives across requests.
-      const scanner = costScannerSingleton;
-      const tasks = taskStore.listTasks();
-      const codexTasks = tasks
-        .filter(t => t.agentType === 'codex-cli')
-        .map(t => {
-          // Use the first session's cwd (the actual cwd Codex saw) when present;
-          // task.cwd is the user-supplied launch cwd which may differ.
-          const sessionCwd = t.sessions[0]?.cwd;
-          const created = t.createdAt instanceof Date ? t.createdAt.getTime() : new Date(t.createdAt).getTime();
-          return { taskId: t.id, cwd: sessionCwd ?? t.cwd, createdAtMs: created };
-        });
-
-      const scanStart = Date.now();
-      const scan = await scanner.scan(windowStartMs, windowEndMs);
-      const { outcomes, orphanRollouts } = scanner.bindTasks(scan.rollouts, codexTasks);
-
-      // Claude side: pull live token usage and the resolved model id (used by the aggregator
-      // to drive the R17 pricing-staleness banner — Claude per-task rows themselves keep
-      // model:null because dated Claude ids don't round-trip through exact-match pricing).
-      const claudeUsage = new Map<string, NonNullable<ReturnType<typeof tokenTracker.getUsage>>>();
-      const claudeModels = new Map<string, string | null>();
-      for (const t of tasks) {
-        if (t.agentType !== 'claude-code') continue;
-        const u = tokenTracker.getUsage(t.id);
-        if (u) claudeUsage.set(t.id, u);
-        claudeModels.set(t.id, tokenTracker.getModel(t.id));
-      }
-
-      // Resolve playbooks for displayName. discoverPlaybooks reads .kookr/playbooks/
-      // in the server cwd; missing entries fall back to the id string.
-      let playbooksById = new Map<string, import('../../shared/contracts/playbook.js').Playbook>();
-      try {
-        const playbooks = await discoverPlaybooks(serverCwd);
-        playbooksById = new Map(playbooks.map(p => [p.id, p]));
-      } catch {
-        // discovery failure is non-fatal — the panel still renders with id strings.
-      }
-
-      const response = aggregateCostComparison({
-        tasks, agentFilter, taskNameQuery,
-        windowStartMs, windowEndMs,
-        claudeUsage, claudeModels, codexOutcomes: outcomes,
-        playbooksById,
-        todayMs: now,
-        codexStats: {
-          rolloutCount: scan.stats.rolloutCount,
-          parseErrorCount: scan.stats.parseErrorCount,
-          abandonedCount: scan.stats.abandonedCount,
-          orphanRollouts,
-        },
-        scannedAt: new Date().toISOString(),
-        scanDurationMs: Date.now() - scanStart,
+    // Codex side: scan + bind. The scanner is a per-route singleton so its
+    // (path, mtime) cache survives across requests.
+    const scanner = costScannerSingleton;
+    const tasks = taskStore.listTasks();
+    const codexTasks = tasks
+      .filter(t => t.agentType === 'codex-cli')
+      .map(t => {
+        // Use the first session's cwd (the actual cwd Codex saw) when present;
+        // task.cwd is the user-supplied launch cwd which may differ.
+        const sessionCwd = t.sessions[0]?.cwd;
+        const created = t.createdAt instanceof Date ? t.createdAt.getTime() : new Date(t.createdAt).getTime();
+        return { taskId: t.id, cwd: sessionCwd ?? t.cwd, createdAtMs: created };
       });
 
-      return c.json(response);
+    const scanStart = Date.now();
+    const scan = await scanner.scan(windowStartMs, windowEndMs);
+    const { outcomes, orphanRollouts } = scanner.bindTasks(scan.rollouts, codexTasks);
+
+    // Claude side: pull live token usage and the resolved model id (used by the aggregator
+    // to drive the R17 pricing-staleness banner — Claude per-task rows themselves keep
+    // model:null because dated Claude ids don't round-trip through exact-match pricing).
+    const claudeUsage = new Map<string, NonNullable<ReturnType<typeof tokenTracker.getUsage>>>();
+    const claudeModels = new Map<string, string | null>();
+    for (const t of tasks) {
+      if (t.agentType !== 'claude-code') continue;
+      const u = tokenTracker.getUsage(t.id);
+      if (u) claudeUsage.set(t.id, u);
+      claudeModels.set(t.id, tokenTracker.getModel(t.id));
+    }
+
+    // Resolve playbooks for displayName. discoverPlaybooks reads .kookr/playbooks/
+    // in the server cwd; missing entries fall back to the id string.
+    let playbooksById = new Map<string, import('../../shared/contracts/playbook.js').Playbook>();
+    try {
+      const playbooks = await discoverPlaybooks(serverCwd);
+      playbooksById = new Map(playbooks.map(p => [p.id, p]));
+    } catch {
+      // discovery failure is non-fatal — the panel still renders with id strings.
+    }
+
+    const response = aggregateCostComparison({
+      tasks, agentFilter, taskNameQuery,
+      windowStartMs, windowEndMs,
+      claudeUsage, claudeModels, codexOutcomes: outcomes,
+      playbooksById,
+      todayMs: now,
+      codexStats: {
+        rolloutCount: scan.stats.rolloutCount,
+        parseErrorCount: scan.stats.parseErrorCount,
+        abandonedCount: scan.stats.abandonedCount,
+        orphanRollouts,
+      },
+      scannedAt: new Date().toISOString(),
+      scanDurationMs: Date.now() - scanStart,
     });
-  }
+
+    return c.json(response);
+  });
 }
 
 // Singleton scanner — its in-memory (path, mtime) cache outlives a single
-// request so warm scans hit the < 200 ms target (R6). Only instantiated when
-// the route is registered, so KOOKR_COST_PANEL=0 deployments pay nothing.
+// request so warm scans hit the < 200 ms target (R6).
 const costScannerSingleton = new CodexRolloutScanner();
 
 function parseIterationLimit(rawLimit: string | undefined): number {

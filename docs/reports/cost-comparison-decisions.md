@@ -3,8 +3,8 @@
 Audit log for the qualitative decision rule introduced by
 `docs/rfc/rfc-cost-comparison-panel.md` §Why now / what success looks like.
 
-The Cost Comparison panel (top-bar `$` icon, behind `KOOKR_COST_PANEL=1`)
-surfaces per-playbook Claude vs Codex spend and a thumbs-up rate on a rolling
+The Cost Comparison panel (top-bar `$` icon) surfaces per-playbook Claude vs
+Codex spend and a thumbs-up rate on a rolling
 30-day window. The panel does NOT make routing decisions — it prompts a human
 judgment, and the audit log lives here.
 
