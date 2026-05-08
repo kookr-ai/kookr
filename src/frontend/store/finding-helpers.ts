@@ -10,7 +10,8 @@ export function isActiveFinding(agent: AgentState): boolean {
     agent.anomaly !== null &&
     !agent.snoozedUntil &&
     !agent.suppressed &&
-    agent.taskStatus !== 'pending'
+    agent.taskStatus !== 'pending' &&
+    (agent.taskStatus === undefined || !isTerminalStatus(agent.taskStatus))
   );
 }
 
