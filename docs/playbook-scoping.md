@@ -12,6 +12,16 @@ Playbooks are reusable task templates. Kookr discovers them from three independe
 
 The plugin tier is auto-detected from the running kookr install. Override with `KOOKR_PLUGIN_DIR` if you've installed the plugin somewhere unusual.
 
+## Plugin portability policy
+
+Plugin-tier playbooks must run as ordinary toolkit content in any consumer repo. They must not depend on Kookr runtime context, local Kookr state, or Kookr development commands, even when that dependency is guarded with a fallback such as `[ -n "${KOOKR_API_BASE_URL:-}" ]`.
+
+Put Kookr-aware workflows in a higher-precedence tier instead:
+
+- Use `project` scope (`<cwd>/.kookr/playbooks/*.md`) when the workflow only applies to one repository.
+- Use `user` scope (`~/.kookr/playbooks/*.md`) when the workflow is personal and useful across repos, but enriches itself from Kookr runtime variables, Kookr APIs, or local Kookr state.
+- Use `plugin` scope only for portable defaults that do not mention `KOOKR_*`, `~/.kookr/`, Kookr development commands, or repository-local Kookr paths.
+
 ## Precedence
 
 When two tiers contain a playbook with the same filename (id), the higher-precedence tier wins:

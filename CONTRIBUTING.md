@@ -79,7 +79,7 @@ A useful rule of thumb: if the diff exceeds a few hundred lines outside generate
 4. **Server type-check** — `pnpm build:server` (`tsc`).
 5. **E2E type-check** — `pnpm check:e2e` (`tsc -p tsconfig.e2e.json`).
 6. **Tests** — `pnpm test`.
-7. **Plugin classification + version bump** for changes under `plugin/`. Rejects Kookr-internal references (the toolkit ships to all consumers, so `pnpm prod:*`, `KOOKR_*`, `~/.kookr/`, etc. must not appear), name collisions between `.claude/<kind>/` and `plugin/<kind>/`, and `plugin/{skills,agents}/**` edits without a corresponding bump in `plugin/.claude-plugin/plugin.json#version`.
+7. **Plugin classification + version bump** for changes under `plugin/`. Rejects Kookr-internal references (the toolkit ships to all consumers, so `pnpm prod:*`, `KOOKR_*`, `~/.kookr/`, etc. must not appear), name collisions between `.claude/<kind>/` and `plugin/<kind>/`, and `plugin/{skills,agents}/**` edits without a corresponding bump in `plugin/.claude-plugin/plugin.json#version`. Guarded or fallback-only `KOOKR_*` usage is still Kookr-specific: place that workflow in `.claude/` for project scope or `~/.kookr/playbooks/` for personal cross-project use instead of `plugin/`.
 
 If any step fails, fix the underlying issue and re-run `git push`. Don't bypass with `--no-verify` — the gates exist because they've caught real regressions.
 
