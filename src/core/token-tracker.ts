@@ -163,6 +163,21 @@ export class TokenTracker {
     return Array.from(ids);
   }
 
+  /**
+   * First non-null model observed across the task's registered transcripts.
+   * Used by the cost-comparison surface to drive the R17 pricing-staleness
+   * banner for Claude rows (the row's `model` field on the wire stays null
+   * because Anthropic transcripts carry dated model ids that don't round-trip
+   * cleanly across the panel's exact-match pricing path).
+   */
+  getModel(taskId: string): string | null {
+    for (const state of this.transcripts.values()) {
+      if (state.taskId !== taskId) continue;
+      if (state.model) return state.model;
+    }
+    return null;
+  }
+
   private async scanOne(path: string, state: TranscriptState): Promise<void> {
     let content: string;
     try {

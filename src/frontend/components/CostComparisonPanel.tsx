@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AggregateMetrics,
   CostAgent,
@@ -8,6 +8,7 @@ import type {
   TimeWindow,
   CostDataQuality,
 } from '../../shared/contracts/cost-comparison.js';
+import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 
 /**
  * Cost Comparison panel (rfc-cost-comparison-panel.md). Renders three sections:
@@ -38,10 +39,27 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
   const [windowChoice, setWindowChoice] = useState<TimeWindow>('7d');
   const [agentFilter, setAgentFilter] = useState<CostAgent | 'all'>('all');
   const [search, setSearch] = useState('');
+  // Debounced query string actually sent to the server. Keystrokes update `search` instantly
+  // (no input lag); the fetch effect waits 300 ms of quiet before re-firing.
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [data, setData] = useState<CostComparisonResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAllNotes, setShowAllNotes] = useState(false);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+
+  useEscapeToClose(onClose);
+
+  // Auto-focus the close button on mount so keyboard users land somewhere inside
+  // the dialog (otherwise focus stays on the trigger button behind the overlay).
+  useEffect(() => {
+    closeBtnRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const handle = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(handle);
+  }, [search]);
 
   useEffect(() => {
     let cancelled = false;
@@ -49,7 +67,7 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
     setError(null);
     const params = new URLSearchParams({ window: windowChoice });
     if (agentFilter !== 'all') params.set('agent', agentFilter);
-    if (search.trim()) params.set('q', search.trim());
+    if (debouncedSearch) params.set('q', debouncedSearch);
     fetch(`/api/cost-comparison?${params.toString()}`)
       .then(async (r) => {
         if (!r.ok) {
@@ -68,7 +86,7 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
         setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [windowChoice, agentFilter, search]);
+  }, [windowChoice, agentFilter, debouncedSearch]);
 
   const visibleNotes = useMemo(() => {
     if (!data) return { primary: [], rest: [] };
@@ -76,10 +94,15 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
   }, [data]);
 
   return (
-    <div className="cost-comparison-overlay" role="dialog" aria-label="Cost comparison">
+    <div
+      className="cost-comparison-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="cost-cmp-title"
+    >
       <div className="cost-comparison-panel">
         <header className="cost-comparison-header">
-          <h2>Cost Comparison <span className="cost-est-badge">(est.)</span></h2>
+          <h2 id="cost-cmp-title">Cost Comparison <span className="cost-est-badge">(est.)</span></h2>
           <div className="cost-comparison-controls">
             <select
               className="cost-window-select"
@@ -91,7 +114,7 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
-            <div className="cost-agent-chips" role="tablist">
+            <div className="cost-agent-chips" role="group" aria-label="Filter by agent">
               <AgentChip label="All"    value="all"          current={agentFilter} onClick={setAgentFilter} />
               <AgentChip label="Claude" value="claude-code"  current={agentFilter} onClick={setAgentFilter} />
               <AgentChip label="Codex"  value="codex-cli"    current={agentFilter} onClick={setAgentFilter} />
@@ -104,7 +127,12 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
               onChange={(e) => setSearch(e.target.value)}
               aria-label="Search task names"
             />
-            <button className="btn-icon" onClick={onClose} aria-label="Close cost comparison">×</button>
+            <button
+              ref={closeBtnRef}
+              className="btn-icon"
+              onClick={onClose}
+              aria-label="Close cost comparison"
+            >×</button>
           </div>
         </header>
 
@@ -126,7 +154,11 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
               <div key={i} className="cost-note">{n.message}</div>
             ))}
             {visibleNotes.rest.length > 0 && (
-              <button className="cost-notes-expander" onClick={() => setShowAllNotes(s => !s)}>
+              <button
+                className="cost-notes-expander"
+                aria-expanded={showAllNotes}
+                onClick={() => setShowAllNotes(s => !s)}
+              >
                 {showAllNotes ? 'Hide' : `${visibleNotes.rest.length} more notes`}
               </button>
             )}
@@ -154,11 +186,14 @@ function AgentChip({ label, value, current, onClick }: {
   label: string; value: CostAgent | 'all'; current: CostAgent | 'all'; onClick: (v: CostAgent | 'all') => void;
 }): React.ReactElement {
   const selected = current === value;
+  // Toggle-button semantics (`aria-pressed`) match the actual UX better than a tablist
+  // would — these chips are filters, not view selectors. The earlier `role="tab"` shape
+  // promised arrow-key roving + a `tabpanel` association that was never implemented.
   return (
     <button
+      type="button"
       className={`cost-agent-chip${selected ? ' selected' : ''}`}
-      role="tab"
-      aria-selected={selected}
+      aria-pressed={selected}
       onClick={() => onClick(value)}
     >
       {label}
@@ -277,11 +312,17 @@ function PerTaskSection({ rows }: { rows: PerTaskRow[] }): React.ReactElement {
                 <td>{r.playbookId ?? '—'}</td>
                 <td>{formatDur(r.durationMs)}</td>
                 <td title={r.estimatedCostUsd == null ? dataQualityTooltip(r.dataQuality) : undefined}>
-                  {r.estimatedCostUsd == null ? '—' : formatUsd(r.estimatedCostUsd)}
+                  {r.estimatedCostUsd == null ? (
+                    <>
+                      <span aria-hidden="true">—</span>
+                      <span className="sr-only">{dataQualityTooltip(r.dataQuality)}</span>
+                    </>
+                  ) : formatUsd(r.estimatedCostUsd)}
                 </td>
                 <td>{r.thumb === 'up' ? '👍' : r.thumb === 'down' ? '👎' : '—'}</td>
                 <td title={dataQualityTooltip(r.dataQuality)}>
-                  {dataQualityLabel(r.dataQuality)}
+                  <span aria-hidden="true">{dataQualityLabel(r.dataQuality)}</span>
+                  <span className="sr-only">{dataQualityTooltip(r.dataQuality)}</span>
                 </td>
               </tr>
             ))}

@@ -79,7 +79,6 @@ function boundOutcome(taskId: string, model: string | null, totals: { in: number
     model,
     hasTokenData: true,
     hasParseError: false,
-    ambiguousCandidateCount: 0,
   };
   return { kind: 'bound', binding };
 }
@@ -201,7 +200,7 @@ describe('aggregate — dataQuality propagation', () => {
     const binding: BoundTaskTokens = {
       taskId: 'pe', parent, subagents: [],
       totalInputTokens: 0, totalOutputTokens: 0, totalCachedInputTokens: 0,
-      model: 'gpt-5.3-codex', hasTokenData: false, hasParseError: true, ambiguousCandidateCount: 0,
+      model: 'gpt-5.3-codex', hasTokenData: false, hasParseError: true,
     };
     const r = aggregate(baseInput({
       tasks: [t],
@@ -216,7 +215,7 @@ describe('aggregate — dataQuality propagation', () => {
     const binding: BoundTaskTokens = {
       taskId: 'nt', parent, subagents: [],
       totalInputTokens: 0, totalOutputTokens: 0, totalCachedInputTokens: 0,
-      model: 'gpt-5.3-codex', hasTokenData: false, hasParseError: false, ambiguousCandidateCount: 0,
+      model: 'gpt-5.3-codex', hasTokenData: false, hasParseError: false,
     };
     const r = aggregate(baseInput({
       tasks: [t],
@@ -326,7 +325,7 @@ describe('aggregate — notes priority order (R17)', () => {
     const peBinding: BoundTaskTokens = {
       taskId: 'pe', parent, subagents: [],
       totalInputTokens: 0, totalOutputTokens: 0, totalCachedInputTokens: 0,
-      model: 'gpt-5.3-codex', hasTokenData: false, hasParseError: true, ambiguousCandidateCount: 0,
+      model: 'gpt-5.3-codex', hasTokenData: false, hasParseError: true,
     };
     const taskUnknown = task({ id: 'up', agentType: 'codex-cli' });
     const r = aggregate(baseInput({

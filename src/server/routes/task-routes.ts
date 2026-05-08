@@ -873,12 +873,16 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       const scan = await scanner.scan(windowStartMs, windowEndMs);
       const { outcomes, orphanRollouts } = scanner.bindTasks(scan.rollouts, codexTasks);
 
-      // Claude side: pull live token usage.
+      // Claude side: pull live token usage and the resolved model id (used by the aggregator
+      // to drive the R17 pricing-staleness banner — Claude per-task rows themselves keep
+      // model:null because dated Claude ids don't round-trip through exact-match pricing).
       const claudeUsage = new Map<string, NonNullable<ReturnType<typeof tokenTracker.getUsage>>>();
+      const claudeModels = new Map<string, string | null>();
       for (const t of tasks) {
         if (t.agentType !== 'claude-code') continue;
         const u = tokenTracker.getUsage(t.id);
         if (u) claudeUsage.set(t.id, u);
+        claudeModels.set(t.id, tokenTracker.getModel(t.id));
       }
 
       // Resolve playbooks for displayName. discoverPlaybooks reads .kookr/playbooks/
@@ -894,7 +898,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       const response = aggregateCostComparison({
         tasks, agentFilter, taskNameQuery,
         windowStartMs, windowEndMs,
-        claudeUsage, codexOutcomes: outcomes,
+        claudeUsage, claudeModels, codexOutcomes: outcomes,
         playbooksById,
         todayMs: now,
         codexStats: {

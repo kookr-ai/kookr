@@ -91,8 +91,6 @@ export interface BoundTaskTokens {
   hasTokenData: boolean;
   /** True iff at least one rollout in the binding raised a parse error. */
   hasParseError: boolean;
-  /** Set when binding flagged the parent as ambiguous (multiple candidates within ±60 s). */
-  ambiguousCandidateCount: number;
 }
 
 /** Per-rollout discovery result for a Kookr task. */
@@ -209,10 +207,10 @@ export class CodexRolloutScanner {
   }
 
   /**
-   * Bind Kookr tasks to rollouts by (cwd, ±60 s UTC). Ambiguity (multiple
-   * candidates) records a binding with `ambiguousCandidateCount > 0`; callers
-   * surface the ambiguity through tooltips. Sub-agents are summed recursively
-   * by walking the `thread_spawn.parent_thread_id` chain.
+   * Bind Kookr tasks to rollouts by (cwd, ±60 s UTC). On ambiguity (multiple
+   * candidates within the window) the closest by timestamp wins; callers
+   * downstream get a single-binding view either way. Sub-agents are summed
+   * recursively by walking the `thread_spawn.parent_thread_id` chain.
    */
   bindTasks(rollouts: CodexRolloutMeta[], tasks: KookrCodexTaskInput[]): {
     bindings: Map<string, BoundTaskTokens>;
@@ -270,7 +268,6 @@ export class CodexRolloutScanner {
         Math.abs(a.startedAt.getTime() - task.createdAtMs) - Math.abs(b.startedAt.getTime() - task.createdAtMs),
       );
       const parent = sorted[0];
-      const ambiguousCount = matches.length - 1;
       usedRolloutIds.add(parent.id);
 
       // Recursively bind sub-agents whose parent_thread_id chain reaches `parent.id`.
@@ -320,7 +317,6 @@ export class CodexRolloutScanner {
         model,
         hasTokenData,
         hasParseError,
-        ambiguousCandidateCount: ambiguousCount,
       };
       bindings.set(task.taskId, binding);
       outcomes.set(task.taskId, { kind: 'bound', binding });

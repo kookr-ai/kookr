@@ -139,7 +139,9 @@ describe('CostComparisonPanel', () => {
     const costCell = Array.from(el.querySelectorAll('.cost-per-task-table td'))
       .find(td => (td.getAttribute('title') ?? '').includes('No Codex rollout file matched'));
     expect(costCell).toBeDefined();
-    expect(costCell?.textContent?.trim()).toBe('—');
+    // The visible glyph is "—" (in an aria-hidden span); a sibling sr-only span carries the
+    // tooltip text for screen readers. Check the visible glyph specifically.
+    expect(costCell?.querySelector('[aria-hidden]')?.textContent).toBe('—');
   });
 
   test('renders banner stack: top 3 inline + "n more notes" expander', async () => {

@@ -20,7 +20,7 @@
 
 import type { Task } from './tasks.js';
 import type { TokenUsage } from './types.js';
-import type { Playbook } from './playbook.js';
+import type { Playbook } from '../shared/contracts/playbook.js';
 import { lookupPricing, estimateCost, type ModelPricing } from './pricing-tables.js';
 import type {
   AggregateMetrics,
@@ -31,7 +31,7 @@ import type {
   PerPlaybookRow,
   PerTaskRow,
 } from '../shared/contracts/cost-comparison.js';
-import type { BoundTaskTokens, CodexRolloutMeta, DiscoveryOutcome } from '../adapters/codex-rollout-scanner.js';
+import type { CodexRolloutMeta, DiscoveryOutcome } from '../adapters/codex-rollout-scanner.js';
 
 const PRICING_STALE_DAYS = 90;
 
@@ -48,6 +48,14 @@ export interface AggregatorInput {
 
   /** Per-Claude-task token usage from TokenTracker.getUsage. Missing entries treated as no-data. */
   claudeUsage: Map<string, TokenUsage>;
+
+  /**
+   * Per-Claude-task model id (TokenTracker.getModel). Drives the R17
+   * pricing-staleness banner for Anthropic rows; the per-task row itself
+   * keeps `model: null` because dated Claude model ids don't round-trip
+   * through the panel's strict-exact-match pricing path.
+   */
+  claudeModels?: Map<string, string | null>;
 
   /** Per-Codex-task scanner outcome. Missing entry => discovery never ran for this task. */
   codexOutcomes: Map<string, DiscoveryOutcome>;
@@ -116,10 +124,22 @@ export function aggregate(input: AggregatorInput): CostComparisonResponse {
       unknownModels.add(computed.row.model);
     }
     // Pricing staleness is a separate concern from unknown-pricing (the row IS priced; the date is old).
+    // For Codex, the row carries `model` directly. For Claude, dated model ids don't round-trip through
+    // exact-match pricing, so we check staleness via the side-channel `claudeModels` map populated
+    // by the route handler from TokenTracker.getModel.
     if (computed.row.dataQuality === 'complete' && computed.row.model) {
       const pricing = lookupPricing(computed.row.model);
       if (pricing && isPricingStale(pricing, input.todayMs)) {
         stalePricingByModel.set(computed.row.model, pricing.lastVerified);
+      }
+    }
+    if (agent === 'claude-code' && input.claudeModels) {
+      const claudeModel = input.claudeModels.get(task.id);
+      if (claudeModel) {
+        const pricing = lookupPricing(claudeModel);
+        if (pricing && isPricingStale(pricing, input.todayMs)) {
+          stalePricingByModel.set(claudeModel, pricing.lastVerified);
+        }
       }
     }
 
@@ -283,6 +303,8 @@ function computeCodexRow(
   }
 
   // Pricing lookup (strict). Codex's gross input includes cached — pre-subtract before billing.
+  // The wire shape stores the NET input on `inputTokens` (`gross - cached`) so cross-agent
+  // aggregate sums are apples-to-apples with Claude's already-net `TokenUsage.inputTokens`.
   const pricing = binding.model ? lookupPricing(binding.model) : null;
   const billedInput = Math.max(0, binding.totalInputTokens - binding.totalCachedInputTokens);
   const estimatedCostUsd = pricing
@@ -295,7 +317,7 @@ function computeCodexRow(
     row: {
       taskId: task.id, agent: 'codex-cli', model: binding.model, playbookId: task.playbookId ?? null,
       startedAt: new Date(startedAtMs).toISOString(), durationMs,
-      inputTokens: binding.totalInputTokens,
+      inputTokens: billedInput,
       outputTokens: binding.totalOutputTokens,
       cacheReadTokens: binding.totalCachedInputTokens,
       cacheWriteTokens: 0,                                                  // OpenAI rollouts do not bill cache writes
@@ -308,8 +330,6 @@ function computeCodexRow(
 interface MetricsAccumulator extends AggregateMetrics {
   /** Internal: durations collected for percentile calc. */
   _durations: number[];
-  /** Internal: cost rows collected separately so unpriced rows don't bias aggregate cost. */
-  _completeCount: number;
 }
 
 function accumulateAggregate(
@@ -330,7 +350,6 @@ function accumulateAggregate(
   if (computed.row.durationMs != null) m._durations.push(computed.row.durationMs);
 
   if (!computed.contributesToAggregate) return;
-  m._completeCount++;
   m.totalCostUsd += computed.row.estimatedCostUsd ?? 0;
   m.inputTokens += computed.row.inputTokens;
   m.outputTokens += computed.row.outputTokens;
@@ -363,7 +382,6 @@ function accumulatePerPlaybook(
   else m.thumbsCount.none++;
   if (computed.row.durationMs != null) m._durations.push(computed.row.durationMs);
   if (!computed.contributesToAggregate) return;
-  m._completeCount++;
   m.totalCostUsd += computed.row.estimatedCostUsd ?? 0;
   m.inputTokens += computed.row.inputTokens;
   m.outputTokens += computed.row.outputTokens;
@@ -371,7 +389,7 @@ function accumulatePerPlaybook(
   m.cacheWriteTokens += computed.row.cacheWriteTokens;
 }
 
-function makeEmptyMetrics(agent: CostAgent): AggregateMetrics & { _durations: number[]; _completeCount: number } {
+function makeEmptyMetrics(agent: CostAgent): AggregateMetrics & { _durations: number[] } {
   return {
     agent, taskCount: 0,
     totalCostUsd: 0,
@@ -379,7 +397,6 @@ function makeEmptyMetrics(agent: CostAgent): AggregateMetrics & { _durations: nu
     medianDurationMs: 0, p95DurationMs: 0, maxDurationMs: 0,
     thumbsUpRate: null, thumbsCount: { up: 0, down: 0, none: 0 },
     _durations: [],
-    _completeCount: 0,
   };
 }
 
@@ -401,7 +418,6 @@ function finalizeMetricsRow(m: AggregateMetrics): void {
   m.thumbsUpRate = fbDenom > 0 ? m.thumbsCount.up / fbDenom : null;
   // Strip the internal accumulator fields so the wire shape is clean.
   delete (am as Partial<MetricsAccumulator>)._durations;
-  delete (am as Partial<MetricsAccumulator>)._completeCount;
 }
 
 function pct(sortedAsc: number[], p: number): number {

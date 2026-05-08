@@ -9,6 +9,10 @@
  *    hook event injection and lifecycle telemetry wiring.
  */
 import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { wireEventPipeline, type EventPipelineDeps } from './event-pipeline.js';
 import type { AgentEvent } from '../core/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
@@ -655,12 +659,6 @@ describe('event-pipeline: R13 subagent_stop registration', () => {
     // idempotency contract `event-pipeline.ts` relies on. If TokenTracker.register
     // ever stops being a no-op on duplicate paths, subagent tokens would be
     // counted twice in the cost-comparison panel.
-    const { TokenTracker } = await import('../core/token-tracker.js');
-    const { writeFileSync, mkdirSync } = await import('node:fs');
-    const { tmpdir } = await import('node:os');
-    const { join } = await import('node:path');
-    const { randomUUID } = await import('node:crypto');
-
     const dir = join(tmpdir(), `event-pipe-r13-${randomUUID()}`);
     mkdirSync(dir, { recursive: true });
     const sidechainPath = join(dir, 'sidechain.jsonl');
