@@ -5,6 +5,7 @@ import { type AgentType, DEFAULT_AGENT_TYPE } from '../core/agent-types.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
+import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import { MAX_ACTIVE_TASKS } from './config.js';
 import { registerNewAgent, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { hashPrompt } from './hash-prompt.js';
@@ -57,6 +58,34 @@ export interface LaunchOpts {
   projectId?: string;
   /** Where the launch came from — for server-side log provenance. Default: 'api'. */
   launchSource?: 'cli' | 'ui' | 'api' | 'remote-chat-telegram';
+  /**
+   * When true, inject `RALPH_VERDICT_FILE` env into the spawned agent so
+   * iteration 0 of a Ralph loop can write a verdict (subsequent iterations
+   * get this via `launchFreshRuntime`'s extraEnv injection). Path is
+   * computed as `defaultVerdictPath(opts.cwd, task.id)` after the task
+   * record exists.
+   *
+   * Coverage and known gaps:
+   * - **Fresh, non-queued launches** (POST /api/tasks/ralph-loop,
+   *   POST /api/playbooks/ralph-loop): covered by PR4. Set this flag to
+   *   true on the launch.
+   * - **Queued ralph launches**: not covered. Promotion via
+   *   `promotePendingTasks` re-launches with bare 3-arg adapter.launch.
+   *   Mitigation: ralph route handlers reject `result.queued: true` with
+   *   a 503 — no half-attached ralph loops.
+   * - **Attach-existing-task** (POST /api/tasks/:id/ralph-loop): NOT
+   *   covered. The existing session predates the loop attach and cannot
+   *   receive new env vars retroactively. Iteration 0 silently misses the
+   *   verdict channel; iteration 1+ get it via `launchFreshRuntime`.
+   *   Documented as a known limitation; relaunch via fresh /api/tasks/ralph-loop
+   *   for full iteration-0 coverage.
+   * - **Crash-recovery resumes**: also not covered (separate path through
+   *   `crash-recovery.ts`); tracked as a follow-up.
+   *
+   * See `docs/rfc/rfc-ralph-loop-stall-handling.md` §8 and PR4 (the
+   * bug-fix companion to PR2 #165).
+   */
+  ralphVerdictEnv?: boolean;
 }
 
 export interface LaunchResult {
@@ -172,8 +201,15 @@ export async function launchTask(
     return { task, queued: true };
   }
 
+  // PR4: ralph-loop launches need RALPH_VERDICT_FILE injected so iteration 0
+  // can write a verdict. Subsequent iterations get this via
+  // `launchFreshRuntime`; this fills the gap on the first launch.
+  const adapterOpts = opts.ralphVerdictEnv
+    ? { extraEnv: { RALPH_VERDICT_FILE: defaultVerdictPath(opts.cwd, task.id) } }
+    : undefined;
+
   try {
-    await adapterRegistry.get(agentType).launch(task.id, effectivePrompt, opts.cwd);
+    await adapterRegistry.get(agentType).launch(task.id, effectivePrompt, opts.cwd, undefined, adapterOpts);
   } catch (err) {
     // Clean up the task record so dedup doesn't block future retries
     taskStore.deleteTask(task.id);

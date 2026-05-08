@@ -1,7 +1,7 @@
 import type { TaskStore } from '../core/tasks.js';
 import { normalizeAgentType } from '../core/agent-types.js';
 import type { AgentEvent } from '../core/types.js';
-import type { AgentAdapter, EffectiveHookSettings, ResumeContext } from './agent-adapter.js';
+import type { AdapterLaunchOptions, AgentAdapter, EffectiveHookSettings, ResumeContext } from './agent-adapter.js';
 import { AdapterRegistry } from './agent-adapter.js';
 
 /**
@@ -32,8 +32,14 @@ export class RoutingAgentAdapter implements AgentAdapter {
     }
   }
 
-  async launch(taskId: string, prompt: string, cwd: string, resume?: ResumeContext): Promise<string> {
-    return this.registry.getDefault().launch(taskId, prompt, cwd, resume);
+  async launch(
+    taskId: string,
+    prompt: string,
+    cwd: string,
+    resume?: ResumeContext,
+    opts?: AdapterLaunchOptions,
+  ): Promise<string> {
+    return this.registry.getDefault().launch(taskId, prompt, cwd, resume, opts);
   }
 
   async sendInput(tmuxName: string, text: string): Promise<void> {
