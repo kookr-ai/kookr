@@ -353,9 +353,42 @@ describe('CodexRolloutScanner — discovery binding', () => {
     });
     const s = new CodexRolloutScanner({ codexHome });
     const r = await s.scan(new Date('2026-05-08T00:00:00Z').getTime(), new Date('2026-05-08T23:59:59Z').getTime());
-    const { orphanRollouts } = s.bindTasks(r.rollouts, []);
-    expect(orphanRollouts).toHaveLength(1);
-    expect(orphanRollouts[0].id).toBe('orphan');
+    const { orphanBindings } = s.bindTasks(r.rollouts, []);
+    expect(orphanBindings).toHaveLength(1);
+    expect(orphanBindings[0].parent.id).toBe('orphan');
+    expect(orphanBindings[0].subagents).toEqual([]);
+    expect(orphanBindings[0].totalInputTokens).toBe(100);
+    expect(orphanBindings[0].model).toBe('gpt-5.3-codex');
+  });
+
+  test('orphan parent with sub-agents: tokens summed across the whole thread', async () => {
+    // Interactive Codex session that spawned sub-agents — must count once, with
+    // the full thread total, not as separate orphans (rfc-cost-comparison-coverage-and-perf.md §Change 2).
+    writeRollout(codexHome, {
+      id: 'orphan-parent', cwd: '/elsewhere', startedAt: '2026-05-08T10:00:00.000Z',
+      model: 'gpt-5.3-codex', terminal: true, mtimeOffsetMs: 60_000,
+      tokenCounts: [{ inputTokens: 200, outputTokens: 50, cachedInputTokens: 10 }],
+    });
+    writeRollout(codexHome, {
+      id: 'orphan-sub-1', cwd: '/elsewhere', startedAt: '2026-05-08T10:01:00.000Z',
+      parentThreadId: 'orphan-parent', agentNickname: 'Helmholtz',
+      model: 'gpt-5.3-codex', terminal: true, mtimeOffsetMs: 120_000,
+      tokenCounts: [{ inputTokens: 300, outputTokens: 75, cachedInputTokens: 20 }],
+    });
+    writeRollout(codexHome, {
+      id: 'orphan-sub-2', cwd: '/elsewhere', startedAt: '2026-05-08T10:02:00.000Z',
+      parentThreadId: 'orphan-sub-1',
+      model: 'gpt-5.3-codex', terminal: true, mtimeOffsetMs: 180_000,
+      tokenCounts: [{ inputTokens: 100, outputTokens: 25, cachedInputTokens: 5 }],
+    });
+    const s = new CodexRolloutScanner({ codexHome });
+    const r = await s.scan(new Date('2026-05-08T00:00:00Z').getTime(), new Date('2026-05-08T23:59:59Z').getTime());
+    const { orphanBindings } = s.bindTasks(r.rollouts, []);
+    expect(orphanBindings).toHaveLength(1);
+    expect(orphanBindings[0].subagents).toHaveLength(2);
+    expect(orphanBindings[0].totalInputTokens).toBe(200 + 300 + 100);
+    expect(orphanBindings[0].totalOutputTokens).toBe(50 + 75 + 25);
+    expect(orphanBindings[0].totalCachedInputTokens).toBe(10 + 20 + 5);
   });
 
   test('abandoned rollout that matches cwd+time still flags task as abandoned (not bound)', async () => {
