@@ -1,4 +1,5 @@
 import { describe, test, expect } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { parsePlaybook, interpolateParameters, PlaybookParseError } from './playbook-parser.js';
 
 const VALID_PLAYBOOK = `---
@@ -188,6 +189,13 @@ Body.
 
     expect(pb.effectiveLoop).toBeUndefined();
     expect(pb.loopValidationError).toBe('loop.stopPredicate must be a non-empty string');
+  });
+
+  test('shipped GitHub issue playbook uses grep status for duplicate branch detection', async () => {
+    const playbook = await readFile('.kookr/playbooks/implement-github-issue.md', 'utf8');
+
+    expect(playbook).toContain('grep -qE "(^|[-_./])issue[-_.]${N}([-_.]|$)"');
+    expect(playbook).not.toContain('| grep -E "(^|[-_./])issue[-_.]${N}([-_.]|$)" | head -1');
   });
 
   test('validates zero-diff convergence against default iteration cap', () => {
