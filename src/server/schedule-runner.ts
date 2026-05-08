@@ -4,9 +4,43 @@ import { ScheduleValidationError, isTriggerLimitExhausted } from '../core/schedu
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
+import type { TaskStatus } from '../core/types.js';
 
 const TICK_INTERVAL_MS = 60_000;
 const CATCHUP_MAX_STALENESS_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// A task is treated as still blocking its schedule only if its `updatedAt` is
+// within this window. Beyond it, the prior run is presumed abandoned and the
+// next cron tick is allowed to fire — preventing a hung task from permanently
+// blocking the schedule (see PR description for the codex-rebase incident).
+// Calibrated for schedules with daily-or-longer cadence; sub-daily schedules
+// will tolerate up to 12h of "previous run still active" before recovery.
+export const SCHEDULE_GATE_MAX_TASK_AGE_MS = 12 * 60 * 60 * 1000;
+
+const SCHEDULE_GATE_ACTIVE_STATUSES: ReadonlySet<TaskStatus> = new Set([
+  'open',
+  'pending',
+  'inProgress',
+]);
+
+/**
+ * Returns true iff `task` should still block its schedule's next firing.
+ *
+ * A task blocks only when it is BOTH in an active status AND its `updatedAt`
+ * is within `staleAfterMs`. The freshness check is what prevents a hung task
+ * from permanently blocking the schedule.
+ *
+ * `now` and `staleAfterMs` are parameterized for tests.
+ */
+export function isTaskBlockingSchedule(
+  task: { status: TaskStatus; updatedAt: Date } | undefined,
+  now: Date = new Date(),
+  staleAfterMs: number = SCHEDULE_GATE_MAX_TASK_AGE_MS,
+): boolean {
+  if (!task || !SCHEDULE_GATE_ACTIVE_STATUSES.has(task.status)) return false;
+  const ageMs = Math.max(0, now.getTime() - task.updatedAt.getTime());
+  return ageMs < staleAfterMs;
+}
 
 export interface ScheduleRunnerDeps {
   store: ScheduleStore;
@@ -15,7 +49,7 @@ export interface ScheduleRunnerDeps {
   launcher: (opts: LaunchOpts) => Promise<LaunchResult>;
   getActiveCount: () => number;
   getMaxActiveTasks: () => number;
-  isTaskActive: (taskId: string) => boolean;
+  isTaskBlockingSchedule: (taskId: string) => boolean;
 }
 
 export class ScheduleRunner {
@@ -102,7 +136,7 @@ export class ScheduleRunner {
       scheduledNextRun?.toISOString(),
     );
 
-    if (schedule.latestExecution?.taskId && this.deps.isTaskActive(schedule.latestExecution.taskId)) {
+    if (schedule.latestExecution?.taskId && this.deps.isTaskBlockingSchedule(schedule.latestExecution.taskId)) {
       console.warn(`[schedule] Skipping "${schedule.name}" — previous run still active (task ${schedule.latestExecution.taskId})`);
       await this.deps.service.markExecutionOutcome(
         schedule.id,

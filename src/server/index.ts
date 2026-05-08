@@ -81,7 +81,7 @@ import { AutonomyOrchestrator } from './autonomy-orchestrator.js';
 import { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
 import { ScheduleStore } from '../core/schedule.js';
-import { ScheduleRunner } from './schedule-runner.js';
+import { ScheduleRunner, isTaskBlockingSchedule } from './schedule-runner.js';
 import { ScheduleValidator } from './schedule-validator.js';
 import { ScheduleService } from './schedule-service.js';
 import { startLedgerWatcher } from './ledger-watcher.js';
@@ -850,9 +850,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     launcher: (opts) => launchTask(launchServiceDeps, opts),
     getActiveCount: () => taskStore.getActiveCount(),
     getMaxActiveTasks,
-    isTaskActive: (taskId) => {
+    isTaskBlockingSchedule: (taskId) => {
       const task = taskStore.getTask(taskId);
-      return !!task && ACTIVE_STATUSES.has(task.status);
+      const blocking = isTaskBlockingSchedule(task);
+      if (task && !blocking && ACTIVE_STATUSES.has(task.status)) {
+        const ageHours = (Date.now() - task.updatedAt.getTime()) / 3_600_000;
+        console.warn(
+          `[schedule] Task ${taskId} treated as abandoned (${ageHours.toFixed(1)}h since update); allowing next run`,
+        );
+      }
+      return blocking;
     },
   });
 
