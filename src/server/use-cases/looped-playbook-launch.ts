@@ -1,4 +1,4 @@
-import { detectStandalonePlugin } from '../../core/ralph-plugin-coexistence.js';
+import { detectStandalonePlugin, type CoexistenceResult } from '../../core/ralph-plugin-coexistence.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import type { RalphLoopRequest, RalphLoopService } from '../ralph-loop-service.js';
 import { canonicalizeCwd, type LaunchOpts, type LaunchResult } from '../launch-service.js';
@@ -77,18 +77,6 @@ export async function launchLoopedPlaybook(
   const prepared = await preparePlaybookLaunchWithMetadata(input);
   validateLoopablePlaybook(prepared);
 
-  const coexistence = await detectStandalonePlugin(prepared.launchOpts.cwd);
-  if (coexistence.detected) {
-    throw new LoopedPlaybookLaunchError(
-      'standalone ralph-wiggum plugin detected — would double-fire on Stop',
-      409,
-      {
-        matchedFiles: coexistence.matchedFiles,
-        reasons: coexistence.reasons,
-      },
-    );
-  }
-
   const key = loopedPlaybookKey(prepared);
   if (inFlightLoopedPlaybooks.has(key)) {
     throw new LoopedPlaybookLaunchError('matching looped playbook launch is already in progress', 409);
@@ -96,14 +84,6 @@ export async function launchLoopedPlaybook(
 
   inFlightLoopedPlaybooks.add(key);
   try {
-    const maxActiveTasks = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
-    if (deps.taskStore.getActiveCount() >= maxActiveTasks) {
-      throw new LoopedPlaybookLaunchError(
-        'cannot start looped playbook while the task queue is full; wait for an active task to finish and try again',
-        409,
-      );
-    }
-
     const duplicate = findActiveLoopedPlaybook(deps.taskStore, key);
     if (duplicate) {
       throw new LoopedPlaybookLaunchError(
@@ -120,6 +100,23 @@ export async function launchLoopedPlaybook(
               }
             : null,
         },
+      );
+    }
+
+    const coexistence = await detectStandalonePlugin(prepared.launchOpts.cwd);
+    if (coexistence.detected) {
+      throw new LoopedPlaybookLaunchError(
+        'standalone ralph-wiggum plugin detected — would double-fire on Stop',
+        409,
+        standalonePluginConflictDetails(coexistence),
+      );
+    }
+
+    const maxActiveTasks = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
+    if (deps.taskStore.getActiveCount() >= maxActiveTasks) {
+      throw new LoopedPlaybookLaunchError(
+        'cannot start looped playbook while the task queue is full; wait for an active task to finish and try again',
+        409,
       );
     }
 
@@ -239,10 +236,7 @@ export async function replaceLoopedPlaybook(
       throw new LoopedPlaybookLaunchError(
         'standalone ralph-wiggum plugin detected — would double-fire on Stop',
         409,
-        {
-          matchedFiles: coexistence.matchedFiles,
-          reasons: coexistence.reasons,
-        },
+        standalonePluginConflictDetails(coexistence),
       );
     }
 
@@ -408,6 +402,15 @@ function validateLoopablePlaybook(prepared: PreparedPlaybookLaunch): void {
   if (!playbook.effectiveLoop) {
     throw new LoopedPlaybookLaunchError('playbook does not have valid loop defaults', 400);
   }
+}
+
+function standalonePluginConflictDetails(coexistence: CoexistenceResult): Record<string, unknown> {
+  return {
+    conflictKind: 'standalone_ralph_plugin',
+    code: 'standalone_ralph_plugin_detected',
+    matchedFiles: coexistence.matchedFiles,
+    reasons: coexistence.reasons,
+  };
 }
 
 function findActiveLoopedPlaybook(taskStore: TaskStore, key: string): Task | undefined {

@@ -415,6 +415,19 @@ The system SHOULD allow authorized Telegram users to choose the coding agent use
 
 **Evidence:** `src/integrations/telegram/index.ts` (`/agent` command, confirmation text, launch call), `src/integrations/telegram/rephrase.ts` (structured `agentType` schema), `src/integrations/telegram/parse-task.ts` (`--agent` parser), `src/integrations/telegram/safety.ts` (persistent per-user defaults), `src/server/launch-service.ts` (`KOOKR_REMOTE_CHAT_ALLOW_CODEX` trust-boundary guard), tests in `src/integrations/telegram/*.test.ts` and `src/server/launch-service.test.ts`.
 
+### R4b.6: Looped Playbook Conflict Guidance [F6.7] — SHOULD — `done`
+
+The system SHOULD surface actionable inline guidance when a looped playbook launch cannot start because an existing Kookr loop or standalone Ralph plugin conflicts with it.
+
+**Acceptance criteria:**
+- A duplicate active loop response includes a typed `conflictKind` and the existing task's loop snapshot
+- A standalone `ralph-wiggum@*` plugin response includes a typed `conflictKind`, matched settings files, and plain-language reasons
+- When both conflicts are present, the launch response prioritizes the existing Kookr loop so the user can open it
+- The launch dialog renders duplicate-loop conflicts with "Replace it (start fresh)" and "Open the running loop" actions
+- The launch dialog renders standalone-plugin conflicts inline with the matched settings file and a retry affordance
+
+**Evidence:** `src/server/use-cases/looped-playbook-launch.ts` (conflict ordering and typed payloads), `src/frontend/components/PlaybookBrowser.tsx` (inline conflict rendering), `src/server/use-cases/looped-playbook-launch.test.ts`, `src/frontend/components/PlaybookBrowser.loopable.test.ts`.
+
 ---
 
 ## R4c: Contribution Workspace
@@ -776,6 +789,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R4b.3 | — | SHOULD | done | useStore, DetailPanel, App |
 | R4b.4 | — | SHOULD | done | QuickLaunch, App |
 | R4b.5 | — | SHOULD | done | telegram/index, telegram/rephrase, launch-service |
+| R4b.6 | F6.7 | SHOULD | done | looped-playbook-launch, PlaybookBrowser |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |

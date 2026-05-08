@@ -193,6 +193,91 @@ Loop {{target}}.
     });
   });
 
+  it('reports duplicate active loop before standalone plugin coexistence', async () => {
+    await withPlaybook(`---
+name: Loopable
+tags: [workflow, loopable]
+---
+
+Loop {{target}}.
+`, async (cwd) => {
+      await mkdir(join(cwd, '.claude'), { recursive: true });
+      await writeFile(
+        join(cwd, '.claude', 'settings.local.json'),
+        JSON.stringify({ enabledPlugins: { 'ralph-wiggum@claude-code-plugins': true } }),
+      );
+
+      const taskStore = new TaskStore();
+      const existing = taskStore.createTask({
+        prompt: 'Loop repo.',
+        cwd,
+        playbookParameterValues: { target: 'repo' },
+      });
+      existing.playbookId = 'workflow.md';
+      existing.ralphLoop = {
+        prompt: 'Loop repo.',
+        iterationCap: 6,
+        currentIteration: 2,
+        status: 'running',
+        lastIterationStartedAt: Date.now(),
+        cumulativeIterations: 2,
+      };
+
+      await expect(launchLoopedPlaybook({
+        taskStore,
+        launchTask: vi.fn(),
+        ralphLoopService: { startLoop: vi.fn() } as unknown as RalphLoopService,
+      }, {
+        cwd,
+        playbookPath: 'workflow.md',
+        parameterValues: { target: 'repo' },
+      })).rejects.toMatchObject({
+        status: 409,
+        details: {
+          taskId: existing.id,
+          conflictKind: 'duplicate_active_loop',
+          ralphLoop: {
+            currentIteration: 2,
+          },
+        },
+      } satisfies Partial<LoopedPlaybookLaunchError>);
+    });
+  });
+
+  it('returns a typed standalone-plugin conflict when no duplicate loop exists', async () => {
+    await withPlaybook(`---
+name: Loopable
+tags: [workflow, loopable]
+---
+
+Loop.
+`, async (cwd) => {
+      await mkdir(join(cwd, '.claude'), { recursive: true });
+      await writeFile(
+        join(cwd, '.claude', 'settings.local.json'),
+        JSON.stringify({ enabledPlugins: { 'ralph-wiggum@claude-code-plugins': true } }),
+      );
+
+      await expect(launchLoopedPlaybook({
+        taskStore: new TaskStore(),
+        launchTask: vi.fn(),
+        ralphLoopService: { startLoop: vi.fn() } as unknown as RalphLoopService,
+      }, {
+        cwd,
+        playbookPath: 'workflow.md',
+        parameterValues: {},
+      })).rejects.toMatchObject({
+        status: 409,
+        details: {
+          conflictKind: 'standalone_ralph_plugin',
+          code: 'standalone_ralph_plugin_detected',
+          matchedFiles: [join(cwd, '.claude', 'settings.local.json')],
+          reasons: ['enabledPlugins["ralph-wiggum@claude-code-plugins"] is true'],
+        },
+      } satisfies Partial<LoopedPlaybookLaunchError>);
+    });
+  });
+
   it('cancelled+cancelled task is excluded from the active-loop check', async () => {
     // Regression for the post-Replace state: cancelTaskLifecycle sets
     // task.status='cancelled' and cancelLoop sets loop.status='cancelled'.
@@ -413,6 +498,42 @@ Loop {{target}}.
         newTaskId: result.task.id,
         oldIteration: 3,
       }));
+    });
+  });
+
+  it('returns a typed standalone-plugin conflict before replacing the old runtime', async () => {
+    await withPlaybook(`---
+name: Loopable
+tags: [workflow, loopable]
+---
+
+Loop {{target}}.
+`, async (cwd) => {
+      await mkdir(join(cwd, '.claude'), { recursive: true });
+      await writeFile(
+        join(cwd, '.claude', 'settings.local.json'),
+        JSON.stringify({ enabledPlugins: { 'ralph-wiggum@claude-code-plugins': true } }),
+      );
+
+      const taskStore = new TaskStore();
+      const old = setupActiveLoop(taskStore, cwd);
+      const cancelReplacedTask = vi.fn(async () => undefined);
+
+      await expect(replaceLoopedPlaybook(baseDeps(taskStore, { cancelReplacedTask }) as never, {
+        replacedTaskId: old.id,
+        cwd,
+        playbookPath: 'workflow.md',
+        parameterValues: { target: 'repo' },
+      })).rejects.toMatchObject({
+        status: 409,
+        details: {
+          conflictKind: 'standalone_ralph_plugin',
+          code: 'standalone_ralph_plugin_detected',
+          matchedFiles: [join(cwd, '.claude', 'settings.local.json')],
+        },
+      } satisfies Partial<LoopedPlaybookLaunchError>);
+
+      expect(cancelReplacedTask).not.toHaveBeenCalled();
     });
   });
 
