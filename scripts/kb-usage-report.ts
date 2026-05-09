@@ -11,12 +11,23 @@
  * Detection: any PreToolUse Bash event whose `tool_input.command` contains the
  * literal substring `kb ` (with trailing space). This catches `kb search …`,
  * piped forms (`… | kb remember …`), and chained forms (`a && kb list`).
+ *
+ * Lesson decisions (issue #227): per-task classification of post-task lesson
+ * behavior — wrote-lesson (saw `kb remember`), explicit-skip (saw the
+ * `No generic KB lesson:` marker the playbook prompts agents to print), or
+ * search-only (kb activity with neither). See src/core/kb-lesson-classifier.
  */
 import { readFile, readdir } from 'node:fs/promises';
 import { existsSync, createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import {
+  classifyKbCommand,
+  aggregateLessonDecision,
+  KB_LESSON_SKIP_MARKER,
+  type LessonDecisionState,
+} from '../src/core/kb-lesson-classifier.js';
 
 interface TaskSession {
   tmuxSession?: string;
@@ -43,13 +54,21 @@ const cutoffMs = Date.now() - days * 86_400_000;
 interface LogStats {
   kbCalls: number;
   bashCalls: number;
+  lessonWrites: number;
+  lessonSkips: number;
+  kbSearches: number;
   exists: boolean;
 }
 
 async function scanLog(path: string): Promise<LogStats> {
-  if (!existsSync(path)) return { kbCalls: 0, bashCalls: 0, exists: false };
+  if (!existsSync(path)) {
+    return { kbCalls: 0, bashCalls: 0, lessonWrites: 0, lessonSkips: 0, kbSearches: 0, exists: false };
+  }
   let kbCalls = 0;
   let bashCalls = 0;
+  let lessonWrites = 0;
+  let lessonSkips = 0;
+  let kbSearches = 0;
   const rl = createInterface({ input: createReadStream(path, { encoding: 'utf8' }) });
   for await (const line of rl) {
     if (!line) continue;
@@ -63,8 +82,21 @@ async function scanLog(path: string): Promise<LogStats> {
     bashCalls++;
     const cmd = evt.tool_input?.command ?? '';
     if (cmd.includes('kb ')) kbCalls++;
+    switch (classifyKbCommand(cmd)) {
+      case 'lesson-write':
+        lessonWrites++;
+        break;
+      case 'lesson-skip':
+        lessonSkips++;
+        break;
+      case 'kb-search':
+        kbSearches++;
+        break;
+      case 'none':
+        break;
+    }
   }
-  return { kbCalls, bashCalls, exists: true };
+  return { kbCalls, bashCalls, lessonWrites, lessonSkips, kbSearches, exists: true };
 }
 
 function pad(s: string | number, n: number, right = false): string {
@@ -124,6 +156,10 @@ async function main(): Promise<void> {
     missingLogs: number;
     kb: number;
     bash: number;
+    lessonWrites: number;
+    lessonSkips: number;
+    kbSearches: number;
+    decision: LessonDecisionState;
     promptHead: string;
     updatedAt: string;
   }
@@ -133,6 +169,9 @@ async function main(): Promise<void> {
     let kb = 0;
     let bash = 0;
     let missing = 0;
+    let lessonWrites = 0;
+    let lessonSkips = 0;
+    let kbSearches = 0;
     for (const s of t.sessions ?? []) {
       if (!s.tmuxSession) continue;
       const logPath = join(homedir(), '.kookr', 'hooks', `${s.tmuxSession}.jsonl`);
@@ -140,6 +179,9 @@ async function main(): Promise<void> {
       if (!r.exists) missing++;
       kb += r.kbCalls;
       bash += r.bashCalls;
+      lessonWrites += r.lessonWrites;
+      lessonSkips += r.lessonSkips;
+      kbSearches += r.kbSearches;
     }
     rows.push({
       taskId: t.id,
@@ -149,6 +191,10 @@ async function main(): Promise<void> {
       missingLogs: missing,
       kb,
       bash,
+      lessonWrites,
+      lessonSkips,
+      kbSearches,
+      decision: aggregateLessonDecision({ lessonWrites, lessonSkips, kbSearches }),
       promptHead: (t.prompt ?? '').replace(/\s+/g, ' ').slice(0, 80),
       updatedAt: t.updatedAt,
     });
@@ -196,12 +242,39 @@ async function main(): Promise<void> {
     }
   }
 
+  // Post-task lesson-decision visibility (issue #227): one bucket per task
+  // based on the strongest signal in its hook log.
+  const wrote = withLogs.filter((r) => r.decision === 'wrote-lesson').length;
+  const skipped = withLogs.filter((r) => r.decision === 'explicit-skip').length;
+  const searched = withLogs.filter((r) => r.decision === 'search-only').length;
+  const noKb = withLogs.filter((r) => r.decision === 'no-kb-activity').length;
+  const decided = wrote + skipped;
+  console.log(`\n--- Lesson decisions ---`);
+  console.log(
+    `Wrote lesson:              ${wrote}  (${withLogsCount ? ((wrote / withLogsCount) * 100).toFixed(1) : '0.0'}%)`,
+  );
+  console.log(
+    `Explicit skip:             ${skipped}  (${withLogsCount ? ((skipped / withLogsCount) * 100).toFixed(1) : '0.0'}%)`,
+  );
+  console.log(
+    `Search only (no decision): ${searched}  (${withLogsCount ? ((searched / withLogsCount) * 100).toFixed(1) : '0.0'}%)`,
+  );
+  console.log(
+    `No kb activity:            ${noKb}  (${withLogsCount ? ((noKb / withLogsCount) * 100).toFixed(1) : '0.0'}%)`,
+  );
+  console.log(
+    `Decision rate:             ${decided}  (${withLogsCount ? ((decided / withLogsCount) * 100).toFixed(1) : '0.0'}%)  — wrote-or-skipped of tasks with logs`,
+  );
+
+  // Zero-kb listing is the operational signal for "agent forgot the policy",
+  // so exclude tasks that explicitly opted out — those are intentionally
+  // zero-kb-but-decided and surfacing them as forgotten would be misleading.
   const zeros = withLogs
-    .filter((r) => r.kb === 0)
+    .filter((r) => r.kb === 0 && r.decision !== 'explicit-skip')
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
     .slice(0, 20);
   if (zeros.length) {
-    console.log(`\n--- Zero-kb tasks (most recent ${zeros.length}) ---`);
+    console.log(`\n--- Zero-kb tasks (most recent ${zeros.length}) — excludes explicit-skip ---`);
     console.log(`${pad('task-id', 38, true)}  ${pad('playbook', 26, true)}  ${pad('bash', 5)}  ${pad('status', 12, true)}  prompt`);
     for (const r of zeros) {
       console.log(
@@ -218,7 +291,10 @@ async function main(): Promise<void> {
     const n = rows.filter((r) => r.missingLogs > 0).length;
     console.log(`Note: ${n} task(s) had ${rows.reduce((a, r) => a + r.missingLogs, 0)} session(s) with no hook log on disk (rotated or pre-hook) — partial coverage.`);
   }
-  console.log(`\nDetection rule: PreToolUse Bash event whose command contains the literal "kb " (trailing space). Source: ~/.kookr/hooks/<tmuxSession>.jsonl. Subagent tool calls only count if they fire the parent-session hook.\n`);
+  console.log(`\nDetection rule: PreToolUse Bash event whose command contains the literal "kb " (trailing space). Source: ~/.kookr/hooks/<tmuxSession>.jsonl. Subagent tool calls only count if they fire the parent-session hook.`);
+  console.log(
+    `Lesson-decision rule (#227): "kb remember" → wrote-lesson; "${KB_LESSON_SKIP_MARKER}" marker → explicit-skip; otherwise kb-search. Strongest signal wins per task.\n`,
+  );
 }
 
 main().catch((err) => {

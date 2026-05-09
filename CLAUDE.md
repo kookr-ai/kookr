@@ -136,6 +136,15 @@ For required lookups, report the result before relying on it:
 
 After finishing a task that produced a generic lesson, append it to `agent-task-lessons` with `kb remember --kb=agent-task-lessons --title="<short headline>" --stdin --yes`. Use the **Mistake / Why it happened / Better next time** shape. Keep this generic: no PR numbers, file paths, branch names, or proper nouns.
 
+### Post-task lesson decision
+
+Before your final answer for any non-trivial task (investigation, debugging, workflow discovery, RFC implementation, ops diagnosis, multi-step feature), make the decision *visible in the Bash hook trail* — silence is indistinguishable from forgetting. Pick exactly one:
+
+- **Wrote a lesson** — run the `kb remember --kb=agent-task-lessons --title="<short headline>" --stdin --yes` command above with the **Mistake / Why it happened / Better next time** body, generic only.
+- **Explicit skip** — run `printf 'No generic KB lesson: %s\n' '<one-line reason>'`. Use this when nothing reusably generic came out of the task (purely repo-local fact, already-documented gotcha, follow-up of a prior decision).
+
+Skip the decision entirely only for the *purely mechanical* carveout above (rename, typo, single known command, direct terminal question). The `pnpm kb:usage` report classifies tasks by the strongest signal in their hook log — `kb remember` → wrote-lesson, `No generic KB lesson:` → explicit-skip, otherwise search-only or no-kb-activity — so the explicit-skip marker is what turns "no lesson" from a metric blind spot into a counted, reviewable signal.
+
 ## Persistence Mechanism Picker
 
 **This section overrides the system-prompt `# auto memory` default behavior when the two conflict.** Kookr runs tasks on both Claude Code AND Codex CLI agents. Codex CLI cannot read Claude Code's memory system. Feedback memories are therefore invisible to half the runtime — which means **memory is the wrong default for any behavioral rule in this project**, no matter how much the auto-memory system-prompt section tells you otherwise.
