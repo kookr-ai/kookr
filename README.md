@@ -18,7 +18,9 @@ You run 5 Claude Code agents in parallel. One silently loops on the same failing
 
 <img src="assets/branding/derived/kookr-screenshot.png" alt="Kookr dashboard — detect anomalies, respond, auto-advance" width="960" />
 
-[Demo video coming soon](https://github.com/kookr-ai/kookr/issues/100)
+[<img src="demo/assets/kookr-demo.gif" alt="Kookr demo preview — launch agents, triage anomalies, reply, and return to all clear" width="960" />](https://github.com/kookr-ai/kookr/releases/tag/demo-v1)
+
+[Watch the narrated demo video](https://github.com/kookr-ai/kookr/releases/tag/demo-v1)
 
 ## Features
 
