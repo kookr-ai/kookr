@@ -693,6 +693,19 @@ The system SHALL handle SIGINT/SIGTERM gracefully.
 
 **Evidence:** `src/server/index.ts` (signal handlers, cleanup logic).
 
+### R6.8: Semantic Checkpoint Compatibility — SHALL — `done`
+
+The system SHALL preserve Markdown checkpoints while supporting `semantic-checkpoint.v1` JSON checkpoints for durable agent handoff and resume.
+
+**Acceptance criteria:**
+- Checkpoint cycling prompts agents to update both `CHECKPOINT.md` and `CHECKPOINT.json`
+- `CHECKPOINT.json` follows the documented `semantic-checkpoint.v1` contract
+- Launch/resume instructions prefer valid `CHECKPOINT.json` when present
+- Launch/resume instructions fall back to `CHECKPOINT.md` when JSON is absent or invalid
+- Invalid semantic checkpoint JSON is surfaced as a warning and does not block launch
+
+**Evidence:** `docs/schemas/semantic-checkpoint.v1.json`, `src/core/checkpoint-path.ts`, `src/core/checkpoint-cycler.ts`, `src/core/checkpoint-path.test.ts`, `src/core/checkpoint-cycler.test.ts`, `src/adapters/claude-code-adapter.test.ts`, `src/adapters/codex-cli-adapter.test.ts`.
+
 ---
 
 ## R7: Non-functional Requirements

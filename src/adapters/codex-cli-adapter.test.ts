@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import { CodexCliAdapter } from './codex-cli-adapter.js';
 import { TaskStore } from '../core/tasks.js';
+import { resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import type { AgentEvent } from '../core/types.js';
 
 const CODEX_SUPPORTED_HOOK_TYPES = [
@@ -98,6 +99,36 @@ describe('CodexCliAdapter', () => {
     const session = updatedTask.sessions.find(s => s.tmuxSession === sessionId);
     expect(session).toBeDefined();
     expect(session!.agentType).toBe('codex-cli');
+  });
+
+  test('launch prefixes the prompt with semantic checkpoint fallback instructions when JSON is absent', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'codex-checkpoint-prefix-'));
+    try {
+      const cwd = join(tempDir, 'repo');
+      const gitDir = join(cwd, '.git');
+      const kookrDataDir = join(tempDir, '.kookr');
+      await mkdir(gitDir, { recursive: true });
+      await mkdir(kookrDataDir, { recursive: true });
+      await writeFile(join(gitDir, 'HEAD'), 'ref: refs/heads/feat-checkpoint-md\n');
+      const checkpointDir = await resolveAndPrepareCheckpointDir({ cwd, kookrDataDir });
+      expect(checkpointDir).not.toBeNull();
+      await writeFile(join(checkpointDir!, 'CHECKPOINT.md'), '# Markdown checkpoint\n');
+
+      const checkpointAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        kookrDataDir,
+      });
+      const task = taskStore.createTask('Fix bug', cwd);
+      const sessionId = await checkpointAdapter.launch(task.id, 'original prompt', cwd);
+
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const prompt = spec.args.at(-1)!;
+      expect(prompt).toContain('CHECKPOINT.json is not present');
+      expect(prompt).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
+      expect(prompt).toContain('original prompt');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   test('launch generates the widened Codex-compatible hook subscription set', async () => {
