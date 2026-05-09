@@ -75,6 +75,18 @@ The system SHOULD reconcile Kookr-managed task sessions against the live `git wo
 
 **Evidence:** `src/adapters/git-worktree-registry.ts`, `src/server/reconciliation.ts`, `src/server/lifecycle-timers.ts`, `src/core/monitor.ts`, `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/FindingsPanel.tsx`.
 
+### R1.7: Preserve Completed Task Implementation Metadata [F1.4] — SHOULD — `done`
+
+The system SHOULD preserve enough closeout metadata for completed Kookr-managed tasks to support later supervision and reflection without reopening transcripts manually.
+
+**Acceptance criteria:**
+- Completed Codex CLI tasks include branch, commit SHA(s), PR URL(s), and final diff files in `completionDigest` when available
+- Verification commands run by the agent are preserved in `completionDigest`
+- Codex rollout token totals and cost are included when available and priceable
+- Missing Codex token/cost data is represented with an explicit quality/reason instead of silent all-zero totals
+
+**Evidence:** `src/core/completion-digest.ts`, `src/server/completion-metadata.ts`, `src/server/ws-handlers/lifecycle-handler.ts`, `src/server/ralph-loop-service.ts`, `src/core/completion-digest.test.ts`, `src/server/completion-metadata.test.ts`.
+
 ---
 
 ## R2: Anomaly Detection
@@ -871,6 +883,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R1.3 | F1.4 | SHOULD | partial | tasks, frontend components |
 | R1.4 | F1.1 | MAY | deferred | — |
 | R1.5 | F1.5 | MAY | deferred | — |
+| R1.7 | F1.4 | SHOULD | done | completion-digest, completion-metadata, lifecycle-handler |
 | R2.1 | F2.1 | SHALL | done | hook-parser, anomaly-detector, monitor |
 | R2.2 | F2.2 | SHOULD | done | anomaly-detector |
 | R2.3 | F2.3 | SHOULD | done | anomaly-detector |

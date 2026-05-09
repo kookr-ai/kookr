@@ -15,7 +15,7 @@ import {
   cleanupSessionResources as cleanupSessionResourcesImpl,
 } from '../agent-lifecycle.js';
 import { nowISO } from '../../core/interaction-log.js';
-import { generateCompletionDigest } from '../../core/completion-digest.js';
+import { buildTaskCompletionMetadata } from '../completion-metadata.js';
 import { getSnapshotAgentsForClient } from '../use-cases/get-snapshot.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { handleLaunchResult } from './launch-result.js';
@@ -198,21 +198,27 @@ export class LifecycleHandler {
           }
         }
 
+        const completionMetadata = completingTask && preEvents.length > 0
+          ? await buildTaskCompletionMetadata(completingTask, preEvents)
+          : undefined;
+
         await completeTaskImpl(msg.taskId, this.deps.getLifecycleDeps());
         await this.deps.scheduleService?.recordTaskTerminalOutcome(msg.taskId, 'completed');
 
         // Generate and store completion digest
-        if (completingTask && preEvents.length > 0) {
-          const digest = generateCompletionDigest(preEvents);
-          this.deps.taskStore.setCompletionDigest(msg.taskId, digest);
+        if (completingTask && completionMetadata) {
+          this.deps.taskStore.setCompletionDigest(msg.taskId, completionMetadata.digest);
+          if (completionMetadata.taskTokenUsage) {
+            this.deps.taskStore.updateTokenUsage(msg.taskId, completionMetadata.taskTokenUsage);
+          }
 
           // Toast notification for all clients
           const taskName = completingTask.name ?? 'Task';
           this.deps.broadcastToAll?.({
             type: 'alert',
             agentId: completingTask.sessions[0]?.tmuxSession ?? '',
-            summary: `Completed: ${taskName} — ${digest.bullets[0]}`,
-            details: digest.bullets.slice(1).join(' · '),
+            summary: `Completed: ${taskName} — ${completionMetadata.digest.bullets[0]}`,
+            details: completionMetadata.digest.bullets.slice(1).join(' · '),
             severity: 'info',
           });
         }
