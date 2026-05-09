@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Anomaly } from '../core/types.js';
 import { TaskStore } from '../core/tasks.js';
@@ -45,6 +45,7 @@ describe('WebSocket MessageRouter', () => {
       const task = taskStore.createTask(opts.prompt, opts.cwd, opts.criteria);
       if (opts.name) task.name = opts.name;
       if (opts.playbookId) task.playbookId = opts.playbookId;
+      if (opts.projectId) taskStore.setProjectId(task.id, opts.projectId);
       await adapter.launch(task.id, opts.prompt, opts.cwd);
       return { task, queued: false };
     };
@@ -1323,6 +1324,7 @@ describe('WebSocket MessageRouter — Playbooks', () => {
       const task = taskStore.createTask(opts.prompt, opts.cwd, opts.criteria);
       if (opts.name) task.name = opts.name;
       if (opts.playbookId) task.playbookId = opts.playbookId;
+      if (opts.projectId) taskStore.setProjectId(task.id, opts.projectId);
       await adapter.launch(task.id, opts.prompt, opts.cwd);
       return { task, queued: false };
     };
@@ -1462,6 +1464,38 @@ Work locally.
     const tasks = taskStore.listTasks();
     expect(tasks).toHaveLength(1);
     expect(tasks[0].cwd).toBe(tempDir);
+  });
+
+  test('launchPlaybook forwards split source, target cwd, and projectId', async () => {
+    const sourceCwd = join(tempDir, 'catalog');
+    const targetCwd = join(tempDir, 'target');
+    const pbDir = join(sourceCwd, '.kookr', 'playbooks');
+    await mkdir(pbDir, { recursive: true });
+    await mkdir(targetCwd, { recursive: true });
+    await writeFile(
+      join(pbDir, 'targeted.md'),
+      `---
+name: Targeted Task
+---
+
+Work in target.
+`,
+    );
+
+    await router.handleMessage({
+      type: 'launchPlaybook',
+      playbookPath: 'targeted.md',
+      playbookSourceCwd: sourceCwd,
+      taskTargetCwd: targetCwd,
+      projectId: `local/${basename(targetCwd)}`,
+      parameterValues: {},
+    });
+
+    const tasks = taskStore.listTasks();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].cwd).toBe(targetCwd);
+    expect(tasks[0].projectId).toBe(`local/${basename(targetCwd)}`);
+    expect(tasks[0].playbookId).toBe('targeted.md');
   });
 
   test('launchPlaybook with non-existent cwd sends descriptive alert', async () => {

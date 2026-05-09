@@ -122,7 +122,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   // When opening for playbook relaunch or project context, ensure playbook list is fetched
   useEffect(() => {
     if (relaunchPlaybookId || projectContext) {
-      const targetCwd = cwd.trim() || serverCwd;
+      const targetCwd = projectContext ? serverCwd : (cwd.trim() || serverCwd);
       const isFresh =
         playbooksLastFetchedCwd === targetCwd &&
         Date.now() - playbooksLastFetchedAt < 30_000 &&
@@ -282,8 +282,17 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
   const PLAYBOOK_CACHE_TTL = 30_000;
 
+  function getPlaybookSourceCwd(): string {
+    return projectContext ? serverCwd : (cwd.trim() || serverCwd);
+  }
+
+  function getTaskTargetCwd(): string {
+    if (projectContext) return cwd.trim();
+    return cwd.trim() || serverCwd;
+  }
+
   function switchToPlaybooks() {
-    const targetCwd = cwd.trim() || serverCwd;
+    const targetCwd = getPlaybookSourceCwd();
     const isFresh =
       playbooksLastFetchedCwd === targetCwd &&
       Date.now() - playbooksLastFetchedAt < PLAYBOOK_CACHE_TTL &&
@@ -538,7 +547,14 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
           <PlaybookBrowser
             send={send}
             onClose={onClose}
-            cwd={cwd.trim() || serverCwd}
+            cwd={getTaskTargetCwd()}
+            {...(projectContext
+              ? {
+                  playbookSourceCwd: getPlaybookSourceCwd(),
+                  taskTargetCwd: getTaskTargetCwd(),
+                  onTaskTargetCwdChange: setCwd,
+                }
+              : {})}
             relaunchPlaybookId={relaunchPlaybookId}
             relaunchParameterValues={relaunchParameterValues}
             projectContext={projectContext}

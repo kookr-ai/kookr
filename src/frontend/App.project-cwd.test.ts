@@ -65,11 +65,11 @@ describe('App project drawer launch cwd', () => {
         checklist: [],
         tags: [],
         body: 'Run this.',
-        sourceCwd: '/work/idle',
+        sourceCwd: '/server/cwd',
         scope: 'project',
       }],
       playbooksLastFetchedAt: Date.now(),
-      playbooksLastFetchedCwd: '/work/idle',
+      playbooksLastFetchedCwd: '/server/cwd',
       playbooksLoading: false,
     });
     useKookrStore.getState().handleProjectSummaries([
@@ -110,7 +110,8 @@ describe('App project drawer launch cwd', () => {
     });
     await flush();
 
-    const runningIn = container.querySelector('.playbook-resolved-cwd-path');
-    expect(runningIn?.textContent).toBe('/work/idle');
+    const cwdPaths = Array.from(container.querySelectorAll('.playbook-resolved-cwd-path'))
+      .map((el) => el.textContent);
+    expect(cwdPaths).toEqual(['/server/cwd', '/work/idle']);
   });
 });

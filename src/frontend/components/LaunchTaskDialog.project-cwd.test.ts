@@ -8,6 +8,7 @@ import { LaunchTaskDialog } from './LaunchTaskDialog.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { LAUNCH_TASK_DIALOG_DRAFT_KEY } from '../store/launch-task-dialog-draft.js';
 import type { ClientMessage } from '../../shared/protocol.js';
+import type { ProjectSummary } from '../../core/project-summary.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -30,21 +31,34 @@ function getCwdEl(container: HTMLElement): HTMLInputElement {
 
 function renderDialog(
   container: HTMLElement,
-  props: { projectCwd?: string; defaultCwd?: string } = {},
+  props: { projectCwd?: string; defaultCwd?: string; projectContext?: ProjectSummary; send?: (msg: ClientMessage) => boolean } = {},
 ): { root: Root } {
   const root = createRoot(container);
   act(() => {
     root.render(
       React.createElement(LaunchTaskDialog, {
-        send: (_msg: ClientMessage) => true,
+        send: props.send ?? ((_msg: ClientMessage) => true),
         onClose: () => {},
         projectCwd: props.projectCwd,
         defaultCwd: props.defaultCwd,
+        projectContext: props.projectContext,
       }),
     );
   });
   return { root };
 }
+
+const projectSummary: ProjectSummary = {
+  project: 'github.com/acme/target',
+  displayName: 'acme/target',
+  color: 1,
+  activeAgents: 0,
+  findingCount: 0,
+  todayPrCount: 0,
+  weekPrCount: 0,
+  openPrs: 0,
+  recentTasks: [],
+};
 
 describe('LaunchTaskDialog projectCwd prop', () => {
   let container: HTMLDivElement;
@@ -109,6 +123,41 @@ describe('LaunchTaskDialog projectCwd prop', () => {
     await flush();
 
     expect(getCwdEl(container).value).toBe('/relaunch/path');
+
+    act(() => root.unmount());
+  });
+
+  test('project context lists playbooks from server cwd and keeps unresolved target empty', async () => {
+    localStorage.setItem(
+      LAUNCH_TASK_DIALOG_DRAFT_KEY,
+      JSON.stringify({ prompt: 'pending', cwd: '/old/draft/path', criteria: '' }),
+    );
+    const sent: ClientMessage[] = [];
+    const { root } = renderDialog(container, {
+      projectCwd: '',
+      projectContext: projectSummary,
+      send: (msg) => {
+        sent.push(msg);
+        return true;
+      },
+    });
+    await flush();
+    await act(async () => {
+      useKookrStore.setState({
+        playbooksLoading: false,
+        playbooks: [],
+        playbooksLastFetchedCwd: '/server/cwd',
+        playbooksLastFetchedAt: Date.now(),
+      });
+    });
+    await flush();
+
+    expect(sent).toContainEqual({ type: 'listPlaybooks', cwd: '/server/cwd' });
+    expect(container.textContent).toContain('Running in:');
+    expect(container.textContent).toContain('Playbooks from:');
+    expect(container.textContent).toContain('/server/cwd');
+    expect(container.textContent).not.toContain('/old/draft/path');
+    expect(Array.from(container.querySelectorAll('.playbook-resolved-cwd-path')).map((el) => el.textContent)).toEqual(['/server/cwd', '']);
 
     act(() => root.unmount());
   });

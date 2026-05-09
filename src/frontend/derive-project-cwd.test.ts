@@ -78,13 +78,13 @@ describe('deriveLaunchProjectCwd', () => {
     expect(deriveLaunchProjectCwd([], project({ localPath: '/work/repo' }))).toBe('/work/repo');
   });
 
-  test('keeps the agent-derived cwd ahead of project localPath', () => {
+  test('keeps project localPath ahead of agent-derived cwd', () => {
     const agents = [
       agent({ projectId: 'github.com/me/repo', cwd: '/work/repo-from-agent' }),
     ];
 
     expect(deriveLaunchProjectCwd(agents, project({ localPath: '/work/repo-from-config' })))
-      .toBe('/work/repo-from-agent');
+      .toBe('/work/repo-from-config');
   });
 
   test('returns null when neither agents nor project localPath provide a cwd', () => {

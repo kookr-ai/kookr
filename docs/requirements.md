@@ -457,6 +457,22 @@ The system SHALL expose the full Ralph verdict environment to every loop iterati
 
 **Evidence:** `src/server/launch-service.ts`, `src/server/ralph-loop-service.ts`, `.kookr/playbooks/implement-github-issue.md`, `src/server/launch-service.test.ts`, `src/server/ralph-loop-service.test.ts`, `src/core/implement-github-issue-playbook.test.ts`.
 
+### R4b.8: Project-Targeted Catalog Playbooks [F6.2, F6.6] — SHALL — `done`
+
+The system SHALL allow playbooks discovered from Kookr's catalog cwd to launch tasks in a selected tracked project's local checkout.
+
+**Acceptance criteria:**
+- Project-drawer playbook launch keeps playbook discovery rooted at Kookr's catalog cwd when the selected project has no `.kookr/playbooks/`
+- Project-drawer launch target defaults to `ProjectSummary.localPath`, then agent-derived cwd, then an unresolved empty target
+- Project-drawer target cwd never falls back to draft cwd, recent cwd, or server cwd
+- The selected playbook detail lets the user edit target cwd without losing selected playbook, parameters, or loop mode
+- Standard, looped, and replace-loop playbook launches send separate playbook source cwd and task target cwd
+- Server launch preparation reads the playbook from source cwd and launches the task in target cwd
+- Legacy playbook launches that send only `cwd` remain backward-compatible, including frontmatter `cwd:` precedence
+- Project-drawer launches include selected project id, and server-side validation rejects conflicting project attribution
+
+**Evidence:** `src/frontend/App.tsx` (localPath-first project target), `src/frontend/components/LaunchTaskDialog.tsx` (catalog source vs target cwd), `src/frontend/components/PlaybookBrowser.tsx` (split standard/looped/replace payloads and inline target editing), `src/server/ws-handlers/playbook-handler.ts`, `src/server/use-cases/playbook-launch.ts` (source/target normalization, pinned-cwd conflict, projectId validation), `src/server/routes/task-routes.ts` (split HTTP payloads), `src/server/use-cases/looped-playbook-launch.ts`. Tests: `src/shared/contracts/client-message-schema.test.ts`, `src/server/use-cases/playbook-launch.test.ts`, `src/server/use-cases/looped-playbook-launch.test.ts`, `src/server/routes/task-routes.test.ts`, `src/server/ws.test.ts`, `src/frontend/components/PlaybookBrowser.loopable.test.ts`, `src/frontend/components/LaunchTaskDialog.project-cwd.test.ts`.
+
 ---
 
 ## R4c: Contribution Workspace
@@ -832,6 +848,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R4b.5 | — | SHOULD | done | telegram/index, telegram/rephrase, launch-service |
 | R4b.6 | F6.7 | SHOULD | done | looped-playbook-launch, PlaybookBrowser |
 | R4b.7 | — | SHALL | done | launch-service, ralph-loop-service, implement-github-issue playbook |
+| R4b.8 | F6.2, F6.6 | SHALL | done | LaunchTaskDialog, PlaybookBrowser, playbook-launch, task-routes |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |

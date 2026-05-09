@@ -1,24 +1,45 @@
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { existsSync } from 'node:fs';
 import { parsePlaybook, interpolateParameters } from '../../core/playbook-parser.js';
 import { userPlaybooksDir, pluginPlaybooksDir } from '../../core/playbook-discovery.js';
-import { projectIdFromRepoSpecifier } from '../../core/project-identity.js';
+import { getProjectId, projectIdFromRepoSpecifier } from '../../core/project-identity.js';
 import type { AgentType } from '../../core/agent-types.js';
 import type { PlaybookScope } from '../../core/playbook.js';
 import type { AutonomyLevel } from '../../core/tasks.js';
-import type { LaunchOpts } from '../launch-service.js';
+import { canonicalizeCwd, type LaunchOpts } from '../launch-service.js';
 import { normalizePromptFileReferences } from '../prompt-file-paths.js';
 import { expandConfiguredCwd } from '../cwd-paths.js';
 
 export interface PreparePlaybookLaunchInput {
-  cwd: string;
+  /**
+   * Legacy field. When split fields are omitted this is both catalog source
+   * and execution target.
+   */
+  cwd?: string;
+  /** CWD whose .kookr/playbooks directory supplies playbook definitions. */
+  playbookSourceCwd?: string;
+  /** CWD where the task should execute. */
+  taskTargetCwd?: string;
+  /**
+   * Set by route adapters when taskTargetCwd was intentionally supplied.
+   * Legacy `cwd` plus playbook frontmatter `cwd:` remains valid.
+   */
+  taskTargetCwdExplicit?: boolean;
+  /** Explicit project identity requested by the launch surface. */
+  projectId?: string;
   playbookPath: string;
   parameterValues: Record<string, string>;
   autonomy?: AutonomyLevel;
   agentType?: AgentType;
   /** Where to read the playbook file from. Defaults to 'project' for back-compat. */
   scope?: PlaybookScope;
+}
+
+export interface NormalizedPlaybookLaunchInput extends PreparePlaybookLaunchInput {
+  playbookSourceCwd: string;
+  taskTargetCwd: string;
+  taskTargetCwdExplicit: boolean;
 }
 
 export interface PreparedPlaybookLaunch {
@@ -31,26 +52,40 @@ export async function preparePlaybookLaunch(input: PreparePlaybookLaunchInput): 
 }
 
 export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLaunchInput): Promise<PreparedPlaybookLaunch> {
+  const normalized = normalizePlaybookLaunchInput(input);
   const scope: PlaybookScope = input.scope ?? 'project';
-  const playbooksDir = resolvePlaybooksDir(scope, input.cwd);
+  const playbooksDir = resolvePlaybooksDir(scope, normalized.playbookSourceCwd);
   if (playbooksDir === undefined) {
     throw new Error(`No playbooks directory available for scope "${scope}" — is the kookr-toolkit plugin installed?`);
   }
   const filePath = join(playbooksDir, input.playbookPath);
-  if (!filePath.startsWith(playbooksDir + '/')) {
+  if (!isPathInside(filePath, playbooksDir)) {
     throw new Error(`Invalid playbook path: ${input.playbookPath}`);
   }
 
   const content = await readFile(filePath, 'utf-8');
   // Non-project scopes use the playbooks dir itself as sourceCwd so that
   // per-scope param-snapshot keys (sourceCwd::id) stay stable across cwds.
-  const sourceCwd = scope === 'project' ? input.cwd : playbooksDir;
+  const sourceCwd = scope === 'project' ? normalized.playbookSourceCwd : playbooksDir;
   const playbook = parsePlaybook(content, input.playbookPath, sourceCwd, scope);
   const criteria = playbook.checklist.length > 0
     ? playbook.checklist.map((item) => `- ${item}`).join('\n')
     : undefined;
 
-  const effectiveCwd = expandConfiguredCwd(playbook.cwd ?? input.cwd);
+  const requestedTargetCwd = expandConfiguredCwd(normalized.taskTargetCwd);
+  const playbookPinnedCwd = playbook.cwd ? expandConfiguredCwd(playbook.cwd) : undefined;
+  if (
+    playbookPinnedCwd
+    && normalized.taskTargetCwdExplicit
+    && canonicalizeCwd(playbookPinnedCwd) !== canonicalizeCwd(requestedTargetCwd)
+  ) {
+    throw new Error(
+      `Playbook "${playbook.name}" pins working directory ${playbookPinnedCwd}; `
+      + `cannot override with requested target ${requestedTargetCwd}.`,
+    );
+  }
+
+  const effectiveCwd = playbookPinnedCwd ?? requestedTargetCwd;
   if (effectiveCwd && !existsSync(effectiveCwd)) {
     throw new Error(
       `Playbook "${playbook.name}" requires working directory ${effectiveCwd} which does not exist. `
@@ -62,17 +97,21 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
     effectiveCwd,
   );
 
-  // Derive project ID from the first parameter with source: tracked-projects
-  // (e.g., repoFullName = "grafana/grafana" → projectId = "github.com/grafana/grafana")
-  let projectId: string | undefined;
-  for (const param of playbook.parameters) {
-    if (param.source === 'tracked-projects') {
-      const value = input.parameterValues[param.name];
-      if (value) {
-        projectId = projectIdFromRepoSpecifier(value) ?? undefined;
-        break;
-      }
+  // Derive project ID from the first parameter with source: tracked-projects.
+  // Project-drawer launches can also send an explicit projectId. Accept it
+  // only when it matches any tracked-project value and the target cwd.
+  const parameterProjectId = projectIdFromTrackedProjectParam(playbook, input.parameterValues);
+  const requestedProjectId = normalizeRequestedProjectId(input.projectId);
+  let projectId = parameterProjectId;
+  if (requestedProjectId) {
+    if (parameterProjectId && requestedProjectId !== parameterProjectId) {
+      throw new Error(`Requested projectId ${requestedProjectId} does not match tracked-project parameter ${parameterProjectId}.`);
     }
+    const targetProjectId = await getProjectId(effectiveCwd);
+    if (requestedProjectId !== targetProjectId) {
+      throw new Error(`Requested projectId ${requestedProjectId} does not match target cwd project ${targetProjectId}.`);
+    }
+    projectId = requestedProjectId;
   }
 
   return {
@@ -97,4 +136,54 @@ function resolvePlaybooksDir(scope: PlaybookScope, projectCwd: string): string |
     case 'user':    return userPlaybooksDir();
     case 'plugin':  return pluginPlaybooksDir();
   }
+}
+
+export function normalizePlaybookLaunchInput(input: PreparePlaybookLaunchInput): NormalizedPlaybookLaunchInput {
+  const legacyCwd = input.cwd?.trim();
+  const rawSourceCwd = input.playbookSourceCwd?.trim() || legacyCwd;
+  const rawTargetCwd = input.taskTargetCwd?.trim() || legacyCwd || rawSourceCwd;
+
+  if (!rawSourceCwd) {
+    throw new Error('playbookSourceCwd or cwd is required for playbook launches.');
+  }
+  if (!rawTargetCwd) {
+    throw new Error('taskTargetCwd or cwd is required for playbook launches.');
+  }
+
+  const taskTargetCwdExplicit = input.taskTargetCwdExplicit
+    ?? Boolean(input.taskTargetCwd?.trim());
+
+  return {
+    ...input,
+    playbookSourceCwd: resolve(expandConfiguredCwd(rawSourceCwd)),
+    taskTargetCwd: resolve(expandConfiguredCwd(rawTargetCwd)),
+    taskTargetCwdExplicit,
+  };
+}
+
+function projectIdFromTrackedProjectParam(
+  playbook: ReturnType<typeof parsePlaybook>,
+  parameterValues: Record<string, string>,
+): string | undefined {
+  for (const param of playbook.parameters) {
+    if (param.source === 'tracked-projects') {
+      const value = parameterValues[param.name];
+      if (value) {
+        return projectIdFromRepoSpecifier(value) ?? undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+function normalizeRequestedProjectId(projectId: string | undefined): string | undefined {
+  const trimmed = projectId?.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith('local/')) return trimmed;
+  return projectIdFromRepoSpecifier(trimmed) ?? trimmed.toLowerCase();
+}
+
+function isPathInside(path: string, parent: string): boolean {
+  const relativePath = relative(resolve(parent), resolve(path));
+  return relativePath === '' || (!relativePath.startsWith('..') && relativePath !== '..' && !relativePath.startsWith(`..${sep}`));
 }

@@ -24,5 +24,5 @@ export function deriveProjectCwd(agents: AgentState[], projectId: string): strin
 }
 
 export function deriveLaunchProjectCwd(agents: AgentState[], project: ProjectSummary): string | null {
-  return deriveProjectCwd(agents, project.project) ?? project.localPath ?? null;
+  return project.localPath ?? deriveProjectCwd(agents, project.project) ?? null;
 }

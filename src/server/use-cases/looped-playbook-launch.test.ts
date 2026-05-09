@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
@@ -335,6 +335,58 @@ Loop {{target}}.
     });
   });
 
+  it('loads looped playbooks from the catalog cwd and launches in the target cwd', async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), 'looped-playbook-source-'));
+    const targetCwd = await mkdtemp(join(tmpdir(), 'looped-playbook-target-'));
+    try {
+      await mkdir(join(sourceCwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(sourceCwd, '.kookr', 'playbooks', 'workflow.md'), `---
+name: Loopable
+tags: [workflow, loopable]
+---
+
+Loop in docs/target-note.md.
+`);
+      await mkdir(join(targetCwd, 'docs'), { recursive: true });
+      await writeFile(join(targetCwd, 'docs', 'target-note.md'), 'target');
+
+      const taskStore = new TaskStore();
+      const startLoop = vi.fn(async () => ({ ok: true, changed: true, value: undefined }));
+      const launchTask = vi.fn(async (opts) => {
+        const task = taskStore.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          playbookParameterValues: opts.playbookParameterValues,
+        });
+        task.playbookId = opts.playbookId;
+        if (opts.projectId) taskStore.setProjectId(task.id, opts.projectId);
+        return { task, queued: false };
+      });
+
+      const result = await launchLoopedPlaybook({
+        taskStore,
+        launchTask,
+        ralphLoopService: { startLoop } as unknown as RalphLoopService,
+      }, {
+        playbookSourceCwd: sourceCwd,
+        taskTargetCwd: targetCwd,
+        projectId: `local/${basename(targetCwd)}`,
+        playbookPath: 'workflow.md',
+        parameterValues: {},
+      });
+
+      expect(result.task.cwd).toBe(targetCwd);
+      expect(result.task.projectId).toBe(`local/${basename(targetCwd)}`);
+      expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
+        cwd: targetCwd,
+        projectId: `local/${basename(targetCwd)}`,
+      }));
+    } finally {
+      await rm(sourceCwd, { recursive: true, force: true });
+      await rm(targetCwd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects looped playbook launch when active task capacity is full', async () => {
     await withPlaybook(`---
 name: Loopable
@@ -391,6 +443,7 @@ describe('replaceLoopedPlaybook', () => {
         playbookParameterValues: opts.playbookParameterValues,
       });
       t.playbookId = opts.playbookId;
+      if (opts.projectId) taskStore.setProjectId(t.id, opts.projectId);
       return { task: t, queued: false };
     });
   }
@@ -564,6 +617,57 @@ Loop {{target}}.
     });
   });
 
+  it('matches replace-loop keys against the target cwd when catalog and target differ', async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), 'replace-looped-source-'));
+    const targetCwd = await mkdtemp(join(tmpdir(), 'replace-looped-target-'));
+    try {
+      await mkdir(join(sourceCwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(sourceCwd, '.kookr', 'playbooks', 'workflow.md'), `---
+name: Loopable
+tags: [workflow, loopable]
+---
+
+Loop {{target}}.
+`);
+
+      const taskStore = new TaskStore();
+      const old = setupActiveLoop(taskStore, targetCwd);
+      const cancelReplacedTask = vi.fn(async (taskId) => {
+        taskStore.cancelTask(taskId);
+        const t = taskStore.getTask(taskId);
+        if (t?.ralphLoop) t.ralphLoop.status = 'cancelled';
+      });
+      const deps = baseDeps(taskStore, { cancelReplacedTask });
+
+      await expect(replaceLoopedPlaybook(baseDeps(taskStore) as never, {
+        replacedTaskId: old.id,
+        playbookSourceCwd: sourceCwd,
+        taskTargetCwd: sourceCwd,
+        projectId: `local/${basename(sourceCwd)}`,
+        playbookPath: 'workflow.md',
+        parameterValues: { target: 'repo' },
+      })).rejects.toMatchObject({
+        status: 400,
+        details: { code: 'replacedTaskId_key_mismatch' },
+      } satisfies Partial<LoopedPlaybookLaunchError>);
+
+      const { result } = await replaceLoopedPlaybook(deps as never, {
+        replacedTaskId: old.id,
+        playbookSourceCwd: sourceCwd,
+        taskTargetCwd: targetCwd,
+        projectId: `local/${basename(targetCwd)}`,
+        playbookPath: 'workflow.md',
+        parameterValues: { target: 'repo' },
+      });
+
+      expect(result.task.cwd).toBe(targetCwd);
+      expect(result.task.projectId).toBe(`local/${basename(targetCwd)}`);
+    } finally {
+      await rm(sourceCwd, { recursive: true, force: true });
+      await rm(targetCwd, { recursive: true, force: true });
+    }
+  });
+
   it('returns 400 when replacedTaskId is unknown', async () => {
     await withPlaybook(`---
 name: Loopable
@@ -644,20 +748,22 @@ Loop {{target}}.
       const taskStore = new TaskStore();
       const old = setupActiveLoop(taskStore, cwd);
 
-      // Hold firstP suspended on its launchTask call so the in-flight key
-      // is observably acquired when secondP fires. Using launchTask as the
-      // barrier keeps the test independent of the order of internal awaits
-      // (detectStandalonePlugin, cancelLoop, cancelReplacedTask, etc.).
-      let releaseLaunch!: () => void;
-      const launchOne = vi.fn(() => new Promise<{ task: never; queued: false }>(() => {
-        releaseLaunch = () => { /* never resolves; firstP intentionally leaks */ };
+      // Hold firstP suspended inside lifecycle cancellation. We wait until
+      // cancelLoop fires: replaceLoopedPlaybook has already acquired the
+      // in-flight key by then, while the stored task is not terminal yet.
+      let cancelLoopReached!: () => void;
+      const cancelLoopReachedP = new Promise<void>((resolve) => { cancelLoopReached = resolve; });
+      const cancelReplacedTask = vi.fn(() => new Promise<void>(() => {
+        /* never resolves; firstP intentionally leaks */
       }));
+      const launchOne = vi.fn();
 
       const sharedRalphService = {
         cancelLoop: vi.fn((task) => {
           if (task.ralphLoop && task.ralphLoop.status === 'running') {
             task.ralphLoop.status = 'cancelled';
           }
+          cancelLoopReached();
           return { ok: true, value: 'cancelled', changed: true };
         }),
         startLoop: vi.fn(async () => ({ ok: true, changed: true, value: undefined })),
@@ -667,11 +773,7 @@ Loop {{target}}.
         taskStore,
         launchTask: launchOne,
         ralphLoopService: sharedRalphService as unknown as RalphLoopService,
-        cancelReplacedTask: vi.fn(async (taskId) => {
-          taskStore.cancelTask(taskId);
-          const t = taskStore.getTask(taskId);
-          if (t?.ralphLoop) t.ralphLoop.status = 'cancelled';
-        }),
+        cancelReplacedTask,
       } as never, {
         replacedTaskId: old.id,
         cwd,
@@ -682,12 +784,7 @@ Loop {{target}}.
       // Avoid an unhandled-rejection warning if firstP is gc'd while pending.
       firstP.catch(() => undefined);
 
-      // Yield enough times for firstP to traverse all of its synchronous and
-      // microtask boundaries (prepare → validate → in-flight add → detect →
-      // cancelLoop → cancelReplacedTask → launch barrier).
-      for (let i = 0; i < 5; i++) {
-        await new Promise((r) => setImmediate(r));
-      }
+      await cancelLoopReachedP;
 
       const secondP = replaceLoopedPlaybook({
         taskStore,
@@ -706,10 +803,8 @@ Loop {{target}}.
         details: { code: 'replace_already_in_progress' },
       } satisfies Partial<LoopedPlaybookLaunchError>);
 
-      // firstP intentionally leaks — wherever it suspended, holding the
-      // in-flight key was the only behavior under test. releaseLaunch
-      // exists for documentation; if launchTask ran, calling it is a no-op.
-      if (typeof releaseLaunch === 'function') releaseLaunch();
+      // firstP intentionally leaks — holding the in-flight key was the only
+      // behavior under test.
     });
   });
 });
