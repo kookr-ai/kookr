@@ -198,6 +198,26 @@ Body.
     expect(playbook).not.toContain('| grep -E "(^|[-_./])issue[-_.]${N}([-_.]|$)" | head -1');
   });
 
+  test('high-risk actor-verifier-distiller playbook covers required manual workflow contracts', async () => {
+    const content = await readFile('.kookr/playbooks/high-risk-actor-verifier-distiller.md', 'utf8');
+    const playbook = parsePlaybook(content, 'high-risk-actor-verifier-distiller.md', process.cwd());
+
+    expect(playbook.name).toBe('High-Risk Actor-Verifier-Distiller');
+    expect(playbook.checklist).toEqual([
+      'Trigger criteria reviewed and mode selected only when risk justifies the extra roles',
+      'Actor produced the required bounded output package',
+      'Verifier completed hard-gate and advisory rubric checks',
+      'Distiller produced only verified candidates and handoff notes',
+      'Stop conditions checked before any persistence, PR, or follow-up action',
+    ]);
+
+    expect(playbook.body).toContain('## Trigger Criteria');
+    expect(playbook.body).toContain('Actor output contract:');
+    expect(playbook.body).toContain('Verifier rubric:');
+    expect(playbook.body).toContain('Distiller output contract:');
+    expect(playbook.body).toContain('## Stop Conditions');
+  });
+
   test('validates zero-diff convergence against default iteration cap', () => {
     const content = `---
 name: Bad zero-diff
