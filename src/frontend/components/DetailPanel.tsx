@@ -97,6 +97,117 @@ function EditableHeading({ agent, send }: { agent: AgentState; send: (msg: Clien
   );
 }
 
+function AgentProviderBadge({
+  agentType,
+  provider,
+}: {
+  agentType: NonNullable<AgentState['agentType']>;
+  provider: ReturnType<typeof agentProviderPresentation>;
+}) {
+  const title = `${provider.label} by ${provider.provider}`;
+
+  return (
+    <span
+      className={`detail-agent-provider detail-agent-provider--${agentType}`}
+      title={title}
+    >
+      <svg className="detail-agent-provider-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d={provider.iconPath} />
+      </svg>
+      <span className="detail-agent-provider-label">{provider.label}</span>
+      <span className="sr-only"> by {provider.provider}</span>
+    </span>
+  );
+}
+
+function DetailMetadataMenu({
+  agent,
+  provider,
+  hookSettingsTriggerRef,
+  onShowHookSettings,
+}: {
+  agent: AgentState;
+  provider: ReturnType<typeof agentProviderPresentation> | null;
+  hookSettingsTriggerRef: React.RefObject<HTMLButtonElement | null>;
+  onShowHookSettings: () => void;
+}) {
+  const hasUsageCost = agent.tokenUsage && agent.tokenUsage.costUsd > 0;
+  const hasTokenCount = agent.tokenUsage && (agent.tokenUsage.inputTokens + agent.tokenUsage.outputTokens) > 0;
+  const hasProject = Boolean(agentProjectLabel(agent));
+  const hasBranch = Boolean(agent.gitBranch || agent.gitCommit);
+  const hasAgentType = Boolean(agent.agentType && provider);
+  const hasAnyDetail = hasUsageCost || hasTokenCount || hasProject || hasBranch || hasAgentType;
+
+  if (!hasAnyDetail) return null;
+
+  return (
+    <details className="detail-meta-menu">
+      <summary>Details</summary>
+      <div className="detail-meta-popover">
+        {hasAgentType && agent.agentType && provider && (
+          <div className="detail-meta-row">
+            <span className="detail-meta-label">Agent</span>
+            <span className="detail-agent-type-group">
+              <AgentProviderBadge agentType={agent.agentType} provider={provider} />
+              <button
+                ref={hookSettingsTriggerRef}
+                type="button"
+                className="detail-hook-settings-btn"
+                aria-label={`Hooks: view effective hook settings for ${provider.label} session`}
+                title={`Hooks: view effective hook settings for ${provider.label} session`}
+                onClick={onShowHookSettings}
+              >
+                hooks
+              </button>
+            </span>
+          </div>
+        )}
+        {hasProject && (
+          <div className="detail-meta-row">
+            <span className="detail-meta-label">Project</span>
+            <span className={`project-badge color-${projectColor(agent.projectId ?? agent.cwd)}`} title={agent.cwd}>
+              {agentProjectLabel(agent)}
+            </span>
+          </div>
+        )}
+        {agent.gitBranch && (
+          <div className="detail-meta-row">
+            <span className="detail-meta-label">Branch</span>
+            <span className="detail-branch" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : 'Git branch'}>
+              {'\u2387'} {formatBranch(agent.gitBranch)}
+              {agent.gitIsWorktree && <span className="worktree-badge">worktree</span>}
+            </span>
+          </div>
+        )}
+        {!agent.gitBranch && agent.gitCommit && (
+          <div className="detail-meta-row">
+            <span className="detail-meta-label">Revision</span>
+            <span className="detail-branch detached" title="Detached HEAD">
+              {'\u2387'} ({agent.gitCommit})
+            </span>
+          </div>
+        )}
+        {hasUsageCost && (
+          <div className="detail-meta-row">
+            <span className="detail-meta-label">Cost</span>
+            <span className="detail-cost" title={`In: ${formatTokens(agent.tokenUsage!.inputTokens)} / Out: ${formatTokens(agent.tokenUsage!.outputTokens)}`}>
+              {formatCost(agent.tokenUsage!.costUsd)}
+            </span>
+          </div>
+        )}
+        {hasTokenCount && (
+          <div className="detail-meta-row">
+            <span className="detail-meta-label">Tokens</span>
+            <span className="detail-tokens">
+              {formatTokens(agent.tokenUsage!.inputTokens + agent.tokenUsage!.outputTokens)} tok
+            </span>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
 export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
@@ -461,52 +572,18 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
           )}
         </div>
         <div className="detail-header-right">
-          {agent.tokenUsage && agent.tokenUsage.costUsd > 0 && (
-            <span className="detail-cost" title={`In: ${formatTokens(agent.tokenUsage.inputTokens)} / Out: ${formatTokens(agent.tokenUsage.outputTokens)}`}>
-              {formatCost(agent.tokenUsage.costUsd)}
-            </span>
-          )}
-          {agent.tokenUsage && (agent.tokenUsage.inputTokens + agent.tokenUsage.outputTokens) > 0 && (
-            <span className="detail-tokens">
-              {formatTokens(agent.tokenUsage.inputTokens + agent.tokenUsage.outputTokens)} tok
-            </span>
-          )}
-          {agent.agentType && agentProvider && (
-            <span className="detail-agent-type-group">
-              <button
-                ref={hookSettingsTriggerRef}
-                type="button"
-                className="detail-hook-settings-btn"
-                aria-label={`Hooks: view effective hook settings for ${agentProvider.label} session`}
-                title={`Hooks: view effective hook settings for ${agentProvider.label} session`}
-                onClick={() => setShowHookSettings(true)}
-              >
-                hooks
-              </button>
-            </span>
-          )}
-          {agentProjectLabel(agent) && (
-            <span className={`project-badge color-${projectColor(agent.projectId ?? agent.cwd)}`} title={agent.cwd}>
-              {agentProjectLabel(agent)}
-            </span>
-          )}
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
-            <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={agent.worktreeRegistryStale ? 'Worktree registry refresh failed; showing stale git state' : `Worktree is ${agent.worktreeHealth}`}>
+            <span className={`detail-header-warning worktree-health worktree-health--${agent.worktreeHealth}`} title={agent.worktreeRegistryStale ? 'Worktree registry refresh failed; showing stale git state' : `Worktree is ${agent.worktreeHealth}`}>
               {agent.worktreeRegistryStale ? 'git stale' : agent.worktreeHealth}
             </span>
           )}
-          {agent.gitBranch && (
-            <span className="detail-branch" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : 'Git branch'}>
-              {'\u2387'} {formatBranch(agent.gitBranch)}
-              {agent.gitIsWorktree && <span className="worktree-badge">worktree</span>}
-            </span>
-          )}
-          {!agent.gitBranch && agent.gitCommit && (
-            <span className="detail-branch detached" title="Detached HEAD">
-              {'\u2387'} ({agent.gitCommit})
-            </span>
-          )}
           {agent.startedAt && <span>{formatDuration(agent.startedAt)}</span>}
+          <DetailMetadataMenu
+            agent={agent}
+            provider={agentProvider}
+            hookSettingsTriggerRef={hookSettingsTriggerRef}
+            onShowHookSettings={() => setShowHookSettings(true)}
+          />
           {agent.taskId && agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && (
             <>
               <button data-testid="action-complete" className="action-btn action-btn--success" onClick={handleComplete}>Complete</button>

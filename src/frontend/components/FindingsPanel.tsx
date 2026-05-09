@@ -385,6 +385,7 @@ function FindingCard({ agent, selected, send }: {
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
   const { selectAgent, nextBottleneck } = useKookrStore();
+  const selectedProject = useKookrStore((s) => s.selectedProject);
   const dnd = useDnd();
   const cls = severityClass(agent);
   const autoProceedingAt = agent.anomaly?.autoProceedingAt;
@@ -434,6 +435,7 @@ function FindingCard({ agent, selected, send }: {
   }
 
   const tooltipText = [agent.description, agent.anomaly?.explanation].filter(Boolean).join('\n\n');
+  const showProjectBadge = !selectedProject || agent.projectId !== selectedProject;
 
   return (
     <Tooltip text={tooltipText}>
@@ -499,7 +501,7 @@ function FindingCard({ agent, selected, send }: {
           if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null; }
         }} />
         <div className="finding-context">
-          {agentProjectLabel(agent) && (
+          {showProjectBadge && agentProjectLabel(agent) && (
             <span className={`project-badge color-${agentProjectColor(agent)}`} title={agent.cwd}>
               {agentProjectLabel(agent)}
             </span>
@@ -571,8 +573,10 @@ function HealthyRow({ agent, selected, send }: {
   send: (msg: ClientMessage) => void;
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
+  const selectedProject = useKookrStore((s) => s.selectedProject);
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
+  const showProjectBadge = !selectedProject || agent.projectId !== selectedProject;
 
   function handleReply(e: React.MouseEvent) {
     e.stopPropagation();
@@ -603,7 +607,7 @@ function HealthyRow({ agent, selected, send }: {
       >
         <div className="healthy-row-top">
           <AgentProviderMark agent={agent} state={healthyDotClass(agent.events)} />
-          {projectLabelText && (
+          {showProjectBadge && projectLabelText && (
             <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
               {projectLabelText}
             </span>
@@ -639,11 +643,6 @@ function HealthyRow({ agent, selected, send }: {
           </button>
         </div>
         <div className="healthy-row-details">
-          {agent.gitBranch && (
-            <span className="branch-label" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : agent.gitBranch}>
-              <span className="branch-icon">{'\u2387'}</span>{formatBranch(agent.gitBranch, 20)}
-            </span>
-          )}
           <div className="healthy-row-controls">
             <RalphLoopControls agent={agent} />
             {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (

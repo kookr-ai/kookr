@@ -4,7 +4,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import type { AgentState, AgentType } from '../../shared/protocol.js';
+import type { AgentState } from '../../shared/protocol.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { DetailPanel } from './DetailPanel.js';
 
@@ -24,19 +24,31 @@ function syncGlobalStore() {
   useKookrStore.setState(nextData);
 }
 
-function makeAgent(agentType: AgentType): AgentState {
+function makeAgent(overrides: Partial<AgentState> = {}): AgentState {
   return {
-    agentId: `kookr-${agentType}`,
-    taskId: `task-${agentType}`,
-    taskName: `${agentType} task`,
+    agentId: 'agent-1',
+    taskId: 'task-1',
+    taskName: 'Implement GitHub Issue',
     events: [],
-    anomaly: null,
-    agentType,
+    anomaly: {
+      type: 'needs_input',
+      severity: 'info',
+      explanation: 'Agent is waiting for input.',
+      detectedAt: '2026-05-09T00:00:00.000Z',
+    },
+    agentType: 'codex-cli',
     autonomy: 'supervised',
-    cwd: '/tmp/kookr',
-    startedAt: '2026-05-08T20:00:00.000Z',
+    cwd: '/home/jean/git/kookr',
+    projectDisplayLabel: 'kookr',
+    projectId: 'kookr-ai/kookr',
+    gitBranch: 'main',
+    gitIsWorktree: false,
+    worktreeHealth: 'missing',
+    startedAt: '2026-05-09T00:00:00.000Z',
     taskStatus: 'inProgress',
-  };
+    tokenUsage: { inputTokens: 1200, outputTokens: 300, costUsd: 0.42 },
+    ...overrides,
+  } as AgentState;
 }
 
 function renderDetailPanel(container: HTMLElement, agent: AgentState): Root {
@@ -53,7 +65,7 @@ function renderDetailPanel(container: HTMLElement, agent: AgentState): Root {
   return root;
 }
 
-describe('DetailPanel agent provider header controls', () => {
+describe('DetailPanel dense metadata', () => {
   let container: HTMLDivElement;
   let root: Root | null;
 
@@ -74,30 +86,23 @@ describe('DetailPanel agent provider header controls', () => {
     vi.unstubAllGlobals();
   });
 
-  test.each([
-    {
-      agentType: 'claude-code' as const,
-      label: 'Claude Code',
-    },
-    {
-      agentType: 'codex-cli' as const,
-      label: 'Codex CLI',
-    },
-  ])('keeps $label out of the task header badge area', ({ agentType, label }) => {
-    root = renderDetailPanel(container, makeAgent(agentType));
+  test('keeps critical task state in the header and moves repeated metadata into details', () => {
+    root = renderDetailPanel(container, makeAgent());
 
-    const headerRight = container.querySelector('.detail-header-right')!;
-    expect(headerRight.querySelector(':scope > .detail-agent-provider')).toBeNull();
-    expect(headerRight.querySelector(':scope > .detail-agent-provider-icon')).toBeNull();
-    expect(headerRight.querySelector(':scope > .detail-agent-type-group')).toBeNull();
-    expect(headerRight.querySelector('summary')?.textContent).toBe('Details');
+    const header = container.querySelector('.detail-header')!;
+    expect(header.querySelector('h2')?.textContent).toBe('Implement GitHub Issue');
+    expect(header.querySelector('.detail-header-warning')?.textContent).toBe('missing');
+    expect(header.querySelector('.detail-badge.input')?.textContent).toBe('NEEDS INPUT');
 
-    const metaMenu = headerRight.querySelector('.detail-meta-menu')!;
-    expect(metaMenu.querySelector('.detail-agent-provider')?.textContent).toContain(label);
+    expect(header.querySelector('.detail-header-right > .project-badge')).toBeNull();
+    expect(header.querySelector('.detail-header-right > .detail-agent-type-group')).toBeNull();
+    expect(header.querySelector('.detail-header-right > .detail-branch')).toBeNull();
 
-    const hooksButton = metaMenu.querySelector<HTMLButtonElement>('.detail-hook-settings-btn');
-    expect(hooksButton?.textContent).toBe('hooks');
-    expect(hooksButton?.getAttribute('aria-label')).toBe(`Hooks: view effective hook settings for ${label} session`);
-    expect(hooksButton?.getAttribute('title')).toBe(`Hooks: view effective hook settings for ${label} session`);
+    const metaMenu = header.querySelector('.detail-meta-menu')!;
+    expect(metaMenu.querySelector('.detail-agent-provider--codex-cli')?.textContent).toContain('Codex CLI');
+    expect(metaMenu.querySelector('.project-badge')?.textContent).toBe('kookr');
+    expect(metaMenu.querySelector('.detail-branch')?.textContent).toContain('main');
+    expect(metaMenu.textContent).toContain('$0.42');
+    expect(metaMenu.textContent).toContain('1.5k tok');
   });
 });

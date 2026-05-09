@@ -588,6 +588,19 @@ The system SHOULD persist project sidebar ordering, pinned projects, hidden proj
 
 **Evidence:** `src/core/project-sidebar-store.ts`, `src/server/routes/project-routes.ts` (`/api/projects/sidebar`), `src/frontend/store/slices/project-sidebar-slice.ts`, `src/core/project-sidebar-store.test.ts`, `src/core/project-summary.test.ts`, `src/server/index.test.ts`, `src/frontend/store/slices/project-sidebar-discovery.test.ts`.
 
+### R5.8: Dense Dashboard Focus Mode — SHOULD — `done`
+
+The system SHOULD reduce repeated metadata and long prompt noise when a developer is triaging running tasks on a large dashboard.
+
+**Acceptance criteria:**
+- The selected task header keeps title, status, autonomy, critical worktree health, age, and primary actions visible while moving provider, hooks, project, branch, cost, and token details into a details affordance
+- When a project and task are both selected on a wide viewport, the project drawer switches to a compact summary instead of showing full contribution history, settings, and recent tasks
+- Oversized launch prompts in the Activity pane render as a bounded preview with an explicit full-prompt expander
+- Healthy task rows avoid repeated project metadata when the user is already scoped to that project
+- The global top bar avoids duplicating finding/healthy counts already shown in the findings and status areas
+
+**Evidence:** `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/ActivityPanel.tsx`, `src/frontend/components/ProjectDetailDrawer.tsx`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/components/TopBar.tsx`, density-focused component tests.
+
 ---
 
 ## R6: Infrastructure & Platform
@@ -869,6 +882,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R5.4 | F5.4 | SHOULD | done | App, useStore, DetailPanel |
 | R5.5 | F5.5 | SHALL | done | useWebSocket, ws, useStore |
 | R5.7 | — | SHOULD | done | project-sidebar-store, project-routes, project-sidebar-slice |
+| R5.8 | — | SHOULD | done | DetailPanel, ActivityPanel, ProjectDetailDrawer, FindingsPanel, TopBar |
 | R6.1 | ADR-007 / ADR-014 | SHALL | done | local-dtach-backend |
 | R6.2 | PoC 001 | SHALL | done | claude-code-adapter, hook-watcher, hook-parser |
 | R6.3 | ADR-008 (superseded by ADR-014) | SHALL | done | reconciliation, local-dtach-backend |

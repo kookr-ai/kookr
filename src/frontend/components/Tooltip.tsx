@@ -6,10 +6,18 @@ interface TooltipProps {
   children: React.ReactElement;
 }
 
+const MAX_TOOLTIP_CHARS = 600;
+
+function compactTooltipText(text: string): string {
+  if (text.length <= MAX_TOOLTIP_CHARS) return text;
+  return `${text.slice(0, MAX_TOOLTIP_CHARS).trimEnd()}...`;
+}
+
 export function Tooltip({ text, children }: TooltipProps) {
   const [visible, setVisible] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const timerRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const displayText = text ? compactTooltipText(text) : undefined;
 
   const show = useCallback((e: React.MouseEvent) => {
     if (!text) return;
@@ -32,12 +40,12 @@ export function Tooltip({ text, children }: TooltipProps) {
         onMouseEnter: show,
         onMouseLeave: hide,
       })}
-      {text && createPortal(
+      {displayText && createPortal(
         <div
           className={`tooltip-portal ${visible ? 'visible' : ''}`}
           style={{ top: pos.top, left: pos.left, transform: 'translateY(-100%)' }}
         >
-          {text}
+          {displayText}
         </div>,
         document.body,
       )}

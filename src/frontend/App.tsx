@@ -445,6 +445,7 @@ export function App() {
         setShowWorkspace(true);
       } : undefined}
       onRunPlaybook={handleRunPlaybook}
+      compact={!isMobileViewport && Boolean(selectedAgent)}
     />
   );
 

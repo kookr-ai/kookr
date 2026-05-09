@@ -136,8 +136,6 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
   const builtAgo = buildInfo?.buildTimestamp ? timeAgo(buildInfo.buildTimestamp) : '';
   const uptimeLabel = serverStartedAt ? timeAgo(serverStartedAt) : '';
 
-  const healthy = healthyAgents.length;
-
   // Treat a non-prod backend (e.g. `pnpm dev` on :4801) as "deploy doesn't apply
   // here" — clicking would update an unrelated sibling process. We hide the
   // controls and the version-badge update pulse so users aren't nudged toward
@@ -274,15 +272,7 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
       </div>
       <div className="topbar-right">
         {!compact && <CapacityGauge agents={healthyAgents} />}
-        <div className="metric-group">
-          <span className="topbar-stat">
-            <span className={`n ${findings > 0 ? 'warn' : ''}`}>{findings}</span> finding{findings !== 1 ? 's' : ''}
-          </span>
-          {!compact && (
-            <span className="topbar-stat">
-              <span className={`n ${healthy > 0 ? 'ok' : ''}`}>{healthy}</span> healthy
-            </span>
-          )}
+        <div className="metric-group topbar-spend-group">
           {totalSpendUsd > 0 && (
             <span className="topbar-spend" title={`Lifetime total across ${agents.length} task${agents.length !== 1 ? 's' : ''}`}>
               {formatCost(totalSpendUsd)}

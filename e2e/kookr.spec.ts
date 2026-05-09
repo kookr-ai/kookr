@@ -442,8 +442,10 @@ test.describe('Kookr E2E — nominal paths', () => {
     await injectSessionStart(request, tmuxName);
     await injectStopEvent(request, tmuxName);
 
-    // TopBar should show "1 finding"
-    await expect(page.locator('.topbar-stat').first()).toContainText('1 finding');
+    // TopBar should show the finding queue without duplicating status counts
+    await expect(page.locator('.queue-info')).toContainText('1 finding waiting');
+    await expect(page.locator('.statusbar')).toContainText('1 task · 1 finding');
+    await expect(page.locator('.topbar-stat')).toHaveCount(0);
 
     // Launch a healthy agent
     await launchViaUI(page, 'Healthy task', '/test/healthy');
@@ -451,8 +453,11 @@ test.describe('Kookr E2E — nominal paths', () => {
     await injectSessionStart(request, tmux2);
     await injectToolUse(request, tmux2);
 
-    // Should show "1 healthy"
-    await expect(page.locator('.topbar-stat').nth(1)).toContainText('1 healthy');
+    // Healthy task state lives in the task list section; aggregate counts live in the status bar.
+    await expect(page.locator('.healthy-section')).toBeVisible();
+    await expect(page.locator('.healthy-label')).toContainText('Healthy');
+    await expect(page.locator('.statusbar')).toContainText('2 tasks');
+    await expect(page.locator('.topbar-stat')).toHaveCount(0);
   });
 
   // --- Focus stability ---

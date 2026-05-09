@@ -8,6 +8,7 @@ interface Props {
   send: (msg: ClientMessage) => void;
   onOpenWorkspace?: () => void;
   onRunPlaybook?: () => void;
+  compact?: boolean;
 }
 
 function ContributionDay({ date, count }: { date: string; count: number }) {
@@ -22,7 +23,7 @@ function ContributionDay({ date, count }: { date: string; count: number }) {
   );
 }
 
-export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, onRunPlaybook }: Props) {
+export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, onRunPlaybook, compact = false }: Props) {
   const [dailyLimit, setDailyLimit] = useState<string>(
     project.dailyLimit?.toString() ?? '2',
   );
@@ -55,7 +56,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
   }
 
   return (
-    <div className="project-drawer" data-testid="project-detail-drawer">
+    <div className={`project-drawer${compact ? ' compact' : ''}`} data-testid="project-detail-drawer">
       <div className="project-drawer-header">
         <div className="project-drawer-header-row">
           <h3>{project.displayName}</h3>
@@ -73,9 +74,16 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
             )}
           </div>
         )}
+        {compact && (
+          <div className="project-drawer-compact-stats" aria-label="Project summary">
+            <span>{project.activeAgents} agent{project.activeAgents === 1 ? '' : 's'}</span>
+            <span>{project.findingCount} finding{project.findingCount === 1 ? '' : 's'}</span>
+            <span>{project.openPrs} open PR{project.openPrs === 1 ? '' : 's'}</span>
+          </div>
+        )}
       </div>
 
-      <div className="project-drawer-stats">
+      {!compact && <div className="project-drawer-stats">
         <div className={`project-drawer-stat${atLimit ? ' exceeded' : ''}`}>
           <span className="stat-label">Today's PRs</span>
           <span className="stat-value">
@@ -104,18 +112,18 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
             </span>
           </div>
         )}
-      </div>
+      </div>}
 
-      <div className="project-drawer-section">
+      {!compact && <div className="project-drawer-section">
         <h4>Contribution History</h4>
         <div className="contrib-timeline">
           {timeline.map((day) => (
             <ContributionDay key={day.date} date={day.date} count={day.count} />
           ))}
         </div>
-      </div>
+      </div>}
 
-      <div className="project-drawer-section">
+      {!compact && <div className="project-drawer-section">
         <h4>Settings</h4>
         <label className="project-drawer-label">
           Daily limit
@@ -144,9 +152,9 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
             Save
           </button>
         )}
-      </div>
+      </div>}
 
-      {project.recentTasks.length > 0 && (
+      {!compact && project.recentTasks.length > 0 && (
         <div className="project-drawer-section">
           <h4>Recent Tasks</h4>
           <div className="project-drawer-tasks">
