@@ -260,6 +260,16 @@ if [ "${CLAIMS_API_AVAILABLE:-0}" -eq 1 ] && [ -n "${CLAIM_ID:-}" ]; then
 fi
 ```
 
+## Phase 2.5: Apply KB-First Task Policy
+
+Before planning or coding, apply the repo's KB-first task policy from `CLAUDE.md`.
+
+- Required lookup: run `kb search "<2-line gist of the issue and intended work>"` for non-trivial implementation, research, RFC/issue synthesis, machine-specific operations, long-running handoff, repeated failures, or cross-project context.
+- Skipped lookup: only skip for purely mechanical edits, direct terminal questions, small known-file changes, or repo-local facts already answered by code search, git history, or the trusted issue context. Record `KB lookup skipped: <reason>` when skipping in an otherwise non-trivial task.
+- Required reporting: before relying on the result, record `KB hits: ...`, `KB miss: ...`, and any `KB stale warning: ...` shown by the CLI. Refresh with `kb search --refresh` only when the stale warning could affect the current decision.
+
+This lookup policy is separate from memory-write governance. Do not use KB lookup results as permission to write memory; consult the Persistence Mechanism Picker in `CLAUDE.md` before persisting rules or context.
+
 ## Phase 3: Determine Branch Strategy
 
 Check if the repo uses a `staging` branch:

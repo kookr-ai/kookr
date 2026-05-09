@@ -109,11 +109,32 @@ A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on 
 - Keep V1 minimal: single package, no monorepo, no plugins, in-memory state
 - **Verify with real data, don't assume** — Before designing a fix for any behavior bug, find the actual inputs causing the problem (hook logs in `~/.kookr/hooks/*.jsonl`, transcripts, DB records). Reproduce the issue programmatically with real data. Scan broadly to measure real-world frequency of both false-positives and true-positives. The data may reveal the right solution is fundamentally different from what you'd assume.
 - **Capitalize on gathered knowledge** — When a research task, POC, or debugging session produces reusable knowledge (how a system works, validated patterns, gotchas), distill it into a skill in `.claude/skills/`. Don't let hard-won insights evaporate with the conversation. If a skill already exists for the topic, update it. If not, create one. The bar is: "would a future agent benefit from knowing this without re-discovering it?"
-- **Use the `kb` CLI for cross-task knowledge** — Before non-trivial work, run `kb search "<2-line gist of the task>"` (omit `--kb=` to search every KB at once) to surface prior framings, earlier analyses, and known gotchas before designing from scratch. After finishing a task that produced a *generic* lesson — a mistake or insight a future agent on an unrelated task could repeat — append it to `agent-task-lessons` via `kb remember --kb=agent-task-lessons --title="<short headline>" --stdin --yes`, body shaped as **Mistake / Why it happened / Better next time**. Generic-only: no PR numbers, file paths, branch names, or proper nouns. Skip the search step only for purely mechanical tasks (rename, typo, single known command).
 - **Persistence Mechanism Picker** — When you need to persist anything (a rule, a learning, a correction), consult the picker below **before** choosing where it goes. The system-prompt `# auto memory` section actively trains you toward memory as a default; this section overrides that default for behavioral rules.
 - **Load `codex-claude-compatibility` skill before Codex fork work** — Before modifying, building, or deploying `~/git/codex`, load the skill first. It documents the exact build command, install path, version scheme, branch policy, and verification workflow.
 
 - **RFC workflow** — When generating an RFC or design document, follow the iterative review pattern: draft in worktree → run parallel critic subagents → incorporate feedback → repeat (default 3 rounds) → present to user and wait for approval before committing or implementing. See `rfc-iterative-review` skill.
+
+## KB-First Task Policy
+
+This policy governs knowledge-base lookup. It is separate from the Persistence Mechanism Picker below, which governs where to save new rules, workflow corrections, and context.
+
+Run `kb search "<2-line gist of the task>"` before designing or implementing any task in these classes:
+
+- Non-trivial research, architecture, RFC, issue-synthesis, or requirements work.
+- Machine-specific operations, production/deployment work, Kookr runtime behavior, or anything likely to depend on local operating-environment notes.
+- Long-running task handoff, checkpoint resume, crash recovery, or any task expected to cross session boundaries.
+- Repeated failures, confusing tool behavior, stale assumptions, or a request that resembles a previous incident.
+- Cross-project work where prior decisions may live outside the current repo.
+
+You may skip the KB lookup for purely mechanical edits, direct terminal questions, small known-file changes, or repo-local facts already answered by code search, git history, or the current issue/PR context. If you skip it, say `KB lookup skipped: <reason>` in your working notes or final summary when the task is otherwise non-trivial.
+
+For required lookups, report the result before relying on it:
+
+- `KB hits:` summarize the relevant prior note(s), or say `none`.
+- `KB miss:` state that no relevant prior note was found.
+- `KB stale warning:` if the CLI reports a stale index, mention it and decide whether `kb search --refresh` is warranted before proceeding.
+
+After finishing a task that produced a generic lesson, append it to `agent-task-lessons` with `kb remember --kb=agent-task-lessons --title="<short headline>" --stdin --yes`. Use the **Mistake / Why it happened / Better next time** shape. Keep this generic: no PR numbers, file paths, branch names, or proper nouns.
 
 ## Persistence Mechanism Picker
 
