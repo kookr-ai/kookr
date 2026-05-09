@@ -13,6 +13,7 @@ import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import type { HttpPushTracker } from '../../core/http-push-tracker.js';
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
+import type { ProjectSidebarStore } from '../../core/project-sidebar-store.js';
 import type { OssAttemptStore } from '../../core/oss-attempt-store.js';
 import type { LedgerAnalytics } from '../../core/ledger-analytics.js';
 import type { OssRefresher } from '../oss-refresh.js';
@@ -54,6 +55,7 @@ export interface RouteDeps {
   launchServiceDeps: LaunchServiceDeps;
   sttUrl?: string;
   projectConfigStore?: ProjectConfigStore;
+  projectSidebarStore?: ProjectSidebarStore;
   ossAttemptStore?: OssAttemptStore;
   ledgerAnalytics?: LedgerAnalytics;
   ossRefresher?: OssRefresher;

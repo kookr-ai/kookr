@@ -10,6 +10,7 @@ import type { BuildInfo } from '../core/build-info.js';
 import type { GitHubStateStore } from '../core/github-state-store.js';
 import type { LedgerAnalytics } from '../core/ledger-analytics.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
+import type { ProjectSidebarStore } from '../core/project-sidebar-store.js';
 import type { SkillDiscoveryStateHolder } from '../core/skill-tracked-repo-discovery.js';
 import type { PrLessonsStateHolder } from '../core/pr-lessons-discovery.js';
 import type { AchievementWatcher } from './achievement-watcher.js';
@@ -56,6 +57,7 @@ export interface WsConnectionDeps {
   githubStateStore: GitHubStateStore;
   ledgerAnalytics: LedgerAnalytics;
   projectConfigStore: ProjectConfigStore;
+  projectSidebarStore?: ProjectSidebarStore;
   skillDiscoveryState?: SkillDiscoveryStateHolder;
   prLessonsState?: PrLessonsStateHolder;
   getRegistryActiveProjects?: () => string[];
@@ -155,6 +157,7 @@ export function handleWsConnection(
       monitor,
       ledgerAnalytics,
       projectConfigStore,
+      getSidebarProjects: () => deps.projectSidebarStore?.getSeedProjects() ?? [],
       getSkillTrackedProjects: () => deps.skillDiscoveryState?.getProjects() ?? [],
       getRegistryActiveProjects: deps.getRegistryActiveProjects,
       prLessonsHolder: deps.prLessonsState,

@@ -1,4 +1,12 @@
 import type { ProjectSummary } from '../../shared/protocol.js';
+import {
+  DEFAULT_PROJECT_SIDEBAR_PREFS,
+  type ProjectSidebarCatalogEntry,
+  type ProjectSidebarPrefs,
+  type ProjectSidebarState,
+} from '../../shared/project-sidebar.js';
+
+export type { ProjectSidebarCatalogEntry, ProjectSidebarPrefs };
 
 export const PROJECT_SIDEBAR_PREFS_KEY = 'kookr:projectSidebarPrefs';
 export const PROJECT_SIDEBAR_CATALOG_KEY = 'kookr:projectSidebarCatalog';
@@ -14,20 +22,6 @@ interface ProjectSidebarPrefsV2Raw {
   ordered?: unknown;
   pinned?: unknown;
   hidden?: unknown;
-}
-
-export interface ProjectSidebarPrefs {
-  version: 2;
-  ordered: string[];
-  pinned: string[];
-  hidden: string[];
-}
-
-export interface ProjectSidebarCatalogEntry {
-  project: string;
-  displayName: string;
-  color: number;
-  lastSeenAt: string;
 }
 
 export interface ProjectSidebarRow {
@@ -49,13 +43,6 @@ export interface ProjectSidebarDerivedState {
 type ReadStorage = Pick<Storage, 'getItem'>;
 type WriteStorage = Pick<Storage, 'setItem'>;
 type DropPosition = 'before' | 'after';
-
-export const DEFAULT_PROJECT_SIDEBAR_PREFS: ProjectSidebarPrefs = {
-  version: 2,
-  ordered: [],
-  pinned: [],
-  hidden: [],
-};
 
 function getStorage(): Storage | null {
   return typeof localStorage === 'undefined' ? null : localStorage;
@@ -214,6 +201,29 @@ export function saveProjectSidebarCatalog(
   } catch (error) {
     return error instanceof Error ? error : new Error(String(error));
   }
+}
+
+export function toProjectSidebarState(
+  prefs: ProjectSidebarPrefs,
+  catalog: Record<string, ProjectSidebarCatalogEntry>,
+): ProjectSidebarState {
+  const normalized = normalizePrefs(prefs);
+  return {
+    version: 1,
+    ordered: normalized.ordered,
+    pinned: normalized.pinned,
+    hidden: normalized.hidden,
+    catalog,
+  };
+}
+
+export function prefsFromProjectSidebarState(state: ProjectSidebarState): ProjectSidebarPrefs {
+  return normalizePrefs({
+    version: 2,
+    ordered: state.ordered,
+    pinned: state.pinned,
+    hidden: state.hidden,
+  });
 }
 
 /**

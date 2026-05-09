@@ -65,6 +65,7 @@ import { ProcessLivenessStrategy } from '../core/process-liveness.js';
 import { CombinedShadowStrategy } from '../core/combined-shadow-strategy.js';
 import { HttpPushTracker } from '../core/http-push-tracker.js';
 import { ProjectConfigStore } from '../core/project-config-store.js';
+import { ProjectSidebarStore } from '../core/project-sidebar-store.js';
 import { OssAttemptStore } from '../core/oss-attempt-store.js';
 import { LedgerAnalytics } from '../core/ledger-analytics.js';
 import { OssRefresher, loadExternalReposFromRegistry } from './oss-refresh.js';
@@ -360,6 +361,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const projectConfigStore = new ProjectConfigStore(kookrDir);
   await projectConfigStore.load();
   await projectConfigStore.loadRateLimits(); // Rate limits from oss-contribution-gate hook
+  const projectSidebarStore = new ProjectSidebarStore(kookrDir);
+  await projectSidebarStore.load();
 
   // OSS contribution lifecycle store (rfc-oss-contribution-tracking). Single
   // source of truth for outgoing PR attempts — absorbs the previous
@@ -689,6 +692,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       monitor,
       ledgerAnalytics,
       projectConfigStore,
+      getSidebarProjects: () => projectSidebarStore.getSeedProjects(),
       getSkillTrackedProjects: () => skillDiscoveryState.getProjects(),
       getRegistryActiveProjects,
       prLessonsHolder: prLessonsState,
@@ -915,7 +919,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, frontendDir, broadcastToAll,
     shadowRegistry, httpPushTracker, launchServiceDeps, sttUrl,
-    projectConfigStore, circuitBreakerRegistry,
+    projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,
     autonomyOrchestrator, suppressionTracker, scheduleService, scheduleRunner,
@@ -1074,7 +1078,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
     broadcastProjectSummaries,
     launchTask: (opts) => launchTask(launchServiceDeps, opts),
-    githubStateStore, ledgerAnalytics, projectConfigStore,
+    githubStateStore, ledgerAnalytics, projectConfigStore, projectSidebarStore,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects,
     achievementWatcher,
     getQuotaStatus: () => quotaAdapter.getLatest(),
@@ -1337,6 +1341,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     watchdog,
     ossAttemptStore,
     projectConfigStore,
+    projectSidebarStore,
     circuitBreakerRegistry,
     app,
     broadcastToAll,
