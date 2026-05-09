@@ -87,7 +87,7 @@ export async function reconcile(
           taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'stale', { registryStale: true });
           result.worktreesStale.push(session.tmuxSession);
         } else if (worktreeRegistry && registrySnapshot?.refreshedAt && !registryEntry) {
-          taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'missing');
+          taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'missing_unexpectedly');
           result.worktreesMissing.push(session.tmuxSession);
         } else if (registryEntry?.isPrunable) {
           taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'stale');

@@ -9,6 +9,7 @@ import type { ProjectSummary } from '../../core/project-summary.js';
 import type { ProjectConfig } from '../../core/project-config-store.js';
 import type { AutonomyLevel, TaskCompletionFeedback } from '../../core/tasks.js';
 import type { AgentType, AvailableAgentType } from '../../core/agent-types.js';
+import type { LaunchDependency } from '../../core/playbook.js';
 import type { QuotaStatus } from '../../core/quota-types.js';
 import type { CircuitBreakerSnapshot } from '../../core/circuit-breaker.js';
 import type { ScheduleResponse, ScheduleStatusSnapshot } from '../../core/schedule.js';
@@ -176,11 +177,11 @@ export type ClientMessage =
   | { type: 'skipAll'; agentIds: string[] }
   | { type: 'snooze'; agentId: string; taskId?: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }
   | { type: 'cancelSnooze'; agentId: string; taskId?: string }
-  | { type: 'launch'; prompt: string; cwd: string; criteria?: string; autonomy?: AutonomyLevel; agentType?: AgentType }
+  | { type: 'launch'; prompt: string; cwd: string; criteria?: string; autonomy?: AutonomyLevel; agentType?: AgentType; dependencies?: LaunchDependency[] }
   | { type: 'completeTask'; taskId: string; feedback?: TaskCompletionFeedback }
   | { type: 'setTaskFeedback'; taskId: string; feedback: TaskCompletionFeedback }
   | { type: 'requestTaskReflect'; taskId: string; direction: 'up' | 'down' }
-  | { type: 'relaunch'; taskId: string; prompt: string; agentType?: AgentType }
+  | { type: 'relaunch'; taskId: string; prompt: string; agentType?: AgentType; dependencies?: LaunchDependency[] }
   | { type: 'cancelTask'; taskId: string }
   | { type: 'reopenTask'; taskId: string }
   | { type: 'deleteTask'; taskId: string }

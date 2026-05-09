@@ -117,6 +117,7 @@ describe('cleanupTaskWorktrees', () => {
 
     // Directory removed
     expect(mockRm).toHaveBeenCalledWith('/wt/feature-branch', { recursive: true, force: true });
+    expect(taskStore.getTask(task.id)!.sessions[0].worktreeHealth).toBe('cleaned_up');
 
     // worktree_cleaned logged
     const cleaned = events.find((e) => e.type === 'worktree_cleaned');

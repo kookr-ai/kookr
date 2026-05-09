@@ -106,6 +106,7 @@ export class LifecycleHandler {
             criteria: msg.criteria,
             autonomy: msg.autonomy,
             agentType: msg.agentType,
+            dependencies: msg.dependencies,
           });
         } catch (e) { err = e; }
         return handleLaunchResult(this.deps.send, excerpt, result, err);
@@ -123,6 +124,7 @@ export class LifecycleHandler {
             cwd: originalTask.cwd,
             criteria: originalTask.criteria,
             agentType: msg.agentType ?? originalTask.agentType,
+            dependencies: msg.dependencies,
           });
         } catch (e) { err = e; }
         return handleLaunchResult(this.deps.send, excerpt, result, err);

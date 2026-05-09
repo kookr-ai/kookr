@@ -914,13 +914,18 @@ kbd {
   text-transform: uppercase;
   letter-spacing: 0;
 }
-.worktree-health--missing {
+.worktree-health--missing,
+.worktree-health--missing_unexpectedly {
   background: rgba(248, 113, 113, 0.14);
   color: #f98e8e;
 }
 .worktree-health--stale {
   background: rgba(251, 191, 36, 0.14);
   color: #f5c542;
+}
+.worktree-health--cleaned_up {
+  background: rgba(52, 211, 153, 0.12);
+  color: #5ee0b0;
 }
 
 /* --- Branch Labels --- */

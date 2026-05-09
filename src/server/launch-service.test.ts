@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { checkSubmission, launchTask, type LaunchServiceDeps } from './launch-service.js';
+import { LaunchPreflightError, type LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 
 // Minimal stubs for adapter and lifecycle deps
 function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
@@ -230,6 +231,42 @@ describe('launchTask', () => {
     const result = await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
     expect(result.duplicate).toBeUndefined();
     expect(result.task.prompt).toBe('hello');
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('runs declared dependency preflights before creating a task', async () => {
+    const finding: LaunchPreflightFinding = {
+      dependency: 'kb',
+      status: 'failed',
+      category: 'server_reachability',
+      summary: 'KB unavailable',
+      detail: 'ECONNREFUSED',
+      recommendedAction: 'Start KB.',
+    };
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([finding]);
+    const depsWithPreflight = { ...deps, dependencyPreflightRunner };
+
+    await expect(launchTask(depsWithPreflight, {
+      prompt: 'needs kb',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    })).rejects.toBeInstanceOf(LaunchPreflightError);
+
+    expect(dependencyPreflightRunner).toHaveBeenCalledWith(['kb']);
+    expect(store.listTasks()).toHaveLength(0);
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('launches normally when dependency preflights pass', async () => {
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([]);
+    const result = await launchTask({ ...deps, dependencyPreflightRunner }, {
+      prompt: 'needs kb',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(result.task.prompt).toBe('needs kb');
+    expect(dependencyPreflightRunner).toHaveBeenCalledWith(['kb']);
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
   });
 

@@ -44,7 +44,7 @@ describe('Startup Reconciliation', () => {
     expect(result.markedCompleted).toHaveLength(0);
   });
 
-  test('marks live session worktree missing when registry no longer contains cwd', async () => {
+  test('marks live session worktree missing_unexpectedly when registry no longer contains cwd', async () => {
     const task = taskStore.createTask('Fix bug', '/repo-missing');
     taskStore.addSession(task.id, {
       tmuxSession: 'kookr-missing',
@@ -61,7 +61,7 @@ describe('Startup Reconciliation', () => {
     });
 
     expect(result.worktreesMissing).toContain('kookr-missing');
-    expect(taskStore.getTask(task.id)!.sessions[0].worktreeHealth).toBe('missing');
+    expect(taskStore.getTask(task.id)!.sessions[0].worktreeHealth).toBe('missing_unexpectedly');
   });
 
   test('marks live session worktree stale when registry refresh failed', async () => {

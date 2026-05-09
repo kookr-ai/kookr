@@ -2,6 +2,7 @@
 name: Implement GitHub Issue
 description: Pick a GitHub issue (or batch), implement it in a worktree, and open a PR
 tags: [workflow, loopable]
+dependencies: [kb]
 parameters:
   - name: issueSelector
     description: "Blank (next eligible open issue), issue numbers (50, 565, 566), or filter (label:bug,enhancement)"
@@ -462,6 +463,28 @@ fi
 ```
 
 If no further action is possible because external review/checks are pending, leave a concise status note in the PR only if there is new evidence, heartbeat the claim if appropriate, and stop. The next Ralph iteration will re-check the external state.
+
+## Phase 8.5: Post-task KB lesson decision
+
+Before writing the verdict in Phase 9 (or before your final answer in single-shot mode), make the post-task lesson decision visible in the Bash hook trail. Pick exactly one:
+
+- **Wrote a lesson** — when this iteration produced a *generic* lesson a future agent on an unrelated task could reuse, write it to the KB. Generic only — no PR numbers, branch names, file paths, or proper nouns.
+
+  ```bash
+  cat <<'EOF' | kb remember --kb=agent-task-lessons --title="<short headline>" --stdin --yes
+  Mistake: <what you or a prior agent did wrong>
+  Why it happened: <root cause, not symptom>
+  Better next time: <the rule or check that would have avoided it>
+  EOF
+  ```
+
+- **Explicit skip** — when no generic lesson came out of the iteration (purely repo-local fact, already-documented gotcha, follow-up of a prior decision), record the skip so the absence is counted, not silent:
+
+  ```bash
+  printf 'No generic KB lesson: %s\n' '<one-line reason>'
+  ```
+
+Skip the decision entirely only for *purely mechanical* iterations (e.g. typo-only fix, dependency bump with no surprises). For everything else — implementation, debugging, RFC follow-through, recovery from a stall — emit one of the two markers above. The `pnpm kb:usage` report classifies tasks by the strongest signal in their hook log; running both forms in one iteration is fine and counts as **wrote-lesson**.
 
 ## Phase 9: Report verdict to the engine
 

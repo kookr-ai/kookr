@@ -3,6 +3,12 @@ import { resolve as pathResolve } from 'node:path';
 import type { Task, TaskStore, AutonomyLevel } from '../core/tasks.js';
 import { type AgentType, DEFAULT_AGENT_TYPE } from '../core/agent-types.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
+import type { LaunchDependency } from '../core/playbook.js';
+import {
+  LaunchPreflightError,
+  runLaunchDependencyPreflights,
+  type DependencyPreflightRunner,
+} from '../core/launch-dependency-preflight.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
@@ -35,6 +41,7 @@ export interface LaunchServiceDeps {
   /** Live getter for max concurrent tasks. Falls back to static default if not provided. */
   getMaxActiveTasks?: () => number;
   interactionLog?: DeferredInteractionLogWriter;
+  dependencyPreflightRunner?: DependencyPreflightRunner;
 }
 
 export interface LaunchOpts {
@@ -58,6 +65,8 @@ export interface LaunchOpts {
   projectId?: string;
   /** Where the launch came from — for server-side log provenance. Default: 'api'. */
   launchSource?: 'cli' | 'ui' | 'api' | 'remote-chat-telegram';
+  /** External services that must be available before launching the agent. */
+  dependencies?: LaunchDependency[];
   /**
    * When true, inject `RALPH_VERDICT_FILE` and `RALPH_ITERATION` env into
    * the spawned agent so iteration 0 of a Ralph loop can write a verdict
@@ -159,6 +168,11 @@ export async function launchTask(
     throw new Error(
       `R19: remote-chat-telegram tasks cannot use ${agentType} unless KOOKR_REMOTE_CHAT_ALLOW_CODEX=1`,
     );
+  }
+
+  const dependencyFindings = await (deps.dependencyPreflightRunner ?? runLaunchDependencyPreflights)(opts.dependencies);
+  if (dependencyFindings.length > 0) {
+    throw new LaunchPreflightError(dependencyFindings);
   }
 
   const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd);

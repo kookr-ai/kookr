@@ -14,6 +14,8 @@ import { detectStandalonePlugin } from '../../core/ralph-plugin-coexistence.js';
 import { DEFAULT_RALPH_ITERATION_READ_LIMIT, MAX_RALPH_ITERATION_READ_LIMIT, appendIterationRecord, formatIterationLogCsv, readIterationLog } from '../../core/ralph-iteration-log.js';
 import { validateRalphLoopRequest } from '../ralph-loop-service.js';
 import { canonicalizeTarget } from '../../core/ralph-iteration-verdict.js';
+import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
+import type { LaunchDependency } from '../../core/playbook.js';
 import { resolveStallConfig } from '../../shared/contracts/ralph.js';
 import {
   launchLoopedPlaybook,
@@ -21,6 +23,8 @@ import {
   replaceLoopedPlaybook,
 } from '../use-cases/looped-playbook-launch.js';
 import { nowISO } from '../../core/interaction-log.js';
+import type { Task } from '../../core/tasks.js';
+import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import type { RouteDeps } from './shared.js';
 
 /** Shape of the /api/agents/:id/edit-events/:toolUseId response.
@@ -49,7 +53,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
   const { ralphLoopService } = deps;
 
   app.get('/api/tasks', (c) => {
-    const tasks = taskStore.listTasks();
+    const tasks = taskStore.listTasks().map(normalizeTaskForApi);
     if (!deps.suppressionTracker) return c.json(tasks);
     const tracker = deps.suppressionTracker;
     return c.json(tasks.map((t) => {
@@ -89,6 +93,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         parentTaskId?: string;
         autonomy?: string;
         agentType?: string;
+        dependencies?: unknown;
       };
 
       if (!body.prompt || typeof body.prompt !== 'string') {
@@ -117,6 +122,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         parentTaskId: body.parentTaskId,
         autonomy,
         agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
+        dependencies: parseLaunchDependencies(body.dependencies),
         launchSource,
       });
 
@@ -127,6 +133,12 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
       return c.json({ ...task, ...(queued ? { queued: true } : {}) }, 201);
     } catch (err) {
+      if (isLaunchDependencyValidationError(err)) {
+        return c.json({ error: err.message }, 400);
+      }
+      if (err instanceof LaunchPreflightError) {
+        return c.json({ error: err.message, code: 'launch_preflight_failed', findings: err.findings }, 409);
+      }
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
     }
@@ -638,6 +650,9 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       if (err instanceof LoopedPlaybookLaunchError) {
         return c.json({ error: err.message, ...err.details }, err.status);
       }
+      if (err instanceof LaunchPreflightError) {
+        return c.json({ error: err.message, code: 'launch_preflight_failed', findings: err.findings }, 409);
+      }
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
     }
@@ -779,6 +794,9 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     } catch (err) {
       if (err instanceof LoopedPlaybookLaunchError) {
         return c.json({ error: err.message, ...err.details }, err.status);
+      }
+      if (err instanceof LaunchPreflightError) {
+        return c.json({ error: err.message, code: 'launch_preflight_failed', findings: err.findings }, 409);
       }
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
@@ -980,6 +998,18 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
   });
 }
 
+function normalizeTaskForApi(task: Task): Task {
+  let changed = false;
+  const sessions = task.sessions.map((session) => {
+    const worktreeHealth = normalizeTerminalWorktreeHealth(task.status, session.worktreeHealth);
+    if (worktreeHealth === session.worktreeHealth) return session;
+    changed = true;
+    return { ...session, worktreeHealth };
+  });
+
+  return changed ? { ...task, sessions } : task;
+}
+
 // Singleton scanner — its in-memory (path, mtime) cache outlives a single
 // request so warm scans hit the < 200 ms target (R6).
 const costScannerSingleton = new CodexRolloutScanner();
@@ -1025,4 +1055,19 @@ function validatePlaybookLaunchCwdFields(body: {
     return 'playbookSourceCwd/taskTargetCwd or cwd is required and must be a string';
   }
   return null;
+}
+
+function parseLaunchDependencies(value: unknown): LaunchDependency[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error('dependencies must be an array when supplied');
+  return value.map((item) => {
+    if (item !== 'kb') throw new Error(`Unsupported launch dependency: ${String(item)}`);
+    return item;
+  });
+}
+
+function isLaunchDependencyValidationError(err: unknown): err is Error {
+  return err instanceof Error
+    && (err.message === 'dependencies must be an array when supplied'
+      || err.message.startsWith('Unsupported launch dependency:'));
 }

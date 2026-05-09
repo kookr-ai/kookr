@@ -91,6 +91,25 @@ body.`;
     expect(pb.repoTags).toBeUndefined();
   });
 
+  test('parses launch dependencies', () => {
+    const content = `---
+name: KB task
+dependencies: [kb]
+---
+body.`;
+    const pb = parsePlaybook(content, 'kb.md', '/p');
+    expect(pb.dependencies).toEqual(['kb']);
+  });
+
+  test('rejects unsupported launch dependencies', () => {
+    const content = `---
+name: Bad dependency
+dependencies: [postgres]
+---
+body.`;
+    expect(() => parsePlaybook(content, 'bad.md', '/p')).toThrow(PlaybookParseError);
+  });
+
   test('parses loopable workflow tags and effective loop defaults', () => {
     const content = `---
 name: Loopable workflow

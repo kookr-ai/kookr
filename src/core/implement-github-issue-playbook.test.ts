@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parsePlaybook } from './playbook-parser.js';
+import { KB_LESSON_SKIP_MARKER } from './kb-lesson-classifier.js';
 
 /**
  * Contract tests for the implement-github-issue playbook. The author-filter
@@ -56,6 +57,7 @@ describe('implement-github-issue playbook', () => {
   });
 
   test('prompts GitHub issue agents to report KB hits, misses, and stale warnings', () => {
+    expect(pb.dependencies).toEqual(['kb']);
     expect(pb.body).toContain('Phase 2.5: Apply KB-First Task Policy');
     expect(pb.body).toContain('kb search "<2-line gist of the issue and intended work>"');
     expect(pb.body).toContain('KB hits: ...');
@@ -88,5 +90,20 @@ describe('implement-github-issue playbook', () => {
     expect(pb.body).toContain('PATCH "$KOOKR_API_BASE_URL/api/tasks/$KOOKR_TASK_ID/name"');
     expect(pb.body).toContain('TARGET_TITLE_JSON=$(jq -Rn --arg title "$ISSUE_TITLE"');
     expect(pb.body).toContain('"targetTitle":${TARGET_TITLE_JSON}');
+  });
+
+  test('Phase 8.5 surfaces the post-task KB lesson decision before Phase 9', () => {
+    // Issue #227: agents must emit either a `kb remember` write or the
+    // skip marker before the verdict is written, so `pnpm kb:usage` can
+    // classify the task. The marker text MUST match the classifier's
+    // constant verbatim — substring detection means any drift breaks
+    // the metric silently.
+    expect(pb.body).toMatch(/Phase 8\.5: Post-task KB lesson decision/);
+    expect(pb.body).toContain('kb remember --kb=agent-task-lessons');
+    expect(pb.body).toContain(KB_LESSON_SKIP_MARKER);
+    const phase85Idx = pb.body.indexOf('Phase 8.5: Post-task KB lesson decision');
+    const phase9Idx = pb.body.indexOf('Phase 9: Report verdict to the engine');
+    expect(phase85Idx).toBeGreaterThan(0);
+    expect(phase9Idx).toBeGreaterThan(phase85Idx);
   });
 });

@@ -74,6 +74,30 @@ Analyze {{repo}} with count {{count}}
     }
   });
 
+  it('passes playbook launch dependencies through to LaunchOpts', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'kb-task.md'), `---
+name: KB Task
+dependencies: [kb]
+---
+
+Use the KB.
+`);
+
+      const launch = await preparePlaybookLaunch({
+        cwd,
+        playbookPath: 'kb-task.md',
+        parameterValues: {},
+      });
+
+      expect(launch.dependencies).toEqual(['kb']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('derives projectId from tracked-projects parameter', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
     try {
