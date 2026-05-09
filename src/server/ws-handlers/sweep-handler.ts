@@ -62,6 +62,7 @@ export class SweepHandler {
             taskStore: this.deps.taskStore,
             serverCwd: this.deps.serverCwd,
             serverProjectId: this.deps.serverProjectId,
+            projectConfigStore: this.deps.projectConfigStore,
           });
           return context.repoPath;
         },
