@@ -87,8 +87,8 @@ describe('generateCompletionDigest', () => {
 
     const digest = generateCompletionDigest(events);
 
-    expect(digest.testSummary).toContain('8 passed');
-    expect(digest.testSummary).toContain('2 failed');
+    expect(digest.testSummary).toBe('Tests: 8 passed, 2 failed');
+    expect(digest.bullets).toEqual(['Tests: 8 passed, 2 failed']);
   });
 
   test('extracts vitest-style test output', () => {
@@ -98,7 +98,8 @@ describe('generateCompletionDigest', () => {
 
     const digest = generateCompletionDigest(events);
 
-    expect(digest.testSummary).toContain('5 passed');
+    expect(digest.testSummary).toBe('Tests: 5 passed');
+    expect(digest.bullets).toEqual(['Tests: 5 passed']);
   });
 
   test('includes PR URLs when provided', () => {
@@ -148,7 +149,12 @@ describe('generateCompletionDigest', () => {
       prUrls: ['#1', '#2'],
     });
 
-    expect(digest.bullets.length).toBeLessThanOrEqual(5);
+    expect(digest.bullets).toEqual([
+      'Changed 4 files: a.ts, b.ts, c.ts +1 more',
+      'Created PRs: #1, #2',
+      'Made 2 commits',
+      'Tests: 42 passed',
+    ]);
   });
 
   test('handles events with missing toolInput gracefully', () => {
@@ -160,7 +166,10 @@ describe('generateCompletionDigest', () => {
 
     const digest = generateCompletionDigest(events);
 
-    // Should not throw, falls back gracefully
-    expect(digest.bullets.length).toBeGreaterThan(0);
+    expect(digest).toEqual({
+      bullets: ['Task completed'],
+      filesChanged: [],
+      testSummary: undefined,
+    });
   });
 });

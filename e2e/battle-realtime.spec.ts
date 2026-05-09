@@ -243,8 +243,11 @@ test.describe('Agent detail metadata', () => {
 
     await page.locator('.finding-card').click();
 
-    // Agent type should be displayed
-    await expect(page.locator('.detail-header-right')).toContainText('claude-code');
+    await expect(page.locator('.detail-agent-provider')).toHaveText('Claude Code by Anthropic');
+    await expect(page.locator('.detail-agent-provider')).toHaveAttribute(
+      'title',
+      'Claude Code by Anthropic',
+    );
   });
 
   test('detail panel shows working directory', async ({ page, request }) => {
