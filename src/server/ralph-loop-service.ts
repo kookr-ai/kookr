@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
-import { generateCompletionDigest } from '../core/completion-digest.js';
+import { buildTaskCompletionMetadata } from './completion-metadata.js';
 import type { RalphCycler, RalphCyclerEvent } from '../core/ralph-cycler.js';
 import { nowISO, type DeferredInteractionLogWriter, type InteractionEvent } from '../core/interaction-log.js';
 import {
@@ -388,7 +388,11 @@ export class RalphLoopService {
 
     if (!currentTask.completionDigest) {
       const events = this.deps.monitor.getAgentEvents(sessionId);
-      this.deps.taskStore.setCompletionDigest(task.id, generateCompletionDigest(events));
+      const metadata = await buildTaskCompletionMetadata(currentTask, events);
+      this.deps.taskStore.setCompletionDigest(task.id, metadata.digest);
+      if (metadata.taskTokenUsage) {
+        this.deps.taskStore.updateTokenUsage(task.id, metadata.taskTokenUsage);
+      }
     }
 
     if (finalizeTask) await finalizeTask(task.id);

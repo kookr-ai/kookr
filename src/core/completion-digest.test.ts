@@ -115,6 +115,73 @@ describe('generateCompletionDigest', () => {
     expect(digest.bullets).toContainEqual(expect.stringContaining('pull/42'));
   });
 
+  test('preserves implementation metadata when provided by the completion layer', () => {
+    const events: AgentEvent[] = [
+      toolUse('Bash', { command: 'pnpm test' }),
+      toolResult('Bash', 'Tests  5 passed (3)'),
+    ];
+
+    const digest = generateCompletionDigest(events, {
+      branch: 'feat-issue-223-completion-metadata',
+      commits: ['abc1234'],
+      prUrls: ['https://github.com/kookr-ai/kookr/pull/224'],
+      filesChanged: ['src/core/completion-digest.ts'],
+      tokenUsage: {
+        source: 'codex-rollout',
+        quality: 'available',
+        model: 'gpt-5.3-codex',
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheReadTokens: 50,
+        cacheWriteTokens: 0,
+        costUsd: 0.01,
+      },
+    });
+
+    expect(digest.branch).toBe('feat-issue-223-completion-metadata');
+    expect(digest.commits).toEqual(['abc1234']);
+    expect(digest.prUrls).toEqual(['https://github.com/kookr-ai/kookr/pull/224']);
+    expect(digest.filesChanged).toEqual(['src/core/completion-digest.ts']);
+    expect(digest.verificationCommands).toEqual(['pnpm test']);
+    expect(digest.tokenUsage).toEqual({
+      source: 'codex-rollout',
+      quality: 'available',
+      model: 'gpt-5.3-codex',
+      inputTokens: 1000,
+      outputTokens: 200,
+      cacheReadTokens: 50,
+      cacheWriteTokens: 0,
+      costUsd: 0.01,
+    });
+  });
+
+  test('records unavailable token metadata explicitly instead of zero totals', () => {
+    const digest = generateCompletionDigest([], {
+      tokenUsage: {
+        source: 'codex-rollout',
+        quality: 'unavailable',
+        inputTokens: null,
+        outputTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+        costUsd: null,
+        reason: 'Codex rollout has no token telemetry',
+      },
+    });
+
+    expect(digest.tokenUsage).toEqual({
+      source: 'codex-rollout',
+      quality: 'unavailable',
+      inputTokens: null,
+      outputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      costUsd: null,
+      reason: 'Codex rollout has no token telemetry',
+    });
+    expect(digest.bullets).toContain('Token usage unavailable: Codex rollout has no token telemetry');
+  });
+
   test('falls back to stop message when few bullets', () => {
     const events: AgentEvent[] = [
       stopEvent('I have completed the requested changes to the configuration file.'),

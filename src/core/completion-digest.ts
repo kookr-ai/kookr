@@ -7,10 +7,40 @@ import type { AgentEvent } from './types.js';
 export interface CompletionDigest {
   /** 2-5 human-readable bullet points summarising the work done. */
   bullets: string[];
-  /** Unique file basenames that were written or edited. */
+  /** Unique files that were written, edited, or observed in the final branch diff. */
   filesChanged: string[];
   /** Brief test result summary, if detected. */
   testSummary?: string;
+  /** Git branch used for the completed work, when available. */
+  branch?: string;
+  /** Commit SHA(s) that belong to the completed work, when available. */
+  commits?: string[];
+  /** Pull request URL(s) created or updated by the task, when available. */
+  prUrls?: string[];
+  /** Verification commands the agent ran, preserved for later review. */
+  verificationCommands?: string[];
+  /** Token/cost closeout, including explicit unavailable states. */
+  tokenUsage?: CompletionTokenUsage;
+}
+
+export type CompletionTokenUsageQuality =
+  | 'available'
+  | 'unavailable'
+  | 'unknown-pricing'
+  | 'parse-error'
+  | 'rollout-not-found'
+  | 'rollout-abandoned';
+
+export interface CompletionTokenUsage {
+  source: 'transcript' | 'codex-rollout';
+  quality: CompletionTokenUsageQuality;
+  model?: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  costUsd: number | null;
+  reason?: string;
 }
 
 /**
@@ -22,11 +52,19 @@ export interface CompletionDigest {
  */
 export function generateCompletionDigest(
   events: AgentEvent[],
-  opts?: { prUrls?: string[] },
+  opts?: {
+    prUrls?: string[];
+    branch?: string;
+    commits?: string[];
+    filesChanged?: string[];
+    tokenUsage?: CompletionTokenUsage;
+  },
 ): CompletionDigest {
-  const filesChanged = extractFilesChanged(events);
+  const filesChanged = unique([...(opts?.filesChanged ?? []), ...extractFilesChanged(events)]);
   const testSummary = extractTestSummary(events);
-  const commits = countGitCommits(events);
+  const commitCount = opts?.commits?.length ?? countGitCommits(events);
+  const prUrls = unique([...(opts?.prUrls ?? []), ...extractPrUrls(events)]);
+  const verificationCommands = extractVerificationCommands(events);
   const bullets: string[] = [];
 
   if (filesChanged.length > 0) {
@@ -35,16 +73,24 @@ export function generateCompletionDigest(
     bullets.push(`Changed ${filesChanged.length} file${filesChanged.length !== 1 ? 's' : ''}: ${shown}${extra}`);
   }
 
-  if (opts?.prUrls && opts.prUrls.length > 0) {
-    bullets.push(`Created PR${opts.prUrls.length > 1 ? 's' : ''}: ${opts.prUrls.join(', ')}`);
+  if (prUrls.length > 0) {
+    bullets.push(`Created PR${prUrls.length > 1 ? 's' : ''}: ${prUrls.join(', ')}`);
   }
 
-  if (commits > 0) {
-    bullets.push(`Made ${commits} commit${commits !== 1 ? 's' : ''}`);
+  if (opts?.branch) {
+    bullets.push(`Branch: ${opts.branch}`);
+  }
+
+  if (commitCount > 0) {
+    bullets.push(`Made ${commitCount} commit${commitCount !== 1 ? 's' : ''}`);
   }
 
   if (testSummary) {
     bullets.push(testSummary);
+  }
+
+  if (opts?.tokenUsage?.quality !== undefined && opts.tokenUsage.quality !== 'available') {
+    bullets.push(`Token usage unavailable: ${opts.tokenUsage.reason ?? opts.tokenUsage.quality}`);
   }
 
   // Pad with the agent's final message if we have < 2 bullets
@@ -60,11 +106,17 @@ export function generateCompletionDigest(
     bullets.push('Task completed');
   }
 
-  return {
+  const digest: CompletionDigest = {
     bullets: bullets.slice(0, 5),
     filesChanged,
     testSummary,
   };
+  if (opts?.branch) digest.branch = opts.branch;
+  if (opts?.commits && opts.commits.length > 0) digest.commits = opts.commits;
+  if (prUrls.length > 0) digest.prUrls = prUrls;
+  if (verificationCommands.length > 0) digest.verificationCommands = verificationCommands;
+  if (opts?.tokenUsage) digest.tokenUsage = opts.tokenUsage;
+  return digest;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +171,50 @@ function countGitCommits(events: AgentEvent[]): number {
     if (cmd && /git\s+commit\b/.test(cmd)) count++;
   }
   return count;
+}
+
+function extractVerificationCommands(events: AgentEvent[]): string[] {
+  const commands: string[] = [];
+  for (const event of events) {
+    if (event.type !== 'tool_use' || event.toolName !== 'Bash') continue;
+    const input = event.toolInput as Record<string, unknown> | undefined;
+    const command = input?.command;
+    if (typeof command !== 'string') continue;
+    if (isVerificationCommand(command)) commands.push(command);
+  }
+  return unique(commands);
+}
+
+function isVerificationCommand(command: string): boolean {
+  return /\b(test|vitest|playwright|tsc|type-?check|check:e2e|lint|build)\b/i.test(command);
+}
+
+function extractPrUrls(events: AgentEvent[]): string[] {
+  const urls: string[] = [];
+  for (const event of events) {
+    if (event.type === 'tool_result') {
+      urls.push(...githubPrUrls(String(event.toolResponse ?? '')));
+    } else if ((event.type === 'stop' || event.type === 'stop_failure') && event.lastMessage) {
+      urls.push(...githubPrUrls(event.lastMessage));
+    }
+  }
+  return unique(urls);
+}
+
+function githubPrUrls(text: string): string[] {
+  return text.match(/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g) ?? [];
+}
+
+function unique(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
 }
 
 function findLastStop(events: AgentEvent[]): string | undefined {
