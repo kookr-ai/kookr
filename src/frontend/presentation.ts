@@ -12,8 +12,8 @@ interface AgentProviderPresentation {
   iconPath: string;
 }
 
-// Brand glyphs are sourced from Simple Icons (CC0-1.0) and rendered as
-// currentColor so the header can keep Kookr's local UI palette.
+// Brand glyphs are sourced from Simple Icons (CC0-1.0) and render as
+// currentColor so task cards can use local status colors.
 const AGENT_PROVIDER_PRESENTATION: Record<AgentType, AgentProviderPresentation> = {
   'claude-code': {
     label: 'Claude Code',

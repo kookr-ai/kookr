@@ -97,29 +97,6 @@ function EditableHeading({ agent, send }: { agent: AgentState; send: (msg: Clien
   );
 }
 
-function AgentProviderBadge({
-  agentType,
-  provider,
-}: {
-  agentType: NonNullable<AgentState['agentType']>;
-  provider: ReturnType<typeof agentProviderPresentation>;
-}) {
-  const title = `${provider.label} by ${provider.provider}`;
-
-  return (
-    <span
-      className={`detail-agent-provider detail-agent-provider--${agentType}`}
-      title={title}
-    >
-      <svg className="detail-agent-provider-icon" viewBox="0 0 24 24" aria-hidden="true">
-        <path d={provider.iconPath} />
-      </svg>
-      <span className="detail-agent-provider-label">{provider.label}</span>
-      <span className="sr-only"> by {provider.provider}</span>
-    </span>
-  );
-}
-
 export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
@@ -496,12 +473,12 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
           )}
           {agent.agentType && agentProvider && (
             <span className="detail-agent-type-group">
-              <AgentProviderBadge agentType={agent.agentType} provider={agentProvider} />
               <button
                 ref={hookSettingsTriggerRef}
                 type="button"
                 className="detail-hook-settings-btn"
                 aria-label={`Hooks: view effective hook settings for ${agentProvider.label} session`}
+                title={`Hooks: view effective hook settings for ${agentProvider.label} session`}
                 onClick={() => setShowHookSettings(true)}
               >
                 hooks

@@ -25,6 +25,24 @@ describe('healthyDotClass', () => {
   });
 });
 
+describe('agentProviderPresentation', () => {
+  test('labels Claude Code as an Anthropic-backed agent', () => {
+    expect(agentProviderPresentation('claude-code')).toMatchObject({
+      label: 'Claude Code',
+      provider: 'Anthropic',
+    });
+    expect(agentProviderPresentation('claude-code').iconPath).toMatch(/^M.+Z$/);
+  });
+
+  test('labels Codex CLI as an OpenAI-backed agent', () => {
+    expect(agentProviderPresentation('codex-cli')).toMatchObject({
+      label: 'Codex CLI',
+      provider: 'OpenAI',
+    });
+    expect(agentProviderPresentation('codex-cli').iconPath).toMatch(/^M.+Z$/);
+  });
+});
+
 describe('healthyStatusLabel', () => {
   test('returns "done" when last event is stop', () => {
     const events: AgentEvent[] = [

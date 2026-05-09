@@ -53,7 +53,7 @@ function renderDetailPanel(container: HTMLElement, agent: AgentState): Root {
   return root;
 }
 
-describe('DetailPanel agent provider badge', () => {
+describe('DetailPanel agent provider header controls', () => {
   let container: HTMLDivElement;
   let root: Root | null;
 
@@ -78,27 +78,21 @@ describe('DetailPanel agent provider badge', () => {
     {
       agentType: 'claude-code' as const,
       label: 'Claude Code',
-      provider: 'Anthropic',
-      className: 'detail-agent-provider--claude-code',
     },
     {
       agentType: 'codex-cli' as const,
       label: 'Codex CLI',
-      provider: 'OpenAI',
-      className: 'detail-agent-provider--codex-cli',
     },
-  ])('renders the $label provider badge in the task header', ({ agentType, label, provider, className }) => {
+  ])('keeps $label out of the task header badge area', ({ agentType, label }) => {
     root = renderDetailPanel(container, makeAgent(agentType));
 
-    const badge = container.querySelector(`.detail-agent-provider.${className}`);
-    expect(badge).not.toBeNull();
-    expect(badge?.textContent).toContain(label);
-    expect(badge?.textContent).toContain(provider);
-    expect(badge?.getAttribute('title')).toBe(`${label} by ${provider}`);
-    expect(badge?.querySelector('svg[aria-hidden="true"] path')?.getAttribute('d')).toMatch(/^M.+Z$/);
+    expect(container.querySelector('.detail-agent-provider')).toBeNull();
+    expect(container.querySelector('.detail-agent-provider-icon')).toBeNull();
+    expect(container.querySelector('.detail-header-right')?.textContent).not.toContain(label);
 
     const hooksButton = container.querySelector<HTMLButtonElement>('.detail-hook-settings-btn');
     expect(hooksButton?.textContent).toBe('hooks');
     expect(hooksButton?.getAttribute('aria-label')).toBe(`Hooks: view effective hook settings for ${label} session`);
+    expect(hooksButton?.getAttribute('title')).toBe(`Hooks: view effective hook settings for ${label} session`);
   });
 });
