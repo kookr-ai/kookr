@@ -12,9 +12,18 @@ import { canSweepRemove } from '../../core/workspace-cleanup-policy.js';
 import type { ProjectConfigStore, ProjectConfig } from '../../core/project-config-store.js';
 import type { TaskStore } from '../../core/tasks.js';
 import type { WorkspaceCleanupDeps, WorkspaceBulkCleanupInput } from './workspace-cleanup-service.js';
+import { WorkspaceAttemptRepository } from '../../core/workspace-attempt-repository.js';
 
 // We exercise cleanupSafeWorkspaceCandidates via a stub rather than real git.
-const cleanupMock = vi.hoisted(() => ({ impl: vi.fn() }));
+const { cleanupMock, execFileMock } = vi.hoisted(() => ({
+  cleanupMock: { impl: vi.fn() },
+  execFileMock: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+    cb(null, { stdout: '', stderr: '' });
+  }),
+}));
+vi.mock('node:child_process', () => ({
+  execFile: execFileMock,
+}));
 vi.mock('./workspace-cleanup-service.js', async () => {
   const actual = await vi.importActual<typeof import('./workspace-cleanup-service.js')>('./workspace-cleanup-service.js');
   return {
@@ -49,7 +58,7 @@ function makeCleanupDeps(): WorkspaceCleanupDeps {
   return {
     policyResolver: {} as unknown as WorkspaceCleanupDeps['policyResolver'],
     leaseService: {} as unknown as WorkspaceCleanupDeps['leaseService'],
-    attemptRepository: {} as unknown as WorkspaceCleanupDeps['attemptRepository'],
+    attemptRepository: new WorkspaceAttemptRepository(),
   };
 }
 
@@ -160,6 +169,39 @@ describe('runCrossProjectSweep', () => {
     // All calls share the same runId.
     const runIds = new Set(calls.map(([, input]) => (input as WorkspaceBulkCleanupInput).sweepRunId));
     expect(runIds.size).toBe(1);
+  });
+
+  it('refreshes origin refs before classifying cleanup candidates', async () => {
+    deps.projectConfigStore = makeConfigStore([{ project: 'github.com/a/a' }]);
+
+    await runCrossProjectSweep(deps);
+
+    const fetchCallIndex = execFileMock.mock.calls.findIndex(([, args]) => (
+      Array.isArray(args)
+      && args.join(' ') === '-C /repos/github.com/a/a fetch origin --prune'
+    ));
+    expect(fetchCallIndex).toBeGreaterThanOrEqual(0);
+    const fetchOrder = execFileMock.mock.invocationCallOrder[fetchCallIndex];
+    const cleanupOrder = cleanupMock.impl.mock.invocationCallOrder[0];
+    expect(fetchOrder).toBeLessThan(cleanupOrder);
+  });
+
+  it('records an audit attempt even when a sweep removes zero worktrees', async () => {
+    deps.projectConfigStore = makeConfigStore([{ project: 'github.com/a/a' }]);
+    cleanupMock.impl.mockResolvedValueOnce({ summaries: [] });
+
+    await runCrossProjectSweep(deps);
+
+    const attempts = deps.cleanupDeps.attemptRepository.listByProject('github.com/a/a');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({
+      type: 'cleanup',
+      source: 'cross_project_sweep',
+      reasonCode: 'cross_project_sweep',
+      status: 'passed',
+      disposition: 'passed',
+    });
+    expect(attempts[0].evidenceSummary).toContain('removed 0 worktree(s)');
   });
 
   it('skips projects whose repoPath cannot be resolved', async () => {

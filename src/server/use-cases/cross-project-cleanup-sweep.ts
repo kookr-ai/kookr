@@ -29,6 +29,7 @@ const execFile = promisify(execFileCb);
 
 const PER_PROJECT_TIMEOUT_MS = 60_000;
 const LOCK_TTL_MS = 20 * 60 * 1000; // 20 min
+const FETCH_TIMEOUT_MS = 30_000;
 
 export interface CrossProjectSweepDeps {
   cleanupDeps: WorkspaceCleanupDeps;
@@ -135,12 +136,21 @@ async function sweepOneProject(
     return { kind: 'skipped', projectId, reason: 'repo_path_unresolved' };
   }
 
-  // Pre-classification prune — converges half-deleted state from prior sweeps/crashes.
-  try {
-    await execFile('git', ['-C', repoPath, 'worktree', 'prune'], { timeout: 10_000 });
-  } catch {
-    // Non-fatal: classification will still run and worst case some stale entries remain.
-  }
+  const sweepAttempt = deps.cleanupDeps.attemptRepository.createAttempt({
+    type: 'cleanup',
+    projectId,
+    reasonCode: 'cross_project_sweep',
+    source: 'cross_project_sweep',
+    evidenceSummary: `Cross-project sweep ${sweepRunId} started for ${projectId}`,
+    sweepRunId,
+  });
+
+  // Refresh refs before classification so recently merged remote branches are
+  // visible to merge-base checks. Then converge half-deleted worktree state
+  // from prior sweeps/crashes. Both are non-fatal: the per-candidate
+  // classifier still reports visible skipped/blocked reasons where possible.
+  await execFile('git', ['-C', repoPath, 'fetch', 'origin', '--prune'], { timeout: FETCH_TIMEOUT_MS }).catch(() => undefined);
+  await execFile('git', ['-C', repoPath, 'worktree', 'prune'], { timeout: 10_000 }).catch(() => undefined);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -153,6 +163,10 @@ async function sweepOneProject(
       signal: controller.signal,
       sweepRunId,
     });
+    deps.cleanupDeps.attemptRepository.passAttempt(
+      sweepAttempt.attemptId,
+      `Cross-project sweep completed for ${projectId}; removed ${result.summaries.length} worktree(s)`,
+    );
     return {
       kind: 'ok',
       projectId,
@@ -162,8 +176,18 @@ async function sweepOneProject(
   } catch (err) {
     const elapsedMs = Date.now() - startedAt;
     if (controller.signal.aborted) {
+      deps.cleanupDeps.attemptRepository.updateAttempt(sweepAttempt.attemptId, {
+        status: 'timed_out',
+        disposition: 'blocked',
+        finishedAt: new Date().toISOString(),
+        evidenceSummary: `Cross-project sweep timed out for ${projectId} after ${timeoutMs}ms`,
+      });
       return { kind: 'failed', projectId, code: 'timeout', message: `Timed out after ${timeoutMs}ms`, elapsedMs };
     }
+    deps.cleanupDeps.attemptRepository.blockAttempt(
+      sweepAttempt.attemptId,
+      err instanceof Error ? err.message : String(err),
+    );
     return {
       kind: 'failed',
       projectId,
