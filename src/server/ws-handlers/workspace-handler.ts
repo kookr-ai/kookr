@@ -4,6 +4,7 @@ import type { TaskStore } from '../../core/tasks.js';
 import type { WorkspaceAttemptRepository } from '../../core/workspace-attempt-repository.js';
 import type { RepoPolicyResolver } from '../../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js';
+import type { ProjectConfigStore } from '../../core/project-config-store.js';
 import type { LaunchOpts, LaunchResult } from '../launch-service.js';
 import { getWorkspaceView } from '../use-cases/contribution-workspace-query.js';
 import { startWork } from '../use-cases/start-work-service.js';
@@ -24,6 +25,7 @@ export interface WorkspaceHandlerDeps {
   taskStore: TaskStore;
   serverCwd: string;
   serverProjectId?: string;
+  projectConfigStore?: ProjectConfigStore;
   workspaceEnabled?: boolean;
   attemptRepository?: WorkspaceAttemptRepository;
   policyResolver?: RepoPolicyResolver;
@@ -72,6 +74,7 @@ export class WorkspaceHandler {
             taskStore: this.deps.taskStore,
             serverCwd: this.deps.serverCwd,
             serverProjectId: this.deps.serverProjectId,
+            projectConfigStore: this.deps.projectConfigStore,
           });
           const view = await getWorkspaceView(msg.projectId, context.repoPath, {
             policyResolver: this.deps.policyResolver,
@@ -145,6 +148,7 @@ export class WorkspaceHandler {
             taskStore: this.deps.taskStore,
             serverCwd: this.deps.serverCwd,
             serverProjectId: this.deps.serverProjectId,
+            projectConfigStore: this.deps.projectConfigStore,
           });
           const detail = await getCleanupCandidateDetail({
             policyResolver: this.deps.policyResolver,
@@ -184,6 +188,7 @@ export class WorkspaceHandler {
             taskStore: this.deps.taskStore,
             serverCwd: this.deps.serverCwd,
             serverProjectId: this.deps.serverProjectId,
+            projectConfigStore: this.deps.projectConfigStore,
           });
           const result = await launchWorkspaceCleanupDiagnostic({
             attemptRepository: this.deps.attemptRepository,
@@ -223,6 +228,7 @@ export class WorkspaceHandler {
             taskStore: this.deps.taskStore,
             serverCwd: this.deps.serverCwd,
             serverProjectId: this.deps.serverProjectId,
+            projectConfigStore: this.deps.projectConfigStore,
           });
           const result = await cleanupWorkspaceCandidate({
             attemptRepository: this.deps.attemptRepository,
@@ -265,6 +271,7 @@ export class WorkspaceHandler {
             taskStore: this.deps.taskStore,
             serverCwd: this.deps.serverCwd,
             serverProjectId: this.deps.serverProjectId,
+            projectConfigStore: this.deps.projectConfigStore,
           });
           const result = await cleanupSafeWorkspaceCandidates({
             attemptRepository: this.deps.attemptRepository,
@@ -309,6 +316,7 @@ export class WorkspaceHandler {
         taskStore: this.deps.taskStore,
         serverCwd: this.deps.serverCwd,
         serverProjectId: this.deps.serverProjectId,
+        projectConfigStore: this.deps.projectConfigStore,
       });
       const view = await getWorkspaceView(projectId, context.repoPath, {
         policyResolver: this.deps.policyResolver,

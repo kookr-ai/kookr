@@ -65,6 +65,7 @@ import { ProcessLivenessStrategy } from '../core/process-liveness.js';
 import { CombinedShadowStrategy } from '../core/combined-shadow-strategy.js';
 import { HttpPushTracker } from '../core/http-push-tracker.js';
 import { ProjectConfigStore } from '../core/project-config-store.js';
+import { ProjectSidebarStore } from '../core/project-sidebar-store.js';
 import { OssAttemptStore } from '../core/oss-attempt-store.js';
 import { LedgerAnalytics } from '../core/ledger-analytics.js';
 import { OssRefresher, loadExternalReposFromRegistry } from './oss-refresh.js';
@@ -107,6 +108,7 @@ import {
 } from './oss-source-watcher.js';
 import { projectIdForRepo } from '../core/oss-attempt-store.js';
 import { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
+import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
 
 // --- Exported types ---
 
@@ -161,6 +163,8 @@ export interface KookrConfig {
   ossSourceWatcherFs?: Partial<OssSourceWatcherFs>;
   /** Test seam for OSS source watcher debounce. Defaults to 250 ms. */
   ossSourceWatcherDebounceMs?: number;
+  /** Server-lifecycle abort signal — see `VoiceWarmupOpts.lifecycleSignal` and issue #188. */
+  lifecycleSignal?: AbortSignal;
 }
 
 /** Narrow public interface — only what production consumers need. */
@@ -226,6 +230,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend, sttUrl, useFakeTerminalBridge, agentBin, codexBin, bypassAllPermissions,
     claudeDir, preflightOnFatal, preflightLogger,
     ossSourceWatcherFs, ossSourceWatcherDebounceMs,
+    lifecycleSignal,
   } = config;
 
   // Ensure directories exist
@@ -356,6 +361,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const projectConfigStore = new ProjectConfigStore(kookrDir);
   await projectConfigStore.load();
   await projectConfigStore.loadRateLimits(); // Rate limits from oss-contribution-gate hook
+  const projectSidebarStore = new ProjectSidebarStore(kookrDir);
+  await projectSidebarStore.load();
 
   // OSS contribution lifecycle store (rfc-oss-contribution-tracking). Single
   // source of truth for outgoing PR attempts — absorbs the previous
@@ -482,6 +489,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   }
 
   await worktreeRegistry.refresh(serverCwd);
+
+  // One-time idempotent migration: any worktree whose basename still matches
+  // the legacy `kookr-prod` convention gets a `.kookr-protected` marker so
+  // the marker-aware protection check is authoritative going forward.
+  for (const entry of worktreeRegistry.all()) {
+    try {
+      if (migrateLegacyProtectedWorktree(entry.path)) {
+        console.log(
+          `[worktree-protection] wrote .kookr-protected marker on ${entry.path} (legacy migration)`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[worktree-protection] failed to write marker on ${entry.path}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   // Reconcile with live backend sessions
   const reconcileResult = await reconcile(taskStore, terminalBackend, worktreeRegistry);
@@ -668,6 +692,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       monitor,
       ledgerAnalytics,
       projectConfigStore,
+      getSidebarProjects: () => projectSidebarStore.getSeedProjects(),
       getSkillTrackedProjects: () => skillDiscoveryState.getProjects(),
       getRegistryActiveProjects,
       prLessonsHolder: prLessonsState,
@@ -894,7 +919,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, frontendDir, broadcastToAll,
     shadowRegistry, httpPushTracker, launchServiceDeps, sttUrl,
-    projectConfigStore, circuitBreakerRegistry,
+    projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,
     autonomyOrchestrator, suppressionTracker, scheduleService, scheduleRunner,
@@ -903,7 +928,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     startupRecoverySummary,
     ralphCycler,
     tokenTracker,
+    tasksFile,
     ralphLoopService,
+    worktreeRegistry,
     settings: {
       get: () => currentSettings,
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,
@@ -1051,7 +1078,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
     broadcastProjectSummaries,
     launchTask: (opts) => launchTask(launchServiceDeps, opts),
-    githubStateStore, ledgerAnalytics, projectConfigStore,
+    githubStateStore, ledgerAnalytics, projectConfigStore, projectSidebarStore,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects,
     achievementWatcher,
     getQuotaStatus: () => quotaAdapter.getLatest(),
@@ -1245,6 +1272,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           // Unset → audio messages are dropped with `dropped_audio_disabled`.
           // See issues #574 and #585.
           whisperUrl: process.env.KOOKR_STT_WHISPER_URL,
+          // Cascade server shutdown into the warmup so STT teardown does not
+          // race the in-flight whisper request. See issue #188.
+          lifecycleSignal,
         });
         telegramHandle = handle;
         // Install the late-bound R16 callback now that the integration is up.
@@ -1311,6 +1341,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     watchdog,
     ossAttemptStore,
     projectConfigStore,
+    projectSidebarStore,
     circuitBreakerRegistry,
     app,
     broadcastToAll,

@@ -35,6 +35,7 @@ describe('resolveWorkspaceContext', () => {
   it('uses the server root for the server project', async () => {
     mockGitResponses({
       '/repo rev-parse --path-format=absolute --git-common-dir': '/repo/.git',
+      '-C /repo remote get-url origin': 'git@github.com:kookr-ai/kookr.git',
     });
 
     const context = await resolveWorkspaceContext('github.com/kookr-ai/kookr', {
@@ -49,6 +50,7 @@ describe('resolveWorkspaceContext', () => {
   it('maps linked worktree sessions back to the shared checkout root', async () => {
     mockGitResponses({
       '/task-worktree rev-parse --path-format=absolute --git-common-dir': '/repo/.git',
+      '-C /repo remote get-url origin': 'git@github.com:org/repo.git',
     });
 
     const context = await resolveWorkspaceContext('github.com/org/repo', {
@@ -67,10 +69,60 @@ describe('resolveWorkspaceContext', () => {
     expect(context.repoPath).toBe('/repo');
   });
 
+  it('keeps local project worktree fallback behavior without remote identity validation', async () => {
+    mockGitResponses({
+      '/task-worktree rev-parse --path-format=absolute --git-common-dir': '/repo/.git',
+    });
+
+    const context = await resolveWorkspaceContext('local/task-worktree', {
+      serverCwd: '/server',
+      taskStore: {
+        getAllTasks: () => [
+          {
+            cwd: '/task-worktree',
+            projectId: 'local/task-worktree',
+            sessions: [],
+          },
+        ],
+      },
+    });
+
+    expect(context.repoPath).toBe('/repo');
+  });
+
+  it('prefers configured localPath and ignores task cwd from a different repo', async () => {
+    mockGitResponses({
+      '/right-repo rev-parse --path-format=absolute --git-common-dir': '/right-repo/.git',
+      '/wrong-repo rev-parse --path-format=absolute --git-common-dir': '/wrong-repo/.git',
+      '-C /right-repo remote get-url origin': 'git@github.com:org/repo.git',
+      '-C /wrong-repo remote get-url origin': 'git@github.com:kookr-ai/kookr.git',
+    });
+
+    const context = await resolveWorkspaceContext('github.com/org/repo', {
+      serverCwd: '/server',
+      projectConfigStore: {
+        getConfig: () => ({ project: 'github.com/org/repo', localPath: '/right-repo' }),
+      },
+      taskStore: {
+        getAllTasks: () => [
+          {
+            cwd: '/wrong-repo',
+            projectId: 'github.com/org/repo',
+            sessions: [{ cwd: '/wrong-repo' }],
+          },
+        ],
+      },
+    });
+
+    expect(context.repoPath).toBe('/right-repo');
+  });
+
   it('throws when multiple distinct roots exist for the same project', async () => {
     mockGitResponses({
       '/repo-a rev-parse --path-format=absolute --git-common-dir': '/repo-a/.git',
       '/repo-b rev-parse --path-format=absolute --git-common-dir': '/repo-b/.git',
+      '-C /repo-a remote get-url origin': 'git@github.com:org/repo.git',
+      '-C /repo-b remote get-url origin': 'git@github.com:org/repo.git',
     });
 
     await expect(resolveWorkspaceContext('github.com/org/repo', {

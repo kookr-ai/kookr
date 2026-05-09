@@ -4,6 +4,7 @@ import { normalizeAgentType } from '../../core/agent-types.js';
 import { CodexRolloutScanner } from '../../adapters/codex-rollout-scanner.js';
 import { aggregate as aggregateCostComparison } from '../../core/cost-comparison-aggregator.js';
 import type { CostAgent, TimeWindow } from '../../shared/contracts/cost-comparison.js';
+import { clampScanStart, loadHistoricalTasks } from '../use-cases/load-historical-tasks.js';
 import { createSnapshotMessage, getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
 import { deleteTask } from '../use-cases/delete-task.js';
@@ -543,9 +544,13 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     let body: {
       playbookPath?: unknown;
       cwd?: unknown;
+      playbookSourceCwd?: unknown;
+      taskTargetCwd?: unknown;
+      projectId?: unknown;
       parameterValues?: unknown;
       autonomy?: string;
       agentType?: string;
+      scope?: unknown;
     };
     try {
       body = await c.req.json();
@@ -556,12 +561,20 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     if (typeof body.playbookPath !== 'string' || body.playbookPath.trim().length === 0) {
       return c.json({ error: 'playbookPath is required and must be a string' }, 400);
     }
-    if (typeof body.cwd !== 'string' || body.cwd.trim().length === 0) {
-      return c.json({ error: 'cwd is required and must be a string' }, 400);
+    const cwdValidationError = validatePlaybookLaunchCwdFields(body);
+    if (cwdValidationError) {
+      return c.json({ error: cwdValidationError }, 400);
     }
     if (!isStringRecord(body.parameterValues)) {
       return c.json({ error: 'parameterValues is required and must be an object of strings' }, 400);
     }
+    if (body.projectId !== undefined && typeof body.projectId !== 'string') {
+      return c.json({ error: 'projectId must be a string' }, 400);
+    }
+    if (body.scope !== undefined && body.scope !== 'project' && body.scope !== 'user' && body.scope !== 'plugin') {
+      return c.json({ error: 'scope must be "project", "user", or "plugin"' }, 400);
+    }
+    const scope = body.scope as 'project' | 'user' | 'plugin' | undefined;
 
     try {
       const rawSource = c.req.header('X-Kookr-Launch-Source');
@@ -586,12 +599,17 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
           suppressionTracker: deps.suppressionTracker,
         }),
       }, {
-        cwd: body.cwd,
+        cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
+        playbookSourceCwd: typeof body.playbookSourceCwd === 'string' ? body.playbookSourceCwd : undefined,
+        taskTargetCwd: typeof body.taskTargetCwd === 'string' ? body.taskTargetCwd : undefined,
+        taskTargetCwdExplicit: typeof body.taskTargetCwd === 'string' && body.taskTargetCwd.trim().length > 0,
+        projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
         playbookPath: body.playbookPath,
         parameterValues: body.parameterValues,
         autonomy,
         agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
         launchSource,
+        scope,
       });
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
@@ -619,9 +637,13 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     let body: {
       playbookPath?: unknown;
       cwd?: unknown;
+      playbookSourceCwd?: unknown;
+      taskTargetCwd?: unknown;
+      projectId?: unknown;
       parameterValues?: unknown;
       autonomy?: string;
       agentType?: string;
+      scope?: unknown;
     };
     try {
       body = await c.req.json();
@@ -632,12 +654,20 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     if (typeof body.playbookPath !== 'string' || body.playbookPath.trim().length === 0) {
       return c.json({ error: 'playbookPath is required and must be a string' }, 400);
     }
-    if (typeof body.cwd !== 'string' || body.cwd.trim().length === 0) {
-      return c.json({ error: 'cwd is required and must be a string' }, 400);
+    const cwdValidationError = validatePlaybookLaunchCwdFields(body);
+    if (cwdValidationError) {
+      return c.json({ error: cwdValidationError }, 400);
     }
     if (!isStringRecord(body.parameterValues)) {
       return c.json({ error: 'parameterValues is required and must be an object of strings' }, 400);
     }
+    if (body.projectId !== undefined && typeof body.projectId !== 'string') {
+      return c.json({ error: 'projectId must be a string' }, 400);
+    }
+    if (body.scope !== undefined && body.scope !== 'project' && body.scope !== 'user' && body.scope !== 'plugin') {
+      return c.json({ error: 'scope must be "project", "user", or "plugin"' }, 400);
+    }
+    const scope = body.scope as 'project' | 'user' | 'plugin' | undefined;
 
     try {
       const rawSource = c.req.header('X-Kookr-Launch-Source');
@@ -703,12 +733,17 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         },
       }, {
         replacedTaskId,
-        cwd: body.cwd,
+        cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
+        playbookSourceCwd: typeof body.playbookSourceCwd === 'string' ? body.playbookSourceCwd : undefined,
+        taskTargetCwd: typeof body.taskTargetCwd === 'string' ? body.taskTargetCwd : undefined,
+        taskTargetCwdExplicit: typeof body.taskTargetCwd === 'string' && body.taskTargetCwd.trim().length > 0,
+        projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
         playbookPath: body.playbookPath,
         parameterValues: body.parameterValues,
         autonomy,
         agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
         launchSource,
+        scope,
       });
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
@@ -857,7 +892,14 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     // Codex side: scan + bind. The scanner is a per-route singleton so its
     // (path, mtime) cache survives across requests.
     const scanner = costScannerSingleton;
-    const tasks = taskStore.listTasks();
+    // Union live + on-disk snapshots. The live store only holds currently-visible
+    // tasks; everything swept lives in tasks.json.daily.* / tasks.json.predelete.*.
+    // Without this union the panel renders structurally empty against any swept
+    // task history (rfc-cost-comparison-coverage-and-perf.md §Change 1).
+    const liveTasks = taskStore.listTasks();
+    const tasks = deps.tasksFile
+      ? await loadHistoricalTasks(liveTasks, deps.tasksFile)
+      : liveTasks;
     const codexTasks = tasks
       .filter(t => t.agentType === 'codex-cli')
       .map(t => {
@@ -868,9 +910,13 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         return { taskId: t.id, cwd: sessionCwd ?? t.cwd, createdAtMs: created };
       });
 
+    // Clamp the directory walk so window=all stops walking 57 years of empty
+    // UTC date directories (rfc-cost-comparison-coverage-and-perf.md §Change 3).
+    const effectiveScanStartMs = clampScanStart(windowStartMs, windowEndMs, tasks);
+
     const scanStart = Date.now();
-    const scan = await scanner.scan(windowStartMs, windowEndMs);
-    const { outcomes, orphanRollouts } = scanner.bindTasks(scan.rollouts, codexTasks);
+    const scan = await scanner.scan(effectiveScanStartMs, windowEndMs);
+    const { outcomes, orphanBindings } = scanner.bindTasks(scan.rollouts, codexTasks);
 
     // Claude side: pull live token usage and the resolved model id (used by the aggregator
     // to drive the R17 pricing-staleness banner — Claude per-task rows themselves keep
@@ -904,7 +950,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         rolloutCount: scan.stats.rolloutCount,
         parseErrorCount: scan.stats.parseErrorCount,
         abandonedCount: scan.stats.abandonedCount,
-        orphanRollouts,
+        orphanBindings,
       },
       scannedAt: new Date().toISOString(),
       scanDurationMs: Date.now() - scanStart,
@@ -932,4 +978,31 @@ function sanitizeFilenamePart(value: string): string {
 function isStringRecord(value: unknown): value is Record<string, string> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   return Object.values(value).every((item) => typeof item === 'string');
+}
+
+function validatePlaybookLaunchCwdFields(body: {
+  cwd?: unknown;
+  playbookSourceCwd?: unknown;
+  taskTargetCwd?: unknown;
+}): string | null {
+  const hasCwd = body.cwd !== undefined;
+  const hasSource = body.playbookSourceCwd !== undefined;
+  const hasTarget = body.taskTargetCwd !== undefined;
+
+  if (hasCwd && (typeof body.cwd !== 'string' || body.cwd.trim().length === 0)) {
+    return 'cwd must be a non-empty string when supplied';
+  }
+  if (hasSource && (typeof body.playbookSourceCwd !== 'string' || body.playbookSourceCwd.trim().length === 0)) {
+    return 'playbookSourceCwd must be a non-empty string when supplied';
+  }
+  if (hasTarget && (typeof body.taskTargetCwd !== 'string' || body.taskTargetCwd.trim().length === 0)) {
+    return 'taskTargetCwd must be a non-empty string when supplied';
+  }
+  if ((hasSource || hasTarget) && !(hasSource && hasTarget)) {
+    return 'playbookSourceCwd and taskTargetCwd must be supplied together';
+  }
+  if (!hasCwd && !(hasSource && hasTarget)) {
+    return 'playbookSourceCwd/taskTargetCwd or cwd is required and must be a string';
+  }
+  return null;
 }

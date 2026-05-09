@@ -445,6 +445,34 @@ The system SHOULD surface actionable inline guidance when a looped playbook laun
 
 **Evidence:** `src/server/use-cases/looped-playbook-launch.ts` (conflict ordering and typed payloads), `src/frontend/components/PlaybookBrowser.tsx` (inline conflict rendering), `src/server/use-cases/looped-playbook-launch.test.ts`, `src/frontend/components/PlaybookBrowser.loopable.test.ts`.
 
+### R4b.7: Ralph Verdict Runtime Environment — SHALL — `done`
+
+The system SHALL expose the full Ralph verdict environment to every loop iteration runtime, including the first runtime created before the loop record is attached.
+
+**Acceptance criteria:**
+- Initial Ralph launches receive `RALPH_VERDICT_FILE` and `RALPH_ITERATION=0`.
+- Subsequent Ralph launches receive `RALPH_VERDICT_FILE` and `RALPH_ITERATION` equal to the current loop iteration.
+- Looped implementation playbooks define non-automatable issue labels that Phase 0 skips before implementation.
+- Looped implementation playbooks define an automation-quarantine path for trusted, non-implementable issue targets.
+
+**Evidence:** `src/server/launch-service.ts`, `src/server/ralph-loop-service.ts`, `.kookr/playbooks/implement-github-issue.md`, `src/server/launch-service.test.ts`, `src/server/ralph-loop-service.test.ts`, `src/core/implement-github-issue-playbook.test.ts`.
+
+### R4b.8: Project-Targeted Catalog Playbooks [F6.2, F6.6] — SHALL — `done`
+
+The system SHALL allow playbooks discovered from Kookr's catalog cwd to launch tasks in a selected tracked project's local checkout.
+
+**Acceptance criteria:**
+- Project-drawer playbook launch keeps playbook discovery rooted at Kookr's catalog cwd when the selected project has no `.kookr/playbooks/`
+- Project-drawer launch target defaults to `ProjectSummary.localPath`, then agent-derived cwd, then an unresolved empty target
+- Project-drawer target cwd never falls back to draft cwd, recent cwd, or server cwd
+- The selected playbook detail lets the user edit target cwd without losing selected playbook, parameters, or loop mode
+- Standard, looped, and replace-loop playbook launches send separate playbook source cwd and task target cwd
+- Server launch preparation reads the playbook from source cwd and launches the task in target cwd
+- Legacy playbook launches that send only `cwd` remain backward-compatible, including frontmatter `cwd:` precedence
+- Project-drawer launches include selected project id, and server-side validation rejects conflicting project attribution
+
+**Evidence:** `src/frontend/App.tsx` (localPath-first project target), `src/frontend/components/LaunchTaskDialog.tsx` (catalog source vs target cwd), `src/frontend/components/PlaybookBrowser.tsx` (split standard/looped/replace payloads and inline target editing), `src/server/ws-handlers/playbook-handler.ts`, `src/server/use-cases/playbook-launch.ts` (source/target normalization, pinned-cwd conflict, projectId validation), `src/server/routes/task-routes.ts` (split HTTP payloads), `src/server/use-cases/looped-playbook-launch.ts`. Tests: `src/shared/contracts/client-message-schema.test.ts`, `src/server/use-cases/playbook-launch.test.ts`, `src/server/use-cases/looped-playbook-launch.test.ts`, `src/server/routes/task-routes.test.ts`, `src/server/ws.test.ts`, `src/frontend/components/PlaybookBrowser.loopable.test.ts`, `src/frontend/components/LaunchTaskDialog.project-cwd.test.ts`.
+
 ---
 
 ## R4c: Contribution Workspace
@@ -535,6 +563,43 @@ The system SHALL update all panels live as agent states change, with no manual r
 - State changes reflected in agent list, detail panel, and status bar within 1 second
 
 **Evidence:** `src/frontend/hooks/useWebSocket.ts` (connection + reconnect), `src/server/ws.ts` (snapshot on connect, broadcast on change), `src/frontend/store/useStore.ts` (state handlers).
+
+### R5.6: Onboarding Tour Test Controls — SHOULD — `done`
+
+The system SHOULD expose deterministic controls for automated tests to identify or suppress the first-run onboarding tour without relying on CSS classes or persisted browser state.
+
+**Acceptance criteria:**
+- The onboarding overlay exposes a stable `data-testid="onboarding-overlay"` selector
+- The Skip/Close button exposes a stable `data-testid="onboarding-skip"` selector
+- `?onboarding=0` suppresses the first-run onboarding tour even when localStorage has no seen marker
+- `KOOKR_DISABLE_ONBOARDING=1` suppresses the first-run onboarding tour at frontend build/test time
+
+**Evidence:** `src/frontend/components/OnboardingTour.tsx`, `src/frontend/store/onboarding-status.ts`, `src/frontend/store/onboarding-status.test.ts`, `e2e/onboarding-tour.spec.ts`.
+
+### R5.7: Persistent Project Sidebar Preferences — SHOULD — `done`
+
+The system SHOULD persist project sidebar ordering, pinned projects, hidden projects, and cached project labels in the Kookr data directory so the sidebar survives server redeploys and browser storage resets.
+
+**Acceptance criteria:**
+- Sidebar preferences are saved to disk under the active Kookr data directory
+- Pinned projects are included in project summaries after restart even when no active agent currently references them
+- The frontend hydrates sidebar preferences from the backend and migrates existing browser-local sidebar preferences when the backend store is empty
+- Browser `localStorage` remains a fallback/cache rather than the source of truth after backend hydration
+
+**Evidence:** `src/core/project-sidebar-store.ts`, `src/server/routes/project-routes.ts` (`/api/projects/sidebar`), `src/frontend/store/slices/project-sidebar-slice.ts`, `src/core/project-sidebar-store.test.ts`, `src/core/project-summary.test.ts`, `src/server/index.test.ts`, `src/frontend/store/slices/project-sidebar-discovery.test.ts`.
+
+### R5.8: Dense Dashboard Focus Mode — SHOULD — `done`
+
+The system SHOULD reduce repeated metadata and long prompt noise when a developer is triaging running tasks on a large dashboard.
+
+**Acceptance criteria:**
+- The selected task header keeps title, status, autonomy, critical worktree health, age, and primary actions visible while moving provider, hooks, project, branch, cost, and token details into a details affordance
+- When a project and task are both selected on a wide viewport, the project drawer switches to a compact summary instead of showing full contribution history, settings, and recent tasks
+- Oversized launch prompts in the Activity pane render as a bounded preview with an explicit full-prompt expander
+- Healthy task rows avoid repeated project metadata when the user is already scoped to that project
+- The global top bar avoids duplicating finding/healthy counts already shown in the findings and status areas
+
+**Evidence:** `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/ActivityPanel.tsx`, `src/frontend/components/ProjectDetailDrawer.tsx`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/components/TopBar.tsx`, density-focused component tests.
 
 ---
 
@@ -627,6 +692,19 @@ The system SHALL handle SIGINT/SIGTERM gracefully.
 - Agent dtach sessions are NOT killed (they survive independently)
 
 **Evidence:** `src/server/index.ts` (signal handlers, cleanup logic).
+
+### R6.8: Semantic Checkpoint Compatibility — SHALL — `done`
+
+The system SHALL preserve Markdown checkpoints while supporting `semantic-checkpoint.v1` JSON checkpoints for durable agent handoff and resume.
+
+**Acceptance criteria:**
+- Checkpoint cycling prompts agents to update both `CHECKPOINT.md` and `CHECKPOINT.json`
+- `CHECKPOINT.json` follows the documented `semantic-checkpoint.v1` contract
+- Launch/resume instructions prefer valid `CHECKPOINT.json` when present
+- Launch/resume instructions fall back to `CHECKPOINT.md` when JSON is absent or invalid
+- Invalid semantic checkpoint JSON is surfaced as a warning and does not block launch
+
+**Evidence:** `docs/schemas/semantic-checkpoint.v1.json`, `src/core/checkpoint-path.ts`, `src/core/checkpoint-cycler.ts`, `src/core/checkpoint-path.test.ts`, `src/core/checkpoint-cycler.test.ts`, `src/adapters/claude-code-adapter.test.ts`, `src/adapters/codex-cli-adapter.test.ts`.
 
 ---
 
@@ -807,6 +885,8 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R4b.4 | — | SHOULD | done | QuickLaunch, App |
 | R4b.5 | — | SHOULD | done | telegram/index, telegram/rephrase, launch-service |
 | R4b.6 | F6.7 | SHOULD | done | looped-playbook-launch, PlaybookBrowser |
+| R4b.7 | — | SHALL | done | launch-service, ralph-loop-service, implement-github-issue playbook |
+| R4b.8 | F6.2, F6.6 | SHALL | done | LaunchTaskDialog, PlaybookBrowser, playbook-launch, task-routes |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |
@@ -814,6 +894,8 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R5.3 | F5.3 | SHOULD | done | StatusBar |
 | R5.4 | F5.4 | SHOULD | done | App, useStore, DetailPanel |
 | R5.5 | F5.5 | SHALL | done | useWebSocket, ws, useStore |
+| R5.7 | — | SHOULD | done | project-sidebar-store, project-routes, project-sidebar-slice |
+| R5.8 | — | SHOULD | done | DetailPanel, ActivityPanel, ProjectDetailDrawer, FindingsPanel, TopBar |
 | R6.1 | ADR-007 / ADR-014 | SHALL | done | local-dtach-backend |
 | R6.2 | PoC 001 | SHALL | done | claude-code-adapter, hook-watcher, hook-parser |
 | R6.3 | ADR-008 (superseded by ADR-014) | SHALL | done | reconciliation, local-dtach-backend |

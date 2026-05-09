@@ -7,6 +7,7 @@ import type {
   PerTaskRow,
   TimeWindow,
   CostDataQuality,
+  UnboundCodexAggregate,
 } from '../../shared/contracts/cost-comparison.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 
@@ -173,7 +174,7 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
         {data && (
           <>
             <PerPlaybookSection rows={data.perPlaybook} />
-            <AggregateSection aggregate={data.aggregate} />
+            <AggregateSection aggregate={data.aggregate} unboundCodex={data.unboundCodex} />
             <PerTaskSection rows={data.perTask} />
           </>
         )}
@@ -239,18 +240,23 @@ function PerPlaybookSection({ rows }: { rows: PerPlaybookRow[] }): React.ReactEl
   );
 }
 
-function AggregateSection({ aggregate }: { aggregate: Partial<Record<CostAgent, AggregateMetrics>> }): React.ReactElement {
+function AggregateSection({ aggregate, unboundCodex }: {
+  aggregate: Partial<Record<CostAgent, AggregateMetrics>>;
+  unboundCodex?: UnboundCodexAggregate;
+}): React.ReactElement {
   const claude = aggregate['claude-code'];
   const codex = aggregate['codex-cli'];
+  const showAny = claude || codex || unboundCodex;
   return (
     <section className="cost-aggregate">
       <h3>Aggregate (across mixed task classes — weak signal)</h3>
-      {!claude && !codex ? (
+      {!showAny ? (
         <div className="cost-empty">No tasks in this window.</div>
       ) : (
         <div className="cost-aggregate-grid">
           {claude && <AgentAggregateCard label="Claude" m={claude} />}
           {codex  && <AgentAggregateCard label="Codex"  m={codex} />}
+          {unboundCodex && <UnboundCodexCard u={unboundCodex} />}
         </div>
       )}
     </section>
@@ -279,6 +285,49 @@ function AgentAggregateCard({ label, m }: { label: string; m: AggregateMetrics }
       <div className="cost-stat">
         <span className="cost-stat-label">👍 rate</span> <span className="cost-stat-val">{formatThumbsRate(m)}</span>
       </div>
+    </div>
+  );
+}
+
+function UnboundCodexCard({ u }: { u: UnboundCodexAggregate }): React.ReactElement {
+  // Visually distinct from the Claude/Codex cards: this is *unbound* spend,
+  // included so cross-agent comparison stays truthful, but kept off the
+  // per-playbook attribution surface (rfc-cost-comparison-coverage-and-perf.md
+  // §Change 2 design-principle 3).
+  const dq = u.dataQualityCounts;
+  const qualityHints: string[] = [];
+  if (dq['unknown-pricing'] > 0) qualityHints.push(`${dq['unknown-pricing']} unknown-pricing`);
+  if (dq['codex-no-tokens'] > 0) qualityHints.push(`${dq['codex-no-tokens']} no-tokens`);
+  if (dq['codex-parse-error'] > 0) qualityHints.push(`${dq['codex-parse-error']} parse-error`);
+  const tooltipDesc = 'Top-level Codex threads not bound to any Kookr task — interactive use, or swept tasks past snapshot retention. Total reflects only priced rows; see Notes for unknown-pricing or no-tokens caveats.';
+  return (
+    <div className="cost-aggregate-card cost-unbound-card">
+      <h4>
+        Unbound Codex <span className="cost-unbound-sub">(interactive / swept)</span>
+        <span className="sr-only">. {tooltipDesc}</span>
+      </h4>
+      <div className="cost-stat">
+        <span className="cost-stat-label">threads</span> <span className="cost-stat-val">{u.threadCount}</span>
+      </div>
+      <div className="cost-stat">
+        <span className="cost-stat-label">total ($, priced rows)</span>
+        <span className="cost-stat-val">{formatUsd(u.totalCostUsd)}</span>
+      </div>
+      <div className="cost-stat">
+        <span className="cost-stat-label">in tok</span> <span className="cost-stat-val">{formatTokens(u.totalInputTokens)}</span>
+      </div>
+      <div className="cost-stat">
+        <span className="cost-stat-label">out tok</span> <span className="cost-stat-val">{formatTokens(u.totalOutputTokens)}</span>
+      </div>
+      <div className="cost-stat">
+        <span className="cost-stat-label">cached in</span> <span className="cost-stat-val">{formatTokens(u.totalCachedInputTokens)}</span>
+      </div>
+      {qualityHints.length > 0 && (
+        <div className="cost-stat cost-unbound-quality">
+          <span className="cost-stat-label">quality</span>
+          <span className="cost-stat-val">{qualityHints.join(', ')}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -339,6 +388,12 @@ function formatUsd(n: number): string {
   if (n === 0) return '$0.00';
   if (n < 0.01) return '<$0.01';
   return `$${n.toFixed(2)}`;
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
 function formatDur(ms: number | null): string {

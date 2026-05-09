@@ -13,6 +13,7 @@ import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import type { HttpPushTracker } from '../../core/http-push-tracker.js';
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
+import type { ProjectSidebarStore } from '../../core/project-sidebar-store.js';
 import type { OssAttemptStore } from '../../core/oss-attempt-store.js';
 import type { LedgerAnalytics } from '../../core/ledger-analytics.js';
 import type { OssRefresher } from '../oss-refresh.js';
@@ -30,6 +31,7 @@ import type { CrashRecoveryResult } from '../crash-recovery.js';
 import type { RalphCycler } from '../../core/ralph-cycler.js';
 import type { TokenTracker } from '../../core/token-tracker.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
+import type { WorktreeRegistry } from '../../adapters/git-worktree-registry.js';
 
 export interface RouteDeps {
   taskStore: TaskStore;
@@ -53,6 +55,7 @@ export interface RouteDeps {
   launchServiceDeps: LaunchServiceDeps;
   sttUrl?: string;
   projectConfigStore?: ProjectConfigStore;
+  projectSidebarStore?: ProjectSidebarStore;
   ossAttemptStore?: OssAttemptStore;
   ledgerAnalytics?: LedgerAnalytics;
   ossRefresher?: OssRefresher;
@@ -86,6 +89,20 @@ export interface RouteDeps {
   ralphCycler?: RalphCycler;
   /** Token tracker — used by ralph routes to read cumulative cost. */
   tokenTracker?: TokenTracker;
+  /**
+   * Path to the live `~/.kookr/tasks.json`. Used by the cost-comparison route
+   * to read sibling `tasks.json.daily.*` and `tasks.json.predelete.*` snapshots
+   * (rfc-cost-comparison-coverage-and-perf.md §Change 1).
+   */
+  tasksFile?: string;
   /** Singleton Ralph loop orchestration service. */
   ralphLoopService: RalphLoopService;
+  /**
+   * Worktree registry — surfaced to deploy-routes so `resolveProdDir` can
+   * locate the production runtime via the `.kookr-protected` marker rather
+   * than the legacy `kookr-prod` basename heuristic. Optional so tests and
+   * non-server callers can omit it; absent registry falls back to the legacy
+   * sibling-path resolver.
+   */
+  worktreeRegistry?: Pick<WorktreeRegistry, 'all'>;
 }

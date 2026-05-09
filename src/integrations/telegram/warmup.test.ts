@@ -178,4 +178,135 @@ describe('Telegram voice warmup', () => {
       vi.useRealTimers();
     }
   });
+
+  // Issue #188: shutdown raced startup warmup — STT containers were being
+  // stopped while the in-flight whisper request was still on the wire, so the
+  // resulting `TypeError: fetch failed` was logged as a user-facing warmup
+  // regression. The lifecycleSignal cascade demoted that to an info-level log.
+  describe('shutdown lifecycle integration', () => {
+    it('logs cancellation distinctly when shutdown aborts an in-flight warmup', async () => {
+      // A stalling whisper server reproduces the bug: by the time the SIGTERM
+      // path aborts the lifecycle signal, the fetch is mid-flight. Without
+      // the fix, the fetch error path would emit the user-facing FAILED log.
+      const sockets: import('node:net').Socket[] = [];
+      const stalling = createServer((req: IncomingMessage, _res: ServerResponse) => {
+        sockets.push(req.socket);
+        // Never respond.
+      });
+      await new Promise<void>((resolve) => stalling.listen(0, '127.0.0.1', () => resolve()));
+      const addr = stalling.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+
+      const audit = vi.fn();
+      const logger = { log: vi.fn(), warn: vi.fn() };
+      const lifecycle = new AbortController();
+      try {
+        const handle = startVoiceWarmup({
+          whisperUrl: `http://127.0.0.1:${port}`,
+          timeoutMs: 5_000,
+          audit,
+          logger,
+          lifecycleSignal: lifecycle.signal,
+        });
+
+        // Wait for the request to be in-flight on the stalling server before
+        // aborting. The 0ms setTimeout inside startVoiceWarmup defers the
+        // fetch one tick, and Node's HTTP client needs time to send headers.
+        await waitFor(() => sockets.length > 0, 1000);
+
+        // Mimic SIGTERM ordering from start.ts: lifecycleAc.abort() runs
+        // BEFORE sttManager.stop() — i.e. while the fetch is still pending.
+        lifecycle.abort();
+        await handle.done;
+
+        expect(logger.warn).not.toHaveBeenCalled();
+        expect(logger.log).toHaveBeenCalledWith(
+          expect.stringMatching(/voice warmup cancelled by shutdown/),
+        );
+        expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+          kind: 'voice_warmup',
+          cancelled: 'shutdown',
+          cancelledMs: expect.any(Number),
+        }));
+      } finally {
+        for (const s of sockets) { try { s.destroy(); } catch { /* noop */ } }
+        await new Promise<void>((resolve) => stalling.close(() => resolve()));
+      }
+    });
+
+    it('does not start the request when lifecycleSignal is already aborted', async () => {
+      vi.useFakeTimers();
+      const audit = vi.fn();
+      const logger = { log: vi.fn(), warn: vi.fn() };
+      const lifecycle = new AbortController();
+      lifecycle.abort();
+      try {
+        const handle = startVoiceWarmup({
+          whisperUrl: 'http://127.0.0.1:1',
+          timeoutMs: 5_000,
+          audit,
+          logger,
+          lifecycleSignal: lifecycle.signal,
+        });
+
+        await vi.runAllTimersAsync();
+        await handle.done;
+
+        // Pre-aborted shutdown means the warmup never ran — no audit, no log.
+        expect(audit).not.toHaveBeenCalled();
+        expect(logger.log).not.toHaveBeenCalled();
+        expect(logger.warn).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not affect the success path when lifecycleSignal is provided but not aborted', async () => {
+      const fake = await startFakeWhisper();
+      const audit = vi.fn();
+      const logger = { log: vi.fn(), warn: vi.fn() };
+      const lifecycle = new AbortController();
+      try {
+        startVoiceWarmup({
+          whisperUrl: fake.baseUrl,
+          timeoutMs: 1000,
+          audit,
+          logger,
+          lifecycleSignal: lifecycle.signal,
+        });
+        await waitFor(() => audit.mock.calls.some(([event]) => typeof event.okMs === 'number'));
+        expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/\[telegram\] voice warmup: ok/));
+        expect(logger.warn).not.toHaveBeenCalled();
+      } finally {
+        await fake.stop();
+      }
+    });
+
+    it('aborting lifecycleSignal before the timer fires skips the request entirely', async () => {
+      vi.useFakeTimers();
+      const audit = vi.fn();
+      const logger = { log: vi.fn(), warn: vi.fn() };
+      const lifecycle = new AbortController();
+      try {
+        const handle = startVoiceWarmup({
+          whisperUrl: 'http://127.0.0.1:1',
+          timeoutMs: 5_000,
+          audit,
+          logger,
+          lifecycleSignal: lifecycle.signal,
+        });
+
+        // Fire shutdown before the 0ms setTimeout drains.
+        lifecycle.abort();
+        await vi.runAllTimersAsync();
+        await handle.done;
+
+        expect(audit).not.toHaveBeenCalled();
+        expect(logger.log).not.toHaveBeenCalled();
+        expect(logger.warn).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

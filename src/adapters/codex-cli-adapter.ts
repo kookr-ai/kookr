@@ -8,7 +8,7 @@ import { parseHookEvent } from '../core/hook-parser.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { buildAgentLaunchContext } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
-import { resolveAndPrepareCheckpointDir, CHECKPOINT_LOAD_INSTRUCTION } from '../core/checkpoint-path.js';
+import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 
@@ -152,6 +152,9 @@ export class CodexCliAdapter implements AgentAdapter {
     const checkpointDir = this.kookrDataDir
       ? (await resolveAndPrepareCheckpointDir({ cwd, kookrDataDir: this.kookrDataDir })) ?? undefined
       : undefined;
+    const checkpointInstruction = checkpointDir
+      ? await buildCheckpointLoadInstruction(checkpointDir)
+      : undefined;
 
     const launchContext = await buildAgentLaunchContext({
       taskStore: this.taskStore,
@@ -184,7 +187,7 @@ export class CodexCliAdapter implements AgentAdapter {
     // summarized away by /compact). Inter-session resume still works (each
     // new task gets the prefix again on launch). Intra-session post-compact
     // resume on Codex CLI is a known v1 gap — fix in a fork patch later.
-    const checkpointPrefix = checkpointDir ? `${CHECKPOINT_LOAD_INSTRUCTION}\n\n` : '';
+    const checkpointPrefix = checkpointInstruction ? `${checkpointInstruction}\n\n` : '';
     const promptWithCheckpoint = `${checkpointPrefix}${prompt}`;
     const permissionFlagStr = this.bypassAllPermissions
       ? '--dangerously-bypass-approvals-and-sandbox'

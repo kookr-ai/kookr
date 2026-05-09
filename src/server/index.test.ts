@@ -13,6 +13,42 @@ function getActualPort(server: KookrServerInternal): number {
   throw new Error('Server not listening');
 }
 
+type MalformedAlertMessage = {
+  type?: string;
+  severity?: string;
+  agentId?: string;
+  summary?: string;
+  details?: string;
+};
+
+function waitForMalformedAlert(ws: WebSocket, label: string): Promise<MalformedAlertMessage> {
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const onMsg = (data: unknown) => {
+      const parsed = JSON.parse((data as Buffer).toString()) as MalformedAlertMessage;
+      if (
+        parsed.type !== 'alert'
+        || parsed.severity !== 'critical'
+        || typeof parsed.summary !== 'string'
+        || !parsed.summary.includes('Malformed WebSocket message')
+      ) {
+        return;
+      }
+
+      clearTimeout(timer);
+      ws.off('message', onMsg);
+      resolve(parsed);
+    };
+
+    timer = setTimeout(() => {
+      ws.off('message', onMsg);
+      reject(new Error(`No malformed message alert for ${label}`));
+    }, 2000);
+
+    ws.on('message', onMsg);
+  });
+}
+
 describe('createKookrServer', () => {
   let tempDir: string;
   let server: KookrServerInternal;
@@ -680,6 +716,64 @@ describe('createKookrServer', () => {
       expect(configs).toEqual([expect.objectContaining({ project: 'kookr-ai/kookr' })]);
     });
 
+    test('PUT /api/projects/sidebar persists pinned projects across server restart', async () => {
+      const putRes = await fetch(`${baseUrl}/api/projects/sidebar`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          version: 1,
+          ordered: ['github.com/example/repo'],
+          pinned: ['github.com/example/repo'],
+          hidden: [],
+          catalog: {
+            'github.com/example/repo': {
+              project: 'github.com/example/repo',
+              displayName: 'example/repo',
+              color: 2,
+              lastSeenAt: '2026-05-09T00:00:00.000Z',
+            },
+          },
+        }),
+      });
+      expect(putRes.status).toBe(200);
+
+      const summariesBefore = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(summariesBefore).toEqual([
+        expect.objectContaining({ project: 'github.com/example/repo' }),
+      ]);
+
+      await server.close();
+      serverClosed = true;
+      server = await createKookrServerInternal({
+        port: 0,
+        host: '127.0.0.1',
+        kookrDir: tempDir,
+        tasksFile: join(tempDir, 'tasks.json'),
+        hooksDir: join(tempDir, 'hooks'),
+        settingsDir: join(tempDir, 'settings'),
+        serverCwd: '/test/cwd',
+        frontendDir: join(tempDir, 'frontend'),
+        saveIntervalMs: 600_000,
+        livenessIntervalMs: 600_000,
+        terminalBackend: new FakeTerminalBackend(),
+        claudeDir: join(tempDir, 'claude'),
+      });
+      serverClosed = false;
+      port = getActualPort(server);
+      baseUrl = `http://127.0.0.1:${port}`;
+
+      const state = await (await fetch(`${baseUrl}/api/projects/sidebar`)).json();
+      expect(state).toEqual(expect.objectContaining({
+        ordered: ['github.com/example/repo'],
+        pinned: ['github.com/example/repo'],
+      }));
+
+      const summariesAfter = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(summariesAfter).toEqual([
+        expect.objectContaining({ project: 'github.com/example/repo' }),
+      ]);
+    });
+
     test('POST /api/schedules creates a schedule', async () => {
       const projectDir = join(tempDir, 'project');
       mkdirSync(join(projectDir, '.kookr', 'playbooks'), { recursive: true });
@@ -930,18 +1024,7 @@ Review daily work.
       ];
 
       for (const { label, payload } of cases) {
-        const next = new Promise<{ type: string; severity?: string; agentId?: string; summary?: string }>((resolve, reject) => {
-          const onMsg = (data: unknown) => {
-            ws.off('message', onMsg);
-            resolve(JSON.parse((data as Buffer).toString()));
-          };
-          ws.on('message', onMsg);
-          setTimeout(() => {
-            ws.off('message', onMsg);
-            reject(new Error(`No reply for malformed payload (${label})`));
-          }, 2000);
-        });
-
+        const next = waitForMalformedAlert(ws, `malformed payload (${label})`);
         ws.send(payload);
         const alert = await next;
 
@@ -999,18 +1082,7 @@ Review daily work.
       ];
 
       for (const { label, payload, expectDetailSubstring } of cases) {
-        const next = new Promise<{ type: string; severity?: string; agentId?: string; summary?: string; details?: string }>((resolve, reject) => {
-          const onMsg = (data: unknown) => {
-            ws.off('message', onMsg);
-            resolve(JSON.parse((data as Buffer).toString()));
-          };
-          ws.on('message', onMsg);
-          setTimeout(() => {
-            ws.off('message', onMsg);
-            reject(new Error(`No reply for ${label}`));
-          }, 2000);
-        });
-
+        const next = waitForMalformedAlert(ws, label);
         ws.send(JSON.stringify(payload));
         const alert = await next;
 

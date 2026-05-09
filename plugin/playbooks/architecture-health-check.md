@@ -1,6 +1,28 @@
 ---
 name: Architecture Health Check
 description: Comprehensive multi-agent audit of codebase structural health — smells, dependencies, interfaces
+parameters:
+  - name: srcRoot
+    description: Source root directory to scan (e.g., src, lib, app)
+    required: false
+    default: src
+  - name: layeringRules
+    description: How layers in this codebase are expected to depend on each other (free text; e.g., "core → adapters → server → frontend, with no upward imports")
+    required: false
+    default: ""
+    type: textarea
+  - name: reportPath
+    description: Where to write the unified findings report
+    required: false
+    default: /tmp/arch-health-report.md
+  - name: issueLabel
+    description: GitHub label to apply to created issues (will be created if missing)
+    required: false
+    default: architecture
+  - name: issueAssignee
+    description: GitHub username to assign new issues to (leave blank to skip assignment)
+    required: false
+    default: ""
 checklist:
   - Ran architecture smell scan on all source modules
   - Ran dependency graph analysis for layering violations and cycles
@@ -12,14 +34,14 @@ checklist:
 
 ## Objective
 
-Run a comprehensive architecture health check on the Kookr codebase. This is a multi-perspective structural audit that combines three analysis passes into one prioritized action plan.
+Run a comprehensive architecture health check on the codebase. This is a multi-perspective structural audit that combines three analysis passes into one prioritized action plan.
 
 ## Context
 
-- **Repository**: Kookr — AI agent supervisor
-- **Source**: `src/` with layers: `core/` → `adapters/` → `server/` → `frontend/`
-- **Architecture docs**: `docs/architecture.md`, `docs/system-models/`
-- **Agents available as subagents**: `architecture-smell-scanner`, `dependency-graph-analyzer`, `module-interface-auditor`
+- **Source root**: `{{srcRoot}}`
+- **Layering expectations** (if specified): `{{layeringRules}}` — if this is empty, derive layers from the directory structure under `{{srcRoot}}` and document the inferred rules at the top of the report.
+- **Report destination**: `{{reportPath}}`
+- **Available subagents (kookr-toolkit)**: `architecture-smell-scanner`, `dependency-graph-analyzer`, `module-interface-auditor`, `architecture-drift-detector`. Invoke them in parallel where the work is independent.
 
 ## Phase 1 — Run All Three Analyses
 
@@ -34,8 +56,8 @@ Analyze all source files for:
 - Inappropriate intimacy (bilateral dependencies, shared internal types)
 
 ### 1B. Dependency Graph Analysis
-Parse all TypeScript imports in `src/` (exclude test files) and check:
-- Layering violations: `core` must not import from `server`, `adapters`, or `frontend`; `adapters` must not import from `server` or `frontend`; etc.
+Parse all imports under `{{srcRoot}}/` (exclude test files) and check:
+- Layering violations against the rules above (or the inferred layout if no rules supplied)
 - Circular dependencies (direct A↔B and transitive A→B→C→A)
 - God modules by fan-in (>10 importers) and fan-out (>8 imports)
 - Hub modules (high fan-in AND fan-out — fragile)
@@ -54,7 +76,7 @@ Cross-reference findings across all three analyses. Look for reinforcing signals
 - A scattered feature (smell scan) whose files have circular dependencies (dependency graph) = compounding problem
 - A leaky abstraction (interface audit) that causes layering violations (dependency graph) = boundary failure
 
-Produce a **unified findings report** as a temporary file at `/tmp/kookr-arch-health-report.md` with:
+Produce a **unified findings report** at `{{reportPath}}` with:
 1. Executive summary (3-5 sentences)
 2. Top findings ranked by impact × fixability
 3. Per-finding detail: what's wrong, evidence from which analysis, refactoring direction
@@ -62,11 +84,11 @@ Produce a **unified findings report** as a temporary file at `/tmp/kookr-arch-he
 
 ## Phase 3 — Create Issues
 
-For the **top 3-5 actionable findings**, create GitHub issues:
+For the **top 3-5 actionable findings**, create GitHub issues in the current repo:
 - Title: `arch: [brief description of the smell/violation]`
 - Body: evidence, impact, suggested approach
-- Label: `architecture` (create if doesn't exist)
-- Assign to: `jeanibarz`
+- Label: `{{issueLabel}}` (create if it doesn't exist)
+- Assignee: `{{issueAssignee}}` (skip assignment if this is empty)
 
 Skip creating issues for:
 - Minor findings (cosmetic naming, low-severity smells)
@@ -75,8 +97,8 @@ Skip creating issues for:
 
 ## Idempotency
 
-- Before creating issues, search existing open issues for `arch:` prefix to avoid duplicates
-- If a previous report exists at `/tmp/kookr-arch-health-report.md`, archive it with a timestamp suffix before writing the new one
+- Before creating issues, search existing open issues for the `arch:` prefix to avoid duplicates
+- If a previous report exists at `{{reportPath}}`, archive it with a timestamp suffix before writing the new one
 - If duplicate issues exist, update them with new evidence instead of creating new ones
 
 ## Anti-Patterns

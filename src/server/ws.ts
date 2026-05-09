@@ -153,6 +153,7 @@ export class MessageRouter {
       taskStore: this.deps.taskStore,
       serverCwd: this.serverCwd,
       serverProjectId: this.deps.serverProjectId,
+      projectConfigStore: this.deps.projectConfigStore,
       workspaceEnabled: this.deps.workspaceEnabled,
       attemptRepository: this.deps.attemptRepository,
       policyResolver: this.deps.policyResolver,

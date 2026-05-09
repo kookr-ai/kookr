@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage, AutonomyLevel } from '../../shared/protocol.js';
 import { track, trackClick } from '../telemetry.js';
-import { formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch } from '../presentation.js';
+import { agentProviderPresentation, formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch } from '../presentation.js';
 import { Tooltip } from './Tooltip.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -340,6 +340,34 @@ function AutonomyBadge({ agent, send }: {
   );
 }
 
+function AgentProviderMark({
+  agent,
+  state,
+}: {
+  agent: AgentState;
+  state: 'running' | 'done' | 'pending' | 'snoozed' | 'completed' | 'cancelled' | 'terminated' | 'finding';
+}): React.ReactElement {
+  if (!agent.agentType) {
+    return <span className={`agent-provider-mark agent-provider-mark--fallback agent-provider-mark--${state}`} aria-hidden="true" />;
+  }
+
+  const provider = agentProviderPresentation(agent.agentType);
+  const title = `${provider.label} by ${provider.provider}`;
+
+  return (
+    <span
+      className={`agent-provider-mark agent-provider-mark--${agent.agentType} agent-provider-mark--${state}`}
+      title={title}
+      role="img"
+      aria-label={title}
+    >
+      <svg className="agent-provider-mark-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d={provider.iconPath} />
+      </svg>
+    </span>
+  );
+}
+
 function formatAutoProceedCountdown(proceedAt: string): string {
   const remaining = Math.max(0, new Date(proceedAt).getTime() - Date.now());
   if (remaining === 0) return 'proceeding...';
@@ -357,6 +385,7 @@ function FindingCard({ agent, selected, send }: {
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
   const { selectAgent, nextBottleneck } = useKookrStore();
+  const selectedProject = useKookrStore((s) => s.selectedProject);
   const dnd = useDnd();
   const cls = severityClass(agent);
   const autoProceedingAt = agent.anomaly?.autoProceedingAt;
@@ -406,6 +435,7 @@ function FindingCard({ agent, selected, send }: {
   }
 
   const tooltipText = [agent.description, agent.anomaly?.explanation].filter(Boolean).join('\n\n');
+  const showProjectBadge = !selectedProject || agent.projectId !== selectedProject;
 
   return (
     <Tooltip text={tooltipText}>
@@ -433,16 +463,19 @@ function FindingCard({ agent, selected, send }: {
         }}
       >
         <div className="finding-header">
-          <span className={`finding-severity ${cls}`} aria-label={`${severityLabel(agent)}${agent.anomaly?.detectedAt && formatAge(agent.anomaly.detectedAt) ? `, waiting ${formatAge(agent.anomaly.detectedAt)}` : ''}`}>{severityLabel(agent)}</span>
-          {arrivedDuringDnd && (
-            <span
-              className="dnd-arrived-badge"
-              title="Arrived while Do Not Disturb was on"
-              aria-label="Arrived while Do Not Disturb was on"
-            >
-              while away
-            </span>
-          )}
+          <span className="finding-header-left">
+            <AgentProviderMark agent={agent} state="finding" />
+            <span className={`finding-severity ${cls}`} aria-label={`${severityLabel(agent)}${agent.anomaly?.detectedAt && formatAge(agent.anomaly.detectedAt) ? `, waiting ${formatAge(agent.anomaly.detectedAt)}` : ''}`}>{severityLabel(agent)}</span>
+            {arrivedDuringDnd && (
+              <span
+                className="dnd-arrived-badge"
+                title="Arrived while Do Not Disturb was on"
+                aria-label="Arrived while Do Not Disturb was on"
+              >
+                while away
+              </span>
+            )}
+          </span>
           <span className="finding-meta">
             {autoProceedingAt ? (
               <span
@@ -468,7 +501,7 @@ function FindingCard({ agent, selected, send }: {
           if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null; }
         }} />
         <div className="finding-context">
-          {agentProjectLabel(agent) && (
+          {showProjectBadge && agentProjectLabel(agent) && (
             <span className={`project-badge color-${agentProjectColor(agent)}`} title={agent.cwd}>
               {agentProjectLabel(agent)}
             </span>
@@ -540,8 +573,10 @@ function HealthyRow({ agent, selected, send }: {
   send: (msg: ClientMessage) => void;
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
+  const selectedProject = useKookrStore((s) => s.selectedProject);
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
+  const showProjectBadge = !selectedProject || agent.projectId !== selectedProject;
 
   function handleReply(e: React.MouseEvent) {
     e.stopPropagation();
@@ -571,11 +606,8 @@ function HealthyRow({ agent, selected, send }: {
         }}
       >
         <div className="healthy-row-top">
-          <span className="healthy-dot-wrap">
-            <span className={`healthy-dot ${healthyDotClass(agent.events)}`} />
-            {healthyDotClass(agent.events) === 'running' && <span className="healthy-dot-ring" />}
-          </span>
-          {projectLabelText && (
+          <AgentProviderMark agent={agent} state={healthyDotClass(agent.events)} />
+          {showProjectBadge && projectLabelText && (
             <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
               {projectLabelText}
             </span>
@@ -611,11 +643,6 @@ function HealthyRow({ agent, selected, send }: {
           </button>
         </div>
         <div className="healthy-row-details">
-          {agent.gitBranch && (
-            <span className="branch-label" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : agent.gitBranch}>
-              <span className="branch-icon">{'\u2387'}</span>{formatBranch(agent.gitBranch, 20)}
-            </span>
-          )}
           <div className="healthy-row-controls">
             <RalphLoopControls agent={agent} />
             {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
@@ -770,7 +797,7 @@ function PendingRow({ agent, selected, send }: {
         }}
       >
         <div className="pending-row-top">
-          <span className="pending-dot" />
+          <AgentProviderMark agent={agent} state="pending" />
           {projectLabelText && (
             <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
               {projectLabelText}
@@ -821,7 +848,7 @@ function SnoozedRow({ agent, selected, send }: {
         }}
       >
         <div className="snoozed-row-top">
-          <span className="snoozed-dot" />
+          <AgentProviderMark agent={agent} state="snoozed" />
           {projectLabelText && (
             <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
               {projectLabelText}
@@ -946,7 +973,7 @@ function CompletedRow({ agent, selected, send }: {
         }}
       >
         <div className="completed-row-top">
-          <span className={`task-status-dot ${rowVariant}`} aria-label={rowVariant} />
+          <AgentProviderMark agent={agent} state={rowVariant} />
           {projectLabelText && (
             <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
               {projectLabelText}

@@ -69,6 +69,25 @@ function fakeRollout(id: string, model: string | null, cwd: string, totals?: { i
   };
 }
 
+function fakeOrphanBinding(
+  id: string,
+  model: string | null,
+  totals: { in: number; out: number; cached: number },
+  opts: { hasParseError?: boolean; hasTokenData?: boolean } = {},
+): import('../adapters/codex-rollout-scanner.js').OrphanBinding {
+  const parent = fakeRollout(id, model, '/elsewhere', totals);
+  return {
+    parent,
+    subagents: [],
+    totalInputTokens: totals.in,
+    totalOutputTokens: totals.out,
+    totalCachedInputTokens: totals.cached,
+    model,
+    hasTokenData: opts.hasTokenData ?? !opts.hasParseError,
+    hasParseError: opts.hasParseError ?? false,
+  };
+}
+
 function boundOutcome(taskId: string, model: string | null, totals: { in: number; out: number; cached: number }): DiscoveryOutcome {
   const parent = fakeRollout(`parent-${taskId}`, model, '/repo', totals);
   const binding: BoundTaskTokens = {
@@ -334,7 +353,7 @@ describe('aggregate — notes priority order (R17)', () => {
         ['pe', { kind: 'bound', binding: peBinding }],
         ['up', boundOutcome('up', 'gpt-7-future', { in: 1, out: 1, cached: 0 })],
       ]),
-      codexStats: { rolloutCount: 2, parseErrorCount: 1, abandonedCount: 0, orphanRollouts: [] },
+      codexStats: { rolloutCount: 2, parseErrorCount: 1, abandonedCount: 0, orphanBindings: [] },
     }));
     const peIdx = r.notes.findIndex(n => n.message.includes('parse error'));
     const upIdx = r.notes.findIndex(n => n.message.includes('Unknown pricing'));
@@ -353,24 +372,189 @@ describe('aggregate — notes priority order (R17)', () => {
     expect(stale!.message).toContain('gpt-5.3-codex');
   });
 
-  test('orphan-rollouts note fires only when codexHome was reachable', () => {
+  test('orphan-rollouts note fires alongside the card (note + card complement each other)', () => {
+    // The note states the count + diagnostic; the card sums the metrics.
+    // Both are present so old clients (pre-PR-2) that ignore `unboundCodex`
+    // still see the orphan signal as a note.
     const r = aggregate(baseInput({
       tasks: [],
       codexStats: {
         rolloutCount: 5, parseErrorCount: 0, abandonedCount: 0,
-        orphanRollouts: [fakeRollout('orphan-1', 'gpt-5.3-codex', '/elsewhere')],
+        orphanBindings: [fakeOrphanBinding('orphan-1', 'gpt-5.3-codex', { in: 100, out: 10, cached: 0 })],
       },
     }));
     expect(r.notes.some(n => n.message.includes('not bound to any Kookr task'))).toBe(true);
+    expect(r.unboundCodex).toBeDefined();
+    expect(r.unboundCodex!.threadCount).toBe(1);
+  });
+
+  test('orphan-rollouts note fires under the Claude-only filter (where the card is suppressed)', () => {
+    const r = aggregate(baseInput({
+      tasks: [],
+      agentFilter: 'claude-code',
+      codexStats: {
+        rolloutCount: 5, parseErrorCount: 0, abandonedCount: 0,
+        orphanBindings: [fakeOrphanBinding('orphan-1', 'gpt-5.3-codex', { in: 100, out: 10, cached: 0 })],
+      },
+    }));
+    expect(r.notes.some(n => n.message.includes('not bound to any Kookr task'))).toBe(true);
+    expect(r.unboundCodex).toBeUndefined();
   });
 
   test('codex-home-missing fires when there are codex tasks but the scanner returned 0 rollouts', () => {
     const r = aggregate(baseInput({
       tasks: [task({ id: 'c', agentType: 'codex-cli' })],
       codexOutcomes: new Map([['c', { kind: 'not-found', reason: 'no-candidates', candidateCount: 0 }]]),
-      codexStats: { rolloutCount: 0, parseErrorCount: 0, abandonedCount: 0, orphanRollouts: [] },
+      codexStats: { rolloutCount: 0, parseErrorCount: 0, abandonedCount: 0, orphanBindings: [] },
     }));
     expect(r.notes.some(n => n.message.includes('Codex session directory not found'))).toBe(true);
+  });
+});
+
+describe('aggregate — unbound Codex card', () => {
+  test('orphan with priced model: totalCostUsd = sum, dataQualityCounts.complete = 1', () => {
+    const r = aggregate(baseInput({
+      codexStats: {
+        rolloutCount: 1, parseErrorCount: 0, abandonedCount: 0,
+        orphanBindings: [
+          fakeOrphanBinding('o1', 'gpt-5.3-codex', { in: 1_000_000, out: 100_000, cached: 0 }),
+        ],
+      },
+    }));
+    expect(r.unboundCodex).toBeDefined();
+    expect(r.unboundCodex!.threadCount).toBe(1);
+    expect(r.unboundCodex!.totalCostUsd).toBeGreaterThan(0);
+    expect(r.unboundCodex!.dataQualityCounts).toEqual({
+      'complete': 1, 'unknown-pricing': 0, 'codex-no-tokens': 0, 'codex-parse-error': 0,
+    });
+    expect(r.unboundCodex!.totalInputTokens).toBe(1_000_000);
+    expect(r.unboundCodex!.totalOutputTokens).toBe(100_000);
+  });
+
+  test('orphan with unknown model is excluded from sums (sum-of-priced); unknown-pricing note fires', () => {
+    // Symmetric with bound `aggregate.codex-cli.totalCostUsd` — unknown rows
+    // count in `dataQualityCounts` but contribute zero to the dollar/token sums.
+    const r = aggregate(baseInput({
+      codexStats: {
+        rolloutCount: 2, parseErrorCount: 0, abandonedCount: 0,
+        orphanBindings: [
+          fakeOrphanBinding('o1', 'gpt-5.3-codex', { in: 1000, out: 100, cached: 0 }),
+          fakeOrphanBinding('o2', 'gpt-7-future', { in: 500, out: 50, cached: 0 }),
+        ],
+      },
+    }));
+    expect(r.unboundCodex!.threadCount).toBe(2);
+    expect(r.unboundCodex!.totalCostUsd).toBeGreaterThan(0);
+    expect(r.unboundCodex!.totalInputTokens).toBe(1000);                   // o2's 500 excluded
+    expect(r.unboundCodex!.dataQualityCounts['unknown-pricing']).toBe(1);
+    expect(r.unboundCodex!.dataQualityCounts['complete']).toBe(1);
+    expect(r.notes.some(n => n.message.includes('gpt-7-future'))).toBe(true);
+  });
+
+  test('orphan with no token data: counts toward codex-no-tokens but does not contribute to totals', () => {
+    const r = aggregate(baseInput({
+      codexStats: {
+        rolloutCount: 1, parseErrorCount: 0, abandonedCount: 0,
+        orphanBindings: [
+          fakeOrphanBinding('o1', 'gpt-5.3-codex', { in: 0, out: 0, cached: 0 }, { hasTokenData: false }),
+        ],
+      },
+    }));
+    expect(r.unboundCodex!.dataQualityCounts['codex-no-tokens']).toBe(1);
+    expect(r.unboundCodex!.totalInputTokens).toBe(0);
+    expect(r.unboundCodex!.totalCostUsd).toBe(0);
+  });
+
+  test('orphan with parse error: counts toward codex-parse-error, no token contribution', () => {
+    const r = aggregate(baseInput({
+      codexStats: {
+        rolloutCount: 1, parseErrorCount: 1, abandonedCount: 0,
+        orphanBindings: [
+          fakeOrphanBinding('o1', 'gpt-5.3-codex', { in: 999, out: 999, cached: 0 }, { hasParseError: true }),
+        ],
+      },
+    }));
+    expect(r.unboundCodex!.dataQualityCounts['codex-parse-error']).toBe(1);
+    expect(r.unboundCodex!.totalInputTokens).toBe(0);
+  });
+
+  test('Codex-only filter: card still surfaces (orphan spend is Codex-side data)', () => {
+    const r = aggregate(baseInput({
+      tasks: [task({ id: 'c1', agentType: 'codex-cli' })],
+      agentFilter: 'codex-cli',
+      codexOutcomes: new Map([['c1', boundOutcome('c1', 'gpt-5.3-codex', { in: 100, out: 10, cached: 0 })]]),
+      codexStats: {
+        rolloutCount: 2, parseErrorCount: 0, abandonedCount: 0,
+        orphanBindings: [fakeOrphanBinding('o1', 'gpt-5.3-codex', { in: 1000, out: 100, cached: 0 })],
+      },
+    }));
+    expect(r.unboundCodex).toBeDefined();
+    expect(r.unboundCodex!.threadCount).toBe(1);
+  });
+
+  test('cached input is subtracted before billing (matches bound-task accounting)', () => {
+    // Codex's gross input INCLUDES cached_input. The unbound card must net it
+    // out the same way bound tasks do, otherwise the totals diverge.
+    const r = aggregate(baseInput({
+      codexStats: {
+        rolloutCount: 1, parseErrorCount: 0, abandonedCount: 0,
+        orphanBindings: [
+          fakeOrphanBinding('o1', 'gpt-5.3-codex', { in: 10_000, out: 1_000, cached: 4_000 }),
+        ],
+      },
+    }));
+    expect(r.unboundCodex!.totalInputTokens).toBe(6_000);                  // 10k - 4k cached
+    expect(r.unboundCodex!.totalCachedInputTokens).toBe(4_000);
+  });
+
+  test('empty orphanBindings: no unboundCodex field on response', () => {
+    const r = aggregate(baseInput({
+      codexStats: { rolloutCount: 0, parseErrorCount: 0, abandonedCount: 0, orphanBindings: [] },
+    }));
+    expect(r.unboundCodex).toBeUndefined();
+  });
+
+  test('orphan whose parent.startedAt is before windowStartMs is filtered out', () => {
+    // Scanner walks [windowStart-1d, windowEnd+1d] for warm-cache reasons,
+    // so without this filter a 24h view could surface a 26h-old orphan.
+    const veryOld = fakeOrphanBinding('old', 'gpt-5.3-codex', { in: 1000, out: 100, cached: 0 });
+    veryOld.parent.startedAt = new Date(NOW - 30 * ONE_DAY_MS);
+    const inWindow = fakeOrphanBinding('fresh', 'gpt-5.3-codex', { in: 500, out: 50, cached: 0 });
+    inWindow.parent.startedAt = new Date(NOW - 1 * ONE_DAY_MS);
+    const r = aggregate(baseInput({
+      windowStartMs: NOW - 7 * ONE_DAY_MS,
+      windowEndMs: NOW,
+      codexStats: { rolloutCount: 2, parseErrorCount: 0, abandonedCount: 0, orphanBindings: [veryOld, inWindow] },
+    }));
+    expect(r.unboundCodex!.threadCount).toBe(1);
+    expect(r.unboundCodex!.totalInputTokens).toBe(500);
+  });
+
+  test('orphan with stale-priced model populates the staleness banner', () => {
+    // Regression: the previous implementation skipped stale tracking for
+    // orphans, so a user whose only Codex usage was unbound would never see
+    // the "pricing was last verified" banner even if the model was 200 days old.
+    const stale = fakeOrphanBinding('o1', 'gpt-5.3-codex', { in: 1000, out: 100, cached: 0 });
+    const r = aggregate(baseInput({
+      codexStats: { rolloutCount: 1, parseErrorCount: 0, abandonedCount: 0, orphanBindings: [stale] },
+      todayMs: new Date('2026-09-01T00:00:00Z').getTime(),                 // ~ 116 days after 2026-05-08
+    }));
+    const staleNote = r.notes.find(n => n.message.includes('was last verified'));
+    expect(staleNote).toBeDefined();
+    expect(staleNote!.message).toContain('gpt-5.3-codex');
+  });
+
+  test('orphan note fires alongside the card (old client + new server compat)', () => {
+    // Old clients (pre-this-PR) ignore unboundCodex; the note must still
+    // surface the diagnostic so they don't lose the signal vs main.
+    const r = aggregate(baseInput({
+      codexStats: {
+        rolloutCount: 1, parseErrorCount: 0, abandonedCount: 0,
+        orphanBindings: [fakeOrphanBinding('o1', 'gpt-5.3-codex', { in: 100, out: 10, cached: 0 })],
+      },
+    }));
+    expect(r.unboundCodex).toBeDefined();
+    expect(r.notes.some(n => n.message.includes('not bound to any Kookr task'))).toBe(true);
   });
 });
 

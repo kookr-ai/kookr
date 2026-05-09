@@ -54,6 +54,47 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(result.success).toBe(true);
   });
 
+  test('accepts legacy playbook launch with only cwd', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launchPlaybook',
+      playbookPath: 'test.md',
+      cwd: '/catalog-and-target',
+      parameterValues: {},
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts split playbook launch without legacy cwd', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launchPlaybook',
+      playbookPath: 'test.md',
+      playbookSourceCwd: '/catalog',
+      taskTargetCwd: '/target',
+      projectId: 'github.com/acme/project',
+      parameterValues: {},
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('rejects playbook launch without legacy or split cwd fields', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launchPlaybook',
+      playbookPath: 'test.md',
+      parameterValues: {},
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects partial split playbook launch fields', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launchPlaybook',
+      playbookPath: 'test.md',
+      playbookSourceCwd: '/catalog',
+      parameterValues: {},
+    });
+    expect(result.success).toBe(false);
+  });
+
   test('accepts a respond message with all required fields', () => {
     const result = ClientMessageSchema.safeParse({ type: 'respond', agentId: 'a1', input: 'go' });
     expect(result.success).toBe(true);

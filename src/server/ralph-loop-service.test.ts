@@ -181,6 +181,11 @@ describe('RalphLoopService', () => {
     });
     task.ralphLoop = baseLoop({
       ownerSessionId: 'agent-1',
+      // Non-zero iteration so the RALPH_ITERATION assertion below proves the
+      // value comes from `String(loop.currentIteration)`, not from a hardcoded
+      // '0' that coincides with the default. The original bug was specifically
+      // that every post-iter-0 launch had a stale iteration value.
+      currentIteration: 3,
     });
     const stopEvent: AgentEvent = {
       type: 'stop',
@@ -202,7 +207,14 @@ describe('RalphLoopService', () => {
       tmuxName: expect.stringMatching(/^kookr-[0-9a-f]{8}$/),
       // PR2: env var pointing at the task's verdict file is injected on every
       // launch so the agent can write its verdict regardless of `cd`.
-      extraEnv: expect.objectContaining({ RALPH_VERDICT_FILE: expect.stringMatching(/\.ralph-verdict-.+\.json$/) }),
+      // `RALPH_ITERATION` mirrors `{{ralph.iteration}}` so verdict-writer
+      // bash like `"iteration":${RALPH_ITERATION}` emits the current number;
+      // without it every post-iter-0 verdict was rejected as
+      // `iteration_mismatch` and stall counts never accrued.
+      extraEnv: expect.objectContaining({
+        RALPH_VERDICT_FILE: expect.stringMatching(/\.ralph-verdict-.+\.json$/),
+        RALPH_ITERATION: '3',
+      }),
     }));
     const launchedTmuxName = launchFreshTaskSession.mock.calls[0]?.[2]?.tmuxName;
     expect(task.ralphLoop).toMatchObject({

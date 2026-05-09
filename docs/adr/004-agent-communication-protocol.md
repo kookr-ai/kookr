@@ -2,7 +2,7 @@
 
 ## Status
 
-**Superseded** — The "headless-only for V1" decision is superseded by [ADR-007](007-managed-terminal-sessions.md) (managed terminal sessions). The research findings below (CLI capabilities, session files, JSONL formats) remain valid reference material.
+**Superseded** — The "headless-only for V1" decision is superseded by [ADR-007](007-managed-terminal-sessions.md) (managed terminal sessions), and the tmux-specific terminal persistence details in ADR-007/008 were later superseded by [ADR-014](014-local-dtach-backend.md). The research findings below (CLI capabilities, session files, JSONL formats) remain valid reference material.
 
 Originally: Proposed (replaces the deprecated abstract protocol design — now based on concrete research)
 
@@ -102,7 +102,7 @@ Use Option B as the default. For discovered agents that Kookr didn't launch, off
 
 ~~**Option A** (headless-only) for V1, with **Option B** (discover + headless) as a future enhancement.~~
 
-**Superseded by [ADR-007](007-managed-terminal-sessions.md).** Agents now run in interactive mode inside managed tmux sessions, not headless mode. Input is delivered via terminal keystrokes (`tmux send-keys`), not `--resume`. The research findings in this ADR (CLI capabilities, JSONL formats, session file locations) remain valid reference material.
+**Superseded by [ADR-007](007-managed-terminal-sessions.md) and [ADR-014](014-local-dtach-backend.md).** Agents now run in interactive mode inside managed dtach-backed sessions, not headless mode. Input is delivered to the running process through the terminal backend, not `--resume`. The research findings in this ADR (CLI capabilities, JSONL formats, session file locations) remain valid reference material.
 
 Agent discovery remains deferred from V1 — see [ADR-005](005-discovered-agent-degradation.md).
 

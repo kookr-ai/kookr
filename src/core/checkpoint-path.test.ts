@@ -1,11 +1,13 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, writeFile, mkdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import {
+  buildCheckpointLoadInstruction,
   resolveAndPrepareCheckpointDir,
   slugifyForCheckpointKey,
+  inspectSemanticCheckpoint,
   __test__,
 } from './checkpoint-path.js';
 
@@ -198,5 +200,95 @@ describe('resolveAndPrepareCheckpointDir', () => {
     // The repo key should derive from the COMMON dir (repoDir/.git), not
     // the linked worktree gitdir.
     expect(result!).toMatch(/checkpoints\/.*\.git-[0-9a-f]{8}\/wt-branch$/);
+  });
+});
+
+describe('semantic checkpoint resume contract', () => {
+  let tmpRoot: string;
+  let checkpointDir: string;
+
+  beforeEach(async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), 'semantic-checkpoint-test-'));
+    checkpointDir = join(tmpRoot, 'checkpoints', 'repo', 'branch');
+    await mkdir(checkpointDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('prefers valid CHECKPOINT.json when present', async () => {
+    await writeFile(join(checkpointDir, 'CHECKPOINT.md'), '# Markdown fallback\n');
+    await writeFile(
+      join(checkpointDir, 'CHECKPOINT.json'),
+      JSON.stringify({
+        schema_version: 'semantic-checkpoint.v1',
+        task_id: 'task-1',
+        repo: 'kookr-ai/kookr',
+        worktree: '/tmp/kookr-task',
+        branch: 'feat/checkpoint-json',
+        verdict: 'in_progress',
+        decisions: [],
+        evidence: [],
+        files_changed: [],
+        tests_run: [],
+        open_risks: [],
+        next_actions: [],
+        memory_write_candidates: [],
+      }),
+    );
+
+    await expect(inspectSemanticCheckpoint(checkpointDir)).resolves.toMatchObject({ kind: 'json' });
+    const instruction = await buildCheckpointLoadInstruction(checkpointDir);
+    expect(instruction).toContain('CHECKPOINT.json');
+    expect(instruction).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.json as your very first action');
+    expect(instruction).toContain('CHECKPOINT.md remains the human-readable companion');
+  });
+
+  it('falls back to CHECKPOINT.md when CHECKPOINT.json is absent', async () => {
+    await writeFile(join(checkpointDir, 'CHECKPOINT.md'), '# Existing checkpoint\n');
+
+    await expect(inspectSemanticCheckpoint(checkpointDir)).resolves.toMatchObject({
+      kind: 'markdown',
+      reason: 'json_missing',
+    });
+    const instruction = await buildCheckpointLoadInstruction(checkpointDir);
+    expect(instruction).toContain('CHECKPOINT.json is not present');
+    expect(instruction).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
+  });
+
+  it('warns and falls back to CHECKPOINT.md when CHECKPOINT.json is invalid', async () => {
+    await writeFile(join(checkpointDir, 'CHECKPOINT.md'), '# Existing checkpoint\n');
+    await writeFile(join(checkpointDir, 'CHECKPOINT.json'), '{"schema_version":"wrong"}');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(inspectSemanticCheckpoint(checkpointDir)).resolves.toMatchObject({
+      kind: 'markdown',
+      reason: 'json_invalid',
+    });
+    const instruction = await buildCheckpointLoadInstruction(checkpointDir);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Invalid semantic checkpoint JSON'));
+    expect(instruction).toContain('CHECKPOINT.json is invalid');
+    expect(instruction).toContain('Warn that CHECKPOINT.json was invalid');
+    expect(instruction).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
+    warn.mockRestore();
+  });
+
+  it('warns and falls back to CHECKPOINT.md when CHECKPOINT.json is malformed', async () => {
+    await writeFile(join(checkpointDir, 'CHECKPOINT.md'), '# Existing checkpoint\n');
+    await writeFile(join(checkpointDir, 'CHECKPOINT.json'), '{bad json');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(inspectSemanticCheckpoint(checkpointDir)).resolves.toMatchObject({
+      kind: 'markdown',
+      reason: 'json_unreadable',
+    });
+    const instruction = await buildCheckpointLoadInstruction(checkpointDir);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Invalid semantic checkpoint JSON'));
+    expect(instruction).toContain('CHECKPOINT.json is invalid');
+    expect(instruction).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
+    warn.mockRestore();
   });
 });

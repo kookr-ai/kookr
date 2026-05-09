@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Anomaly } from '../core/types.js';
 import { TaskStore } from '../core/tasks.js';
@@ -45,6 +45,7 @@ describe('WebSocket MessageRouter', () => {
       const task = taskStore.createTask(opts.prompt, opts.cwd, opts.criteria);
       if (opts.name) task.name = opts.name;
       if (opts.playbookId) task.playbookId = opts.playbookId;
+      if (opts.projectId) taskStore.setProjectId(task.id, opts.projectId);
       await adapter.launch(task.id, opts.prompt, opts.cwd);
       return { task, queued: false };
     };
@@ -1297,8 +1298,19 @@ describe('WebSocket MessageRouter — Playbooks', () => {
   let router: MessageRouter;
   let sentMessages: ServerMessage[];
   let tempDir: string;
+  let originalUserEnv: string | undefined;
+  let originalPluginEnv: string | undefined;
 
   beforeEach(async () => {
+    // Isolate the user and plugin tiers — these tests assert exact playbook
+    // counts assuming a fresh project dir; without isolation the plugin's
+    // shipped playbooks (and the user's personal ~/.kookr/playbooks/) would
+    // bleed in and the assertions would flap.
+    originalUserEnv = process.env.KOOKR_USER_PLAYBOOKS_DIR;
+    originalPluginEnv = process.env.KOOKR_PLUGIN_DIR;
+    process.env.KOOKR_USER_PLAYBOOKS_DIR = '/nonexistent/kookr-user-playbooks';
+    process.env.KOOKR_PLUGIN_DIR = '/nonexistent/kookr-plugin';
+
     taskStore = new TaskStore();
     queue = new AttentionQueue();
     monitor = new Monitor(taskStore, queue);
@@ -1312,6 +1324,7 @@ describe('WebSocket MessageRouter — Playbooks', () => {
       const task = taskStore.createTask(opts.prompt, opts.cwd, opts.criteria);
       if (opts.name) task.name = opts.name;
       if (opts.playbookId) task.playbookId = opts.playbookId;
+      if (opts.projectId) taskStore.setProjectId(task.id, opts.projectId);
       await adapter.launch(task.id, opts.prompt, opts.cwd);
       return { task, queued: false };
     };
@@ -1326,6 +1339,10 @@ describe('WebSocket MessageRouter — Playbooks', () => {
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true });
+    if (originalUserEnv === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
+    else process.env.KOOKR_USER_PLAYBOOKS_DIR = originalUserEnv;
+    if (originalPluginEnv === undefined) delete process.env.KOOKR_PLUGIN_DIR;
+    else process.env.KOOKR_PLUGIN_DIR = originalPluginEnv;
   });
 
   test('listPlaybooks returns discovered playbooks', async () => {
@@ -1447,6 +1464,38 @@ Work locally.
     const tasks = taskStore.listTasks();
     expect(tasks).toHaveLength(1);
     expect(tasks[0].cwd).toBe(tempDir);
+  });
+
+  test('launchPlaybook forwards split source, target cwd, and projectId', async () => {
+    const sourceCwd = join(tempDir, 'catalog');
+    const targetCwd = join(tempDir, 'target');
+    const pbDir = join(sourceCwd, '.kookr', 'playbooks');
+    await mkdir(pbDir, { recursive: true });
+    await mkdir(targetCwd, { recursive: true });
+    await writeFile(
+      join(pbDir, 'targeted.md'),
+      `---
+name: Targeted Task
+---
+
+Work in target.
+`,
+    );
+
+    await router.handleMessage({
+      type: 'launchPlaybook',
+      playbookPath: 'targeted.md',
+      playbookSourceCwd: sourceCwd,
+      taskTargetCwd: targetCwd,
+      projectId: `local/${basename(targetCwd)}`,
+      parameterValues: {},
+    });
+
+    const tasks = taskStore.listTasks();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].cwd).toBe(targetCwd);
+    expect(tasks[0].projectId).toBe(`local/${basename(targetCwd)}`);
+    expect(tasks[0].playbookId).toBe('targeted.md');
   });
 
   test('launchPlaybook with non-existent cwd sends descriptive alert', async () => {

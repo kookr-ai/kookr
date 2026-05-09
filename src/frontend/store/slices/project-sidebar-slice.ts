@@ -6,14 +6,17 @@ import {
   loadProjectSidebarPrefs,
   moveVisibleProjectInPrefs,
   pinProjectToTop,
+  prefsFromProjectSidebarState,
   reorderVisibleProjectInPrefs,
   resetProjectSidebarPrefs,
   saveProjectSidebarCatalog,
   saveProjectSidebarPrefs,
   showProjectInPrefs,
+  toProjectSidebarState,
   unpinProjectInPrefs,
   updateProjectSidebarCatalog,
 } from '../project-sidebar-prefs.js';
+import type { ProjectSidebarState } from '../../../shared/project-sidebar.js';
 import { parseOwnerRepoSlug } from '../../../shared/repo-slug.js';
 import { SEVERITY_ORDER } from '../store-types.js';
 import type {
@@ -33,6 +36,44 @@ function persistProjectSidebarState(
   return prefsError?.message ?? catalogError?.message ?? null;
 }
 
+function isServerStateEmpty(state: ProjectSidebarState): boolean {
+  return state.ordered.length === 0
+    && state.pinned.length === 0
+    && state.hidden.length === 0
+    && Object.keys(state.catalog).length === 0;
+}
+
+function isProjectSidebarState(value: unknown): value is ProjectSidebarState {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const state = value as Record<string, unknown>;
+  return state.version === 1
+    && Array.isArray(state.ordered)
+    && Array.isArray(state.pinned)
+    && Array.isArray(state.hidden)
+    && !!state.catalog
+    && typeof state.catalog === 'object'
+    && !Array.isArray(state.catalog);
+}
+
+function saveProjectSidebarToServer(
+  prefs: ProjectSidebarSlice['projectSidebarPrefs'],
+  catalog: ProjectSidebarSlice['projectSidebarCatalog'],
+  set: StoreSet,
+): void {
+  void fetch('/api/projects/sidebar', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(toProjectSidebarState(prefs, catalog)),
+  }).then((res) => {
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+  }).catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    set({ projectSidebarError: msg });
+  });
+}
+
 export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): ProjectSidebarSlice {
   const initialSidebarPrefs = loadProjectSidebarPrefs();
   const initialSidebarCatalog = loadProjectSidebarCatalog();
@@ -47,6 +88,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
     projectSidebarPrefs: initialSidebarPrefs,
     projectSidebarCatalog: initialSidebarCatalog,
     projectSidebarError: null,
+    projectSidebarServerHydrated: false,
     projectSummariesHydrated: false,
     discoveryStatus: null,
     discoveryBusy: false,
@@ -103,6 +145,48 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       set((prev) => ({ projectSidebarVisible: !prev.projectSidebarVisible }));
     },
 
+    hydrateProjectSidebarFromServer: async () => {
+      try {
+        const res = await fetch('/api/projects/sidebar');
+        if (!res.ok) {
+          set({ projectSidebarError: `HTTP ${res.status}` });
+          return;
+        }
+        const data: unknown = await res.json();
+        if (!isProjectSidebarState(data)) {
+          set({ projectSidebarError: 'Invalid project sidebar state' });
+          return;
+        }
+
+        const prev = get();
+        const localState = toProjectSidebarState(prev.projectSidebarPrefs, prev.projectSidebarCatalog);
+        const nextState = isServerStateEmpty(data) && !isServerStateEmpty(localState)
+          ? localState
+          : data;
+        const nextPrefs = prefsFromProjectSidebarState(nextState);
+        const nextCatalog = nextState.catalog;
+        const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, nextCatalog);
+        const persistError = persistProjectSidebarState(nextPrefs, nextCatalog);
+
+        set({
+          projectSidebarPrefs: nextPrefs,
+          projectSidebarCatalog: nextCatalog,
+          visibleProjectSummaries: derived.visibleProjects,
+          projectSidebarRows: derived.managerRows,
+          projectSidebarServerHydrated: true,
+          projectSidebarError: persistError,
+          ...(derived.hasRecoveryShell ? { projectSidebarVisible: true } : {}),
+        });
+
+        if (nextState === localState) {
+          saveProjectSidebarToServer(nextPrefs, nextCatalog, set);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        set({ projectSidebarError: msg });
+      }
+    },
+
     handleProjectSummaries: (projects) => {
       const prev = get();
       const nextCatalog = updateProjectSidebarCatalog(prev.projectSidebarCatalog, projects);
@@ -110,6 +194,9 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       const error = nextCatalog === prev.projectSidebarCatalog
         ? null
         : persistProjectSidebarState(prev.projectSidebarPrefs, nextCatalog, { savePrefs: false });
+      if (prev.projectSidebarServerHydrated && nextCatalog !== prev.projectSidebarCatalog) {
+        saveProjectSidebarToServer(prev.projectSidebarPrefs, nextCatalog, set);
+      }
 
       set({
         projectSummaries: projects,
@@ -127,6 +214,9 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       const nextPrefs = pinProjectToTop(prev.projectSidebarPrefs, project, prev.projectSummaries, prev.projectSidebarCatalog);
       const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
       const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      if (prev.projectSidebarServerHydrated) {
+        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+      }
 
       set({
         projectSidebarPrefs: nextPrefs,
@@ -142,6 +232,9 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       const nextPrefs = unpinProjectInPrefs(prev.projectSidebarPrefs, project, prev.projectSummaries, prev.projectSidebarCatalog);
       const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
       const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      if (prev.projectSidebarServerHydrated) {
+        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+      }
 
       set({
         projectSidebarPrefs: nextPrefs,
@@ -158,6 +251,9 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
       const hidingSelected = prev.selectedProject === project;
       const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      if (prev.projectSidebarServerHydrated) {
+        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+      }
 
       if (hidingSelected && typeof localStorage !== 'undefined') {
         localStorage.removeItem('kookr-selected-project');
@@ -178,6 +274,9 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       const nextPrefs = showProjectInPrefs(prev.projectSidebarPrefs, project, prev.projectSummaries, prev.projectSidebarCatalog);
       const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
       const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      if (prev.projectSidebarServerHydrated) {
+        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+      }
 
       set({
         projectSidebarPrefs: nextPrefs,
@@ -193,6 +292,9 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       const nextPrefs = moveVisibleProjectInPrefs(prev.projectSidebarPrefs, project, direction, prev.projectSummaries, prev.projectSidebarCatalog);
       const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
       const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      if (prev.projectSidebarServerHydrated) {
+        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+      }
 
       set({
         projectSidebarPrefs: nextPrefs,
@@ -215,6 +317,9 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       );
       const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
       const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      if (prev.projectSidebarServerHydrated) {
+        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+      }
 
       set({
         projectSidebarPrefs: nextPrefs,
@@ -230,6 +335,9 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       const nextPrefs = resetProjectSidebarPrefs();
       const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
       const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      if (prev.projectSidebarServerHydrated) {
+        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+      }
 
       if (typeof localStorage !== 'undefined') {
         localStorage.removeItem('kookr-selected-project');
@@ -370,6 +478,9 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
         );
         const hidingSelected = prev.selectedProject === projectId;
         const persistError = persistProjectSidebarState(forgotten.prefs, forgotten.catalog);
+        if (prev.projectSidebarServerHydrated) {
+          saveProjectSidebarToServer(forgotten.prefs, forgotten.catalog, set);
+        }
         if (hidingSelected && typeof localStorage !== 'undefined') {
           localStorage.removeItem('kookr-selected-project');
         }

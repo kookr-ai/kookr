@@ -4,6 +4,7 @@ import { resolve, basename } from 'node:path';
 import { access } from 'node:fs/promises';
 import type { Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
+import { isProtectedWorktreePath } from '../../adapters/worktree-marker.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -17,10 +18,32 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout.trim();
 }
 
-function resolveProdDir(serverCwd: string): string {
-  // If we ARE the prod worktree, use ourselves; otherwise sibling ../kookr-prod
-  if (basename(serverCwd) === 'kookr-prod') return serverCwd;
-  return resolve(serverCwd, '../kookr-prod');
+/**
+ * Locate the production worktree.
+ *
+ * Marker-first: scan the worktree registry for paths carrying the
+ * `.kookr-protected` marker. Single match → that path; multiple matches →
+ * throw (operator misconfiguration). When the registry is unavailable or
+ * holds no markers, fall back to the legacy `kookr-prod` basename heuristic
+ * — necessary for fresh installs where the marker has not yet been written
+ * by the startup migration, and for tests that wire a minimal RouteDeps.
+ */
+export function resolveProdDir(deps: Pick<RouteDeps, 'serverCwd' | 'worktreeRegistry'>): string {
+  const registry = deps.worktreeRegistry;
+  if (registry) {
+    const protectedPaths = registry.all()
+      .map((entry) => entry.path)
+      .filter((p) => isProtectedWorktreePath(p));
+    if (protectedPaths.length > 1) {
+      throw new Error(
+        `[deploy] multiple .kookr-protected worktrees found: ${protectedPaths.join(', ')}. ` +
+          'Only one production worktree may carry the marker; remove duplicates.',
+      );
+    }
+    if (protectedPaths.length === 1) return protectedPaths[0];
+  }
+  if (basename(deps.serverCwd) === 'kookr-prod') return deps.serverCwd;
+  return resolve(deps.serverCwd, '../kookr-prod');
 }
 
 function resolveProdUpdateScript(serverCwd: string): string {
@@ -28,12 +51,26 @@ function resolveProdUpdateScript(serverCwd: string): string {
 }
 
 export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
-  const prodDir = resolveProdDir(deps.serverCwd);
   const prodUpdateScript = resolveProdUpdateScript(deps.serverCwd);
   const runningPort = deps.serverPort;
   let deploying = false;
 
   app.get('/api/deploy/status', async (c) => {
+    let prodDir: string;
+    try {
+      prodDir = resolveProdDir(deps);
+    } catch (err) {
+      return c.json(
+        {
+          configured: true,
+          error: err instanceof Error ? err.message : String(err),
+          runningPort,
+          prodPort: PROD_PORT,
+        },
+        500,
+      );
+    }
+
     try {
       await access(prodDir);
     } catch {
@@ -95,6 +132,13 @@ export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
   app.post('/api/deploy/trigger', async (c) => {
     if (deploying) {
       return c.json({ error: 'Deployment already in progress' }, 409);
+    }
+
+    let prodDir: string;
+    try {
+      prodDir = resolveProdDir(deps);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
 
     try {

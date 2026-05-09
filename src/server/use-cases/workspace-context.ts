@@ -1,5 +1,7 @@
 import { basename, dirname, resolve } from 'node:path';
 import { gitIn } from '../../core/git-helpers.js';
+import type { ProjectConfigStore } from '../../core/project-config-store.js';
+import { getProjectId } from '../../core/project-identity.js';
 
 interface TaskSessionLike {
   cwd?: string;
@@ -15,6 +17,7 @@ export interface WorkspaceContextDeps {
   taskStore: { getAllTasks(): TaskLike[] };
   serverCwd: string;
   serverProjectId?: string;
+  projectConfigStore?: Pick<ProjectConfigStore, 'getConfig'>;
 }
 
 export interface WorkspaceContext {
@@ -33,23 +36,23 @@ export async function resolveWorkspaceContext(
 ): Promise<WorkspaceContext> {
   const roots = new Set<string>();
 
+  const localPath = deps.projectConfigStore?.getConfig(projectId)?.localPath;
+  if (localPath) {
+    await addMatchingRepoRoot(roots, projectId, localPath);
+  }
+
   if (deps.serverProjectId && deps.serverProjectId === projectId) {
-    const serverRoot = await resolveCanonicalRepoRoot(deps.serverCwd);
-    if (serverRoot) {
-      roots.add(serverRoot);
-    }
+    await addMatchingRepoRoot(roots, projectId, deps.serverCwd);
   }
 
   for (const task of deps.taskStore.getAllTasks()) {
     if (task.projectId !== projectId) continue;
 
-    const taskRoot = await resolveCanonicalRepoRoot(task.cwd);
-    if (taskRoot) roots.add(taskRoot);
+    await addMatchingRepoRoot(roots, projectId, task.cwd);
 
     for (const session of task.sessions) {
       if (!session.cwd) continue;
-      const sessionRoot = await resolveCanonicalRepoRoot(session.cwd);
-      if (sessionRoot) roots.add(sessionRoot);
+      await addMatchingRepoRoot(roots, projectId, session.cwd);
     }
   }
 
@@ -62,6 +65,21 @@ export async function resolveWorkspaceContext(
   }
 
   throw new Error(`Multiple repository roots found for ${projectId}`);
+}
+
+async function addMatchingRepoRoot(roots: Set<string>, projectId: string, path: string): Promise<void> {
+  const root = await resolveCanonicalRepoRoot(path);
+  if (!root) return;
+
+  if (projectId.startsWith('local/')) {
+    roots.add(root);
+    return;
+  }
+
+  const currentProjectId = await getProjectId(root);
+  if (currentProjectId === projectId) {
+    roots.add(root);
+  }
 }
 
 async function resolveCanonicalRepoRoot(path: string): Promise<string | null> {

@@ -11,10 +11,15 @@ vi.mock('node:child_process', () => ({
   execFile: mockExecFile,
 }));
 
-// Mock existsSync so test paths pass validation
+// Mock existsSync so test paths pass validation. Marker files (`.kookr-protected`)
+// are excluded so cleanup-inspector's protection check does not falsely classify
+// every test worktree as protected.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, existsSync: vi.fn(() => true) };
+  return {
+    ...actual,
+    existsSync: vi.fn((p: string) => !p.toString().endsWith('.kookr-protected')),
+  };
 });
 
 import { TaskStore } from '../core/tasks.js';

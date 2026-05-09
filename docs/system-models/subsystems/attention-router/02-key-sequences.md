@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Show the "respond, skip, snooze & advance" loop and the "all clear" / "all skipped" detection.
+Show the "respond, skip, snooze & advance" loop and all-clear detection.
 
 ## Primary Sequence: Respond & Auto-Advance
 
@@ -16,8 +16,8 @@ sequenceDiagram
 
   Dev->>SPA: Type response + send
   SPA->>Nav: WS: {type: "respond", agentId, input}
-  Nav->>Adapter: sendKeys(agentId, input)
-  Adapter->>Adapter: send-keys to terminal session
+  Nav->>Adapter: sendInput(agentId, input)
+  Adapter->>Adapter: write bytes to terminal session
   Nav->>PQ: remove(agentId)
   Nav->>PQ: getNext()
   alt Active queue has items
@@ -48,9 +48,9 @@ sequenceDiagram
     PQ-->>Nav: nextAgentId
     Nav->>SPA: WS: {type: "update", navigate: nextAgentId}
   else Active empty, skipped has items
-    PQ-->>Nav: nextSkippedAgentId (cycles through skipped tier)
-    Nav->>SPA: WS: {type: "update", navigate: nextSkippedAgentId, allSkipped: true}
-    Note over SPA: Show "All agents skipped. N pending."
+    PQ-->>Nav: nextSkippedAgentId (skipped tier sorted by severity)
+    Nav->>SPA: WS: {type: "update", navigate: nextSkippedAgentId}
+    Note over SPA: Skipped agents can cycle back; no distinct allSkipped queue state exists
   else All empty
     Nav->>SPA: WS: {type: "update", allClear: true}
   end
@@ -71,7 +71,7 @@ sequenceDiagram
   SPA->>Nav: WS: {type: "snooze", agentId, durationMs, reason?}
   Nav->>PQ: remove(agentId)
   Nav->>ST: startTimer(agentId, durationMs, reason)
-  ST->>Sup: pausePolling(agentId)
+  Note over Sup: Monitoring continues; queue suppresses resurfacing until expiry
   Nav->>PQ: getNext()
   PQ-->>Nav: nextAgentId (or allClear)
   Nav->>SPA: WS: {type: "update", navigate: ..., snoozed: {agentId, expiresAt, reason}}
@@ -86,15 +86,10 @@ sequenceDiagram
   participant PQ as Priority Queue
   participant SPA as Browser SPA
 
-  ST->>Sup: resumePolling(agentId)
-  Sup->>Sup: Poll agent, check for anomalies
-  alt Anomaly still present
-    Sup->>PQ: alert(agentId, summary, severity)
-    PQ->>SPA: WS: {type: "alert", agentId, summary}
-    Note over SPA: Agent re-enters queue at normal priority
-  else Agent is fine
-    Note over Sup: No alert. Agent stays in Running state.
-  end
+  ST->>PQ: restoreExpiredSnoozes()
+  PQ->>PQ: Move stored anomaly back to active tier
+  PQ->>SPA: WS: {type: "alert", agentId, summary}
+  Note over SPA: Agent re-enters queue if the snoozed anomaly was still stored
 ```
 
 ## Sequence: Alert Arrives While Developer Is Idle
@@ -121,9 +116,9 @@ sequenceDiagram
   participant PQ as Priority Queue
   participant SPA as Browser SPA
 
-  Note over Sup: Supervisor is still polling skipped agents
+  Note over Sup: Supervisor still processes events for skipped agents
   Sup->>PQ: alert(agentId, newAnomaly)
-  PQ->>PQ: Remove from skipped tier, insert into active tier at normal priority
+  PQ->>PQ: Update anomaly and clear skipped flag if anomaly type changed
   PQ->>SPA: WS: {type: "alert", agentId, summary}
   Note over SPA: Agent re-enters active queue<br/>(new anomaly = fresh attention needed)
 ```
@@ -147,14 +142,14 @@ sequenceDiagram
 
 ## Failure Or Recovery Variant
 
-If the developer sends a response but the terminal keystroke delivery fails (e.g., terminal session crashed), the adapter reports an error. The Navigation Controller keeps the agent in the queue (now as `errored`) and does not auto-advance.
+If the developer sends a response but terminal byte delivery fails (e.g., terminal session crashed), the adapter reports an error. The Navigation Controller keeps the agent in the queue and does not auto-advance.
 
 ## Handoff Notes
 
-- The attention router does not block on the keystroke delivery completing. It fires the `sendKeys` and immediately advances. The adapter handles the delivery.
-- **~~Resume serialization~~ (issue #9, resolved by ADR-007):** No longer applicable. Input is delivered via terminal keystrokes (send-keys) — no subprocess spawning, no serialization needed.
-- **Waiting for input (ADR-007, replaces issue #3):** agents natively block in interactive mode. The alert ("agent asks: ...") is actionable — the developer responds via terminal keystrokes. If the agent completes while waiting, the router handles the stale alert gracefully — remove from queue, show "completed" status.
-- **Skip vs Snooze monitoring:** skipped agents are still polled by the supervisor (state changes un-skip them). Snoozed agents are NOT polled (saves resources; timer handles re-entry).
+- The attention router delegates input delivery to the adapter. The adapter handles the byte write and reports failures.
+- **~~Resume serialization~~ (issue #9, resolved by ADR-007):** No longer applicable. Input is delivered through the terminal backend's byte-write path — no subprocess spawning, no serialization needed.
+- **Waiting for input (ADR-007, replaces issue #3):** agents natively block in interactive mode. The alert is actionable — the developer responds through the terminal backend. If the agent completes while waiting, the router handles the stale alert gracefully — remove from queue, show completed status.
+- **Skip vs Snooze monitoring:** skipped and snoozed agents are still processed by the supervisor. Skips keep the anomaly in `entries` with `skipped: true`; snoozes move the anomaly into the `snoozed` map until expiry/manual wake/purge.
 
 ## Evidence
 

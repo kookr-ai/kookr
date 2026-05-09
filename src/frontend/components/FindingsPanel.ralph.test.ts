@@ -235,10 +235,10 @@ describe('FindingsPanel Ralph controls', () => {
     const topRow = container.querySelector('.healthy-row-top');
     expect(topRow?.querySelector('.healthy-row-name')?.textContent).toContain('A very long Ralph-controlled task name');
     expect(topRow?.querySelector('[data-testid="reply-button"]')?.textContent).toBe('Reply');
+    expect(topRow?.querySelector('.branch-label')?.textContent).toContain('feature/');
     expect(topRow?.querySelector('.ralph-loop-controls')).toBeNull();
 
     const details = container.querySelector('.healthy-row-details');
-    expect(details?.querySelector('.branch-label')?.textContent).toContain('feature/');
     expect(details?.querySelector('.healthy-row-controls .ralph-loop-controls')).toBeTruthy();
   });
 

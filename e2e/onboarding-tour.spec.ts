@@ -42,6 +42,7 @@ async function seedSeen(page: import('@playwright/test').Page): Promise<void> {
 test.describe('Onboarding tour', () => {
   test('fresh storage shows the tour on load', async ({ page }) => {
     await seedFresh(page);
+    await expect(page.locator('[data-testid="onboarding-overlay"]')).toBeVisible();
     await expect(page.locator('.onboarding-tour')).toBeVisible();
     await expect(page.locator('.onboarding-tour h3')).toHaveText('Welcome to Kookr');
   });
@@ -49,11 +50,18 @@ test.describe('Onboarding tour', () => {
   test('Skip dismisses the tour and reload does not re-show', async ({ page }) => {
     await seedFresh(page);
     await expect(page.locator('.onboarding-tour')).toBeVisible();
-    await page.locator('.onboarding-skip').click();
+    await page.locator('[data-testid="onboarding-skip"]').click();
     await expect(page.locator('.onboarding-tour')).not.toBeVisible();
 
     await page.reload();
     await expect(page.locator('.logo')).toHaveText('KOOKR');
+    await expect(page.locator('.onboarding-tour')).not.toBeVisible();
+  });
+
+  test('onboarding=0 query param suppresses the first-run tour', async ({ page }) => {
+    await page.goto('/?onboarding=0');
+    await expect(page.locator('.logo')).toHaveText('KOOKR');
+    await expect(page.locator('[data-testid="onboarding-overlay"]')).not.toBeVisible();
     await expect(page.locator('.onboarding-tour')).not.toBeVisible();
   });
 

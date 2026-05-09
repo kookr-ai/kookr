@@ -22,7 +22,7 @@ The supervisor agent is Kookr's core intelligence. It reads normalized agent eve
 ## Key Dependencies
 
 - **agent-adapter** — provides the normalized `AgentEvent` stream
-- **attention-router** — consumes alerts produced by the supervisor; sends `pausePolling`/`resumePolling` signals for snooze
+- **attention-router** — consumes alerts produced by the supervisor; stores skipped/snoozed queue state while the supervisor continues processing events
 
 ## Non-Goals
 
@@ -39,4 +39,4 @@ The supervisor agent is Kookr's core intelligence. It reads normalized agent eve
 
 ## Observed Smells
 
-None remaining. Detection and explanation are separate concerns with a defined interface seam (`AnomalySignal` → `Explainer`). V1 collocates them in skill files; V2 can swap the template explainer for an LLM call. See `04-boundary-smells.md`.
+None remaining. Detection and explanation are separate concerns with a defined interface (`Anomaly` objects emitted from detector/watchdog/budget paths). V1 implements rule-based detectors in TypeScript; V2 can swap the template explainer for an LLM call. See `04-boundary-smells.md`.

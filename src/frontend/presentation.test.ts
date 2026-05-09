@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { healthyDotClass, healthyStatusLabel, projectLabel, projectColor } from './presentation.js';
+import { agentProviderPresentation, healthyDotClass, healthyStatusLabel, projectLabel, projectColor } from './presentation.js';
 import type { AgentEvent } from '../shared/protocol.js';
 
 describe('healthyDotClass', () => {
@@ -22,6 +22,24 @@ describe('healthyDotClass', () => {
       { type: 'stop', sessionId: 's1', lastMessage: 'All done!' },
     ];
     expect(healthyDotClass(events)).toBe('done');
+  });
+});
+
+describe('agentProviderPresentation', () => {
+  test('labels Claude Code as an Anthropic-backed agent', () => {
+    expect(agentProviderPresentation('claude-code')).toMatchObject({
+      label: 'Claude Code',
+      provider: 'Anthropic',
+    });
+    expect(agentProviderPresentation('claude-code').iconPath).toMatch(/^M.+Z$/);
+  });
+
+  test('labels Codex CLI as an OpenAI-backed agent', () => {
+    expect(agentProviderPresentation('codex-cli')).toMatchObject({
+      label: 'Codex CLI',
+      provider: 'OpenAI',
+    });
+    expect(agentProviderPresentation('codex-cli').iconPath).toMatch(/^M.+Z$/);
   });
 });
 
@@ -143,5 +161,23 @@ describe('projectColor', () => {
     for (const p of paths) {
       expect(projectColor(p)).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+describe('agentProviderPresentation', () => {
+  test('labels Claude Code as an Anthropic-backed agent', () => {
+    expect(agentProviderPresentation('claude-code')).toMatchObject({
+      label: 'Claude Code',
+      provider: 'Anthropic',
+    });
+    expect(agentProviderPresentation('claude-code').iconPath).toMatch(/^M.+Z$/);
+  });
+
+  test('labels Codex CLI as an OpenAI-backed agent', () => {
+    expect(agentProviderPresentation('codex-cli')).toMatchObject({
+      label: 'Codex CLI',
+      provider: 'OpenAI',
+    });
+    expect(agentProviderPresentation('codex-cli').iconPath).toMatch(/^M.+Z$/);
   });
 });

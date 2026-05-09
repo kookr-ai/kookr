@@ -1,10 +1,22 @@
 ---
 name: Doc-Implementation Gap Analysis
 description: Identify misalignments between system design docs and current implementation, present findings to user, then fix docs/code based on user direction
-cwd: $HOME/git/kookr
+parameters:
+  - name: srcRoot
+    description: Source root directory to compare against docs
+    required: false
+    default: src
+  - name: docsRoot
+    description: Docs root directory containing design material
+    required: false
+    default: docs
+  - name: prTitle
+    description: Title for the PR that lands the resulting fixes
+    required: false
+    default: "fix: align docs and implementation"
 checklist:
-  - Read all design docs (README, CLAUDE.md, features.md, architecture.md, roadmap.md, ADRs, POCs)
-  - Explored all implementation directories (src/core, src/adapters, src/server, src/frontend)
+  - Read all design docs (README, agent-instruction docs, architecture, ADRs, roadmap, POCs)
+  - Explored all implementation directories under the configured src root
   - Compared documented features vs implemented features
   - Checked architecture docs match actual module boundaries and data flow
   - Verified ADR decisions are reflected in code
@@ -21,39 +33,32 @@ checklist:
 
 ## Objective
 
-Identify gaps between Kookr's system design documentation and the current codebase. Present a synthetic report to the user, wait for their direction on what to fix and how, then implement the actual changes and create a PR containing those fixes.
+Identify gaps between this project's system design documentation and the current codebase. Present a synthetic report to the user, wait for their direction on what to fix and how, then implement the actual changes and create a PR containing those fixes.
 
 ## Context
 
-- **Project**: Kookr — AI agent supervisor dashboard
-- **Docs**: `README.md`, `CLAUDE.md`, `docs/features.md`, `docs/architecture.md`, `docs/roadmap.md`, `docs/adr/`, `docs/poc/`
-- **Implementation**: `src/core/`, `src/adapters/`, `src/server/`, `src/frontend/`
+- **Source root**: `{{srcRoot}}`
+- **Docs root**: `{{docsRoot}}`
+
+Before starting, list which doc files actually exist under `{{docsRoot}}` and at the repo root. Common ones to scan when present: `README.md`, `CLAUDE.md`, `AGENTS.md`, `{{docsRoot}}/architecture.md`, `{{docsRoot}}/features.md`, `{{docsRoot}}/roadmap.md`, `{{docsRoot}}/adr/`, `{{docsRoot}}/poc/`, `{{docsRoot}}/system-models/`. Skip any that don't exist.
 
 ## Phase 1: Read all design docs
 
-Read each document thoroughly, noting key claims:
+Read each document thoroughly that exists in this repo, noting key claims:
 
 1. `README.md` — project overview, stated capabilities
-2. `CLAUDE.md` — project instructions, decided technologies, repository structure
-3. `docs/features.md` — user-facing feature requirements
-4. `docs/architecture.md` — system design, module boundaries, data flow
-5. `docs/roadmap.md` — implementation phases with status markers
-6. `docs/adr/` — all architecture decision records
-7. `docs/poc/` — proof-of-concept validation docs
+2. `CLAUDE.md` / `AGENTS.md` — project instructions, decided technologies, repository structure
+3. `{{docsRoot}}/features.md` — user-facing feature requirements (if present)
+4. `{{docsRoot}}/architecture.md` — system design, module boundaries, data flow
+5. `{{docsRoot}}/roadmap.md` — implementation phases with status markers (if present)
+6. `{{docsRoot}}/adr/` — all architecture decision records (if present)
+7. `{{docsRoot}}/poc/` or `{{docsRoot}}/spikes/` — proof-of-concept validation docs (if present)
 
 For each doc, extract a list of concrete claims (features exist, modules exist, decisions applied, phases complete).
 
 ## Phase 2: Explore the implementation
 
-Systematically walk the codebase:
-
-1. `src/core/` — types, parsers, task store, anomaly detection, attention queue, monitor
-2. `src/adapters/` — terminal manager interface, tmux impl, Claude Code adapter
-3. `src/server/` — HTTP (Hono) + WebSocket server, hook file watcher, reconciliation
-4. `src/frontend/` — React SPA: components, Zustand store, WebSocket hook, CSS
-5. `package.json` — dependencies, scripts, overall structure
-
-For each module, note what actually exists and what it does.
+Systematically walk the codebase under `{{srcRoot}}/`. Walk by top-level directory and note what each module actually exists for and does. Also read `package.json` (or the equivalent manifest for this project's language) for dependencies, scripts, and overall structure.
 
 ## Phase 3: Systematic comparison
 
@@ -69,7 +74,7 @@ Be specific — cite file paths and line numbers. Reference specific doc section
 
 ## Phase 4: Write temporary working report
 
-Write the report to `.tmp/gap-analysis-report.md` (gitignored working directory). This is a thinking aid, not a deliverable.
+Write the report to `.tmp/gap-analysis-report.md` (treat `.tmp` as a gitignored working directory; create it if missing). This is a thinking aid, not a deliverable.
 
 ```bash
 mkdir -p .tmp
@@ -127,7 +132,7 @@ Then **ask the user**:
 The PR contains the actual doc/code fixes — NOT a report.
 
 ```bash
-gh pr create --title "fix: align docs and implementation" --body "$(cat <<'EOF'
+gh pr create --title "{{prTitle}}" --body "$(cat <<'EOF'
 ## Summary
 
 Fixes misalignments between design docs and current implementation based on gap analysis.
@@ -137,8 +142,6 @@ Fixes misalignments between design docs and current implementation based on gap 
 
 ### Gaps deferred
 - {any gaps the user chose to skip, for future reference}
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 ```
@@ -146,7 +149,7 @@ EOF
 ## Idempotency Rules
 
 1. **Check for existing temporary report.** If `.tmp/gap-analysis-report.md` exists, read it and update rather than starting from scratch.
-2. **Check for existing PR.** Search for open PRs with "align docs" in the title before creating a new one.
+2. **Check for existing PR.** Search for open PRs with a similar title before creating a new one.
 3. **Don't duplicate work.** If a previous run partially completed, continue from where it left off.
 4. **Date-stamp the temporary report.** Include the analysis date so staleness is visible.
 
@@ -158,3 +161,4 @@ EOF
 - Don't commit the report — it's a temporary thinking artifact, not a deliverable
 - Don't proceed to fixes without user direction — the user decides what to fix and how
 - Don't bundle everything into one commit — separate logical changes for reviewability
+- Don't fabricate references to docs that don't exist in this repo. Only inspect files that are actually present.

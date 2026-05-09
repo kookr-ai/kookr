@@ -59,11 +59,11 @@ export interface LaunchOpts {
   /** Where the launch came from — for server-side log provenance. Default: 'api'. */
   launchSource?: 'cli' | 'ui' | 'api' | 'remote-chat-telegram';
   /**
-   * When true, inject `RALPH_VERDICT_FILE` env into the spawned agent so
-   * iteration 0 of a Ralph loop can write a verdict (subsequent iterations
-   * get this via `launchFreshRuntime`'s extraEnv injection). Path is
-   * computed as `defaultVerdictPath(opts.cwd, task.id)` after the task
-   * record exists.
+   * When true, inject `RALPH_VERDICT_FILE` and `RALPH_ITERATION` env into
+   * the spawned agent so iteration 0 of a Ralph loop can write a verdict
+   * (subsequent iterations get this via `launchFreshRuntime`'s extraEnv
+   * injection). Path is computed as `defaultVerdictPath(opts.cwd, task.id)`
+   * after the task record exists.
    *
    * Coverage and known gaps:
    * - **Fresh, non-queued launches** (POST /api/tasks/ralph-loop,
@@ -201,11 +201,16 @@ export async function launchTask(
     return { task, queued: true };
   }
 
-  // PR4: ralph-loop launches need RALPH_VERDICT_FILE injected so iteration 0
-  // can write a verdict. Subsequent iterations get this via
-  // `launchFreshRuntime`; this fills the gap on the first launch.
+  // PR4: ralph-loop launches need verdict env injected so iteration 0 can
+  // write a verdict. Subsequent iterations get this via `launchFreshRuntime`;
+  // this fills the gap on the first launch.
   const adapterOpts = opts.ralphVerdictEnv
-    ? { extraEnv: { RALPH_VERDICT_FILE: defaultVerdictPath(opts.cwd, task.id) } }
+    ? {
+        extraEnv: {
+          RALPH_VERDICT_FILE: defaultVerdictPath(opts.cwd, task.id),
+          RALPH_ITERATION: '0',
+        },
+      }
     : undefined;
 
   try {

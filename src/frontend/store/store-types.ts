@@ -175,6 +175,7 @@ export interface ProjectSidebarSlice {
   projectSidebarPrefs: ProjectSidebarPrefs;
   projectSidebarCatalog: Record<string, ProjectSidebarCatalogEntry>;
   projectSidebarError: string | null;
+  projectSidebarServerHydrated: boolean;
   projectSummariesHydrated: boolean;
   discoveryStatus: DiscoveryStatus | null;
   discoveryBusy: boolean;
@@ -185,6 +186,7 @@ export interface ProjectSidebarSlice {
 
   selectProject: (project: string | null) => void;
   toggleProjectSidebar: () => void;
+  hydrateProjectSidebarFromServer: () => Promise<void>;
   handleProjectSummaries: (projects: ProjectSummary[]) => void;
   pinProjectToTop: (project: string) => void;
   unpinSidebarProject: (project: string) => void;

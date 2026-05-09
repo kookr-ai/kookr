@@ -123,6 +123,15 @@ export interface BurnedOutTarget {
   lastStallBlockers: string[];
   /** True once consecutiveStallCount >= consecutiveStallsPerTarget. */
   burned: boolean;
+  /**
+   * True when the burn was triggered by a `verdict.stalled` with
+   * `permanent: true` (agent's structural-unfitness claim). Sticky: decay
+   * skips rows with this flag so a permanent burn doesn't silently revert.
+   * A subsequent `progress` verdict for the same target still un-burns
+   * unconditionally — the agent can self-correct. Absent on rows burned via
+   * the count threshold.
+   */
+  permanent?: boolean;
   /** Iteration number when this target was last stalled (for decay). */
   lastAttemptedIteration: number;
 }

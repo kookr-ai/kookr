@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import { ClaudeCodeAdapter, resolvePluginDir } from './claude-code-adapter.js';
 import { TaskStore } from '../core/tasks.js';
+import { resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import type { AgentEvent } from '../core/types.js';
 
 // Mock getGitInfo so we can control whether it returns data
@@ -101,6 +102,51 @@ describe('ClaudeCodeAdapter', () => {
     expect(sourcesIdx).toBeGreaterThan(bypassIdx);
     expect(resumeIdx).toBeGreaterThan(sourcesIdx);
     expect(spec.args[sourcesIdx + 1]).toBe('');
+  });
+
+  test('resume launch appends the current semantic checkpoint reader when CHECKPOINT.json is valid', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'claude-checkpoint-resume-'));
+    try {
+      const cwd = join(tempRoot, 'repo');
+      const gitDir = join(cwd, '.git');
+      const kookrDataDir = join(tempRoot, '.kookr');
+      mkdirSync(gitDir, { recursive: true });
+      mkdirSync(kookrDataDir, { recursive: true });
+      writeFileSync(join(gitDir, 'HEAD'), 'ref: refs/heads/feat-checkpoint-json\n');
+      const checkpointDir = await resolveAndPrepareCheckpointDir({ cwd, kookrDataDir });
+      expect(checkpointDir).not.toBeNull();
+      writeFileSync(join(checkpointDir!, 'CHECKPOINT.json'), JSON.stringify({
+        schema_version: 'semantic-checkpoint.v1',
+        task_id: 'task-1',
+        repo: 'kookr-ai/kookr',
+        worktree: cwd,
+        branch: 'feat-checkpoint-json',
+        verdict: 'in_progress',
+        decisions: [],
+        evidence: [],
+        files_changed: [],
+        tests_run: [],
+        open_risks: [],
+        next_actions: [],
+        memory_write_candidates: [],
+      }));
+
+      const checkpointAdapter = new ClaudeCodeAdapter(backend, taskStore, { kookrDataDir });
+      const task = taskStore.createTask('Fix bug', cwd);
+      const sessionId = await checkpointAdapter.launch(task.id, 'original prompt', cwd, {
+        sessionId: '00000000-0000-0000-0000-000000000003',
+      });
+
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const promptIdx = spec.args.indexOf('--append-system-prompt');
+      const resumeIdx = spec.args.indexOf('--resume');
+      expect(promptIdx).toBeGreaterThanOrEqual(0);
+      expect(resumeIdx).toBeGreaterThan(promptIdx);
+      expect(spec.args[promptIdx + 1]).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.json as your very first action');
+      expect(spec.args).not.toContain('original prompt');
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   test('launch injects --agents <json> when bypassAllPermissions is true and file-based agents exist', async () => {

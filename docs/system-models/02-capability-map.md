@@ -95,7 +95,7 @@ flowchart LR
 | Attach to agent terminal | agent-adapter | Nice-to-have |
 | Persist session metadata | core (tasks.ts) | Must |
 | Reconnect after restart | core (tasks.ts) + agent-adapter | Must |
-| Reconcile sessions with terminal backend (dtach + tmux) | core (tasks.ts) + server (reconciliation.ts) | Must |
+| Reconcile sessions with terminal backend (dtach-only production path) | core (tasks.ts) + server (reconciliation.ts) | Must |
 | Track agent status | agent-adapter + supervisor | Must |
 | Show current activity | agent-adapter | Nice-to-have |
 | Detect asked-question | supervisor-agent | Must |

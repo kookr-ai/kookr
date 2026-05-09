@@ -282,6 +282,8 @@ cp ~/.kookr/tasks.json.predelete.YYYYMMDDTHHMMSS ~/.kookr/tasks.json
 > **Rewritten 2026-04-10** to match the current code. The tree below groups files by capability instead of listing every module individually — use the source tree as the authoritative file list. Major subsystems that were missing in the previous version: Codex CLI support, circuit breakers, workspace-cleanup / worktree leases, scheduled tasks, autonomy / auto-proceed, split route modules, the server `use-cases/` layer, and the Zustand slice architecture on the frontend.
 >
 > **Drift-reconcile 2026-04-22** added the OSS-attempts cluster: `oss-attempts-routes.ts` (server route), `oss-attempts-slice.ts` (Zustand slice), `oss-trends.ts` (frontend aggregation), and the OSS-dashboard components `OssProductivityView`, `OssWeeklyBars`, `OssTrendsErrorBoundary`, plus `DiffPane` and `markdown.ts`, which were live in code but missing from the tree.
+>
+> **Drift-reconcile 2026-05-09** refreshed the grouped inventory for Ralph loops, checkpoint cycling, workspace cleanup, Telegram/STT integration, frontend onboarding/effective-hooks controls, and shared contract modules. The tree remains capability-grouped; it is not an exhaustive file manifest.
 
 ```
 kookr/
@@ -289,6 +291,10 @@ kookr/
 │   ├── shared/                            # Cross-boundary contracts (server + frontend both import here)
 │   │   ├── protocol.ts                    # Re-exports ServerMessage/ClientMessage + shared core types
 │   │   ├── contracts/messages.ts          # Canonical WS protocol tagged-union
+│   │   ├── contracts/client-message-schema.ts # Runtime client-message validation helpers
+│   │   ├── contracts/playbook.ts          # Shared playbook DTOs
+│   │   ├── contracts/ralph.ts             # Ralph loop request/response contracts
+│   │   ├── contracts/ralph-iteration-log.ts # Ralph iteration-log DTOs
 │   │   └── repo-slug.ts                   # GitHub `owner/repo` normalization
 │   │
 │   ├── server/                            # HTTP (Hono) + WebSocket server
@@ -320,6 +326,7 @@ kookr/
 │   │   │   ├── lifecycle-handler.ts       #   task start/stop/complete/cancel/reopen/ack
 │   │   │   ├── playbook-handler.ts        #   listPlaybooks / launchPlaybook
 │   │   │   ├── reflection-handler.ts      #   reflection request/ack
+│   │   │   ├── sweep-handler.ts           #   cross-project workspace cleanup sweep
 │   │   │   └── workspace-handler.ts       #   workspace cleanup messages
 │   │   ├── event-projection.ts            # Strip transport-unused AgentEvent fields
 │   │   ├── oss-attempts-snapshot.ts       # Serialize OSS attempts for WS snapshot
@@ -328,16 +335,20 @@ kookr/
 │   │   ├── session-bridge.ts              # Bridge xterm.js ↔ TerminalBackend byte stream
 │   │   ├── fake-terminal-bridge.ts        # Fake terminal for E2E / demo mode
 │   │   ├── agent-lifecycle.ts             # Agent launch/stop/cleanup + pending-task promotion
+│   │   ├── agent-preflight.ts             # Agent binary availability/version preflight
 │   │   ├── launch-service.ts              # High-level launch orchestration
 │   │   ├── event-pipeline.ts              # Wires adapter events into monitor/tracker/watchdog
 │   │   ├── lifecycle-timers.ts            # Periodic timers: liveness, reconciliation, task save
 │   │   ├── auto-proceed.ts                # Autonomy auto-proceed scheduler
 │   │   ├── autonomy-orchestrator.ts       # Autonomy level enforcement
+│   │   ├── ralph-loop-service.ts          # Ralph iteration-loop orchestration
+│   │   ├── ralph-stop.ts                  # Stop-event handoff into Ralph cycler
 │   │   ├── schedule-runner.ts             # Cron-driven scheduled tasks
 │   │   ├── schedule-service.ts            # Schedule CRUD + persistence
 │   │   ├── schedule-validator.ts          # Cron / schedule validation
 │   │   ├── reflection-task.ts             # Session reflection background task (ADR-010)
 │   │   ├── diagnostic-runner.ts           # Self-diagnostic job runner
+│   │   ├── oss-refresh.ts                 # OSS contribution PR/linked-issue refresh
 │   │   ├── achievement-watcher.ts         # Detect achievement unlocks, persist
 │   │   ├── ledger-watcher.ts              # Watch OSS contribution ledger
 │   │   ├── worktree-guardrails.ts         # Enforce worktree safety invariants
@@ -359,11 +370,12 @@ kookr/
 │   │   ├── task-persistence.ts            # Atomic JSON file persistence
 │   │   ├── task-naming.ts                 # AI task naming via LLM (F4.8)
 │   │   ├── token-tracker.ts               # Token/cost tracking per session (F4.9)
-│   │   ├── checkpoint-cycler.ts           # /compact cancel-backoff controller (ADR-015)
+│   │   ├── checkpoint-cycler.ts           # /compact checkpoint cycle + cancel-backoff controller (ADR-015)
 │   │   ├── checkpoint-path.ts             # Checkpoint file path resolver
 │   │   # Supervisor: detection + queue
 │   │   ├── monitor.ts                     # Event-driven supervisor orchestrator
 │   │   ├── anomaly-detector.ts            # Pure detection patterns
+│   │   ├── detection-stats.ts             # Detector counters, suppression stats, false-positive feedback
 │   │   ├── attention-queue.ts             # Priority queue, snooze, cancelSnooze
 │   │   ├── snooze-suppression.ts          # Suppress re-alerts during snooze
 │   │   ├── budget-checker.ts              # Emits budget_exceeded anomalies
@@ -379,9 +391,11 @@ kookr/
 │   │   ├── shadow-report.ts               # Offline shadow report generator
 │   │   ├── self-diagnostic.ts             # Runtime self-diagnostic
 │   │   # Response assist + suggestions
+│   │   ├── context-feedback.ts            # Context-window feedback helpers
 │   │   ├── response-assist.ts             # Quick-action extraction (F3.8)
 │   │   ├── response-suggest.ts            # AI response suggestions (F3.9)
 │   │   ├── suggestion-telemetry.ts        # Suggestion telemetry aggregation
+│   │   ├── feedback-bundle.ts             # Immutable per-task reflection bundle
 │   │   # Reflection + friction
 │   │   ├── interaction-log.ts             # User interaction event log (F8, ADR-010)
 │   │   ├── friction-analyzer.ts           # Rule-based friction pattern detection (F8)
@@ -426,6 +440,7 @@ kookr/
 │   │   ├── worktree-lease-service.ts      # Worktree lease allocation
 │   │   ├── worktree-protection.ts         # Worktree safety enforcement
 │   │   ├── git-helpers.ts                 # Git helpers shared by server
+│   │   ├── persistence-utils.ts           # Atomic/persistent file utilities
 │   │   ├── settings-store.ts              # Server settings persistence
 │   │   └── achievement-catalog.ts         # Achievement definitions
 │   │
@@ -439,12 +454,26 @@ kookr/
 │   │   ├── claude-code-adapter.ts         # Managed Claude Code sessions
 │   │   ├── codex-cli-adapter.ts           # Managed Codex CLI sessions
 │   │   ├── codex-config.ts                # Codex CLI config/settings emission
+│   │   ├── effective-hook-settings.ts     # Persist/read effective hook settings per session
 │   │   ├── agent-launch-context.ts        # Per-launch env + paths
+│   │   ├── probe-agent-binary.ts          # Agent binary probe helpers
 │   │   ├── quota-adapter.ts               # Usage-quota surface for LLM providers
 │   │   ├── github-fetcher.ts              # `gh` CLI wrapper (REST + GraphQL)
 │   │   ├── circuit-breaker-github-fetcher.ts    # Circuit-breaker wrapper
 │   │   ├── git-info.ts                    # Git branch/commit from filesystem
 │   │   └── git-worktree.ts                # Git worktree create/cleanup
+│   │
+│   ├── integrations/                      # Optional integration surfaces
+│   │   └── telegram/                      # Telegram voice/text ingestion and STT bridge
+│   │       ├── index.ts                   # Integration entrypoint
+│   │       ├── api-client.ts              # Telegram API wrapper
+│   │       ├── parse-task.ts              # Message -> launch-task parsing
+│   │       ├── transcribe.ts              # Voice transcription bridge
+│   │       ├── rephrase.ts                # Prompt rephrasing
+│   │       ├── safety.ts                  # Launch safety checks
+│   │       ├── audit.ts                   # Audit logging
+│   │       ├── warmup.ts                  # STT warmup
+│   │       └── fake-telegram-server.ts    # Test/dev fake server
 │   │
 │   └── frontend/                          # SPA (React + Vite — ADR-002)
 │       ├── App.tsx                        # Root component with keyboard shortcuts
@@ -460,25 +489,33 @@ kookr/
 │       ├── components/                    # React components — see `src/frontend/components/`
 │       │   # Triage surface: FindingsPanel, DetailPanel, TerminalPanel, TopBar, StatusBar,
 │       │   #                 SnoozeDialog, SnoozeGroup, SentOverlay, Toasts, Tooltip,
-│       │   #                 ConfirmDialog, ShortcutsHelp, AchievementToast, DiffPane
+│       │   #                 ConfirmDialog, CompleteDialogFooter, ShortcutsHelp, AchievementToast,
+│       │   #                 DiffPane, DndPill
 │       │   # Launch / playbooks: LaunchDialog, PlaybookBrowser, PlaybookSelector,
 │       │   #                     PlaybookParameterForm, QuickLaunch, StartWorkPanel,
 │       │   #                     AgentExecutionConfig, AgentTypeSelector
 │       │   # Projects + GitHub: ProjectSidebar, ProjectSidebarManager, ProjectDetailDrawer,
 │       │   #                    GitHubPanel, ContributionWorkspace, CleanupCandidateTable
 │       │   # OSS trends dashboard: OssProductivityView, OssWeeklyBars, OssTrendsErrorBoundary
+│       │   # Ralph + onboarding: RalphLoopPanel, OnboardingTour, OnboardingLayoutDiagram
 │       │   # Infra + diagnostics: CapacityGauge, CircuitBreakerPanel, DetectionStatsPanel,
 │       │   #                      ActivityPanel, AchievementsPanel, SettingsDialog,
 │       │   #                      ScheduleSection, SchedulesDialog, VoiceInputButton,
-│       │   #                      FilterableSelect
+│       │   #                      EffectiveHookSettingsModal, HookInventorySection,
+│       │   #                      SweepButton, FilterableSelect
+│       │   # Component helpers: cleanup-row-format, detail-panel-focus,
+│       │   #                    detail-panel-visibility, onboarding-tour-targets
 │       ├── hooks/                         # useWebSocket, useNotifications, useAudibleAlert,
-│       │                                  # useSTT, useEscapeToClose
+│       │                                  # useSTT, useEscapeToClose, useDnd, usePersistedCollapsed
 │       └── store/                         # Zustand store
 │           ├── useStore.ts                # Root store composed of slices
 │           ├── store-types.ts             # Store-wide types
 │           ├── slices/                    # achievements-system, project-sidebar,
 │           │                              # transport-session, triage-navigation, workspace,
 │           │                              # oss-attempts
+│           ├── onboarding-store.ts        # Onboarding tour state
+│           ├── onboarding-status.ts       # Onboarding persistence state
+│           ├── launch-task-dialog-draft.ts# Launch dialog draft persistence
 │           ├── finding-helpers.ts         # Finding-related selectors
 │           ├── playbook-params.ts         # Playbook parameter form state
 │           ├── playbook-source-resolver.ts# Resolve playbook source URLs
@@ -490,7 +527,7 @@ kookr/
 └── vite.config.ts
 ```
 
-> **Note on `src/shared/`:** The `shared/` layer contains the `ServerMessage`/`ClientMessage` protocol types used by both the server and frontend. The canonical definitions live in `src/shared/contracts/messages.ts` and are re-exported from `src/shared/protocol.ts`. This layer exists to prevent the frontend from importing server internals.
+> **Note on `src/shared/`:** The `shared/` layer contains the `ServerMessage`/`ClientMessage` protocol types used by both the server and frontend. The canonical definitions live in `src/shared/contracts/messages.ts` and are re-exported from `src/shared/protocol.ts`. The frontend also imports some pure `src/core/*` types/helpers directly (`Task`, `AgentEvent`, playbook DTOs, workspace DTOs, etc.); what remains forbidden is importing server or adapter I/O internals into the SPA.
 >
 > **Note on `GitInfo`:** The `GitInfo` interface lives in `src/core/types.ts`. The `src/adapters/git-info.ts` module re-exports it alongside the I/O function `getGitInfo()`, keeping the core layer free of adapter dependencies.
 >

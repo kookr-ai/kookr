@@ -103,8 +103,8 @@ All tests must pass.
 ## Phase 5 — Verify
 
 1. Run full test suite
-2. Start the dev server (`pnpm dev`) and verify a few routes manually with curl
-3. Check that the frontend still connects and receives WebSocket messages
+2. Start the project's dev server (use the script defined in `package.json`, e.g. `npm run dev` / `pnpm run dev` / `make dev`) and verify a few routes manually with `curl`
+3. If the project has a frontend, sanity-check that it still connects and receives any websocket messages it depends on
 
 ## Idempotency
 

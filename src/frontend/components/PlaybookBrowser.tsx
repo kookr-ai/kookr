@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { AVAILABLE_AGENT_TYPES, type Playbook, type ClientMessage, type AutonomyLevel, type AgentType } from '../../shared/protocol.js';
-import type { PlaybookParameterOption } from '../../core/playbook.js';
+import type { PlaybookParameterOption, PlaybookScope } from '../../core/playbook.js';
 import type { ProjectSummary } from '../../core/project-summary.js';
 import { useKookrStore } from '../store/useStore.js';
 import { projectLabel, projectColor } from '../presentation.js';
@@ -121,6 +121,19 @@ function PinIcon({ pinned }: { pinned: boolean }): React.ReactElement {
   );
 }
 
+function ScopeBadge({ scope }: { scope: PlaybookScope }): React.ReactElement | null {
+  if (scope === 'project') return null;
+  const label = scope === 'plugin' ? 'plugin' : 'user';
+  const title = scope === 'plugin'
+    ? 'Bundled with kookr-toolkit — visible in every project.'
+    : 'From ~/.kookr/playbooks — visible in every project.';
+  return (
+    <span className={`playbook-scope-badge playbook-scope-${scope}`} title={title}>
+      {label}
+    </span>
+  );
+}
+
 function renderPlaybookTags(tags: string[]): React.ReactNode {
   const visible = tags.filter((tag): tag is 'workflow' | 'loopable' => tag === 'workflow' || tag === 'loopable');
   if (visible.length === 0) return null;
@@ -146,12 +159,18 @@ interface Props {
   send: (msg: ClientMessage) => boolean;
   onClose: () => void;
   cwd: string;
+  /** CWD whose .kookr/playbooks catalog was used to list this browser. */
+  playbookSourceCwd?: string;
+  /** CWD where launches should execute. */
+  taskTargetCwd?: string;
   /** When set, auto-select this playbook for relaunch. */
   relaunchPlaybookId?: string;
   /** Parameter values to pre-fill when relaunching a playbook task. */
   relaunchParameterValues?: Record<string, string>;
   /** When launched from a project detail drawer, pre-fill source-matching params */
   projectContext?: ProjectSummary;
+  /** Update the execution target without leaving the selected playbook detail. */
+  onTaskTargetCwdChange?: (cwd: string) => void;
   /**
    * Switch the parent dialog back to the manual tab so the user can edit the
    * cwd. The "Change…" link in the resolved-cwd label invokes this.
@@ -162,26 +181,38 @@ interface Props {
 function ResolvedCwdLabel({
   cwd,
   overrideCwd,
+  playbookSourceCwd,
   onRequestEdit,
 }: {
   cwd: string;
   /** When set, the playbook's own `cwd:` overrides the dialog cwd. */
   overrideCwd?: string;
+  playbookSourceCwd?: string;
   onRequestEdit?: () => void;
 }): React.ReactElement {
   const effective = overrideCwd ?? cwd;
+  const showSource = playbookSourceCwd !== undefined && playbookSourceCwd !== effective;
   return (
     <div className="playbook-resolved-cwd">
+      {showSource && (
+        <>
+          <span className="playbook-resolved-cwd-label">Playbooks from:</span>
+          <span
+            className={`project-badge color-${projectColor(playbookSourceCwd)}`}
+            title={playbookSourceCwd}
+          >
+            {projectLabel(playbookSourceCwd)}
+          </span>
+          <span className="playbook-resolved-cwd-path" title={playbookSourceCwd}>
+            {playbookSourceCwd}
+          </span>
+        </>
+      )}
       <span className="playbook-resolved-cwd-label">Running in:</span>
-      <span
-        className={`project-badge color-${projectColor(effective)}`}
-        title={effective}
-      >
+      <span className={`project-badge color-${projectColor(effective)}`} title={effective}>
         {projectLabel(effective)}
       </span>
-      <span className="playbook-resolved-cwd-path" title={effective}>
-        {effective}
-      </span>
+      <span className="playbook-resolved-cwd-path" title={effective}>{effective}</span>
       {overrideCwd !== undefined ? (
         <span
           className="playbook-resolved-cwd-override"
@@ -204,7 +235,18 @@ function ResolvedCwdLabel({
   );
 }
 
-export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaunchParameterValues, projectContext, onRequestEditCwd }: Props) {
+export function PlaybookBrowser({
+  send,
+  onClose,
+  cwd,
+  playbookSourceCwd,
+  taskTargetCwd,
+  relaunchPlaybookId,
+  relaunchParameterValues,
+  projectContext,
+  onTaskTargetCwdChange,
+  onRequestEditCwd,
+}: Props) {
   const { playbooks, playbooksLoading, availableAgentTypes, defaultAgentType, projectSummaries } = useKookrStore();
   const agentOptions = availableAgentTypes.length > 0
     ? availableAgentTypes
@@ -238,6 +280,9 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   const [suppressOtherAuthorWarning, setSuppressOtherAuthorWarning] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const effectivePlaybookSourceCwd = (playbookSourceCwd ?? cwd).trim();
+  const effectiveTaskTargetCwd = (taskTargetCwd ?? cwd).trim();
+  const usesSplitLaunchFields = Boolean(playbookSourceCwd || taskTargetCwd || projectContext);
 
   // Auto-select playbook when relaunching and playbooks have loaded
   const relaunchAppliedRef = useRef(false);
@@ -410,23 +455,18 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
     setSubmitting(true);
     usageTracker.recordLaunch(selected.id);
     usageTracker.recordParams(selected.id, selected.sourceCwd, paramValues);
-    const trimmedCwd = cwd.trim();
+    const trimmedCwd = effectiveTaskTargetCwd;
     if (trimmedCwd) recentPaths.add(trimmedCwd);
     localStorage.setItem('kookr:defaultAutonomy', autonomy);
     localStorage.setItem('kookr:defaultAgentType', agentType);
     const excerpt = selected.name.slice(0, 40) + (selected.name.length > 40 ? '…' : '');
+    const launchPayload = buildPlaybookLaunchPayload(selected.id);
     if (launchMode === 'looped') {
       try {
         const res = await fetch('/api/playbooks/ralph-loop', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'ui' },
-          body: JSON.stringify({
-            playbookPath: selected.id,
-            cwd,
-            parameterValues: paramValues,
-            autonomy,
-            agentType,
-          }),
+          body: JSON.stringify(launchPayload),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({})) as Record<string, unknown>;
@@ -462,11 +502,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
     } else {
       const sent = send({
         type: 'launchPlaybook',
-        playbookPath: selected.id,
-        cwd,
-        parameterValues: paramValues,
-        autonomy,
-        agentType,
+        ...launchPayload,
       });
       if (sent) {
         useKookrStore.getState().handleAlert('', `Starting task: ${excerpt}`, 'info');
@@ -494,11 +530,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'ui' },
           body: JSON.stringify({
-            playbookPath: selected.id,
-            cwd,
-            parameterValues: paramValues,
-            autonomy,
-            agentType,
+            ...buildPlaybookLaunchPayload(selected.id),
           }),
         },
       );
@@ -553,12 +585,35 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   function canLaunch(): boolean {
     if (!selected) return false;
     if (submitting) return false;
+    if (usesSplitLaunchFields && (!effectivePlaybookSourceCwd || !effectiveTaskTargetCwd)) return false;
     if (launchMode === 'looped' && (!selected.tags.includes('loopable') || !selected.effectiveLoop || selected.loopValidationError)) {
       return false;
     }
     return selected.parameters
       .filter((p) => p.required)
       .every((p) => (paramValues[p.name] ?? '').trim() !== '');
+  }
+
+  function buildPlaybookLaunchPayload(playbookPath: string) {
+    const base = {
+      playbookPath,
+      parameterValues: paramValues,
+      autonomy,
+      agentType,
+      ...(selected?.scope ? { scope: selected.scope } : {}),
+    };
+    if (!usesSplitLaunchFields) {
+      return {
+        ...base,
+        cwd,
+      };
+    }
+    return {
+      ...base,
+      playbookSourceCwd: effectivePlaybookSourceCwd,
+      taskTargetCwd: effectiveTaskTargetCwd,
+      ...(projectContext?.project ? { projectId: projectContext.project } : {}),
+    };
   }
 
   function handleTogglePin(e: React.MouseEvent, playbookId: string) {
@@ -607,14 +662,28 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
             Back
           </button>
           <span className="playbook-detail-name">{selected.name}</span>
+          <ScopeBadge scope={selected.scope} />
           {renderPlaybookTags(selected.tags)}
         </div>
         {selected.description && <p className="playbook-detail-desc">{selected.description}</p>}
         <ResolvedCwdLabel
           cwd={cwd}
           overrideCwd={selected.cwd ?? undefined}
+          playbookSourceCwd={usesSplitLaunchFields ? effectivePlaybookSourceCwd : undefined}
           onRequestEdit={onRequestEditCwd}
         />
+        {usesSplitLaunchFields && !selected.cwd && onTaskTargetCwdChange && (
+          <label className="playbook-param playbook-target-cwd-field">
+            Target directory
+            <input
+              type="text"
+              value={effectiveTaskTargetCwd}
+              onChange={(e) => onTaskTargetCwdChange(e.target.value)}
+              placeholder="~/project"
+              required
+            />
+          </label>
+        )}
 
         <div className="launch-mode-toggle playbook-launch-mode" role="group" aria-label="Playbook launch mode">
           <button
@@ -877,7 +946,11 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
   if (playbooks.length === 0) {
     return (
       <>
-        <ResolvedCwdLabel cwd={cwd} onRequestEdit={onRequestEditCwd} />
+        <ResolvedCwdLabel
+          cwd={cwd}
+          playbookSourceCwd={usesSplitLaunchFields ? effectivePlaybookSourceCwd : undefined}
+          onRequestEdit={onRequestEditCwd}
+        />
         <div className="playbook-empty">
           No playbooks found.
           <br />
@@ -893,7 +966,11 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
 
   return (
     <div>
-      <ResolvedCwdLabel cwd={cwd} onRequestEdit={onRequestEditCwd} />
+      <ResolvedCwdLabel
+        cwd={cwd}
+        playbookSourceCwd={usesSplitLaunchFields ? effectivePlaybookSourceCwd : undefined}
+        onRequestEdit={onRequestEditCwd}
+      />
       <div className="playbook-search">
         <input
           ref={searchRef}
@@ -957,6 +1034,7 @@ export function PlaybookBrowser({ send, onClose, cwd, relaunchPlaybookId, relaun
                   </span>
                   <span className="playbook-card-meta">
                     {isRecent && <span className="playbook-recent-badge">recent</span>}
+                    <ScopeBadge scope={pb.scope} />
                     {renderPlaybookTags(pb.tags)}
                     <span
                       className={`project-badge color-${projectColor(targetCwd)}`}

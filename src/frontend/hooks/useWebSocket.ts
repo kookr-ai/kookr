@@ -10,6 +10,7 @@ export function useWebSocket() {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   const disconnectedAtRef = useRef<number | null>(null);
   const hasConnectedRef = useRef(false);
+  const hasHydratedProjectSidebarRef = useRef(false);
   const {
     handleSnapshot,
     handleUpdate,
@@ -17,6 +18,7 @@ export function useWebSocket() {
     handleGitHubUpdate,
     handlePlaybooks,
     handleSuggestion,
+    hydrateProjectSidebarFromServer,
     handleProjectSummaries,
     handleAchievementUnlocked,
     handleQuotaStatus,
@@ -83,6 +85,12 @@ export function useWebSocket() {
               useKookrStore.setState({
                 ...(msg.achievementCounters ? { achievementCounters: msg.achievementCounters } : {}),
                 ...(msg.achievementStreak ? { achievementStreak: msg.achievementStreak } : {}),
+              });
+            }
+            if (!hasHydratedProjectSidebarRef.current) {
+              hasHydratedProjectSidebarRef.current = true;
+              hydrateProjectSidebarFromServer().catch(() => {
+                hasHydratedProjectSidebarRef.current = false;
               });
             }
             // Fetch schedules on initial snapshot (connection established)
@@ -171,6 +179,7 @@ export function useWebSocket() {
 
     ws.onclose = () => {
       setConnected(false);
+      hasHydratedProjectSidebarRef.current = false;
       wsRef.current = null;
       if (disconnectedAtRef.current === null) {
         disconnectedAtRef.current = Date.now();
@@ -181,7 +190,7 @@ export function useWebSocket() {
     ws.onerror = () => {
       ws.close();
     };
-  }, [handleSnapshot, handleUpdate, handleAlert, handleGitHubUpdate, handlePlaybooks, handleSuggestion, handleProjectSummaries, handleAchievementUnlocked, handleQuotaStatus, handleCircuitBreakerStatus, handleDiagnosticReport, handleSchedules, handleWorkspaceView, handleWorkspaceCleanupDetail, handleWorkspaceStartWorkAck, handleSweepComplete, handleSweepBusy, handleOssAttempts, setConnected]);
+  }, [handleSnapshot, handleUpdate, handleAlert, handleGitHubUpdate, handlePlaybooks, handleSuggestion, hydrateProjectSidebarFromServer, handleProjectSummaries, handleAchievementUnlocked, handleQuotaStatus, handleCircuitBreakerStatus, handleDiagnosticReport, handleSchedules, handleWorkspaceView, handleWorkspaceCleanupDetail, handleWorkspaceStartWorkAck, handleSweepComplete, handleSweepBusy, handleOssAttempts, setConnected]);
 
   useEffect(() => {
     connect();

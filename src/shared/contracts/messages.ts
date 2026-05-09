@@ -2,7 +2,7 @@ import type { AnomalySeverity, AnomalyType } from '../../core/types.js';
 import type { AgentState } from '../../core/monitor.js';
 import type { GitHubPRState, GitHubIssueState, GitHubStateChange } from '../../core/github-types.js';
 import type { BuildInfo } from '../../core/build-info.js';
-import type { Playbook } from '../../core/playbook.js';
+import type { Playbook, PlaybookScope } from '../../core/playbook.js';
 import type { QuickAction } from '../../core/response-assist.js';
 import type { TelemetryEvent } from '../../core/telemetry.js';
 import type { ProjectSummary } from '../../core/project-summary.js';
@@ -83,6 +83,32 @@ export type SnapshotMessage = {
   sweepRunning?: boolean;
 };
 
+type LaunchPlaybookBaseMessage = {
+  type: 'launchPlaybook';
+  playbookPath: string;
+  parameterValues: Record<string, string>;
+  autonomy?: AutonomyLevel;
+  agentType?: AgentType;
+  scope?: PlaybookScope;
+};
+
+type LaunchPlaybookLegacyMessage = LaunchPlaybookBaseMessage & {
+  /** Legacy catalog+target cwd. Prefer playbookSourceCwd/taskTargetCwd for new clients. */
+  cwd: string;
+  playbookSourceCwd?: never;
+  taskTargetCwd?: never;
+  projectId?: string;
+};
+
+type LaunchPlaybookSplitMessage = LaunchPlaybookBaseMessage & {
+  cwd?: string;
+  playbookSourceCwd: string;
+  taskTargetCwd: string;
+  projectId?: string;
+};
+
+export type LaunchPlaybookClientMessage = LaunchPlaybookLegacyMessage | LaunchPlaybookSplitMessage;
+
 export type ServerMessage =
   | SnapshotMessage
   | { type: 'update'; agentId: string; state: AgentState }
@@ -162,7 +188,7 @@ export type ClientMessage =
   | { type: 'stop'; agentId: string }
   | { type: 'reflect' }
   | { type: 'listPlaybooks'; cwd: string }
-  | { type: 'launchPlaybook'; playbookPath: string; cwd: string; parameterValues: Record<string, string>; autonomy?: AutonomyLevel; agentType?: AgentType }
+  | LaunchPlaybookClientMessage
   | { type: 'telemetry'; events: TelemetryEvent[] }
   | { type: 'setProjectConfig'; project: string; config: Partial<ProjectConfig> }
   | { type: 'clearCompleted'; includeTerminated?: boolean }

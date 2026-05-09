@@ -1,4 +1,4 @@
-import type { Playbook, EffectivePlaybookLoop, PlaybookParameter, PlaybookParameterOption } from './playbook.js';
+import type { Playbook, EffectivePlaybookLoop, PlaybookParameter, PlaybookParameterOption, PlaybookScope } from './playbook.js';
 
 export const PLAYBOOK_LOOP_DEFAULTS = {
   iterationCap: 6,
@@ -21,7 +21,12 @@ export class PlaybookParseError extends Error {
  * Parse a playbook Markdown file into a Playbook object.
  * Expects YAML-like frontmatter delimited by --- lines.
  */
-export function parsePlaybook(content: string, relativePath: string, sourceCwd: string): Playbook {
+export function parsePlaybook(
+  content: string,
+  relativePath: string,
+  sourceCwd: string,
+  scope: PlaybookScope = 'project',
+): Playbook {
   const { frontmatter, body } = extractFrontmatter(content);
   const meta = parseFrontmatter(frontmatter);
 
@@ -34,9 +39,11 @@ export function parsePlaybook(content: string, relativePath: string, sourceCwd: 
   const effectiveLoop = tags.includes('loopable') && !loop.error
     ? buildEffectiveLoop(loop.value)
     : undefined;
+  const repoTags = parseStringArray(meta['repo-tags']);
 
   return {
     id: relativePath,
+    scope,
     name: meta.name,
     description: typeof meta.description === 'string' ? meta.description : '',
     parameters: parseParameters(meta.parameters),
@@ -48,6 +55,7 @@ export function parsePlaybook(content: string, relativePath: string, sourceCwd: 
     body: body.trim(),
     ...(typeof meta.cwd === 'string' && meta.cwd ? { cwd: meta.cwd } : {}),
     sourceCwd,
+    ...(repoTags.length > 0 ? { repoTags } : {}),
   };
 }
 

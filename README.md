@@ -32,7 +32,7 @@ You run 5 Claude Code agents in parallel. One silently loops on the same failing
 - **Multi-project tracking** — register several project directories and see contributions across all of them
 - **Scheduled tasks** — cron-style triggers for recurring agents (nightly scans, periodic supervision)
 - **GitHub integration** — PR status, CI checks, and review threads for agent-created PRs
-- **Playbooks** — reusable task templates from `.kookr/playbooks/`
+- **Playbooks** — reusable task templates discovered from three tiers: bundled with the kookr-toolkit plugin (visible everywhere), `~/.kookr/playbooks/` (per-user), and `<repo>/.kookr/playbooks/` (project-local). See [`docs/playbook-scoping.md`](docs/playbook-scoping.md).
 - **Cost tracking** — token usage and cost per session
 - **Session reflection** — analyze friction patterns across supervision sessions
 
@@ -265,7 +265,7 @@ How Kookr stacks up against the supervision approaches developers reach for toda
 | Cost / token tracking | ✅ | ❌ | ✅ | ⚠️ DIY |
 | Local-first (no cloud required) | ✅ | ✅ | ✅ | ✅ |
 
-> Maintenance note: comparison tables go stale fast — vendor capabilities change. Refresh this table before each release; if you spot something inaccurate, please open an issue or PR. A formal review cadence will live in [`CONTRIBUTING.md`](https://github.com/kookr-ai/kookr/issues/93) once that file lands.
+> Maintenance note: comparison tables go stale fast — vendor capabilities change. Refresh this table before each release; if you spot something inaccurate, please open an issue or PR. See [`CONTRIBUTING.md`](CONTRIBUTING.md#maintainer-notes) for the maintainer cadence.
 
 ## Architecture
 
@@ -487,29 +487,20 @@ A snapshot of where Kookr is headed. See [`docs/roadmap.md`](docs/roadmap.md) fo
 | Live badges, Community & Support, Privacy, Star History ([#119](https://github.com/kookr-ai/kookr/pull/119)) | Three-pillar README rewrite + alternatives comparison ([#110](https://github.com/kookr-ai/kookr/issues/110), [#111](https://github.com/kookr-ai/kookr/issues/111)) | Publish `kookr` to npm | Team mode and cloud deployment option |
 | CLA + Apache 2.0 relicensing ([#73](https://github.com/kookr-ai/kookr/pull/73), [#83](https://github.com/kookr-ai/kookr/pull/83)) | | Issue templates + Dependabot + secret scanning ([#94](https://github.com/kookr-ai/kookr/issues/94), [#97](https://github.com/kookr-ai/kookr/issues/97)) | |
 
-> Maintenance note: this snapshot is meant to be refreshed after each release. A formal cadence will be tracked in [`CONTRIBUTING.md`](https://github.com/kookr-ai/kookr/issues/93) once that file lands.
+> Maintenance note: this snapshot is meant to be refreshed after each release. See [`CONTRIBUTING.md`](CONTRIBUTING.md#maintainer-notes) for the maintainer cadence.
 
 ## Contributing
 
-Contributions are welcome! This project uses:
-
-- **TypeScript strict** with full type coverage
-- **Vitest** for unit/integration tests, **Playwright** for E2E
-- **Conventional Commits** for commit messages
-
-Before submitting a PR, make sure `pnpm test` passes. The pre-push hook enforces this automatically.
-
-### Contributor License Agreement
-
-Contributions to Kookr require signing the [Contributor License Agreement](CLA.md). When you open your first pull request, the CLA Assistant bot will comment with a link to the agreement and instructions for signing — typically a one-line comment posted on the PR. You only need to sign once; future contributions are covered automatically.
-
-The CLA grants the project owner a broad license to use and relicense your contributions, which keeps the door open to dual-licensing and commercial offerings while ensuring the publicly-released versions remain freely available under Apache 2.0.
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide (verification matrix, branch naming, Conventional Commits, and how the pre-push gates work). Contributions require signing the [CLA](CLA.md); the CLA Assistant bot walks you through it on your first PR. All contributors are expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Community & Support
 
 - **Bug reports & feature requests** — open a [GitHub issue](https://github.com/kookr-ai/kookr/issues).
-- **Security disclosures** — please use [GitHub Security Advisories](https://github.com/kookr-ai/kookr/security/advisories/new) (private). A formal `SECURITY.md` is tracked in [#91](https://github.com/kookr-ai/kookr/issues/91).
-- **Contributing** — see the [Contributing](#contributing) section above and [`CLA.md`](CLA.md). A dedicated `CONTRIBUTING.md` is tracked in [#93](https://github.com/kookr-ai/kookr/issues/93).
+- **Contributing** — see [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`CLA.md`](CLA.md).
+
+### Security
+
+Please report suspected vulnerabilities privately through [GitHub Security Advisories](https://github.com/kookr-ai/kookr/security/advisories/new). See [`SECURITY.md`](SECURITY.md) for supported versions, response expectations, and scope.
 
 ## Privacy
 

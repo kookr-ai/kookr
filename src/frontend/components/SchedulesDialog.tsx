@@ -117,8 +117,12 @@ export function SchedulesDialog({ onClose }: Props) {
       fetch(`/api/playbooks?cwd=${encodeURIComponent(cwd.trim())}`)
         .then((res) => res.json())
         .then((items: Playbook[]) => {
-          setPlaybooks(items);
-          setPlaybookId((current) => (current && items.some((item) => item.id === current)) ? current : '');
+          // Schedules currently key playbook lookups off `<cwd>/.kookr/playbooks/`,
+          // so non-project (user/plugin) playbooks can't be scheduled yet — hide
+          // them from the picker until the schedule path supports scope.
+          const projectOnly = items.filter((item) => item.scope === 'project');
+          setPlaybooks(projectOnly);
+          setPlaybookId((current) => (current && projectOnly.some((item) => item.id === current)) ? current : '');
         })
         .catch(() => {
           setPlaybooks([]);

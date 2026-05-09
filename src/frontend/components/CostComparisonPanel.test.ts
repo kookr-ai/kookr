@@ -103,11 +103,10 @@ describe('CostComparisonPanel', () => {
     mockFetchSequential([{ body: makeResponse({ perPlaybook: [row] }) }]);
     const el = mount();
     await flush();
-    expect(el.querySelector('.cost-per-playbook')?.textContent).toContain('oss-pr');
+    const cells = Array.from(el.querySelectorAll('.cost-per-playbook tbody td'))
+      .map((td) => td.textContent?.trim());
     // claude avg = $1.86/6 = $0.31, codex avg = $1.92/4 = $0.48 → codex 1.55×
-    expect(el.querySelector('.cost-per-playbook')?.textContent).toContain('Codex 1.55×');
-    expect(el.querySelector('.cost-per-playbook')?.textContent).toContain('×6');
-    expect(el.querySelector('.cost-per-playbook')?.textContent).toContain('×4');
+    expect(cells).toEqual(['oss-pr', '$0.31×6', '$0.48×4', 'Codex 1.55×', '— / —']);
   });
 
   test('renders aggregate cards when both agents have tasks', async () => {
@@ -118,9 +117,21 @@ describe('CostComparisonPanel', () => {
     mockFetchSequential([{ body: makeResponse({ aggregate }) }]);
     const el = mount();
     await flush();
-    expect(el.querySelectorAll('.cost-aggregate-card').length).toBe(2);
-    expect(el.textContent).toContain('Claude');
-    expect(el.textContent).toContain('Codex');
+    const cards = Array.from(el.querySelectorAll('.cost-aggregate-card')).map((card) => ({
+      title: card.querySelector('h4')?.textContent?.trim(),
+      stats: Array.from(card.querySelectorAll('.cost-stat'))
+        .map((stat) => stat.textContent?.replace(/\s+/g, ' ').trim()),
+    }));
+    expect(cards).toEqual([
+      {
+        title: 'Claude',
+        stats: ['tasks 18', 'total $4.21', 'med dur 12m00s', 'p95 dur —', 'max dur —', '👍 rate —'],
+      },
+      {
+        title: 'Codex',
+        stats: ['tasks 12', 'total $6.83', 'med dur 18m00s', 'p95 dur —', 'max dur —', '👍 rate —'],
+      },
+    ]);
   });
 
   test('renders the "—" cost cell with a dataQuality tooltip when cost is null', async () => {

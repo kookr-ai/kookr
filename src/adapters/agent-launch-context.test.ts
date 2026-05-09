@@ -28,17 +28,21 @@ describe('agent-launch-context', () => {
       serverPort: 4801,
     });
 
-    expect(context.env).toMatchObject({
+    expect(context.env).toEqual({
       KOOKR_TASK_ID: child.id,
       KOOKR_PARENT_TASK_ID: parent.id,
       KOOKR_PORT: '4801',
       KOOKR_API_BASE_URL: 'http://127.0.0.1:4801',
       KOOKR_GIT_COMMON_DIR: join(repoDir, '.git'),
     });
-    expect(context.permissionAllowlist).toContain('Bash(git *)');
-    expect(context.permissionAllowlist).toContain('Bash(curl *KOOKR_API_BASE_URL*api/tasks*)');
-    expect(context.permissionAllowlist).toContain(`Read(//${join(repoDir, '.git').slice(1)}/**)`);
-    expect(context.permissionAllowlist).toContain(`Write(//${join(repoDir, '.git').slice(1)}/**)`);
+    expect(context.permissionAllowlist).toEqual([
+      'Bash(git *)',
+      'Bash(curl *KOOKR_API_BASE_URL*api/tasks*)',
+      'Bash(curl *http://127.0.0.1:4801/api/tasks*)',
+      'Bash(curl *http://localhost:4801/api/tasks*)',
+      `Read(//${join(repoDir, '.git').slice(1)}/**)`,
+      `Write(//${join(repoDir, '.git').slice(1)}/**)`,
+    ]);
   });
 
   test('maps linked worktrees back to the shared git common dir', async () => {
@@ -79,10 +83,19 @@ describe('agent-launch-context', () => {
       checkpointDir,
     });
 
-    expect(context.env.KOOKR_CHECKPOINT_DIR).toBe(checkpointDir);
-    expect(context.permissionAllowlist).toContain(`Read(//${checkpointDir.slice(1)}/**)`);
-    expect(context.permissionAllowlist).toContain(`Write(//${checkpointDir.slice(1)}/**)`);
-    expect(context.permissionAllowlist).toContain(`Bash(${checkpointDir}/repro.sh*)`);
+    expect(context.env).toEqual({
+      KOOKR_TASK_ID: task.id,
+      KOOKR_GIT_COMMON_DIR: join(repoDir, '.git'),
+      KOOKR_CHECKPOINT_DIR: checkpointDir,
+    });
+    expect(context.permissionAllowlist).toEqual([
+      'Bash(git *)',
+      `Read(//${join(repoDir, '.git').slice(1)}/**)`,
+      `Write(//${join(repoDir, '.git').slice(1)}/**)`,
+      `Read(//${checkpointDir.slice(1)}/**)`,
+      `Write(//${checkpointDir.slice(1)}/**)`,
+      `Bash(${checkpointDir}/repro.sh*)`,
+    ]);
   });
 
   test('omits checkpoint env when checkpointDir is not provided', async () => {

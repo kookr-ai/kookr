@@ -41,9 +41,21 @@ export interface EffectivePlaybookLoop {
   };
 }
 
+/**
+ * Where a playbook was discovered. Drives both UI grouping and which directory
+ * the launcher reads the file from. Precedence on id collision: project > user > plugin.
+ *
+ * - 'project': `<cwd>/.kookr/playbooks/` — only surfaces when work path matches.
+ * - 'user':    `~/.kookr/playbooks/` (or `$KOOKR_USER_PLAYBOOKS_DIR`) — per-user personal playbooks.
+ * - 'plugin':  `<kookr-toolkit-plugin>/playbooks/` — ships with the plugin; available to every install.
+ */
+export type PlaybookScope = 'project' | 'user' | 'plugin';
+
 export interface Playbook {
-  /** Unique identifier: relative file path from .kookr/playbooks/ (e.g., "create-mr.md") */
+  /** Unique identifier: relative file path from the playbooks dir (e.g., "create-mr.md") */
   id: string;
+  /** Discovery origin — drives where the launcher reads the file from. */
+  scope: PlaybookScope;
   /** Human-readable name from frontmatter */
   name: string;
   /** Short description from frontmatter */
@@ -66,4 +78,10 @@ export interface Playbook {
   cwd?: string;
   /** The CWD where this playbook was discovered */
   sourceCwd: string;
+  /**
+   * Frontmatter `repo-tags`. When non-empty, plugin-tier playbooks are only
+   * visible in cwds whose detected repo-tags intersect this set. Ignored for
+   * project/user scope (those are explicitly placed by the user).
+   */
+  repoTags?: string[];
 }

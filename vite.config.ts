@@ -10,6 +10,9 @@ const devHost: string | boolean = process.env.KOOKR_DEV_HOST ?? true;
 export default defineConfig({
   plugins: [react()],
   root: 'src/frontend',
+  define: {
+    __KOOKR_DISABLE_ONBOARDING__: JSON.stringify(process.env.KOOKR_DISABLE_ONBOARDING ?? ''),
+  },
   build: {
     outDir: '../../dist/frontend',
     emptyOutDir: true,

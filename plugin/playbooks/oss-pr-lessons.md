@@ -1,6 +1,7 @@
 ---
 name: OSS PR Lessons
 description: Analyze closed PRs from any repository to learn contribution patterns — parameterized replacement for per-repo playbooks
+repo-tags: [github]
 parameters:
   - name: repoFullName
     description: "Full repository name (owner/repo, e.g., microsoft/vscode)"

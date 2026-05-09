@@ -124,16 +124,26 @@ function ActivityItemView({
   item: ActivityItem;
   onOpenDiff?: (target: DiffClickTarget) => void;
 }) {
+  const LONG_MESSAGE_LIMIT = 900;
   switch (item.type) {
-    case 'user_message':
+    case 'user_message': {
+      const isLong = item.text.length > LONG_MESSAGE_LIMIT;
+      const preview = isLong ? `${item.text.slice(0, LONG_MESSAGE_LIMIT).trimEnd()}...` : item.text;
       return (
-        <div className="act-msg act-msg-user">
+        <div className={`act-msg act-msg-user${isLong ? ' act-msg-collapsed' : ''}`}>
           <div className="act-msg-header">
             <span className="act-msg-label act-label-user">You</span>
           </div>
-          <div className="act-msg-text">{renderMarkdown(item.text)}</div>
+          <div className="act-msg-text">{renderMarkdown(preview)}</div>
+          {isLong && (
+            <details className="act-msg-full">
+              <summary>Show full prompt</summary>
+              <div className="act-msg-text act-msg-full-text">{renderMarkdown(item.text)}</div>
+            </details>
+          )}
         </div>
       );
+    }
 
     case 'agent_message':
       return (

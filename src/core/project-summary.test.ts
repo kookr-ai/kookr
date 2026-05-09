@@ -178,6 +178,18 @@ describe('computeProjectSummaries', () => {
     expect(summaries[0].project).toBe('github.com/grafana/grafana');
   });
 
+  test('includes sidebar-persisted projects with no agents or contributions', () => {
+    const summaries = computeProjectSummaries({
+      agents: [],
+      ledgerAnalytics,
+      configStore,
+      sidebarProjects: ['github.com/example/repo'],
+    });
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].project).toBe('github.com/example/repo');
+    expect(summaries[0].displayName).toBe('example/repo');
+  });
+
   test('deduplicates between skill-discovered and manual config', () => {
     configStore.setConfig('github.com/org/repo', { tracked: true });
     const summaries = computeProjectSummaries({

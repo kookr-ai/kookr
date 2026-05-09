@@ -30,6 +30,7 @@ const noCwdPlaybook: Playbook = {
   tags: [],
   body: 'Do it once.',
   sourceCwd: '/repo',
+  scope: 'project',
 };
 
 const pinnedCwdPlaybook: Playbook = {
@@ -41,6 +42,7 @@ const pinnedCwdPlaybook: Playbook = {
   tags: [],
   body: 'Do it in /etc/elsewhere.',
   sourceCwd: '/repo',
+  scope: 'project',
   cwd: '/etc/elsewhere',
 };
 
