@@ -9,15 +9,15 @@ Show the key interactions within the adapter layer.
 ```mermaid
 sequenceDiagram
   participant BE as Backend
-  participant SessionMgr as Terminal Session Manager
+  participant SessionMgr as TerminalBackend / AgentAdapter
   participant Term as Terminal Session
   participant CC as Claude Code
   participant ES as Event Source
   participant Sup as Supervisor
 
   BE->>SessionMgr: launch(prompt, cwd)
-  SessionMgr->>Term: Create terminal session (tmux new-session)
-  SessionMgr->>Term: send-keys: launch claude in interactive mode with prompt + hooks configured
+  SessionMgr->>Term: Create dtach-backed terminal session
+  SessionMgr->>Term: Launch agent in interactive mode with prompt + hooks configured
   Term->>CC: Agent starts in interactive mode
   SessionMgr->>SessionMgr: Store terminal session handle + start transcript JSONL file-watch
   SessionMgr->>SessionMgr: Call tasks.addSession() to persist session metadata in tasks.json (ADR-008)
@@ -27,7 +27,7 @@ sequenceDiagram
   Note over CC,ES: Hooks provide real-time events; transcript JSONL provides full history
   CC->>Term: Agent completes
   CC-->>ES: Hook event (Stop) via stdin JSON
-  ES-->>Sup: AgentEvent {type: "completed"}
+  ES-->>Sup: AgentEvent {type: "stop"}
   Term-->>SessionMgr: Process exit detected
   SessionMgr->>SessionMgr: Call tasks.updateSession() to update session metadata in tasks.json (ADR-008)
   SessionMgr->>SessionMgr: Clean up terminal session
@@ -43,8 +43,8 @@ sequenceDiagram
   participant CC as Claude Code
 
   BE->>InputSender: sendInput(agentId, input)
-  InputSender->>Term: send-keys(input + Enter)
-  Term->>CC: Keystrokes delivered to agent
+  InputSender->>Term: write(input + Enter) to child PTY
+  Term->>CC: Bytes delivered to agent
   Note over CC: Agent receives input and resumes
 ```
 
@@ -66,7 +66,7 @@ sequenceDiagram
 
 - The adapter never interprets events. It produces a flat stream of `AgentEvent` objects. The supervisor decides what they mean.
 - Terminal session IDs are managed internally by the adapter. Unlike the previous headless approach, there is no session ID mismatch issue (issue #5, resolved by ADR-007).
-- **~~Resume serialization~~ (issue #9, resolved by ADR-007):** No longer needed. Input is delivered via terminal keystrokes (send-keys) to the running agent process — no subprocess spawning, no serialization required.
+- **~~Resume serialization~~ (issue #9, resolved by ADR-007):** No longer needed. Input is delivered through the terminal backend's byte-write path to the running agent process — no subprocess spawning, no serialization required.
 
 ## Evidence
 

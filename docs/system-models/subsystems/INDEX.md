@@ -15,6 +15,8 @@ All three subsystems are core to V1. They were selected because:
 - **agent-adapter** bridges to external CLI processes via managed terminal sessions (ADR-007) — most coupling to external systems
 - **attention-router** drives the primary UX loop — most impact on developer experience
 
-## ADR-007 Update (2026-03-24)
+## Terminal Backend Updates
 
-All subsystem models updated to reflect ADR-007: managed terminal sessions replace headless mode. Agents run in interactive mode inside managed terminal sessions (tmux). Input via terminal keystrokes (send-keys), monitoring via terminal output capture. The `AskUserQuestion` behavioral contract is no longer needed — interactive mode is natively blocking.
+All subsystem models were updated for ADR-007 on 2026-03-24: managed terminal sessions replace headless mode, so agents run continuously in interactive mode and input is delivered to the running process.
+
+Updated 2026-05-09: ADR-014 is now the current terminal persistence decision. Production sessions are dtach-only through `LocalDtachBackend`; browser terminal views attach through `SessionBridge`; input is PTY byte writes rather than tmux `send-keys`; monitoring is structured hook JSONL, transcript JSONL, and watchdog signals rather than terminal-output polling.

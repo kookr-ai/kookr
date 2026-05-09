@@ -2,25 +2,27 @@
 
 ## Purpose
 
-The agent adapter bridges Kookr to the supported coding-agent CLIs — **Claude Code** and **Codex CLI** (updated 2026-04-10). It manages terminal sessions through a `TerminalBackend` abstraction (dtach by default per ADR-014; tmux as legacy escape hatch), consumes structured data from hooks and transcript files, and delivers developer input as bytes to the child PTY (dtach) or `send-keys` (tmux). A thin `RoutingAgentAdapter` dispatches calls to the per-agent-type adapter (`claude-code-adapter.ts`, `codex-cli-adapter.ts`) behind the common `AgentAdapter` interface. The layer exposes a uniform `AgentEvent` stream for the supervisor to consume.
+The agent adapter bridges Kookr to the supported coding-agent CLIs — **Claude Code** and **Codex CLI** (updated 2026-04-10). It manages terminal sessions through the `TerminalBackend` abstraction; production is dtach-only through `LocalDtachBackend` per ADR-014 and V8. It consumes structured data from hooks and transcript files, and delivers developer input as bytes to the child PTY. A thin `RoutingAgentAdapter` dispatches calls to the per-agent-type adapter (`claude-code-adapter.ts`, `codex-cli-adapter.ts`) behind the common `AgentAdapter` interface. The layer exposes a uniform `AgentEvent` stream for the supervisor to consume.
+
+> Updated 2026-05-09: Removed stale tmux escape-hatch, `SessionMonitor`, and `capture-pane` descriptions. `src/server/start.ts` rejects non-dtach backends; the ring buffer lives inside `LocalDtachBackend`.
 
 ## Scope
 
 - Create managed terminal sessions and launch the configured agent binary in interactive mode (ADR-007 interactive rationale, ADR-014 dtach persistence)
 - Tail transcript JSONL (`~/.claude/projects/<project>/<session_id>.jsonl` for Claude Code; Codex CLI equivalent) for structured agent events
 - Receive real-time hook events via per-session JSONL files. Claude Code hooks include `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `PermissionRequest`, `Notification`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` — see `HookEventName` in `src/core/types.ts:2-14`. Codex CLI advertises its supported subset via `codexHookCapabilities` on `session_start`
-- Stream agent output to the browser: under dtach, `SessionMonitor`'s ring buffer is replayed to every `SessionBridge` attach; under tmux, `capture-pane` is called on demand for display snapshots
+- Stream agent output to the browser: `LocalDtachBackend` maintains a persistent attach and ring buffer; every `SessionBridge` attach receives recent bytes plus live output
 - Map structured data into normalized `AgentEvent` objects — no ANSI terminal parsing needed
-- Send developer input as bytes to the child PTY (dtach) or via `send-keys` (tmux)
+- Send developer input as bytes to the child PTY
 - Terminate agent processes (SIGTERM -> SIGKILL) and clean up terminal sessions + dtach sockets
-- Maintain per-adapter circuit breakers on the legacy tmux path (`circuit-breaker-terminal-manager.ts`, `circuit-breaker-github-fetcher.ts`) and surface quota state via `quota-adapter.ts`
+- Surface quota state via `quota-adapter.ts` and wrap GitHub fetches with `circuit-breaker-github-fetcher.ts`; there is no terminal-backend circuit-breaker wrapper on the dtach path
 
 ## Owned Responsibilities
 
 - Terminal session lifecycle (create, monitor, destroy)
 - Transcript JSONL tailing and hook event reception — normalization into `AgentEvent` stream
 - Per-agent-type dispatch through `RoutingAgentAdapter`
-- Input delivery via terminal keystrokes (send-keys)
+- Input delivery via terminal backend byte writes
 - Process exit detection within terminal sessions
 
 ## Key Dependencies

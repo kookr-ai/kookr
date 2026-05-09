@@ -55,7 +55,7 @@ Current data available for analysis:
 - **In-memory anomaly state** (`Monitor.getSnapshot()`) — current anomalies
 
 Data **not currently captured** but needed:
-- User input history (what the developer sent via `send-keys`)
+- User input history (what the developer sent through the terminal backend input path)
 - Attention queue transitions (enqueue, skip, snooze, advance timestamps)
 - Anomaly lifecycle (detection → resolution, with resolution method)
 

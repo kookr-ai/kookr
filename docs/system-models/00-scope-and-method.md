@@ -2,18 +2,18 @@
 
 ## Purpose
 
-Document the V1 design of Kookr before implementation begins, to validate subsystem boundaries and surface design smells early.
+Document the current implemented Kookr architecture, validate subsystem boundaries, and surface design smells from code-backed evidence.
 
 ## System In Scope
 
-Kookr V1: local Node.js backend + browser SPA that launches, monitors, and routes developer attention across multiple AI coding agents (Claude Code only for V1). Agents run in interactive mode inside managed terminal sessions (tmux); Kookr monitors via terminal output capture and sends input via terminal keystrokes (ADR-007). Kookr only manages agents it launches itself — no discovery of external agents in V1.
+Kookr: local Node.js backend + browser SPA that launches, monitors, and routes developer attention across multiple AI coding agents. The implemented managed agents are Claude Code and Codex CLI. Agents run in interactive mode inside dtach-backed managed terminal sessions through `LocalDtachBackend`; Kookr monitors structured hook JSONL and transcript JSONL, streams terminal bytes through `SessionBridge`, and sends developer input as PTY bytes through the `TerminalBackend` abstraction. Kookr only manages agents it launches itself.
+
+> Updated 2026-05-09: This file now models the implemented system, not the pre-implementation V1 design. Codex CLI and dtach-only terminal persistence are in scope; Gemini CLI remains deferred.
 
 ## Out Of Scope
 
-- Codex CLI and Gemini CLI adapters (Phase 4)
+- Gemini CLI adapter
 - LLM-powered supervisor (Tier 2 — V2)
-- Plugin/extension system
-- Session persistence and analytics
 - Cloud deployment
 - Windows support
 
@@ -22,15 +22,16 @@ Kookr V1: local Node.js backend + browser SPA that launches, monitors, and route
 - `README.md` — problem statement, design principles
 - `docs/features.md` — user-facing feature catalog (F1-F5)
 - `docs/architecture.md` — system design, component layout, type definitions
-- `docs/roadmap.md` — 4-phase implementation plan
-- `docs/adr/001-007` — accepted and proposed architecture decisions (ADR-007: managed terminal sessions)
+- `docs/roadmap.md` — historical 4-phase implementation plan
+- `docs/adr/001-015` — accepted and superseding architecture decisions
+- `src/core/`, `src/adapters/`, `src/server/`, `src/frontend/`, `src/shared/`, `src/integrations/` — implemented architecture
 
 ## Modeling Method
 
-MBSE-lite: C4-inspired structural views + Mermaid behavioral views (sequences, state machines). Evidence-first — grounded in the design docs listed above.
+MBSE-lite: C4-inspired structural views + Mermaid behavioral views (sequences, state machines). Evidence-first — grounded in both the design docs and the current source tree listed above.
 
 ## Confidence And Limitations
 
-- **High confidence:** System context, container boundaries, agent lifecycle states — well-documented in ADRs with empirical research.
-- **Medium confidence:** Supervisor internals, attention prioritization — design intent is clear but implementation details are TBD.
-- **Limitation:** No source code exists yet. Models reflect designed architecture, not observed runtime behavior.
+- **High confidence:** System context, container boundaries, task lifecycle, terminal backend model — backed by ADRs and current TypeScript implementation.
+- **Medium confidence:** Long-running operational workflows such as Ralph loops, checkpoint cycling, and workspace cleanup — implemented but evolving quickly.
+- **Limitation:** The models summarize current behavior and do not enumerate every frontend component or test helper. Use the source tree as the authoritative exhaustive file list.

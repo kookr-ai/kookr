@@ -42,7 +42,7 @@ stateDiagram-v2
 | Process killed externally (SIGKILL) | Process exit detected in terminal session. Adapter transitions to Exited. Supervisor detects error |
 | Terminal session crashes (dtach master SIGKILL'd) | Adapter detects lost session via `TerminalBackend.isAlive()` returning false. All agents in affected sessions transition to Exited/Failed |
 | Orphan terminal session after Kookr crash | Dtach master persists detached. On Kookr restart, `reconciliation.ts` queries `LocalDtachBackend` (tmux removed in V8) and either reattaches (manifest → `'recovered'` if pid ownership cannot be verified) or cleans up |
-| ~~Resume called while still streaming (issue #9)~~ | Resolved by ADR-007. No more resume — input delivered via send-keys to running process |
+| ~~Resume called while still streaming (issue #9)~~ | Resolved by ADR-007. No more resume — input delivered through the terminal backend's byte-write path to the running process |
 | ~~Resume fails with wrong session ID (issue #5)~~ | Resolved by ADR-007. No more resume subprocess |
 
 ## Evidence
