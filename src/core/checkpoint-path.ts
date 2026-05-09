@@ -5,8 +5,10 @@ import { createHash } from 'node:crypto';
 const REPO_KEY_MAX_SLUG_LEN = 100;
 const REPO_KEY_HASH_LEN = 8;
 export const SEMANTIC_CHECKPOINT_SCHEMA_VERSION = 'semantic-checkpoint.v1';
+export const MEMORY_WRITE_CANDIDATES_SCHEMA_VERSION = 'memory-write-candidates.v1';
 export const CHECKPOINT_JSON_FILENAME = 'CHECKPOINT.json';
 export const CHECKPOINT_MARKDOWN_FILENAME = 'CHECKPOINT.md';
+export const MEMORY_WRITE_CANDIDATES_FILENAME = 'memory_write_candidates.json';
 
 /**
  * Replace filesystem-unsafe characters with a single dash. Used for branch
@@ -169,6 +171,11 @@ export interface SemanticCheckpointV1 {
   memory_write_candidates: unknown[];
 }
 
+export interface MemoryWriteCandidatesV1 {
+  schema_version: typeof MEMORY_WRITE_CANDIDATES_SCHEMA_VERSION;
+  candidates: unknown[];
+}
+
 export type SemanticCheckpointInspection =
   | { kind: 'json'; jsonPath: string; markdownPath: string }
   | {
@@ -182,6 +189,11 @@ export type SemanticCheckpointInspection =
       reason: 'no_checkpoint_files' | 'checkpoint_dir_unreadable' | 'json_invalid' | 'json_unreadable';
       warning?: string;
     };
+
+export type MemoryWriteCandidatesInspection =
+  | { kind: 'valid'; path: string }
+  | { kind: 'missing'; path: string }
+  | { kind: 'invalid'; path: string; warning: string };
 
 const REQUIRED_ARRAY_FIELDS = [
   'decisions',
@@ -198,6 +210,16 @@ const VALID_VERDICTS = new Set<SemanticCheckpointVerdict>([
   'blocked',
   'stalled',
   'complete',
+]);
+
+const VALID_VERIFIER_STATUSES = new Set(['unverified', 'passed', 'failed']);
+const VALID_APPROVAL_STATUSES = new Set(['pending', 'approved', 'rejected']);
+const VALID_LIFECYCLE_STATUSES = new Set([
+  'proposed',
+  'ready_for_review',
+  'promoted',
+  'rejected',
+  'superseded',
 ]);
 
 async function fileExists(path: string): Promise<boolean> {
@@ -230,6 +252,70 @@ function validateSemanticCheckpoint(value: unknown): string | null {
       return `${field} must be an array`;
     }
   }
+  return null;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasNonEmptyString(record: Record<string, unknown>, field: string): boolean {
+  return typeof record[field] === 'string' && record[field].trim() !== '';
+}
+
+function validateMemoryWriteCandidates(value: unknown): string | null {
+  if (!isPlainRecord(value)) {
+    return 'root must be an object';
+  }
+  if (value.schema_version !== MEMORY_WRITE_CANDIDATES_SCHEMA_VERSION) {
+    return `schema_version must be ${MEMORY_WRITE_CANDIDATES_SCHEMA_VERSION}`;
+  }
+  if (!Array.isArray(value.candidates)) {
+    return 'candidates must be an array';
+  }
+
+  for (const [index, candidate] of value.candidates.entries()) {
+    if (!isPlainRecord(candidate)) {
+      return `candidates[${index}] must be an object`;
+    }
+    if (!hasNonEmptyString(candidate, 'id')) {
+      return `candidates[${index}].id must be a non-empty string`;
+    }
+    if (!isPlainRecord(candidate.target)) {
+      return `candidates[${index}].target must be an object`;
+    }
+    if (!Array.isArray(candidate.evidence)) {
+      return `candidates[${index}].evidence must be an array`;
+    }
+    if (!isPlainRecord(candidate.verifier) || typeof candidate.verifier.status !== 'string') {
+      return `candidates[${index}].verifier.status must be a string`;
+    }
+    if (!VALID_VERIFIER_STATUSES.has(candidate.verifier.status)) {
+      return `candidates[${index}].verifier.status must be one of unverified, passed, failed`;
+    }
+    if (!isPlainRecord(candidate.approval) || typeof candidate.approval.status !== 'string') {
+      return `candidates[${index}].approval.status must be a string`;
+    }
+    if (!VALID_APPROVAL_STATUSES.has(candidate.approval.status)) {
+      return `candidates[${index}].approval.status must be one of pending, approved, rejected`;
+    }
+    if (!isPlainRecord(candidate.lifecycle)) {
+      return `candidates[${index}].lifecycle must be an object`;
+    }
+    if (typeof candidate.lifecycle.status !== 'string') {
+      return `candidates[${index}].lifecycle.status must be a string`;
+    }
+    if (!VALID_LIFECYCLE_STATUSES.has(candidate.lifecycle.status)) {
+      return `candidates[${index}].lifecycle.status must be one of proposed, ready_for_review, promoted, rejected, superseded`;
+    }
+    if (!hasNonEmptyString(candidate.lifecycle, 'created_at')) {
+      return `candidates[${index}].lifecycle.created_at must be a non-empty string`;
+    }
+    if (!isPlainRecord(candidate.promotion)) {
+      return `candidates[${index}].promotion must be an object`;
+    }
+  }
+
   return null;
 }
 
@@ -271,9 +357,49 @@ export async function inspectSemanticCheckpoint(checkpointDir: string): Promise<
   return { kind: 'json', jsonPath, markdownPath };
 }
 
+/**
+ * Inspect the review-only memory candidate sidecar. This is intentionally
+ * fail-open: malformed candidate files are warnings, never launch blockers,
+ * and Kookr never promotes their contents automatically.
+ */
+export async function inspectMemoryWriteCandidates(checkpointDir: string): Promise<MemoryWriteCandidatesInspection> {
+  const path = join(checkpointDir, MEMORY_WRITE_CANDIDATES_FILENAME);
+  if (!(await fileExists(path))) {
+    return { kind: 'missing', path };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, 'utf-8'));
+  } catch (err) {
+    return {
+      kind: 'invalid',
+      path,
+      warning: `Invalid memory write candidates JSON at ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const validationError = validateMemoryWriteCandidates(parsed);
+  if (validationError) {
+    return {
+      kind: 'invalid',
+      path,
+      warning: `Invalid memory write candidates JSON at ${path}: ${validationError}`,
+    };
+  }
+
+  return { kind: 'valid', path };
+}
+
 function maybeWarn(inspection: SemanticCheckpointInspection): void {
   if ('warning' in inspection && inspection.warning) {
     console.warn(`[checkpoint] ${inspection.warning}; falling back without breaking launch.`);
+  }
+}
+
+function maybeWarnMemoryCandidates(inspection: MemoryWriteCandidatesInspection): void {
+  if (inspection.kind === 'invalid') {
+    console.warn(`[checkpoint] ${inspection.warning}; preserving the file without automatic promotion.`);
   }
 }
 
@@ -289,14 +415,28 @@ export async function buildCheckpointLoadInstruction(checkpointDir?: string): Pr
   if (!checkpointDir) return CHECKPOINT_LOAD_INSTRUCTION;
 
   const inspection = await inspectSemanticCheckpoint(checkpointDir);
+  const memoryCandidatesInspection = await inspectMemoryWriteCandidates(checkpointDir);
   maybeWarn(inspection);
+  maybeWarnMemoryCandidates(memoryCandidatesInspection);
 
+  const candidateProtocol =
+    `${MEMORY_WRITE_CANDIDATES_FILENAME} is the optional review-only memory candidate sidecar using schema_version ` +
+    `"${MEMORY_WRITE_CANDIDATES_SCHEMA_VERSION}". It must contain candidates with target, evidence, verifier.status, ` +
+    `approval.status, lifecycle, and promotion metadata. If present and valid, preserve it across checkpoint/resume; ` +
+    `do not promote candidates into KB, wisdom, or skills automatically.`;
+  const candidateStatus =
+    memoryCandidatesInspection.kind === 'valid'
+      ? `Valid ${MEMORY_WRITE_CANDIDATES_FILENAME} detected; preserve it across checkpoint/resume.`
+      : memoryCandidatesInspection.kind === 'invalid'
+        ? `${MEMORY_WRITE_CANDIDATES_FILENAME} is invalid. Warn that ${MEMORY_WRITE_CANDIDATES_FILENAME} was invalid, then continue without promoting candidates automatically.`
+        : `High-risk tasks may write $KOOKR_CHECKPOINT_DIR/${MEMORY_WRITE_CANDIDATES_FILENAME} for review-only memory updates.`;
   const writeProtocol =
     `When a user message asks you to update checkpoints (Kookr sends this proactively before /compact), ` +
     `use the Write tool to refresh both $KOOKR_CHECKPOINT_DIR/${CHECKPOINT_MARKDOWN_FILENAME} and ` +
     `$KOOKR_CHECKPOINT_DIR/${CHECKPOINT_JSON_FILENAME}. The JSON file must use ` +
     `${SEMANTIC_CHECKPOINT_SCHEMA_VERSION} with task_id, repo, worktree, branch, verdict, decisions, ` +
-    `evidence, files_changed, tests_run, open_risks, next_actions, and memory_write_candidates.`;
+    `evidence, files_changed, tests_run, open_risks, next_actions, and memory_write_candidates. ` +
+    `${candidateProtocol} ${candidateStatus}`;
 
   if (inspection.kind === 'json') {
     return `Kookr checkpoint protocol: valid ${CHECKPOINT_JSON_FILENAME} detected. Read $KOOKR_CHECKPOINT_DIR/${CHECKPOINT_JSON_FILENAME} as your very first action in this session; it is the durable semantic state from previous tasks on the same branch. ${CHECKPOINT_MARKDOWN_FILENAME} remains the human-readable companion. ${writeProtocol} See the oss-task-checkpointing skill for the full protocol.`;
@@ -317,7 +457,7 @@ export async function buildCheckpointLoadInstruction(checkpointDir?: string): Pr
 }
 
 export const CHECKPOINT_LOAD_INSTRUCTION =
-  `Kookr checkpoint protocol: if the KOOKR_CHECKPOINT_DIR environment variable is set, prefer $KOOKR_CHECKPOINT_DIR/${CHECKPOINT_JSON_FILENAME} when it exists and validates as ${SEMANTIC_CHECKPOINT_SCHEMA_VERSION}; otherwise fall back to $KOOKR_CHECKPOINT_DIR/${CHECKPOINT_MARKDOWN_FILENAME} when present. When a user message asks you to update checkpoints (Kookr sends this proactively before /compact), use the Write tool to refresh both $KOOKR_CHECKPOINT_DIR/${CHECKPOINT_MARKDOWN_FILENAME} and $KOOKR_CHECKPOINT_DIR/${CHECKPOINT_JSON_FILENAME}, then continue. See the oss-task-checkpointing skill for the full protocol.`;
+  `Kookr checkpoint protocol: if the KOOKR_CHECKPOINT_DIR environment variable is set, prefer $KOOKR_CHECKPOINT_DIR/${CHECKPOINT_JSON_FILENAME} when it exists and validates as ${SEMANTIC_CHECKPOINT_SCHEMA_VERSION}; otherwise fall back to $KOOKR_CHECKPOINT_DIR/${CHECKPOINT_MARKDOWN_FILENAME} when present. When a user message asks you to update checkpoints (Kookr sends this proactively before /compact), use the Write tool to refresh both $KOOKR_CHECKPOINT_DIR/${CHECKPOINT_MARKDOWN_FILENAME} and $KOOKR_CHECKPOINT_DIR/${CHECKPOINT_JSON_FILENAME}, then continue. High-risk tasks may write $KOOKR_CHECKPOINT_DIR/${MEMORY_WRITE_CANDIDATES_FILENAME} using schema_version "${MEMORY_WRITE_CANDIDATES_SCHEMA_VERSION}" with target, evidence, verifier.status, approval.status, lifecycle, and promotion metadata; preserve it across checkpoint/resume and do not promote candidates into KB, wisdom, or skills automatically. See the oss-task-checkpointing skill for the full protocol.`;
 
 // Test-only export: do not import this from production code.
 export const __test__ = { repoKeyFor };
