@@ -57,6 +57,7 @@ describe('implement-github-issue playbook', () => {
   });
 
   test('prompts GitHub issue agents to report KB hits, misses, and stale warnings', () => {
+    expect(pb.dependencies).toEqual(['kb']);
     expect(pb.body).toContain('Phase 2.5: Apply KB-First Task Policy');
     expect(pb.body).toContain('kb search "<2-line gist of the issue and intended work>"');
     expect(pb.body).toContain('KB hits: ...');

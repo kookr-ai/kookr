@@ -1,4 +1,5 @@
-import type { Playbook, EffectivePlaybookLoop, PlaybookParameter, PlaybookParameterOption, PlaybookScope } from './playbook.js';
+import type { Playbook, EffectivePlaybookLoop, LaunchDependency, PlaybookParameter, PlaybookParameterOption, PlaybookScope } from './playbook.js';
+import { LAUNCH_DEPENDENCIES } from './playbook.js';
 
 export const PLAYBOOK_LOOP_DEFAULTS = {
   iterationCap: 6,
@@ -40,6 +41,7 @@ export function parsePlaybook(
     ? buildEffectiveLoop(loop.value)
     : undefined;
   const repoTags = parseStringArray(meta['repo-tags']);
+  const dependencies = parseLaunchDependencies(meta.dependencies);
 
   return {
     id: relativePath,
@@ -54,6 +56,7 @@ export function parsePlaybook(
     ...(loop.error ? { loopValidationError: loop.error } : {}),
     body: body.trim(),
     ...(typeof meta.cwd === 'string' && meta.cwd ? { cwd: meta.cwd } : {}),
+    ...(dependencies.length > 0 ? { dependencies } : {}),
     sourceCwd,
     ...(repoTags.length > 0 ? { repoTags } : {}),
   };
@@ -415,6 +418,16 @@ function parseOptions(raw: unknown[]): PlaybookParameterOption[] {
 function parseStringArray(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((item): item is string => typeof item === 'string');
+}
+
+function parseLaunchDependencies(raw: unknown): LaunchDependency[] {
+  const values = parseStringArray(raw).map((item) => item.trim()).filter(Boolean);
+  for (const value of values) {
+    if (!(LAUNCH_DEPENDENCIES as readonly string[]).includes(value)) {
+      throw new PlaybookParseError(`Unsupported launch dependency: ${value}`);
+    }
+  }
+  return [...new Set(values)] as LaunchDependency[];
 }
 
 /**

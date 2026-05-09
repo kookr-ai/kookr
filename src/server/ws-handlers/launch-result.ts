@@ -1,5 +1,6 @@
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { LaunchResult } from '../launch-service.js';
+import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 
 /**
  * Emit result-aware feedback after a launch/relaunch/launchPlaybook attempt.
@@ -24,11 +25,21 @@ export function handleLaunchResult(
   if (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[launch] failed prompt="${promptExcerpt}" err=${message}`);
+    const details = err instanceof LaunchPreflightError
+      ? err.findings.map((finding) =>
+          [
+            `Dependency: ${finding.dependency}`,
+            `Failure mode: ${finding.category}`,
+            finding.detail ? `Detail: ${finding.detail}` : undefined,
+            `Recommended action: ${finding.recommendedAction}`,
+          ].filter(Boolean).join('\n'),
+        ).join('\n\n')
+      : '';
     send({
       type: 'alert',
       agentId: '',
       summary: `Error starting "${promptExcerpt}": ${message}`,
-      details: '',
+      details,
       severity: 'critical',
     });
     return { duplicate: false };

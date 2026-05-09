@@ -2,6 +2,7 @@
 name: Implement GitHub Issue
 description: Pick a GitHub issue (or batch), implement it in a worktree, and open a PR
 tags: [workflow, loopable]
+dependencies: [kb]
 parameters:
   - name: issueSelector
     description: "Blank (next eligible open issue), issue numbers (50, 565, 566), or filter (label:bug,enhancement)"

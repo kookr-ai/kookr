@@ -15,6 +15,7 @@ import type { ClientMessage } from './messages.js';
 const autonomyLevel = z.enum(['supervised', 'autonomous']);
 const agentType = z.enum(['claude-code', 'codex-cli']);
 const playbookScope = z.enum(['project', 'user', 'plugin']);
+const launchDependency = z.enum(['kb']);
 const anomalyType = z.enum([
   'needs_input',
   'permission_blocked',
@@ -58,12 +59,12 @@ const telemetryEventType = z.enum([
   'suggestion_lifecycle',
 ]);
 
-const telemetryEvent = z.looseObject({
+const telemetryEvent = z.object({
   type: telemetryEventType,
   timestamp: z.string(),
   sessionId: z.string(),
   platform: z.enum(['linux', 'darwin', 'wsl2', 'unknown']),
-});
+}).passthrough();
 
 const projectConfigPartial = z.object({
   project: z.string().optional(),
@@ -104,7 +105,7 @@ const launchPlaybookMessage = z.object({
   }
 });
 
-const ClientMessageSchemaImpl = z.discriminatedUnion('type', [
+const ClientMessageSchemaImpl = z.union([
   z.object({ type: z.literal('respond'), agentId: z.string(), input: z.string() }),
   z.object({ type: z.literal('respondAll'), agentIds: z.array(z.string()), input: z.string() }),
   z.object({ type: z.literal('directReply'), agentId: z.string(), input: z.string() }),
@@ -128,6 +129,7 @@ const ClientMessageSchemaImpl = z.discriminatedUnion('type', [
     criteria: z.string().optional(),
     autonomy: autonomyLevel.optional(),
     agentType: agentType.optional(),
+    dependencies: z.array(launchDependency).optional(),
   }),
   z.object({
     type: z.literal('completeTask'),
@@ -157,6 +159,7 @@ const ClientMessageSchemaImpl = z.discriminatedUnion('type', [
     taskId: z.string(),
     prompt: z.string(),
     agentType: agentType.optional(),
+    dependencies: z.array(launchDependency).optional(),
   }),
   z.object({ type: z.literal('cancelTask'), taskId: z.string() }),
   z.object({ type: z.literal('reopenTask'), taskId: z.string() }),
@@ -241,12 +244,44 @@ void _driftUnionToSchema;
  * the operator can see which field tripped validation.
  */
 export function summarizeZodIssues(error: z.ZodError): string {
-  if (error.issues.length === 0) return 'validation failed';
-  return error.issues
+  const issues = flattenZodIssues(error.issues);
+  if (issues.length === 0) return 'validation failed';
+  return issues
     .slice(0, 5)
     .map((issue) => {
       const path = issue.path.length === 0 ? '(root)' : issue.path.join('.');
       return `${path}: ${issue.message}`;
     })
     .join('; ');
+}
+
+function flattenZodIssues(issues: z.ZodIssue[]): z.ZodIssue[] {
+  const flattened = issues.flatMap((issue) => {
+    if (issue.code === 'invalid_union') {
+      const unionIssueLists = getUnionIssueLists(issue);
+      const bestMatch = [...unionIssueLists].sort((a, b) => scoreUnionIssues(a) - scoreUnionIssues(b))[0];
+      return bestMatch ?? [];
+    }
+    return [issue];
+  });
+  return flattened.sort((a, b) => {
+    const aSpecific = a.path.length > 0 && a.path[0] !== 'type';
+    const bSpecific = b.path.length > 0 && b.path[0] !== 'type';
+    if (aSpecific === bSpecific) return 0;
+    return aSpecific ? -1 : 1;
+  });
+}
+
+function getUnionIssueLists(issue: z.ZodIssue): z.ZodIssue[][] {
+  const raw = issue as unknown as {
+    unionErrors?: z.ZodError[];
+    errors?: z.ZodIssue[][];
+  };
+  if (raw.unionErrors) return raw.unionErrors.map((error) => error.issues);
+  return raw.errors ?? [];
+}
+
+function scoreUnionIssues(issues: z.ZodIssue[]): number {
+  const discriminatorIssues = issues.filter((issue) => issue.path[0] === 'type').length;
+  return discriminatorIssues * 100 + issues.length;
 }

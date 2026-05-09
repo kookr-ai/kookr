@@ -51,6 +51,9 @@ export interface EffectivePlaybookLoop {
  */
 export type PlaybookScope = 'project' | 'user' | 'plugin';
 
+export const LAUNCH_DEPENDENCIES = ['kb'] as const;
+export type LaunchDependency = typeof LAUNCH_DEPENDENCIES[number];
+
 export interface Playbook {
   /** Unique identifier: relative file path from the playbooks dir (e.g., "create-mr.md") */
   id: string;
@@ -76,6 +79,8 @@ export interface Playbook {
   body: string;
   /** Optional target CWD declared in frontmatter — overrides the dialog CWD */
   cwd?: string;
+  /** External services this playbook needs before an agent starts. */
+  dependencies?: LaunchDependency[];
   /** The CWD where this playbook was discovered */
   sourceCwd: string;
   /**
