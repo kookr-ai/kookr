@@ -73,6 +73,8 @@ describe('CheckpointCycler', () => {
       expect(actions[0].text).toContain('CHECKPOINT.md');
       expect(actions[0].text).toContain('CHECKPOINT.json');
       expect(actions[0].text).toContain('semantic-checkpoint.v1');
+      expect(actions[0].text).toContain('memory_write_candidates.json');
+      expect(actions[0].text).toContain('do not promote candidates automatically');
     }
     expect(cycler.getState('s1')!.phase).toBe('prompting');
   });

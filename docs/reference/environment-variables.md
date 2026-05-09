@@ -36,7 +36,7 @@ not user configuration knobs.
 | `KOOKR_PARENT_TASK_ID` | Injected only for child tasks | Task id string | Identifies the parent task for nested agent work. |
 | `KOOKR_API_BASE_URL` | `http://127.0.0.1:<server port>` when known | HTTP URL | Lets agents and CLIs call back to the active Kookr instance. |
 | `KOOKR_GIT_COMMON_DIR` | Injected when cwd is a Git worktree | Absolute path | Points at the shared Git common directory for worktree-aware workflows. |
-| `KOOKR_CHECKPOINT_DIR` | Injected when checkpoint support resolves | Absolute path | Per-task checkpoint directory. Agents read and write `CHECKPOINT.md` there during long-running work. |
+| `KOOKR_CHECKPOINT_DIR` | Injected when checkpoint support resolves | Absolute path | Per-task checkpoint directory. Agents read and write `CHECKPOINT.md`, `CHECKPOINT.json`, and optional review-only `memory_write_candidates.json` there during long-running work. |
 
 ## CLI Tools
 

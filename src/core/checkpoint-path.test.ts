@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import {
   buildCheckpointLoadInstruction,
+  inspectMemoryWriteCandidates,
   resolveAndPrepareCheckpointDir,
   slugifyForCheckpointKey,
   inspectSemanticCheckpoint,
@@ -289,6 +290,53 @@ describe('semantic checkpoint resume contract', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Invalid semantic checkpoint JSON'));
     expect(instruction).toContain('CHECKPOINT.json is invalid');
     expect(instruction).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
+    warn.mockRestore();
+  });
+
+  it('preserves valid memory write candidates as review-only checkpoint state', async () => {
+    await writeFile(join(checkpointDir, 'CHECKPOINT.md'), '# Existing checkpoint\n');
+    await writeFile(
+      join(checkpointDir, 'memory_write_candidates.json'),
+      JSON.stringify({
+        schema_version: 'memory-write-candidates.v1',
+        candidates: [
+          {
+            id: 'candidate-1',
+            target: { kind: 'kb', name: 'agent-task-lessons' },
+            evidence: [{ note: 'verified repeated behavior' }],
+            verifier: { status: 'passed' },
+            approval: { status: 'pending' },
+            lifecycle: { status: 'proposed', created_at: '2026-05-09T00:00:00.000Z' },
+            promotion: { destination: 'agent-task-lessons' },
+          },
+        ],
+      }),
+    );
+
+    await expect(inspectMemoryWriteCandidates(checkpointDir)).resolves.toMatchObject({
+      kind: 'valid',
+    });
+    const instruction = await buildCheckpointLoadInstruction(checkpointDir);
+
+    expect(instruction).toContain('memory_write_candidates.json');
+    expect(instruction).toContain('preserve it across checkpoint/resume');
+    expect(instruction).toContain('do not promote candidates into KB, wisdom, or skills automatically');
+  });
+
+  it('warns but does not block launch when memory write candidates are malformed', async () => {
+    await writeFile(join(checkpointDir, 'CHECKPOINT.md'), '# Existing checkpoint\n');
+    await writeFile(join(checkpointDir, 'memory_write_candidates.json'), '{"schema_version":"wrong"}');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(inspectMemoryWriteCandidates(checkpointDir)).resolves.toMatchObject({
+      kind: 'invalid',
+    });
+    const instruction = await buildCheckpointLoadInstruction(checkpointDir);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Invalid memory write candidates JSON'));
+    expect(instruction).toContain('memory_write_candidates.json is invalid');
+    expect(instruction).toContain('Warn that memory_write_candidates.json was invalid');
+    expect(instruction).toContain('continue without promoting candidates automatically');
     warn.mockRestore();
   });
 });

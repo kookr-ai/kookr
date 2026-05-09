@@ -706,6 +706,20 @@ The system SHALL preserve Markdown checkpoints while supporting `semantic-checkp
 
 **Evidence:** `docs/schemas/semantic-checkpoint.v1.json`, `src/core/checkpoint-path.ts`, `src/core/checkpoint-cycler.ts`, `src/core/checkpoint-path.test.ts`, `src/core/checkpoint-cycler.test.ts`, `src/adapters/claude-code-adapter.test.ts`, `src/adapters/codex-cli-adapter.test.ts`.
 
+### R6.9: Checkpoint Memory Write Candidates — SHALL — `done`
+
+The system SHALL preserve review-only memory write candidates in checkpoint state without promoting them automatically.
+
+**Acceptance criteria:**
+- High-risk tasks can emit `memory_write_candidates.json` in `$KOOKR_CHECKPOINT_DIR`
+- Candidate files follow the documented `memory-write-candidates.v1` contract
+- Candidates include target, evidence, verifier status, approval status, lifecycle fields, and promotion metadata
+- Launch/resume instructions preserve valid candidate files across checkpoint/resume
+- Malformed candidate files are surfaced as warnings and do not block launch
+- Kookr does not automatically promote candidates into KB, wisdom, or skills
+
+**Evidence:** `docs/schemas/memory-write-candidates.v1.json`, `src/core/checkpoint-path.ts`, `src/core/checkpoint-path.test.ts`.
+
 ---
 
 ## R7: Non-functional Requirements
