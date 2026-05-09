@@ -83,6 +83,32 @@ export type SnapshotMessage = {
   sweepRunning?: boolean;
 };
 
+type LaunchPlaybookBaseMessage = {
+  type: 'launchPlaybook';
+  playbookPath: string;
+  parameterValues: Record<string, string>;
+  autonomy?: AutonomyLevel;
+  agentType?: AgentType;
+  scope?: PlaybookScope;
+};
+
+type LaunchPlaybookLegacyMessage = LaunchPlaybookBaseMessage & {
+  /** Legacy catalog+target cwd. Prefer playbookSourceCwd/taskTargetCwd for new clients. */
+  cwd: string;
+  playbookSourceCwd?: never;
+  taskTargetCwd?: never;
+  projectId?: string;
+};
+
+type LaunchPlaybookSplitMessage = LaunchPlaybookBaseMessage & {
+  cwd?: string;
+  playbookSourceCwd: string;
+  taskTargetCwd: string;
+  projectId?: string;
+};
+
+export type LaunchPlaybookClientMessage = LaunchPlaybookLegacyMessage | LaunchPlaybookSplitMessage;
+
 export type ServerMessage =
   | SnapshotMessage
   | { type: 'update'; agentId: string; state: AgentState }
@@ -162,7 +188,7 @@ export type ClientMessage =
   | { type: 'stop'; agentId: string }
   | { type: 'reflect' }
   | { type: 'listPlaybooks'; cwd: string }
-  | { type: 'launchPlaybook'; playbookPath: string; cwd: string; parameterValues: Record<string, string>; autonomy?: AutonomyLevel; agentType?: AgentType; scope?: PlaybookScope }
+  | LaunchPlaybookClientMessage
   | { type: 'telemetry'; events: TelemetryEvent[] }
   | { type: 'setProjectConfig'; project: string; config: Partial<ProjectConfig> }
   | { type: 'clearCompleted'; includeTerminated?: boolean }

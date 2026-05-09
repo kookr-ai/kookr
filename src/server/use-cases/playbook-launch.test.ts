@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { preparePlaybookLaunch } from './playbook-launch.js';
 
@@ -99,6 +99,148 @@ Work on {{repoFullName}}
       expect(launch.projectId).toBe('github.com/grafana/grafana');
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('reads the playbook from source cwd and launches in target cwd', async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), 'playbook-source-'));
+    const targetCwd = await mkdtemp(join(tmpdir(), 'playbook-target-'));
+    try {
+      await mkdir(join(sourceCwd, '.kookr', 'playbooks'), { recursive: true });
+      await mkdir(join(targetCwd, 'docs'), { recursive: true });
+      await writeFile(join(targetCwd, 'docs', 'target-note.md'), 'target file');
+      await writeFile(join(sourceCwd, '.kookr', 'playbooks', 'quality.md'), `---
+name: Quality
+checklist:
+  - Improve tests
+---
+
+Review docs/target-note.md
+`);
+
+      const launch = await preparePlaybookLaunch({
+        playbookSourceCwd: sourceCwd,
+        taskTargetCwd: targetCwd,
+        projectId: `local/${basename(targetCwd)}`,
+        playbookPath: 'quality.md',
+        parameterValues: {},
+      });
+
+      expect(launch.cwd).toBe(targetCwd);
+      expect(launch.prompt).toBe(`Review ${join(targetCwd, 'docs', 'target-note.md')}`);
+      expect(launch.projectId).toBe(`local/${basename(targetCwd)}`);
+      expect(launch.criteria).toContain('Improve tests');
+    } finally {
+      await rm(sourceCwd, { recursive: true, force: true });
+      await rm(targetCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects explicit projectId when it conflicts with target cwd identity', async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), 'playbook-source-'));
+    const targetCwd = await mkdtemp(join(tmpdir(), 'playbook-target-'));
+    try {
+      await mkdir(join(sourceCwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(sourceCwd, '.kookr', 'playbooks', 'quality.md'), `---
+name: Quality
+---
+
+Review tests.
+`);
+
+      await expect(preparePlaybookLaunch({
+        playbookSourceCwd: sourceCwd,
+        taskTargetCwd: targetCwd,
+        projectId: 'github.com/acme/wrong',
+        playbookPath: 'quality.md',
+        parameterValues: {},
+      })).rejects.toThrow(/projectId.*does not match/i);
+    } finally {
+      await rm(sourceCwd, { recursive: true, force: true });
+      await rm(targetCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects explicit projectId when tracked-project param matches but target cwd does not', async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), 'playbook-source-'));
+    const targetCwd = await mkdtemp(join(tmpdir(), 'playbook-target-'));
+    try {
+      await mkdir(join(sourceCwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(sourceCwd, '.kookr', 'playbooks', 'oss.md'), `---
+name: OSS Task
+parameters:
+  - name: repoFullName
+    required: true
+    type: select
+    source: tracked-projects
+---
+
+Work on {{repoFullName}}.
+`);
+
+      await expect(preparePlaybookLaunch({
+        playbookSourceCwd: sourceCwd,
+        taskTargetCwd: targetCwd,
+        projectId: 'github.com/grafana/grafana',
+        playbookPath: 'oss.md',
+        parameterValues: { repoFullName: 'grafana/grafana' },
+      })).rejects.toThrow(/projectId.*does not match target cwd project/i);
+    } finally {
+      await rm(sourceCwd, { recursive: true, force: true });
+      await rm(targetCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves legacy cwd behavior when frontmatter cwd pins execution', async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), 'playbook-source-'));
+    const pinnedCwd = await mkdtemp(join(tmpdir(), 'playbook-pinned-'));
+    try {
+      await mkdir(join(sourceCwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(sourceCwd, '.kookr', 'playbooks', 'pinned.md'), `---
+name: Pinned
+cwd: ${pinnedCwd}
+---
+
+Run pinned.
+`);
+
+      const launch = await preparePlaybookLaunch({
+        cwd: sourceCwd,
+        playbookPath: 'pinned.md',
+        parameterValues: {},
+      });
+
+      expect(launch.cwd).toBe(pinnedCwd);
+    } finally {
+      await rm(sourceCwd, { recursive: true, force: true });
+      await rm(pinnedCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects explicit target override when frontmatter cwd pins another execution target', async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), 'playbook-source-'));
+    const pinnedCwd = await mkdtemp(join(tmpdir(), 'playbook-pinned-'));
+    const targetCwd = await mkdtemp(join(tmpdir(), 'playbook-target-'));
+    try {
+      await mkdir(join(sourceCwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(sourceCwd, '.kookr', 'playbooks', 'pinned.md'), `---
+name: Pinned
+cwd: ${pinnedCwd}
+---
+
+Run pinned.
+`);
+
+      await expect(preparePlaybookLaunch({
+        playbookSourceCwd: sourceCwd,
+        taskTargetCwd: targetCwd,
+        playbookPath: 'pinned.md',
+        parameterValues: {},
+      })).rejects.toThrow(/pins working directory/i);
+    } finally {
+      await rm(sourceCwd, { recursive: true, force: true });
+      await rm(pinnedCwd, { recursive: true, force: true });
+      await rm(targetCwd, { recursive: true, force: true });
     }
   });
 

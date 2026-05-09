@@ -36,6 +36,9 @@ export class PlaybookHandler {
         try {
           opts = await preparePlaybookLaunch({
             cwd: msg.cwd,
+            playbookSourceCwd: msg.playbookSourceCwd,
+            taskTargetCwd: msg.taskTargetCwd,
+            projectId: msg.projectId,
             playbookPath: msg.playbookPath,
             parameterValues: msg.parameterValues,
             autonomy: msg.autonomy,

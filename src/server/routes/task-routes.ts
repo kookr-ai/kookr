@@ -544,6 +544,9 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     let body: {
       playbookPath?: unknown;
       cwd?: unknown;
+      playbookSourceCwd?: unknown;
+      taskTargetCwd?: unknown;
+      projectId?: unknown;
       parameterValues?: unknown;
       autonomy?: string;
       agentType?: string;
@@ -558,11 +561,15 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     if (typeof body.playbookPath !== 'string' || body.playbookPath.trim().length === 0) {
       return c.json({ error: 'playbookPath is required and must be a string' }, 400);
     }
-    if (typeof body.cwd !== 'string' || body.cwd.trim().length === 0) {
-      return c.json({ error: 'cwd is required and must be a string' }, 400);
+    const cwdValidationError = validatePlaybookLaunchCwdFields(body);
+    if (cwdValidationError) {
+      return c.json({ error: cwdValidationError }, 400);
     }
     if (!isStringRecord(body.parameterValues)) {
       return c.json({ error: 'parameterValues is required and must be an object of strings' }, 400);
+    }
+    if (body.projectId !== undefined && typeof body.projectId !== 'string') {
+      return c.json({ error: 'projectId must be a string' }, 400);
     }
     if (body.scope !== undefined && body.scope !== 'project' && body.scope !== 'user' && body.scope !== 'plugin') {
       return c.json({ error: 'scope must be "project", "user", or "plugin"' }, 400);
@@ -592,7 +599,11 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
           suppressionTracker: deps.suppressionTracker,
         }),
       }, {
-        cwd: body.cwd,
+        cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
+        playbookSourceCwd: typeof body.playbookSourceCwd === 'string' ? body.playbookSourceCwd : undefined,
+        taskTargetCwd: typeof body.taskTargetCwd === 'string' ? body.taskTargetCwd : undefined,
+        taskTargetCwdExplicit: typeof body.taskTargetCwd === 'string' && body.taskTargetCwd.trim().length > 0,
+        projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
         playbookPath: body.playbookPath,
         parameterValues: body.parameterValues,
         autonomy,
@@ -626,6 +637,9 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     let body: {
       playbookPath?: unknown;
       cwd?: unknown;
+      playbookSourceCwd?: unknown;
+      taskTargetCwd?: unknown;
+      projectId?: unknown;
       parameterValues?: unknown;
       autonomy?: string;
       agentType?: string;
@@ -640,11 +654,15 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     if (typeof body.playbookPath !== 'string' || body.playbookPath.trim().length === 0) {
       return c.json({ error: 'playbookPath is required and must be a string' }, 400);
     }
-    if (typeof body.cwd !== 'string' || body.cwd.trim().length === 0) {
-      return c.json({ error: 'cwd is required and must be a string' }, 400);
+    const cwdValidationError = validatePlaybookLaunchCwdFields(body);
+    if (cwdValidationError) {
+      return c.json({ error: cwdValidationError }, 400);
     }
     if (!isStringRecord(body.parameterValues)) {
       return c.json({ error: 'parameterValues is required and must be an object of strings' }, 400);
+    }
+    if (body.projectId !== undefined && typeof body.projectId !== 'string') {
+      return c.json({ error: 'projectId must be a string' }, 400);
     }
     if (body.scope !== undefined && body.scope !== 'project' && body.scope !== 'user' && body.scope !== 'plugin') {
       return c.json({ error: 'scope must be "project", "user", or "plugin"' }, 400);
@@ -715,7 +733,11 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         },
       }, {
         replacedTaskId,
-        cwd: body.cwd,
+        cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
+        playbookSourceCwd: typeof body.playbookSourceCwd === 'string' ? body.playbookSourceCwd : undefined,
+        taskTargetCwd: typeof body.taskTargetCwd === 'string' ? body.taskTargetCwd : undefined,
+        taskTargetCwdExplicit: typeof body.taskTargetCwd === 'string' && body.taskTargetCwd.trim().length > 0,
+        projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
         playbookPath: body.playbookPath,
         parameterValues: body.parameterValues,
         autonomy,
@@ -956,4 +978,31 @@ function sanitizeFilenamePart(value: string): string {
 function isStringRecord(value: unknown): value is Record<string, string> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   return Object.values(value).every((item) => typeof item === 'string');
+}
+
+function validatePlaybookLaunchCwdFields(body: {
+  cwd?: unknown;
+  playbookSourceCwd?: unknown;
+  taskTargetCwd?: unknown;
+}): string | null {
+  const hasCwd = body.cwd !== undefined;
+  const hasSource = body.playbookSourceCwd !== undefined;
+  const hasTarget = body.taskTargetCwd !== undefined;
+
+  if (hasCwd && (typeof body.cwd !== 'string' || body.cwd.trim().length === 0)) {
+    return 'cwd must be a non-empty string when supplied';
+  }
+  if (hasSource && (typeof body.playbookSourceCwd !== 'string' || body.playbookSourceCwd.trim().length === 0)) {
+    return 'playbookSourceCwd must be a non-empty string when supplied';
+  }
+  if (hasTarget && (typeof body.taskTargetCwd !== 'string' || body.taskTargetCwd.trim().length === 0)) {
+    return 'taskTargetCwd must be a non-empty string when supplied';
+  }
+  if ((hasSource || hasTarget) && !(hasSource && hasTarget)) {
+    return 'playbookSourceCwd and taskTargetCwd must be supplied together';
+  }
+  if (!hasCwd && !(hasSource && hasTarget)) {
+    return 'playbookSourceCwd/taskTargetCwd or cwd is required and must be a string';
+  }
+  return null;
 }

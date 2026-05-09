@@ -138,7 +138,7 @@ export function App() {
   const handleRunPlaybook = useCallback(() => {
     if (selectedProjectSummary) {
       setLaunchProjectContext(selectedProjectSummary);
-      setLaunchProjectCwd(deriveLaunchProjectCwd(agents, selectedProjectSummary));
+      setLaunchProjectCwd(deriveLaunchProjectCwd(agents, selectedProjectSummary) ?? '');
       track({ type: 'launch_dialog_opened', method: 'project_drawer' });
       setShowLaunch(true);
     }

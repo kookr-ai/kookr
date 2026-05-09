@@ -14,6 +14,7 @@ import type { ClientMessage } from './messages.js';
 
 const autonomyLevel = z.enum(['supervised', 'autonomous']);
 const agentType = z.enum(['claude-code', 'codex-cli']);
+const playbookScope = z.enum(['project', 'user', 'plugin']);
 const anomalyType = z.enum([
   'needs_input',
   'permission_blocked',
@@ -72,7 +73,38 @@ const projectConfigPartial = z.object({
   notes: z.string().optional(),
 });
 
-export const ClientMessageSchema = z.discriminatedUnion('type', [
+const launchPlaybookMessage = z.object({
+  type: z.literal('launchPlaybook'),
+  playbookPath: z.string(),
+  cwd: z.string().optional(),
+  playbookSourceCwd: z.string().optional(),
+  taskTargetCwd: z.string().optional(),
+  projectId: z.string().optional(),
+  parameterValues: z.record(z.string(), z.string()),
+  autonomy: autonomyLevel.optional(),
+  agentType: agentType.optional(),
+  scope: playbookScope.optional(),
+}).superRefine((value, ctx) => {
+  const hasLegacy = value.cwd !== undefined;
+  const hasSource = value.playbookSourceCwd !== undefined;
+  const hasTarget = value.taskTargetCwd !== undefined;
+  if (!hasLegacy && !(hasSource && hasTarget)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['cwd'],
+      message: 'launchPlaybook requires cwd or both playbookSourceCwd and taskTargetCwd',
+    });
+  }
+  if ((hasSource || hasTarget) && !(hasSource && hasTarget)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['playbookSourceCwd'],
+      message: 'playbookSourceCwd and taskTargetCwd must be supplied together',
+    });
+  }
+});
+
+const ClientMessageSchemaImpl = z.discriminatedUnion('type', [
   z.object({ type: z.literal('respond'), agentId: z.string(), input: z.string() }),
   z.object({ type: z.literal('respondAll'), agentIds: z.array(z.string()), input: z.string() }),
   z.object({ type: z.literal('directReply'), agentId: z.string(), input: z.string() }),
@@ -133,14 +165,7 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('stop'), agentId: z.string() }),
   z.object({ type: z.literal('reflect') }),
   z.object({ type: z.literal('listPlaybooks'), cwd: z.string() }),
-  z.object({
-    type: z.literal('launchPlaybook'),
-    playbookPath: z.string(),
-    cwd: z.string(),
-    parameterValues: z.record(z.string(), z.string()),
-    autonomy: autonomyLevel.optional(),
-    agentType: agentType.optional(),
-  }),
+  launchPlaybookMessage,
   z.object({ type: z.literal('telemetry'), events: z.array(telemetryEvent) }),
   z.object({
     type: z.literal('setProjectConfig'),
@@ -196,6 +221,8 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('workspace:sweep') }),
 ]);
+
+export const ClientMessageSchema = ClientMessageSchemaImpl as unknown as z.ZodType<ClientMessage>;
 
 // Compile-time drift guards. Both directions are checked because a one-way
 // check would silently accept the case where someone adds a variant to
