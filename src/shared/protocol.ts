@@ -49,6 +49,7 @@ export type {
 export type {
   RalphIterationExitReason,
   RalphIterationDiffStats,
+  RalphIterationVerdict,
   RalphIterationRecord,
   RalphIterationLogSummary,
   RalphIterationLogReadModel,

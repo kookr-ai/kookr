@@ -454,8 +454,10 @@ The system SHALL expose the full Ralph verdict environment to every loop iterati
 - Subsequent Ralph launches receive `RALPH_VERDICT_FILE` and `RALPH_ITERATION` equal to the current loop iteration.
 - Looped implementation playbooks define non-automatable issue labels that Phase 0 skips before implementation.
 - Looped implementation playbooks define an automation-quarantine path for trusted, non-implementable issue targets.
+- GitHub issue implementation playbooks rename the running task from the generic playbook name to `#<issue> <title>` after target resolution.
+- Ralph issue iteration verdicts preserve the resolved issue title and the Ralph panel exposes that target metadata in iteration history.
 
-**Evidence:** `src/server/launch-service.ts`, `src/server/ralph-loop-service.ts`, `.kookr/playbooks/implement-github-issue.md`, `src/server/launch-service.test.ts`, `src/server/ralph-loop-service.test.ts`, `src/core/implement-github-issue-playbook.test.ts`.
+**Evidence:** `src/server/launch-service.ts`, `src/server/ralph-loop-service.ts`, `src/server/routes/task-routes.ts`, `.kookr/playbooks/implement-github-issue.md`, `src/frontend/components/RalphLoopPanel.tsx`, `src/server/launch-service.test.ts`, `src/server/ralph-loop-service.test.ts`, `src/server/routes/task-routes.test.ts`, `src/core/implement-github-issue-playbook.test.ts`, `src/frontend/components/RalphLoopPanel.test.ts`.
 
 ### R4b.8: Project-Targeted Catalog Playbooks [F6.2, F6.6] — SHALL — `done`
 

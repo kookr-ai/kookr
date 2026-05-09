@@ -60,6 +60,26 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     }));
   });
 
+  app.patch('/api/tasks/:id/name', async (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+
+    let body: { name?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (typeof body.name !== 'string') {
+      return c.json({ error: 'name is required and must be a string' }, 400);
+    }
+
+    const updated = taskStore.renameTask(id, body.name);
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    return c.json({ ok: true, task: updated });
+  });
+
   app.post('/api/tasks', async (c) => {
     try {
       const body = await c.req.json() as {
