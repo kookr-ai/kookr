@@ -12,4 +12,7 @@ export type {
   PlaybookLoopConfig,
   EffectivePlaybookLoop,
   PlaybookScope,
+  LaunchDependency,
 } from '../shared/contracts/playbook.js';
+
+export { LAUNCH_DEPENDENCIES } from '../shared/contracts/playbook.js';

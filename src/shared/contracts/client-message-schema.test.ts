@@ -54,6 +54,26 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(result.success).toBe(true);
   });
 
+  test('accepts a launch message with KB dependency declaration', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launch',
+      prompt: 'hi',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('rejects unsupported launch dependency declarations', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launch',
+      prompt: 'hi',
+      cwd: '/tmp',
+      dependencies: ['postgres'],
+    });
+    expect(result.success).toBe(false);
+  });
+
   test('accepts legacy playbook launch with only cwd', () => {
     const result = ClientMessageSchema.safeParse({
       type: 'launchPlaybook',

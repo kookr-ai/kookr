@@ -126,6 +126,7 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       autonomy: input.autonomy,
       agentType: input.agentType,
       projectId,
+      dependencies: playbook.dependencies,
     },
   };
 }
