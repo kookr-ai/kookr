@@ -49,12 +49,13 @@ export interface RalphIterationDiffStats {
  * See `rfc-ralph-loop-stall-handling.md` §1.
  */
 export type RalphIterationVerdict =
-  | { verdict: 'progress'; iteration: number; target?: string; reason?: string }
+  | { verdict: 'progress'; iteration: number; target?: string; targetTitle?: string; reason?: string }
   | { verdict: 'complete'; iteration: number; reason?: string }
   | {
       verdict: 'stalled';
       iteration: number;
       target: string;
+      targetTitle?: string;
       reason: string;
       blockers?: string[];
       /**

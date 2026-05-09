@@ -194,6 +194,26 @@ echo "STOP: COMPLETE" > "$BATCH_CWD/.batch-stop"
 
 Stop. The Ralph loop predicate fires on the next Stop hook and the loop exits cleanly. (For the blank-shape single-shot path with no Ralph loop, `.batch-stop` simply persists until the next looped launch's Step 0a cleanup — harmless.) Phase 9 also writes `verdict: complete` to `$RALPH_VERDICT_FILE` for the engine's per-iteration channel — the engine treats that as a clean termination signal.
 
+### Step 0f: Record resolved issue metadata
+
+After `TARGET` is known, fetch the issue title and update the Kookr task name. This happens only after the author check has passed; do not fetch title/body/comments for skipped candidates.
+
+```bash
+ISSUE_TITLE=$(gh issue view "$TARGET" --repo "$REPO" --json title -q .title)
+ISSUE_TASK_NAME="#${TARGET} ${ISSUE_TITLE}"
+TARGET_TITLE_JSON=$(jq -Rn --arg title "$ISSUE_TITLE" '$title')
+
+if [ -n "${KOOKR_API_BASE_URL:-}" ] && [ -n "${KOOKR_TASK_ID:-}" ]; then
+  jq -n --arg name "$ISSUE_TASK_NAME" '{name:$name}' \
+    | curl -fsS -X PATCH "$KOOKR_API_BASE_URL/api/tasks/$KOOKR_TASK_ID/name" \
+      -H 'Content-Type: application/json' \
+      --data-binary @- \
+    || true
+fi
+```
+
+Use `$ISSUE_TITLE` in the PR title/body and include `"targetTitle": $TARGET_TITLE_JSON` in every Phase 9 `progress` or `stalled` verdict for this target. That keeps both standard task lists and Ralph iteration history scannable.
+
 ## Phase 1: Read the target issue
 
 ```bash
@@ -300,7 +320,7 @@ fi
 REASON="target is not currently an implementable automation unit"
 BLOCKERS_JSON='"automation_blocked_non_implementable"'
 cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
-{"verdict":"stalled","iteration":${RALPH_ITERATION},"target":"$TARGET","reason":"$REASON","blockers":[$BLOCKERS_JSON],"permanent":true}
+{"verdict":"stalled","iteration":${RALPH_ITERATION},"target":"$TARGET","targetTitle":${TARGET_TITLE_JSON},"reason":"$REASON","blockers":[$BLOCKERS_JSON],"permanent":true}
 EOF
 mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 ```
@@ -479,7 +499,7 @@ Map the iteration outcome to one verdict variant. Use atomic write: write `${RAL
 #    iteration" and "PR exists from a prior iteration and we're polling for
 #    merge". A `progress` for a previously-burned target un-burns it.
 cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
-{"verdict":"progress","iteration":${RALPH_ITERATION},"target":"$TARGET","reason":"$REASON"}
+{"verdict":"progress","iteration":${RALPH_ITERATION},"target":"$TARGET","targetTitle":${TARGET_TITLE_JSON},"reason":"$REASON"}
 EOF
 mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 
@@ -491,7 +511,7 @@ mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 #    threshold (default 2) the target is burned out and excluded by Step 0c.5
 #    of subsequent iterations.
 cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
-{"verdict":"stalled","iteration":${RALPH_ITERATION},"target":"$TARGET","reason":"$REASON","blockers":[$BLOCKERS_JSON]}
+{"verdict":"stalled","iteration":${RALPH_ITERATION},"target":"$TARGET","targetTitle":${TARGET_TITLE_JSON},"reason":"$REASON","blockers":[$BLOCKERS_JSON]}
 EOF
 mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 
@@ -506,7 +526,7 @@ mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 #    contention, network 5xx) — that bypasses the retry-tolerance the
 #    count-based threshold provides.
 cat > "${RALPH_VERDICT_FILE}.tmp" <<EOF
-{"verdict":"stalled","iteration":${RALPH_ITERATION},"target":"$TARGET","reason":"$REASON","blockers":[$BLOCKERS_JSON],"permanent":true}
+{"verdict":"stalled","iteration":${RALPH_ITERATION},"target":"$TARGET","targetTitle":${TARGET_TITLE_JSON},"reason":"$REASON","blockers":[$BLOCKERS_JSON],"permanent":true}
 EOF
 mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 

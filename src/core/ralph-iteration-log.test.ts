@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   appendIterationRecord,
+  formatIterationLogCsv,
   iterationLogPath,
   parseIterationRecord,
   type RalphIterationRecord,
@@ -123,6 +124,23 @@ describe('parseIterationRecord', () => {
     expect(parsed?.iterationNumber).toBe(1);
   });
 
+  it('preserves issue target titles in verdicts', () => {
+    const parsed = parseIterationRecord(row({
+      verdict: {
+        verdict: 'progress',
+        iteration: 1,
+        target: '224',
+        targetTitle: 'Name GitHub issue tasks from resolved issue metadata',
+      },
+    }));
+    expect(parsed?.verdict).toEqual({
+      verdict: 'progress',
+      iteration: 1,
+      target: '224',
+      targetTitle: 'Name GitHub issue tasks from resolved issue metadata',
+    });
+  });
+
   it('still rejects rows with missing or malformed fields (only the exit reason is forward-compat)', () => {
     expect(parseIterationRecord('not json at all')).toBeNull();
     expect(parseIterationRecord(row({ iterationNumber: 'one' }))).toBeNull();
@@ -212,5 +230,39 @@ describe('parseIterationRecord — new stall-handling exit reasons', () => {
     expect(parsed).not.toBeNull();
     expect(parsed!.verdict).toBeUndefined();
     expect(parsed!.iterationNumber).toBe(1);
+  });
+});
+
+describe('formatIterationLogCsv', () => {
+  it('includes issue target metadata from verdicts', () => {
+    const csv = formatIterationLogCsv({
+      iterations: [
+        sampleRecord({
+          verdict: {
+            verdict: 'progress',
+            iteration: 1,
+            target: '224',
+            targetTitle: 'Name GitHub issue tasks from resolved issue metadata',
+            reason: 'PR created',
+          },
+        }),
+      ],
+      summary: {
+        totalIterations: 1,
+        returnedIterations: 1,
+        capped: false,
+        malformedLines: 0,
+        latestExitReason: 'continued',
+        cumulativeCostUsd: 0.42,
+        startedAt: 1_700_000_000_000,
+        endedAt: 1_700_000_005_000,
+        runtimeMs: 5_000,
+        averageIterationDurationMs: 5_000,
+        etaMs: null,
+      },
+    });
+
+    expect(csv).toContain('target,targetTitle,verdictReason');
+    expect(csv).toContain('224,Name GitHub issue tasks from resolved issue metadata,PR created');
   });
 });

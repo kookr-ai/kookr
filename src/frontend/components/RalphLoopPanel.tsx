@@ -282,6 +282,7 @@ export function RalphLoopPanel({ taskId }: Props) {
               <tr>
                 <th>Iter</th>
                 <th>Exit</th>
+                <th>Target</th>
                 <th>Duration</th>
                 <th>Diff</th>
                 <th>Cost</th>
@@ -319,11 +320,18 @@ function RalphIterationRow({ record }: { record: RalphIterationRecord }) {
     <tr>
       <td>{record.iterationNumber}</td>
       <td><span className={`ralph-exit ralph-exit-${exitTone(record.exitReason)}`}>{record.exitReason}</span></td>
+      <td>{formatTarget(record)}</td>
       <td>{formatMs(record.endedAt - record.startedAt)}</td>
       <td>{diff}</td>
       <td>{record.cumulativeCostUsd === null ? 'Unavailable' : formatCost(record.cumulativeCostUsd)}</td>
     </tr>
   );
+}
+
+function formatTarget(record: RalphIterationRecord): string {
+  const verdict = record.verdict;
+  if (!verdict || !('target' in verdict) || !verdict.target) return 'Unspecified';
+  return verdict.targetTitle ? `#${verdict.target} ${verdict.targetTitle}` : `#${verdict.target}`;
 }
 
 function formatDiff(record: RalphIterationRecord): string {

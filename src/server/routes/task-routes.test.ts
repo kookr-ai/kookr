@@ -203,6 +203,41 @@ Do something else.
   });
 });
 
+describe('PATCH /api/tasks/:id/name', () => {
+  test('renames a task and broadcasts a snapshot', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Implement GitHub Issue', cwd: '/repo' });
+    const broadcastToAll = vi.fn();
+    const app = mkApp({ ...mkLoopDeps(taskStore), broadcastToAll });
+
+    const res = await app.request(`/api/tasks/${task.id}/name`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: '  #224 Name GitHub issue tasks  ' }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(taskStore.getTask(task.id)?.name).toBe('#224 Name GitHub issue tasks');
+    expect(broadcastToAll).toHaveBeenCalledOnce();
+    const body = await res.json() as { task: { name?: string } };
+    expect(body.task.name).toBe('#224 Name GitHub issue tasks');
+  });
+
+  test('rejects non-string names', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Implement GitHub Issue', cwd: '/repo' });
+    const app = mkApp(mkLoopDeps(taskStore));
+
+    const res = await app.request(`/api/tasks/${task.id}/name`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: 224 }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('POST /api/tasks error paths', () => {
   beforeEach(() => {
     vi.clearAllMocks();

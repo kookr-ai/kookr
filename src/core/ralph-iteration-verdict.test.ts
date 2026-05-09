@@ -75,6 +75,7 @@ describe('readVerdictFile', () => {
       verdict: 'stalled',
       iteration: 3,
       target: '154',
+      targetTitle: 'Fix worktree reconciliation',
       reason: 'tests fail',
       blockers: ['missing dep'],
     }));
@@ -83,6 +84,7 @@ describe('readVerdictFile', () => {
       verdict: 'stalled',
       iteration: 3,
       target: '154',
+      targetTitle: 'Fix worktree reconciliation',
       reason: 'tests fail',
       blockers: ['missing dep'],
     });
@@ -127,9 +129,25 @@ describe('readVerdictFile', () => {
   });
 
   it('reads a valid progress verdict (target only, no reason)', async () => {
-    await writeFile(path, JSON.stringify({ verdict: 'progress', iteration: 2, target: '153' }));
+    await writeFile(path, JSON.stringify({
+      verdict: 'progress',
+      iteration: 2,
+      target: '153',
+      targetTitle: 'Revalidate project id',
+    }));
     const r = await readVerdictFile(path, 2);
-    expect(r.verdict).toEqual({ verdict: 'progress', iteration: 2, target: '153' });
+    expect(r.verdict).toEqual({
+      verdict: 'progress',
+      iteration: 2,
+      target: '153',
+      targetTitle: 'Revalidate project id',
+    });
+  });
+
+  it('rejects verdicts with non-string targetTitle', async () => {
+    await writeFile(path, JSON.stringify({ verdict: 'progress', iteration: 1, target: '153', targetTitle: 153 }));
+    const r = await readVerdictFile(path, 1);
+    expect(r.failure).toBe('schema_invalid');
   });
 
   it('rejects iteration mismatch', async () => {

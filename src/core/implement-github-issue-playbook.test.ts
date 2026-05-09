@@ -79,6 +79,19 @@ describe('implement-github-issue playbook', () => {
     expect(pb.body).toContain('"permanent":true');
   });
 
+  test('renames the Kookr task and preserves issue title in Ralph verdicts after target resolution', () => {
+    const targetIdx = pb.body.indexOf('The first candidate passing all three checks is the target');
+    const metadataIdx = pb.body.indexOf('Step 0f: Record resolved issue metadata');
+    const phase1Idx = pb.body.indexOf('Phase 1: Read the target issue');
+    expect(metadataIdx).toBeGreaterThan(targetIdx);
+    expect(phase1Idx).toBeGreaterThan(metadataIdx);
+
+    expect(pb.body).toContain('ISSUE_TITLE=$(gh issue view "$TARGET" --repo "$REPO" --json title -q .title)');
+    expect(pb.body).toContain('PATCH "$KOOKR_API_BASE_URL/api/tasks/$KOOKR_TASK_ID/name"');
+    expect(pb.body).toContain('TARGET_TITLE_JSON=$(jq -Rn --arg title "$ISSUE_TITLE"');
+    expect(pb.body).toContain('"targetTitle":${TARGET_TITLE_JSON}');
+  });
+
   test('Phase 8.5 surfaces the post-task KB lesson decision before Phase 9', () => {
     // Issue #227: agents must emit either a `kb remember` write or the
     // skip marker before the verdict is written, so `pnpm kb:usage` can

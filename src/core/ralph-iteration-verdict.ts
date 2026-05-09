@@ -173,11 +173,13 @@ function isValidVerdict(value: unknown): value is RalphIterationVerdict {
   switch (obj.verdict) {
     case 'progress':
       return (obj.target === undefined || typeof obj.target === 'string')
+        && (obj.targetTitle === undefined || typeof obj.targetTitle === 'string')
         && (obj.reason === undefined || typeof obj.reason === 'string');
     case 'complete':
       return obj.reason === undefined || typeof obj.reason === 'string';
     case 'stalled':
       if (typeof obj.target !== 'string' || obj.target.length === 0) return false;
+      if (obj.targetTitle !== undefined && typeof obj.targetTitle !== 'string') return false;
       if (typeof obj.reason !== 'string') return false;
       if (obj.blockers !== undefined) {
         if (!Array.isArray(obj.blockers)) return false;

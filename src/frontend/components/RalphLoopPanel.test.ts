@@ -217,6 +217,12 @@ describe('RalphLoopPanel', () => {
           cumulativeCostUsd: null,
           gitBaselineRef: 'ralph/iter-4-start',
           diffStats: { filesChanged: 2, insertions: 5, deletions: 1 },
+          verdict: {
+            verdict: 'progress',
+            iteration: 4,
+            target: '224',
+            targetTitle: 'Name GitHub issue tasks from resolved issue metadata',
+          },
         },
         {
           iterationNumber: 5,
@@ -249,6 +255,7 @@ describe('RalphLoopPanel', () => {
     await act(async () => {});
 
     expect(container.textContent).toContain('predicate_satisfied');
+    expect(container.textContent).toContain('#224 Name GitHub issue tasks from resolved issue metadata');
     expect(container.textContent).toContain('2 files, +5 / -1');
     expect(container.textContent).toContain('$0.42');
     expect(container.textContent).toContain('1 malformed log line skipped');
