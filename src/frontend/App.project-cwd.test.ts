@@ -114,4 +114,42 @@ describe('App project drawer launch cwd', () => {
       .map((el) => el.textContent);
     expect(cwdPaths).toEqual(['/server/cwd', '/work/idle']);
   });
+
+  test('can reopen Run playbook from the same project drawer after closing the dialog', async () => {
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await flush();
+
+    const firstRunPlaybook = container.querySelector('[data-testid="run-playbook-btn"]');
+    expect(firstRunPlaybook).not.toBeNull();
+
+    await act(async () => {
+      firstRunPlaybook!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('.dialog')).not.toBeNull();
+
+    const closeButton = container.querySelector<HTMLButtonElement>('.dialog-close');
+    expect(closeButton).not.toBeNull();
+
+    await act(async () => {
+      closeButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('.dialog')).toBeNull();
+    expect(container.querySelector('[data-testid="project-detail-drawer"]')).not.toBeNull();
+
+    const secondRunPlaybook = container.querySelector('[data-testid="run-playbook-btn"]');
+    expect(secondRunPlaybook).not.toBeNull();
+
+    await act(async () => {
+      secondRunPlaybook!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('.dialog')).not.toBeNull();
+  });
 });

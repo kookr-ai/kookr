@@ -97,6 +97,24 @@ describe('ProjectSidebar interactions', () => {
     expect(onManage).toHaveBeenCalledTimes(1);
   });
 
+  test('clicking the selected project icon keeps the project drawer selected', async () => {
+    useKookrStore.getState().selectProject('github.com/a');
+
+    await act(async () => {
+      root.render(React.createElement(ProjectSidebar, { onManage: vi.fn() }));
+    });
+    await flush();
+
+    const iconA = container.querySelector('[data-testid="project-icon-github.com/a"]');
+    expect(iconA).not.toBeNull();
+
+    await act(async () => {
+      iconA!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(useKookrStore.getState().selectedProject).toBe('github.com/a');
+  });
+
   test('right click opens context menu and pin action updates store state', async () => {
     await act(async () => {
       root.render(React.createElement(ProjectSidebar, { onManage: vi.fn() }));
