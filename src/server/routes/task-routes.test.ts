@@ -97,6 +97,46 @@ function mockRouteLaunchTask(taskStore: TaskStore) {
   });
 }
 
+describe('GET /api/tasks worktree health', () => {
+  test('normalizes completed missing worktree health to cleaned_up', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Ship implementation PR', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-cleaned',
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+      worktreeHealth: 'missing',
+    });
+    taskStore.completeTask(task.id);
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks');
+    const tasks = await res.json();
+
+    expect(tasks[0].sessions[0].worktreeHealth).toBe('cleaned_up');
+  });
+
+  test('keeps terminated missing worktree health actionable', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Investigate lost session', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-missing',
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+      worktreeHealth: 'missing_unexpectedly',
+    });
+    taskStore.terminateTask(task.id);
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks');
+    const tasks = await res.json();
+
+    expect(tasks[0].sessions[0].worktreeHealth).toBe('missing_unexpectedly');
+  });
+});
+
 describe('GET /api/playbooks', () => {
   let tempDir: string;
   let originalUserEnv: string | undefined;

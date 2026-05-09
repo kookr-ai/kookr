@@ -23,6 +23,8 @@ import {
   replaceLoopedPlaybook,
 } from '../use-cases/looped-playbook-launch.js';
 import { nowISO } from '../../core/interaction-log.js';
+import type { Task } from '../../core/tasks.js';
+import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import type { RouteDeps } from './shared.js';
 
 /** Shape of the /api/agents/:id/edit-events/:toolUseId response.
@@ -51,7 +53,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
   const { ralphLoopService } = deps;
 
   app.get('/api/tasks', (c) => {
-    const tasks = taskStore.listTasks();
+    const tasks = taskStore.listTasks().map(normalizeTaskForApi);
     if (!deps.suppressionTracker) return c.json(tasks);
     const tracker = deps.suppressionTracker;
     return c.json(tasks.map((t) => {
@@ -974,6 +976,18 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
 
     return c.json(response);
   });
+}
+
+function normalizeTaskForApi(task: Task): Task {
+  let changed = false;
+  const sessions = task.sessions.map((session) => {
+    const worktreeHealth = normalizeTerminalWorktreeHealth(task.status, session.worktreeHealth);
+    if (worktreeHealth === session.worktreeHealth) return session;
+    changed = true;
+    return { ...session, worktreeHealth };
+  });
+
+  return changed ? { ...task, sessions } : task;
 }
 
 // Singleton scanner — its in-memory (path, mtime) cache outlives a single

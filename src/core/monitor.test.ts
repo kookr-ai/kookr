@@ -636,6 +636,25 @@ describe('Monitor', () => {
       expect(entry!.description).toBe('Run database migration');
     });
 
+    test('completed task synthetic entry normalizes legacy missing worktree health as cleaned_up', () => {
+      const task = taskStore.createTask('Ship implementation PR', '/home/user/app');
+      taskStore.addSession(task.id, {
+        tmuxSession: 'agent-cleaned',
+        agentType: 'claude-code',
+        cwd: '/home/user/app',
+        createdAt: new Date(),
+        worktreeHealth: 'missing',
+      });
+      taskStore.completeTask(task.id);
+
+      const snapshot = monitor.getSnapshot();
+      const entry = snapshot.find((s) => s.taskId === task.id);
+
+      expect(entry).toBeDefined();
+      expect(entry!.taskStatus).toBe('completed');
+      expect(entry!.worktreeHealth).toBe('cleaned_up');
+    });
+
     test('includes synthetic entry for cancelled task after agent unregistered', () => {
       const task = taskStore.createTask('Deploy staging build', '/home/user/app');
       // addSession auto-transitions open -> inProgress

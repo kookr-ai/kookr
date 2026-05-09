@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage, AutonomyLevel } from '../../shared/protocol.js';
 import { track, trackClick } from '../telemetry.js';
-import { agentProviderPresentation, formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch } from '../presentation.js';
+import { agentProviderPresentation, formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch, worktreeHealthLabel, worktreeHealthTitle } from '../presentation.js';
 import { Tooltip } from './Tooltip.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -507,8 +507,8 @@ function FindingCard({ agent, selected, send }: {
             </span>
           )}
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
-            <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={agent.worktreeRegistryStale ? 'Worktree registry refresh failed; showing stale git state' : `Worktree is ${agent.worktreeHealth}`}>
-              {agent.worktreeRegistryStale ? 'git stale' : agent.worktreeHealth}
+            <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
+              {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
             </span>
           )}
           {agent.gitBranch && (
@@ -613,8 +613,8 @@ function HealthyRow({ agent, selected, send }: {
             </span>
           )}
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
-            <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={agent.worktreeRegistryStale ? 'Worktree registry refresh failed; showing stale git state' : `Worktree is ${agent.worktreeHealth}`}>
-              {agent.worktreeRegistryStale ? 'git stale' : agent.worktreeHealth}
+            <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
+              {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
             </span>
           )}
           {agent.gitBranch && (

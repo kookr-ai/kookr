@@ -194,7 +194,13 @@ export interface GitInfo {
   isDetached: boolean;
 }
 
-export type WorktreeHealth = 'ok' | 'missing' | 'stale';
+export type WorktreeHealth =
+  | 'ok'
+  | 'stale'
+  /** Legacy value retained for persisted tasks from older builds. New unexpected misses use `missing_unexpectedly`. */
+  | 'missing'
+  | 'missing_unexpectedly'
+  | 'cleaned_up';
 
 // Agent status — used as metadata on persisted sessions (SessionInfo.lastStatus),
 // not as a live state machine. See architecture.md for details.

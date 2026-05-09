@@ -31,6 +31,41 @@ export function agentProviderPresentation(agentType: AgentType): AgentProviderPr
   return AGENT_PROVIDER_PRESENTATION[agentType];
 }
 
+export function worktreeHealthLabel(health: string | undefined, registryStale?: boolean): string {
+  if (registryStale) return 'git stale';
+  switch (health) {
+    case 'missing_unexpectedly':
+      return 'missing unexpectedly';
+    case 'cleaned_up':
+      return 'cleaned up';
+    case 'missing':
+      return 'missing';
+    case 'stale':
+      return 'stale';
+    case 'ok':
+    case undefined:
+      return '';
+    default:
+      return health;
+  }
+}
+
+export function worktreeHealthTitle(health: string | undefined, registryStale?: boolean): string {
+  if (registryStale) return 'Worktree registry refresh failed; showing stale git state';
+  switch (health) {
+    case 'missing_unexpectedly':
+      return 'Worktree is missing unexpectedly';
+    case 'cleaned_up':
+      return 'Worktree was cleaned up after successful completion';
+    case 'missing':
+      return 'Worktree is missing';
+    case 'stale':
+      return 'Worktree registry entry is stale';
+    default:
+      return health ? `Worktree is ${health}` : '';
+  }
+}
+
 /**
  * Extract a short project label from an absolute CWD path.
  * Returns the last non-empty segment (e.g., "/workspace/kookr" → "kookr").

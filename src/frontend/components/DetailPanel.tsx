@@ -8,7 +8,7 @@ import { TerminalPanel } from './TerminalPanel.js';
 import { GitHubPanel } from './GitHubPanel.js';
 import { ActivityPanel, type DiffClickTarget } from './ActivityPanel.js';
 import { DiffPane } from './DiffPane.js';
-import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, formatBranch, agentProviderPresentation } from '../presentation.js';
+import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { EffectiveHookSettingsModal } from './EffectiveHookSettingsModal.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
@@ -573,8 +573,8 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
         </div>
         <div className="detail-header-right">
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
-            <span className={`detail-header-warning worktree-health worktree-health--${agent.worktreeHealth}`} title={agent.worktreeRegistryStale ? 'Worktree registry refresh failed; showing stale git state' : `Worktree is ${agent.worktreeHealth}`}>
-              {agent.worktreeRegistryStale ? 'git stale' : agent.worktreeHealth}
+            <span className={`detail-header-warning worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
+              {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
             </span>
           )}
           {agent.startedAt && <span>{formatDuration(agent.startedAt)}</span>}

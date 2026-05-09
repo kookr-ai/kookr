@@ -12,6 +12,7 @@ import type { ServerMessage } from '../shared/contracts/messages.js';
 import { MAX_ACTIVE_TASKS } from './config.js';
 import { cleanupTaskWorktrees } from '../adapters/git-worktree.js';
 import { getProjectId, deriveCanonicalPath } from '../core/project-identity.js';
+import { isMissingWorktreeHealth } from '../core/worktree-health.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 
@@ -225,6 +226,14 @@ async function stopAllLiveSessions(
   }
 }
 
+function markCompletedMissingWorktreesCleanedUp(task: Task, deps: LifecycleDeps): void {
+  for (const session of task.sessions) {
+    if (isMissingWorktreeHealth(session.worktreeHealth)) {
+      deps.taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'cleaned_up');
+    }
+  }
+}
+
 /**
  * Complete a task: stop all active sessions, mark completed,
  * log the event, and fire-and-forget worktree cleanup.
@@ -239,6 +248,7 @@ export async function completeTask(
   await stopAllLiveSessions(task, deps, 'completed');
   deps.queue?.purgeTask(taskId);
   deps.taskStore.completeTask(taskId);
+  markCompletedMissingWorktreesCleanedUp(task, deps);
 
   await deps.interactionLog?.append({
     type: 'task_completed',
