@@ -14,7 +14,7 @@ import { probeAgentBinary, type ProbeExecRunner } from './probe-agent-binary.js'
 import { parseHookEvent } from '../core/hook-parser.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { buildAgentLaunchContext } from './agent-launch-context.js';
-import { resolveAndPrepareCheckpointDir, CHECKPOINT_LOAD_INSTRUCTION } from '../core/checkpoint-path.js';
+import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
@@ -146,6 +146,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const checkpointDir = this.kookrDataDir
       ? (await resolveAndPrepareCheckpointDir({ cwd, kookrDataDir: this.kookrDataDir })) ?? undefined
       : undefined;
+    const checkpointInstruction = checkpointDir
+      ? await buildCheckpointLoadInstruction(checkpointDir)
+      : undefined;
 
     const launchContext = await buildAgentLaunchContext({
       taskStore: this.taskStore,
@@ -197,12 +200,14 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     if (useResume) {
       // --fork-session creates a new sessionId for the resumed branch so the
       // user's pre-crash transcript is preserved as a read-only snapshot.
-      // No --append-system-prompt or prompt arg: the resumed conversation
-      // already contains the original prompt and any checkpoint context.
+      // No prompt arg: the resumed conversation already contains the original
+      // prompt. We still append the current checkpoint protocol so older
+      // sessions learn the semantic CHECKPOINT.json reader contract.
+      if (checkpointInstruction) args.push('--append-system-prompt', checkpointInstruction);
       args.push('--resume', resume!.sessionId, '--fork-session');
       args.push('--settings', settingsPath);
     } else {
-      if (checkpointDir) args.push('--append-system-prompt', CHECKPOINT_LOAD_INSTRUCTION);
+      if (checkpointInstruction) args.push('--append-system-prompt', checkpointInstruction);
       args.push('--settings', settingsPath, prompt);
     }
 

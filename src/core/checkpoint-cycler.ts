@@ -105,7 +105,7 @@ const DEFAULT_CONFIG: CheckpointCyclerConfig = {
 };
 
 const PROMPT_MESSAGE = (ratioPercent: number): string =>
-  `Context window is at ${ratioPercent}% of the model limit. Before I run /compact, please update $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md with the current verdict, evidence, and next actions. After your reply I will run /compact for you, then a fresh turn will read CHECKPOINT.md back automatically.`;
+  `Context window is at ${ratioPercent}% of the model limit. Before I run /compact, please update $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md with the current verdict, evidence, and next actions, and update $KOOKR_CHECKPOINT_DIR/CHECKPOINT.json using schema_version "semantic-checkpoint.v1" with task_id, repo, worktree, branch, verdict, decisions, evidence, files_changed, tests_run, open_risks, next_actions, and memory_write_candidates. After your reply I will run /compact for you, then a fresh turn will read CHECKPOINT.json first when valid and fall back to CHECKPOINT.md automatically.`;
 
 const COMPACT_INPUT = '/compact';
 

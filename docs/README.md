@@ -43,6 +43,10 @@ We publish drafts intentionally — the design history is part of the engineerin
 
 [`reports/`](reports/) — internal audit and gap reports (skill-classification audits, spec-vs-code gap reports, brand-asset investigations, TUI-rendering limitation analyses, etc.). These are honest, point-in-time snapshots of what we found. They're useful for understanding how the project investigates and corrects itself; they may reference issues, PRs, or commits that have since shipped.
 
+## Schemas
+
+[`schemas/`](schemas/) — versioned JSON contracts for durable Kookr artifacts such as structured checkpoints.
+
 ## Reference
 
 [`reference/`](reference/) — canonical reference material (e.g. [environment variables](reference/environment-variables.md)).

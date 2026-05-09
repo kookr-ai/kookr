@@ -14,28 +14,33 @@ The skill is invoked in two scenarios. Both are driven by Kookr, not by you.
 
 ### Scenario A — fresh session resume
 
-Every time a Kookr-managed agent session starts (a new task, a relaunch after crash, a session resumed after `/compact`), the system prompt contains an instruction to read `$KOOKR_CHECKPOINT_DIR/CHECKPOINT.md` if that variable is set and the file exists. **Your very first action in any new session must be to `Read` that file.**
+Every time a Kookr-managed agent session starts (a new task, a relaunch after crash, a session resumed after `/compact`), the system prompt contains an instruction to read checkpoint state if `KOOKR_CHECKPOINT_DIR` is set. **Your very first action in any new session must be to read the checkpoint.**
 
-If the file exists, treat it as authoritative state from previous work on this branch. It contains:
+Read order:
+
+1. If `$KOOKR_CHECKPOINT_DIR/CHECKPOINT.json` exists and validates as `semantic-checkpoint.v1`, read it first. It is the durable machine-readable handoff contract.
+2. If `CHECKPOINT.json` is missing or invalid, warn about the invalid/missing JSON and fall back to `$KOOKR_CHECKPOINT_DIR/CHECKPOINT.md`.
+3. If neither file exists or `KOOKR_CHECKPOINT_DIR` is unset, this is a fresh task — proceed normally.
+
+If a checkpoint exists, treat it as authoritative state from previous work on this branch. It contains:
 - Current verdict / hypothesis
 - What's been tried and ruled out
 - Next concrete actions
 - A pointer to `repro.sh` (if any) which brings the local environment back up
 
-If the file doesn't exist or `KOOKR_CHECKPOINT_DIR` is unset, this is a fresh task — proceed normally.
-
 ### Scenario B — Kookr-driven update (proactive cycle)
 
-When the per-turn context fill crosses the configured threshold (default 75%), Kookr injects a user message into the session asking you to update `CHECKPOINT.md` with the current state. The message looks like:
+When the per-turn context fill crosses the configured threshold (default 75%), Kookr injects a user message into the session asking you to update both `CHECKPOINT.md` and `CHECKPOINT.json` with the current state. The message looks like:
 
-> Context window is at NN% of the model limit. Before I run /compact, please update $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md with the current verdict, evidence, and next actions. After your reply I will run /compact for you, then a fresh turn will read CHECKPOINT.md back automatically.
+> Context window is at NN% of the model limit. Before I run /compact, please update $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md with the current verdict, evidence, and next actions, and update $KOOKR_CHECKPOINT_DIR/CHECKPOINT.json using schema_version "semantic-checkpoint.v1" with task_id, repo, worktree, branch, verdict, decisions, evidence, files_changed, tests_run, open_risks, next_actions, and memory_write_candidates. After your reply I will run /compact for you, then a fresh turn will read CHECKPOINT.json first when valid and fall back to CHECKPOINT.md automatically.
 
 When you receive this message:
 
-1. Use `Write` to refresh `$KOOKR_CHECKPOINT_DIR/CHECKPOINT.md` with the current state.
-2. Reply briefly confirming the write.
-3. Kookr will automatically send `/compact` after your reply finishes.
-4. After compaction, the system prompt instruction fires again on the next turn and you re-read the checkpoint with fresh context.
+1. Use `Write` to refresh `$KOOKR_CHECKPOINT_DIR/CHECKPOINT.md` with the current human-readable state.
+2. Use `Write` to refresh `$KOOKR_CHECKPOINT_DIR/CHECKPOINT.json` with valid `semantic-checkpoint.v1` JSON.
+3. Reply briefly confirming the write.
+4. Kookr will automatically send `/compact` after your reply finishes.
+5. After compaction, the system prompt instruction fires again on the next turn and you re-read the checkpoint with fresh context.
 
 You do not need to remember to run `/compact` yourself — Kookr does it. You also do not need to remember to re-read the checkpoint after compaction — the system prompt handles it.
 
@@ -45,7 +50,8 @@ Kookr provisions a per-`(repo, branch)` directory at launch and exports its path
 
 ```
 $KOOKR_CHECKPOINT_DIR/
-├── CHECKPOINT.md       # Mandatory — the only file you must keep current
+├── CHECKPOINT.md       # Human-readable checkpoint
+├── CHECKPOINT.json     # semantic-checkpoint.v1 structured checkpoint
 ├── repro.sh            # Optional but strongly recommended — atomic re-runnable env setup
 ├── git-state.json      # Optional — { worktree, branch, sha } snapshot
 └── artifacts/          # Optional — videos, log files, probe output
@@ -87,6 +93,30 @@ Run `$KOOKR_CHECKPOINT_DIR/repro.sh` (if it exists). Otherwise the steps to brin
 
 Keep the file under ~32 KB. Move historical detail into `artifacts/history-YYYY-MM-DD.md` if it grows.
 
+## CHECKPOINT.json schema
+
+`CHECKPOINT.json` is the machine-readable companion to `CHECKPOINT.md`. Keep it compact, valid JSON, and aligned with the Markdown checkpoint.
+
+```json
+{
+  "schema_version": "semantic-checkpoint.v1",
+  "task_id": "string",
+  "repo": "owner/name",
+  "worktree": "path",
+  "branch": "string",
+  "verdict": "in_progress|blocked|stalled|complete",
+  "decisions": [],
+  "evidence": [],
+  "files_changed": [],
+  "tests_run": [],
+  "open_risks": [],
+  "next_actions": [],
+  "memory_write_candidates": []
+}
+```
+
+The canonical schema is `docs/schemas/semantic-checkpoint.v1.json`. Kookr validates the top-level shape when launching/resuming. Invalid JSON is a warning, not a task blocker; Kookr falls back to `CHECKPOINT.md`.
+
 ## When NOT to checkpoint
 
 - Trivial tasks ("read this file and tell me what it does"). The cycle won't fire — context never fills up. No checkpoint needed.
@@ -102,7 +132,7 @@ Keep the file under ~32 KB. Move historical detail into `artifacts/history-YYYY-
 
 ## Reproducing from zero on resume
 
-If a `repro.sh` exists at `$KOOKR_CHECKPOINT_DIR/repro.sh`, your second action on resume (after reading CHECKPOINT.md) should be to run it — it's the agent's protocol for verifying the claimed environment is still real. If the script fails, the checkpoint is stale; rewrite it with the corrected state and escalate to the user before acting on the old verdict.
+If a `repro.sh` exists at `$KOOKR_CHECKPOINT_DIR/repro.sh`, your second action on resume (after reading the checkpoint) should be to run it — it's the agent's protocol for verifying the claimed environment is still real. If the script fails, the checkpoint is stale; rewrite both checkpoint files with the corrected state and escalate to the user before acting on the old verdict.
 
 ## Limitations of this approach
 
@@ -115,5 +145,5 @@ If a `repro.sh` exists at `$KOOKR_CHECKPOINT_DIR/repro.sh`, your second action o
 - `docs/poc/004-checkpoint-hook-feasibility.md` — empirical proof that hook-feedback steering and agent-side `/compact` invocation do **not** work
 - `docs/poc/005-checkpoint-cycle-mechanics.md` — empirical proof that Kookr-side `tmux send-keys "/compact"`, the `token-tracker.ts` formula, and system-prompt survival across `/compact` all work
 - `src/core/checkpoint-cycler.ts` — Kookr's state machine that drives the cycle
-- `src/server/checkpoint-path.ts` — branch-keyed storage layout
+- `src/core/checkpoint-path.ts` — branch-keyed storage layout and semantic checkpoint reader
 - `src/core/token-tracker.ts` — `computeContextFillFromTranscript` is the metric that fires the cycle

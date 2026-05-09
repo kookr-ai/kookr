@@ -71,6 +71,8 @@ describe('CheckpointCycler', () => {
       expect(actions[0].tmuxName).toBe('s1');
       expect(actions[0].text).toContain('80%');
       expect(actions[0].text).toContain('CHECKPOINT.md');
+      expect(actions[0].text).toContain('CHECKPOINT.json');
+      expect(actions[0].text).toContain('semantic-checkpoint.v1');
     }
     expect(cycler.getState('s1')!.phase).toBe('prompting');
   });
