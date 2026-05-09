@@ -151,13 +151,13 @@ describe('runCrossProjectSweep', () => {
       // is the strongest possible assertion that the sweep hasn't silently
       // swapped it for a looser filter.
       expect(typed.classificationFilter).toBe(canSweepRemove);
-      // Functional probe: confirms the filter rejects patch_equivalent and
-      // accepts merged, which is the RFC's core safety property.
+      // Functional probe: confirms the filter accepts both strict merges and
+      // patch-equivalent squash merges, which is the sweep's core behavior.
       expect(typed.classificationFilter!({
         worktreePath: '/x', branch: 'b', projectId: 'p',
         classification: 'patch_equivalent', reasonCode: 'no_unique_patches',
         observedAt: new Date().toISOString(),
-      })).toBe(false);
+      })).toBe(true);
       expect(typed.classificationFilter!({
         worktreePath: '/x', branch: 'b', projectId: 'p',
         classification: 'merged', reasonCode: 'ancestor_of_baseline',

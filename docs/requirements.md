@@ -483,6 +483,7 @@ The system SHALL allow Contribution Workspace cleanup for candidates classified 
 
 **Acceptance criteria:**
 - Cleanup action is enabled only for candidates classified as `merged` or `patch_equivalent`
+- The global sweep action removes the same safe classifications as the per-project cleanup action
 - Server revalidates the candidate classification before deleting anything and blocks all other classifications
 - Cleanup removes the worktree path, prunes git's worktree registry, and deletes the local branch when the observed ref still matches
 - If the branch ref changes between validation and deletion, the worktree path is removed but the branch is retained and the user is told why

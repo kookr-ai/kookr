@@ -8,7 +8,7 @@ import type {
   CleanupResultSummary,
 } from '../../core/workspace-types.js';
 import { deriveCleanupCapabilitiesForCandidate } from '../../core/workspace-cleanup-policy.js';
-import { inspectCleanupCandidates } from './cleanup-inspector.js';
+import { inspectCleanupCandidate, inspectCleanupCandidates } from './cleanup-inspector.js';
 import { hydrateCleanupCandidateDetail } from './workspace-cleanup-detail-query.js';
 
 const execFile = promisify(execFileCb);
@@ -45,7 +45,7 @@ export interface WorkspaceBulkCleanupInput {
   /**
    * Optional filter on which candidates to delete. Defaults to
    * `canSafeRemove` (merged + patch_equivalent). The cross-project
-   * sweep passes `canSweepRemove` (merged only).
+   * sweep passes `canSweepRemove`, which uses the same safe classifications.
    */
   classificationFilter?: (candidate: CleanupCandidateAssessment) => boolean;
   signal?: AbortSignal;
@@ -116,10 +116,10 @@ export async function cleanupWorkspaceCandidate(
     sweepRunId: input.sweepRunId,
   });
 
-  const candidate = (await inspectCleanupCandidates(input.repoPath, input.projectId, {
+  const candidate = await inspectCleanupCandidate(input.repoPath, input.projectId, input.worktreePath, {
     policyResolver: deps.policyResolver,
     leaseService: deps.leaseService,
-  })).find((item) => item.worktreePath === input.worktreePath);
+  });
 
   if (!candidate || !candidate.worktreePath) {
     deps.attemptRepository.blockAttempt(attempt.attemptId, 'Cleanup candidate could not be revalidated');

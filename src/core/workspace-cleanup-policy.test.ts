@@ -78,11 +78,11 @@ describe('canSweepRemove', () => {
     })).toBe(true);
   });
 
-  it('rejects patch_equivalent candidates (false-positive on squash+revert)', () => {
+  it('authorizes patch_equivalent candidates produced by squash merges', () => {
     expect(canSweepRemove({
       classification: 'patch_equivalent',
       reasonCode: 'no_unique_patches',
-    })).toBe(false);
+    })).toBe(true);
   });
 
   it('rejects every classification that canSafeRemove rejects', () => {
@@ -103,6 +103,6 @@ describe('canSweepRemove', () => {
   });
 
   it('exposes the safe set as a readonly constant', () => {
-    expect(SWEEP_SAFE_CLASSIFICATIONS).toEqual(['merged']);
+    expect(SWEEP_SAFE_CLASSIFICATIONS).toEqual(['merged', 'patch_equivalent']);
   });
 });
