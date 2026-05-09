@@ -6,6 +6,7 @@ import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
 import { detectAnomalies, evaluateAnomalies } from './anomaly-detector.js';
 import { projectDisplayLabel } from './project-identity.js';
+import { normalizeTerminalWorktreeHealth } from './worktree-health.js';
 import {
   recordDetectionCheck,
   recordDetectionFire,
@@ -590,7 +591,7 @@ export class Monitor {
             gitBranch: lastSession?.gitBranch,
             gitCommit: lastSession?.gitCommit,
             gitIsWorktree: lastSession?.gitIsWorktree,
-            worktreeHealth: lastSession?.worktreeHealth,
+            worktreeHealth: normalizeTerminalWorktreeHealth(task.status, lastSession?.worktreeHealth),
             worktreeHealthObservedAt: lastSession?.worktreeHealthObservedAt,
             worktreeRegistryStale: lastSession?.worktreeRegistryStale,
             completionDigest: task.completionDigest,

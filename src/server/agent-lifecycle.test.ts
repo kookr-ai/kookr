@@ -392,6 +392,7 @@ function makeLifecycleDeps(overrides: Partial<LifecycleDeps> = {}): LifecycleDep
       cancelTask: vi.fn(),
       terminateTask: vi.fn(),
       updateSession: vi.fn(),
+      updateSessionWorktreeHealth: vi.fn(),
       findTaskBySession: vi.fn(),
     } as any,
     interactionLog: { append: vi.fn().mockResolvedValue(undefined) } as any,
@@ -467,6 +468,26 @@ describe('completeTask', () => {
         agentId: 'kookr-s1',
         reason: 'user_marked',
       }),
+    );
+  });
+
+  test('marks completed sessions with missing worktrees as cleaned_up', async () => {
+    const task = makeTask({
+      id: 'task-42',
+      status: 'inProgress',
+      sessions: [
+        { tmuxSession: 'kookr-s1', lastStatus: 'inProgress', worktreeHealth: 'missing_unexpectedly' },
+      ] as any,
+    });
+    const deps = makeLifecycleDeps();
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-42', deps);
+
+    expect(deps.taskStore.updateSessionWorktreeHealth).toHaveBeenCalledWith(
+      'task-42',
+      'kookr-s1',
+      'cleaned_up',
     );
   });
 

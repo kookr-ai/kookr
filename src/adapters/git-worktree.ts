@@ -119,6 +119,14 @@ function getSessionForWorktree(task: Task, worktreePath: string) {
   return task.sessions.find((s) => s.gitIsWorktree && s.cwd === worktreePath);
 }
 
+function markWorktreeCleanedUp(taskStore: TaskStore, taskId: string, task: Task, worktreePath: string): void {
+  for (const session of task.sessions) {
+    if (session.gitIsWorktree && session.cwd === worktreePath) {
+      taskStore.updateSessionWorktreeHealth(taskId, session.tmuxSession, 'cleaned_up');
+    }
+  }
+}
+
 /**
  * Clean up worktrees for a completed/cancelled task.
  * Fires asynchronously — does NOT block the caller.
@@ -161,6 +169,7 @@ async function cleanupSingleWorktree(
   // Path doesn't exist on disk — just prune git registry
   if (!existsSync(worktreePath)) {
     await pruneStaleEntries();
+    markWorktreeCleanedUp(taskStore, taskId, task, worktreePath);
     await interactionLog?.append({
       type: 'worktree_skipped',
       taskId,
@@ -229,6 +238,7 @@ async function cleanupSingleWorktree(
 
   // Step 1: Remove directory
   await rm(worktreePath, { recursive: true, force: true });
+  markWorktreeCleanedUp(taskStore, taskId, task, worktreePath);
 
   // Guard again before prune + branch delete
   if (taskStore.getTask(taskId)?.status === 'open') {
