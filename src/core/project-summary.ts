@@ -46,6 +46,8 @@ export interface ProjectSummaryDeps {
   skillTrackedProjects?: string[];
   /** Project IDs derived from active external repos in ~/.kookr/oss-repos.json. */
   registryActiveProjects?: string[];
+  /** Project IDs persisted by the sidebar preference store. */
+  sidebarProjects?: string[];
   prLessonsHolder?: PrLessonsStateHolder;
 }
 
@@ -66,7 +68,7 @@ export function configSeedsMembership(config: ProjectConfig): boolean {
  * Groups agents by projectId, computes aggregate stats per project.
  */
 export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummary[] {
-  const { agents, ledgerAnalytics, configStore, skillTrackedProjects, registryActiveProjects, prLessonsHolder } = deps;
+  const { agents, ledgerAnalytics, configStore, skillTrackedProjects, registryActiveProjects, sidebarProjects, prLessonsHolder } = deps;
 
   // Group agents by projectId (derived from task data)
   const projectAgents = new Map<string, AgentState[]>();
@@ -107,6 +109,17 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
   // reflected in the sidebar even before a manual GH refresh creates PR rows.
   if (registryActiveProjects) {
     for (const project of registryActiveProjects) {
+      if (!projectAgents.has(project)) {
+        projectAgents.set(project, []);
+      }
+    }
+  }
+
+  // Include projects that exist only because the user pinned/reordered/hidden
+  // them in the sidebar. This makes the sidebar recoverable after restart even
+  // when no active agent or contribution currently mentions the project.
+  if (sidebarProjects) {
+    for (const project of sidebarProjects) {
       if (!projectAgents.has(project)) {
         projectAgents.set(project, []);
       }

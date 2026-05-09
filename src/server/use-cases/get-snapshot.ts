@@ -42,6 +42,8 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
   getSkillTrackedProjects?: () => string[];
   /** Read-only accessor for active external repos from ~/.kookr/oss-repos.json. */
   getRegistryActiveProjects?: () => string[];
+  /** Read-only accessor for project IDs persisted by the sidebar preference store. */
+  getSidebarProjects?: () => string[];
   prLessonsHolder?: PrLessonsStateHolder;
 }
 
@@ -93,6 +95,7 @@ export function getProjectSummaries(deps: ProjectSummaryQueryDeps): ProjectSumma
     configStore: deps.projectConfigStore,
     skillTrackedProjects: deps.getSkillTrackedProjects?.(),
     registryActiveProjects: deps.getRegistryActiveProjects?.(),
+    sidebarProjects: deps.getSidebarProjects?.(),
     prLessonsHolder: deps.prLessonsHolder,
   });
 }

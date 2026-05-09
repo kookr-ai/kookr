@@ -716,6 +716,64 @@ describe('createKookrServer', () => {
       expect(configs).toEqual([expect.objectContaining({ project: 'kookr-ai/kookr' })]);
     });
 
+    test('PUT /api/projects/sidebar persists pinned projects across server restart', async () => {
+      const putRes = await fetch(`${baseUrl}/api/projects/sidebar`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          version: 1,
+          ordered: ['github.com/example/repo'],
+          pinned: ['github.com/example/repo'],
+          hidden: [],
+          catalog: {
+            'github.com/example/repo': {
+              project: 'github.com/example/repo',
+              displayName: 'example/repo',
+              color: 2,
+              lastSeenAt: '2026-05-09T00:00:00.000Z',
+            },
+          },
+        }),
+      });
+      expect(putRes.status).toBe(200);
+
+      const summariesBefore = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(summariesBefore).toEqual([
+        expect.objectContaining({ project: 'github.com/example/repo' }),
+      ]);
+
+      await server.close();
+      serverClosed = true;
+      server = await createKookrServerInternal({
+        port: 0,
+        host: '127.0.0.1',
+        kookrDir: tempDir,
+        tasksFile: join(tempDir, 'tasks.json'),
+        hooksDir: join(tempDir, 'hooks'),
+        settingsDir: join(tempDir, 'settings'),
+        serverCwd: '/test/cwd',
+        frontendDir: join(tempDir, 'frontend'),
+        saveIntervalMs: 600_000,
+        livenessIntervalMs: 600_000,
+        terminalBackend: new FakeTerminalBackend(),
+        claudeDir: join(tempDir, 'claude'),
+      });
+      serverClosed = false;
+      port = getActualPort(server);
+      baseUrl = `http://127.0.0.1:${port}`;
+
+      const state = await (await fetch(`${baseUrl}/api/projects/sidebar`)).json();
+      expect(state).toEqual(expect.objectContaining({
+        ordered: ['github.com/example/repo'],
+        pinned: ['github.com/example/repo'],
+      }));
+
+      const summariesAfter = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(summariesAfter).toEqual([
+        expect.objectContaining({ project: 'github.com/example/repo' }),
+      ]);
+    });
+
     test('POST /api/schedules creates a schedule', async () => {
       const projectDir = join(tempDir, 'project');
       mkdirSync(join(projectDir, '.kookr', 'playbooks'), { recursive: true });

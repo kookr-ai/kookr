@@ -6,6 +6,7 @@ describe('discovery + track actions', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    localStorage.clear();
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
   });
@@ -62,6 +63,138 @@ describe('discovery + track actions', () => {
     await store.getState().rescanSkills();
     expect(store.getState().discoveryStatus?.lastError).toContain('503');
     expect(store.getState().discoveryBusy).toBe(false);
+  });
+
+  test('hydrateProjectSidebarFromServer applies persisted sidebar state', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        version: 1,
+        ordered: ['github.com/a/repo', 'github.com/b/repo'],
+        pinned: ['github.com/b/repo'],
+        hidden: ['github.com/a/repo'],
+        catalog: {
+          'github.com/b/repo': {
+            project: 'github.com/b/repo',
+            displayName: 'b/repo',
+            color: 2,
+            lastSeenAt: '2026-05-09T00:00:00.000Z',
+          },
+        },
+      }),
+    });
+    const store = createKookrStore();
+    store.getState().handleProjectSummaries([
+      {
+        project: 'github.com/a/repo',
+        displayName: 'a/repo',
+        color: 1,
+        activeAgents: 0,
+        findingCount: 0,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+      {
+        project: 'github.com/b/repo',
+        displayName: 'b/repo',
+        color: 2,
+        activeAgents: 0,
+        findingCount: 0,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+    ]);
+
+    await store.getState().hydrateProjectSidebarFromServer();
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/sidebar');
+    expect(store.getState().projectSidebarServerHydrated).toBe(true);
+    expect(store.getState().projectSidebarPrefs.pinned).toEqual(['github.com/b/repo']);
+    expect(store.getState().visibleProjectSummaries.map((project) => project.project)).toEqual([
+      'github.com/b/repo',
+    ]);
+  });
+
+  test('hydrateProjectSidebarFromServer migrates local prefs when server is empty', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          version: 1,
+          ordered: [],
+          pinned: [],
+          hidden: [],
+          catalog: {},
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true });
+    const store = createKookrStore();
+    store.getState().handleProjectSummaries([
+      {
+        project: 'github.com/a/repo',
+        displayName: 'a/repo',
+        color: 1,
+        activeAgents: 0,
+        findingCount: 0,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+    ]);
+    store.getState().pinProjectToTop('github.com/a/repo');
+
+    await store.getState().hydrateProjectSidebarFromServer();
+
+    const put = fetchMock.mock.calls.find((call) => call[0] === '/api/projects/sidebar' && call[1]?.method === 'PUT');
+    expect(put).toBeDefined();
+    expect(JSON.parse(put![1].body)).toEqual(expect.objectContaining({
+      ordered: ['github.com/a/repo'],
+      pinned: ['github.com/a/repo'],
+    }));
+  });
+
+  test('pinProjectToTop writes to server after hydration', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          version: 1,
+          ordered: [],
+          pinned: [],
+          hidden: [],
+          catalog: {},
+        }),
+      })
+      .mockResolvedValue({ ok: true });
+    const store = createKookrStore();
+    store.getState().handleProjectSummaries([
+      {
+        project: 'github.com/a/repo',
+        displayName: 'a/repo',
+        color: 1,
+        activeAgents: 0,
+        findingCount: 0,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+    ]);
+    await store.getState().hydrateProjectSidebarFromServer();
+    fetchMock.mockClear();
+
+    store.getState().pinProjectToTop('github.com/a/repo');
+
+    const put = fetchMock.mock.calls.find((call) => call[0] === '/api/projects/sidebar' && call[1]?.method === 'PUT');
+    expect(put).toBeDefined();
+    expect(JSON.parse(put![1].body)).toEqual(expect.objectContaining({
+      pinned: ['github.com/a/repo'],
+    }));
   });
 
   test('trackOssProject rejects malformed input without calling fetch', async () => {

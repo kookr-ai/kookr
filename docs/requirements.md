@@ -576,6 +576,18 @@ The system SHOULD expose deterministic controls for automated tests to identify 
 
 **Evidence:** `src/frontend/components/OnboardingTour.tsx`, `src/frontend/store/onboarding-status.ts`, `src/frontend/store/onboarding-status.test.ts`, `e2e/onboarding-tour.spec.ts`.
 
+### R5.7: Persistent Project Sidebar Preferences — SHOULD — `done`
+
+The system SHOULD persist project sidebar ordering, pinned projects, hidden projects, and cached project labels in the Kookr data directory so the sidebar survives server redeploys and browser storage resets.
+
+**Acceptance criteria:**
+- Sidebar preferences are saved to disk under the active Kookr data directory
+- Pinned projects are included in project summaries after restart even when no active agent currently references them
+- The frontend hydrates sidebar preferences from the backend and migrates existing browser-local sidebar preferences when the backend store is empty
+- Browser `localStorage` remains a fallback/cache rather than the source of truth after backend hydration
+
+**Evidence:** `src/core/project-sidebar-store.ts`, `src/server/routes/project-routes.ts` (`/api/projects/sidebar`), `src/frontend/store/slices/project-sidebar-slice.ts`, `src/core/project-sidebar-store.test.ts`, `src/core/project-summary.test.ts`, `src/server/index.test.ts`, `src/frontend/store/slices/project-sidebar-discovery.test.ts`.
+
 ---
 
 ## R6: Infrastructure & Platform
@@ -856,6 +868,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R5.3 | F5.3 | SHOULD | done | StatusBar |
 | R5.4 | F5.4 | SHOULD | done | App, useStore, DetailPanel |
 | R5.5 | F5.5 | SHALL | done | useWebSocket, ws, useStore |
+| R5.7 | — | SHOULD | done | project-sidebar-store, project-routes, project-sidebar-slice |
 | R6.1 | ADR-007 / ADR-014 | SHALL | done | local-dtach-backend |
 | R6.2 | PoC 001 | SHALL | done | claude-code-adapter, hook-watcher, hook-parser |
 | R6.3 | ADR-008 (superseded by ADR-014) | SHALL | done | reconciliation, local-dtach-backend |

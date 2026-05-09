@@ -10,6 +10,7 @@ import type { DeferredTelemetryLogWriter } from '../core/telemetry.js';
 import type { GitHubScannerService } from '../core/github-scanner-service.js';
 import type { OssAttemptStore } from '../core/oss-attempt-store.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
+import type { ProjectSidebarStore } from '../core/project-sidebar-store.js';
 import type { CircuitBreakerRegistry } from '../core/circuit-breaker.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import type { HookFileWatcher } from './hook-watcher.js';
@@ -33,6 +34,7 @@ export interface KookrServerInternal {
   watchdog: Watchdog;
   ossAttemptStore: OssAttemptStore;
   projectConfigStore: ProjectConfigStore;
+  projectSidebarStore: ProjectSidebarStore;
   circuitBreakerRegistry: CircuitBreakerRegistry;
   app: Hono;
 }

@@ -16,6 +16,7 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       projectConfigStore: deps.projectConfigStore,
       getSkillTrackedProjects: () => deps.skillDiscoveryState?.getProjects() ?? [],
       getRegistryActiveProjects: deps.getRegistryActiveProjects,
+      getSidebarProjects: () => deps.projectSidebarStore?.getSeedProjects() ?? [],
       prLessonsHolder: deps.prLessonsState,
     });
     return c.json(summaries);
@@ -33,6 +34,28 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/projects/configs', (c) => {
     if (!deps.projectConfigStore) return c.json([]);
     return c.json(deps.projectConfigStore.getAllConfigs());
+  });
+
+  app.get('/api/projects/sidebar', (c) => {
+    if (!deps.projectSidebarStore) return c.json({ error: 'Not configured' }, 500);
+    return c.json(deps.projectSidebarStore.getState());
+  });
+
+  app.put('/api/projects/sidebar', async (c) => {
+    if (!deps.projectSidebarStore) return c.json({ error: 'Not configured' }, 500);
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON' }, 400);
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({ error: 'body must be an object' }, 400);
+    }
+    const state = deps.projectSidebarStore.setState(body);
+    await deps.projectSidebarStore.save();
+    deps.broadcastProjectSummaries?.();
+    return c.json(state);
   });
 
   app.post('/api/projects/configs', async (c) => {
