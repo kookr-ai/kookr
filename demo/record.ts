@@ -921,10 +921,11 @@ async function record() {
     await showCaption(page, 'One keypress to allow — no typing needed');
     await page.waitForTimeout(holdTime(audioClips, 'allow', 1500));
     await showKeystroke(page, '1');
-    await page.keyboard.press('1');
+    await page.locator('.btn-quick-action', { hasText: 'Allow' }).click();
 
-    // Wait for sent overlay
-    await page.locator('.sent-overlay').waitFor({ state: 'visible' }).catch(() => {});
+    // Wait briefly for the sent overlay; if this regresses, fail the recording
+    // instead of producing a long static segment.
+    await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 });
     await page.waitForTimeout(2000);
 
     // =====================================================================
