@@ -30,7 +30,7 @@ try {
 
 import { chromium, type Page, type APIRequestContext, type BrowserContext } from '@playwright/test';
 import { resolve, join, dirname } from 'node:path';
-import { mkdtempSync, renameSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, renameSync, writeFileSync, existsSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fork, type ChildProcess } from 'node:child_process';
 import { execFile } from 'node:child_process';
@@ -110,6 +110,7 @@ async function showCaption(page: Page, text: string) {
         transition: opacity 0.4s; max-width: 80%; text-align: center;
         border: 1px solid rgba(45,53,80,0.6); letter-spacing: 0.2px;
         box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        pointer-events: none;
       `;
       document.body.appendChild(el);
     }
@@ -661,6 +662,8 @@ async function mergeAudioIntoVideo(
 // ---------------------------------------------------------------------------
 
 async function record() {
+  mkdirSync(OUTPUT_DIR, { recursive: true });
+
   // --- Preflight: verify color-emoji font + Chromium can render it.
   // Fails fast with an actionable message so we never spin up TTS Docker
   // and Playwright just to produce a video full of tofu boxes.
@@ -710,6 +713,9 @@ async function record() {
   const context = await browser.newContext({
     viewport: VIEWPORT,
     recordVideo: { dir: videoTmpDir, size: VIEWPORT },
+  });
+  await context.addInitScript(() => {
+    window.localStorage.setItem('kookr:onboarding:seen-v1', 'true');
   });
   const page = await context.newPage();
   const request = context.request;
@@ -915,10 +921,11 @@ async function record() {
     await showCaption(page, 'One keypress to allow — no typing needed');
     await page.waitForTimeout(holdTime(audioClips, 'allow', 1500));
     await showKeystroke(page, '1');
-    await page.keyboard.press('1');
+    await page.locator('.btn-quick-action', { hasText: 'Allow' }).click();
 
-    // Wait for sent overlay
-    await page.locator('.sent-overlay').waitFor({ state: 'visible' }).catch(() => {});
+    // Wait briefly for the sent overlay; if this regresses, fail the recording
+    // instead of producing a long static segment.
+    await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 });
     await page.waitForTimeout(2000);
 
     // =====================================================================
@@ -1231,22 +1238,14 @@ async function record() {
     // Close context to finalize video
     const videoPage = page.video();
     await context.close();
-    await browser.close();
 
     // Move the video to output directory
     const silentPath = join(OUTPUT_DIR, audioClips.size > 0 ? 'kookr-demo-silent.webm' : 'kookr-demo.webm');
     if (videoPage) {
-      const videoPath = await videoPage.path();
-      if (videoPath) {
-        try {
-          renameSync(videoPath, silentPath);
-        } catch {
-          const { copyFileSync } = await import('node:fs');
-          copyFileSync(videoPath, silentPath);
-        }
-        console.log(`Video saved: ${silentPath}`);
-      }
+      await videoPage.saveAs(silentPath);
+      console.log(`Video saved: ${silentPath}`);
     }
+    await browser.close();
 
     // Merge audio if we have clips
     if (audioClips.size > 0 && existsSync(silentPath)) {
