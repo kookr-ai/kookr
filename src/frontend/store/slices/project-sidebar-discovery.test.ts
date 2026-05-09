@@ -67,8 +67,12 @@ describe('discovery + track actions', () => {
   test('trackOssProject rejects malformed input without calling fetch', async () => {
     const store = createKookrStore();
     const res = await store.getState().trackOssProject('not-valid');
-    expect(res.ok).toBe(false);
-    expect(store.getState().trackOssError).toBeTruthy();
+    expect(res).toEqual({
+      ok: false,
+      error: 'Enter a valid owner/repo (e.g. "grafana/grafana")',
+    });
+    expect(store.getState().trackOssError).toBe('Enter a valid owner/repo (e.g. "grafana/grafana")');
+    expect(store.getState().trackOssBusy).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -96,9 +100,9 @@ describe('discovery + track actions', () => {
     });
     const store = createKookrStore();
     const res = await store.getState().trackOssProject('grafana/grafana');
-    expect(res.ok).toBe(false);
-    expect(res.error).toContain('owner/repo format');
-    expect(store.getState().trackOssError).toContain('owner/repo format');
+    expect(res).toEqual({ ok: false, error: 'repo must be in owner/repo format' });
+    expect(store.getState().trackOssError).toBe('repo must be in owner/repo format');
+    expect(store.getState().trackOssBusy).toBe(false);
   });
 
   test('trackOssProject falls back to HTTP <status> when body is not JSON', async () => {
@@ -127,8 +131,12 @@ describe('discovery + track actions', () => {
   test('untrackOssProject rejects malformed input without calling fetch', async () => {
     const store = createKookrStore();
     const res = await store.getState().untrackOssProject('not-valid');
-    expect(res.ok).toBe(false);
-    expect(store.getState().untrackOssError).toBeTruthy();
+    expect(res).toEqual({
+      ok: false,
+      error: 'Enter a valid owner/repo (e.g. "grafana/grafana")',
+    });
+    expect(store.getState().untrackOssError).toBe('Enter a valid owner/repo (e.g. "grafana/grafana")');
+    expect(store.getState().untrackOssBusy).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -233,9 +241,9 @@ describe('discovery + track actions', () => {
       },
     ]);
     const res = await store.getState().untrackOssProject('grafana/grafana');
-    expect(res.ok).toBe(false);
-    expect(res.error).toContain('owner/repo format');
-    expect(store.getState().untrackOssError).toContain('owner/repo format');
+    expect(res).toEqual({ ok: false, error: 'repo must be in owner/repo format' });
+    expect(store.getState().untrackOssError).toBe('repo must be in owner/repo format');
+    expect(store.getState().untrackOssBusy).toBe(false);
     // State should not be mutated when the server rejects.
     expect(store.getState().projectSummaries).toHaveLength(1);
     expect(store.getState().projectSidebarCatalog['github.com/grafana/grafana']).toBeDefined();

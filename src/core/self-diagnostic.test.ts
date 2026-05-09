@@ -43,6 +43,15 @@ function makePrevious(overrides: Partial<PreviousSnapshot> = {}): PreviousSnapsh
   };
 }
 
+function expectSingleFinding(
+  report: ReturnType<typeof runDiagnostic>,
+  checkId: string,
+) {
+  const findings = report.findings.filter((f) => f.checkId === checkId);
+  expect(findings).toHaveLength(1);
+  return findings[0];
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -124,11 +133,13 @@ describe('Self-Diagnostic', () => {
     // 30 min interval, delta = 80,000 → rate = 160,000/hr → critical
 
     const report = runDiagnostic(input, previous);
-    const finding = report.findings.find((f) => f.checkId === 'detection-fire-rate');
-    expect(finding).toBeDefined();
-    expect(finding!.scope).toBe('needs_input');
-    expect(finding!.severity).toBe('critical');
-    expect(finding!.observed).toBe(160_000);
+    expect(expectSingleFinding(report, 'detection-fire-rate')).toMatchObject({
+      checkId: 'detection-fire-rate',
+      scope: 'needs_input',
+      severity: 'critical',
+      observed: 160_000,
+      threshold: 10_000,
+    });
   });
 
   test('detection-fire-rate: isolated per type', () => {
@@ -153,11 +164,12 @@ describe('Self-Diagnostic', () => {
     const previous = makePrevious({ detectionStats: zeroStats() });
 
     const report = runDiagnostic(input, previous);
-    const finding = report.findings.find((f) => f.checkId === 'detection-fire-rate');
-    expect(finding).toBeDefined();
-    expect(finding!.severity).toBe('warning');
-    expect(finding!.observed).toBe(3_000);
-    expect(finding!.threshold).toBe(1_000);
+    expect(expectSingleFinding(report, 'detection-fire-rate')).toMatchObject({
+      scope: 'stale_agent',
+      severity: 'warning',
+      observed: 3_000,
+      threshold: 1_000,
+    });
   });
 
   test('detection-fire-rate: below threshold → no finding', () => {
@@ -210,9 +222,12 @@ describe('Self-Diagnostic', () => {
     // 10K delta in 30 min = 20K/hr → warning
 
     const report = runDiagnostic(input, previous);
-    const finding = report.findings.find((f) => f.checkId === 'ws-broadcast-rate');
-    expect(finding).toBeDefined();
-    expect(finding!.severity).toBe('warning');
+    expect(expectSingleFinding(report, 'ws-broadcast-rate')).toMatchObject({
+      scope: 'websocket (system-wide)',
+      severity: 'warning',
+      observed: 20_000,
+      threshold: 10_000,
+    });
   });
 
   test('ws-broadcast-rate: critical tier', () => {
@@ -221,9 +236,12 @@ describe('Self-Diagnostic', () => {
     // 100K in 30 min = 200K/hr → critical
 
     const report = runDiagnostic(input, previous);
-    const finding = report.findings.find((f) => f.checkId === 'ws-broadcast-rate');
-    expect(finding).toBeDefined();
-    expect(finding!.severity).toBe('critical');
+    expect(expectSingleFinding(report, 'ws-broadcast-rate')).toMatchObject({
+      scope: 'websocket (system-wide)',
+      severity: 'critical',
+      observed: 200_000,
+      threshold: 100_000,
+    });
   });
 
   test('ws-broadcast-rate: normal rate → no finding', () => {
@@ -240,17 +258,23 @@ describe('Self-Diagnostic', () => {
   test('snapshot-size: triggers on large payload (critical)', () => {
     const input = makeInput({ lastSnapshotSizeBytes: 3_000_000 }); // well above 2MB
     const report = runDiagnostic(input);
-    const finding = report.findings.find((f) => f.checkId === 'snapshot-size');
-    expect(finding).toBeDefined();
-    expect(finding!.severity).toBe('critical');
+    expect(expectSingleFinding(report, 'snapshot-size')).toMatchObject({
+      scope: 'snapshot (system-wide)',
+      severity: 'critical',
+      observed: 3_000_000,
+      threshold: 2 * 1024 * 1024,
+    });
   });
 
   test('snapshot-size: warning tier', () => {
     const input = makeInput({ lastSnapshotSizeBytes: 600_000 });
     const report = runDiagnostic(input);
-    const finding = report.findings.find((f) => f.checkId === 'snapshot-size');
-    expect(finding).toBeDefined();
-    expect(finding!.severity).toBe('warning');
+    expect(expectSingleFinding(report, 'snapshot-size')).toMatchObject({
+      scope: 'snapshot (system-wide)',
+      severity: 'warning',
+      observed: 600_000,
+      threshold: 500 * 1024,
+    });
   });
 
   test('snapshot-size: normal size → no finding', () => {
@@ -277,12 +301,15 @@ describe('Self-Diagnostic', () => {
     const previous = makePrevious({ detectionStats: previousStats });
 
     const report = runDiagnostic(input, previous);
-    const finding = report.findings.find((f) => f.checkId === 'detection-fire-rate');
-    expect(finding).toBeDefined();
+    const finding = expectSingleFinding(report, 'detection-fire-rate');
     // Window-delta: 10,000 / 30 min = 20,000/hr → critical
     // Cumulative would be: 10,000 / 10 hr = 1,000/hr → barely at warning
-    expect(finding!.observed).toBe(20_000);
-    expect(finding!.severity).toBe('critical');
+    expect(finding).toMatchObject({
+      scope: 'needs_input',
+      observed: 20_000,
+      severity: 'critical',
+      threshold: 10_000,
+    });
   });
 
   test('first run (no previous) uses cumulative rate', () => {
@@ -295,9 +322,11 @@ describe('Self-Diagnostic', () => {
     });
     // No previous snapshot — uses cumulative
     const report = runDiagnostic(input, null);
-    const finding = report.findings.find((f) => f.checkId === 'detection-fire-rate');
-    expect(finding).toBeDefined();
-    expect(finding!.observed).toBe(80_000); // 80K / 1hr = 80K/hr
+    expect(expectSingleFinding(report, 'detection-fire-rate')).toMatchObject({
+      scope: 'needs_input',
+      observed: 80_000,
+      severity: 'critical',
+    }); // 80K / 1hr = 80K/hr
   });
 
   // --- Boundary values ---
@@ -319,9 +348,11 @@ describe('Self-Diagnostic', () => {
     const input = makeInput({ detectionStats: currentStats });
     const previous = makePrevious({ detectionStats: zeroStats() });
     const report = runDiagnostic(input, previous);
-    const finding = report.findings.find((f) => f.checkId === 'detection-fire-rate');
-    expect(finding).toBeDefined();
-    expect(finding!.severity).toBe('warning');
+    expect(expectSingleFinding(report, 'detection-fire-rate')).toMatchObject({
+      scope: 'needs_input',
+      observed: 1_002,
+      severity: 'warning',
+    });
   });
 
   test('snapshot-size: exactly at threshold → no finding', () => {
@@ -334,9 +365,10 @@ describe('Self-Diagnostic', () => {
   test('snapshot-size: just above threshold → finding', () => {
     const input = makeInput({ lastSnapshotSizeBytes: 500 * 1024 + 1 });
     const report = runDiagnostic(input);
-    const finding = report.findings.find((f) => f.checkId === 'snapshot-size');
-    expect(finding).toBeDefined();
-    expect(finding!.severity).toBe('warning');
+    expect(expectSingleFinding(report, 'snapshot-size')).toMatchObject({
+      observed: 500 * 1024 + 1,
+      severity: 'warning',
+    });
   });
 
   // --- Multiple findings ---
@@ -353,9 +385,10 @@ describe('Self-Diagnostic', () => {
     const previous = makePrevious({ detectionStats: zeroStats(), wsBroadcastCount: 0 });
 
     const report = runDiagnostic(input, previous);
-    const checkIds = new Set(report.findings.map((f) => f.checkId));
-    expect(checkIds.has('detection-fire-rate')).toBe(true);
-    expect(checkIds.has('ws-broadcast-rate')).toBe(true);
-    expect(checkIds.has('snapshot-size')).toBe(true);
+    expect(report.findings.map((f) => [f.checkId, f.scope, f.severity])).toEqual([
+      ['snapshot-size', 'snapshot (system-wide)', 'critical'],
+      ['detection-fire-rate', 'needs_input', 'critical'],
+      ['ws-broadcast-rate', 'websocket (system-wide)', 'critical'],
+    ]);
   });
 });
