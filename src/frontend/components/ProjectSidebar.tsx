@@ -294,7 +294,7 @@ export function ProjectSidebar({ onManage }: Props) {
           pinned={pinned}
           selected={selectedProject === summary.project}
           dragActive={draggingProjectId === summary.project}
-          onClick={() => selectProject(selectedProject === summary.project ? null : summary.project)}
+          onClick={() => selectProject(summary.project)}
           onContextMenu={(event) => handleProjectContextMenu(summary.project, event)}
           onDragEnd={handleDragEnd}
           onDragOver={(event) => updateDragTarget(event, summary.project, pinned)}
