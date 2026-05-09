@@ -79,7 +79,7 @@ export class RepoPolicyResolver {
       return { policy: 'unknown_policy', checkedAt };
     }
 
-    // 2. Known local default branch (for server project and local projects)
+    // 2. Known default branch (for server project and local projects)
     if (policy === 'known_policy') {
       const defaultBranch = await resolveDefaultBranch(repoPath);
       if (defaultBranch) {
@@ -105,17 +105,21 @@ export class RepoPolicyResolver {
   }
 }
 
-/** Resolve the default branch from origin/HEAD or common names. */
+/** Resolve the default branch from origin/HEAD, remote common names, or local common names. */
 async function resolveDefaultBranch(repoPath: string): Promise<string | null> {
-  // Try symbolic ref first
+  // Try symbolic ref first. Use the remote-tracking ref as the cleanup
+  // baseline so a freshly fetched GitHub merge is visible even when the local
+  // main/master branch has not been advanced.
   const ref = await gitIn(repoPath, 'symbolic-ref', 'refs/remotes/origin/HEAD');
   if (ref) {
     const parts = ref.split('/');
-    return parts[parts.length - 1];
+    const branchName = parts[parts.length - 1];
+    if (branchName) return `origin/${branchName}`;
   }
 
-  // Fall back to checking common branch names
-  for (const name of ['main', 'master']) {
+  // Prefer remote-tracking defaults when origin/HEAD is missing. Then fall
+  // back to local branches for repos without a remote.
+  for (const name of ['origin/main', 'origin/master', 'main', 'master']) {
     const result = await gitIn(repoPath, 'rev-parse', '--verify', name);
     if (result) return name;
   }

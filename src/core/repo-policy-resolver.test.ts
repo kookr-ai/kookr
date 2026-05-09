@@ -132,7 +132,7 @@ describe('RepoPolicyResolver', () => {
       expect(result.baselineRef).toBeUndefined();
     });
 
-    it('resolves default branch for known local repos', async () => {
+    it('resolves the remote default branch for known local repos', async () => {
       const resolver = new RepoPolicyResolver({
         serverProjectId: 'local/myproject',
       });
@@ -152,11 +152,11 @@ describe('RepoPolicyResolver', () => {
 
       const result = await resolver.resolveBaseline('local/myproject', '/repo');
       expect(result.policy).toBe('known_policy');
-      expect(result.baselineRef).toBe('main');
+      expect(result.baselineRef).toBe('origin/main');
       expect(result.baselineSha).toBe('def456');
     });
 
-    it('fallback chain: symbolic-ref fails, tries main, tries master, finds master', async () => {
+    it('fallback chain: symbolic-ref fails, prefers remote main over stale local branches', async () => {
       const resolver = new RepoPolicyResolver({
         serverProjectId: 'local/myproject',
       });
@@ -168,12 +168,44 @@ describe('RepoPolicyResolver', () => {
           // symbolic-ref fails (no origin/HEAD)
           cb(new Error('not a symbolic ref'), { stdout: '' }, '');
         } else if (callCount === 2) {
-          // rev-parse --verify main fails
+          // rev-parse --verify origin/main succeeds
+          cb(null, { stdout: 'origin-main-sha\n' }, '');
+        } else if (callCount === 3) {
+          // rev-parse origin/main (resolve SHA for the baseline)
+          cb(null, { stdout: 'origin-main-sha\n' }, '');
+        }
+      });
+
+      const result = await resolver.resolveBaseline('local/myproject', '/repo');
+      expect(result.policy).toBe('known_policy');
+      expect(result.baselineRef).toBe('origin/main');
+      expect(result.baselineSha).toBe('origin-main-sha');
+    });
+
+    it('falls back to local branches when no remote default branch exists', async () => {
+      const resolver = new RepoPolicyResolver({
+        serverProjectId: 'local/myproject',
+      });
+
+      let callCount = 0;
+      mockExecFile.mockImplementation((_cmd, args: any, _opts, cb: any) => {
+        callCount++;
+        if (callCount === 1) {
+          // symbolic-ref fails (no origin/HEAD)
+          cb(new Error('not a symbolic ref'), { stdout: '' }, '');
+        } else if (callCount === 2) {
+          // rev-parse --verify origin/main fails
           cb(new Error('not found'), { stdout: '' }, '');
         } else if (callCount === 3) {
+          // rev-parse --verify origin/master fails
+          cb(new Error('not found'), { stdout: '' }, '');
+        } else if (callCount === 4) {
+          // rev-parse --verify main fails
+          cb(new Error('not found'), { stdout: '' }, '');
+        } else if (callCount === 5) {
           // rev-parse --verify master succeeds
           cb(null, { stdout: 'master-sha-789\n' }, '');
-        } else if (callCount === 4) {
+        } else if (callCount === 6) {
           // rev-parse master (resolve SHA for the baseline)
           cb(null, { stdout: 'master-sha-789\n' }, '');
         }

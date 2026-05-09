@@ -2,12 +2,9 @@
  * Cross-project worktree sweep.
  *
  * Iterates every known project and delegates safe cleanup to the existing
- * `cleanupSafeWorkspaceCandidates()` per-project path. The sweep's safe
- * set is narrower than the per-project panel's — it uses `canSweepRemove`
- * (merged only), which excludes `patch_equivalent` because the classifier
- * has a confirmed false-positive on squash-merge + revert.
- *
- * See docs/rfc/rfc-cross-project-worktree-sweep.md.
+ * `cleanupSafeWorkspaceCandidates()` per-project path. The sweep uses the
+ * same safe classifications as the per-project panel: strict merged branches
+ * and patch-equivalent branches produced by squash merges.
  */
 
 import { execFile as execFileCb } from 'node:child_process';
@@ -27,7 +24,7 @@ import {
 
 const execFile = promisify(execFileCb);
 
-const PER_PROJECT_TIMEOUT_MS = 60_000;
+const PER_PROJECT_TIMEOUT_MS = 10 * 60_000;
 const LOCK_TTL_MS = 20 * 60 * 1000; // 20 min
 const FETCH_TIMEOUT_MS = 30_000;
 

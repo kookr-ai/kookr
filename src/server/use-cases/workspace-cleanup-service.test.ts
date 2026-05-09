@@ -16,11 +16,13 @@ vi.mock('node:child_process', () => ({
 
 vi.mock('./cleanup-inspector.js', () => ({
   inspectCleanupCandidates: vi.fn(),
+  inspectCleanupCandidate: vi.fn(),
 }));
 
-import { inspectCleanupCandidates } from './cleanup-inspector.js';
+import { inspectCleanupCandidate, inspectCleanupCandidates } from './cleanup-inspector.js';
 
 const mockInspectCleanupCandidates = vi.mocked(inspectCleanupCandidates);
+const mockInspectCleanupCandidate = vi.mocked(inspectCleanupCandidate);
 
 function cleanupCandidate(overrides: Partial<Awaited<ReturnType<typeof inspectCleanupCandidates>>[number]> = {}) {
   const classification = overrides.classification ?? 'merged';
@@ -72,6 +74,10 @@ describe('cleanupWorkspaceCandidate', () => {
     attemptRepository = new WorkspaceAttemptRepository();
     policyResolver = new RepoPolicyResolver({ profiles: [{ projectId: 'github.com/org/repo', baselineRef: 'main' }] });
     leaseService = new WorktreeLeaseService();
+    mockInspectCleanupCandidate.mockImplementation(async (_repoPath, _projectId, worktreePath) => {
+      const candidates = await mockInspectCleanupCandidates();
+      return candidates.find((candidate) => candidate.worktreePath === worktreePath);
+    });
   });
 
   it('removes a patch-equivalent worktree and deletes the matching branch ref', async () => {

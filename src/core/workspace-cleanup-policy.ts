@@ -98,15 +98,11 @@ export function deriveCleanupCapabilitiesForCandidate(
 /**
  * Classifications the cross-project sweep is authorized to remove.
  *
- * Tighter than canSafeRemove: excludes patch_equivalent because the
- * classifier cannot distinguish "squash-merged and still on baseline"
- * from "squash-merged then reverted" — both produce an empty
- * `git log --cherry-pick` output. See docs/rfc/rfc-cross-project-worktree-sweep.md.
- *
- * When revert-detection lands in the classifier, patch_equivalent can
- * be re-admitted by updating this constant alone.
+ * Mirrors the safe-remove policy used by the per-project panel. Squash-merged
+ * worktrees classify as patch_equivalent rather than merged, so excluding them
+ * makes the global sweep miss the normal GitHub squash-merge path.
  */
-export const SWEEP_SAFE_CLASSIFICATIONS: readonly CleanupClassification[] = ['merged'] as const;
+export const SWEEP_SAFE_CLASSIFICATIONS: readonly CleanupClassification[] = ['merged', 'patch_equivalent'] as const;
 
 export function canSweepRemove(
   candidate: Pick<CleanupCandidateAssessment, 'classification' | 'reasonCode'>,

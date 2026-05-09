@@ -122,6 +122,42 @@ export async function inspectCleanupCandidates(
   return assessments;
 }
 
+/**
+ * Inspect and classify one worktree path.
+ *
+ * Bulk cleanup uses this for per-candidate revalidation. It preserves the
+ * same branch-checked-out-elsewhere and project-repointing guards as the full
+ * inspector without reclassifying every worktree for every deletion.
+ */
+export async function inspectCleanupCandidate(
+  repoPath: string,
+  projectId: string,
+  worktreePath: string,
+  deps: CleanupInspectorDeps,
+): Promise<CleanupCandidateAssessment | undefined> {
+  const { policyResolver, leaseService } = deps;
+  const observedAt = new Date().toISOString();
+
+  const rawList = await gitIn(repoPath, 'worktree', 'list', '--porcelain');
+  if (rawList === null) {
+    return undefined;
+  }
+
+  const worktrees = parseWorktreeList(rawList);
+  const wt = worktrees.slice(1).find((item) => item.worktree === worktreePath);
+  if (!wt || wt.bare) {
+    return undefined;
+  }
+
+  const currentProjectId = await getProjectId(repoPath);
+  if (currentProjectId !== projectId) {
+    return classifyProjectRepointedCandidate(wt, projectId, currentProjectId, observedAt);
+  }
+
+  const baseline = await policyResolver.resolveBaseline(projectId, repoPath);
+  return classifyCandidate(wt, repoPath, projectId, baseline, leaseService, observedAt, worktrees);
+}
+
 function classifyProjectRepointedCandidate(
   wt: GitWorktreeInfo,
   projectId: string,
