@@ -29,7 +29,7 @@ flowchart TD
 | Component | Responsibility |
 |---|---|
 | **Event-Driven Monitor** (`monitor.ts`) | Orchestrates the supervisor: receives hook events, maintains per-agent sliding event windows, invokes detectors, manages agent registration/unregistration. Builds snapshots for the frontend |
-| **Anomaly Detectors** (`anomaly-detector.ts`) | Pure-function pattern matchers: `detect-stuck-loop`, `detect-repeated-error`, `detect-needs-input`, `detect-permission-blocked`. Each reads recent events, returns anomaly or nothing |
+| **Anomaly Detectors** (`anomaly-detector.ts`) | Pure-function pattern matchers for implemented event-derived anomalies: `needs_input` (Stop / AskUserQuestion), `permission_blocked`, `merge_conflict`, `repeated_error`, and `api_error`. Each reads recent events, returns an `Anomaly` or nothing |
 | **Budget Checker** (`budget-checker.ts`) | Emits `budget_exceeded` anomalies when a session crosses configured token/cost thresholds. Sits alongside `anomaly-detector.ts` in the detection stage |
 | **Snooze Suppression** (`snooze-suppression.ts`) | Gates re-alert emission so a snoozed agent does not re-enter the attention queue with the same anomaly before snooze expiry |
 | **Attention Queue** (`attention-queue.ts`) | Priority queue with active/skipped tiers, snooze management, auto-advance. Sorts by `AnomalySeverity` (`critical > warning > info`) |
@@ -41,8 +41,8 @@ flowchart TD
 
 - Detectors are pure functions in `anomaly-detector.ts`, co-located with tests. The SKILL.md approach (community-contributable patterns) remains a V2 direction.
 - Agent state is expressed through `AgentState.anomaly` (presence/type of current anomaly) and `AgentState.snoozedUntil`, not through `AgentStatus` transitions. The `AgentStatus` type in `types.ts` serves as metadata on persisted sessions only.
-- **Alerts:** Detectors produce alerts when they detect an actionable condition (stuck loop, repeated error, needs input, permission blocked). Alerts enter the priority queue. The `needs_input` anomaly type serves the role of the documented `WaitingForInput` state.
-- **Event-driven monitoring:** `HookFileWatcher` uses `fs.watch()` on per-agent JSONL hook files. A separate 5-second liveness interval reconciles tmux session state. No round-robin polling.
+- **Alerts:** Detectors, watchdog, and budget checker produce alerts when they detect an actionable condition (needs input, permission block, repeated error, merge conflict, stale/hook-disconnected state, API error, budget exceeded). Alerts enter the priority queue. The `needs_input` anomaly type serves the role of the documented `WaitingForInput` state.
+- **Event-driven monitoring:** `HookFileWatcher` uses `fs.watch()` on per-agent JSONL hook files. Periodic lifecycle timers apply watchdog verdicts and reconcile `LocalDtachBackend` liveness. No round-robin terminal-output polling.
 
 ## Evidence
 

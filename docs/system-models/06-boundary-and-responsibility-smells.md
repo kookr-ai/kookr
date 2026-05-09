@@ -19,11 +19,11 @@ Identify design smells in the V1 architecture before implementation. Pre-impleme
 | # | Ambiguity | Components | Severity | Status |
 |---|---|---|---|---|
 | 1 | **Process lifecycle** — who kills a managed agent? The adapter (it owns the process handle) or the backend (it receives the GUI command)? | agent-adapter, server | Low | Decided |
-| 2 | **~~Resume serialization~~** — resolved by ADR-007. No more resume subprocess; input delivered via terminal keystrokes (send-keys) | agent-adapter, server, attention-router | ~~Medium~~ | Resolved (ADR-007) |
+| 2 | **~~Resume serialization~~** — resolved by ADR-007. No more resume subprocess; input delivered through the terminal backend byte-write path | agent-adapter, server, attention-router | ~~Medium~~ | Resolved (ADR-007) |
 
 **#1 Decision (accepted):** The adapter exposes a `stop(agentId)` method. The server calls it in response to the GUI command. Adapter owns the process handle; server owns the routing of user commands.
 
-**#2 ~~Recommendation~~ (issue #9, resolved by ADR-007):** No longer applicable. With managed terminal sessions, input is delivered via terminal keystrokes (send-keys) to the running agent process. There is no resume subprocess to serialize.
+**#2 ~~Recommendation~~ (issue #9, resolved by ADR-007):** No longer applicable. With managed terminal sessions, input is delivered through the terminal backend to the running agent process. There is no resume subprocess to serialize.
 
 ## Duplicated Control Findings
 
@@ -43,7 +43,7 @@ Previously flagged as HIGH severity: the design docs describe synchronous "agent
 
 **Original resolution:** Agent behavioral contract (agents instructed to exit after asking).
 
-**Further simplified by ADR-007:** With managed terminal sessions, agents run in interactive mode where input blocking is native. When an agent needs input, it simply blocks waiting for keystrokes. No behavioral contract needed, no session exit/resume cycle. The "waiting for input" state is a real, observable state that Kookr detects via terminal output analysis. The developer responds via terminal keystrokes (send-keys), and the agent resumes immediately. This completely eliminates the design-vs-reality gap.
+**Further simplified by ADR-007 and ADR-014:** With managed terminal sessions, agents run in interactive mode where input blocking is native. When an agent needs input, it blocks in the running process. No behavioral contract needed, no session exit/resume cycle. Kookr detects actionable input states from structured hooks/transcripts and watchdog signals. The developer responds through the terminal backend's byte-write path, and the agent resumes immediately.
 
 ## Evidence
 

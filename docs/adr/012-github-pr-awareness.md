@@ -4,6 +4,8 @@
 
 **Accepted** (2026-03-25)
 
+> Implementation note (2026-05-09): The GitHub awareness pipeline is implemented, but Stage 1 reference extraction is deterministic regex extraction in `src/core/github-reference-scanner.ts`, not Haiku-assisted extraction. `GitHubScannerService.scanForReferences()` keeps LLM extraction as a future safety-net entry point; the accepted architecture remains periodic `gh` polling + diffing + attention alerts.
+
 ## Context
 
 Kookr supervises AI coding agents and routes developer attention to agents that need help. Agents frequently interact with GitHub — creating PRs, referencing issues, pushing code — but Kookr currently has **zero visibility** into what happens on GitHub after an agent performs these actions.

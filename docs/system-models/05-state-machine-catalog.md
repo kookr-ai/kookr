@@ -6,7 +6,9 @@ Document the major stateful entities in Kookr V1 and their legal state transitio
 
 ## Major Stateful Entities
 
-Four stateful entities in V1: **Task**, **Agent Session**, **Attention Event**, and **Snooze Timer**.
+Core attention-loop stateful entities: **Task**, **Agent Session**, **Attention Event**, and **Snooze Timer**.
+
+> Updated 2026-05-09: The original catalog covered the V1 attention loop. The implemented codebase now also contains operational state machines for checkpoint cycling, Ralph loops, schedules, workspace attempts, quota polling, and watchdog verdicts. Those are summarized in the "Additional Operational State Machines" section below.
 
 **Key distinction:** A Task is the *goal* ("fix the auth bug"). An Agent Session is one *attempt* at that goal. A task may go through multiple agent sessions — an agent can error out, get stuck, or only partially complete the work, and the developer relaunches with a new or modified prompt. This is analogous to GitHub/GitLab issues: the issue exists independently of any branch or PR attempt.
 
@@ -85,10 +87,10 @@ stateDiagram-v2
   Running --> Completed: Agent process exits in terminal session
   Running --> Snoozed: Developer snoozes agent
 
-  WaitingForInput --> Running: Developer sends keystrokes (send-keys)
+  WaitingForInput --> Running: Developer sends terminal input bytes
   WaitingForInput --> Snoozed: Developer snoozes agent
 
-  Stuck --> Running: Developer sends keystrokes (send-keys)
+  Stuck --> Running: Developer sends terminal input bytes
   Stuck --> Snoozed: Developer snoozes agent
 
   Snoozed --> Running: Snooze timer expires, supervisor resumes polling
@@ -115,19 +117,19 @@ stateDiagram-v2
 | Running | error_event | Errored | Agent adapter (terminal error output) | |
 | Running | process_exit | Completed | Agent adapter (process exits in terminal) | |
 | Running | snooze | Snoozed | Developer via GUI | Optional reason + duration |
-| WaitingForInput | keystrokes_sent | Running | Developer via GUI -> send-keys | Input delivered to running agent via terminal |
+| WaitingForInput | input_sent | Running | Developer via GUI -> `AgentAdapter.sendInput()` | Input delivered to running agent via terminal backend byte write |
 | WaitingForInput | snooze | Snoozed | Developer via GUI | |
-| Stuck | keystrokes_sent | Running | Developer via GUI -> send-keys | Input delivered to running agent via terminal |
+| Stuck | input_sent | Running | Developer via GUI -> `AgentAdapter.sendInput()` | Input delivered to running agent via terminal backend byte write |
 | Stuck | snooze | Snoozed | Developer via GUI | |
 | Snoozed | snooze_expired | Running | Snooze timer | Supervisor resumes polling, re-evaluates |
 | Snoozed | process_exit | Completed | Agent adapter (process exit in terminal) | Terminal session still monitored during snooze |
 
-**Implementation note (updated 2026-03-29):** The `AgentStatus` type exists in `src/core/types.ts` but is **not used as a live state machine** in the current implementation. The supervisor's actual agent state is expressed through:
+**Implementation note (updated 2026-05-09):** The diagram above is conceptual only. The `AgentStatus` type exists in `src/core/types.ts` but is **not used as a live state machine** in the current implementation. The supervisor's actual agent state is expressed through:
 1. `AgentState.anomaly` in `monitor.ts` — presence/absence and type of the current anomaly
 2. `AgentState.snoozedUntil` — set via `AttentionQueue.getSnoozedUntil()`
 3. `SessionInfo.lastStatus` in `tasks.ts` — used only for terminal session states (`'completed'`, `'aborted'`)
 
-The documented state machine above represents the **conceptual design**. In practice, `WaitingForInput` is not a member of the `AgentStatus` union — the `needs_input` anomaly type serves this role instead. `Snoozed` is tracked as a queue-level property (`snoozedUntil`), not as an `AgentStatus` value. The `Starting → Running` transition has no code path — agents are registered directly with the monitor.
+The documented state machine above represents historical **conceptual design**, not executable transition logic. In practice, `WaitingForInput` is not a member of the `AgentStatus` union — the `needs_input` anomaly type serves this role instead. `Snoozed` is tracked as a queue-level property (`snoozedUntil`), not as an `AgentStatus` value. The `Starting → Running` transition has no code path — agents are registered directly with the monitor. See `subsystems/supervisor-agent/03-state-machines.md` for the implementation state model.
 
 **Key design implications:**
 - **Snooze** is managed at the attention queue level, not as an agent status transition. The agent process continues running in its terminal session. Process exit is still detected because the adapter monitors the terminal session independently.
@@ -136,8 +138,9 @@ The documented state machine above represents the **conceptual design**. In prac
 
 **Relationship to tasks:**
 - Every agent session belongs to exactly one task.
-- When an agent session reaches `Completed` or `Errored`, the parent task transitions back to `Open` — the developer then decides whether to mark the task complete, relaunch, or cancel.
-- Killing an agent (via stop or task cancel) terminates the session (SIGTERM → SIGKILL) and transitions it to `Errored`.
+- When an agent session ends normally, lifecycle code can return the parent task to `Open` so the developer can mark complete, relaunch, or cancel.
+- When reconciliation finds every session for an `Open` or `InProgress` task dead without user acknowledgement, the task transitions to `Terminated`.
+- Killing an agent (via stop or task cancel) marks the session `aborted` and prevents reconciliation from treating that session as live.
 
 ### 3. Attention Event Lifecycle
 
@@ -175,7 +178,7 @@ stateDiagram-v2
 | Pending | developer_navigates | Viewed | SPA navigation |
 | Pending | agent_status_change | Resolved | Agent moved on |
 | Pending | agent_completed | Stale | Agent finished before developer saw alert |
-| Viewed | response_sent | Resolved | Developer responds via terminal keystrokes (send-keys) |
+| Viewed | response_sent | Resolved | Developer responds via terminal backend byte write |
 | Viewed | developer_skips | Skipped | Developer clicks Skip; auto-advance to next |
 | Viewed | developer_snoozes | Snoozed | Developer clicks Snooze + picks duration; auto-advance |
 | Viewed | agent_status_change | Resolved | Agent self-resolves |
@@ -207,6 +210,19 @@ stateDiagram-v2
 
 **Implementation note (updated 2026-04-10):** The `Active → Cancelled` transition via "developer manually wakes agent" is implemented end-to-end. The `cancelSnooze` WebSocket message (`src/shared/contracts/messages.ts:87`) is handled in `src/server/ws.ts:375` and calls `AttentionQueue.cancelSnooze(agentId)` (`src/core/attention-queue.ts:74`). A snooze can therefore be cancelled by (a) the developer manually, (b) agent completion (`unregisterAgent` → `remove`), or (c) the timer firing.
 
+**Implementation note (updated 2026-05-09):** Snooze does **not** pause supervisor monitoring. Hook events and watchdog verdicts continue flowing through `Monitor`; `AttentionQueue.enqueue()` updates the stored snoozed anomaly and keeps it out of the active queue until expiry/manual wake/purge.
+
+### Additional Operational State Machines
+
+| Entity | States | Owner | Notes |
+|---|---|---|---|
+| Checkpoint cycle | `idle`, `prompting`, `compacting` plus session-scoped `gaveUp` | `src/core/checkpoint-cycler.ts` | Sends the checkpoint prompt when transcript context crosses the trigger ratio, then sends `/compact` after a Stop event. Repeated no-progress compact attempts set `gaveUp` for that session |
+| Ralph loop | `running`, `paused`, `completed`, `failed`, `cancelled` | `src/core/ralph-cycler.ts`, `src/server/ralph-loop-service.ts` | Terminal states prevent further iteration injection. `paused` preserves the loop but does not launch a fresh runtime until explicitly resumed |
+| Schedule execution receipt | `reserved`, `accepted`, `terminal`, `unknown_after_restart` | `src/core/schedule.ts`, `src/server/schedule-runner.ts` | Latest execution outcomes further classify queued/running/completed/cancelled/deduplicated/skipped/failed states for the UI |
+| Workspace attempt | `running`, `passed`, `blocked`, `timed_out`, `cancelled`, `superseded`, `completed` | `src/core/workspace-attempt-repository.ts` | Durable cleanup/preflight/diagnostic attempt records, separate from task lifecycle |
+| Quota poller | `idle`, `polling`, `healthy`, `backoff`, `auth_failed`, `disabled` | `src/adapters/quota-adapter.ts` | Polling state for Anthropic OAuth usage quota, with backoff on 429/network/schema failures |
+| Watchdog verdict | `healthy`, `grace_period`, `needs_input`, `permission_blocked`, `tool_running`, `quiet_working`, `mcp_starting`, `stale_agent`, `hook_disconnected` | `src/core/watchdog.ts` | Verdict union is converted into queue anomalies by `Monitor.applyWatchdogVerdict()` when actionable |
+
 ## Transition Ownership Table
 
 | Entity | Owner of transitions | Persistence |
@@ -233,7 +249,7 @@ stateDiagram-v2
 
 | Edge Case | Why Deferred |
 |---|---|
-| Developer skips all agents without snoozing | All agents cycle in back-of-queue tier indefinitely. V1 shows "all skipped" state. Automatic dampening deferred to later |
+| Developer skips all agents without snoozing | Skipped agents cycle after the active tier is empty. No distinct `AllSkipped` state is implemented; automatic dampening deferred to later |
 | Auto-complete tasks based on completion criteria | V1 always requires explicit developer confirmation. Auto-complete based on criteria matching is a V2 supervisor feature |
 
 ## Known Issues Affecting This Model
@@ -243,7 +259,7 @@ stateDiagram-v2
 | **#3** AskUserQuestion is non-blocking | **Resolved by ADR-007.** Interactive mode is natively blocking — agent waits for input. WaitingForInput is now a first-class state | Resolved (ADR-007) |
 | **#5** Session ID mismatch on error | **Resolved by ADR-007.** No more session resume; agents run continuously in terminal sessions | Resolved (ADR-007) |
 | **#6** Resume cost accumulation | **Resolved by ADR-007.** No more `--resume` calls — agent runs in a single continuous interactive session | Resolved (ADR-007) |
-| **#9** Resume race conditions | **Resolved by ADR-007.** No more resume subprocess — input delivered via terminal keystrokes (send-keys) to running process | Resolved (ADR-007) |
+| **#9** Resume race conditions | **Resolved by ADR-007.** No more resume subprocess — input delivered through the terminal backend's byte-write path to the running process | Resolved (ADR-007) |
 
 ## Evidence
 
