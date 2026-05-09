@@ -9,8 +9,10 @@ import type { KookrServerInternal } from './server-test-helpers.js';
 
 const hasApiKey = !!(process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY || process.env.ANTHROPIC_API_KEY);
 
-function getRandomPort(): number {
-  return 30000 + Math.floor(Math.random() * 20000);
+function getActualPort(server: KookrServerInternal): number {
+  const addr = server.httpServer.address();
+  if (addr && typeof addr === 'object') return addr.port;
+  throw new Error('Server not listening');
 }
 
 /**
@@ -44,11 +46,9 @@ describe.skipIf(!hasApiKey)('task naming E2E (real API)', () => {
 
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'kookr-naming-e2e-'));
-    port = getRandomPort();
-    baseUrl = `http://127.0.0.1:${port}`;
 
     server = await createKookrServerInternal({
-      port,
+      port: 0,
       host: '127.0.0.1',
       kookrDir: tempDir,
       tasksFile: join(tempDir, 'tasks.json'),
@@ -60,6 +60,8 @@ describe.skipIf(!hasApiKey)('task naming E2E (real API)', () => {
       livenessIntervalMs: 600_000,
       terminalBackend: new FakeTerminalBackend(),
     });
+    port = getActualPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
   });
 
   afterEach(async () => {

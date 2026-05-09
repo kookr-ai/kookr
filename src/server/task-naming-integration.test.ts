@@ -28,8 +28,10 @@ import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { createKookrServerInternal } from './index.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 
-function getRandomPort(): number {
-  return 30000 + Math.floor(Math.random() * 20000);
+function getActualPort(server: KookrServerInternal): number {
+  const addr = server.httpServer.address();
+  if (addr && typeof addr === 'object') return addr.port;
+  throw new Error('Server not listening');
 }
 
 /** Poll the task store for a name to appear (up to timeoutMs). */
@@ -59,8 +61,6 @@ describe('AI task naming integration', () => {
 
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'kookr-naming-int-'));
-    port = getRandomPort();
-    baseUrl = `http://127.0.0.1:${port}`;
 
     // Default: LLM client available, returns a name
     mockCreateLlmClient.mockResolvedValue({
@@ -71,7 +71,7 @@ describe('AI task naming integration', () => {
     mockGenerateTaskName.mockResolvedValue('Fix JWT Token Invalidation');
 
     server = await createKookrServerInternal({
-      port,
+      port: 0,
       host: '127.0.0.1',
       kookrDir: tempDir,
       tasksFile: join(tempDir, 'tasks.json'),
@@ -83,6 +83,8 @@ describe('AI task naming integration', () => {
       livenessIntervalMs: 600_000,
       terminalBackend: new FakeTerminalBackend(),
     });
+    port = getActualPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
   });
 
   afterEach(async () => {
@@ -201,7 +203,7 @@ describe('AI task naming integration', () => {
     mockCreateLlmClient.mockResolvedValue(null);
 
     server = await createKookrServerInternal({
-      port: getRandomPort(),
+      port: 0,
       host: '127.0.0.1',
       kookrDir: tempDir,
       tasksFile: join(tempDir, 'tasks2.json'),
@@ -214,7 +216,7 @@ describe('AI task naming integration', () => {
       terminalBackend: new FakeTerminalBackend(),
     });
 
-    port = (server.httpServer.address() as any).port;
+    port = getActualPort(server);
     baseUrl = `http://127.0.0.1:${port}`;
 
     const res = await fetch(`${baseUrl}/api/tasks`, {
