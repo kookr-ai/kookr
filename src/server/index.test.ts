@@ -13,6 +13,42 @@ function getActualPort(server: KookrServerInternal): number {
   throw new Error('Server not listening');
 }
 
+type MalformedAlertMessage = {
+  type?: string;
+  severity?: string;
+  agentId?: string;
+  summary?: string;
+  details?: string;
+};
+
+function waitForMalformedAlert(ws: WebSocket, label: string): Promise<MalformedAlertMessage> {
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const onMsg = (data: unknown) => {
+      const parsed = JSON.parse((data as Buffer).toString()) as MalformedAlertMessage;
+      if (
+        parsed.type !== 'alert'
+        || parsed.severity !== 'critical'
+        || typeof parsed.summary !== 'string'
+        || !parsed.summary.includes('Malformed WebSocket message')
+      ) {
+        return;
+      }
+
+      clearTimeout(timer);
+      ws.off('message', onMsg);
+      resolve(parsed);
+    };
+
+    timer = setTimeout(() => {
+      ws.off('message', onMsg);
+      reject(new Error(`No malformed message alert for ${label}`));
+    }, 2000);
+
+    ws.on('message', onMsg);
+  });
+}
+
 describe('createKookrServer', () => {
   let tempDir: string;
   let server: KookrServerInternal;
@@ -930,18 +966,7 @@ Review daily work.
       ];
 
       for (const { label, payload } of cases) {
-        const next = new Promise<{ type: string; severity?: string; agentId?: string; summary?: string }>((resolve, reject) => {
-          const onMsg = (data: unknown) => {
-            ws.off('message', onMsg);
-            resolve(JSON.parse((data as Buffer).toString()));
-          };
-          ws.on('message', onMsg);
-          setTimeout(() => {
-            ws.off('message', onMsg);
-            reject(new Error(`No reply for malformed payload (${label})`));
-          }, 2000);
-        });
-
+        const next = waitForMalformedAlert(ws, `malformed payload (${label})`);
         ws.send(payload);
         const alert = await next;
 
@@ -999,18 +1024,7 @@ Review daily work.
       ];
 
       for (const { label, payload, expectDetailSubstring } of cases) {
-        const next = new Promise<{ type: string; severity?: string; agentId?: string; summary?: string; details?: string }>((resolve, reject) => {
-          const onMsg = (data: unknown) => {
-            ws.off('message', onMsg);
-            resolve(JSON.parse((data as Buffer).toString()));
-          };
-          ws.on('message', onMsg);
-          setTimeout(() => {
-            ws.off('message', onMsg);
-            reject(new Error(`No reply for ${label}`));
-          }, 2000);
-        });
-
+        const next = waitForMalformedAlert(ws, label);
         ws.send(JSON.stringify(payload));
         const alert = await next;
 
