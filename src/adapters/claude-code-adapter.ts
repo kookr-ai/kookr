@@ -46,7 +46,7 @@ export interface ClaudeCodeAdapterOptions {
   /**
    * Kookr data directory (`~/.kookr` or `~/.kookr-<port>`). When provided,
    * each launched task gets a per-(repo, branch) checkpoint directory under
-   * `<kookrDataDir>/checkpoints/...` and `KOOKR_CHECKPOINT_DIR` is injected
+   * `<kookrDataDir>/checkpoints/...` and `TASK_CHECKPOINT_DIR` is injected
    * into the spawned agent's environment. Without this, checkpointing is
    * silently disabled (fail-open).
    */

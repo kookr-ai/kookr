@@ -70,7 +70,7 @@
     },
     "memory_write_candidates": {
       "type": "array",
-      "description": "Inline summary or pointers for review-only memory candidates. Full candidate state, when needed, lives in $KOOKR_CHECKPOINT_DIR/memory_write_candidates.json using memory-write-candidates.v1.",
+      "description": "Inline summary or pointers for review-only memory candidates. Full candidate state, when needed, lives in $TASK_CHECKPOINT_DIR/memory_write_candidates.json using memory-write-candidates.v1.",
       "items": {}
     }
   }

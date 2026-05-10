@@ -242,7 +242,7 @@ describe('semantic checkpoint resume contract', () => {
     await expect(inspectSemanticCheckpoint(checkpointDir)).resolves.toMatchObject({ kind: 'json' });
     const instruction = await buildCheckpointLoadInstruction(checkpointDir);
     expect(instruction).toContain('CHECKPOINT.json');
-    expect(instruction).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.json as your very first action');
+    expect(instruction).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.json as your very first action');
     expect(instruction).toContain('CHECKPOINT.md remains the human-readable companion');
   });
 
@@ -255,7 +255,7 @@ describe('semantic checkpoint resume contract', () => {
     });
     const instruction = await buildCheckpointLoadInstruction(checkpointDir);
     expect(instruction).toContain('CHECKPOINT.json is not present');
-    expect(instruction).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
+    expect(instruction).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
   });
 
   it('warns and falls back to CHECKPOINT.md when CHECKPOINT.json is invalid', async () => {
@@ -272,7 +272,7 @@ describe('semantic checkpoint resume contract', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Invalid semantic checkpoint JSON'));
     expect(instruction).toContain('CHECKPOINT.json is invalid');
     expect(instruction).toContain('Warn that CHECKPOINT.json was invalid');
-    expect(instruction).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
+    expect(instruction).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
     warn.mockRestore();
   });
 
@@ -289,7 +289,7 @@ describe('semantic checkpoint resume contract', () => {
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Invalid semantic checkpoint JSON'));
     expect(instruction).toContain('CHECKPOINT.json is invalid');
-    expect(instruction).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
+    expect(instruction).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
     warn.mockRestore();
   });
 
