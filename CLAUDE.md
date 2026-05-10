@@ -49,12 +49,16 @@ plugin/agents/         — General-purpose review subagents
 
 ## Where to put a new skill or agent
 
-- **Kookr-internal** (references `pnpm prod:*`, `KOOKR_*`, `~/.kookr/`, `.hooks/`, hardcoded `/home/.../git/kookr`, or describes Kookr internals like the dashboard / supervisor / playbook system): goes in `<kookr>/.claude/{skills,agents}/`. Loaded as project-scope when cwd is the Kookr repo. Not shipped to other developers.
-- **General-purpose** (no Kookr-internal references): goes in `<kookr>/plugin/{skills,agents}/`. Ships via the toolkit plugin to all consumers. **Bump `plugin/.claude-plugin/plugin.json#version`** in the same PR — the pre-push hook enforces this.
+Two homes only (RFC: `docs/rfc/rfc-skill-agent-distribution.md`):
 
-User-scope (`~/.claude/skills/<name>`) **wins over** project-scope (`<cwd>/.claude/skills/<name>`) on name collision (silent shadow — empirically verified). The pre-push hook rejects pushes that introduce a name collision between `.claude/<kind>/` and `plugin/<kind>/`.
+- **Kookr-internal** (references `pnpm prod:*`, `pnpm build:server`, `KOOKR_*`, `~/.kookr/`, `.hooks/`, hardcoded `/home/.../git/kookr`, or describes Kookr internals like the dashboard / supervisor / playbook system / `.review-state` markers): goes in `<kookr>/.claude/{skills,agents}/` with a **`kookr-`** prefix in the directory or file name. Loaded as project-scope when cwd is the Kookr repo. Not shipped to other developers.
+- **General-purpose** (no Kookr-internal references): goes in `<kookr>/plugin/{skills,agents}/` with **no** `kookr-` prefix. Ships via the toolkit plugin to all consumers. **Bump `plugin/.claude-plugin/plugin.json#version`** in the same PR — the pre-push hook enforces this.
 
-Plugin skill invocation is backwards-compatible: prompts that say `typescript-type-safety` (unqualified) still trigger the same skill once it's namespaced as `kookr-toolkit:typescript-type-safety`. No CLAUDE.md / memory / prompt rewrites needed when promoting a skill from project-scope to plugin.
+The `hooks/skill-placement-gate.sh` script (called from `.hooks/pre-push`) enforces both rules: every dir in `.claude/skills/` and every file in `.claude/agents/` must start with `kookr-`; nothing in `plugin/skills/` may; no name collision between the two trees; no unqualified `subagent_type` references inside skill bodies.
+
+User-scope (`~/.claude/skills/<name>`) **wins over** project-scope (`<cwd>/.claude/skills/<name>`) on name collision (silent shadow — empirically verified).
+
+Plugin skill invocation backwards-compat is **narrower than previously stated**: natural-language prompts ("use the `typescript-type-safety` skill") still resolve via model-mapping to `kookr-toolkit:typescript-type-safety`, but **slash commands** (`/pre-push`) and **programmatic `subagent_type` calls** require the qualified form (`/kookr-toolkit:pre-push`, `subagent_type: "kookr-toolkit:boundary-critic"`). The placement gate rejects unqualified `subagent_type` references inside skill bodies.
 
 The `KOOKR_PLUGIN_DIR` env var overrides the auto-resolved plugin path. Set to empty string to disable injection for a session (hermetic mode).
 - Platform: Linux + macOS required. Windows deferred.

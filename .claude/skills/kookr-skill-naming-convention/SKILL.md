@@ -1,35 +1,43 @@
 ---
 name: kookr-skill-naming-convention
-description: Where Kookr skills live (.claude/skills/ vs plugin/skills/) and how to name them. Kookr-internal skills MUST be prefixed `kookr-`; project-agnostic skills go in plugin/skills/ unprefixed. Use this skill before creating, renaming, or promoting a skill.
-keywords: skill, naming, convention, plugin, kookr, prefix, promote, marketplace, manifest, organization
-related: oss-task-checkpointing, rfc-iterative-review
+description: Where Kookr skills and agents live (.claude vs plugin) and how to name them. Kookr-internal MUST be prefixed `kookr-`; project-agnostic go in plugin/ unprefixed. Use this skill before creating, renaming, or promoting a skill or agent.
+keywords: skill, agent, naming, convention, plugin, kookr, prefix, promote, marketplace, manifest, organization, subagent
+related: rfc-iterative-review
 ---
 
-# Kookr skill naming + placement convention
+# Kookr skill + agent naming + placement convention
 
 ## When to use
 
-- Creating a new skill in the Kookr repo.
-- Promoting a skill from `.claude/skills/` to `plugin/skills/` (or the reverse).
-- Renaming an existing skill that violates the convention below.
-- Reviewing a PR that adds or renames a skill.
+- Creating a new skill or agent in the Kookr repo.
+- Promoting a skill/agent from `.claude/` to `plugin/` (or the reverse).
+- Renaming an existing artifact that violates the convention below.
+- Reviewing a PR that adds or renames a skill or agent.
 
 ## The two locations
 
 ```
 ~/git/kookr/
-├── .claude/skills/      ← KOOKR-INTERNAL: only loaded when working inside the kookr repo itself
-└── plugin/skills/       ← PUBLISHED PLUGIN: shipped via the kookr-toolkit marketplace plugin to every project that installs it
+├── .claude/
+│   ├── skills/          ← KOOKR-INTERNAL skills: dirs MUST start with `kookr-`
+│   └── agents/          ← KOOKR-INTERNAL agents: files MUST start with `kookr-`
+└── plugin/
+    ├── skills/          ← PUBLISHED skills: MUST NOT start with `kookr-`
+    └── agents/          ← PUBLISHED agents: MUST NOT start with `kookr-`
 ```
 
-A skill in `.claude/skills/` is invisible to other projects — it only loads when Claude Code is opened inside `$HOME/git/kookr/`. Anything that should be reusable across all projects MUST live in `plugin/skills/`.
+`.claude/` artifacts are invisible to other projects — they only load when Claude Code is opened inside `$HOME/git/kookr/`. Anything that should be reusable across all projects MUST live in `plugin/`.
+
+The `hooks/skill-placement-gate.sh` script (called from `.hooks/pre-push`) enforces every rule below on push. CI does not duplicate it; the hook is the single enforcement boundary.
 
 ## The naming rule
 
 | Location | Name pattern | Example |
 |---|---|---|
-| `.claude/skills/` (kookr-internal) | **must start with `kookr-`** | `kookr-shadow-detection`, `kookr-supervise-tasks` |
-| `plugin/skills/` (published) | **must NOT start with `kookr-`** (unless the skill is genuinely about Kookr itself, which is rare and a code smell — most published skills should be domain-named) | `architecture-drift-signals`, `oss-task-checkpointing` |
+| `.claude/skills/` (kookr-internal) | **must start with `kookr-`** | `kookr-shadow-detection`, `kookr-supervise-tasks`, `kookr-pre-push` |
+| `.claude/agents/` (kookr-internal) | **must start with `kookr-`** | `kookr-oss-issue-scout.md` |
+| `plugin/skills/` (published) | **must NOT start with `kookr-`** | `architecture-drift-signals`, `task-checkpointing` |
+| `plugin/agents/` (published) | **must NOT start with `kookr-`** | `boundary-critic.md`, `failure-mode-analyst.md` |
 
 The `kookr-` prefix exists for one reason: when a Kookr-internal skill leaks into a `~/.claude/plugins/marketplaces/kookr/.claude/skills/` mirror or shows up in `/skills` output in another project, the prefix makes it obvious this skill is about Kookr internals — not generally applicable. If the prefix isn't there, a user from another project might trigger the skill expecting it to apply to their codebase, then waste minutes discovering it's about Kookr's terminal backend.
 
@@ -79,3 +87,5 @@ Default to kookr-internal (`.claude/skills/kookr-<name>/`). It's cheaper to prom
 - **`.claude/skills/foo/`** without the `kookr-` prefix — either the skill is genuinely generic (move to `plugin/skills/foo/`) or it's Kookr-internal and needs the prefix.
 - **A "generic" skill that has `~/.kookr/...` paths in its body** — it isn't generic. Promote only after the paths are abstracted out.
 - **Renaming a published skill without bumping the plugin version** — breaks every project that referenced the old name.
+- **Unqualified `subagent_type` references inside a skill body** — calling `Agent` with a bare agent name does NOT resolve for plugin-namespaced agents. The qualified `kookr-toolkit:<name>` form is required. The placement gate rejects bare names on push.
+- **Project-scope agents without the `kookr-` prefix** — bypass-mode strips `--setting-sources` and these would silently disappear. The gate enforces the prefix; kookr-prefixed agents are permitted because they're only useful inside the kookr repo anyway.

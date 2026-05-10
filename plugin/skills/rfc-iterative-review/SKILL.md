@@ -55,7 +55,9 @@ Run **3 review rounds** by default (the task prompt may specify a different numb
 
 ### Each round
 
-Launch the following subagents **in parallel** using the Agent tool. Pick 3-5 that are most relevant to the RFC's topic:
+Launch the following subagents **in parallel** using the Agent tool. Pick 3-5 that are most relevant to the RFC's topic.
+
+> **Invocation note:** The agent names below appear unqualified for readability. When calling `Agent({ subagent_type: "..." })`, prepend `kookr-toolkit:` to every name (e.g., `kookr-toolkit:boundary-critic`). Unqualified `subagent_type` does not resolve for plugin-namespaced agents.
 
 | Subagent | When to include |
 |----------|----------------|

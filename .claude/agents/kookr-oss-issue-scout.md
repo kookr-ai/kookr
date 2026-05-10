@@ -1,5 +1,5 @@
 ---
-name: oss-issue-scout
+name: kookr-oss-issue-scout
 description: Scouts an external GitHub repo for the best issue to contribute to. Scores candidates, runs label-based exclusion, verifies no competing PRs, runs the Reproducibility Gate, and returns a ready-to-claim top candidate with a draft claim comment and a one-shot gh command. Does NOT post the claim itself — the caller reviews and posts. Use whenever the user asks to contribute to an OSS repo.
 model: opus
 ---

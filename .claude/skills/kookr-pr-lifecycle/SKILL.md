@@ -1,5 +1,5 @@
 ---
-name: pr-lifecycle
+name: kookr-pr-lifecycle
 description: Full PR lifecycle — creation, checklist tracking, CI monitoring, review resolution, body updates, and post-merge cleanup. Use together with post-push to finish PR follow-through.
 keywords: PR, pull request, create PR, checklist, CI, review, merge, resolve thread, pr body, pr description, test plan, github
 related: github-issue-workflow, post-push, pr-review-triage, git-commit-discipline

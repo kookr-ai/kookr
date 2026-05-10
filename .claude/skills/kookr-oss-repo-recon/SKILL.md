@@ -1,5 +1,5 @@
 ---
-name: oss-repo-recon
+name: kookr-oss-repo-recon
 description: Analyze an open-source repository's contribution requirements — CONTRIBUTING.md, PR template, CI config, CLA, build system, key reviewers — before attempting any contribution
 keywords: recon, contributing, guidelines, CI, CLA, build, open source, oss, reconnaissance, setup, fork, upstream, PR template
 related: [[oss-fork-manager]], [[oss-issue-scout]], [[oss-pr-critic]]

@@ -1,5 +1,5 @@
 ---
-name: session-reflect
+name: kookr-session-reflect
 description: Analyze a Kookr supervision session to identify friction patterns and generate actionable improvements for agent behavior and anomaly detection.
 keywords: session, reflect, friction, feedback, self-improve, meta-analysis, supervision, attention, interaction, patterns, UX
 related: testing-patterns, e2e-agent-testing, state-machine-workflow-patterns

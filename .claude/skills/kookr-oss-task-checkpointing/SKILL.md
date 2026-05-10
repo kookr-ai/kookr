@@ -1,5 +1,5 @@
 ---
-name: oss-task-checkpointing
+name: kookr-oss-task-checkpointing
 description: Persistent checkpoint protocol for long Kookr tasks. Survives context compaction, agent crash, host reboot, and handoff to a new task on the same branch. Used by Kookr's v5 proactive cycle (see docs/poc/004 + 005) — `KOOKR_CHECKPOINT_DIR` is injected at launch and Kookr auto-triggers checkpoint writes when context fills up.
 keywords: checkpoint, oss, contribution, long task, persistent state, compaction, memory reset, recon, handoff, resume, wip, context window, session boundary, grafana, n8n, rust, upstream, kookr, branch, git
 ---

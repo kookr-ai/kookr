@@ -196,8 +196,19 @@ if [ -d plugin ]; then
     exit 1
   fi
 
-  # 2. Intra-repo collision — same name in both .claude/<kind>/ and plugin/<kind>/.
-  for kind in skills agents commands; do
+  # 2. Skill/agent placement gate — covers naming, empty-agents, collisions,
+  #    and unqualified subagent_type references. See hooks/skill-placement-gate.sh.
+  if [ -x hooks/skill-placement-gate.sh ] || [ -f hooks/skill-placement-gate.sh ]; then
+    if ! bash hooks/skill-placement-gate.sh "$REPO_ROOT"; then
+      echo ""
+      echo "Push rejected: skill/agent placement violations (see above)."
+      exit 1
+    fi
+  fi
+
+  # 2b. Legacy collision check for non-skill/agent kinds (commands, etc.) that
+  #     the placement gate doesn't cover.
+  for kind in commands; do
     if [ -d ".claude/$kind" ] && [ -d "plugin/$kind" ]; then
       DUPES=$(comm -12 \
         <(ls ".claude/$kind" 2>/dev/null | sort -u) \

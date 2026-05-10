@@ -1,5 +1,5 @@
 ---
-name: pre-push
+name: kookr-pre-push
 description: Repo delivery-cycle entrypoint before git push or PR creation — compose the repo pre-push hook, pre-pr-review, reviewer specialists, and PR gate without duplicating them.
 keywords: pre-push, before push, git push, before PR, delivery cycle, push, PR gate, reviewer specialists
 related: pre-pr-review, post-push, pr-lifecycle, pr-review-triage, git-commit-discipline

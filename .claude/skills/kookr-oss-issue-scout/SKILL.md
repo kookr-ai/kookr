@@ -1,5 +1,5 @@
 ---
-name: oss-issue-scout
+name: kookr-oss-issue-scout
 description: Find the best contribution opportunity in an external repository — scores issues by clarity, size, acceptance likelihood, competition, match, and local reproducibility
 keywords: issue, triage, scout, contribute, good first issue, help wanted, open source, oss, find issue, contribution opportunity, performance, optimization, reproducibility, verifiability
 related: [[oss-repo-recon]], [[oss-fork-manager]], [[oss-pr-critic]]

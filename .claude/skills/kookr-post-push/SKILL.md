@@ -1,5 +1,5 @@
 ---
-name: post-push
+name: kookr-post-push
 description: Repo delivery-cycle follow-through after push or PR creation — verify mergeability, checklist state, CI, and early feedback by composing pr-lifecycle and pr-review-triage.
 keywords: post-push, after push, after PR, PR follow-up, CI, merge conflict, review comments, delivery cycle
 related: pre-push, pr-lifecycle, pr-review-triage, pre-pr-review
