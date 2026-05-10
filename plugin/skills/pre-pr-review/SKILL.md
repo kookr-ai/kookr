@@ -24,7 +24,6 @@ Detect the project's build system from the working directory. Pick the first row
 
 | Detected                                                          | Build command                                                              | Test command   |
 | ----------------------------------------------------------------- | -------------------------------------------------------------------------- | -------------- |
-| **Kookr main** (`package.json` + `.hooks/pre-push` present)      | `pnpm build:server && pnpm check:e2e`                                      | `pnpm test`    |
 | **pnpm** (`pnpm-lock.yaml`)                                       | prefer `pnpm build`; else `pnpm tsc --noEmit` if `tsconfig.json` present   | `pnpm test`    |
 | **npm** (`package-lock.json`)                                     | prefer `npm run build`; else `npx tsc --noEmit` if `tsconfig.json` present | `npm test`     |
 | **yarn** (`yarn.lock`)                                            | prefer `yarn build`; else `yarn tsc --noEmit` if `tsconfig.json` present   | `yarn test`    |
@@ -99,7 +98,7 @@ Replace with one of:
 
 - `$HOME` or `~`
 - Repo-root-relative paths (e.g. `scripts/foo.sh`, `.claude/skills/bar/SKILL.md`)
-- Documented env vars (`CODEX_SRC`, `CODEX_INSTALL_DIR`, `KOOKR_PLUGIN_DIR`, ...)
+- Documented env vars (e.g. `CODEX_SRC`, `CODEX_INSTALL_DIR`, ...)
 - Placeholders (`/path/to/repo`, `<USER>`) in examples
 
 Allowed without conversion:
@@ -151,7 +150,10 @@ Each specialist expects:
 - `{repoDir}` — path to the full repo checkout (the worktree)
 - PR context: `git diff main..HEAD` output and list of changed files
 
-#### Layer 2: Architecture Agents (`.claude/agents/`)
+#### Layer 2: Architecture Agents (kookr-toolkit plugin agents)
+
+> **Invocation note:** Agent names below appear unqualified for readability. When calling `Agent({ subagent_type: "..." })`, prepend `kookr-toolkit:` (e.g., `kookr-toolkit:dependency-graph-analyzer`). Unqualified `subagent_type` does not resolve for plugin-namespaced agents.
+
 Use when the change touches module boundaries, imports, or public APIs:
 - **dependency-graph-analyzer** — import graph, circular deps, layering violations
 - **module-interface-auditor** — public API clarity, leaky abstractions
@@ -233,7 +235,7 @@ The state file is the contract between this skill and the `pr-workflow-gate` hoo
 
 Before you conclude this skill, report the checklist result explicitly:
 
-- detected project type: `kookr|pnpm|npm|yarn|rust|python|other`
+- detected project type: `pnpm|npm|yarn|rust|python|other`
 - type/build checks: passed / failed / skipped (with reason)
 - tests: passed / failed / skipped (with reason)
 - bug reproduction (fix PRs only): reproduced / verified / skipped with reason
@@ -247,15 +249,11 @@ Do not say the branch is PR-ready without stating whether the reviewer specialis
 
 ## Quick Version
 
-For small/obvious changes, the minimum is: run the detected build + test commands, then `git diff --stat`, then create the state file (see above). For Kookr specifically:
-
-```bash
-pnpm build:server && pnpm check:e2e && pnpm test && git diff --stat
-```
+For small/obvious changes, the minimum is: run the detected build + test commands, then `git diff --stat`, then create the state file (see above).
 
 ## See Also
 
-- [[pre-push]] — Delivery-cycle entrypoint before push (Kookr only)
+- [[pre-push]] — Delivery-cycle entrypoint before push (project-specific)
 - [[pr-lifecycle]] — Full PR lifecycle after this checklist passes
 - [[git-commit-discipline]] — Commit message and branch safety
 - [[testing-patterns]] — Test configuration and isolation

@@ -71,11 +71,11 @@ fi
 
 ### Phase 2: Scout (subagent) → Claim (caller posts)
 
-Spawn the `oss-issue-scout` subagent. It runs in an isolated context with narrow instructions and returns a **ready-to-claim top candidate** (with a draft claim comment body and a one-shot `gh api` command) — or an explicit `ABORTED`. You do not re-verify competition or reproducibility after it returns; the subagent's contract is that every gate has been cleared. But you DO post the claim comment yourself — the subagent deliberately stops short of that to give the user a review checkpoint and to keep the public-action blast radius in the caller's hands.
+Spawn the `kookr-oss-issue-scout` subagent. It runs in an isolated context with narrow instructions and returns a **ready-to-claim top candidate** (with a draft claim comment body and a one-shot `gh api` command) — or an explicit `ABORTED`. You do not re-verify competition or reproducibility after it returns; the subagent's contract is that every gate has been cleared. But you DO post the claim comment yourself — the subagent deliberately stops short of that to give the user a review checkpoint and to keep the public-action blast radius in the caller's hands.
 
 ```
 Agent(
-  subagent_type: "oss-issue-scout",
+  subagent_type: "kookr-oss-issue-scout",
   prompt: "Scout an issue in {repo}. Focus: {contributionFocus or 'any'}. Return the top candidate with score, root cause, fix sketch, reproducibility evidence note path, recommended branch name, draft claim comment, and the gh command to post the claim."
 )
 ```

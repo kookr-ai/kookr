@@ -179,9 +179,9 @@ User-scope body.`,
 
   test('loads project-scope agents', () => {
     writeFileSync(
-      join(projectDir, 'oss-issue-scout.md'),
+      join(projectDir, 'fixture-project-agent.md'),
       `---
-name: oss-issue-scout
+name: fixture-project-agent
 description: Project-scope agent
 model: opus
 ---
@@ -190,7 +190,7 @@ Project body.`,
       'utf-8',
     );
     const agents = loadFileBasedAgents('/unused', { userAgentsDir: userDir, projectAgentsDir: projectDir });
-    expect(agents['oss-issue-scout']).toEqual({
+    expect(agents['fixture-project-agent']).toEqual({
       description: 'Project-scope agent',
       model: 'opus',
       prompt: 'Project body.',

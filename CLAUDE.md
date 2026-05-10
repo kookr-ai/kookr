@@ -49,12 +49,16 @@ plugin/agents/         — General-purpose review subagents
 
 ## Where to put a new skill or agent
 
-- **Kookr-internal** (references `pnpm prod:*`, `KOOKR_*`, `~/.kookr/`, `.hooks/`, hardcoded `/home/.../git/kookr`, or describes Kookr internals like the dashboard / supervisor / playbook system): goes in `<kookr>/.claude/{skills,agents}/`. Loaded as project-scope when cwd is the Kookr repo. Not shipped to other developers.
-- **General-purpose** (no Kookr-internal references): goes in `<kookr>/plugin/{skills,agents}/`. Ships via the toolkit plugin to all consumers. **Bump `plugin/.claude-plugin/plugin.json#version`** in the same PR — the pre-push hook enforces this.
+Two homes only (RFC: `docs/rfc/rfc-skill-agent-distribution.md`):
 
-User-scope (`~/.claude/skills/<name>`) **wins over** project-scope (`<cwd>/.claude/skills/<name>`) on name collision (silent shadow — empirically verified). The pre-push hook rejects pushes that introduce a name collision between `.claude/<kind>/` and `plugin/<kind>/`.
+- **Kookr-internal** (references `pnpm prod:*`, `pnpm build:server`, `KOOKR_*`, `~/.kookr/`, `.hooks/`, hardcoded `/home/.../git/kookr`, or describes Kookr internals like the dashboard / supervisor / playbook system / `.review-state` markers): goes in `<kookr>/.claude/{skills,agents}/` with a **`kookr-`** prefix in the directory or file name. Loaded as project-scope when cwd is the Kookr repo. Not shipped to other developers.
+- **General-purpose** (no Kookr-internal references): goes in `<kookr>/plugin/{skills,agents}/` with **no** `kookr-` prefix. Ships via the toolkit plugin to all consumers. **Bump `plugin/.claude-plugin/plugin.json#version`** in the same PR — the pre-push hook enforces this.
 
-Plugin skill invocation is backwards-compatible: prompts that say `typescript-type-safety` (unqualified) still trigger the same skill once it's namespaced as `kookr-toolkit:typescript-type-safety`. No CLAUDE.md / memory / prompt rewrites needed when promoting a skill from project-scope to plugin.
+The `hooks/skill-placement-gate.sh` script (called from `.hooks/pre-push`) enforces both rules: every dir in `.claude/skills/` and every file in `.claude/agents/` must start with `kookr-`; nothing in `plugin/skills/` may; no name collision between the two trees; no unqualified `subagent_type` references inside skill bodies.
+
+User-scope (`~/.claude/skills/<name>`) **wins over** project-scope (`<cwd>/.claude/skills/<name>`) on name collision (silent shadow — empirically verified).
+
+Plugin skill invocation backwards-compat is **narrower than previously stated**: natural-language prompts ("use the `typescript-type-safety` skill") still resolve via model-mapping to `kookr-toolkit:typescript-type-safety`, but **slash commands** (e.g., `/typescript-type-safety` would not resolve) and **programmatic `subagent_type` calls** require the qualified form (`/kookr-toolkit:typescript-type-safety`, `subagent_type: "kookr-toolkit:boundary-critic"`). The placement gate rejects unqualified `subagent_type` references inside skill bodies.
 
 The `KOOKR_PLUGIN_DIR` env var overrides the auto-resolved plugin path. Set to empty string to disable injection for a session (hermetic mode).
 - Platform: Linux + macOS required. Windows deferred.
@@ -101,7 +105,7 @@ A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on 
 - **All changes in worktrees** — Always use `EnterWorktree` before making changes. Never switch branches on the main repo. Start by reporting the current branch/worktree and any dirty files in this repo, and keep reporting dirty files for any additional repos you touch. If a worktree with a similar name already exists, ask the user whether to reuse it or create a new one. If you must switch branches on the main repo (edge case), explain why and wait for explicit user approval. See `.claude/skills/github-issue-workflow/SKILL.md` for naming conventions.
 - **Use injected Kookr session context** — Kookr-managed agent sessions export `KOOKR_TASK_ID`, `KOOKR_PARENT_TASK_ID` (when present), `KOOKR_API_BASE_URL`, and `KOOKR_GIT_COMMON_DIR` (when in a worktree). Use these instead of dtach/process probing when spawning child tasks or diagnosing worktree behavior.
 - **Complete the delivery cycle** — After finishing implementation work, don't stop and wait. Commit, push, and create (or update) a PR. The user should not have to ask you to "commit and push" or "create PR" — do it proactively as the final step. If there's a PR checklist, verify each item before declaring done.
-- **Use the delivery-cycle skills explicitly** — Before a non-trivial `git push`, run `pre-push`. After pushing a branch with a PR, or after creating/updating the PR, run `post-push`. These skills compose the repo pre-push hook, `pre-pr-review`, `pr-lifecycle`, and `pr-review-triage` into one flow.
+- **Use the delivery-cycle skills explicitly** — Before a non-trivial `git push`, run `kookr-pre-push`. After pushing a branch with a PR, or after creating/updating the PR, run `kookr-post-push`. These skills compose the repo pre-push hook, `pre-pr-review`, `kookr-pr-lifecycle`, and `pr-review-triage` into one flow.
 - **Report completion clearly** — When you finish a task, explicitly state what was done, what was committed/pushed, and the PR URL (if created). Don't leave the user guessing whether you're done or still working. End with a clear status: "Done — PR created at [URL]" or "Done — changes committed and pushed to [branch]".
 - Read `docs/features.md` for what to build
 - Read `docs/architecture.md` for how

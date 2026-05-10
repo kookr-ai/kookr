@@ -27,14 +27,14 @@ cd "$REPO_ROOT"
 ALLOWLIST=(
   # OSS extension — distribution to coworkers pending design
   ".claude/skills/pre-pr-review/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
-  ".claude/skills/pre-push/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/kookr-pre-push/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
   ".claude/skills/oss-pr-distill/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
   ".claude/skills/kookr-oss-pr-state/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
   ".claude/skills/oss-pr-plan/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
   ".claude/skills/oss-pr-critic/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
   ".claude/skills/oss-pr-threshold/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
-  ".claude/skills/oss-issue-scout/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
-  ".claude/skills/oss-repo-recon/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/kookr-oss-issue-scout/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/skills/kookr-oss-repo-recon/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
   ".claude/skills/oss-fork-manager/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
   ".claude/skills/kookr-oss-contribution-gate/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
   ".claude/skills/kookr-oss-dashboard-verify/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
@@ -45,7 +45,7 @@ ALLOWLIST=(
   ".claude/skills/reviewer-distillation-predict/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
   ".claude/skills/reviewer-distillation-select/SKILL.md # follow-up: NONE — deferred OSS extension distribution"
   ".claude/playbooks/oss-contribute.md # follow-up: NONE — deferred OSS extension distribution"
-  ".claude/agents/oss-issue-scout.md # follow-up: NONE — deferred OSS extension distribution"
+  ".claude/agents/kookr-oss-issue-scout.md # follow-up: NONE — deferred OSS extension distribution"
 
   # Meta-skills that legitimately document the agent runtime's filesystem
   # conventions (~/.claude/ for Claude Code, ~/.codex/ for Codex CLI,
@@ -59,7 +59,7 @@ ALLOWLIST=(
   ".claude/skills/kookr-playbooks/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-skill-naming-convention/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/self-reflect/SKILL.md # follow-up: NONE — load-bearing personal path"
-  ".claude/skills/session-reflect/SKILL.md # follow-up: NONE — load-bearing personal path"
+  ".claude/skills/kookr-session-reflect/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-shadow-detection/SKILL.md # follow-up: NONE — load-bearing personal path"
 
   # Project CLAUDE.md: Persistence Picker section documents the Claude Code
