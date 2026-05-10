@@ -14,7 +14,7 @@ interface BuildAgentLaunchContextOptions {
   serverPort?: number;
   /**
    * Pre-resolved per-task checkpoint directory. When provided, the launch
-   * context exports `KOOKR_CHECKPOINT_DIR` and adds Read/Write/Bash entries
+   * context exports `TASK_CHECKPOINT_DIR` and adds Read/Write/Bash entries
    * to the permission allowlist scoped to the directory tree.
    *
    * Resolution and pre-creation happen at the call site (server layer) where
@@ -57,7 +57,7 @@ export async function buildAgentLaunchContext(
   }
 
   if (opts.checkpointDir) {
-    env.KOOKR_CHECKPOINT_DIR = opts.checkpointDir;
+    env.TASK_CHECKPOINT_DIR = opts.checkpointDir;
     permissionAllowlist.push(
       `Read(${toAbsolutePermissionPath(opts.checkpointDir)}/**)`,
       `Write(${toAbsolutePermissionPath(opts.checkpointDir)}/**)`,

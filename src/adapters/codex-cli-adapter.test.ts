@@ -124,7 +124,7 @@ describe('CodexCliAdapter', () => {
       const spec = backend.sessions.get(sessionId)!.spec;
       const prompt = spec.args.at(-1)!;
       expect(prompt).toContain('CHECKPOINT.json is not present');
-      expect(prompt).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
+      expect(prompt).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
       expect(prompt).toContain('original prompt');
     } finally {
       await rm(tempDir, { recursive: true, force: true });

@@ -86,7 +86,7 @@ describe('agent-launch-context', () => {
     expect(context.env).toEqual({
       KOOKR_TASK_ID: task.id,
       KOOKR_GIT_COMMON_DIR: join(repoDir, '.git'),
-      KOOKR_CHECKPOINT_DIR: checkpointDir,
+      TASK_CHECKPOINT_DIR: checkpointDir,
     });
     expect(context.permissionAllowlist).toEqual([
       'Bash(git *)',
@@ -110,7 +110,7 @@ describe('agent-launch-context', () => {
       cwd: repoDir,
     });
 
-    expect(context.env.KOOKR_CHECKPOINT_DIR).toBeUndefined();
+    expect(context.env.TASK_CHECKPOINT_DIR).toBeUndefined();
     const checkpointAllowlistEntries = context.permissionAllowlist.filter((e) =>
       e.includes('checkpoint') || e.includes('repro.sh'),
     );

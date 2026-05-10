@@ -727,7 +727,7 @@ The system SHALL preserve Markdown checkpoints while supporting `semantic-checkp
 The system SHALL preserve review-only memory write candidates in checkpoint state without promoting them automatically.
 
 **Acceptance criteria:**
-- High-risk tasks can emit `memory_write_candidates.json` in `$KOOKR_CHECKPOINT_DIR`
+- High-risk tasks can emit `memory_write_candidates.json` in `$TASK_CHECKPOINT_DIR`
 - Candidate files follow the documented `memory-write-candidates.v1` contract
 - Candidates include target, evidence, verifier status, approval status, lifecycle fields, and promotion metadata
 - Launch/resume instructions preserve valid candidate files across checkpoint/resume

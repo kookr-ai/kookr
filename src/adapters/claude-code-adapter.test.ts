@@ -142,7 +142,7 @@ describe('ClaudeCodeAdapter', () => {
       const resumeIdx = spec.args.indexOf('--resume');
       expect(promptIdx).toBeGreaterThanOrEqual(0);
       expect(resumeIdx).toBeGreaterThan(promptIdx);
-      expect(spec.args[promptIdx + 1]).toContain('Read $KOOKR_CHECKPOINT_DIR/CHECKPOINT.json as your very first action');
+      expect(spec.args[promptIdx + 1]).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.json as your very first action');
       expect(spec.args).not.toContain('original prompt');
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
