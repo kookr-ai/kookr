@@ -12,8 +12,10 @@ The user has a global Claude Code Stop hook in `~/.claude/settings.json:74` that
 
 ```json
 "Stop": [{ "matcher": "", "hooks": [{ "type": "command",
-  "command": "(play -q /home/jean/.claude/sounds/task-complete.wav &) 2>/dev/null; true" }] }]
+  "command": "(play -q $HOME/.claude/sounds/task-complete.wav &) 2>/dev/null; true" }] }]
 ```
+
+(The literal hook in the user's settings hardcodes their absolute home path; the snippet above is normalized to `$HOME` for documentation portability.)
 
 This produces a "storm" of chimes because:
 
