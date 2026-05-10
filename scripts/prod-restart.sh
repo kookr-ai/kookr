@@ -207,3 +207,17 @@ wait_for_health() {
 stop_existing_server
 start_server
 wait_for_health
+
+# Post-restart capability nag — if the configured Codex binary doesn't
+# advertise --plugin-dir, kookr-spawned codex sessions silently miss the
+# toolkit. Mirrors the `pnpm doctor` row; emits only on missing-flag.
+# See scripts/lib/probe-codex-plugin-dir.sh for the shared contract.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "${SCRIPT_DIR}/lib/probe-codex-plugin-dir.sh"
+probe_codex_plugin_dir
+if [[ "$PROBE_RESULT" == "missing-flag" ]]; then
+  {
+    echo "WARN: codex on PATH does not advertise --plugin-dir; kookr-spawned codex sessions"
+    echo "      will NOT see the kookr-toolkit. Run \`pnpm codex:rebuild\` to fix."
+  } >&2
+fi

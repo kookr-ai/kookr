@@ -205,6 +205,47 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Optional: Codex CLI fork capability (--plugin-dir)
+#
+# Stock @openai/codex does not advertise --plugin-dir. Kookr's
+# CodexCliAdapter silently skips toolkit injection in that case (with a
+# one-time console.warn at first launch). Surface the gap on demand here.
+# Mirrors the runtime probe in src/adapters/probe-agent-binary.ts —
+# see scripts/lib/probe-codex-plugin-dir.sh for the shared contract.
+# ---------------------------------------------------------------------------
+. "$REPO_ROOT/scripts/lib/probe-codex-plugin-dir.sh"
+probe_codex_plugin_dir
+CODEX_VERSION_DISPLAY="unknown"
+if [ "$PROBE_RESULT" != "not-installed" ]; then
+  CODEX_VERSION_DISPLAY="$(timeout 2 "$PROBE_CODEX_BIN" --version 2>/dev/null \
+    | head -n1 | awk '{print $NF}' 2>/dev/null || echo unknown)"
+  [ -z "$CODEX_VERSION_DISPLAY" ] && CODEX_VERSION_DISPLAY="unknown"
+fi
+case "$PROBE_RESULT" in
+  ok)
+    print_row "Codex --plugin-dir" "$CODEX_VERSION_DISPLAY" "OK" "(kookr-fork)"
+    ;;
+  missing-flag)
+    print_row "Codex --plugin-dir" "$CODEX_VERSION_DISPLAY" "WARN" "stock build — toolkit not injected"
+    add_fix "Codex sessions launched by Kookr will NOT see kookr-toolkit. Run: pnpm codex:rebuild   (requires the kookr-fork at \$CODEX_SRC, default ~/git/codex; see jeanibarz/codex#52)"
+    WARNS=$((WARNS + 1))
+    ;;
+  not-installed)
+    if [ "${PROBE_TIMED_OUT:-0}" = "1" ]; then
+      print_row "Codex --plugin-dir" "unknown" "INFO" "probe timed out — re-run pnpm doctor"
+    else
+      print_row "Codex CLI" "not installed" "INFO" "optional (Codex agent type)"
+    fi
+    ;;
+  *)
+    # Defensive default — if a future probe state is added but a doctor
+    # update is forgotten, surface that as an unknown state rather than a
+    # silently dropped row.
+    print_row "Codex --plugin-dir" "$PROBE_RESULT" "WARN" "unknown probe state"
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Optional: free TCP ports
 # Try `ss` first (Linux), fall back to `lsof` (macOS / minimal containers).
 # A port being held isn't fatal — KOOKR_PORT can override 4800. Report as WARN.

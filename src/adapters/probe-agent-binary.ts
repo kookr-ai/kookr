@@ -103,6 +103,11 @@ const defaultExec: ProbeExecRunner = async (file, args, options) => {
  *
  * Returns false on any failure (binary missing, timeout, non-zero exit) so the
  * caller can degrade gracefully — fail-open, never throws.
+ *
+ * Diagnostic mirror: `scripts/lib/probe-codex-plugin-dir.sh` implements the
+ * same contract for `pnpm doctor` and `prod-restart.sh`. Keep both probes in
+ * sync if the criterion changes (flag rename, version-range check, stderr
+ * probing, etc.).
  */
 export async function probeBinaryFlagSupport(
   bin: string,
