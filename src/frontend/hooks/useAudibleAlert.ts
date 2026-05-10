@@ -1,66 +1,14 @@
 import { useEffect } from 'react';
 import { useKookrStore } from '../store/useStore.js';
-import { isDndEnabled } from './useDnd.js';
+import { maybePlayChime } from '../audio/sound.js';
 import { isActiveFinding } from '../store/finding-helpers.js';
 import type { AgentState } from '../../shared/protocol.js';
-
-const STORAGE_KEY = 'kookr-sound-enabled';
 
 // After an agent leaves the findings list, suppress re-chimes for this long.
 // Guards against transient anomaly flicker (subagent boundaries, watchdog
 // re-evaluation, brief stale_agent oscillation) where the same logical issue
 // rapidly cycles in and out of finding state with a fresh detectedAt each time.
 export const RECHIME_COOLDOWN_MS = 30_000;
-
-/** Read mute preference from localStorage (default: enabled). */
-export function isSoundEnabled(): boolean {
-  return localStorage.getItem(STORAGE_KEY) !== 'false';
-}
-
-/** Persist mute preference. */
-export function setSoundEnabled(enabled: boolean): void {
-  localStorage.setItem(STORAGE_KEY, String(enabled));
-}
-
-/**
- * Play a short two-tone chime via Web Audio API.
- * Gracefully handles browsers that block AudioContext before user interaction.
- */
-function playChime(): void {
-  try {
-    const ctx = new AudioContext();
-    const now = ctx.currentTime;
-
-    // First tone: A5 (880 Hz)
-    const osc1 = ctx.createOscillator();
-    const gain1 = ctx.createGain();
-    osc1.connect(gain1);
-    gain1.connect(ctx.destination);
-    osc1.frequency.value = 880;
-    osc1.type = 'sine';
-    gain1.gain.setValueAtTime(0.3, now);
-    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
-    osc1.start(now);
-    osc1.stop(now + 0.3);
-
-    // Second tone: C#6 (1109 Hz) — rising interval for urgency
-    const osc2 = ctx.createOscillator();
-    const gain2 = ctx.createGain();
-    osc2.connect(gain2);
-    gain2.connect(ctx.destination);
-    osc2.frequency.value = 1109;
-    osc2.type = 'sine';
-    gain2.gain.setValueAtTime(0.25, now + 0.15);
-    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
-    osc2.start(now + 0.15);
-    osc2.stop(now + 0.5);
-
-    // Clean up after playback
-    setTimeout(() => void ctx.close(), 600);
-  } catch {
-    // AudioContext blocked by browser autoplay policy — silently ignore
-  }
-}
 
 /**
  * Stable identity for a single logical finding: type + detectedAt.
@@ -167,8 +115,8 @@ export function useAudibleAlert(): void {
 
   useEffect(() => {
     const shouldChime = evaluateChime(agents, chimedState, Date.now());
-    if (shouldChime && isSoundEnabled() && !isDndEnabled()) {
-      playChime();
+    if (shouldChime) {
+      maybePlayChime();
     }
   }, [agents]);
 }

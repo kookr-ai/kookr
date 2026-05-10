@@ -2,7 +2,7 @@ import React, { useState, useCallback, useMemo } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { FocusZone } from '../store/useStore.js';
 import type { QuotaStatus } from '../../shared/protocol.js';
-import { isSoundEnabled, setSoundEnabled } from '../hooks/useAudibleAlert.js';
+import { isSoundEnabled, setSoundEnabled } from '../audio/sound.js';
 
 interface Props {
   findings: number;

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { AutonomyLevel } from '../../shared/protocol.js';
-import { isSoundEnabled, setSoundEnabled } from '../hooks/useAudibleAlert.js';
+import { isSoundEnabled, setSoundEnabled } from '../audio/sound.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { HookInventorySection } from './HookInventorySection.js';
 
