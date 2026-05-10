@@ -607,54 +607,60 @@ function HealthyRow({ agent, selected, send }: {
       >
         <div className="healthy-row-top">
           <AgentProviderMark agent={agent} state={healthyDotClass(agent.events)} />
-          {showProjectBadge && projectLabelText && (
-            <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
-              {projectLabelText}
-            </span>
-          )}
-          {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
-            <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
-              {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
-            </span>
-          )}
-          {agent.gitBranch && (
-            <span className="branch-label" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : agent.gitBranch}>
-              <span className="branch-icon">{'⎇'}</span>{formatBranch(agent.gitBranch, 20)}
-            </span>
-          )}
-          <AutonomyBadge agent={agent} send={send} />
-          <span className="healthy-row-name" title={agent.taskName ?? agent.agentId}>
-            {agent.taskName ?? agent.agentId}
-          </span>
-          <button
-            className="btn-reply"
-            data-testid="reply-button"
-            onClick={handleReply}
-            title={`Send message to ${agent.taskName ?? agent.agentId}`}
-          >
-            Reply
-          </button>
-          <button
-            className="btn-reply"
-            onClick={(e) => { e.stopPropagation(); setShowSnooze(true); }}
-            title={`Snooze ${agent.taskName ?? agent.agentId}`}
-          >
-            Snooze
-          </button>
-        </div>
-        <div className="healthy-row-details">
-          <div className="healthy-row-controls">
-            <RalphLoopControls agent={agent} />
-            {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
-              <RalphLoopBadge agent={agent} />
-            )}
-            <AttachRalphButton agent={agent} />
+          <div className="healthy-row-body">
+            <div className="healthy-row-status">
+              {showProjectBadge && projectLabelText && (
+                <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
+                  {projectLabelText}
+                </span>
+              )}
+              {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
+                <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
+                  {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
+                </span>
+              )}
+              {agent.gitBranch && (
+                <span className="branch-label" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : agent.gitBranch}>
+                  <span className="branch-icon">{'⎇'}</span>{formatBranch(agent.gitBranch, 20)}
+                </span>
+              )}
+              <AutonomyBadge agent={agent} send={send} />
+            </div>
+            <div className="healthy-row-title-line">
+              <span className="healthy-row-name" title={agent.taskName ?? agent.agentId}>
+                {agent.taskName ?? agent.agentId}
+              </span>
+            </div>
+            <div className="healthy-row-footer">
+              <div className="healthy-row-meta">
+                {formatTokenUsage(agent.tokenUsage)}
+                {agent.tokenUsage ? ' · ' : ''}
+                {healthyStatusLabel(agent.events, agent.startedAt)}
+              </div>
+              <div className="healthy-row-controls">
+                <button
+                  className="btn-reply"
+                  data-testid="reply-button"
+                  onClick={handleReply}
+                  title={`Send message to ${agent.taskName ?? agent.agentId}`}
+                >
+                  Reply
+                </button>
+                <button
+                  className="btn-reply"
+                  onClick={(e) => { e.stopPropagation(); setShowSnooze(true); }}
+                  title={`Snooze ${agent.taskName ?? agent.agentId}`}
+                >
+                  Snooze
+                </button>
+                <RalphLoopControls agent={agent} />
+                {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
+                  <RalphLoopBadge agent={agent} />
+                )}
+                <AttachRalphButton agent={agent} />
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="healthy-row-meta">
-          {formatTokenUsage(agent.tokenUsage)}
-          {agent.tokenUsage ? ' · ' : ''}
-          {healthyStatusLabel(agent.events, agent.startedAt)}
         </div>
         {showSnooze && (
           <SnoozeDialog

@@ -226,20 +226,24 @@ describe('FindingsPanel Ralph controls', () => {
     expect(completedBadge?.textContent).toContain('2/5');
   });
 
-  test('healthy rows reserve the first row for status, task name, and reply', () => {
+  test('healthy rows reserve a dedicated row for the task name', () => {
     root = renderPanel(container, agentWithRalph('running', {
       taskName: 'A very long Ralph-controlled task name that still needs visible room',
       gitBranch: 'feature/long-running-ralph-loop-controls',
     }));
 
-    const topRow = container.querySelector('.healthy-row-top');
-    expect(topRow?.querySelector('.healthy-row-name')?.textContent).toContain('A very long Ralph-controlled task name');
-    expect(topRow?.querySelector('[data-testid="reply-button"]')?.textContent).toBe('Reply');
-    expect(topRow?.querySelector('.branch-label')?.textContent).toContain('feature/');
-    expect(topRow?.querySelector('.ralph-loop-controls')).toBeNull();
+    const statusRow = container.querySelector('.healthy-row-status');
+    expect(statusRow?.querySelector('.branch-label')?.textContent).toContain('feature/');
+    expect(statusRow?.querySelector('.healthy-row-name')).toBeNull();
 
-    const details = container.querySelector('.healthy-row-details');
-    expect(details?.querySelector('.healthy-row-controls .ralph-loop-controls')).toBeTruthy();
+    const titleRow = container.querySelector('.healthy-row-title-line');
+    expect(titleRow?.querySelector('.healthy-row-name')?.textContent).toContain('A very long Ralph-controlled task name');
+    expect(titleRow?.querySelector('[data-testid="reply-button"]')).toBeNull();
+    expect(titleRow?.querySelector('.ralph-loop-controls')).toBeNull();
+
+    const footer = container.querySelector('.healthy-row-footer');
+    expect(footer?.querySelector('[data-testid="reply-button"]')?.textContent).toBe('Reply');
+    expect(footer?.querySelector('.healthy-row-controls .ralph-loop-controls')).toBeTruthy();
   });
 
   test('Ralph tasks appear in their normal section without a dedicated overview', () => {
