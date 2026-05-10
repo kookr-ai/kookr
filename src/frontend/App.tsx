@@ -7,6 +7,7 @@ import { useKookrStore } from './store/useStore.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useNotifications } from './hooks/useNotifications.js';
 import { useAudibleAlert } from './hooks/useAudibleAlert.js';
+import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
 import { track } from './telemetry.js';
 import { isActiveFinding } from './store/finding-helpers.js';
@@ -57,7 +58,13 @@ function reflectionDismissKey(sessionId: string): string {
 export function App() {
   const { send } = useWebSocket();
   useNotifications();
+  // Audible alerts. Findings are unfocused (anomaly chimes regardless of
+  // which task is focused — that's when the user most needs to switch).
+  // Completion is focus-gated (only the watched task chimes; non-focused
+  // completions are surfaced visually in the completed list). See
+  // docs/rfc/rfc-task-chime-browser.md §6.
   useAudibleAlert();
+  useTaskCompletionChime();
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth <= MOBILE_BREAKPOINT_PX : false,
   );
