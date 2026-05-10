@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, test, expect, vi } from 'vitest';
+import { describe, test, expect } from 'vitest';
 import {
   evaluateChime,
   RECHIME_COOLDOWN_MS,
@@ -8,11 +8,6 @@ import {
 } from './useAudibleAlert.js';
 import type { AgentState, AnomalySeverity, AnomalyType } from '../../shared/protocol.js';
 import type { Anomaly } from '../../core/types.js';
-
-// Sound preference tests moved to ../audio/sound.test.ts along with
-// isSoundEnabled / setSoundEnabled themselves. Keep `vi` imported because
-// the dedup tests below may stub globals in the future.
-void vi; // silence unused-import lint if stubs are not currently used
 
 // Default detectedAt for tests that do not care about the timestamp's exact
 // value — tests that exercise dedup or flicker pin their own dates explicitly.

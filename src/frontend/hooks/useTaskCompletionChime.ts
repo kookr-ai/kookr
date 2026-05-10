@@ -10,7 +10,7 @@ export interface FocusedStatus {
   status: TaskStatus | undefined;
 }
 
-export interface CompletionChimeResult {
+interface CompletionChimeResult {
   /** Next ref state. null = "no focus / focus mismatch / agent unknown" — caller stores this. */
   next: FocusedStatus | null;
   /** True when a non-terminal → terminal transition was observed *while focused*. */

@@ -1,10 +1,17 @@
 // @vitest-environment jsdom
 
-import { describe, test, expect } from 'vitest';
+import React, { StrictMode } from 'react';
+import { afterEach, beforeEach, describe, test, expect, vi } from 'vitest';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
 import {
   evaluateCompletionChime,
+  useTaskCompletionChime,
   type FocusedStatus,
 } from './useTaskCompletionChime.js';
+import { useKookrStore } from '../store/useStore.js';
+import { __resetDndForTests, enableDnd, disableDnd } from '../hooks/useDnd.js';
+import { setSoundEnabled } from '../audio/sound.js';
 import type { TaskStatus } from '../../core/types.js';
 import type { AgentState } from '../../shared/protocol.js';
 
@@ -107,6 +114,17 @@ describe('evaluateCompletionChime — no-chime cases while focused', () => {
     const result = evaluateCompletionChime(prev, 'a', mkAgent('a', undefined));
     expect(result.shouldChime).toBe(false);
   });
+
+  test('prev.status undefined → terminal next → chime (status arrives after agent first observed)', () => {
+    // Edge case: an agent can be added to the dashboard with taskStatus
+    // undefined (session-only agent before task metadata populates), then
+    // later a delta supplies a terminal status. The user did observe the
+    // agent while focused, so a chime is the right outcome.
+    const prev: FocusedStatus = { agentId: 'a', status: undefined };
+    const result = evaluateCompletionChime(prev, 'a', mkAgent('a', 'completed'));
+    expect(result.shouldChime).toBe(true);
+    expect(result.next).toEqual<FocusedStatus>({ agentId: 'a', status: 'completed' });
+  });
 });
 
 describe('evaluateCompletionChime — focus changes invalidate stale state', () => {
@@ -195,38 +213,207 @@ describe('evaluateCompletionChime — focus changes invalidate stale state', () 
   });
 });
 
-describe('evaluateCompletionChime — StrictMode invariants', () => {
-  // StrictMode dev double-invokes effects. Under either useRef interpretation,
-  // a single transition produces exactly one chime. These tests model both
-  // cases by replaying evaluateCompletionChime as the hook would.
+// Runtime tests: actually mount the React hook with createRoot + act and
+// drive transitions through the store. These are the canonical guards for
+// the hook body itself — the dependency array, the `agents.find()` lookup,
+// the useRef lifecycle, and the StrictMode contract. Pattern follows
+// useEscapeToClose.test.ts.
+describe('useTaskCompletionChime — runtime hook behavior', () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  let audioContextCtor: ReturnType<typeof vi.fn>;
+  let store: Map<string, string>;
 
-  test('ref persists across remount: second effect run sees prev=next, no second chime', () => {
-    let prev: FocusedStatus | null = null;
-    // Mount 1, effect 1: prime
-    let r = evaluateCompletionChime(prev, 'a', mkAgent('a', 'inProgress'));
-    prev = r.next;
-    // Effect 2 on same render (delta arrives): transition → chime
-    r = evaluateCompletionChime(prev, 'a', mkAgent('a', 'completed'));
-    expect(r.shouldChime).toBe(true);
-    prev = r.next;
-    // Effect 3 (StrictMode synthetic remount, ref persists): no transition
-    r = evaluateCompletionChime(prev, 'a', mkAgent('a', 'completed'));
-    expect(r.shouldChime).toBe(false);
+  function Wrapper() {
+    useTaskCompletionChime();
+    return null;
+  }
+
+  function mount(strict = false): void {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    act(() => {
+      root = createRoot(container);
+      const tree = strict
+        ? React.createElement(StrictMode, null, React.createElement(Wrapper))
+        : React.createElement(Wrapper);
+      root.render(tree);
+    });
+  }
+
+  beforeEach(() => {
+    // Per-test localStorage stub for sound preferences.
+    store = new Map();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+      clear: () => store.clear(),
+    });
+    __resetDndForTests();
+    disableDnd();
+
+    audioContextCtor = vi.fn().mockImplementation(() => ({
+      currentTime: 0,
+      destination: {},
+      close: vi.fn(),
+      createOscillator: () => ({
+        connect: vi.fn(),
+        frequency: { value: 0 },
+        type: '',
+        start: vi.fn(),
+        stop: vi.fn(),
+      }),
+      createGain: () => ({
+        connect: vi.fn(),
+        gain: {
+          setValueAtTime: vi.fn(),
+          exponentialRampToValueAtTime: vi.fn(),
+        },
+      }),
+    }));
+    vi.stubGlobal('AudioContext', audioContextCtor);
+
+    // Reset the store to a known empty state. Direct setState matches
+    // useStore's interface and avoids running the side effects of
+    // selectAgent (which would also touch leftPane/narrowTab).
+    useKookrStore.setState({ agents: [], selectedAgentId: null });
   });
 
-  test('ref resets on remount: focus-change branch primes without chiming', () => {
-    let prev: FocusedStatus | null = null;
-    // Mount 1, effect 1: prime
-    let r = evaluateCompletionChime(prev, 'a', mkAgent('a', 'inProgress'));
-    prev = r.next;
-    // Effect 2: transition → chime
-    r = evaluateCompletionChime(prev, 'a', mkAgent('a', 'completed'));
-    expect(r.shouldChime).toBe(true);
-    // StrictMode synthetic remount with ref reset
-    prev = null;
-    // Effect 3 on remount: focus-change branch primes, no chime
-    r = evaluateCompletionChime(prev, 'a', mkAgent('a', 'completed'));
-    expect(r.shouldChime).toBe(false);
-    expect(r.next).toEqual<FocusedStatus>({ agentId: 'a', status: 'completed' });
+  afterEach(() => {
+    act(() => root?.unmount());
+    container?.remove();
+    __resetDndForTests();
+    vi.unstubAllGlobals();
+    useKookrStore.setState({ agents: [], selectedAgentId: null });
+  });
+
+  test('focused agent inProgress → completed produces exactly one chime', () => {
+    useKookrStore.setState({
+      agents: [mkAgent('a', 'inProgress')],
+      selectedAgentId: 'a',
+    });
+    mount();
+
+    expect(audioContextCtor).not.toHaveBeenCalled();
+
+    act(() => {
+      useKookrStore.setState({ agents: [mkAgent('a', 'completed')] });
+    });
+    expect(audioContextCtor).toHaveBeenCalledTimes(1);
+
+    // Repeated delta carrying the same status must not re-fire.
+    act(() => {
+      useKookrStore.setState({ agents: [mkAgent('a', 'completed')] });
+    });
+    expect(audioContextCtor).toHaveBeenCalledTimes(1);
+  });
+
+  test('StrictMode: a single transition still produces exactly one chime', () => {
+    useKookrStore.setState({
+      agents: [mkAgent('a', 'inProgress')],
+      selectedAgentId: 'a',
+    });
+    mount(true);
+
+    act(() => {
+      useKookrStore.setState({ agents: [mkAgent('a', 'completed')] });
+    });
+    expect(audioContextCtor).toHaveBeenCalledTimes(1);
+  });
+
+  test('hydration with focused agent already terminal does not chime', () => {
+    useKookrStore.setState({
+      agents: [mkAgent('a', 'completed')],
+      selectedAgentId: 'a',
+    });
+    mount();
+
+    expect(audioContextCtor).not.toHaveBeenCalled();
+  });
+
+  test('transition on a non-focused agent does not chime', () => {
+    useKookrStore.setState({
+      agents: [mkAgent('a', 'inProgress'), mkAgent('b', 'inProgress')],
+      selectedAgentId: 'a',
+    });
+    mount();
+
+    act(() => {
+      useKookrStore.setState({
+        agents: [mkAgent('a', 'inProgress'), mkAgent('b', 'completed')],
+      });
+    });
+    expect(audioContextCtor).not.toHaveBeenCalled();
+  });
+
+  test('stale-completion guard: focus A → focus B → A completes → return to A → no chime', () => {
+    useKookrStore.setState({
+      agents: [mkAgent('a', 'inProgress'), mkAgent('b', 'inProgress')],
+      selectedAgentId: 'a',
+    });
+    mount();
+
+    // Focus shifts to B
+    act(() => {
+      useKookrStore.setState({ selectedAgentId: 'b' });
+    });
+    // A completes off-screen
+    act(() => {
+      useKookrStore.setState({
+        agents: [mkAgent('a', 'completed'), mkAgent('b', 'inProgress')],
+      });
+    });
+    // User returns to A — focus-change branch primes the ref to (a, completed)
+    // without firing the chime, matching the "while focused" semantics.
+    act(() => {
+      useKookrStore.setState({ selectedAgentId: 'a' });
+    });
+
+    expect(audioContextCtor).not.toHaveBeenCalled();
+  });
+
+  test('user-initiated completion chimes (current spec; suppression deferred per RFC future enhancements)', () => {
+    // The chime hook does not distinguish autonomous vs user-initiated
+    // transitions. Pinned as a test so a future suppress-self-completion
+    // change is forced to update this assertion intentionally.
+    useKookrStore.setState({
+      agents: [mkAgent('a', 'inProgress')],
+      selectedAgentId: 'a',
+    });
+    mount();
+
+    act(() => {
+      useKookrStore.setState({ agents: [mkAgent('a', 'completed')] });
+    });
+    expect(audioContextCtor).toHaveBeenCalledTimes(1);
+  });
+
+  test('mute disabled: no chime on transition (gate is in maybePlayChime)', () => {
+    useKookrStore.setState({
+      agents: [mkAgent('a', 'inProgress')],
+      selectedAgentId: 'a',
+    });
+    setSoundEnabled(false);
+    mount();
+
+    act(() => {
+      useKookrStore.setState({ agents: [mkAgent('a', 'completed')] });
+    });
+    expect(audioContextCtor).not.toHaveBeenCalled();
+  });
+
+  test('DND on: no chime on transition', () => {
+    useKookrStore.setState({
+      agents: [mkAgent('a', 'inProgress')],
+      selectedAgentId: 'a',
+    });
+    enableDnd();
+    mount();
+
+    act(() => {
+      useKookrStore.setState({ agents: [mkAgent('a', 'completed')] });
+    });
+    expect(audioContextCtor).not.toHaveBeenCalled();
   });
 });
