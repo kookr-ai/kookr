@@ -52,6 +52,17 @@ probe_codex_plugin_dir() {
     return 0
   fi
 
+  # Require exit 0 for a meaningful "did help advertise the flag?" answer.
+  # A non-zero exit means codex itself failed (login required, broken
+  # install, etc.) — we cannot trust the help text we read, so render the
+  # binary as "not-installed" rather than risk a false WARN on a fork
+  # binary that happens to exit non-zero, or a false OK on a stock binary
+  # whose error-message text contains the substring "--plugin-dir".
+  if [ "$timeout_status" -ne 0 ]; then
+    PROBE_RESULT="not-installed"
+    return 0
+  fi
+
   if printf '%s' "$help_output" | grep -q -- '--plugin-dir'; then
     PROBE_RESULT="ok"
   else

@@ -113,15 +113,61 @@ run_case "timeout — codex --help hangs" "$TMPDIR/codex-slow"
 assert_eq "PROBE_RESULT" "not-installed" "${PROBE_RESULT:-<unset>}"
 assert_eq "PROBE_TIMED_OUT" "1" "${PROBE_TIMED_OUT:-<unset>}"
 
-# Verify the function returns 0 even when called under set -e (callers like
-# prod-restart.sh rely on this).
+# Stub that exits non-zero on --help (broken codex install: login required,
+# missing config, etc.). Probe must NOT trust the output → not-installed.
+cat > "$TMPDIR/codex-broken" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) echo "codex 0.42.0"; exit 0 ;;
+  --help)    echo "Error: please run codex login first" >&2; exit 2 ;;
+esac
+EOF
+chmod +x "$TMPDIR/codex-broken"
+run_case "broken — codex --help exits non-zero" "$TMPDIR/codex-broken"
+assert_eq "PROBE_RESULT" "not-installed" "${PROBE_RESULT:-<unset>}"
+assert_eq "PROBE_TIMED_OUT (unset)" "" "${PROBE_TIMED_OUT:-}"
+
+# KOOKR_CODEX_BIN unset → fallback to bare `codex` resolved via PATH.
+# Synthesize a `codex` binary in $TMPDIR and prepend $TMPDIR to PATH so the
+# fallback name resolves to the fork stub.
+ln -sf "$TMPDIR/codex-fork" "$TMPDIR/codex"
 echo
-echo "[case] safe under set -euo pipefail (caller invariant)"
-unset PROBE_RESULT PROBE_TIMED_OUT
-KOOKR_CODEX_BIN="$ABSENT_PATH"
-( set -euo pipefail; . "$LIB"; probe_codex_plugin_dir; exit 0 ) && \
-  assert_eq "exits 0 under errexit" "0" "0" || \
-  assert_eq "exits 0 under errexit" "0" "1"
+echo "[case] KOOKR_CODEX_BIN unset — falls back to bare \`codex\` on PATH"
+unset PROBE_RESULT PROBE_TIMED_OUT KOOKR_CODEX_BIN
+ORIG_PATH="$PATH"
+PATH="$TMPDIR:$PATH"
+export PATH
+. "$LIB"
+probe_codex_plugin_dir
+PATH="$ORIG_PATH"
+export PATH
+assert_eq "PROBE_RESULT" "ok" "${PROBE_RESULT:-<unset>}"
+assert_eq "PROBE_CODEX_BIN" "codex" "${PROBE_CODEX_BIN:-<unset>}"
+
+# Errexit-safety invariant: when the probe completes via the timeout block
+# (i.e. through the set +e/set -e bracket — NOT via the early `[ -f ]` exit),
+# the caller's errexit state must be preserved. Use the fork stub so the
+# function reaches and exits the bracketed block.
+echo
+echo "[case] errexit preserved across the timeout block"
+( set -euo pipefail
+  unset PROBE_RESULT PROBE_TIMED_OUT
+  KOOKR_CODEX_BIN="$TMPDIR/codex-fork"; export KOOKR_CODEX_BIN
+  . "$LIB"
+  probe_codex_plugin_dir
+  case $- in *e*) exit 0 ;; *) exit 1 ;; esac )
+errexit_kept=$?
+assert_eq "errexit still on after timeout-block path" "0" "$errexit_kept"
+
+# And the same invariant for the early-exit path (absent binary).
+( set -euo pipefail
+  unset PROBE_RESULT PROBE_TIMED_OUT
+  KOOKR_CODEX_BIN="$ABSENT_PATH"; export KOOKR_CODEX_BIN
+  . "$LIB"
+  probe_codex_plugin_dir
+  case $- in *e*) exit 0 ;; *) exit 1 ;; esac )
+errexit_kept_early=$?
+assert_eq "errexit still on after early-exit path" "0" "$errexit_kept_early"
 
 # ---------------------------------------------------------------------------
 # Summary

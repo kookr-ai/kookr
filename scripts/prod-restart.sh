@@ -215,7 +215,7 @@ wait_for_health
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "${SCRIPT_DIR}/lib/probe-codex-plugin-dir.sh"
 probe_codex_plugin_dir
-if [ "$PROBE_RESULT" = "missing-flag" ]; then
+if [[ "$PROBE_RESULT" == "missing-flag" ]]; then
   {
     echo "WARN: codex on PATH does not advertise --plugin-dir; kookr-spawned codex sessions"
     echo "      will NOT see the kookr-toolkit. Run \`pnpm codex:rebuild\` to fix."

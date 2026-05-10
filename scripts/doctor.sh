@@ -237,6 +237,12 @@ case "$PROBE_RESULT" in
       print_row "Codex CLI" "not installed" "INFO" "optional (Codex agent type)"
     fi
     ;;
+  *)
+    # Defensive default — if a future probe state is added but a doctor
+    # update is forgotten, surface that as an unknown state rather than a
+    # silently dropped row.
+    print_row "Codex --plugin-dir" "$PROBE_RESULT" "WARN" "unknown probe state"
+    ;;
 esac
 
 # ---------------------------------------------------------------------------
