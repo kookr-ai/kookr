@@ -94,3 +94,27 @@ const defaultExec: ProbeExecRunner = async (file, args, options) => {
   });
   return { stdout, stderr };
 };
+
+/**
+ * Probe whether `<bin> --help` advertises a specific flag (e.g. `--plugin-dir`).
+ * Used by adapters to detect optional capability of an external binary at
+ * runtime, so the adapter can adapt its arg construction instead of hardcoding
+ * a "this binary version supports X" assumption.
+ *
+ * Returns false on any failure (binary missing, timeout, non-zero exit) so the
+ * caller can degrade gracefully — fail-open, never throws.
+ */
+export async function probeBinaryFlagSupport(
+  bin: string,
+  flag: string,
+  options: { exec?: ProbeExecRunner; timeoutMs?: number } = {},
+): Promise<boolean> {
+  const exec = options.exec ?? defaultExec;
+  const timeoutMs = options.timeoutMs ?? 2000;
+  try {
+    const { stdout } = await exec(bin, ['--help'], { timeout: timeoutMs });
+    return stdout.includes(flag);
+  } catch {
+    return false;
+  }
+}

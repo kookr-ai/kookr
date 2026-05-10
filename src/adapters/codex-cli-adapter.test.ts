@@ -550,6 +550,25 @@ describe('CodexCliAdapter', () => {
     let backend: FakeTerminalBackend;
     let taskStore: TaskStore;
 
+    // Probe stub that simulates kookr-fork codex (advertises --plugin-dir).
+    const probeSupported: import('./probe-agent-binary.js').ProbeExecRunner = async (_file, args) => {
+      if (args.includes('--help')) {
+        return {
+          stdout: 'Usage: codex [OPTIONS]\n      --plugin-dir <DIR>\n          Additional plugin directories\n',
+          stderr: '',
+        };
+      }
+      return { stdout: 'codex 0.125.0\n', stderr: '' };
+    };
+
+    // Probe stub that simulates stock upstream codex (no --plugin-dir).
+    const probeUnsupported: import('./probe-agent-binary.js').ProbeExecRunner = async (_file, args) => {
+      if (args.includes('--help')) {
+        return { stdout: 'Usage: codex [OPTIONS]\n      --add-dir <DIR>\n', stderr: '' };
+      }
+      return { stdout: 'codex 0.124.0\n', stderr: '' };
+    };
+
     beforeEach(() => {
       backend = new FakeTerminalBackend();
       taskStore = new TaskStore();
@@ -566,10 +585,11 @@ describe('CodexCliAdapter', () => {
       rmSync(tempRoot, { recursive: true, force: true });
     });
 
-    test('injects --plugin-dir when explicit option points to a valid plugin tree', async () => {
+    test('injects --plugin-dir when binary advertises it AND tree resolves', async () => {
       const a = new CodexCliAdapter(backend, taskStore, {
         pluginDir: validPluginDir,
         trustWorkspace: false,
+        probeExec: probeSupported,
       });
       const task = taskStore.createTask('t', '/cwd');
       const sessionId = await a.launch(task.id, 'my-prompt', '/cwd');
@@ -577,12 +597,23 @@ describe('CodexCliAdapter', () => {
       const idx = spec.args.indexOf('--plugin-dir');
       expect(idx).toBeGreaterThanOrEqual(0);
       expect(spec.args[idx + 1]).toBe(validPluginDir);
-      // The flag must come BEFORE the prompt (codex's clap parser treats
-      // unknown trailing args as the prompt). Locate the prompt by exact
-      // match rather than a length offset so this assertion stays
-      // load-bearing if the args list grows.
+      // Locate the prompt by exact match (not length offset) so the
+      // assertion stays load-bearing if args grow.
       const promptIdx = spec.args.lastIndexOf('my-prompt');
       expect(promptIdx).toBeGreaterThan(idx);
+    });
+
+    test('skips injection when binary does NOT advertise --plugin-dir (stock codex)', async () => {
+      const a = new CodexCliAdapter(backend, taskStore, {
+        pluginDir: validPluginDir,
+        trustWorkspace: false,
+        probeExec: probeUnsupported,
+      });
+      const task = taskStore.createTask('t', '/cwd');
+      const sessionId = await a.launch(task.id, 't', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      // Binary doesn't support the flag → no injection, no launch failure.
+      expect(spec.args).not.toContain('--plugin-dir');
     });
 
     test('skips injection when explicit pluginDir path is invalid (no plugin.json)', async () => {
@@ -590,6 +621,7 @@ describe('CodexCliAdapter', () => {
       const a = new CodexCliAdapter(backend, taskStore, {
         pluginDir: bogus,
         trustWorkspace: false,
+        probeExec: probeSupported,
       });
       const task = taskStore.createTask('t', '/cwd');
       const sessionId = await a.launch(task.id, 't', '/cwd');
@@ -601,20 +633,7 @@ describe('CodexCliAdapter', () => {
       const a = new CodexCliAdapter(backend, taskStore, {
         pluginDir: '',
         trustWorkspace: false,
-      });
-      const task = taskStore.createTask('t', '/cwd');
-      const sessionId = await a.launch(task.id, 't', '/cwd');
-      const spec = backend.sessions.get(sessionId)!.spec;
-      expect(spec.args).not.toContain('--plugin-dir');
-    });
-
-    test('does NOT auto-discover (codex requires opt-in via option or KOOKR_PLUGIN_DIR)', async () => {
-      // Default construction (no pluginDir option, no KOOKR_PLUGIN_DIR env)
-      // must NOT inject --plugin-dir, because stock codex rejects the flag
-      // at launch. Auto-discovery is the difference vs. ClaudeCodeAdapter.
-      delete process.env.KOOKR_PLUGIN_DIR;
-      const a = new CodexCliAdapter(backend, taskStore, {
-        trustWorkspace: false,
+        probeExec: probeSupported,
       });
       const task = taskStore.createTask('t', '/cwd');
       const sessionId = await a.launch(task.id, 't', '/cwd');
@@ -627,6 +646,7 @@ describe('CodexCliAdapter', () => {
         pluginDir: validPluginDir,
         bypassAllPermissions: true,
         trustWorkspace: false,
+        probeExec: probeSupported,
       });
       const task = taskStore.createTask('t', '/cwd');
       const sessionId = await a.launch(task.id, 'my-prompt', '/cwd');
@@ -640,6 +660,32 @@ describe('CodexCliAdapter', () => {
       expect(spec.args).not.toContain('--full-auto');
       const promptIdx = spec.args.lastIndexOf('my-prompt');
       expect(promptIdx).toBeGreaterThan(idx);
+    });
+
+    test('probe runs only once per adapter (memoized across launches)', async () => {
+      let helpCalls = 0;
+      const counting: import('./probe-agent-binary.js').ProbeExecRunner = async (_file, args) => {
+        if (args.includes('--help')) {
+          helpCalls += 1;
+          return {
+            stdout: 'Usage: codex [OPTIONS]\n      --plugin-dir <DIR>\n',
+            stderr: '',
+          };
+        }
+        return { stdout: 'codex 0.125.0\n', stderr: '' };
+      };
+      const a = new CodexCliAdapter(backend, taskStore, {
+        pluginDir: validPluginDir,
+        trustWorkspace: false,
+        probeExec: counting,
+      });
+      const t1 = taskStore.createTask('t1', '/cwd');
+      const t2 = taskStore.createTask('t2', '/cwd');
+      await a.launch(t1.id, 't1', '/cwd');
+      await a.launch(t2.id, 't2', '/cwd');
+      // Probe must be cached after the first launch — second launch should
+      // reuse the result without re-spawning `codex --help`.
+      expect(helpCalls).toBe(1);
     });
   });
 });

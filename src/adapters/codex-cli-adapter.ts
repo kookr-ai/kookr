@@ -3,7 +3,7 @@ import type { TerminalBackend } from './terminal-backend.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
 import type { AgentAdapter, AdapterLaunchOptions, EffectiveHookSettings, PreflightResult } from './agent-adapter.js';
-import { probeAgentBinary, type ProbeExecRunner } from './probe-agent-binary.js';
+import { probeAgentBinary, probeBinaryFlagSupport, type ProbeExecRunner } from './probe-agent-binary.js';
 import { parseHookEvent } from '../core/hook-parser.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { buildAgentLaunchContext } from './agent-launch-context.js';
@@ -62,16 +62,22 @@ export interface CodexCliAdapterOptions {
   kookrDataDir?: string;
   /**
    * Absolute path to the kookr-toolkit plugin tree (containing
-   * `.claude-plugin/plugin.json`). When set and the path is valid, the
-   * adapter passes `--plugin-dir <path>` to every spawned `codex` so
-   * Kookr-spawned agents see the toolkit regardless of cwd.
+   * `.claude-plugin/plugin.json`). When the configured codex binary
+   * advertises `--plugin-dir` in its `--help` output, the adapter passes
+   * `--plugin-dir <path>` to every spawned `codex` so kookr-spawned agents
+   * see the toolkit regardless of cwd.
    *
-   * Resolution order: this option > `KOOKR_PLUGIN_DIR` env. Empty string
-   * disables injection. Auto-discovery is intentionally OFF for codex
-   * (unlike ClaudeCodeAdapter) — stock codex rejects `--plugin-dir` with
-   * an unrecognized-argument error at launch, so the adapter requires an
-   * explicit opt-in to avoid silently breaking users who haven't yet
-   * upgraded to the kookr-fork that supports the flag (jeanibarz/codex#52).
+   * Resolution order: this option > `KOOKR_PLUGIN_DIR` env > auto-resolved
+   * `<repo-root>/plugin`. Empty string disables. Mirrors the
+   * `ClaudeCodeAdapter.pluginDir` option semantically.
+   *
+   * Capability gate: at first launch the adapter probes
+   * `<bin> --help` for the `--plugin-dir` substring. Stock codex (no
+   * jeanibarz/codex#52) doesn't have the flag, so injection is silently
+   * skipped — the binary itself is the source of truth, no env var or
+   * version check needed for the dev to opt in. Kookr-fork codex starts
+   * working automatically once `pnpm codex:rebuild` installs a binary
+   * that advertises the flag.
    */
   pluginDir?: string;
   /**
@@ -116,6 +122,8 @@ export class CodexCliAdapter implements AgentAdapter {
   private bypassAllPermissions: boolean;
   private kookrDataDir?: string;
   private pluginDir?: string;
+  private pluginDirSupportProbe?: Promise<boolean>;
+  private warnedAboutMissingPluginDirSupport = false;
   private probeExec?: ProbeExecRunner;
 
   constructor(
@@ -133,14 +141,12 @@ export class CodexCliAdapter implements AgentAdapter {
     this.trustWorkspace = options?.trustWorkspace ?? true;
     this.bypassAllPermissions = options?.bypassAllPermissions ?? false;
     this.kookrDataDir = options?.kookrDataDir;
-    // Opt-in only: explicit option or KOOKR_PLUGIN_DIR env. Auto-discovery
-    // is deliberately disabled because stock Codex CLI rejects --plugin-dir
-    // with an unrecognized-argument error at launch — see jeanibarz/codex#52.
-    // Once the kookr-fork is widely deployed, the autoDiscover gate can be
-    // flipped to mirror ClaudeCodeAdapter's default-on behavior.
-    this.pluginDir = resolvePluginDir(options?.pluginDir, undefined, undefined, {
-      autoDiscover: false,
-    });
+    // Mirror ClaudeCodeAdapter: auto-discover the kookr-toolkit plugin tree
+    // from the compiled module location. The runtime --plugin-dir capability
+    // probe (run lazily at first launch) gates whether we actually inject,
+    // so onboarding devs don't have to set any env var even before the
+    // codex-fork supporting --plugin-dir lands. See `probePluginDirSupport`.
+    this.pluginDir = resolvePluginDir(options?.pluginDir);
     this.probeExec = options?.probeExec;
   }
 
@@ -153,6 +159,23 @@ export class CodexCliAdapter implements AgentAdapter {
       configuredVia: this.agentBinConfiguredVia,
       envVarName: CODEX_AGENT_BIN_ENV,
     };
+  }
+
+  /**
+   * Memoized capability probe: does this codex binary advertise `--plugin-dir`
+   * in its `--help` output? Caches the Promise so concurrent first-launches
+   * share the work. Lazy — only spawns the probe subprocess when the adapter
+   * actually has a plugin tree to inject.
+   */
+  private probePluginDirSupport(): Promise<boolean> {
+    if (this.pluginDirSupportProbe === undefined) {
+      this.pluginDirSupportProbe = probeBinaryFlagSupport(
+        this.agentBin,
+        '--plugin-dir',
+        { exec: this.probeExec },
+      );
+    }
+    return this.pluginDirSupportProbe;
   }
 
   async launch(taskId: string, prompt: string, cwd: string, resume?: import('./agent-adapter.js').ResumeContext, opts?: AdapterLaunchOptions): Promise<string> {
@@ -224,12 +247,25 @@ export class CodexCliAdapter implements AgentAdapter {
       permissionFlagStr,
       '--settings', settingsPath,
     ];
-    // Inject --plugin-dir <path> when the kookr-toolkit tree resolves.
-    // Symmetric with ClaudeCodeAdapter. Requires the kookr-fork of Codex
-    // CLI (jeanibarz/codex#52); upstream Codex rejects this flag with an
-    // unrecognized-argument error at launch.
+    // Inject --plugin-dir <path> when (a) the kookr-toolkit tree resolves
+    // and (b) the configured codex binary actually supports the flag. The
+    // capability probe runs once per adapter instance, lazily, so cold start
+    // pays a single `codex --help` invocation. Stock codex returns help
+    // without the flag → injection is skipped silently. Kookr-fork codex
+    // (jeanibarz/codex#52) advertises the flag → injection is automatic
+    // with no env var setup.
     if (this.pluginDir) {
-      args.push('--plugin-dir', this.pluginDir);
+      const supported = await this.probePluginDirSupport();
+      if (supported) {
+        args.push('--plugin-dir', this.pluginDir);
+      } else if (!this.warnedAboutMissingPluginDirSupport) {
+        this.warnedAboutMissingPluginDirSupport = true;
+        console.warn(
+          `[codex-cli-adapter] codex binary "${this.agentBin}" does not advertise --plugin-dir; ` +
+          `kookr-toolkit skills won't be loaded by spawned codex sessions. ` +
+          `Run \`pnpm codex:rebuild\` from kookr to install the kookr-fork (jeanibarz/codex#52).`,
+        );
+      }
     }
     args.push(promptWithCheckpoint);
     await this.backend.createSession({
