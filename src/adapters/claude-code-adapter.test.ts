@@ -144,6 +144,12 @@ describe('ClaudeCodeAdapter', () => {
       expect(resumeIdx).toBeGreaterThan(promptIdx);
       expect(spec.args[promptIdx + 1]).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.json as your very first action');
       expect(spec.args).not.toContain('original prompt');
+      // Guard the integration seam: confirm the env var actually reaches the
+      // spawned process (not just the prompt instruction). A regression that
+      // dropped `launchContext.env` from the spec would leave the prompt
+      // assertion green while the agent silently runs without checkpoint state.
+      expect(spec.env?.TASK_CHECKPOINT_DIR).toBe(checkpointDir);
+      expect(spec.env?.KOOKR_CHECKPOINT_DIR).toBeUndefined();
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

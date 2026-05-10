@@ -111,6 +111,8 @@ describe('agent-launch-context', () => {
     });
 
     expect(context.env.TASK_CHECKPOINT_DIR).toBeUndefined();
+    // Guard against regression: also confirm the legacy var name is not set.
+    expect(Object.keys(context.env)).not.toContain('KOOKR_CHECKPOINT_DIR');
     const checkpointAllowlistEntries = context.permissionAllowlist.filter((e) =>
       e.includes('checkpoint') || e.includes('repro.sh'),
     );

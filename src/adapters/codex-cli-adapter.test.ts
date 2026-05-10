@@ -126,6 +126,12 @@ describe('CodexCliAdapter', () => {
       expect(prompt).toContain('CHECKPOINT.json is not present');
       expect(prompt).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
       expect(prompt).toContain('original prompt');
+      // Guard the integration seam: confirm the env var actually reaches the
+      // spawned codex process. A regression that dropped `launchContext.env`
+      // would leave the prompt-text assertion green while the agent runs
+      // without checkpoint state.
+      expect(spec.env?.TASK_CHECKPOINT_DIR).toBe(checkpointDir);
+      expect(spec.env?.KOOKR_CHECKPOINT_DIR).toBeUndefined();
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
