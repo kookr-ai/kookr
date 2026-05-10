@@ -235,7 +235,7 @@ The state file is the contract between this skill and the `pr-workflow-gate` hoo
 
 Before you conclude this skill, report the checklist result explicitly:
 
-- detected project type: `kookr|pnpm|npm|yarn|rust|python|other`
+- detected project type: `pnpm|npm|yarn|rust|python|other`
 - type/build checks: passed / failed / skipped (with reason)
 - tests: passed / failed / skipped (with reason)
 - bug reproduction (fix PRs only): reproduced / verified / skipped with reason

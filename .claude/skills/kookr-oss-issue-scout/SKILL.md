@@ -435,7 +435,7 @@ priority = clarity + size + acceptance + competition + match + verifiability
 
 ## Competition Check
 
-**PREFERRED EXECUTION PATH: use the `oss-issue-scout` subagent** (`.claude/agents/oss-issue-scout.md`). It runs the full scout flow in an isolated context, returns a **ready-to-claim top candidate** (with a draft claim comment and a one-shot `gh api` command), and guarantees the competition check cannot be forgotten or skipped. The subagent does NOT post the claim itself — the caller reviews the candidate and runs the `gh api` command verbatim. The PreToolUse `claim-gate` hook at `~/.claude/hooks/claim-gate.sh` re-runs all three competition queries on the caller's POST as a second line of defense, and also fires for manual claims that bypass the subagent.
+**PREFERRED EXECUTION PATH: use the `kookr-oss-issue-scout` subagent** (`.claude/agents/kookr-oss-issue-scout.md`). It runs the full scout flow in an isolated context, returns a **ready-to-claim top candidate** (with a draft claim comment and a one-shot `gh api` command), and guarantees the competition check cannot be forgotten or skipped. The subagent does NOT post the claim itself — the caller reviews the candidate and runs the `gh api` command verbatim. The PreToolUse `claim-gate` hook at `~/.claude/hooks/claim-gate.sh` re-runs all three competition queries on the caller's POST as a second line of defense, and also fires for manual claims that bypass the subagent.
 
 The following is the canonical check for anyone running the scout workflow manually or auditing the subagent's behavior.
 

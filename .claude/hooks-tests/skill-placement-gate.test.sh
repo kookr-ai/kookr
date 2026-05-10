@@ -75,17 +75,22 @@ mkdir -p "$TMP/c5/plugin/skills/kookr-bad"
 assert_fail "kookr- prefix in plugin/skills rejected" "$TMP/c5"
 
 # Case 6: unqualified subagent_type in plugin/skills
-mkdir -p "$TMP/c6/plugin/skills/foo"
+# Fixture must include plugin/agents/<name>.md so the gate's dynamic AGENT_NAMES
+# derivation has a name to look for.
+mkdir -p "$TMP/c6/plugin/skills/foo" "$TMP/c6/plugin/agents"
+touch "$TMP/c6/plugin/agents/boundary-critic.md"
 echo 'Agent({subagent_type: "boundary-critic", prompt: "..."})' > "$TMP/c6/plugin/skills/foo/SKILL.md"
 assert_fail "unqualified subagent_type rejected" "$TMP/c6"
 
 # Case 7: qualified subagent_type passes
-mkdir -p "$TMP/c7/plugin/skills/foo"
+mkdir -p "$TMP/c7/plugin/skills/foo" "$TMP/c7/plugin/agents"
+touch "$TMP/c7/plugin/agents/boundary-critic.md"
 echo 'Agent({subagent_type: "kookr-toolkit:boundary-critic", prompt: "..."})' > "$TMP/c7/plugin/skills/foo/SKILL.md"
 assert_pass "qualified subagent_type passes" "$TMP/c7"
 
 # Case 8: descriptive prose mentioning an agent name (not in subagent_type context) passes
-mkdir -p "$TMP/c8/plugin/skills/foo"
+mkdir -p "$TMP/c8/plugin/skills/foo" "$TMP/c8/plugin/agents"
+touch "$TMP/c8/plugin/agents/boundary-critic.md"
 echo 'See the boundary-critic agent for boundary reviews.' > "$TMP/c8/plugin/skills/foo/SKILL.md"
 assert_pass "descriptive prose mention passes" "$TMP/c8"
 

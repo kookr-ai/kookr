@@ -74,17 +74,34 @@ fi
 # Pattern matches a quote directly preceded by `subagent_type` context, then the
 # bare agent name. The qualified form has `kookr-toolkit:` between the quote
 # and the agent name, so the bracketing `["']<name>` only matches unqualified.
-AGENT_NAMES='ambition-amplifier|api-surface-auditor|architecture-drift-detector|architecture-smell-scanner|assumption-archaeologist|boundary-critic|delivery-pragmatist|dependency-graph-analyzer|design-experimenter|design-minimalist|failure-mode-analyst|module-interface-auditor|operability-reviewer|socratic-challenger|state-machine-verifier|test-fixer|test-quality-reviewer|oss-issue-scout|kookr-oss-issue-scout'
+#
+# Limitation: only matches when subagent_type and the quoted name appear on the
+# same line. Multi-line forms slip through. Acceptable at single-tenant scale.
+#
+# AGENT_NAMES is derived from plugin/agents/*.md filenames (the only agents
+# that need namespace qualification). Project-scope agents under .claude/agents/
+# (kookr-* names) are NOT in this list — they're called by their bare name and
+# should not be qualified. Adding/removing a plugin agent automatically updates
+# the gate without code changes.
+AGENT_NAMES=""
+if [ -d plugin/agents ]; then
+  AGENT_NAMES=$(ls plugin/agents/*.md 2>/dev/null \
+    | xargs -n1 basename 2>/dev/null \
+    | sed 's/\.md$//' \
+    | paste -sd'|' - || true)
+fi
 
-for dir in .claude/skills plugin/skills; do
-  [ -d "$dir" ] || continue
-  HITS=$(grep -RInE "subagent_type[^a-zA-Z]+[\"']($AGENT_NAMES)[\"']" "$dir" 2>/dev/null || true)
-  if [ -n "$HITS" ]; then
-    while IFS= read -r line; do
-      [ -n "$line" ] && BAD+="${BAD:+$'\n'}  $line"
-    done <<< "$HITS"
-  fi
-done
+if [ -n "$AGENT_NAMES" ]; then
+  for dir in .claude/skills plugin/skills; do
+    [ -d "$dir" ] || continue
+    HITS=$(grep -RInE "subagent_type[^a-zA-Z]+[\"']($AGENT_NAMES)[\"']" "$dir" 2>/dev/null || true)
+    if [ -n "$HITS" ]; then
+      while IFS= read -r line; do
+        [ -n "$line" ] && BAD+="${BAD:+$'\n'}  $line"
+      done <<< "$HITS"
+    fi
+  done
+fi
 
 if [ -n "$BAD" ]; then
   echo "" >&2
