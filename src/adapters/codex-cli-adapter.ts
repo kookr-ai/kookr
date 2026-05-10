@@ -8,6 +8,7 @@ import { parseHookEvent } from '../core/hook-parser.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { buildAgentLaunchContext } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
+import { resolvePluginDir } from '../core/plugin-paths.js';
 import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
@@ -60,6 +61,20 @@ export interface CodexCliAdapterOptions {
    */
   kookrDataDir?: string;
   /**
+   * Absolute path to the kookr-toolkit plugin tree (containing
+   * `.claude-plugin/plugin.json`). When set and the path is valid, the
+   * adapter passes `--plugin-dir <path>` to every spawned `codex` so
+   * Kookr-spawned agents see the toolkit regardless of cwd.
+   *
+   * Resolution order: this option > `KOOKR_PLUGIN_DIR` env. Empty string
+   * disables injection. Auto-discovery is intentionally OFF for codex
+   * (unlike ClaudeCodeAdapter) — stock codex rejects `--plugin-dir` with
+   * an unrecognized-argument error at launch, so the adapter requires an
+   * explicit opt-in to avoid silently breaking users who haven't yet
+   * upgraded to the kookr-fork that supports the flag (jeanibarz/codex#52).
+   */
+  pluginDir?: string;
+  /**
    * Test seam for {@link CodexCliAdapter.preflight}. When provided, the
    * adapter spawns probes through this runner instead of `child_process.execFile`.
    * Production callers should leave this unset.
@@ -100,6 +115,7 @@ export class CodexCliAdapter implements AgentAdapter {
   private trustWorkspace: boolean;
   private bypassAllPermissions: boolean;
   private kookrDataDir?: string;
+  private pluginDir?: string;
   private probeExec?: ProbeExecRunner;
 
   constructor(
@@ -117,6 +133,14 @@ export class CodexCliAdapter implements AgentAdapter {
     this.trustWorkspace = options?.trustWorkspace ?? true;
     this.bypassAllPermissions = options?.bypassAllPermissions ?? false;
     this.kookrDataDir = options?.kookrDataDir;
+    // Opt-in only: explicit option or KOOKR_PLUGIN_DIR env. Auto-discovery
+    // is deliberately disabled because stock Codex CLI rejects --plugin-dir
+    // with an unrecognized-argument error at launch — see jeanibarz/codex#52.
+    // Once the kookr-fork is widely deployed, the autoDiscover gate can be
+    // flipped to mirror ClaudeCodeAdapter's default-on behavior.
+    this.pluginDir = resolvePluginDir(options?.pluginDir, undefined, undefined, {
+      autoDiscover: false,
+    });
     this.probeExec = options?.probeExec;
   }
 
@@ -199,8 +223,15 @@ export class CodexCliAdapter implements AgentAdapter {
       '-c', 'features.codex_hooks=true',
       permissionFlagStr,
       '--settings', settingsPath,
-      promptWithCheckpoint,
     ];
+    // Inject --plugin-dir <path> when the kookr-toolkit tree resolves.
+    // Symmetric with ClaudeCodeAdapter. Requires the kookr-fork of Codex
+    // CLI (jeanibarz/codex#52); upstream Codex rejects this flag with an
+    // unrecognized-argument error at launch.
+    if (this.pluginDir) {
+      args.push('--plugin-dir', this.pluginDir);
+    }
+    args.push(promptWithCheckpoint);
     await this.backend.createSession({
       id: tmuxName,
       command: this.agentBin,

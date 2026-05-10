@@ -1,5 +1,6 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
@@ -540,6 +541,105 @@ describe('CodexCliAdapter', () => {
       const spec = backend.sessions.get(sessionId)!.spec;
       expect(spec.env?.RALPH_VERDICT_FILE).toBeUndefined();
       expect(spec.env?.KOOKR_TASK_ID).toBe(task.id);
+    });
+  });
+
+  describe('--plugin-dir injection', () => {
+    let validPluginDir: string;
+    let tempRoot: string;
+    let backend: FakeTerminalBackend;
+    let taskStore: TaskStore;
+
+    beforeEach(() => {
+      backend = new FakeTerminalBackend();
+      taskStore = new TaskStore();
+      tempRoot = mkdtempSync(join(tmpdir(), 'kookr-codex-plugin-test-'));
+      validPluginDir = join(tempRoot, 'plugin');
+      mkdirSync(join(validPluginDir, '.claude-plugin'), { recursive: true });
+      writeFileSync(
+        join(validPluginDir, '.claude-plugin', 'plugin.json'),
+        JSON.stringify({ name: 'test-plugin', version: '0.0.1' }),
+      );
+    });
+
+    afterEach(() => {
+      rmSync(tempRoot, { recursive: true, force: true });
+    });
+
+    test('injects --plugin-dir when explicit option points to a valid plugin tree', async () => {
+      const a = new CodexCliAdapter(backend, taskStore, {
+        pluginDir: validPluginDir,
+        trustWorkspace: false,
+      });
+      const task = taskStore.createTask('t', '/cwd');
+      const sessionId = await a.launch(task.id, 'my-prompt', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const idx = spec.args.indexOf('--plugin-dir');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(spec.args[idx + 1]).toBe(validPluginDir);
+      // The flag must come BEFORE the prompt (codex's clap parser treats
+      // unknown trailing args as the prompt). Locate the prompt by exact
+      // match rather than a length offset so this assertion stays
+      // load-bearing if the args list grows.
+      const promptIdx = spec.args.lastIndexOf('my-prompt');
+      expect(promptIdx).toBeGreaterThan(idx);
+    });
+
+    test('skips injection when explicit pluginDir path is invalid (no plugin.json)', async () => {
+      const bogus = join(tempRoot, 'does-not-exist');
+      const a = new CodexCliAdapter(backend, taskStore, {
+        pluginDir: bogus,
+        trustWorkspace: false,
+      });
+      const task = taskStore.createTask('t', '/cwd');
+      const sessionId = await a.launch(task.id, 't', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(spec.args).not.toContain('--plugin-dir');
+    });
+
+    test('skips injection when pluginDir is explicitly empty string', async () => {
+      const a = new CodexCliAdapter(backend, taskStore, {
+        pluginDir: '',
+        trustWorkspace: false,
+      });
+      const task = taskStore.createTask('t', '/cwd');
+      const sessionId = await a.launch(task.id, 't', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(spec.args).not.toContain('--plugin-dir');
+    });
+
+    test('does NOT auto-discover (codex requires opt-in via option or KOOKR_PLUGIN_DIR)', async () => {
+      // Default construction (no pluginDir option, no KOOKR_PLUGIN_DIR env)
+      // must NOT inject --plugin-dir, because stock codex rejects the flag
+      // at launch. Auto-discovery is the difference vs. ClaudeCodeAdapter.
+      delete process.env.KOOKR_PLUGIN_DIR;
+      const a = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+      });
+      const task = taskStore.createTask('t', '/cwd');
+      const sessionId = await a.launch(task.id, 't', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(spec.args).not.toContain('--plugin-dir');
+    });
+
+    test('still injects under bypassAllPermissions=true', async () => {
+      const a = new CodexCliAdapter(backend, taskStore, {
+        pluginDir: validPluginDir,
+        bypassAllPermissions: true,
+        trustWorkspace: false,
+      });
+      const task = taskStore.createTask('t', '/cwd');
+      const sessionId = await a.launch(task.id, 'my-prompt', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const idx = spec.args.indexOf('--plugin-dir');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(spec.args[idx + 1]).toBe(validPluginDir);
+      // Bypass replaces --full-auto with the dangerous variant; both must
+      // still appear before --plugin-dir, which must come before the prompt.
+      expect(spec.args).toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(spec.args).not.toContain('--full-auto');
+      const promptIdx = spec.args.lastIndexOf('my-prompt');
+      expect(promptIdx).toBeGreaterThan(idx);
     });
   });
 });
