@@ -4733,7 +4733,7 @@ textarea::-webkit-resizer { background: transparent; }
   color: var(--text-bright);
 }
 
-/* --- Project Detail Drawer (minimalist redesign) --- */
+/* --- Project Detail Drawer --- */
 
 .project-drawer {
   width: 280px;
@@ -4829,6 +4829,11 @@ textarea::-webkit-resizer { background: transparent; }
 }
 .project-drawer-link:hover {
   color: var(--text-bright);
+}
+.project-drawer-link:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .project-drawer-stats {
@@ -4980,8 +4985,9 @@ textarea::-webkit-resizer { background: transparent; }
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-.project-drawer-input:focus {
-  outline: none;
+.project-drawer-input:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
   border-color: var(--teal);
 }
 
@@ -4998,8 +5004,9 @@ textarea::-webkit-resizer { background: transparent; }
   width: 100%;
   box-sizing: border-box;
 }
-.project-drawer-textarea:focus {
-  outline: none;
+.project-drawer-textarea:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
   border-color: var(--teal);
 }
 
@@ -5659,19 +5666,6 @@ textarea::-webkit-resizer { background: transparent; }
 .settings-unit {
   font-size: 12px;
   color: var(--text-muted);
-}
-
-/* --- Project Drawer Workspace Button --- */
-.btn-workspace {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 12px;
-}
-.btn-workspace:hover {
-  color: var(--text-bright);
 }
 
 /* --- Contribution Workspace --- */

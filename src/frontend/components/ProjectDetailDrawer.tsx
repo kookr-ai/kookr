@@ -19,9 +19,8 @@ function relativeDays(iso: string): string {
   if (days <= 0) return 'today';
   if (days === 1) return 'yesterday';
   if (days < 30) return `${days}d ago`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo ago`;
-  return `${Math.floor(months / 12)}y ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
 }
 
 function StatRow({ label, value, hint }: { label: string; value: React.ReactNode; hint?: React.ReactNode }) {
@@ -79,8 +78,9 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
 
   const subParts: string[] = [];
   if (project.lastContribution) subParts.push(`Last PR ${relativeDays(project.lastContribution)}`);
-  subParts.push(`${project.activeAgents} running`);
+  if (project.activeAgents > 0) subParts.push(`${project.activeAgents} running`);
   if (project.findingCount > 0) subParts.push(`${project.findingCount} finding${project.findingCount === 1 ? '' : 's'}`);
+  if (subParts.length === 0) subParts.push('Idle');
 
   const limitPct = project.dailyLimit ? Math.min(100, Math.round((project.todayPrCount / project.dailyLimit) * 100)) : 0;
 
@@ -106,13 +106,20 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
       )}
 
       {hasAnyStat && (
-        <section className="project-drawer-stats">
+        <section className="project-drawer-stats" aria-label="Project stats">
           {showToday && (
             <div className={`project-drawer-stat-row${atLimit ? ' at-limit' : ''}`}>
               <span className="project-drawer-stat-label">Today</span>
               <span className="project-drawer-stat-value">
                 {project.dailyLimit !== undefined ? (
-                  <span className="project-drawer-meter" aria-label={`${project.todayPrCount} of ${project.dailyLimit} daily PRs`}>
+                  <span
+                    className="project-drawer-meter"
+                    role="progressbar"
+                    aria-valuenow={project.todayPrCount}
+                    aria-valuemin={0}
+                    aria-valuemax={project.dailyLimit}
+                    aria-label={`${project.todayPrCount} of ${project.dailyLimit} daily PRs${atLimit ? ' (limit reached)' : ''}`}
+                  >
                     <span className="project-drawer-meter-track">
                       <span className="project-drawer-meter-fill" style={{ width: `${limitPct}%` }} />
                     </span>
@@ -139,8 +146,8 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
       )}
 
       {project.recentTasks.length > 0 && (
-        <section className="project-drawer-section">
-          <h4>Recent agents</h4>
+        <section className="project-drawer-section" aria-labelledby={`recent-agents-${project.project}`}>
+          <h4 id={`recent-agents-${project.project}`}>Recent agents</h4>
           <div className="project-drawer-tasks">
             {visibleTasks.map((task) => (<TaskRow key={task.taskId} task={task} />))}
           </div>
@@ -152,8 +159,8 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
         </section>
       )}
 
-      <section className="project-drawer-section">
-        <h4>Settings</h4>
+      <section className="project-drawer-section" aria-labelledby={`settings-${project.project}`}>
+        <h4 id={`settings-${project.project}`}>Settings</h4>
         <div className="project-drawer-setting">
           <label htmlFor={`daily-limit-${project.project}`}>Daily PR cap</label>
           <input
