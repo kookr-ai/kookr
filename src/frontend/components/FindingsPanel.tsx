@@ -12,6 +12,7 @@ import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import { useDnd } from '../hooks/useDnd.js';
 import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
+import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 
 export const HEALTHY_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.healthy';
 export const PENDING_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.pending';
@@ -501,6 +502,7 @@ function FindingCard({ agent, selected, send }: {
           if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null; }
         }} />
         <div className="finding-context">
+          <TaskIdCopyButton taskId={agent.taskId} compact />
           {showProjectBadge && agentProjectLabel(agent) && (
             <span className={`project-badge color-${agentProjectColor(agent)}`} title={agent.cwd}>
               {agentProjectLabel(agent)}
@@ -630,6 +632,7 @@ function HealthyRow({ agent, selected, send }: {
               <span className="healthy-row-name" title={agent.taskName ?? agent.agentId}>
                 {agent.taskName ?? agent.agentId}
               </span>
+              <TaskIdCopyButton taskId={agent.taskId} compact />
             </div>
             <div className="healthy-row-footer">
               <div className="healthy-row-meta">
@@ -813,6 +816,7 @@ function PendingRow({ agent, selected, send }: {
           <span className="pending-row-name" title={agent.taskName ?? agent.agentId}>
             {agent.taskName ?? agent.agentId}
           </span>
+          <TaskIdCopyButton taskId={agent.taskId} compact />
         </div>
         <div className="pending-row-meta">
           Queued · waiting for slot
@@ -863,6 +867,7 @@ function SnoozedRow({ agent, selected, send }: {
           <span className="snoozed-row-name" title={agent.taskName ?? agent.agentId}>
             {agent.taskName ?? agent.agentId}
           </span>
+          <TaskIdCopyButton taskId={agent.taskId} compact />
         </div>
         <div className="snoozed-countdown">
           {agent.suppressed ? 'Paused' : `Snoozed · ${formatCountdown(agent.snoozedUntil!)}`}
@@ -988,6 +993,7 @@ function CompletedRow({ agent, selected, send }: {
           <span className="completed-row-name" title={agent.taskName ?? agent.agentId}>
             {agent.taskName ?? agent.agentId}
           </span>
+          <TaskIdCopyButton taskId={agent.taskId} compact />
           <span className="completed-row-meta">
             {isCancelled && <span className="completed-cancelled-label">cancelled</span>}
             {isCancelled && (agent.tokenUsage || agent.startedAt) && ' · '}
