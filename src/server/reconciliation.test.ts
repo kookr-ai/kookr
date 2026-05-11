@@ -52,6 +52,7 @@ describe('Startup Reconciliation', () => {
       cwd: '/repo-missing',
       createdAt: new Date(),
       lastStatus: 'running',
+      gitIsWorktree: true,
     });
     await backend.createSession(spec('kookr-missing'));
 
@@ -64,6 +65,52 @@ describe('Startup Reconciliation', () => {
     expect(taskStore.getTask(task.id)!.sessions[0].worktreeHealth).toBe('missing_unexpectedly');
   });
 
+  test('does not mark live non-worktree sessions missing when absent from the Kookr worktree registry', async () => {
+    const task = taskStore.createTask('Fix bug', '/other-repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-regular-repo',
+      agentType: 'claude-code',
+      cwd: '/other-repo',
+      createdAt: new Date(),
+      lastStatus: 'running',
+    });
+    await backend.createSession(spec('kookr-regular-repo'));
+
+    const result = await reconcile(taskStore, backend, {
+      byPath: () => null,
+      snapshot: () => ({ entries: [], refreshedAt: new Date().toISOString(), lastError: null }),
+    });
+
+    expect(result.worktreesMissing).not.toContain('kookr-regular-repo');
+    expect(taskStore.getTask(task.id)!.sessions[0].worktreeHealth).toBeUndefined();
+  });
+
+  test('clears stale false-positive worktree health from live non-worktree sessions', async () => {
+    const task = taskStore.createTask('Fix bug', '/other-repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-false-positive',
+      agentType: 'claude-code',
+      cwd: '/other-repo',
+      createdAt: new Date(),
+      lastStatus: 'running',
+      worktreeHealth: 'missing_unexpectedly',
+      worktreeHealthObservedAt: '2026-05-11T23:30:57.130Z',
+    });
+    await backend.createSession(spec('kookr-false-positive'));
+
+    const result = await reconcile(taskStore, backend, {
+      byPath: () => null,
+      snapshot: () => ({ entries: [], refreshedAt: new Date().toISOString(), lastError: null }),
+    });
+
+    expect(result.worktreesChanged).toContain('kookr-false-positive');
+    expect(taskStore.getTask(task.id)!.sessions[0]).toMatchObject({
+      worktreeHealth: undefined,
+      worktreeHealthObservedAt: undefined,
+      worktreeRegistryStale: undefined,
+    });
+  });
+
   test('marks live session worktree stale when registry refresh failed', async () => {
     const task = taskStore.createTask('Fix bug', '/repo');
     taskStore.addSession(task.id, {
@@ -72,6 +119,7 @@ describe('Startup Reconciliation', () => {
       cwd: '/repo',
       createdAt: new Date(),
       lastStatus: 'running',
+      gitIsWorktree: true,
     });
     await backend.createSession(spec('kookr-stale'));
 

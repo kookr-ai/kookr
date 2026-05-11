@@ -83,16 +83,24 @@ export async function reconcile(
         result.resumed.push(session.tmuxSession);
         const registryEntry = worktreeRegistry?.byPath(session.cwd);
         const registrySnapshot = worktreeRegistry?.snapshot();
-        if (registrySnapshot?.lastError) {
+        const shouldTrackWorktreeHealth = session.gitIsWorktree === true || Boolean(registryEntry);
+        if (!shouldTrackWorktreeHealth && session.worktreeHealth) {
+          taskStore.updateSession(task.id, session.tmuxSession, {
+            worktreeHealth: undefined,
+            worktreeHealthObservedAt: undefined,
+            worktreeRegistryStale: undefined,
+          });
+          result.worktreesChanged.push(session.tmuxSession);
+        } else if (shouldTrackWorktreeHealth && registrySnapshot?.lastError) {
           taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'stale', { registryStale: true });
           result.worktreesStale.push(session.tmuxSession);
-        } else if (worktreeRegistry && registrySnapshot?.refreshedAt && !registryEntry) {
+        } else if (shouldTrackWorktreeHealth && worktreeRegistry && registrySnapshot?.refreshedAt && !registryEntry) {
           taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'missing_unexpectedly');
           result.worktreesMissing.push(session.tmuxSession);
-        } else if (registryEntry?.isPrunable) {
+        } else if (shouldTrackWorktreeHealth && registryEntry?.isPrunable) {
           taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'stale');
           result.worktreesStale.push(session.tmuxSession);
-        } else if (registryEntry) {
+        } else if (shouldTrackWorktreeHealth && registryEntry) {
           taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'ok');
         }
 
