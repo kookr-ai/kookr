@@ -25,7 +25,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
-HOOK="$REPO_ROOT/hooks/pr-workflow-gate.sh"
+HOOK="$REPO_ROOT/plugin/hooks/pr-workflow-gate.sh"
 
 if [ ! -x "$HOOK" ] && [ ! -f "$HOOK" ]; then
   printf 'ERROR: hook not found at %s\n' "$HOOK" >&2

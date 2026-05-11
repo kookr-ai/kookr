@@ -27,7 +27,7 @@ Learn what makes a good contribution to langchain-ai/langchain by systematically
 - **Raw learnings**: `~/.claude/langchain-pr-lessons/learnings-raw.md`
 - **Distilled learnings**: `~/.claude/langchain-pr-lessons/learnings-distilled.md`
 - **LangChain-specific patterns**: `~/.claude/langchain-pr-lessons/langchain-patterns.md`
-- **General skill output**: `~/.claude/skills/pr-contribution-excellence/SKILL.md`
+- **General skill output**: `${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/skills/pr-contribution-excellence/SKILL.md`
 
 ## Contribution Guidelines (from CLAUDE.md and PR template)
 
@@ -252,7 +252,7 @@ Read all inputs:
 cat ~/.claude/langchain-pr-lessons/learnings-raw.md
 cat ~/.claude/langchain-pr-lessons/langchain-patterns.md 2>/dev/null || echo "(new file)"
 cat ~/.claude/langchain-pr-lessons/learnings-distilled.md 2>/dev/null || echo "(new file)"
-cat ~/.claude/skills/pr-contribution-excellence/SKILL.md 2>/dev/null || echo "(new file)"
+cat ${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/skills/pr-contribution-excellence/SKILL.md 2>/dev/null || echo "(new file)"
 ```
 
 ### Classify patterns

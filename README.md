@@ -201,10 +201,10 @@ Bundled with `kookr-spawn` — `pnpm link --global` exposes both binaries.
 
 If you use Claude Code or Codex CLI to work on this repo, the bundled `.claude/skills/`, `.claude/agents/`, and `.claude/playbooks/` are picked up automatically — no install step required. The repo's git pre-push hook is wired by `pnpm install`'s `prepare` script.
 
-**Optional in-repo Claude Code hook** — install the closed-issue scout gate:
+**Optional in-repo Claude Code hooks** — install the bundled `PreToolUse` hooks (closed-issue scout gate, PR-workflow gate, OSS rate-limit gate, etc.):
 
 ```bash
-bash scripts/install-hooks.sh   # installs hooks/oss-stale-scout-gate.sh into ~/.claude/hooks/
+bash scripts/install-hooks.sh   # symlinks plugin/hooks/*.sh into ~/.claude/hooks/
 ```
 
 ### Kookr Toolkit (Claude Code plugin)
@@ -223,7 +223,14 @@ claude
 
 Update with `/plugin marketplace update kookr`. See [`plugin/README.md`](plugin/README.md) for the full skill/agent inventory and the maintainer dev workflow (`claude --plugin-dir ~/git/kookr/plugin`).
 
-**Optional OSS extension** — Several bundled skills (`pre-pr-review`, `oss-pr-distill`, `codex-pr-distill`, `kookr-oss-issue-scout`, `kookr-oss-repo-recon`) and the `oss-contribute` playbook depend on an OSS contribution layer that lives as user-global scripts and data outside this repo (`~/.claude/reviewer-specialists/`, `~/.claude/skills/pr-contribution-excellence/`, `~/.claude/hooks/{pr-workflow-gate,oss-contribution-gate,…}.sh`). The extension is **not bundled** — its distribution mechanism is still pending. Without it, the affected skills are still safe to invoke — they detect the missing dependencies and stop rather than fabricating output. Read [`docs/hooks-setup.md`](docs/hooks-setup.md) for the full status.
+**OSS extension (bundled)** — Several skills (`pre-pr-review`, `oss-pr-distill`, `codex-pr-distill`, `kookr-oss-issue-scout`, `kookr-oss-repo-recon`, `pr-contribution-excellence`) and the `oss-contribute` playbook depend on an OSS contribution layer. As of `kookr-toolkit` 0.5, that layer ships **inside the plugin**: reviewer-specialist subagent prompts at `plugin/reviewer-specialists/`, distilled PR-contribution patterns at `plugin/skills/pr-contribution-excellence/`, and the PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`, `oss-stale-scout-gate`) at `plugin/hooks/`. **One-time setup** to wire the hooks into your `~/.claude/settings.json`:
+
+```bash
+bash scripts/install-hooks.sh           # PreToolUse hooks (scout, PR gate, rate-limit)
+bash scripts/install-oss-tracking-hook.sh   # PostToolUse OSS tracking hook
+```
+
+See [`docs/hooks-setup.md`](docs/hooks-setup.md) for the full hook inventory, scope-list semantics, and uninstall recipe.
 
 ## Use cases
 
