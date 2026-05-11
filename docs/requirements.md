@@ -609,7 +609,7 @@ The system SHOULD persist project sidebar ordering, pinned projects, hidden proj
 The system SHOULD reduce repeated metadata and long prompt noise when a developer is triaging running tasks on a large dashboard.
 
 **Acceptance criteria:**
-- The selected task header keeps title, status, autonomy, critical worktree health, age, and primary actions visible while moving provider, hooks, project, branch, cost, and token details into a details affordance
+- The selected task header keeps title, status, critical worktree health, age, and primary actions visible while moving provider, hooks, project, branch, cost, and token details into a details affordance
 - When a project and task are both selected on a wide viewport, the project drawer switches to a compact summary instead of showing full contribution history, settings, and recent tasks
 - Oversized launch prompts in the Activity pane render as a bounded preview with an explicit full-prompt expander
 - Healthy task rows avoid repeated project metadata when the user is already scoped to that project

@@ -20,7 +20,7 @@ Now informed by concrete research: agents run in interactive mode inside managed
 - [x] Register hooks for real-time structured event notifications (tool use, errors, permission requests)
 - [x] Use `backend.captureBytes` only for display rendering in GUI (not for monitoring logic)
 - [x] Parse hook JSON entries into normalized `AgentEvent` stream
-- [x] CLI entry point: `npx kookr` (via `bin/kookr.js`) starts the server. Agent launching moved to the GUI ("New Task" dialog) in Phase 2 rather than a positional-argument CLI, since the interactive dialog offers a better surface for specifying prompt + cwd + autonomy + agent type.
+- [x] CLI entry point: `npx kookr` (via `bin/kookr.js`) starts the server. Agent launching moved to the GUI ("New Task" dialog) in Phase 2 rather than a positional-argument CLI, since the interactive dialog offers a better surface for specifying prompt + cwd + agent type.
 
 **Demo:** Run `npx kookr` → server starts on `http://127.0.0.1:4800`, open it in a browser, launch an agent via the top-bar launcher, and watch its dtach-backed terminal stream live.
 

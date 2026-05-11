@@ -26,7 +26,7 @@ Prompt sources:
 
 ```bash
 kookr-spawn "fix the auth bug"
-cat prompt.md | kookr-spawn --autonomous
+cat prompt.md | kookr-spawn
 kookr-spawn --prompt-file /tmp/prompt.md
 ```
 

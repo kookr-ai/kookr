@@ -187,16 +187,17 @@ After a supervision session, Kookr can analyze its own interaction data to ident
 
 **V2 (deferred):** LLM-powered summarization for contextual improvement suggestions. Cross-session pattern detection.
 
-### F9: Agent Autonomy & Auto-Proceed
+### F9: Findings feedback
 
-Agents launched through Kookr run with a configurable **autonomy level** that controls whether the supervisor auto-proceeds through permission prompts and minor confirmations on the developer's behalf.
+The original F9 section ("Agent Autonomy & Auto-Proceed") was removed on
+2026-05-12 — see docs/cleanup/2026-05-12-autonomy-removal-audit.md. The
+findings-feedback sub-item survives because it is independent of the
+autonomy feature. F9 is preserved as a numbered slot to avoid renumbering
+F10-F15.
 
 | ID | Feature | Description |
 |----|---------|-------------|
-| F9.1 | **Per-task autonomy level** | Each task carries an `AutonomyLevel` (`tasks.ts`) set at launch time and adjustable live via the `setAutonomy` WS message. |
-| F9.2 | **Auto-proceed** | When an agent hits a recoverable prompt matching the task's autonomy policy, `auto-proceed.ts` responds automatically. The developer can cancel in-flight auto-proceed via `cancelAutoProceed`. |
-| F9.3 | **Autonomy UI** | `AgentExecutionConfig.tsx` in the Launch Dialog and controls on finding cards let the developer choose the level and see whether auto-proceed is currently armed. |
-| F9.4 | **Findings feedback loop** | Developers can mark a finding as a false positive via `findingFeedback`; the monitor records the verdict and suppresses similar future anomalies per session. |
+| F9.1 | **Findings feedback loop** | Developers can mark a finding as a false positive via `findingFeedback`; the monitor records the verdict and suppresses similar future anomalies per session. |
 
 ### F10: Resilience — Circuit Breakers
 
@@ -344,7 +345,7 @@ This approach supersedes the headless mode design from [ADR-004](adr/004-agent-c
 - F8.1-F8.3: Session reflection (interaction log, friction analysis, reflection report)
 
 **Shipped after the original V1 cut:**
-- F9 Agent autonomy / auto-proceed / findings feedback
+- F9 Findings feedback (false positives)
 - F10 Circuit breakers for LLM, GitHub, and terminal
 - F11 Scheduled tasks (cron)
 - F12 Contribution workspace + worktree cleanup

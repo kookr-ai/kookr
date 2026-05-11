@@ -1169,7 +1169,7 @@ function renderRepeatedInstructions(analyses: SessionAnalysis[], threshold: numb
 
   if (byIntent["approval"]) {
     console.log(`  APPROVAL patterns (${byIntent["approval"].length}): Users repeatedly approve agent proposals.`);
-    console.log(`  → Consider agent autonomy levels (auto-proceed after delay).`);
+    console.log(`  → Consider adding a CLAUDE.md rule that pre-authorises this approval pattern.`);
     console.log();
   }
   if (byIntent["lifecycle"]) {

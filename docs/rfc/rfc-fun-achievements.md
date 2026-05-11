@@ -119,7 +119,7 @@ Display labels in parentheses. Legend: ★ existing signal, no new instrumentati
 | `stuck-together` ★ | Stuck Together | 🤝 | Resolve the same `(agentId, type)` anomaly 3 times within 1 hour | rolling window keyed by tuple |
 | `tab-hoarder` ★ | Tab Hoarder | 📑 | Have 10+ unsnoozed findings observable in a single snapshot tick | snapshot count |
 | `afk` ★ | Welcome Back | 🐻 | Resolve an anomaly more than 30 minutes after it fired | `resolution_at − active_anomaly.detectedAt > 30m` |
-| `forty-two` ★ | The Answer | 4️⃣2️⃣ | Reach 42 lifetime supervised sessions | `counters.session_start_total ≥ 42` (round-2 crash-safe; was `==42`) |
+| `forty-two` ★ | The Answer | 4️⃣2️⃣ | Reach 42 lifetime agent sessions | `counters.session_start_total ≥ 42` (round-2 crash-safe; was `==42`) |
 | `self-aware` ★ | Self-Aware | 🪞 | Launch a task whose subject matches `\bkookr\b` (case-insensitive) | task subject regex with word boundary (round-2: tightened from `/kookr/i`) |
 
 **Cut from v1/v2:** Triage Streak, Penny Pincher (perverse incentives); Shortcut Master, Playbook Explorer (unreachable for low-feature users + persisted distinct-ID set complexity); Konami, Coffee Break (generic, not Kookr-specific); Cost-Aware (too thin); time-of-day category (folded into Folklore via `afk`).
