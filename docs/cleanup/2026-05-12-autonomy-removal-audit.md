@@ -638,7 +638,23 @@ Line 38: `"Worker/autonomy mode | Set intentionally, not inherited stale state"`
 
 None. The autonomy feature is well-isolated: a typed field on `Task`, a single orchestrator + scheduler in `src/server`, and UI surfaces. No persisted side-effects beyond the legacy `autonomy` field in `~/.kookr/tasks.json`, which will be silently dropped on next load when `loadTasks` no longer reads/back-fills it.
 
-Two judgement calls flagged for the executor:
+Two judgement calls flagged for the executor (both resolved during execution — `AgentExecutionConfig.tsx` deleted, CLI flag removed cleanly without a deprecation cycle since the feature is judged useless):
 
 1. **`AgentExecutionConfig.tsx`** — recommend deletion (option 1) over keeping a paper-thin wrapper. The component name no longer matches its remaining responsibility.
 2. **CLI `--autonomous` flag in `bin/kookr-spawn.js`** — the file isn't in the original audit list but contains the public CLI flag. Removing it is a (small) public-CLI break; if you want a deprecation cycle, leave the flag parsing in but make it a no-op + warn-on-use. Otherwise delete cleanly.
+
+## Execution-time additions
+
+Files discovered during execution that the original audit missed:
+
+- `src/cli/kookr-spawn.test.ts` — two test cases referenced the deleted `--autonomous` flag and the `autonomous: true` field on `postTask`. Both were edited to match the trimmed CLI surface (the test that "parses ... --autonomous ... --criteria" was renamed and lost the autonomous bits, and the postTask body assertion lost the `expect(bodySeen.autonomy).toBe('autonomous')` line).
+
+## Grep whitelist — intentional LEAVEs
+
+After the removal, the following matches remain in `src/` and are intentional. They are generic English usage and do NOT refer to the deleted AutonomyLevel feature:
+
+- `src/server/launch-service.ts` — `"Claude Code's supervised path"` in a comment about Claude Code's permission-model gating.
+- `src/frontend/components/DetailPanel.tsx` — UI copy `"All clear — agents working autonomously."` (generic English; left intact rather than churn the user-visible copy).
+- `src/frontend/hooks/useTaskCompletionChime.test.ts` — test comment `"The chime hook does not distinguish autonomous vs user-initiated transitions."`
+
+If any future grep regression check needs a stricter pattern, exclude these three lines explicitly.
