@@ -340,6 +340,37 @@ describe('launchTask', () => {
     expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
   });
 
+  it('uses the configured default agent type when none is requested', async () => {
+    const depsWithDefault = {
+      ...deps,
+      getDefaultAgentType: vi.fn(() => 'codex-cli' as const),
+    };
+
+    const result = await launchTask(depsWithDefault, { prompt: 'hello', cwd: '/tmp' });
+
+    expect(result.task.agentType).toBe('codex-cli');
+    expect(depsWithDefault.getDefaultAgentType).toHaveBeenCalledOnce();
+    expect(deps.adapterRegistry.get('codex-cli').launch).toHaveBeenCalledOnce();
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('lets an explicit launch agent override the configured default', async () => {
+    const depsWithDefault = {
+      ...deps,
+      getDefaultAgentType: vi.fn(() => 'codex-cli' as const),
+    };
+
+    const result = await launchTask(depsWithDefault, {
+      prompt: 'hello',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+    });
+
+    expect(result.task.agentType).toBe('claude-code');
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    expect(deps.adapterRegistry.get('codex-cli').launch).not.toHaveBeenCalled();
+  });
+
   it('cleans up task record when adapter.launch throws, allowing retry', async () => {
     const adapter = deps.adapterRegistry.get('claude-code');
     (adapter.launch as ReturnType<typeof vi.fn>)
@@ -657,6 +688,21 @@ describe('R19 trust boundary (rfc-remote-chat-trigger §4)', () => {
     expect(store.listTasks()).toHaveLength(0);
     expect(claudeLaunch).not.toHaveBeenCalled();
     expect(codexLaunch).not.toHaveBeenCalled();
+  });
+
+  it('applies R19 to a codex configured default when remote chat omits agentType', async () => {
+    await expect(
+      launchTask({
+        ...deps,
+        getDefaultAgentType: () => 'codex-cli',
+      }, {
+        prompt: 'p',
+        cwd: '/tmp',
+        launchSource: 'remote-chat-telegram',
+      }),
+    ).rejects.toThrow(/R19/);
+    expect(store.listTasks()).toHaveLength(0);
+    expect(deps.adapterRegistry.get('codex-cli').launch).not.toHaveBeenCalled();
   });
 
   it('allows launchSource=remote-chat-telegram with agentType=claude-code', async () => {

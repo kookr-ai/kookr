@@ -84,6 +84,7 @@ describe('validateSettings', () => {
     expect(result.watchdogStaleThresholdSec).toBe(30);
     expect(result.repeatedErrorThreshold).toBe(3);
     expect(result.maxActiveTasks).toBe(10);
+    expect(result.defaultAgentType).toBe('claude-code');
   });
 
   it('accepts valid boolean for autoWatchOssSources', () => {
@@ -91,6 +92,18 @@ describe('validateSettings', () => {
       ...DEFAULT_SETTINGS,
       autoWatchOssSources: false,
     });
+  });
+
+  it('accepts valid defaultAgentType values', () => {
+    expect(validateSettings({ defaultAgentType: 'codex-cli' })).toEqual({
+      ...DEFAULT_SETTINGS,
+      defaultAgentType: 'codex-cli',
+    });
+  });
+
+  it('falls back to default for invalid defaultAgentType values', () => {
+    expect(validateSettings({ defaultAgentType: 'gemini-cli' })).toEqual(DEFAULT_SETTINGS);
+    expect(validateSettings({ defaultAgentType: null })).toEqual(DEFAULT_SETTINGS);
   });
 });
 
@@ -136,6 +149,7 @@ describe('loadSettings / saveSettings', () => {
       watchdogStaleThresholdSec: 45,
       repeatedErrorThreshold: 5,
       maxActiveTasks: 15,
+      defaultAgentType: 'codex-cli' as const,
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);
@@ -171,6 +185,7 @@ describe('loadSettings / saveSettings', () => {
     expect(result.settings.repeatedErrorThreshold).toBe(3);
     expect(result.settings.autoWatchOssSources).toBe(true);
     expect(result.settings.maxActiveTasks).toBe(10);
+    expect(result.settings.defaultAgentType).toBe('claude-code');
     expect(result.loadedFromDefaults).toBe(false);
   });
 

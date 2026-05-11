@@ -61,6 +61,7 @@ export interface MessageRouterDeps {
   suppressionTracker?: SnoozeSuppressionTracker;
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentType;
+  getDefaultAgentType?: () => AgentType;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   /** Workspace services (Phase 1a). */
@@ -201,7 +202,7 @@ export class MessageRouter {
       serverStartedAt: this.deps.serverStartedAt,
       totalSpendUsd: this.deps.taskStore.getLifetimeSpendUsd(),
       availableAgentTypes: this.deps.availableAgentTypes,
-      defaultAgentType: this.deps.defaultAgentType,
+      defaultAgentType: this.deps.getDefaultAgentType?.() ?? this.deps.defaultAgentType,
       sttUrl: this.deps.sttUrl,
       workspaceEnabled: this.deps.workspaceEnabled,
       sweepRunning: isSweepInProgress(),

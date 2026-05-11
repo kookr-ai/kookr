@@ -51,6 +51,7 @@ describe('Settings API', () => {
       watchdogStaleThresholdSec: 30,
       repeatedErrorThreshold: 3,
       maxActiveTasks: 10,
+      defaultAgentType: 'claude-code',
       loadedFromDefaults: true,
     });
   });
@@ -62,18 +63,21 @@ describe('Settings API', () => {
       body: JSON.stringify({
         githubPollingEnabled: false,
         githubPollingIntervalSec: 120,
+        defaultAgentType: 'codex-cli',
       }),
     });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.githubPollingEnabled).toBe(false);
     expect(data.githubPollingIntervalSec).toBe(120);
+    expect(data.defaultAgentType).toBe('codex-cli');
     expect(data.warnings).toEqual([]);
 
     // Verify persisted to file
     const fileContent = JSON.parse(readFileSync(join(tempDir, 'settings.json'), 'utf-8'));
     expect(fileContent.githubPollingEnabled).toBe(false);
     expect(fileContent.githubPollingIntervalSec).toBe(120);
+    expect(fileContent.defaultAgentType).toBe('codex-cli');
   });
 
   test('PUT /api/settings clamps out-of-range interval', async () => {
@@ -130,6 +134,19 @@ describe('Settings API', () => {
     expect(data.githubPollingEnabled).toBe(false);
     // Unknown keys are stripped
     expect(data.unknownSetting).toBeUndefined();
+  });
+
+  test('PUT /api/settings rejects invalid defaultAgentType to the safe default', async () => {
+    const res = await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        defaultAgentType: 'gemini-cli',
+      }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.defaultAgentType).toBe('claude-code');
   });
 
   test('disabling polling stops the GitHub scanner', async () => {

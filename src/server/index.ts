@@ -592,7 +592,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       msg = {
         ...msg,
         availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
-        defaultAgentType: adapterRegistry.getDefaultType(),
+        defaultAgentType: currentSettings.defaultAgentType,
       };
     }
     const data = JSON.stringify(msg);
@@ -757,10 +757,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Live getter for max active tasks — reads from current settings.
   const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
+  const getDefaultAgentType = () => currentSettings.defaultAgentType;
 
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
-  const launchServiceDeps: LaunchServiceDeps = { taskStore, adapterRegistry, lifecycleDeps, getMaxActiveTasks, interactionLog };
+  const launchServiceDeps: LaunchServiceDeps = {
+    taskStore,
+    adapterRegistry,
+    lifecycleDeps,
+    getMaxActiveTasks,
+    getDefaultAgentType,
+    interactionLog,
+  };
 
   const ralphLoopService = new RalphLoopService({
     taskStore,
@@ -1061,7 +1069,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     circuitBreakerRegistry,
     getMaxActiveTasks, suppressionTracker,
     availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
-    defaultAgentType: adapterRegistry.getDefaultType(),
+    defaultAgentType: getDefaultAgentType(),
+    getDefaultAgentType,
     scheduleService,
     ralphLoopService,
     getDiagnosticStatus: () => diagnosticRunner.getStatus(),

@@ -52,8 +52,6 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     : AVAILABLE_AGENT_TYPES;
   // Relaunch paths drive the form from props. In that mode we neither read
   // nor write the persisted draft — the relaunched task owns its own state.
-  // `defaultAgentType` is intentionally absent: agentType is persisted under
-  // its own key and is orthogonal to draft-vs-relaunch semantics.
   const isRelaunch = defaultPrompt != null || defaultCriteria != null || defaultCwd != null;
   const initialDraft = isRelaunch ? null : loadLaunchTaskDialogDraft();
   // Was this dialog opened with content hydrated from a stored draft? Recorded
@@ -75,10 +73,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const [highlightIdx, setHighlightIdx] = useState(-1);
   const [tab, setTab] = useState<Tab>(relaunchPlaybookId || projectContext ? 'playbooks' : 'manual');
   const [submitting, setSubmitting] = useState(false);
-  const [agentType, setAgentType] = useState<AgentType>(() => {
-    const stored = localStorage.getItem('kookr:defaultAgentType') as AgentType | null;
-    return defaultAgentType ?? stored ?? serverDefaultAgentType ?? 'claude-code';
-  });
+  const [agentType, setAgentType] = useState<AgentType>(
+    () => defaultAgentType ?? serverDefaultAgentType ?? 'claude-code',
+  );
   const [draftRestored, setDraftRestored] = useState(initialHadDraft);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const cwdRef = useRef<HTMLInputElement>(null);
@@ -139,7 +136,6 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     }
     track({ type: 'launch_submitted', method: 'manual' });
     track({ type: 'launch_dialog_closed', submitted: true, dwellMs: Date.now() - openedAtRef.current });
-    localStorage.setItem('kookr:defaultAgentType', agentType);
     const excerpt = trimmed.slice(0, 40) + (trimmed.length > 40 ? '…' : '');
     const sent = send({
       type: 'launch',
