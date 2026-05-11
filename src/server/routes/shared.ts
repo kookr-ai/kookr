@@ -105,4 +105,9 @@ export interface RouteDeps {
    * sibling-path resolver.
    */
   worktreeRegistry?: Pick<WorktreeRegistry, 'all'>;
+  /**
+   * Test seam for routes that inspect or update user-global Claude assets.
+   * Production defaults to os.homedir().
+   */
+  hookHomeDir?: string;
 }

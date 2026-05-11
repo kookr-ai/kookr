@@ -161,7 +161,11 @@ kbd {
   margin: 8px 0;
 }
 .deploy-checking { color: var(--text-muted); font-style: italic; }
-.deploy-error { color: var(--red); }
+.deploy-error {
+  color: var(--red);
+  white-space: normal;
+  overflow: visible;
+}
 .deploy-available {
   font-size: 11px;
   color: var(--green);
@@ -200,6 +204,12 @@ kbd {
   margin-right: 4px;
 }
 .deploy-more { color: var(--text-muted); font-style: italic; }
+.toolkit-stale {
+  font-size: 11px;
+  color: var(--amber);
+  padding: 2px 0 4px;
+  font-weight: 500;
+}
 .deploy-status-row {
   font-size: 11px;
   color: var(--amber);

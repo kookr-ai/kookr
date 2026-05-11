@@ -15,7 +15,7 @@ This document walks both newcomers through the setup, from the "I just want to c
 > - `hooks/pr-workflow-gate.sh` → `~/.claude/hooks/pr-workflow-gate.sh`
 > - `hooks/oss-contribution-gate.sh` → `~/.claude/hooks/oss-contribution-gate.sh`
 > - `hooks/post-merge-keyword-scan.sh` → `~/.claude/hooks/post-merge-keyword-scan.sh`
-> - `.claude/skills/pre-pr-review/` → `~/.claude/skills/pre-pr-review/`
+> - `plugin/skills/pre-pr-review/` → `~/.claude/skills/pre-pr-review/`
 > - `plugin/reviewer-specialists/` → `~/.claude/reviewer-specialists/`
 > - `plugin/skills/pr-contribution-excellence/` → `~/.claude/skills/pr-contribution-excellence/`
 >
@@ -56,7 +56,7 @@ If you use Claude Code (or Codex CLI) to work on this repo, there is a larger ho
 | `oss-gate` (CLI) | N/A (invoked manually) | Status / reset / log / health commands for the rate-limit gate | User-global helper |
 | `oss-registry-check` (CLI) | N/A (invoked manually) | Resolves a repo against the `~/.kookr/oss-repos.json` registry to check eligibility | User-global helper |
 
-**The four OSS-extension PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) have canonical source in this repo under `hooks/` and `scripts/`, alongside the `pre-pr-review` skill at `.claude/skills/pre-pr-review/`, the `pr-contribution-excellence` skill at `plugin/skills/pr-contribution-excellence/`, and the reviewer specialists at `plugin/reviewer-specialists/`. The hooks are not under `plugin/` because they integrate with Kookr's HTTP API, `~/.kookr/` config, and `KOOKR_*` env vars — keeping `plugin/` Kookr-agnostic preserves marketplace portability.** Remaining items — `claim-gate.sh`, `ai-coauthor-push-guard.sh`, `kookr-prod-readonly-guard.sh`, `fix-bare-after-worktree.sh`, plus the `oss-gate` and `oss-registry-check` CLIs — still live as standalone files in `~/.claude/hooks/` and `~/.local/bin/`. Bundling those is tracked in the "Future work" section at the bottom.
+**The four OSS-extension PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) have canonical source in this repo under `hooks/` and `scripts/`, alongside the `pre-pr-review` and `pr-contribution-excellence` skills at `plugin/skills/`, and the reviewer specialists at `plugin/reviewer-specialists/`. The hooks are not under `plugin/` because they integrate with Kookr's HTTP API, `~/.kookr/` config, and `KOOKR_*` env vars — keeping `plugin/` Kookr-agnostic preserves marketplace portability.** Remaining items — `claim-gate.sh`, `ai-coauthor-push-guard.sh`, `kookr-prod-readonly-guard.sh`, `fix-bare-after-worktree.sh`, plus the `oss-gate` and `oss-registry-check` CLIs — still live as standalone files in `~/.claude/hooks/` and `~/.local/bin/`. Bundling those is tracked in the "Future work" section at the bottom.
 
 ### Interaction with `kookr-spawn`
 
@@ -88,11 +88,11 @@ If your prompt or criteria contain strings that PreToolUse hooks match on (`gh p
    - `~/.claude/hooks/pr-workflow-gate.sh` → `$(repo-root)/hooks/pr-workflow-gate.sh`
    - `~/.claude/hooks/oss-contribution-gate.sh` → `$(repo-root)/hooks/oss-contribution-gate.sh`
    - `~/.claude/hooks/post-merge-keyword-scan.sh` → `$(repo-root)/hooks/post-merge-keyword-scan.sh`
-   - `~/.claude/skills/pre-pr-review` → `$(repo-root)/.claude/skills/pre-pr-review`
+   - `~/.claude/skills/pre-pr-review` → `$(repo-root)/plugin/skills/pre-pr-review`
    - `~/.claude/skills/pr-contribution-excellence` → `$(repo-root)/plugin/skills/pr-contribution-excellence`
    - `~/.claude/reviewer-specialists` → `$(repo-root)/plugin/reviewer-specialists`
 
-   Re-running is safe; it never duplicates entries or clobbers non-symlink directories.
+   Re-running is safe; it never duplicates entries or clobbers non-symlink files or directories.
 
    After this, `pr-workflow-gate.sh` will fire on every `gh pr create` whose target repo is listed in `~/.kookr/pr-gated-repos.json`. The active repo's branch must first produce a `/dev/shm/.pr-gate-<repo>-<branch>-pre-done` state file via the `pre-pr-review` skill. One-time bypass: `touch /dev/shm/.pr-gate-<repo>-<branch>-bypass`.
 

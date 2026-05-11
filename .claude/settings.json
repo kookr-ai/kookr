@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/hooks/kookr-prod-kill-guard.sh"
+            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0; \"$root/hooks/kookr-prod-kill-guard.sh\"'"
           }
         ]
       }

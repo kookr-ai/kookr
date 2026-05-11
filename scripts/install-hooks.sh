@@ -19,7 +19,7 @@
 #
 # Skills installed today:
 #   - pre-pr-review — the companion skill for pr-workflow-gate.sh. It lives
-#     in-repo at .claude/skills/pre-pr-review/ and is symlinked to
+#     in the bundled toolkit plugin and is symlinked to
 #     ~/.claude/skills/pre-pr-review/ so Claude Code loads it from any repo
 #     (the hook fires globally, so the skill must be reachable globally).
 #
@@ -65,12 +65,10 @@ HOOKS=(
   $'post-merge-keyword-scan.sh\tUserPromptSubmit\t\t'
 )
 
-# Each entry: skill directory name under .claude/skills/ in this repo.
-# The install step creates ~/.claude/skills/<name> as a symlink to the
-# in-repo directory so the skill is available in any repo, not just kookr.
-SKILLS=(
-  'pre-pr-review'
-)
+# Project-scope skill symlinks are intentionally empty. Globally-loaded
+# companion skills live under PLUGIN_ASSETS so install-hooks works from the
+# post-PR #263 toolkit layout.
+SKILLS=()
 
 # Each entry: "<source-relative-to-repo>\t<dest-relative-to-$HOME>"
 # Plugin-distributed assets that several skills/playbooks read by user-global
@@ -80,6 +78,7 @@ SKILLS=(
 # `plugin/README.md`).
 PLUGIN_ASSETS=(
   $'plugin/reviewer-specialists\t.claude/reviewer-specialists'
+  $'plugin/skills/pre-pr-review\t.claude/skills/pre-pr-review'
   $'plugin/skills/pr-contribution-excellence\t.claude/skills/pr-contribution-excellence'
 )
 
@@ -123,6 +122,10 @@ install_symlink() {
   bash -n "$src" || die "Source hook has syntax errors: $src"
 
   mkdir -p "$DEST_DIR"
+  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+    warn "Refusing to overwrite non-symlink at $dest. Move it aside and re-run."
+    return 1
+  fi
   ln -sf "$src" "$dest"
   printf '  symlink  %-40s -> %s\n' "$dest" "$src"
 }
@@ -184,6 +187,21 @@ uninstall_plugin_asset_symlink() {
   elif [ -e "$dest" ]; then
     warn "Not a symlink, leaving alone: $dest"
   fi
+}
+
+print_global_assets() {
+  local row name event matcher if_cond src_rel dest_rel skill
+  for row in "${HOOKS[@]}"; do
+    IFS=$'\t' read -r name event matcher if_cond <<<"$row"
+    printf '%s\t%s\t%s\n' "$name" "hooks/$name" ".claude/hooks/$name"
+  done
+  for skill in "${SKILLS[@]}"; do
+    printf '%s\t%s\t%s\n' "$skill" ".claude/skills/$skill" ".claude/skills/$skill"
+  done
+  for row in "${PLUGIN_ASSETS[@]}"; do
+    IFS=$'\t' read -r src_rel dest_rel <<<"$row"
+    printf '%s\t%s\t%s\n' "$dest_rel" "$src_rel" "$dest_rel"
+  done
 }
 
 register_hook() {
@@ -251,6 +269,9 @@ unregister_hook() {
 }
 
 case "$cmd" in
+  --print-global-assets|print-global-assets)
+    print_global_assets
+    ;;
   install)
     ensure_jq
     printf 'Installing Kookr hooks from %s\n' "$REPO_DIR"
