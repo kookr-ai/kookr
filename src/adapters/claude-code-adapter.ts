@@ -368,17 +368,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const hookFile = `${hookOutputDir}/${tmuxName}.jsonl`;
 
     // When serverPort is set, dual-write: JSONL file (durable) + HTTP POST (fast).
-    // tee reads stdin (the hook event JSON) and appends to the JSONL file, then
-    // pipes the same data to curl for immediate HTTP delivery.
+    // awk appends a newline-terminated JSONL record and forwards the same record
+    // to curl for immediate HTTP delivery. Some hook payloads arrive without a
+    // trailing newline, so a raw tee/cat append can concatenate adjacent objects.
     // IMPORTANT: no trailing `&` — Claude Code runs hooks via non-interactive bash,
-    // and `bash -c 'cmd &'` redirects stdin from /dev/null, so tee would read nothing.
+    // and `bash -c 'cmd &'` redirects stdin from /dev/null, so the hook would read nothing.
     // curl's --max-time 1 prevents blocking Claude Code if the server is slow.
     let hookCommand: string;
     if (this.serverPort) {
       const url = `http://localhost:${this.serverPort}/api/hook-event/${tmuxName}`;
-      hookCommand = `tee -a ${hookFile} | curl -s -X POST ${url} --max-time 1 -H 'Content-Type: application/json' -d @- >/dev/null 2>&1`;
+      hookCommand = `awk -v file='${hookFile}' '{ print >> file; print }' | curl -s -X POST ${url} --max-time 1 -H 'Content-Type: application/json' -d @- >/dev/null 2>&1`;
     } else {
-      hookCommand = `cat >> ${hookFile}`;
+      hookCommand = `awk -v file='${hookFile}' '{ print >> file }'`;
     }
 
     const cmd = { type: 'command', command: hookCommand };

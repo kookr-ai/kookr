@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { HookFileWatcher } from './hook-watcher.js';
+import { HookFileWatcher, splitHookRecords } from './hook-watcher.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { TaskStore } from '../core/tasks.js';
@@ -140,6 +140,79 @@ describe('HookFileWatcher', () => {
     expect(events.length).toBe(2);
     expect(events[0].type).toBe('session_start');
     expect(events[1].type).toBe('tool_use');
+  });
+
+  test('splitHookRecords separates concatenated hook JSON objects', () => {
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    const event2 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'printf "}{"' },
+    });
+
+    expect(splitHookRecords(`${event1}${event2}`)).toEqual({
+      records: [event1, event2],
+      consumedChars: event1.length + event2.length,
+    });
+  });
+
+  test('splitHookRecords leaves incomplete trailing JSON for the next read', () => {
+    const event = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    const partial = '{"session_id":"sess-2"';
+
+    expect(splitHookRecords(`${event}${partial}`)).toEqual({
+      records: [event],
+      consumedChars: event.length,
+    });
+  });
+
+  test('replayExisting=true replays concatenated hook records', async () => {
+    const hookFile = join(tempDir, 'kookr-concat.jsonl');
+
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      model: 'claude-sonnet-4-20250514',
+    });
+    const event2 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      permission_mode: 'acceptEdits',
+    });
+    writeFileSync(hookFile, event1 + event2);
+
+    const task = taskStore.createTask('Test', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-concat', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-concat',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    watcher.watch('kookr-concat', { replayExisting: true });
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(events.map((event) => event.type)).toEqual(['session_start', 'tool_use']);
   });
 
   test('handles malformed hook event lines gracefully', async () => {
