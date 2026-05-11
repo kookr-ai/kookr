@@ -18,7 +18,7 @@ You run several Claude Code or Codex CLI agents in parallel. One loops on the sa
 
 <img src="assets/branding/derived/kookr-screenshot.png" alt="Kookr dashboard - detect anomalies, respond, auto-advance" width="960" />
 
-[Watch the narrated demo video](https://github.com/kookr-ai/kookr/releases/tag/demo-v1)
+[Watch the narrated demo video (1080p + 4K)](https://github.com/kookr-ai/kookr/releases/tag/demo-v3)
 
 ## What Kookr Does
 
@@ -40,6 +40,8 @@ pnpm dev
 Open `http://localhost:5173`.
 
 Prerequisites: `git`, Node.js `>=22`, `pnpm >=10`, and build tools for native modules. Claude Code is only required when you want Kookr to launch Claude Code agents.
+
+**Works with Codex CLI** via a maintained fork that adds the Claude-compatible hooks Kookr depends on. See [Codex CLI Setup](docs/codex-cli-setup.md).
 
 If setup fails, run:
 
@@ -77,7 +79,7 @@ See [CLI Reference](docs/reference/cli.md) for `kookr-spawn`, `kookr-status`, an
 
 ## Core Features
 
-- Real-time monitoring for Claude Code and Codex CLI agents
+- Real-time monitoring for Claude Code and Codex CLI agents (Codex CLI requires the maintained [`jeanibarz/codex#feat/claude-compat`](docs/codex-cli-setup.md) fork)
 - Anomaly detection and prioritized findings
 - Quick replies and response suggestions
 - Live terminal access through xterm.js and dtach

@@ -138,6 +138,19 @@ async function main() {
     return c.json({ ok: true });
   });
 
+  // Set agentType on a task (used by the demo recorder to mix a Codex agent
+  // in alongside Claude agents — see demo/record.ts Act 1).
+  server.app.post('/api/test/set-agent-type', async (c) => {
+    const { taskId, agentType } = await c.req.json();
+    if (agentType !== 'claude-code' && agentType !== 'codex-cli') {
+      return c.json({ error: `invalid agentType: ${String(agentType)}` }, 400);
+    }
+    server.taskStore.setAgentType(taskId, agentType);
+    const snapshot = server.monitor.getSnapshot();
+    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    return c.json({ ok: true });
+  });
+
   // Attach loop state directly for compact-control tests without exposing the
   // removed generic Ralph API.
   server.app.post('/api/test/set-ralph-loop/:taskId', async (c) => {
