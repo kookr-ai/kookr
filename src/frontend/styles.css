@@ -633,6 +633,54 @@ kbd {
 .btn-fp { color: var(--orange, #f59e0b); border-color: color-mix(in srgb, var(--orange, #f59e0b) 40%, transparent); }
 .btn-fp:hover { color: #fbbf24; }
 
+.task-id-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  max-width: 132px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.task-id-copy:hover {
+  color: var(--teal);
+  border-color: var(--teal);
+  background: rgba(45, 212, 191, 0.08);
+}
+.task-id-copy:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+.task-id-copy.compact {
+  min-height: 20px;
+  padding: 2px 6px;
+  font-size: 10px;
+}
+.task-id-copy.copied {
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(74, 222, 128, 0.1);
+}
+.task-id-copy-icon {
+  color: inherit;
+  opacity: 0.75;
+}
+.task-id-copy-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* --- Collapsible Section Headers --- */
 .section-header {
   display: flex;

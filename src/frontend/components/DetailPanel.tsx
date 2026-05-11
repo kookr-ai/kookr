@@ -13,6 +13,7 @@ import { SnoozeDialog } from './SnoozeDialog.js';
 import { EffectiveHookSettingsModal } from './EffectiveHookSettingsModal.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
 import { computeTerminalVisible } from './detail-panel-visibility.js';
+import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 const NARROW_DETAIL_BREAKPOINT_PX = 1200;
@@ -572,6 +573,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
           )}
         </div>
         <div className="detail-header-right">
+          <TaskIdCopyButton taskId={agent.taskId} />
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
             <span className={`detail-header-warning worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
               {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
