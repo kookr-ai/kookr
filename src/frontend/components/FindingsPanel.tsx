@@ -12,6 +12,7 @@ import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import { useDnd } from '../hooks/useDnd.js';
 import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
+import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 
 export const HEALTHY_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.healthy';
 export const PENDING_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.pending';
@@ -104,143 +105,6 @@ function RalphLoopControls({ agent }: { agent: AgentState }): React.ReactElement
         onClick={() => callEndpoint(`/api/tasks/${taskId}/ralph-loop`, 'DELETE')}
       >Cancel</button>
     </span>
-  );
-}
-
-function AttachRalphDialog({ taskId, onClose }: { taskId: string; onClose: () => void }): React.ReactElement {
-  const { handleAlert } = useKookrStore.getState();
-  const [prompt, setPrompt] = useState('');
-  const [iterationCap, setIterationCap] = useState('');
-  const [stopPredicate, setStopPredicate] = useState('');
-  const [zeroDiff, setZeroDiff] = useState('');
-  const [costCap, setCostCap] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (submitting) return;
-    if (!prompt.trim()) return;
-
-    setSubmitting(true);
-    const cap = parseInt(iterationCap, 10);
-    const body: Record<string, unknown> = {
-      prompt: prompt.trim(),
-    };
-    if (Number.isInteger(cap)) body.iterationCap = cap;
-    if (stopPredicate.trim()) body.stopPredicate = stopPredicate.trim();
-    const zd = parseInt(zeroDiff, 10);
-    if (Number.isInteger(zd) && zd > 0) body.zeroDiffConvergence = { consecutiveIterations: zd };
-    const cc = parseFloat(costCap);
-    if (isFinite(cc) && cc > 0) body.costCapUsd = cc;
-
-    try {
-      const res = await fetch(`/api/tasks/${taskId}/ralph-loop`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (res.ok) {
-        handleAlert('', 'Ralph loop attached', 'info');
-        onClose();
-      } else {
-        const data = await res.json().catch(() => ({})) as { error?: string };
-        setError(data.error ?? `Server error ${res.status}`);
-      }
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <div role="dialog" aria-label="Attach Ralph loop" onClick={(e) => e.stopPropagation()}>
-      <h4>Attach Ralph loop</h4>
-      {error && <div role="alert" className="ralph-attach-error">{error}</div>}
-      <form onSubmit={handleSubmit}>
-        <label>
-          Prompt
-          <textarea
-            id={`ralph-attach-prompt-${taskId}`}
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            required
-          />
-        </label>
-        <label>
-          Iteration cap
-          <input
-            type="number"
-            name="ralph-attach-iteration-cap"
-            value={iterationCap}
-            onChange={(e) => setIterationCap(e.target.value)}
-            min={1}
-            step={1}
-            required
-          />
-        </label>
-        <label>
-          Stop predicate (optional)
-          <input
-            type="text"
-            name="ralph-attach-stop-predicate"
-            value={stopPredicate}
-            onChange={(e) => setStopPredicate(e.target.value)}
-          />
-        </label>
-        <label>
-          Zero-diff threshold (optional)
-          <input
-            type="number"
-            name="ralph-attach-zero-diff-threshold"
-            value={zeroDiff}
-            onChange={(e) => setZeroDiff(e.target.value)}
-            min={1}
-            step={1}
-          />
-        </label>
-        <label>
-          Cost cap USD (optional)
-          <input
-            type="number"
-            name="ralph-attach-cost-cap"
-            value={costCap}
-            onChange={(e) => setCostCap(e.target.value)}
-            min={0.01}
-            step={0.01}
-          />
-        </label>
-        <div>
-          <button type="submit" disabled={submitting}>Attach</button>
-          <button type="button" onClick={onClose}>Cancel</button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function AttachRalphButton({ agent }: { agent: AgentState }): React.ReactElement | null {
-  const [open, setOpen] = useState(false);
-  if (!agent.taskId) return null;
-  // Only offer attach when there is no loop at all (new or after terminal cleanup)
-  if (agent.ralphLoop) return null;
-
-  return (
-    <>
-      <button
-        className="btn-xs ralph-btn"
-        aria-label="Attach Ralph loop"
-        onClick={(e) => { e.stopPropagation(); setOpen(true); }}
-      >Ralph loop</button>
-      {open && (
-        <AttachRalphDialog
-          taskId={agent.taskId}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </>
   );
 }
 
@@ -501,6 +365,7 @@ function FindingCard({ agent, selected, send }: {
           if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null; }
         }} />
         <div className="finding-context">
+          <TaskIdCopyButton taskId={agent.taskId} compact />
           {showProjectBadge && agentProjectLabel(agent) && (
             <span className={`project-badge color-${agentProjectColor(agent)}`} title={agent.cwd}>
               {agentProjectLabel(agent)}
@@ -630,6 +495,7 @@ function HealthyRow({ agent, selected, send }: {
               <span className="healthy-row-name" title={agent.taskName ?? agent.agentId}>
                 {agent.taskName ?? agent.agentId}
               </span>
+              <TaskIdCopyButton taskId={agent.taskId} compact />
             </div>
             <div className="healthy-row-footer">
               <div className="healthy-row-meta">
@@ -657,7 +523,6 @@ function HealthyRow({ agent, selected, send }: {
                 {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
                   <RalphLoopBadge agent={agent} />
                 )}
-                <AttachRalphButton agent={agent} />
               </div>
             </div>
           </div>
@@ -813,6 +678,7 @@ function PendingRow({ agent, selected, send }: {
           <span className="pending-row-name" title={agent.taskName ?? agent.agentId}>
             {agent.taskName ?? agent.agentId}
           </span>
+          <TaskIdCopyButton taskId={agent.taskId} compact />
         </div>
         <div className="pending-row-meta">
           Queued · waiting for slot
@@ -863,6 +729,7 @@ function SnoozedRow({ agent, selected, send }: {
           <span className="snoozed-row-name" title={agent.taskName ?? agent.agentId}>
             {agent.taskName ?? agent.agentId}
           </span>
+          <TaskIdCopyButton taskId={agent.taskId} compact />
         </div>
         <div className="snoozed-countdown">
           {agent.suppressed ? 'Paused' : `Snoozed · ${formatCountdown(agent.snoozedUntil!)}`}
@@ -988,6 +855,7 @@ function CompletedRow({ agent, selected, send }: {
           <span className="completed-row-name" title={agent.taskName ?? agent.agentId}>
             {agent.taskName ?? agent.agentId}
           </span>
+          <TaskIdCopyButton taskId={agent.taskId} compact />
           <span className="completed-row-meta">
             {isCancelled && <span className="completed-cancelled-label">cancelled</span>}
             {isCancelled && (agent.tokenUsage || agent.startedAt) && ' · '}

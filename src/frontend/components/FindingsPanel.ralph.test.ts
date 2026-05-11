@@ -258,97 +258,18 @@ describe('FindingsPanel Ralph controls', () => {
     expect(healthy?.querySelector('.ralph-loop-badge')?.textContent).toContain('2/5');
   });
 
-  test('attaches a Ralph loop to an existing task from the dashboard', async () => {
+  test('does not advertise legacy Ralph attach for non-loop tasks', async () => {
     const fetchMock = stubAttachFetch({ ok: true, ralphLoop: { status: 'running' } });
     root = renderPanel(container, agentWithoutRalph({ taskId: 'task-attach', agentId: 'agent-attach' }));
 
     const attach = container.querySelector<HTMLButtonElement>('button[aria-label="Attach Ralph loop"]');
-    expect(attach).toBeTruthy();
-
-    await act(async () => {
-      attach!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
-    const dialog = container.querySelector('[role="dialog"]');
-    expect(dialog?.textContent).toContain('Attach Ralph loop');
-    const prompt = container.querySelector<HTMLTextAreaElement>('#ralph-attach-prompt-task-attach');
-    const cap = container.querySelector<HTMLInputElement>('input[name="ralph-attach-iteration-cap"]');
-    const predicate = container.querySelector<HTMLInputElement>('input[name="ralph-attach-stop-predicate"]');
-    const zeroDiff = container.querySelector<HTMLInputElement>('input[name="ralph-attach-zero-diff-threshold"]');
-    const cost = container.querySelector<HTMLInputElement>('input[name="ralph-attach-cost-cap"]');
-    expect(prompt).toBeTruthy();
-    expect(cap).toBeTruthy();
-
-    await act(async () => {
-      setInputValue(prompt!, 'Keep going');
-      setInputValue(cap!, '7');
-      setInputValue(predicate!, 'test -f DONE');
-      setInputValue(zeroDiff!, '2');
-      setInputValue(cost!, '1.5');
-    });
-    await act(async () => {
-      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    });
-    await flush();
-
-    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/task-attach/ralph-loop', expect.objectContaining({
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    }));
-    const attachCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/tasks/task-attach/ralph-loop');
-    const [, init] = attachCall!;
-    expect(JSON.parse(String(init?.body))).toEqual({
-      prompt: 'Keep going',
-      iterationCap: 7,
-      stopPredicate: 'test -f DONE',
-      zeroDiffConvergence: { consecutiveIterations: 2 },
-      costCapUsd: 1.5,
-    });
-    expect(container.querySelector('[role="dialog"]')).toBeNull();
-    expect(useKookrStore.getState().alerts[0]?.summary).toContain('Ralph loop attached');
+    expect(attach).toBeNull();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/ralph-loop'))).toBe(false);
   });
 
-  test('shows server validation errors while keeping the attach dialog open', async () => {
-    stubAttachFetch({ error: 'iterationCap is required and must be a positive integer' }, 400);
-    root = renderPanel(container, agentWithoutRalph({ taskId: 'task-invalid' }));
-
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('button[aria-label="Attach Ralph loop"]')!
-        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    await act(async () => {
-      setInputValue(container.querySelector<HTMLTextAreaElement>('#ralph-attach-prompt-task-invalid')!, 'Go');
-      setInputValue(container.querySelector<HTMLInputElement>('input[name="ralph-attach-iteration-cap"]')!, '0');
-    });
-    await act(async () => {
-      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    });
-    await flush();
-
-    expect(container.querySelector('[role="dialog"]')).toBeTruthy();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('iterationCap is required');
-  });
-
-  test('hides attach action for active loops and surfaces stale already-active responses', async () => {
+  test('hides attach action for active loops', async () => {
     root = renderPanel(container, agentWithRalph('running'));
     expect(container.querySelector('button[aria-label="Attach Ralph loop"]')).toBeNull();
-    act(() => root?.unmount());
-
-    stubAttachFetch({ error: 'task already has an active Ralph loop' }, 409);
-    root = renderPanel(container, agentWithoutRalph({ taskId: 'task-stale' }));
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('button[aria-label="Attach Ralph loop"]')!
-        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    await act(async () => {
-      setInputValue(container.querySelector<HTMLTextAreaElement>('#ralph-attach-prompt-task-stale')!, 'Go');
-    });
-    await act(async () => {
-      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    });
-    await flush();
-
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('active Ralph loop');
   });
 
 });

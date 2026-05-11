@@ -128,13 +128,13 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
               onChange={(e) => setSearch(e.target.value)}
               aria-label="Search task names"
             />
-            <button
-              ref={closeBtnRef}
-              className="btn-icon"
-              onClick={onClose}
-              aria-label="Close cost comparison"
-            >×</button>
           </div>
+          <button
+            ref={closeBtnRef}
+            className="btn-icon"
+            onClick={onClose}
+            aria-label="Close cost comparison"
+          >×</button>
         </header>
 
         {data && (
@@ -143,11 +143,15 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
           </div>
         )}
 
+        {data?.coverage && <CoverageSummary coverage={data.coverage} />}
+
         {error && (
           <div className="cost-comparison-error">
             Failed to load: {error}
           </div>
         )}
+
+        {data?.unboundCodex && <UnboundCoverageCaveat u={data.unboundCodex} />}
 
         {data && data.notes.length > 0 && (
           <div className="cost-notes-stack">
@@ -174,11 +178,24 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
         {data && (
           <>
             <PerPlaybookSection rows={data.perPlaybook} />
-            <AggregateSection aggregate={data.aggregate} unboundCodex={data.unboundCodex} />
+            <AggregateSection aggregate={data.aggregate} />
             <PerTaskSection rows={data.perTask} />
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function CoverageSummary({ coverage }: { coverage: NonNullable<CostComparisonResponse['coverage']> }): React.ReactElement {
+  return (
+    <div className="cost-coverage-summary" aria-label="Cost data coverage">
+      <span>{coverage.taskCount} tasks</span>
+      <span>{coverage.pricedTaskCount} priced</span>
+      <span>{coverage.excludedTaskCount} excluded</span>
+      {coverage.unboundCodexThreadCount > 0 && <span>{coverage.unboundCodexThreadCount} unbound Codex</span>}
+      {coverage.abandonedCodexRolloutCount > 0 && <span>{coverage.abandonedCodexRolloutCount} abandoned</span>}
+      {coverage.liveData && <span>{coverage.runningTaskCount} live</span>}
     </div>
   );
 }
@@ -209,44 +226,45 @@ function PerPlaybookSection({ rows }: { rows: PerPlaybookRow[] }): React.ReactEl
       {rows.length === 0 ? (
         <div className="cost-empty">No tasks in this window.</div>
       ) : (
-        <table className="cost-table">
-          <thead>
-            <tr>
-              <th>Playbook</th>
-              <th>Claude (n)</th>
-              <th>Codex (n)</th>
-              <th>Cost ratio</th>
-              <th>👍 ratio</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(row => {
-              const c = row.perAgent['claude-code'];
-              const x = row.perAgent['codex-cli'];
-              return (
-                <tr key={row.playbookId ?? '<no-playbook>'}>
-                  <td>{row.playbookName}</td>
-                  <td>{formatAgentCell(c)}</td>
-                  <td>{formatAgentCell(x)}</td>
-                  <td>{formatCostRatio(c, x)}</td>
-                  <td>{formatThumbsRatio(c, x)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="cost-table-wrap">
+          <table className="cost-table">
+            <thead>
+              <tr>
+                <th>Playbook</th>
+                <th>Claude</th>
+                <th>Codex</th>
+                <th>Cost ratio</th>
+                <th>👍 ratio</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(row => {
+                const c = row.perAgent['claude-code'];
+                const x = row.perAgent['codex-cli'];
+                return (
+                  <tr key={row.playbookId ?? '<no-playbook>'}>
+                    <td>{row.playbookName}</td>
+                    <td><AgentMetricCell m={c} /></td>
+                    <td><AgentMetricCell m={x} /></td>
+                    <td>{formatCostRatio(c, x)}</td>
+                    <td>{formatThumbsRatio(c, x)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
 }
 
-function AggregateSection({ aggregate, unboundCodex }: {
+function AggregateSection({ aggregate }: {
   aggregate: Partial<Record<CostAgent, AggregateMetrics>>;
-  unboundCodex?: UnboundCodexAggregate;
 }): React.ReactElement {
   const claude = aggregate['claude-code'];
   const codex = aggregate['codex-cli'];
-  const showAny = claude || codex || unboundCodex;
+  const showAny = claude || codex;
   return (
     <section className="cost-aggregate">
       <h3>Aggregate (across mixed task classes — weak signal)</h3>
@@ -256,10 +274,29 @@ function AggregateSection({ aggregate, unboundCodex }: {
         <div className="cost-aggregate-grid">
           {claude && <AgentAggregateCard label="Claude" m={claude} />}
           {codex  && <AgentAggregateCard label="Codex"  m={codex} />}
-          {unboundCodex && <UnboundCodexCard u={unboundCodex} />}
         </div>
       )}
     </section>
+  );
+}
+
+function AgentMetricCell({ m }: { m: AggregateMetrics | undefined }): React.ReactElement {
+  if (!m || m.pricedTaskCount === 0) {
+    return (
+      <span className="cost-agent-metric" aria-label="No average cost, n equals 0">
+        <span className="cost-agent-avg">—</span>
+        <span aria-hidden="true"> </span>
+        <span className="cost-agent-count">n=0</span>
+      </span>
+    );
+  }
+  const average = m.totalCostUsd / m.pricedTaskCount;
+  return (
+    <span className="cost-agent-metric" aria-label={`${formatUsd(average)} average, n equals ${m.pricedTaskCount}`}>
+      <span className="cost-agent-avg">{formatUsd(average)} avg</span>
+      <span aria-hidden="true"> </span>
+      <span className="cost-agent-count">n={m.pricedTaskCount}</span>
+    </span>
   );
 }
 
@@ -289,46 +326,27 @@ function AgentAggregateCard({ label, m }: { label: string; m: AggregateMetrics }
   );
 }
 
-function UnboundCodexCard({ u }: { u: UnboundCodexAggregate }): React.ReactElement {
-  // Visually distinct from the Claude/Codex cards: this is *unbound* spend,
-  // included so cross-agent comparison stays truthful, but kept off the
-  // per-playbook attribution surface (rfc-cost-comparison-coverage-and-perf.md
-  // §Change 2 design-principle 3).
+function UnboundCoverageCaveat({ u }: { u: UnboundCodexAggregate }): React.ReactElement {
   const dq = u.dataQualityCounts;
   const qualityHints: string[] = [];
   if (dq['unknown-pricing'] > 0) qualityHints.push(`${dq['unknown-pricing']} unknown-pricing`);
   if (dq['codex-no-tokens'] > 0) qualityHints.push(`${dq['codex-no-tokens']} no-tokens`);
   if (dq['codex-parse-error'] > 0) qualityHints.push(`${dq['codex-parse-error']} parse-error`);
-  const tooltipDesc = 'Top-level Codex threads not bound to any Kookr task — interactive use, or swept tasks past snapshot retention. Total reflects only priced rows; see Notes for unknown-pricing or no-tokens caveats.';
   return (
-    <div className="cost-aggregate-card cost-unbound-card">
-      <h4>
-        Unbound Codex <span className="cost-unbound-sub">(interactive / swept)</span>
-        <span className="sr-only">. {tooltipDesc}</span>
-      </h4>
-      <div className="cost-stat">
-        <span className="cost-stat-label">threads</span> <span className="cost-stat-val">{u.threadCount}</span>
-      </div>
-      <div className="cost-stat">
-        <span className="cost-stat-label">total ($, priced rows)</span>
-        <span className="cost-stat-val">{formatUsd(u.totalCostUsd)}</span>
-      </div>
-      <div className="cost-stat">
-        <span className="cost-stat-label">in tok</span> <span className="cost-stat-val">{formatTokens(u.totalInputTokens)}</span>
-      </div>
-      <div className="cost-stat">
-        <span className="cost-stat-label">out tok</span> <span className="cost-stat-val">{formatTokens(u.totalOutputTokens)}</span>
-      </div>
-      <div className="cost-stat">
-        <span className="cost-stat-label">cached in</span> <span className="cost-stat-val">{formatTokens(u.totalCachedInputTokens)}</span>
+    <section className="cost-coverage-caveat" aria-label="Coverage caveats">
+      <h3>Coverage caveats</h3>
+      <div className="cost-unbound-line">
+        <strong>Unbound Codex</strong>
+        <span>{u.threadCount} threads</span>
+        <span>{formatUsd(u.totalCostUsd)} priced</span>
+        <span>{formatTokens(u.totalInputTokens)} input</span>
+        <span>{formatTokens(u.totalOutputTokens)} output</span>
+        <span>{formatTokens(u.totalCachedInputTokens)} cached input</span>
       </div>
       {qualityHints.length > 0 && (
-        <div className="cost-stat cost-unbound-quality">
-          <span className="cost-stat-label">quality</span>
-          <span className="cost-stat-val">{qualityHints.join(', ')}</span>
-        </div>
+        <div className="cost-unbound-quality">Incomplete unbound rows: {qualityHints.join(', ')}</div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -339,46 +357,59 @@ function PerTaskSection({ rows }: { rows: PerTaskRow[] }): React.ReactElement {
       {rows.length === 0 ? (
         <div className="cost-empty">No tasks match the current filters.</div>
       ) : (
-        <table className="cost-table cost-per-task-table">
-          <thead>
-            <tr>
-              <th>Started</th>
-              <th>Agent</th>
-              <th>Model</th>
-              <th>Playbook</th>
-              <th>Dur</th>
-              <th>Cost</th>
-              <th>👍</th>
-              <th>Quality</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(r => (
-              <tr key={r.taskId} className={`cost-row dq-${r.dataQuality}`}>
-                <td>{new Date(r.startedAt).toLocaleString()}</td>
-                <td>{r.agent === 'claude-code' ? 'Claude' : 'Codex'}</td>
-                <td>{r.model ?? '—'}</td>
-                <td>{r.playbookId ?? '—'}</td>
-                <td>{formatDur(r.durationMs)}</td>
-                <td title={r.estimatedCostUsd == null ? dataQualityTooltip(r.dataQuality) : undefined}>
-                  {r.estimatedCostUsd == null ? (
-                    <>
-                      <span aria-hidden="true">—</span>
-                      <span className="sr-only">{dataQualityTooltip(r.dataQuality)}</span>
-                    </>
-                  ) : formatUsd(r.estimatedCostUsd)}
-                </td>
-                <td>{r.thumb === 'up' ? '👍' : r.thumb === 'down' ? '👎' : '—'}</td>
-                <td title={dataQualityTooltip(r.dataQuality)}>
-                  <span aria-hidden="true">{dataQualityLabel(r.dataQuality)}</span>
-                  <span className="sr-only">{dataQualityTooltip(r.dataQuality)}</span>
-                </td>
+        <div className="cost-table-wrap">
+          <table className="cost-table cost-per-task-table">
+            <thead>
+              <tr>
+                <th>Started</th>
+                <th>Agent</th>
+                <th>Model</th>
+                <th>Playbook</th>
+                <th>Dur</th>
+                <th>Cost</th>
+                <th><span aria-hidden="true">👍</span><span className="sr-only">Feedback</span></th>
+                <th>Quality</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.taskId} className={`cost-row dq-${r.dataQuality}`}>
+                  <td>{new Date(r.startedAt).toLocaleString()}</td>
+                  <td>{r.agent === 'claude-code' ? 'Claude' : 'Codex'}</td>
+                  <td>{r.model ?? '—'}</td>
+                  <td>{r.playbookId ?? '—'}</td>
+                  <td>{formatRowDur(r)}</td>
+                  <td title={r.estimatedCostUsd == null ? dataQualityTooltip(r.dataQuality) : undefined}>
+                    {r.estimatedCostUsd == null ? (
+                      <>
+                        <span aria-hidden="true">—</span>
+                        <span className="sr-only">{dataQualityTooltip(r.dataQuality)}</span>
+                      </>
+                    ) : formatUsd(r.estimatedCostUsd)}
+                  </td>
+                  <td>{formatThumbCell(r.thumb)}</td>
+                  <td title={dataQualityTooltip(r.dataQuality)}>
+                    <QualityBadge row={r} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
+  );
+}
+
+function QualityBadge({ row }: { row: PerTaskRow }): React.ReactElement {
+  const label = dataQualityLabel(row);
+  return (
+    <span
+      className={`cost-quality-badge dq-${row.dataQuality}`}
+      aria-label={`${label}: ${dataQualityTooltip(row.dataQuality)}`}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -406,16 +437,26 @@ function formatDur(ms: number | null): string {
   return `${h}h${String(m % 60).padStart(2, '0')}m`;
 }
 
-function formatAgentCell(m: AggregateMetrics | undefined): string {
-  if (!m) return '—×0';
-  const median = m.taskCount > 0 ? m.totalCostUsd / m.taskCount : 0;
-  return `${formatUsd(median)}×${m.taskCount}`;
+function formatRowDur(row: PerTaskRow): string {
+  if (row.status === 'inProgress') return 'running';
+  if (!row.isTerminal) return row.status;
+  return formatDur(row.durationMs);
+}
+
+function formatThumbCell(thumb: PerTaskRow['thumb']): React.ReactElement | string {
+  if (thumb === 'up') {
+    return <><span aria-hidden="true">👍</span><span className="sr-only">Thumbs-up feedback</span></>;
+  }
+  if (thumb === 'down') {
+    return <><span aria-hidden="true">👎</span><span className="sr-only">Thumbs-down feedback</span></>;
+  }
+  return '—';
 }
 
 function formatCostRatio(c: AggregateMetrics | undefined, x: AggregateMetrics | undefined): string {
-  if (!c || !x || c.taskCount === 0 || x.taskCount === 0) return '—';
-  const cAvg = c.totalCostUsd / c.taskCount;
-  const xAvg = x.totalCostUsd / x.taskCount;
+  if (!c || !x || c.pricedTaskCount === 0 || x.pricedTaskCount === 0) return '—';
+  const cAvg = c.totalCostUsd / c.pricedTaskCount;
+  const xAvg = x.totalCostUsd / x.pricedTaskCount;
   if (cAvg === 0 && xAvg === 0) return '—';
   if (cAvg === 0) return `Codex ∞×`;
   if (xAvg === 0) return `Claude ∞×`;
@@ -435,20 +476,31 @@ function formatThumbsRate(m: AggregateMetrics): string {
   return `${Math.round(m.thumbsUpRate * 100)}%`;
 }
 
-function dataQualityLabel(q: CostDataQuality): string {
-  switch (q) {
-    case 'complete':                  return '●';
-    case 'unknown-pricing':           return 'unkpr';
-    case 'codex-parse-error':         return 'parse';
-    case 'codex-no-tokens':           return 'no-tok';
-    case 'codex-rollout-not-found':   return 'no-roll';
-    case 'codex-rollout-abandoned':   return 'aband';
+function dataQualityLabel(row: PerTaskRow): string {
+  if (
+    row.dataQuality === 'complete'
+    && row.inputTokens === 0
+    && row.outputTokens === 0
+    && row.cacheReadTokens === 0
+    && row.cacheWriteTokens === 0
+  ) {
+    return 'zero tokens';
+  }
+  switch (row.dataQuality) {
+    case 'complete':                  return 'priced';
+    case 'missing-usage':             return 'missing usage';
+    case 'unknown-pricing':           return 'unknown price';
+    case 'codex-parse-error':         return 'parse error';
+    case 'codex-no-tokens':           return 'no tokens';
+    case 'codex-rollout-not-found':   return 'missing rollout';
+    case 'codex-rollout-abandoned':   return 'abandoned';
   }
 }
 
 function dataQualityTooltip(q: CostDataQuality): string {
   switch (q) {
     case 'complete':                  return 'Complete data — cost computed from tokens and a verified pricing row.';
+    case 'missing-usage':             return 'Usage not available for this task; no transcript or persisted token snapshot was found.';
     case 'unknown-pricing':           return 'Tokens are known but the model has no pricing row in pricing-tables.ts. Cost cannot be computed.';
     case 'codex-parse-error':         return 'Codex rollout schema mismatch — see startup log for details.';
     case 'codex-no-tokens':           return 'Codex rollout has no token telemetry (pre-Nov-2025 schema).';

@@ -2,7 +2,7 @@
 name: kookr-oss-pr-state
 description: State management for oss-pr-lessons playbook — persist learnings and update tracking state for any repository
 keywords: oss, pr, state, learnings, persist, json, open source
-related: [[oss-pr-plan]], [[oss-pr-critic]], [[oss-pr-threshold]], [[oss-pr-distill]]
+related: [oss-pr-plan, oss-pr-critic, oss-pr-threshold, oss-pr-distill]
 ---
 
 # OSS PR State

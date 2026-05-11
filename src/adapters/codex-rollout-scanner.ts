@@ -277,7 +277,7 @@ export class CodexRolloutScanner {
      * Top-level rollouts (parent_thread_id null) that no Kookr task claimed,
      * each summed with its recursively-reachable sub-agents — same accounting
      * rule as a bound task. Counts and totals here drive the panel's
-     * "Unbound Codex" aggregate card (rfc-cost-comparison-coverage-and-perf.md
+     * "Unbound Codex" coverage caveat (rfc-cost-comparison-coverage-and-perf.md
      * §Change 2).
      */
     orphanBindings: OrphanBinding[];

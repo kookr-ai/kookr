@@ -415,9 +415,9 @@ export class CodexCliAdapter implements AgentAdapter {
     let hookCommand: string;
     if (this.serverPort) {
       const url = `http://localhost:${this.serverPort}/api/hook-event/${tmuxName}`;
-      hookCommand = `tee -a ${hookFile} | curl -s -X POST ${url} --max-time 1 -H 'Content-Type: application/json' -d @- >/dev/null 2>&1`;
+      hookCommand = `awk -v file='${hookFile}' '{ print >> file; print }' | curl -s -X POST ${url} --max-time 1 -H 'Content-Type: application/json' -d @- >/dev/null 2>&1`;
     } else {
-      hookCommand = `cat >> ${hookFile}`;
+      hookCommand = `awk -v file='${hookFile}' '{ print >> file }'`;
     }
 
     const cmd = { type: 'command', command: hookCommand };

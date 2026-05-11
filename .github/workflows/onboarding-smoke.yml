@@ -39,8 +39,8 @@ jobs:
       - name: Install dependencies (README "Install & Run")
         run: pnpm install --frozen-lockfile
 
-      - name: pnpm doctor (must exit 0)
-        run: pnpm doctor
+      - name: Kookr doctor (must exit 0)
+        run: pnpm run doctor
 
   onboarding-test:
     needs: prereq-check
@@ -55,6 +55,7 @@ jobs:
       - name: Run onboarding smoke test
         env:
           ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          ONBOARDING_CONTAINER_AGENT_SMOKE: "1"
           REPORT_DIR: ${{ runner.temp }}
         run: bash scripts/onboarding-smoke-test.sh
 
@@ -71,7 +72,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: onboarding-hooks
-          path: ${{ runner.temp }}/onboarding-hooks/
+          path: ${{ runner.temp }}/onboarding-hooks-*
           retention-days: 7
 
       - name: Comment on commit (failure only)
