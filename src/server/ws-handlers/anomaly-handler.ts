@@ -116,7 +116,7 @@ export class AnomalyHandler {
         await sendDirectAgentInput({
           adapter: this.deps.adapter,
           interactionLog: this.deps.interactionLog,
-        }, msg.agentId, msg.input, 'direct_reply');
+        }, msg.agentId, msg.input);
         return;
       }
 

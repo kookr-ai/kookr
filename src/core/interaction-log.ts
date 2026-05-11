@@ -16,7 +16,6 @@ export type InteractionEvent =
       method: 'input' | 'auto_clear' | 'skip' | 'snooze' | 'false_positive';
       durationMs: number;
       timestamp: string;
-      cancelledBy?: 'user' | 'agent_stopped' | 'restart';
     }
   | { type: 'agent_launched'; agentId: string; taskPrompt: string; timestamp: string }
   | { type: 'agent_stopped'; agentId: string; reason: 'user' | 'completed' | 'error'; timestamp: string }

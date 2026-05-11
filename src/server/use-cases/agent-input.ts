@@ -15,7 +15,6 @@ export async function sendDirectAgentInput(
   deps: BaseInputDeps,
   agentId: string,
   input: string,
-  source: 'direct_reply' | 'rest_api',
 ): Promise<DirectAgentInputResult> {
   await deps.adapter.sendInput(agentId, input);
 

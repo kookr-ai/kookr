@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { sendDirectAgentInput } from './agent-input.js';
 
 describe('sendDirectAgentInput', () => {
-  it('sends direct reply input and logs it', async () => {
+  it('sends input via the adapter and appends a user_input event to the log', async () => {
     const adapter = { sendInput: vi.fn().mockResolvedValue(undefined) };
     const interactionLog = { append: vi.fn().mockResolvedValue(undefined) };
 
@@ -10,7 +10,6 @@ describe('sendDirectAgentInput', () => {
       { adapter, interactionLog },
       'agent-1',
       'hello',
-      'direct_reply',
     );
 
     expect(adapter.sendInput).toHaveBeenCalledWith('agent-1', 'hello');
@@ -22,14 +21,13 @@ describe('sendDirectAgentInput', () => {
     }));
   });
 
-  it('sends REST input', async () => {
+  it('is a no-op for the interaction log when no writer is configured', async () => {
     const adapter = { sendInput: vi.fn().mockResolvedValue(undefined) };
 
     await sendDirectAgentInput(
       { adapter },
       'agent-2',
       'ship it',
-      'rest_api',
     );
 
     expect(adapter.sendInput).toHaveBeenCalledWith('agent-2', 'ship it');

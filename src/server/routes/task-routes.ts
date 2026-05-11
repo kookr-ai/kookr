@@ -741,7 +741,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       await sendDirectAgentInput({
         adapter,
         interactionLog,
-      }, agentId, body.input, 'rest_api');
+      }, agentId, body.input);
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
       return c.json({ ok: true, agentId, delivered: true });
