@@ -265,6 +265,38 @@ describe('POST /api/tasks error paths', () => {
   });
 });
 
+describe('legacy Ralph task entrypoints', () => {
+  test('generic Ralph launch is removed', async () => {
+    vi.clearAllMocks();
+    const taskStore = new TaskStore();
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks/ralph-loop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'go', cwd: '/cwd', iterationCap: 2 }),
+    });
+
+    expect(res.status).toBe(410);
+    expect(await res.json()).toMatchObject({
+      code: 'generic_ralph_removed',
+    });
+    expect(launchTask).not.toHaveBeenCalled();
+  });
+
+  test('attach Ralph is removed', async () => {
+    vi.clearAllMocks();
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('go', '/cwd');
+    const res = await mkApp(mkLoopDeps(taskStore)).request(`/api/tasks/${task.id}/ralph-loop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'go', iterationCap: 2 }),
+    });
+
+    expect(res.status).toBe(410);
+    expect(await res.json()).toMatchObject({ code: 'generic_ralph_removed' });
+  });
+});
+
 describe('POST /api/playbooks/ralph-loop', () => {
   let sourceCwd: string;
   let targetCwd: string;
@@ -379,7 +411,7 @@ Loop {{target}}.
     rmSync(targetCwd, { recursive: true, force: true });
   });
 
-  test('matches replace keys against target cwd rather than catalog cwd', async () => {
+  test('keeps playbook replace available by default and matches keys against target cwd', async () => {
     const taskStore = new TaskStore();
     const old = taskStore.createTask({
       prompt: 'old loop',
