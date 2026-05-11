@@ -85,8 +85,9 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | `GET /api/oss-attempts` | OSS contribution-attempt store snapshot |
 | `POST /api/oss-attempts/refresh` | Refresh PR and issue state for tracked OSS attempts |
 | `POST /api/oss-attempts/events` | Record an OSS attempt event, used by hooks |
-| `GET /api/deploy/status` | Production-update job status |
+| `GET /api/deploy/status` | Production-update job status plus user-global toolkit symlink freshness |
 | `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job |
+| `POST /api/deploy/toolkit-refresh` | Reinstall user-global Kookr hooks/toolkit symlinks from the production worktree |
 
 ## WebSocket
 

@@ -26,6 +26,8 @@ interface DeployStatus {
   configured: boolean;
   available?: boolean;
   deploying?: boolean;
+  toolkit?: ToolkitStatus;
+  toolkitError?: string;
   currentShort?: string;
   latestShort?: string;
   behindCount?: number;
@@ -35,6 +37,12 @@ interface DeployStatus {
   runningPort?: number;
   /** Port the deploy button targets (the production instance). */
   prodPort?: number;
+}
+
+interface ToolkitStatus {
+  stale: boolean;
+  checkedCount: number;
+  staleCount: number;
 }
 
 function timeAgo(isoString: string): string {
@@ -58,6 +66,7 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
   const [deploying, setDeploying] = useState(false);
+  const [toolkitRefreshing, setToolkitRefreshing] = useState(false);
   const preDeployCommitRef = useRef<string | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
@@ -78,12 +87,12 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
     setDeployLoading(true);
     try {
       const res = await fetch('/api/deploy/status');
+      const data: DeployStatus = await res.json();
       if (res.ok) {
-        const data: DeployStatus = await res.json();
         setDeployStatus(data);
         if (data.deploying) setDeploying(true);
       } else {
-        setDeployStatus({ configured: false, error: 'Failed to check status' });
+        setDeployStatus({ ...data, error: data.error ?? 'Failed to check status' });
       }
     } catch {
       setDeployStatus({ configured: false, error: 'Server unreachable' });
@@ -91,6 +100,10 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
       setDeployLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    checkDeployStatus();
+  }, [checkDeployStatus]);
 
   useEffect(() => {
     if (showPopover) {
@@ -129,6 +142,30 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
     }
   }
 
+  async function refreshToolkitLinks() {
+    setToolkitRefreshing(true);
+    try {
+      const res = await fetch('/api/deploy/toolkit-refresh', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        setDeployStatus((prev) => prev ? { ...prev, toolkit: data.toolkit } : prev);
+      } else {
+        setDeployStatus((prev) => prev ? { ...prev, ...data, error: data.error ?? 'Toolkit refresh failed' } : {
+          configured: false,
+          ...data,
+          error: data.error ?? 'Toolkit refresh failed',
+        });
+      }
+    } catch {
+      setDeployStatus((prev) => prev ? { ...prev, error: 'Toolkit refresh failed' } : {
+        configured: false,
+        error: 'Toolkit refresh failed',
+      });
+    } finally {
+      setToolkitRefreshing(false);
+    }
+  }
+
   const isDev = !buildInfo || buildInfo.commitShort === 'dev';
   const versionLabel = isDev
     ? 'DEV'
@@ -145,7 +182,9 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
     deployStatus?.prodPort !== undefined &&
     deployStatus.runningPort !== deployStatus.prodPort;
 
-  const hasUpdates = !onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying;
+  const toolkitStale = Boolean(deployStatus?.toolkit?.stale);
+  const showToolkitSection = Boolean(toolkitStale || toolkitRefreshing || deployStatus?.toolkitError);
+  const hasUpdates = (!onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying) || toolkitStale;
 
   return (
     <div className={`topbar kookr-tour-target-layout${compact ? ' compact' : ''}`}>
@@ -195,6 +234,9 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
                 {deployStatus?.error && (
                   <div className="version-row deploy-error">{deployStatus.error}</div>
                 )}
+                {deployStatus?.toolkitError && (
+                  <div className="version-row deploy-error">{deployStatus.toolkitError}</div>
+                )}
                 {deployStatus && !deployStatus.configured && !deployStatus.error && (
                   <div className="deploy-uptodate">No production instance configured</div>
                 )}
@@ -237,6 +279,27 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
                     </button>
                   </>
                 )}
+              </>
+            )}
+
+            {deployStatus?.configured && showToolkitSection && (
+              <>
+                <div className="deploy-divider" />
+                <div className="toolkit-stale">
+                  Toolkit links {toolkitStale ? 'need refresh' : toolkitRefreshing ? 'refreshing' : 'unavailable'}
+                  {deployStatus.toolkit && (
+                    <span className="deploy-range">
+                      {deployStatus.toolkit.checkedCount - deployStatus.toolkit.staleCount}/{deployStatus.toolkit.checkedCount} current
+                    </span>
+                  )}
+                </div>
+                <button
+                  className="deploy-refresh"
+                  onClick={refreshToolkitLinks}
+                  disabled={toolkitRefreshing || !deployStatus.toolkit?.stale}
+                >
+                  {toolkitRefreshing ? 'Refreshing...' : 'Refresh toolkit links'}
+                </button>
               </>
             )}
           </div>
