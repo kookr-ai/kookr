@@ -27,7 +27,17 @@ export async function deleteTask(deps: DeleteTaskDeps, taskId: string): Promise<
   for (const session of task.sessions) {
     if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {
       await cleanupSessionResources(session.tmuxSession, deps);
+      continue;
     }
+
+    // A session can become terminal before its hook JSONL file is created.
+    // In that race, the hook watcher may still hold a poll-until-exists
+    // sentinel even though there is no live process left to stop.
+    deps.monitor.unregisterAgent(session.tmuxSession);
+    deps.hookWatcher?.stop(session.tmuxSession);
+    deps.watchdog?.unregisterAgent(session.tmuxSession);
+    deps.shadowRegistry?.unregisterAgent(session.tmuxSession);
+    deps.suppressionTracker?.reset(session.tmuxSession);
   }
 
   // Snoozes are keyed by taskId — clear the task's snooze before the task
