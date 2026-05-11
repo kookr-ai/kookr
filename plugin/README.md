@@ -28,7 +28,7 @@ After installation, the toolkit is available in every Claude Code session on you
 
 **Reviewer specialists (`plugin/reviewer-specialists/`):** narrow prompt templates (`conventions-specialist`, `correctness-specialist`, `deadcode-specialist`, `test-specialist`, `a11y-specialist`) consumed by the bundled `pre-pr-review` skill.
 
-**OSS contribution hooks (not in the marketplace plugin):** the PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) live in the Kookr repo at `hooks/` and `scripts/`, not under `plugin/`, because they integrate with Kookr's HTTP API and `~/.kookr/` config — keeping `plugin/` Kookr-agnostic preserves portability for non-Kookr users of the marketplace plugin. Clone the Kookr repo and run the install scripts (see next section) to wire them.
+**OSS contribution hooks (not in the marketplace plugin):** the PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) live in the Kookr repo's `hooks/` and `scripts/` dirs, not under `plugin/`, because they integrate with Kookr-specific runtime APIs and config — keeping `plugin/` Kookr-agnostic preserves portability for non-Kookr users of the marketplace plugin. Clone the Kookr repo and run the install scripts (see next section) to wire them.
 
 **Reviewer distillation experiment:** `reviewer-distillation-{judge,mutate,predict,prepare,select,meta}`.
 
