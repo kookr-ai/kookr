@@ -73,7 +73,7 @@ export const ACHIEVEMENT_CATALOG: readonly AchievementDefinition[] = [
   { id: 'stuck-together', name: 'Stuck Together', emoji: '🤝', description: 'Resolve the same anomaly 3 times within an hour', category: 'easter-egg' },
   { id: 'tab-hoarder', name: 'Tab Hoarder', emoji: '📑', description: 'Have 10+ unsnoozed findings queued at once', category: 'easter-egg' },
   { id: 'afk', name: 'Welcome Back', emoji: '🐻', description: 'Resolve an anomaly more than 30 minutes after it fired', category: 'easter-egg' },
-  { id: 'forty-two', name: 'The Answer', emoji: '🌌', description: 'Reach 42 lifetime supervised sessions', category: 'easter-egg' },
+  { id: 'forty-two', name: 'The Answer', emoji: '🌌', description: 'Reach 42 lifetime agent sessions', category: 'easter-egg' },
   { id: 'self-aware', name: 'Self-Aware', emoji: '🪞', description: 'Launch a task with "kookr" in its subject', category: 'easter-egg' },
 ] as const;
 

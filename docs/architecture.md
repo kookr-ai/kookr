@@ -119,8 +119,8 @@ Review the error output and provide a hint about an alternative approach.
 
 Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2), `detect-repeated-error`, `detect-idle-agent`.
 
-> **Updated 2026-04-22 — current anomaly catalogue.** The live `AnomalyType` union is defined in `src/core/types.ts:211-222`:
-> `needs_input`, `permission_blocked`, `repeated_error`, `merge_conflict`, `stale_agent`, `hook_disconnected`, `hook_missing`, `tmux_unresponsive`, `api_error`, `auto_proceed_failure`, `budget_exceeded`.
+> **Updated 2026-05-12 — current anomaly catalogue.** The live `AnomalyType` union is defined in `src/core/types.ts`:
+> `needs_input`, `permission_blocked`, `repeated_error`, `merge_conflict`, `stale_agent`, `hook_disconnected`, `hook_missing`, `tmux_unresponsive`, `api_error`, `budget_exceeded`.
 > `needs_input` subsumes both `stop` and `ask_user_question` (via `Anomaly.subType`). `budget_exceeded` is emitted by `src/core/budget-checker.ts` when a task crosses its configured per-task USD threshold (F4.9). `stuck_loop` was removed; the aspirational `detect-stuck-loop` and `detect-trajectory-drift` patterns above remain V2 directions, not V1 code. Note: `tmux_unresponsive` is the symbol the code emits today; V8 Main C rename to `backend_unreachable` is pending.
 
 ---
@@ -224,7 +224,7 @@ stateDiagram-v2
 > **ClientMessage families:**
 >
 > - Respond / triage: `respond`, `respondAll`, `directReply`, `navigate`, `getNext`, `skip`, `skipAll`, `snooze`, `cancelSnooze`, `stop`, `findingFeedback`
-> - Task lifecycle: `launch`, `completeTask`, `relaunch`, `cancelTask`, `reopenTask`, `deleteTask`, `renameTask`, `clearCompleted`, `ackTerminatedTask`, `setAutonomy`, `cancelAutoProceed`, `permissionChoice`
+> - Task lifecycle: `launch`, `completeTask`, `relaunch`, `cancelTask`, `reopenTask`, `deleteTask`, `renameTask`, `clearCompleted`, `ackTerminatedTask`, `permissionChoice`
 > - Playbooks: `listPlaybooks`, `launchPlaybook`
 > - Session reflection: `reflect`
 > - Projects: `setProjectConfig`, `selectProject`
@@ -279,7 +279,7 @@ cp ~/.kookr/tasks.json.predelete.YYYYMMDDTHHMMSS ~/.kookr/tasks.json
 
 ## Module Structure (V1)
 
-> **Rewritten 2026-04-10** to match the current code. The tree below groups files by capability instead of listing every module individually — use the source tree as the authoritative file list. Major subsystems that were missing in the previous version: Codex CLI support, circuit breakers, workspace-cleanup / worktree leases, scheduled tasks, autonomy / auto-proceed, split route modules, the server `use-cases/` layer, and the Zustand slice architecture on the frontend.
+> **Rewritten 2026-04-10** to match the current code. The tree below groups files by capability instead of listing every module individually — use the source tree as the authoritative file list. Major subsystems that were missing in the previous version: Codex CLI support, circuit breakers, workspace-cleanup / worktree leases, scheduled tasks, split route modules, the server `use-cases/` layer, and the Zustand slice architecture on the frontend.
 >
 > **Drift-reconcile 2026-04-22** added the OSS-attempts cluster: `oss-attempts-routes.ts` (server route), `oss-attempts-slice.ts` (Zustand slice), `oss-trends.ts` (frontend aggregation), and the OSS-dashboard components `OssProductivityView`, `OssWeeklyBars`, `OssTrendsErrorBoundary`, plus `DiffPane` and `markdown.ts`, which were live in code but missing from the tree.
 >
@@ -339,8 +339,6 @@ kookr/
 │   │   ├── launch-service.ts              # High-level launch orchestration
 │   │   ├── event-pipeline.ts              # Wires adapter events into monitor/tracker/watchdog
 │   │   ├── lifecycle-timers.ts            # Periodic timers: liveness, reconciliation, task save
-│   │   ├── auto-proceed.ts                # Autonomy auto-proceed scheduler
-│   │   ├── autonomy-orchestrator.ts       # Autonomy level enforcement
 │   │   ├── ralph-loop-service.ts          # Ralph iteration-loop orchestration
 │   │   ├── ralph-stop.ts                  # Stop-event handoff into Ralph cycler
 │   │   ├── schedule-runner.ts             # Cron-driven scheduled tasks

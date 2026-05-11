@@ -366,8 +366,7 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
      --cwd "$LOCAL" \
      --prompt-file "$PROMPTS_DIR/issue-$N.md" \
      --criteria "Issue #$N has a PR matching the requested merge policy" \
-     $AGENT_FLAG \
-     --autonomous
+     $AGENT_FLAG
    ```
 
    If `KOOKR_REPO` is not set, derive it from the parent cwd if it contains `bin/kookr-spawn.js`, otherwise use `$HOME/git/kookr`.

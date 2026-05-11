@@ -96,11 +96,11 @@ describe('rephrase', () => {
     expect(r.kind).toBe('failed');
   });
 
-  it('rejects unknown autonomy field at schema level (Zod strict)', async () => {
+  it('rejects unknown fields at schema level (Zod strict)', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'x',
       cwd: '/workspace/kookr',
-      autonomy: 'autonomous',           // unknown — schema is strict
+      somethingExtra: 'nope',           // unknown — schema is strict
     }));
     const r = await rephrase('x', { allowedProjects: PROJECTS, llm });
     expect(r.kind).toBe('failed');

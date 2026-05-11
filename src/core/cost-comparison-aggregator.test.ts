@@ -30,7 +30,6 @@ function task(overrides: Partial<Task> & { id: string; agentType: 'claude-code' 
     sessions: overrides.sessions ?? [],
     tokenUsage: overrides.tokenUsage,
     completionFeedback: overrides.completionFeedback,
-    autonomy: overrides.autonomy ?? 'supervised',
     createdAt: created,
     updatedAt: updated,
   };

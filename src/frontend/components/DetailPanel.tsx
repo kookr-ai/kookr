@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
 import { useKookrStore } from '../store/useStore.js';
-import type { AgentState, ClientMessage, AutonomyLevel } from '../../shared/protocol.js';
+import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TaskStatus } from '../../core/types.js';
 import { track, trackClick } from '../telemetry.js';
@@ -553,24 +553,6 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
           {agent.playbookId && <span className="detail-badge playbook">Playbook</span>}
           {agent.taskStatus === 'pending' && <span className="detail-badge pending">Pending</span>}
           {agent.anomaly && <span className={`detail-badge ${badgeClass}`}>{badgeLabel}</span>}
-          {agent.taskId && agent.autonomy && !isTerminalTaskStatus(agent.taskStatus) && (
-            <div className="detail-autonomy-toggle">
-              <button
-                className={`autonomy-option-sm${agent.autonomy === 'supervised' ? ' active' : ''}`}
-                title="Supervised — pauses and waits for your input"
-                onClick={() => send({ type: 'setAutonomy', taskId: agent.taskId!, level: 'supervised' })}
-              >
-                Supervised
-              </button>
-              <button
-                className={`autonomy-option-sm${agent.autonomy === 'autonomous' ? ' active' : ''}`}
-                title="Autonomous — auto-proceeds after 3 min when stopped"
-                onClick={() => send({ type: 'setAutonomy', taskId: agent.taskId!, level: 'autonomous' })}
-              >
-                Autonomous
-              </button>
-            </div>
-          )}
         </div>
         <div className="detail-header-right">
           <TaskIdCopyButton taskId={agent.taskId} />

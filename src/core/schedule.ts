@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { open, readFile, mkdir, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { AutonomyLevel } from './tasks.js';
 import type { AgentType } from './agent-types.js';
 import { DEFAULT_AGENT_TYPE } from './agent-types.js';
 import { isValidCron, nextRun, describeCron } from './cron.js';
@@ -71,7 +70,6 @@ export interface Schedule {
   exhaustedAt?: string;
   playbook: SchedulePlaybook;
   cwd: string;
-  autonomy: AutonomyLevel;
   agentType: AgentType;
   /** Legacy dispatch fields kept for migration compatibility. */
   lastRunAt?: string;
@@ -114,7 +112,6 @@ export interface CreateScheduleInput {
   maxTriggers?: number;
   playbook: SchedulePlaybook;
   cwd: string;
-  autonomy?: AutonomyLevel;
   agentType?: AgentType;
   enabled?: boolean;
 }
@@ -125,7 +122,6 @@ export interface UpdateScheduleDefinitionInput {
   maxTriggers?: number | null;
   playbook?: SchedulePlaybook;
   cwd?: string;
-  autonomy?: AutonomyLevel;
   agentType?: AgentType;
 }
 
@@ -236,7 +232,6 @@ export class ScheduleStore {
         parameters: { ...(input.playbook.parameters ?? {}) },
       },
       cwd: input.cwd,
-      autonomy: input.autonomy ?? 'autonomous',
       agentType: input.agentType ?? DEFAULT_AGENT_TYPE,
       createdAt: now,
       updatedAt: now,
@@ -346,7 +341,6 @@ function normalizeSchedule(raw: unknown): Schedule | null {
       parameters: { ...(candidate.playbook.parameters ?? {}) },
     },
     cwd: String(candidate.cwd),
-    autonomy: candidate.autonomy ?? 'autonomous',
     agentType: candidate.agentType ?? DEFAULT_AGENT_TYPE,
     createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
     updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : new Date().toISOString(),

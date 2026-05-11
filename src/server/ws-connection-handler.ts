@@ -20,7 +20,6 @@ import { MessageRouter } from './ws.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
 import type { AgentLifecycleDeps } from './agent-lifecycle.js';
 import type { CircuitBreakerRegistry } from '../core/circuit-breaker.js';
-import type { AutonomyOrchestrator } from './autonomy-orchestrator.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { AgentType, AvailableAgentType } from '../core/agent-types.js';
 import type { ScheduleService } from './schedule-service.js';
@@ -48,7 +47,6 @@ export interface WsConnectionDeps {
     watchdog: { unregisterAgent(agentId: string): void };
     shadowRegistry?: { unregisterAgent(agentId: string): void };
     tokenTracker?: { unregister(transcriptPath: string): void };
-    autonomyOrchestrator?: AutonomyOrchestrator;
   };
   agentLifecycleDeps: AgentLifecycleDeps;
   broadcastToAll: (msg: ServerMessage) => void;
@@ -117,7 +115,6 @@ export function handleWsConnection(
     lifecycleExtras, sttUrl,
     agentLifecycleDeps, broadcastToAll, launchTask,
     circuitBreakerRegistry: deps.circuitBreakerRegistry,
-    autonomyOrchestrator: lifecycleExtras.autonomyOrchestrator,
     getMaxActiveTasks: deps.getMaxActiveTasks,
     suppressionTracker: deps.suppressionTracker,
     availableAgentTypes: deps.availableAgentTypes,

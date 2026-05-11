@@ -41,7 +41,6 @@ export class PlaybookHandler {
             projectId: msg.projectId,
             playbookPath: msg.playbookPath,
             parameterValues: msg.parameterValues,
-            autonomy: msg.autonomy,
             agentType: msg.agentType,
             scope: msg.scope,
           });

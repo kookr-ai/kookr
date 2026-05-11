@@ -51,7 +51,7 @@ export const HOOK_DESCRIPTIONS: Record<HookEventName, string> = {
   PreToolUse: 'Per-tool event stream used for anomaly detection.',
   PostToolUse: 'Tool results feed repeated-error and stuck detection.',
   PostToolUseFailure: 'Tool failure logging; non-critical.',
-  PermissionRequest: 'Permission prompts drive auto-proceed and the attention queue.',
+  PermissionRequest: 'Permission prompts drive the attention queue.',
   Stop: 'Needs-input detection and task completion.',
   StopFailure: 'API error anomaly (rate limit, auth, billing).',
   Notification: 'Idle detection and permission prompt surfacing.',

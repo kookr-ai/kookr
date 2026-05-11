@@ -23,7 +23,6 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     cwd: '/tmp',
     agentType: 'claude-code',
     status: 'inProgress',
-    autonomy: 'supervised',
     createdAt: new Date('2026-04-15T00:00:00Z'),
     updatedAt: new Date('2026-04-15T00:00:00Z'),
     sessions: [

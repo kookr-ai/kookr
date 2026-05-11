@@ -234,7 +234,6 @@ export type AnomalyType =
   | 'hook_missing'
   | 'tmux_unresponsive'
   | 'api_error'
-  | 'auto_proceed_failure'
   | 'budget_exceeded';
 
 export type AnomalySeverity = 'info' | 'warning' | 'critical';
@@ -252,10 +251,8 @@ export interface Anomaly {
   explanation: string;
   detectedAt: Date;
   count?: number;
-  /** Discriminates needs_input sub-types for autonomy decisions. */
+  /** Discriminates needs_input sub-types (stop vs explicit ask_user_question). */
   subType?: 'stop' | 'ask_user_question';
-  /** ISO timestamp when auto-proceed will fire. Set by broadcast layer, not stored in core. */
-  autoProceedingAt?: string;
   /** Shadow-only: strategy confidence for offline precision analysis. */
   confidence?: AnomalyConfidence;
 }

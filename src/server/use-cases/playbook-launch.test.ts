@@ -28,7 +28,6 @@ Deploy to {{target}} after reading docs/deploy-checklist.md
         cwd,
         playbookPath: 'deploy.md',
         parameterValues: { target: 'prod' },
-        autonomy: 'autonomous',
         agentType: 'claude-code',
       });
 
@@ -36,7 +35,6 @@ Deploy to {{target}} after reading docs/deploy-checklist.md
         prompt: `Deploy to prod after reading ${join(cwd, 'docs', 'deploy-checklist.md')}`,
         cwd,
         name: 'Deploy',
-        autonomy: 'autonomous',
         agentType: 'claude-code',
       }));
       expect(launch.criteria).toContain('Verify deploy');

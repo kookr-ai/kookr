@@ -96,7 +96,6 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         cwd?: string;
         criteria?: string;
         parentTaskId?: string;
-        autonomy?: string;
         agentType?: string;
         dependencies?: unknown;
       };
@@ -116,7 +115,6 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         }
       }
 
-      const autonomy = body.autonomy === 'autonomous' ? 'autonomous' as const : undefined;
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
         rawSource === 'cli' || rawSource === 'ui' ? rawSource : 'api';
@@ -125,7 +123,6 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         cwd: body.cwd,
         criteria: body.criteria,
         parentTaskId: body.parentTaskId,
-        autonomy,
         agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
         dependencies: parseLaunchDependencies(body.dependencies),
         launchSource,
@@ -440,7 +437,6 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       taskTargetCwd?: unknown;
       projectId?: unknown;
       parameterValues?: unknown;
-      autonomy?: string;
       agentType?: string;
       scope?: unknown;
     };
@@ -472,7 +468,6 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
         rawSource === 'cli' || rawSource === 'ui' ? rawSource : 'api';
-      const autonomy = body.autonomy === 'autonomous' ? 'autonomous' as const : undefined;
       const result = await launchLoopedPlaybook({
         taskStore,
         ralphLoopService,
@@ -487,7 +482,6 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
           watchdog,
           shadowRegistry: deps.shadowRegistry,
           tokenTracker: deps.tokenTracker,
-          autonomyOrchestrator: deps.autonomyOrchestrator,
           suppressionTracker: deps.suppressionTracker,
         }),
       }, {
@@ -498,7 +492,6 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
         playbookPath: body.playbookPath,
         parameterValues: body.parameterValues,
-        autonomy,
         agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
         launchSource,
         scope,
@@ -536,7 +529,6 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       taskTargetCwd?: unknown;
       projectId?: unknown;
       parameterValues?: unknown;
-      autonomy?: string;
       agentType?: string;
       scope?: unknown;
     };
@@ -568,7 +560,6 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
         rawSource === 'cli' || rawSource === 'ui' ? rawSource : 'api';
-      const autonomy = body.autonomy === 'autonomous' ? 'autonomous' as const : undefined;
 
       console.info(
         `[ralph-replace] replacedTaskId=${replacedTaskId} playbook=${body.playbookPath} source=${launchSource}`,
@@ -583,7 +574,6 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         watchdog,
         shadowRegistry: deps.shadowRegistry,
         tokenTracker: deps.tokenTracker,
-        autonomyOrchestrator: deps.autonomyOrchestrator,
         suppressionTracker: deps.suppressionTracker,
       };
 
@@ -635,7 +625,6 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
         playbookPath: body.playbookPath,
         parameterValues: body.parameterValues,
-        autonomy,
         agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
         launchSource,
         scope,
@@ -752,8 +741,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
       await sendDirectAgentInput({
         adapter,
         interactionLog,
-        autonomyOrchestrator: deps.autonomyOrchestrator,
-      }, agentId, body.input, 'rest_api');
+      }, agentId, body.input);
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
       return c.json({ ok: true, agentId, delivered: true });

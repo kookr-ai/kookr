@@ -15,7 +15,6 @@ function makeSchedule(overrides: Partial<ScheduleResponse> = {}): ScheduleRespon
     cron: '0 3 * * *',
     playbook: { path: '/p.md', parameters: {} },
     cwd: '/repo',
-    autonomy: 'supervised',
     agentType: 'claude-code',
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',

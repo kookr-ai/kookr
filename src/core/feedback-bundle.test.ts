@@ -16,7 +16,6 @@ function makeTask(id: string, sessionIds: string[]): Task {
       cwd: '/tmp/repo',
       createdAt: new Date(),
     })),
-    autonomy: 'supervised',
     createdAt: new Date(),
     updatedAt: new Date(),
   };

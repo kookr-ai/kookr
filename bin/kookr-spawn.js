@@ -41,7 +41,6 @@ Usage:
 Options:
   -C, --cwd <path>         Working directory for the task (default: cwd).
   -a, --agent <type>       claude-code or codex-cli (default: server default).
-      --autonomous         Launch in autonomous mode (default: supervised).
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
   -f, --prompt-file <path> Read prompt from a file (hook-safe).
   -h, --help               Show this help.
@@ -73,7 +72,6 @@ function parseArgs(argv) {
     positional: [],
     cwd: null,
     agent: null,
-    autonomous: false,
     criteria: null,
     promptFile: null,
     help: false,
@@ -93,8 +91,6 @@ function parseArgs(argv) {
       out.cwd = eat();
     } else if (tok === '-a' || tok === '--agent') {
       out.agent = eat();
-    } else if (tok === '--autonomous') {
-      out.autonomous = true;
     } else if (tok === '--criteria') {
       out.criteria = eat();
     } else if (tok === '-f' || tok === '--prompt-file') {
@@ -292,10 +288,9 @@ function defaultSleep(ms) {
 
 // ---------- HTTP POST ----------
 
-async function postTask({ baseUrl, prompt, cwd, agent, autonomous, criteria }) {
+async function postTask({ baseUrl, prompt, cwd, agent, criteria }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
-  if (autonomous) body.autonomy = 'autonomous';
   if (agent) body.agentType = agent;
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
@@ -442,7 +437,6 @@ async function main({
       prompt,
       cwd: cwdAbs,
       agent: args.agent,
-      autonomous: args.autonomous,
       criteria: args.criteria,
     });
   } catch (e) {

@@ -42,7 +42,6 @@ export interface AgentState {
   projectDisplayLabel?: string;
   completionDigest?: CompletionDigest;
   completionFeedback?: import('./tasks.js').TaskCompletionFeedback;
-  autonomy?: import('./tasks.js').AutonomyLevel;
   ralphLoop?: import('./tasks.js').RalphLoopState;
 }
 
@@ -527,11 +526,10 @@ export class Monitor {
         state.worktreeRegistryStale = meta.worktreeRegistryStale;
         state.projectId = meta.projectId;
         state.projectDisplayLabel = meta.projectDisplayLabel;
-        // Enrich with token usage, task status, and autonomy from the task
+        // Enrich with token usage, task status, and ralph loop state from the task
         const task = this.taskStore.getTask(meta.taskId);
         if (task) {
           state.taskStatus = task.status;
-          state.autonomy = task.autonomy;
           state.ralphLoop = task.ralphLoop;
           if (task.tokenUsage) {
             state.tokenUsage = task.tokenUsage;
@@ -560,7 +558,6 @@ export class Monitor {
           playbookParameterValues: task.playbookParameterValues,
           projectId: task.projectId,
           projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: task.cwd }),
-          autonomy: task.autonomy,
           ralphLoop: task.ralphLoop,
         });
       } else if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'terminated') {
@@ -596,7 +593,6 @@ export class Monitor {
             worktreeRegistryStale: lastSession?.worktreeRegistryStale,
             completionDigest: task.completionDigest,
             completionFeedback: task.completionFeedback,
-            autonomy: task.autonomy,
             ralphLoop: task.ralphLoop,
           });
         }

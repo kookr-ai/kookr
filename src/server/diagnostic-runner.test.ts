@@ -7,7 +7,7 @@ function zeroCounts(): Record<AnomalyType, number> {
   const types: AnomalyType[] = [
     'needs_input', 'permission_blocked', 'repeated_error', 'merge_conflict',
     'stale_agent', 'hook_disconnected', 'hook_missing', 'tmux_unresponsive',
-    'api_error', 'auto_proceed_failure', 'budget_exceeded',
+    'api_error', 'budget_exceeded',
   ];
   return Object.fromEntries(types.map((t) => [t, 0])) as Record<AnomalyType, number>;
 }

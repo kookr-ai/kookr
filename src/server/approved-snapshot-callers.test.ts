@@ -24,10 +24,6 @@ const APPROVED_DIRECT_CALLERS = new Set<string>([
   'src/server/use-cases/get-snapshot.ts',
   // Permission-action state lookup; reads anomaly/agentId only (no events).
   'src/server/ws-handlers/anomaly-handler.ts',
-  // Autonomy decisions read the raw event window.
-  'src/server/autonomy-orchestrator.ts',
-  // Auto-proceed reads anomaly/tokenUsage (no events).
-  'src/server/auto-proceed.ts',
   // State diffing in the event-processing pipeline.
   'src/server/event-pipeline.ts',
 ]);

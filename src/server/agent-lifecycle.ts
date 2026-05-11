@@ -165,7 +165,6 @@ export interface LifecycleDeps {
   watchdog?: { unregisterAgent(agentId: string): void };
   shadowRegistry?: { unregisterAgent(agentId: string): void };
   tokenTracker?: { unregister(transcriptPath: string): void };
-  autonomyOrchestrator?: { onSessionCleanup(agentId: string): void };
   suppressionTracker?: { reset(agentId: string): void };
   /** Optional queue — used to clear task-keyed snoozes on terminal transitions. */
   queue?: Pick<AttentionQueue, 'purgeTask'>;
@@ -198,7 +197,6 @@ export async function cleanupSessionResources(
     }
   }
 
-  deps.autonomyOrchestrator?.onSessionCleanup(tmuxName);
   await deps.adapter.stop(tmuxName);
   deps.monitor.unregisterAgent(tmuxName);
   deps.hookWatcher?.stop(tmuxName);

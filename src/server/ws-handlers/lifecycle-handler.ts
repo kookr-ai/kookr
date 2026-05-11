@@ -4,7 +4,6 @@ import type { TaskStore } from '../../core/tasks.js';
 import type { Monitor } from '../../core/monitor.js';
 import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
-import type { AutonomyOrchestrator } from '../autonomy-orchestrator.js';
 import type { ScheduleService } from '../schedule-service.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
 import type { LaunchOpts, LaunchResult } from '../launch-service.js';
@@ -41,7 +40,6 @@ export interface LifecycleHandlerDeps {
   monitor: Monitor;
   queue: AttentionQueue;
   interactionLog?: DeferredInteractionLogWriter;
-  autonomyOrchestrator?: AutonomyOrchestrator;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
@@ -104,7 +102,6 @@ export class LifecycleHandler {
             prompt: msg.prompt,
             cwd: msg.cwd,
             criteria: msg.criteria,
-            autonomy: msg.autonomy,
             agentType: msg.agentType,
             dependencies: msg.dependencies,
           });
@@ -131,8 +128,6 @@ export class LifecycleHandler {
       }
 
       case 'stop': {
-        // Cancel auto-proceed for this agent
-        this.deps.autonomyOrchestrator?.onAgentStopped(msg.agentId);
         // Legacy: kept for backwards compatibility but UI now uses completeTask/cancelTask
         await cleanupSessionResourcesImpl(msg.agentId, this.deps.getLifecycleDeps());
         // Mark the session completed and reopen the task if all sessions are done.
