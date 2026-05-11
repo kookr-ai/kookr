@@ -445,6 +445,7 @@ export function App() {
 
   const projectDetailDrawer = selectedProjectSummary && (
     <ProjectDetailDrawer
+      key={selectedProjectSummary.project}
       project={selectedProjectSummary}
       onClose={() => selectProject(null)}
       send={send}
@@ -452,7 +453,6 @@ export function App() {
         setShowWorkspace(true);
       } : undefined}
       onRunPlaybook={handleRunPlaybook}
-      compact={!isMobileViewport && Boolean(selectedAgent)}
     />
   );
 
