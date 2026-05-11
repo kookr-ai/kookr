@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Installer for Kookr's in-repo Claude Code hooks and companion skills.
 #
-# Hooks installed today:
+# Hooks installed today (live under `hooks/` because they integrate with
+# Kookr's HTTP API, `~/.kookr/` config, and `KOOKR_*` env vars — the
+# `plugin/` tree intentionally stays Kookr-agnostic so the marketplace
+# install remains portable for non-Kookr users):
 #   - oss-stale-scout-gate.sh — blocks gh pr create that references a
 #     closed upstream issue. (PreToolUse / Bash)
 #   - pr-workflow-gate.sh — blocks gh pr create until the pre-pr-review
 #     skill has produced a state file proving pre-PR checks ran.
 #     (PreToolUse / Bash)
+#   - oss-contribution-gate.sh — rate-limits external OSS PRs (default
+#     1/day/repo) and enforces the blocked-repo list. Reads
+#     ~/.kookr/rate-limits.json. (PreToolUse / Bash)
 #   - post-merge-keyword-scan.sh — when the user prompt mentions a merge,
 #     scans open PRs in the cwd repo and surfaces ones needing rebase.
 #     (UserPromptSubmit)
@@ -55,6 +61,7 @@ SETTINGS="$HOME/.claude/settings.json"
 HOOKS=(
   $'oss-stale-scout-gate.sh\tPreToolUse\tBash\tBash(gh pr create*)'
   $'pr-workflow-gate.sh\tPreToolUse\tBash\tBash(gh pr create*)'
+  $'oss-contribution-gate.sh\tPreToolUse\tBash\tBash(gh pr create*)'
   $'post-merge-keyword-scan.sh\tUserPromptSubmit\t\t'
 )
 
@@ -63,6 +70,17 @@ HOOKS=(
 # in-repo directory so the skill is available in any repo, not just kookr.
 SKILLS=(
   'pre-pr-review'
+)
+
+# Each entry: "<source-relative-to-repo>\t<dest-relative-to-$HOME>"
+# Plugin-distributed assets that several skills/playbooks read by user-global
+# path. The symlink makes those `cat ~/.claude/...` lookups resolve to the
+# bundled plugin copy, which avoids forcing every plugin skill to encode a
+# Kookr-specific resolver (the plugin tree must stay portable per
+# `plugin/README.md`).
+PLUGIN_ASSETS=(
+  $'plugin/reviewer-specialists\t.claude/reviewer-specialists'
+  $'plugin/skills/pr-contribution-excellence\t.claude/skills/pr-contribution-excellence'
 )
 
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
@@ -132,6 +150,34 @@ install_skill_symlink() {
 uninstall_skill_symlink() {
   local name="$1"
   local dest="$SKILL_DEST_DIR/$name"
+  if [ -L "$dest" ]; then
+    rm -f "$dest"
+    printf '  removed  %s\n' "$dest"
+  elif [ -e "$dest" ]; then
+    warn "Not a symlink, leaving alone: $dest"
+  fi
+}
+
+install_plugin_asset_symlink() {
+  local src_rel="$1"
+  local dest_rel="$2"
+  local src="$REPO_DIR/$src_rel"
+  local dest="$HOME/$dest_rel"
+
+  [ -d "$src" ] || die "Source plugin asset not found: $src"
+
+  mkdir -p "$(dirname "$dest")"
+  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+    warn "Refusing to overwrite non-symlink at $dest. Move it aside and re-run."
+    return 1
+  fi
+  ln -sfn "$src" "$dest"
+  printf '  asset    %-40s -> %s\n' "$dest" "$src"
+}
+
+uninstall_plugin_asset_symlink() {
+  local dest_rel="$1"
+  local dest="$HOME/$dest_rel"
   if [ -L "$dest" ]; then
     rm -f "$dest"
     printf '  removed  %s\n' "$dest"
@@ -216,6 +262,10 @@ case "$cmd" in
     for skill in "${SKILLS[@]}"; do
       install_skill_symlink "$skill"
     done
+    for row in "${PLUGIN_ASSETS[@]}"; do
+      IFS=$'\t' read -r src_rel dest_rel <<<"$row"
+      install_plugin_asset_symlink "$src_rel" "$dest_rel"
+    done
     printf '\nDone.\n\nVerify with:\n'
     printf '  ls -l %s/\n' "$DEST_DIR"
     printf '  ls -l %s/\n' "$SKILL_DEST_DIR"
@@ -232,6 +282,10 @@ case "$cmd" in
         printf '  removed  %s\n' "$DEST_DIR/$name"
       fi
       unregister_hook "$name" "$event"
+    done
+    for row in "${PLUGIN_ASSETS[@]}"; do
+      IFS=$'\t' read -r src_rel dest_rel <<<"$row"
+      uninstall_plugin_asset_symlink "$dest_rel"
     done
     for skill in "${SKILLS[@]}"; do
       uninstall_skill_symlink "$skill"

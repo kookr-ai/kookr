@@ -27,7 +27,7 @@ Learn what makes a good contribution to openai/codex by systematically analyzing
 - **Raw learnings**: `~/.claude/codex-pr-lessons/learnings-raw.md`
 - **Distilled learnings**: `~/.claude/codex-pr-lessons/learnings-distilled.md`
 - **Codex-specific patterns**: `~/.claude/codex-pr-lessons/codex-patterns.md`
-- **General skill output**: `~/.claude/skills/pr-contribution-excellence/SKILL.md`
+- **General skill output**: `${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/skills/pr-contribution-excellence/SKILL.md`
 
 ## Contribution Guidelines (from openai/codex docs/contributing.md)
 
@@ -68,7 +68,7 @@ Count lines in `learnings-raw.md`. If > 200 lines, trigger distillation.
 
 Compress raw learnings into:
 1. Codex-specific patterns → `~/.claude/codex-pr-lessons/codex-patterns.md`
-2. General PR contribution patterns → `~/.claude/skills/pr-contribution-excellence/SKILL.md`
+2. General PR contribution patterns → `${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/skills/pr-contribution-excellence/SKILL.md`
 
 After distillation, reset `learnings-raw.md` to the header (preserving the distilled content elsewhere).
 

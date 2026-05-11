@@ -7,7 +7,7 @@ related: [oss-repo-recon, oss-fork-manager, oss-pr-critic]
 
 # OSS Issue Scout
 
-> **Requires:** per-repo recon at `~/.claude/{org}-{repo}-recon/recon-report.md` (created by `[[oss-repo-recon]]`) and, optionally, distilled patterns at `~/.claude/skills/pr-contribution-excellence/repo/{slug}.md` (part of the optional OSS extension — see `docs/hooks-setup.md`). If recon is missing, stop and run `[[oss-repo-recon]]` first rather than scouting blind. If only the patterns are missing, proceed but do not invent substitutes.
+> **Requires:** per-repo recon at `~/.claude/{org}-{repo}-recon/recon-report.md` (created by `[[oss-repo-recon]]`) and, optionally, distilled patterns at `${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/skills/pr-contribution-excellence/repo/{slug}.md` (part of the optional OSS extension — see `docs/hooks-setup.md`). If recon is missing, stop and run `[[oss-repo-recon]]` first rather than scouting blind. If only the patterns are missing, proceed but do not invent substitutes.
 
 Find the best issue to contribute to in an external repository. Not just "good first issue" — intelligent triage of what an external contributor can realistically fix and get merged.
 
@@ -22,7 +22,7 @@ Find the best issue to contribute to in an external repository. Not just "good f
 | # | Rule | Violation Example | Correct Pattern |
 |---|------|-------------------|-----------------|
 | 1 | Load recon report before scouting | Guessing repo conventions | `cat ~/.claude/{repoSlug}-recon/recon-report.md` |
-| 2 | Load distilled patterns if available | Ignoring PR analysis insights | `cat ~/.claude/skills/pr-contribution-excellence/repo/{repoSlug}.md` |
+| 2 | Load distilled patterns if available | Ignoring PR analysis insights | `cat ${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/skills/pr-contribution-excellence/repo/{repoSlug}.md` |
 | 3 | Check for competing PRs on each issue | Duplicating work someone else started | Search for linked PRs before selecting |
 | 4 | Score every candidate on all 5 dimensions | Picking based on gut feeling | Use the scoring matrix below |
 | 5 | Present 3-5 candidates, not just 1 | Forcing a single choice | Give options with rationale |

@@ -1,6 +1,6 @@
 # OSS Contribution Pipeline
 
-> **Requires the optional OSS extension** — this playbook depends on user-global tooling that is not bundled in this repo: `~/.claude/hooks/oss-registry-check`, `~/.claude/oss-contribution-tracking-template.json`, `~/.claude/reviewer-specialists/`, and the `pr-contribution-excellence` skill. See `docs/hooks-setup.md` for status. If the extension is not installed, the playbook will hit broken references in Phase 0/1 and should not be run — stop and report the missing dependency rather than attempting partial execution.
+> **Requires the bundled OSS extension** — this playbook depends on tooling that now ships with the `kookr-toolkit` plugin under `plugin/reviewer-specialists/` and `plugin/skills/pr-contribution-excellence/`, plus the still-user-global `~/.claude/hooks/oss-registry-check` and `~/.claude/oss-contribution-tracking-template.json` (not bundled — install via the maintainer scripts or replicate manually per `docs/hooks-setup.md`). If the bundled pieces are missing the plugin is not installed; if the user-global pieces are missing follow `docs/hooks-setup.md`. In either case stop and report the missing dependency rather than attempting partial execution.
 
 ## Objective
 
@@ -145,7 +145,7 @@ cat ${RECON_DIR}/contributions.json | jq \
 ### Phase 7: Iterative AI Review (max 3 rounds)
 
 ```
-SPECIALISTS_DIR=~/.claude/reviewer-specialists
+SPECIALISTS_DIR="${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/reviewer-specialists"
 MAX_ITERATIONS=3
 iteration=0
 prev_actionable=999

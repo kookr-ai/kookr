@@ -24,13 +24,34 @@ After installation, the toolkit is available in every Claude Code session on you
 
 **Workflow:** `git-commit-discipline`, `tdd-workflow`, `token-efficiency`, `claude-code-metrics-analysis`, `hook-driven-workflow-enforcement`, `e2e-agent-testing`, `github-issue-workflow`, `github-trending-repos`.
 
-**OSS contribution:** `oss-fork-manager`, `oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `pr-contribution-excellence`, `find-best-reviewers`, `rust-lang-rust-{tests,pre-push}`.
+**OSS contribution:** `oss-fork-manager`, `oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `pr-contribution-excellence` (bundled with per-repo distilled patterns under `repo/`), `find-best-reviewers`, `rust-lang-rust-{tests,pre-push}`.
+
+**Reviewer specialists (`plugin/reviewer-specialists/`):** narrow prompt templates (`conventions-specialist`, `correctness-specialist`, `deadcode-specialist`, `test-specialist`, `a11y-specialist`) consumed by the bundled `pre-pr-review` skill.
+
+**OSS contribution hooks (not in the marketplace plugin):** the PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) live in the Kookr repo's `hooks/` and `scripts/` dirs, not under `plugin/`, because they integrate with Kookr-specific runtime APIs and config — keeping `plugin/` Kookr-agnostic preserves portability for non-Kookr users of the marketplace plugin. Clone the Kookr repo and run the install scripts (see next section) to wire them.
 
 **Reviewer distillation experiment:** `reviewer-distillation-{judge,mutate,predict,prepare,select,meta}`.
 
 **Codex PR analysis:** `codex-pr-{critic,distill,plan,threshold}`.
 
 **Review subagents (15):** `api-surface-auditor`, `architecture-drift-detector`, `architecture-smell-scanner`, `boundary-critic`, `delivery-pragmatist`, `dependency-graph-analyzer`, `design-experimenter`, `design-minimalist`, `failure-mode-analyst`, `module-interface-auditor`, `operability-reviewer`, `socratic-challenger`, `state-machine-verifier`, `test-fixer`, `test-quality-reviewer`.
+
+## One-time setup for the OSS extension
+
+A few skills (`oss-pr-distill`, `codex-pr-distill`, `reviewer-distillation-predict`) and the `oss-contribute` playbook read companion files from `~/.claude/skills/pr-contribution-excellence/` and `~/.claude/reviewer-specialists/`. These paths are not auto-populated by the marketplace install. From a Kookr checkout:
+
+```
+git clone https://github.com/kookr-ai/kookr.git
+bash kookr/scripts/install-hooks.sh
+```
+
+`install-hooks.sh` symlinks:
+
+- `~/.claude/skills/pr-contribution-excellence` → `<kookr>/plugin/skills/pr-contribution-excellence`
+- `~/.claude/reviewer-specialists` → `<kookr>/plugin/reviewer-specialists`
+- `~/.claude/hooks/{pr-workflow-gate,oss-stale-scout-gate,oss-contribution-gate,post-merge-keyword-scan}.sh` → `<kookr>/hooks/*`
+
+and registers each hook in `~/.claude/settings.json`. Run `bash kookr/scripts/install-oss-tracking-hook.sh` to also wire the `oss-contribution-gate-posttool.sh` tracking hook. See [`docs/hooks-setup.md`](../docs/hooks-setup.md) for the full hook table, scope-list semantics, and uninstall recipe.
 
 ## Maintainer dev workflow
 

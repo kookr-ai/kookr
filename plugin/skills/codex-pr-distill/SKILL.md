@@ -7,7 +7,7 @@ related: [codex-pr-threshold, codex-pr-state, codex-pr-critic]
 
 # Codex PR Distill
 
-> **Requires:** the `pr-contribution-excellence` skill at `~/.claude/skills/pr-contribution-excellence/SKILL.md` (part of the optional OSS extension — see `docs/hooks-setup.md`). If absent, stop and report the missing dependency rather than fabricating distilled patterns.
+> **Requires:** the `pr-contribution-excellence` skill at `~/.claude/skills/pr-contribution-excellence/SKILL.md` (bundled with the `kookr-toolkit` plugin since 0.5 — see `docs/hooks-setup.md`). If absent, the plugin is not installed; stop and report the missing dependency rather than fabricating distilled patterns.
 
 ## When to Use
 

@@ -7,7 +7,7 @@ related: pre-push, pr-lifecycle, git-commit-discipline, testing-patterns, pr-rev
 
 # Pre-PR Review
 
-> **Requires:** the four reviewer specialists at `~/.claude/reviewer-specialists/` (part of the optional OSS extension — see `docs/hooks-setup.md`). If absent, stop and report the missing dependency rather than fabricating review output. The repo-level checks (build, tsc, tests) below still run.
+> **Requires:** the four reviewer specialists at `plugin/reviewer-specialists/` (bundled with the `kookr-toolkit` plugin since 0.5 — see `docs/hooks-setup.md`). If the directory is missing (e.g. plugin not installed), stop and report the missing dependency rather than fabricating review output. The repo-level checks (build, tsc, tests) below still run.
 
 Run this checklist before creating a pull request. When Kookr is installed via `scripts/install-hooks.sh`, the `pr-workflow-gate` hook enforces this skill before every `gh pr create` in *any* repo on your machine.
 
@@ -138,7 +138,7 @@ Run specialized reviewer subagents in parallel against the diff. **Skip for triv
 
 **Two reviewer layers are available:**
 
-#### Layer 1: Reviewer Specialists (`~/.claude/reviewer-specialists/`)
+#### Layer 1: Reviewer Specialists (`plugin/reviewer-specialists/`)
 Narrow prompt templates for PR-level review. Use for all non-trivial PRs:
 - **conventions-specialist** — style, naming, imports, code organization
 - **correctness-specialist** — logic bugs, edge cases, data flow, security

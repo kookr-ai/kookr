@@ -7,15 +7,21 @@ Kookr relies on two independent layers of hooks:
 
 This document walks both newcomers through the setup, from the "I just want to contribute a PR" path (5 seconds) to the full "I want the same guardrails when running autonomous agents" path (a few minutes).
 
-## OSS extension hooks (partially bundled)
+## OSS extension hooks (bundled with the repo)
 
-> **Status:** Two hooks and one skill in the OSS-extension stack now ship with this repo and are installed by `scripts/install-hooks.sh`:
+> **Status:** The OSS-extension skills now ship with the `kookr-toolkit` marketplace plugin (`plugin/skills/pr-contribution-excellence/`, `plugin/reviewer-specialists/`, `plugin/skills/pre-pr-review/`). The PreToolUse / PostToolUse **hooks** stay in this repo at `hooks/` and `scripts/` (not under `plugin/`) because they integrate with Kookr's HTTP API, `~/.kookr/` config, and `KOOKR_*` env vars — the `plugin/` tree intentionally stays Kookr-agnostic so the marketplace install remains portable for non-Kookr users. `scripts/install-hooks.sh` installs:
 >
-> - `hooks/oss-stale-scout-gate.sh`
-> - `hooks/pr-workflow-gate.sh` (previously user-global, not bundled)
-> - `.claude/skills/pre-pr-review/` (symlinked into `~/.claude/skills/` by the installer so the hook's companion skill is available in any repo, not just Kookr)
+> - `hooks/oss-stale-scout-gate.sh` → `~/.claude/hooks/oss-stale-scout-gate.sh`
+> - `hooks/pr-workflow-gate.sh` → `~/.claude/hooks/pr-workflow-gate.sh`
+> - `hooks/oss-contribution-gate.sh` → `~/.claude/hooks/oss-contribution-gate.sh`
+> - `hooks/post-merge-keyword-scan.sh` → `~/.claude/hooks/post-merge-keyword-scan.sh`
+> - `.claude/skills/pre-pr-review/` → `~/.claude/skills/pre-pr-review/`
+> - `plugin/reviewer-specialists/` → `~/.claude/reviewer-specialists/`
+> - `plugin/skills/pr-contribution-excellence/` → `~/.claude/skills/pr-contribution-excellence/`
 >
-> The remaining OSS-extension hooks (`oss-contribution-gate`, `claim-gate`, `ai-coauthor-push-guard`, plus the `oss-gate` and `oss-registry-check` CLIs) are **still user-global and not bundled**. Distribution of those is still pending.
+> `scripts/install-oss-tracking-hook.sh` installs the PostToolUse tracking hook from `scripts/oss-contribution-gate-posttool.sh`.
+>
+> The remaining user-global pieces (`claim-gate`, `ai-coauthor-push-guard`, plus the `oss-gate` and `oss-registry-check` CLIs) live outside this repo because they target unrelated workflows; bundling them is a separate effort and out of scope here.
 >
 > `pr-workflow-gate.sh` is **scope-gated**: it consults `~/.kookr/pr-gated-repos.json` and forms an opinion only about repos listed there. If the file is absent the hook falls back to the previous "gate everything" behavior — the upgrade is opt-out, not opt-in. See `Minimum install` below for the scope-list format and the "silent mode" (`[]`) recipe.
 
@@ -40,8 +46,8 @@ If you use Claude Code (or Codex CLI) to work on this repo, there is a larger ho
 | Hook | Event / Matcher | Purpose | Source |
 |------|-----------------|---------|--------|
 | `pr-workflow-gate.sh` | `PreToolUse` / `Bash(gh pr create*)` | Blocks `gh pr create` until the `pre-pr-review` skill has created a state file proving pre-PR checks ran | **In this repo at `hooks/pr-workflow-gate.sh`** |
-| `oss-contribution-gate.sh` | `PreToolUse` / `Bash` | Rate-limits external OSS PRs (default 1/day/repo) and enforces the blocked-repo list (`~/.kookr/rate-limits.json`) | User-global, not bundled |
-| `oss-contribution-gate-posttool.sh` | `PostToolUse` / `Bash(gh pr create*)` | Captures successfully-created PRs into `~/.kookr/oss-attempts.json` via Kookr's HTTP API | User-global, not bundled |
+| `oss-contribution-gate.sh` | `PreToolUse` / `Bash` | Rate-limits external OSS PRs (default 1/day/repo) and enforces the blocked-repo list (`~/.kookr/rate-limits.json`) | **In this repo at `hooks/oss-contribution-gate.sh`** |
+| `oss-contribution-gate-posttool.sh` | `PostToolUse` / `Bash(gh pr create*)` | Captures successfully-created PRs into `~/.kookr/oss-attempts.json` via Kookr's HTTP API | **In this repo at `scripts/oss-contribution-gate-posttool.sh`** |
 | `oss-stale-scout-gate.sh` | `PreToolUse` / `Bash(gh pr create*)` | Blocks `gh pr create` when the PR body references an already-closed upstream issue (any of the 9 GitHub closing keywords + cross-repo refs + URL form) | **In this repo at `hooks/oss-stale-scout-gate.sh`** |
 | `claim-gate.sh` | `PreToolUse` / `Bash` | Blocks issue-claim comments (`gh issue comment`, `gh api .../comments -X POST`) if a competing PR or assignment already exists | User-global, not bundled |
 | `ai-coauthor-push-guard.sh` | `PreToolUse` / `Bash(git push*)` | Rejects `git push` to external remotes when commits carry AI attribution markers (`Co-Authored-By: Claude`, etc.) that the target repo forbids | User-global, not bundled |
@@ -50,7 +56,7 @@ If you use Claude Code (or Codex CLI) to work on this repo, there is a larger ho
 | `oss-gate` (CLI) | N/A (invoked manually) | Status / reset / log / health commands for the rate-limit gate | User-global helper |
 | `oss-registry-check` (CLI) | N/A (invoked manually) | Resolves a repo against the `~/.kookr/oss-repos.json` registry to check eligibility | User-global helper |
 
-**Two hooks in the table above — `oss-stale-scout-gate.sh` and `pr-workflow-gate.sh` — have canonical source checked into this repo, alongside the `pre-pr-review` skill at `.claude/skills/pre-pr-review/`.** The remaining hooks still live as standalone files in `~/.claude/hooks/`, maintained outside version control. Moving those in as well is tracked in the "Future work" section at the bottom.
+**The four OSS-extension PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) have canonical source in this repo under `hooks/` and `scripts/`, alongside the `pre-pr-review` skill at `.claude/skills/pre-pr-review/`, the `pr-contribution-excellence` skill at `plugin/skills/pr-contribution-excellence/`, and the reviewer specialists at `plugin/reviewer-specialists/`. The hooks are not under `plugin/` because they integrate with Kookr's HTTP API, `~/.kookr/` config, and `KOOKR_*` env vars — keeping `plugin/` Kookr-agnostic preserves marketplace portability.** Remaining items — `claim-gate.sh`, `ai-coauthor-push-guard.sh`, `kookr-prod-readonly-guard.sh`, `fix-bare-after-worktree.sh`, plus the `oss-gate` and `oss-registry-check` CLIs — still live as standalone files in `~/.claude/hooks/` and `~/.local/bin/`. Bundling those is tracked in the "Future work" section at the bottom.
 
 ### Interaction with `kookr-spawn`
 
@@ -80,7 +86,11 @@ If your prompt or criteria contain strings that PreToolUse hooks match on (`gh p
 
    - `~/.claude/hooks/oss-stale-scout-gate.sh` → `$(repo-root)/hooks/oss-stale-scout-gate.sh`
    - `~/.claude/hooks/pr-workflow-gate.sh` → `$(repo-root)/hooks/pr-workflow-gate.sh`
+   - `~/.claude/hooks/oss-contribution-gate.sh` → `$(repo-root)/hooks/oss-contribution-gate.sh`
+   - `~/.claude/hooks/post-merge-keyword-scan.sh` → `$(repo-root)/hooks/post-merge-keyword-scan.sh`
    - `~/.claude/skills/pre-pr-review` → `$(repo-root)/.claude/skills/pre-pr-review`
+   - `~/.claude/skills/pr-contribution-excellence` → `$(repo-root)/plugin/skills/pr-contribution-excellence`
+   - `~/.claude/reviewer-specialists` → `$(repo-root)/plugin/reviewer-specialists`
 
    Re-running is safe; it never duplicates entries or clobbers non-symlink directories.
 
@@ -112,7 +122,15 @@ If your prompt or criteria contain strings that PreToolUse hooks match on (`gh p
    - Empty array (`[]`) → gate nothing (silent mode — the hook is installed but forms no opinion).
    - Any other shape / invalid JSON → log to `~/.kookr/hook-errors.log` and fall through to gate-everything (never silently drops the gate on a corrupt file).
 
-3. **(Optional) Install the other user-global hooks.** The rest of the OSS-extension stack (`oss-contribution-gate`, `claim-gate`, `ai-coauthor-push-guard`, etc.) is still not bundled. Options:
+3. **Install the PostToolUse OSS tracking hook** (optional, recommended for OSS contribution workflows):
+
+   ```bash
+   bash scripts/install-oss-tracking-hook.sh
+   ```
+
+   Copies `plugin/hooks/oss-contribution-gate-posttool.sh` to `~/.claude/hooks/` and prints the `~/.claude/settings.json` snippet to register it under `PostToolUse`.
+
+4. **(Optional) Install the still-user-global hooks.** A few hooks are not bundled because they target unrelated workflows: `claim-gate`, `ai-coauthor-push-guard`, `kookr-prod-readonly-guard`, `fix-bare-after-worktree`. Options:
    - On the maintainer's machine they are already at `~/.claude/hooks/`.
    - To replicate on a new machine, read the RFCs listed above — each RFC includes the hook pseudocode and its behavior contract in enough detail to re-implement from scratch.
    - Register each hook in `~/.claude/settings.json` under `PreToolUse` or `PostToolUse` as the RFC specifies.
@@ -131,10 +149,10 @@ ls -l ~/.claude/hooks/oss-stale-scout-gate.sh ~/.claude/hooks/pr-workflow-gate.s
 ls -l ~/.claude/skills/pre-pr-review
 # Expected: symlinks pointing to your kookr checkout's hooks/ and .claude/skills/ dirs
 
-# 3. Confirm both settings.json entries exist
-jq '.hooks.PreToolUse[] | select(.hooks[0].command | test("oss-stale-scout-gate|pr-workflow-gate"))' \
+# 3. Confirm settings.json entries exist
+jq '.hooks.PreToolUse[] | select(.hooks[0].command | test("oss-stale-scout-gate|pr-workflow-gate|oss-contribution-gate"))' \
   ~/.claude/settings.json
-# Expected: two JSON objects (one per hook)
+# Expected: three JSON objects (one per PreToolUse hook)
 
 # 4. Run the hook tests
 pnpm test:hooks
@@ -169,12 +187,13 @@ This removes both hook symlinks, the `pre-pr-review` skill symlink, and the corr
 # 1. Remove the hook and skill symlinks
 rm -f ~/.claude/hooks/oss-stale-scout-gate.sh
 rm -f ~/.claude/hooks/pr-workflow-gate.sh
+rm -f ~/.claude/hooks/oss-contribution-gate.sh
 rm -f ~/.claude/skills/pre-pr-review
 
 # 2. Remove the settings.json entries
 tmp=$(mktemp)
 jq 'del(.hooks.PreToolUse[] | select(
-      (.hooks // [])[0].command // "" | test("oss-stale-scout-gate|pr-workflow-gate")
+      (.hooks // [])[0].command // "" | test("oss-stale-scout-gate|pr-workflow-gate|oss-contribution-gate")
     ))' ~/.claude/settings.json > "$tmp" && mv "$tmp" ~/.claude/settings.json
 ```
 
@@ -207,4 +226,4 @@ Key things to know if you're debugging a denied action or a missing block:
 
 ### Future work
 
-The remaining asymmetry — two hooks and one skill in-repo, the rest user-global — has not yet been resolved. The scope-gate that `pr-workflow-gate.sh` uses (consults `~/.kookr/pr-gated-repos.json`) is implemented; the analogous scope-gating for the still-user-global hooks (`oss-contribution-gate`, `claim-gate`, `ai-coauthor-push-guard`) is a follow-up.
+The four OSS-extension PreToolUse / PostToolUse hooks and the `pr-contribution-excellence` skill are bundled. Remaining user-global hooks (`claim-gate`, `ai-coauthor-push-guard`, `kookr-prod-readonly-guard`, `fix-bare-after-worktree`) and CLIs (`oss-gate`, `oss-registry-check`) are not bundled because they sit outside the OSS PR workflow this stack targets — bundling them is a separate effort. The scope-gate that `pr-workflow-gate.sh` uses (consults `~/.kookr/pr-gated-repos.json`) is implemented; an analogous scope-gate for `oss-contribution-gate.sh` (so non-Kookr users can adopt the bundle without forcing rate-limits on every `gh pr create`) is a follow-up.
