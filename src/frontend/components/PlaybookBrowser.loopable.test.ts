@@ -37,7 +37,7 @@ const loopablePlaybook: Playbook = {
   tags: ['workflow', 'loopable'],
   effectiveLoop: {
     iterationCap: 6,
-    costCapUsd: 5,
+    costCapUsd: 25,
     sources: {
       iterationCap: 'default',
       costCapUsd: 'default',

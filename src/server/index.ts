@@ -346,7 +346,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const tokenTracker = new TokenTracker();
 
   // Reactive budget threshold checker (issue #98). Threshold is per-task, in USD,
-  // configurable via KOOKR_BUDGET_WARN_USD. Default $5 per task. Setting to 0
+  // configurable via KOOKR_BUDGET_WARN_USD. Default $25 per task. Setting to 0
   // disables the check. Fires `budget_exceeded` anomalies through the attention
   // queue the first time a task crosses threshold and then 2x threshold.
   const budgetThresholdUsd = readBudgetThresholdFromEnv();

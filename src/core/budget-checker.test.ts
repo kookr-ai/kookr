@@ -101,12 +101,12 @@ describe('BudgetChecker', () => {
 
 describe('readBudgetThresholdFromEnv', () => {
   test('returns default when var is unset', () => {
-    expect(readBudgetThresholdFromEnv({}, 5)).toBe(5);
+    expect(readBudgetThresholdFromEnv({})).toBe(25);
   });
 
   test('returns default when var is blank', () => {
-    expect(readBudgetThresholdFromEnv({ KOOKR_BUDGET_WARN_USD: '' }, 5)).toBe(5);
-    expect(readBudgetThresholdFromEnv({ KOOKR_BUDGET_WARN_USD: '   ' }, 5)).toBe(5);
+    expect(readBudgetThresholdFromEnv({ KOOKR_BUDGET_WARN_USD: '' })).toBe(25);
+    expect(readBudgetThresholdFromEnv({ KOOKR_BUDGET_WARN_USD: '   ' })).toBe(25);
   });
 
   test('returns parsed value when var is a number', () => {
@@ -119,13 +119,13 @@ describe('readBudgetThresholdFromEnv', () => {
   });
 
   test('falls back to default when var is garbage', () => {
-    expect(readBudgetThresholdFromEnv({ KOOKR_BUDGET_WARN_USD: 'not-a-number' }, 5)).toBe(5);
+    expect(readBudgetThresholdFromEnv({ KOOKR_BUDGET_WARN_USD: 'not-a-number' })).toBe(25);
   });
 
   test('falls back to default for Infinity and -Infinity', () => {
     // Number('Infinity') === Infinity, which is NOT Number.isFinite — reject.
-    expect(readBudgetThresholdFromEnv({ KOOKR_BUDGET_WARN_USD: 'Infinity' }, 5)).toBe(5);
-    expect(readBudgetThresholdFromEnv({ KOOKR_BUDGET_WARN_USD: '-Infinity' }, 5)).toBe(5);
+    expect(readBudgetThresholdFromEnv({ KOOKR_BUDGET_WARN_USD: 'Infinity' })).toBe(25);
+    expect(readBudgetThresholdFromEnv({ KOOKR_BUDGET_WARN_USD: '-Infinity' })).toBe(25);
   });
 
   test('accepts scientific notation', () => {

@@ -4,7 +4,7 @@ description: Drive an agent through a fixed-prompt iteration loop with a stop pr
 tags: [workflow, loopable]
 loop:
   iterationCap: 6
-  costCapUsd: 5
+  costCapUsd: 25
 checklist:
   - Ralph loop attached to the right task via POST /api/tasks/:id/ralph-loop
   - Standalone ralph-wiggum plugin not enabled (would double-fire on Stop)
