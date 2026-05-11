@@ -320,7 +320,6 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     const launchOpts = launchTaskMock.mock.calls[0][0] as LaunchOpts;
     expect(launchOpts.launchSource).toBe('remote-chat-telegram');
     expect(launchOpts.agentType).toBe('claude-code');
-    expect(launchOpts.autonomy).toBe('supervised');
     expect(launchOpts.cwd).toBe(PROJECT.cwd);
     // The rephrased prompt — not the raw "fix it" — should reach launchTask.
     expect(launchOpts.prompt).toBe('Investigate sweep button placement.');

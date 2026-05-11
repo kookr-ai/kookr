@@ -32,7 +32,6 @@ function makeAgent(agentType: AgentType): AgentState {
     events: [],
     anomaly: null,
     agentType,
-    autonomy: 'supervised',
     cwd: '/tmp/kookr',
     startedAt: '2026-05-08T20:00:00.000Z',
     taskStatus: 'inProgress',

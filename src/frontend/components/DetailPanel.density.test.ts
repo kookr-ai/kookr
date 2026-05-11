@@ -37,7 +37,6 @@ function makeAgent(overrides: Partial<AgentState> = {}): AgentState {
       detectedAt: '2026-05-09T00:00:00.000Z',
     },
     agentType: 'codex-cli',
-    autonomy: 'supervised',
     cwd: '/home/jean/git/kookr',
     projectDisplayLabel: 'kookr',
     projectId: 'kookr-ai/kookr',

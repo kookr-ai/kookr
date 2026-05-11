@@ -13,7 +13,6 @@ function makeTask(overrides: Partial<Task> & { id: string }): Task {
     agentType: overrides.agentType ?? 'claude-code',
     status: overrides.status ?? 'completed',
     sessions: overrides.sessions ?? [],
-    autonomy: overrides.autonomy ?? 'supervised',
     createdAt: overrides.createdAt ?? new Date('2026-05-01T00:00:00Z'),
     updatedAt: overrides.updatedAt ?? new Date('2026-05-01T00:00:00Z'),
     ...overrides,
