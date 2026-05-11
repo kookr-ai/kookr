@@ -6,521 +6,134 @@
 
 [![CI](https://github.com/kookr-ai/kookr/actions/workflows/ci.yml/badge.svg)](https://github.com/kookr-ai/kookr/actions/workflows/ci.yml) [![Stars](https://img.shields.io/github/stars/kookr-ai/kookr?style=flat&color=yellow)](https://github.com/kookr-ai/kookr/stargazers) [![Last commit](https://img.shields.io/github/last-commit/kookr-ai/kookr)](https://github.com/kookr-ai/kookr/commits/main) [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](#) [![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](#) [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 
-[Features](docs/features.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md) · [ADRs](docs/adr/README.md)
+[Getting Started](docs/getting-started.md) · [User Guide](docs/user-guide.md) · [Architecture](docs/architecture.md) · [API](docs/reference/api.md)
 
 </div>
 
 ---
 
-You run 5 Claude Code agents in parallel. One silently loops on the same failing test for the 50th time. Another asks a permission question. A third drifts off-task. Which one needs you?
+You run several Claude Code or Codex CLI agents in parallel. One loops on the same failing test. Another is waiting on a permission question. A third finished and needs review.
 
-**Kookr watches them all, detects failure patterns, and routes your attention to the agent that needs you most.**
+**Kookr watches the agents, explains what needs attention, and routes you to the most urgent one.**
 
-<img src="assets/branding/derived/kookr-screenshot.png" alt="Kookr dashboard — detect anomalies, respond, auto-advance" width="960" />
+<img src="assets/branding/derived/kookr-screenshot.png" alt="Kookr dashboard - detect anomalies, respond, auto-advance" width="960" />
 
-[<img src="demo/assets/kookr-demo.gif" alt="Kookr demo preview — launch agents, triage anomalies, reply, and return to all clear" width="960" />](https://github.com/kookr-ai/kookr/releases/tag/demo-v1)
+[<img src="demo/assets/kookr-demo.gif" alt="Kookr demo preview - launch agents, triage anomalies, reply, and return to all clear" width="960" />](https://github.com/kookr-ai/kookr/releases/tag/demo-v1)
 
 [Watch the narrated demo video](https://github.com/kookr-ai/kookr/releases/tag/demo-v1)
 
-## Features
+## What Kookr Does
 
-- **Real-time monitoring** — watches all your agents' event streams via Claude Code hooks
-- **Anomaly detection** — catches stuck loops, repeated errors, permission blocks, idle agents
-- **Attention routing** — prioritizes findings and auto-advances after you respond
-- **Quick reply** — send hints or instructions to agents without leaving the dashboard
-- **Live terminal** — xterm.js bridged to the agent's persistent dtach session
-- **AI suggestions** — Claude Haiku generates response hints for detected anomalies
-- **Multi-agent support** — launch Claude Code or Codex CLI agents from the same dashboard
-- **Multi-project tracking** — register several project directories and see contributions across all of them
-- **Scheduled tasks** — cron-style triggers for recurring agents (nightly scans, periodic supervision)
-- **GitHub integration** — PR status, CI checks, and review threads for agent-created PRs
-- **Playbooks** — reusable task templates discovered from three tiers: bundled with the kookr-toolkit plugin (visible everywhere), `~/.kookr/playbooks/` (per-user), and `<repo>/.kookr/playbooks/` (project-local). See [`docs/playbook-scoping.md`](docs/playbook-scoping.md).
-- **Cost tracking** — token usage and cost per session
-- **Session reflection** — analyze friction patterns across supervision sessions
+- **Monitors agent sessions in real time** through hooks, transcripts, and managed terminal sessions.
+- **Detects common blockers** such as permission prompts, repeated errors, idle/stopped agents, and stuck work.
+- **Routes your attention** to the agent that most needs a human response.
+- **Lets you reply from one dashboard** without switching terminals.
+- **Runs locally** on your machine, with optional integrations for AI suggestions, speech, Telegram, GitHub state, schedules, and playbooks.
 
 ## Quick Start
 
-### Prerequisites
-
-- **git**
-- **Node.js** >= 22 (tested with v24)
-- **pnpm** >= 10
-- **Build tools** for native module compilation (`node-pty`) and the vendored `dtach` binary
-- **Claude Code** CLI (optional — required for launching agents, not needed for running the dashboard)
-
-<details>
-<summary>Ubuntu / Debian install commands</summary>
-
 ```bash
-# Node.js 24 via NodeSource (tested version; v22 is also supported)
-curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-# Build tools + git — dtach is vendored and compiled via `pnpm build:dtach`
-sudo apt-get install -y build-essential git
-
-# pnpm
-sudo npm install -g pnpm
-```
-
-</details>
-
-<details>
-<summary>macOS install commands</summary>
-
-```bash
-# Xcode command line tools (provides git + build tools)
-xcode-select --install
-
-# Node.js + pnpm via Homebrew — dtach is vendored and compiled via `pnpm build:dtach`
-brew install node@22 pnpm
-```
-
-</details>
-
-### Recording prerequisites
-
-Only required if you plan to regenerate the demo video with `pnpm demo:record`. Skip this section otherwise.
-
-- **Color emoji font** — Linux: `sudo apt-get install fonts-noto-color-emoji && fc-cache -fv`. macOS: ships with the system. A startup preflight (`demo/lib/preflight.ts`) refuses to record if Chromium can't render colored emoji.
-- **ffmpeg ≥ 5.0** — Linux: `sudo apt-get install ffmpeg`. macOS: `brew install ffmpeg`. Used to mux the captured video with TTS narration.
-- **Docker** — only needed for the bundled TTS service (`KOOKR_TTS=true`). Skip if you record silent (`KOOKR_TTS=`) or point at an external TTS endpoint via `KOOKR_TTS_URL`.
-
-### Install & Run
-
-```bash
-git clone https://github.com/kookr-ai/kookr.git && cd kookr
+git clone https://github.com/kookr-ai/kookr.git
+cd kookr
 pnpm install
-pnpm dev         # backend on :4801 + Vite frontend on :5173
+pnpm dev
 ```
 
-Open `http://localhost:5173` in your browser. You're ready to launch and supervise agents.
+Open `http://localhost:5173`.
 
-If anything goes wrong, run `pnpm run doctor` — it checks Node/pnpm versions, build tools, the dtach binary, Docker (for voice features), GPU availability, and whether ports 4800 / 5173 are free, then prints a copy-pasteable summary with fix commands.
+Prerequisites: `git`, Node.js `>=22`, `pnpm >=10`, and build tools for native modules. Claude Code is only required when you want Kookr to launch Claude Code agents.
 
-Optional features (voice, Telegram, LLM-backed AI suggestions) are off by default. Copy [`.env.example`](.env.example) to `.env` and uncomment only what you need — see [`docs/reference/environment-variables.md`](docs/reference/environment-variables.md) for the full reference.
-
-<details>
-<summary>Troubleshooting</summary>
-
-- **`serveStatic: root path '...dist/frontend' is not found` on first request** — only emitted by older builds (pre-`fix/onboarding-polish`). In dev the backend on `:4801` does not serve frontend assets — Vite does, on `:5173`. Harmless; gone after `pnpm install` on a current checkout.
-- **`Ignored build scripts: protobufjs@7.5.x` or `@google/genai@2.x` during `pnpm install`** — pnpm 10's secure-by-default behavior. Current `package.json` allow-lists both packages, so the warning should not appear after a fresh install. If you still see it, run `pnpm install` again to pick up the allow-list.
-
-</details>
-
-### Daily use vs. development
-
-Kookr is meant to run two ways depending on what you're doing. Pick the one that matches your audience:
-
-| Mode | Port | Worktree | Reload | Audience |
-|------|------|----------|--------|----------|
-| `pnpm dev` | 4801 | this checkout | `tsx --watch` + Vite HMR on every save | **Working on Kookr itself** — you're editing Kookr's source, or AI agents are. The watcher is intentional. |
-| `pnpm prod:setup` (one-time) + `pnpm prod:update` (continuous) | 4800 | sibling `../kookr-prod` (detached HEAD) | Manual, or one-click via the dashboard | **Using Kookr to supervise real agents.** Stable. Doesn't churn while you edit code in this checkout. |
-
-If you're a developer using Kookr to supervise multi-agent workflows, **the prod path is the recommended one.** `pnpm prod:setup` creates the sibling worktree once; after that:
-
-- **One-click deploy from the dashboard** — the top-left **Auto-deploy** button (in the TopBar) is wired only when Kookr runs on port 4800. It checks `origin/main`, lists the commits the prod worktree is behind, and runs `scripts/prod-update.sh` (fetch → build → restart) on click. On any non-prod port the button is hidden.
-- **Terminal equivalent** — `pnpm prod:update` does the same thing from a shell.
-- **Restart only (no rebuild)** — `pnpm prod:restart` bounces the prod server when you've changed `.env` or want to clear in-memory state without recompiling.
-
-The dev checkout's `.env` is symlinked into `../kookr-prod/.env` by `prod:setup`, so runtime configuration stays in one place — edit `.env` here, run `pnpm prod:restart`, and the prod instance picks it up.
-
-### Launch an Agent
-
-From the dashboard, click **Launch** or use the API:
+If setup fails, run:
 
 ```bash
-# via WebSocket
-wscat -c ws://127.0.0.1:4801/ws
-> {"type":"launch","prompt":"Fix the auth bug","cwd":"/my/project"}
+pnpm run doctor
 ```
 
-The spawned agent runs under a persistent dtach session (one per agent). Attach through the dashboard terminal panel — the WebSocket bridge replays recent output and streams live bytes.
+For operating-system install commands and first-agent walkthroughs, see [Getting Started](docs/getting-started.md).
 
-After you send a response to a finding, Kookr auto-advances to the next one. When nothing needs you — "All clear."
+## First Agent
 
-### Voice (optional)
+In the dashboard, click **Launch**, choose a working directory, and enter a task prompt. Kookr starts the agent in a persistent dtach session, streams the terminal, and queues findings when the agent needs attention.
 
-Speech-to-text (STT) and text-to-speech (TTS) are off by default. Both services run as Docker Compose stacks and only start when you opt in.
-
-**Prerequisites**
-
-- **Docker** + **Docker Compose**
-- **GPU is auto-detected.** STT probes the docker daemon for the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) at startup; if found, it runs Whisper `large-v3` on CUDA, otherwise it runs Whisper `base` on CPU. TTS auto-detects GPU through PyTorch the same way. No manual compose-file edits required.
-- **Force a device** with `KOOKR_STT_DEVICE=cpu` or `KOOKR_STT_DEVICE=gpu` if you want to override the auto choice (e.g. CPU testing on a GPU box, or fail-loud on a GPU box where the runtime is misconfigured).
-
-**First boot**
-
-The first time you start with `KOOKR_STT=true`, the Whisper sidecar downloads the model into a Docker volume — roughly **150 MB for `base`** (CPU default) or **~3 GB for `large-v3`** (GPU default). Subsequent boots reuse the cached model.
-
-**Enabling**
-
-Uncomment the relevant lines in [`.env.example`](.env.example) → `.env`:
+Terminal users can launch a task from any project:
 
 ```bash
-KOOKR_STT=true        # bundled STT, listens on KOOKR_STT_PORT (default 8003)
-KOOKR_TTS=true        # bundled TTS, listens on KOOKR_TTS_PORT (default 8004)
-# Or point at an existing service:
-# KOOKR_STT_URL=ws://127.0.0.1:8003
-# KOOKR_TTS_URL=http://127.0.0.1:8004
+kookr-spawn "review the diff since origin/main and summarize risks"
 ```
 
-Restart Kookr (`pnpm dev` or `pnpm prod:restart`). The full variable list — including `WHISPER_*`, `TTS_VOICE`, and health-check timeouts — is documented in [`docs/reference/environment-variables.md`](docs/reference/environment-variables.md#speech-io).
+See [CLI Reference](docs/reference/cli.md) for `kookr-spawn`, `kookr-status`, and related commands.
 
-### Terminal Usage: `kookr-spawn`
+## Where To Go Next
 
-Create a task for the repository you're already in, without leaving the terminal:
+| I want to... | Read |
+| --- | --- |
+| Install Kookr and run the first agent | [Getting Started](docs/getting-started.md) |
+| Use the dashboard day to day | [User Guide](docs/user-guide.md) |
+| Configure optional features | [Configuration](docs/configuration.md) |
+| Fix setup or runtime issues | [Troubleshooting](docs/troubleshooting.md) |
+| Develop Kookr itself | [Development](docs/development.md) |
+| Understand the system design | [Architecture](docs/architecture.md) |
+| See all API endpoints | [API Reference](docs/reference/api.md) |
+| Understand playbook discovery | [Playbook Scoping](docs/playbook-scoping.md) |
+| Install or inspect the toolkit plugin | [Kookr Toolkit](plugin/README.md) |
 
-```bash
-cd ~/git/my-project
-kookr-spawn "review the diff since origin/main and write a summary"
-# or pipe:
-cat repro.md | kookr-spawn --autonomous
-# or from a file (hook-safe — see below):
-kookr-spawn --prompt-file /tmp/prompt.md
-```
+## Core Features
 
-The spawned task uses `$PWD` as the working directory and appears in the dashboard immediately. Output on stdout starts with `task_id=<uuid>` so you can pipe it into other commands.
-
-**Inside a Claude Code session:** the Bash tool's PreToolUse hook inspects the full command line. Prompts containing strings like `gh pr create`, `git push --force`, or `rm -rf` may be blocked when passed as positional arguments or via `--criteria`. Use `--prompt-file` (or piped stdin) for hook-safe prompts — the flag's *value* is just a file path, and the hook cannot see the file contents.
-
-**Install:** `pnpm build && pnpm link --global` adds `kookr-spawn` to `$PATH`. If you previously linked Kookr before this binary existed, re-run `pnpm link --global` — pnpm caches bin symlinks at link time and does not auto-pick-up new `bin` entries. See `kookr-spawn --help` for all options.
-
-### Terminal Usage: `kookr-status`
-
-A read-only CLI that prints a snapshot of the running Kookr instance — server uptime, build version, and a per-agent severity summary pulled from `/api/snapshot` and `/api/health`. Auto-detects port (4800 → 4801) when `KOOKR_PORT` is unset.
-
-```bash
-kookr-status        # one-shot snapshot
-pnpm status         # equivalent for local dev
-```
-
-Bundled with `kookr-spawn` — `pnpm link --global` exposes both binaries.
-
-### Setup for AI agents
-
-If you use Claude Code or Codex CLI to work on this repo, the bundled `.claude/skills/`, `.claude/agents/`, and `.claude/playbooks/` are picked up automatically — no install step required. The repo's git pre-push hook is wired by `pnpm install`'s `prepare` script.
-
-**Optional in-repo Claude Code hook** — install the closed-issue scout gate:
-
-```bash
-bash scripts/install-hooks.sh   # installs hooks/oss-stale-scout-gate.sh into ~/.claude/hooks/
-```
-
-### Onboarding smoke test
-
-Maintainers can run the fresh-environment smoke harness locally or through the manual `Onboarding Smoke Test` GitHub Actions workflow:
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-... bash scripts/onboarding-smoke-test.sh
-```
-
-The driver `claude` command runs on the host and controls a clean Ubuntu container through Docker. The script preflights host-side Claude Code authentication before starting the walkthrough and writes a failure report if auth is unavailable. Docker uses the default `bridge` network; override with `DOCKER_NETWORK=<name>` only when diagnosing host-specific Docker DNS issues.
-
-Set `ONBOARDING_CONTAINER_AGENT_SMOKE=1` to additionally install Claude Code inside the clean container, pass only `ANTHROPIC_API_KEY` into that `docker exec` process, and verify that Kookr can launch an authenticated Claude Code agent with hooks and toolkit plugin injection. Do not mount your whole `~/.claude` into the container for this test — that would import user-global skills, hooks, MCP config, and auth state that can hide missing Kookr setup.
-
-### Kookr Toolkit (Claude Code plugin)
-
-Kookr ships a curated set of **~50 skills + 17 review subagents** as a Claude Code plugin (`kookr-toolkit`). Skills cover code patterns (`typescript-type-safety`, `error-handling-patterns`, `async-flow-control`, `dependency-injection-patterns`, `domain-driven-design`, etc.), workflow (`git-commit-discipline`, `tdd-workflow`, `token-efficiency`), OSS contribution (`oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `find-best-reviewers`), and a reviewer-distillation experiment (`reviewer-distillation-{judge,mutate,predict,prepare,select,meta}`). Review subagents include `boundary-critic`, `design-minimalist`, `failure-mode-analyst`, `delivery-pragmatist`, `socratic-challenger`, and others. See [`plugin/README.md`](plugin/README.md) for the canonical inventory.
-
-**Kookr users get the toolkit automatically.** When Kookr spawns Claude Code against any project, the adapter injects `--plugin-dir <kookr>/plugin` so the toolkit is visible regardless of cwd.
-
-**Other Claude Code users** can install the toolkit standalone:
-
-```
-claude
-> /plugin marketplace add kookr-ai/kookr
-> /plugin install kookr-toolkit@kookr
-```
-
-Update with `/plugin marketplace update kookr`. See [`plugin/README.md`](plugin/README.md) for the full skill/agent inventory and the maintainer dev workflow (`claude --plugin-dir ~/git/kookr/plugin`).
-
-**Optional OSS extension** — Several bundled skills (`pre-pr-review`, `oss-pr-distill`, `codex-pr-distill`, `kookr-oss-issue-scout`, `kookr-oss-repo-recon`) and the `oss-contribute` playbook depend on an OSS contribution layer that lives as user-global scripts and data outside this repo (`~/.claude/reviewer-specialists/`, `~/.claude/skills/pr-contribution-excellence/`, `~/.claude/hooks/{pr-workflow-gate,oss-contribution-gate,…}.sh`). The extension is **not bundled** — its distribution mechanism is still pending. Without it, the affected skills are still safe to invoke — they detect the missing dependencies and stop rather than fabricating output. Read [`docs/hooks-setup.md`](docs/hooks-setup.md) for the full status.
-
-## Use cases
-
-- **Bug-fix swarms** — launch N agents on N flaky tests in parallel and surface the one that gets stuck on a permission prompt or the same error.
-- **Overnight refactors** — leave a long-running agent working a multi-step migration; check in from your phone via Telegram or voice when it actually needs you.
-- **OSS contribution farms** — supervise several PRs across multiple upstream repos in parallel, driven by the bundled `oss-contribute` playbook.
-- **Multi-repo audits** — register the project directories you care about and watch contributions, findings, and CI state across all of them from one dashboard.
-- **Scheduled supervision** — cron-style triggers for nightly dependency scans, periodic security reviews, or recurring housekeeping agents.
-- **Pair programming with AI** — use the dashboard as a single attention surface so you can stay focused on the one agent in front of you while the rest run in the background.
+- Real-time monitoring for Claude Code and Codex CLI agents
+- Anomaly detection and prioritized findings
+- Quick replies and response suggestions
+- Live terminal access through xterm.js and dtach
+- Multi-project tracking
+- Project, user, and bundled playbooks
+- Scheduled tasks
+- GitHub PR, CI, and review awareness
+- Cost tracking and session reflection
+- Optional speech and Telegram integrations
 
 ## Why Kookr?
 
-Developer tooling evolved in waves — Stack Overflow → ChatGPT → IDE-integrated AI (Cursor, Copilot) → autonomous CLI agents. The current frontier is **running multiple agents in parallel**, which creates a new bottleneck: managing the agents themselves.
+Running one AI coding agent is simple. Running five creates a new coordination problem: you need to know which agent is blocked, which one is wasting budget, and which one can keep working without you.
 
-- **Local-first** — Runs on your machine. No cloud, no telemetry, no vendor lock-in.
-- **Multi-agent native** — Built from day one for parallel Claude Code / Codex CLI agents, not bolted on.
-- **Open & extensible** — Apache 2.0, plugin-based skills and playbooks, hooks-driven detection you can audit.
+Kookr is built for that supervision loop:
 
-### How Detection Works
+- **Local-first:** no telemetry, no cloud service required, state stored under `~/.kookr/`.
+- **Multi-agent native:** one dashboard for parallel Claude Code and Codex CLI sessions.
+- **Action-oriented:** findings are ordered by urgency and paired with the terminal context you need to respond.
+- **Extensible:** hooks, playbooks, skills, and a Claude Code plugin are part of the repo.
 
-V1 uses **rule-based heuristics**: repeated error counting, permission block detection, idle/stop detection. These catch the most common failure modes reliably and fast.
+## Architecture In One Screen
 
-A dumb monitor says: *"Agent #3 status: running."*
-
-Kookr says: *"Agent #3 — same error repeated 8 times: `TypeError: token.verify is not a function`. Blocked on tool permission: Bash."*
-
-> **V2 goal:** LLM-powered analysis for nuanced issues — trajectory drift, budget burn, strategic dead ends — with natural-language explanations like: *"Agent #3 keeps editing `auth.ts` but hasn't tried changing the import. It seems to be importing from the wrong module. Want to give it a hint?"*
-
-### Compared to alternatives
-
-How Kookr stacks up against the supervision approaches developers reach for today. ✅ = built-in, ⚠️ = partial / DIY, ❌ = not addressed. Combinations like `tmux` + `ccusage` + hand-rolled hooks can cover more cells than any single column below — Kookr's value is bundling them behind one attention surface.
-
-| Capability | Kookr | `tmux` + manual switching | [`ccusage`](https://github.com/ryoppippi/ccusage) | Hand-rolled Claude Code hooks |
-|---|---|---|---|---|
-| Anomaly detection (stuck loops, idle, repeated errors, permission blocks) | ✅ | ❌ | ❌ | ⚠️ one script per pattern |
-| Attention routing / queue across agents | ✅ | ❌ | ❌ | ❌ |
-| Multi-CLI support (Claude Code + Codex CLI) | ✅ | ✅ runs any binary | ❌ Claude Code only | ❌ Claude Code only |
-| Voice (STT/TTS) integration | ✅ optional | ❌ | ❌ | ❌ |
-| Scheduled tasks (cron) | ✅ | ⚠️ via system `cron` | ❌ | ⚠️ DIY |
-| GitHub PR status integration | ✅ | ❌ | ❌ | ⚠️ DIY |
-| Cost / token tracking | ✅ | ❌ | ✅ | ⚠️ DIY |
-| Local-first (no cloud required) | ✅ | ✅ | ✅ | ✅ |
-
-> Maintenance note: comparison tables go stale fast — vendor capabilities change. Refresh this table before each release; if you spot something inaccurate, please open an issue or PR. See [`CONTRIBUTING.md`](CONTRIBUTING.md#maintainer-notes) for the maintainer cadence.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Browser (React SPA)                         │
-│  Findings Panel · Detail/Terminal Panel · GitHub Panel · Toasts    │
-│                         Zustand store                              │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │ WebSocket (ws://)
-┌──────────────────────────┴──────────────────────────────────────────┐
-│                     Hono HTTP + WebSocket Server                    │
-│  Hook Watcher · Reconciliation · Terminal Bridge · GitHub Scanner  │
-├────────────────────────────────────────────────────────────────────-┤
-│                          Core Logic                                │
-│  Monitor · Anomaly Detector · Attention Queue · Task Store         │
-│  Hook Parser · Token Tracker · Friction Analyzer · Playbooks       │
-├────────────────────────────────────────────────────────────────────-┤
-│                          Adapters                                  │
-│  Local dtach Backend · Claude Code Adapter · Codex CLI Adapter     │
-│  GitHub Fetcher · Git Worktree · Circuit Breakers                  │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │ Claude Code hooks + dtach sessions
-                    ┌──────┴──────────┐
-                    │    AI Agents    │
-                    │ (Claude Code or │
-                    │  Codex CLI)     │
-                    └─────────────────┘
+```text
+Browser dashboard
+  -> Hono HTTP/WebSocket server
+  -> Core monitor, anomaly detector, attention queue, task store
+  -> Local dtach backend plus Claude Code / Codex CLI adapters
+  -> Managed AI agent sessions
 ```
 
-Agents run in interactive mode inside managed dtach sessions. Monitoring happens via Claude Code hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) injected through the `--settings` flag. Sessions survive if Kookr crashes — the dtach master keeps the child process alive, and Kookr reconciles via the manifest at startup.
+Agents run in interactive dtach sessions. Kookr watches hook events, terminal output, transcripts, GitHub state, and task metadata, then turns that signal into a small queue of findings.
 
-See [Architecture docs](docs/architecture.md) for the full design and [ADR-014](docs/adr/014-local-dtach-backend.md) for the dtach backend decision (supersedes ADR-007).
-
-## Design Principles
-
-1. **Reuse, don't reinvent** — Agent drivers were forked from a predecessor project. Skill format follows Claude Code conventions. Integrates with existing ecosystems rather than replacing them.
-2. **Smart supervisor, not coder** — Kookr's AI understands what agents are doing and explains anomalies. It doesn't write code itself.
-3. **Simple first** — No plugins, no persistence, no cloud for V1. Single package, in-memory state, spec-driven development.
-4. **Local-first** — Runs on the developer's machine. Critical for corporate environments behind VPNs. Linux + macOS.
-5. **Managed agents** — Agents run under dtach sessions that survive Kookr crashes. The dashboard terminal panel is the attach surface. See [ADR-014](docs/adr/014-local-dtach-backend.md).
-
-## API Reference
-
-### Health & build
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/health` | Server status + agent count + build info |
-| `GET /api/health/stt` | Bundled STT (speech-to-text) container health |
-| `GET /api/startup-summary` | Crash-recovery startup summary (fetched once on UI mount) |
-
-### Tasks & agents
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/tasks` | All tasks with sessions |
-| `POST /api/tasks` | Create and launch a new task |
-| `DELETE /api/tasks/:id` | Stop and remove a task |
-| `POST /api/agents/:id/message` | Send a message/hint to a running agent |
-| `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
-| `GET /api/sessions/:sessionId/effective-hook-settings` | Resolved per-session hook settings (additive merge of user + Kookr-injected) |
-
-### Supervisor surface
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/snapshot` | Current agent states + anomalies |
-| `GET /api/queue` | Attention queue contents |
-| `GET /api/anomaly-stats` | Anomaly counters and detector stats |
-| `GET /api/capture/:sessionId` | Snapshot of the dtach session's ring buffer |
-| `POST /api/hook-event/:sessionId` | HTTP push surface for hook events (used by Codex CLI hooks) |
-
-### Projects
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/projects` | Tracked project directories |
-| `POST /api/projects/track` | Register a new project directory |
-| `POST /api/projects/untrack` | Remove a tracked project |
-| `GET /api/projects/contributions` | Contributions summary across projects |
-| `GET /api/projects/configs` | Per-project configuration (contribution policy, agent defaults) |
-| `POST /api/projects/configs` | Update a project's config |
-| `GET /api/projects/discovery-status` | Background project-discovery progress |
-| `POST /api/projects/rescan-skills` | Re-scan tracked repos for `.claude/skills/` |
-
-### Playbooks & schedules
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/playbooks?cwd=` | Discover playbooks at a CWD |
-| `GET /api/schedules` | List scheduled tasks |
-| `POST /api/schedules` | Create a scheduled task (cron) |
-| `POST /api/schedules/preview` | Preview the next-run timestamps for a candidate schedule |
-| `PATCH /api/schedules/:id` | Update an existing schedule |
-| `DELETE /api/schedules/:id` | Delete a schedule |
-| `POST /api/schedules/:id/run` | Trigger a scheduled task immediately |
-
-### Reflection & telemetry
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/reflect` | Analyze session friction patterns |
-| `GET /api/reflect/recommendation` | Top-priority reflection recommendation for the UI banner |
-| `GET /api/telemetry/report` | Aggregated telemetry over the session log |
-| `GET /api/shadow-report` | Shadow-detection comparison report (`?format=text` for plain text) |
-
-### GitHub
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/github` | All tracked tasks' PR/issue state |
-| `GET /api/github/status` | GitHub scanner active status |
-| `GET /api/github/:taskId` | PR/issue state for a task |
-
-### Settings & infrastructure
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/settings` | Get user/project settings |
-| `PUT /api/settings` | Update settings |
-| `GET /api/circuit-breakers` | Snapshots of all wrapped-dependency breakers |
-| `GET /api/diagnostic` | Latest self-diagnostic report + last error |
-| `POST /api/diagnostic/run` | Trigger a self-diagnostic run on demand |
-| `GET /api/oss-attempts` | OSS contribution-attempt store snapshot |
-| `POST /api/oss-attempts/refresh` | Refresh PR/issue state for tracked OSS attempts |
-| `POST /api/oss-attempts/events` | Record an OSS attempt event (used by hooks) |
-| `GET /api/deploy/status` | Production-update job status |
-| `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job |
-
-### WebSocket
-| Endpoint | Description |
-|----------|-------------|
-| `ws://host:port/ws` | WebSocket for real-time updates (snapshots, alerts, suggestions, …) |
-| `ws://host:port/ws/terminal/:sessionId` | Interactive terminal bridge — binary frames over the dtach session |
-
-**Data directory:** `~/.kookr/` (port 4800) or `~/.kookr-{port}/` (other ports).
-
-## Development
-
-```bash
-pnpm dev               # backend (4801) + Vite frontend (5173) with HMR
-pnpm dev:server         # backend only
-pnpm dev:frontend       # frontend only
-pnpm test               # run all tests once (Vitest)
-pnpm test:watch         # watch mode
-pnpm test:e2e           # Playwright E2E tests
-pnpm build              # compile TypeScript to dist/
-pnpm build && pnpm start  # production mode on :4800
-```
-
-Dev mode uses port 4801 to avoid conflicting with a production instance on port 4800.
-
-Configure via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `KOOKR_PORT` | `4800` | HTTP/WebSocket port (dev defaults to `4801` to avoid conflict with prod) |
-| `KOOKR_HOST` | `127.0.0.1` | Bind address |
-| `KOOKR_BACKEND` | `dtach` | Terminal backend. Hard-rejected unless `dtach` (V8 escape hatch removed; see [ADR-014](docs/adr/014-local-dtach-backend.md)) |
-| `KOOKR_BYPASS_ALL_PERMISSIONS` | `false` | When `true`, spawn agents without permission prompts (`--dangerously-skip-permissions` for Claude Code, `--dangerously-bypass-approvals-and-sandbox` for Codex). Off by default — both flags remove safety guardrails |
-| `KOOKR_PLUGIN_DIR` | auto | Override the auto-resolved Kookr Toolkit plugin path injected into spawned `claude`. Empty string disables injection (hermetic mode) |
-| `KOOKR_CODEX_BIN` | `codex` | Codex CLI binary path (the forked build at `~/git/codex` ships via `pnpm codex:rebuild`) |
-| `KOOKR_STT_HEALTH_TIMEOUT_S` | `600` | Seconds to wait for the bundled speech-to-text service to become healthy. First-run Whisper model downloads can take several minutes |
-| `ANTHROPIC_API_KEY` | unset | Required for AI task naming (F4.8) and AI response suggestions (F3.9). Falls back to truncated prompt / no suggestions when unset |
-
-### Production instance
-
-For the audience and workflow, see [Daily use vs. development](#daily-use-vs-development) above. This subsection covers what's relevant when you're hacking on Kookr from this checkout while the prod instance keeps running.
-
-`pnpm prod:update` maintains a detached sibling worktree at `../kookr-prod` and restarts the port 4800 server after building it. The dashboard's auto-deploy button calls the same script via `POST /api/deploy/trigger` (status at `GET /api/deploy/status`). The endpoints are prod-only — they return `{configured: false}` on any port other than 4800.
-
-The dev checkout's `.env` is symlinked into `../kookr-prod/.env` by `pnpm prod:setup`, so edit `.env` here and run `pnpm prod:restart` to apply runtime-only configuration changes without rebuilding.
-
-### Project Structure
-
-```
-src/
-  shared/         # Cross-boundary contracts — ServerMessage/ClientMessage
-                  #   protocol, repo-slug helpers (imported by both server and frontend)
-  core/           # Pure logic — types, parsers, task store, anomaly detection,
-                  #   attention queue, monitor, token tracking, friction analysis,
-                  #   circuit breakers, GitHub state diff, playbook discovery
-  adapters/       # I/O boundaries — LocalDtachBackend, Claude Code adapter,
-                  #   Codex CLI adapter, GitHub fetcher, git worktree
-  server/         # Hono HTTP + WebSocket server — split route modules,
-                  #   ws-handlers, hook watcher, reconciliation, SessionBridge,
-                  #   schedule runner, autonomy orchestrator
-  frontend/       # React SPA — Zustand store with sliced architecture,
-                  #   WebSocket hook, ~30 components (findings, terminal,
-                  #   workspace, OSS dashboard, settings)
-```
-
-For the canonical file-by-file tree see [docs/architecture.md](docs/architecture.md#module-structure-v1).
-
-### Testing
-
-Dtach-based integration tests are automatically skipped when the vendored binary isn't built. `pnpm install` configures a pre-push hook that runs the test suite.
-
-### Hooks
-
-`pnpm install` wires up the repo pre-push hook automatically — it runs `build:server`, `check:e2e`, and `test` before every `git push`. That's all most contributors need.
-
-If you run Claude Code or Codex CLI agents on this repo and want the PR-workflow / OSS-contribution / stale-scout guardrails as well, see [`docs/hooks-setup.md`](docs/hooks-setup.md). It walks through the full user-global hook stack, minimum install (`bash scripts/install-hooks.sh`), verification, uninstall, and troubleshooting. Those hooks are optional — the repo builds and tests the same with or without them.
+Read [Architecture](docs/architecture.md) and [ADR-014](docs/adr/014-local-dtach-backend.md) for the full design.
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Features](docs/features.md) | What the app does — smart detection, the "loop" UX, MVP scope |
-| [Requirements](docs/requirements.md) | Structured requirements — SHALL/SHOULD/MAY, acceptance criteria |
-| [Architecture](docs/architecture.md) | System design — supervisor agent, adapters, reuse map |
-| [System Models](docs/system-models/) | MBSE-lite diagrams — context, containers, sequences, state machines |
-| [Roadmap](docs/roadmap.md) | 4 phases from discovery to multi-agent polish |
-| [Hooks setup](docs/hooks-setup.md) | Repo + Claude Code hook install, inventory, verification, troubleshooting |
-| [ADRs](docs/adr/README.md) | Accepted decisions — TypeScript, managed dtach sessions, session bridge |
+The top-level README is intentionally short. Detailed documentation lives under [`docs/`](docs/README.md):
 
-## Roadmap
+- [Features](docs/features.md) - user-facing capabilities
+- [Requirements](docs/requirements.md) - structured acceptance criteria
+- [Architecture](docs/architecture.md) - system design and module structure
+- [System Models](docs/system-models/) - context, containers, sequences, and state machines
+- [Roadmap](docs/roadmap.md) - current direction
+- [ADRs](docs/adr/README.md) - durable architecture decisions
 
-A snapshot of where Kookr is headed. See [`docs/roadmap.md`](docs/roadmap.md) for the full phase-by-phase plan.
+## Community
 
-| Recently shipped | In progress | Coming up | Exploring |
-|------------------|-------------|-----------|-----------|
-| Use cases section in README ([#123](https://github.com/kookr-ai/kookr/pull/123)) | Public-launch governance docs — CONTRIBUTING/SECURITY/COC ([#91](https://github.com/kookr-ai/kookr/issues/91), [#92](https://github.com/kookr-ai/kookr/issues/92), [#93](https://github.com/kookr-ai/kookr/issues/93)) | Codex session discovery (date-partitioned `~/.codex/sessions/`) | Plugin / `SKILL.md` extension SDK |
-| Auto-watch OSS registry sources ([#122](https://github.com/kookr-ai/kookr/pull/122)) | Restoring green CI on `main` ([#89](https://github.com/kookr-ai/kookr/issues/89)) | Dark / light theme | Session persistence and history |
-| Onboarding portability — strip maintainer paths ([#121](https://github.com/kookr-ai/kookr/pull/121)) | Codex CLI adapter — per-session routing + hook gaps ([PoC 003](docs/poc/003-codex-compatibility-gaps.md)) | Long-form Getting-started guide | Windows + Gemini CLI adapters |
-| Live badges, Community & Support, Privacy, Star History ([#119](https://github.com/kookr-ai/kookr/pull/119)) | Three-pillar README rewrite + alternatives comparison ([#110](https://github.com/kookr-ai/kookr/issues/110), [#111](https://github.com/kookr-ai/kookr/issues/111)) | Publish `kookr` to npm | Team mode and cloud deployment option |
-| CLA + Apache 2.0 relicensing ([#73](https://github.com/kookr-ai/kookr/pull/73), [#83](https://github.com/kookr-ai/kookr/pull/83)) | | Issue templates + Dependabot + secret scanning ([#94](https://github.com/kookr-ai/kookr/issues/94), [#97](https://github.com/kookr-ai/kookr/issues/97)) | |
+- Bug reports and feature requests: [GitHub issues](https://github.com/kookr-ai/kookr/issues)
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security disclosures: [GitHub Security Advisories](https://github.com/kookr-ai/kookr/security/advisories/new) and [SECURITY.md](SECURITY.md)
+- License: [Apache 2.0](LICENSE)
 
-> Maintenance note: this snapshot is meant to be refreshed after each release. See [`CONTRIBUTING.md`](CONTRIBUTING.md#maintainer-notes) for the maintainer cadence.
-
-## Contributing
-
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide (verification matrix, branch naming, Conventional Commits, and how the pre-push gates work). Contributions require signing the [CLA](CLA.md); the CLA Assistant bot walks you through it on your first PR. All contributors are expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
-
-## Community & Support
-
-- **Bug reports & feature requests** — open a [GitHub issue](https://github.com/kookr-ai/kookr/issues).
-- **Contributing** — see [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`CLA.md`](CLA.md).
-
-### Security
-
-Please report suspected vulnerabilities privately through [GitHub Security Advisories](https://github.com/kookr-ai/kookr/security/advisories/new). See [`SECURITY.md`](SECURITY.md) for supported versions, response expectations, and scope.
-
-## Privacy
-
-Kookr collects no telemetry. The dashboard, the watcher, and the agents all run on your machine — no phone-home, no analytics, no remote logging. State lives locally in `~/.kookr/` (default port 4800) or `~/.kookr-{port}/` when `KOOKR_PORT` is set to anything else.
-
-Features that *do* reach the network are off by default and named explicitly: `ANTHROPIC_API_KEY` enables AI task naming and response suggestions; `KOOKR_TELEGRAM_*` enables Telegram notifications; `KOOKR_TTS_URL` / `KOOKR_STT_URL` point at external speech endpoints if you choose to use one. Everything else stays on the box.
+Kookr collects no telemetry. Optional features that call network services are disabled by default and documented in [Configuration](docs/configuration.md).
 
 ## Star History
 
@@ -528,6 +141,6 @@ Features that *do* reach the network are off by default and named explicitly: `A
 
 ## License
 
-Kookr is licensed under the [Apache License 2.0](LICENSE). You may use, modify, distribute, and sublicense the software for any purpose — including commercial use — subject to the terms of the license. See the [LICENSE](LICENSE) file for the full legal text and the [NOTICE](NOTICE) file for required attribution.
+Kookr is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for required attribution.
 
 Copyright 2026 Jean Ibarz.

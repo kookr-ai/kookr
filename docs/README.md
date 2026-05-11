@@ -6,13 +6,18 @@ This README is the map. New readers should start at the top and follow the links
 
 ## Start here
 
+- [Getting Started](getting-started.md) — install Kookr, run the dashboard, and launch a first agent.
+- [User Guide](user-guide.md) — daily supervision workflow: findings, terminal, playbooks, schedules, GitHub awareness.
+- [Configuration](configuration.md) — common optional features and `.env` choices.
+- [Troubleshooting](troubleshooting.md) — setup and runtime fixes.
+- [Development](development.md) — commands, worktrees, hooks, and contributor docs layout.
 - [Features & Functionality](features.md) — what Kookr does from the user's perspective.
 - [Architecture](architecture.md) — how the system is laid out (supervisor agent + GUI on top of managed terminal sessions).
 - [Roadmap](roadmap.md) — phased plan toward V1 and beyond.
 - [Requirements](requirements.md) — structured, testable requirements derived from the docs above and ADRs.
 - [Hooks setup](hooks-setup.md) — git/repo hooks every contributor needs.
 
-The repo's top-level [README](../README.md) covers install and usage.
+The repo's top-level [README](../README.md) is a short project entry point.
 
 ## Architecture decisions
 
@@ -49,7 +54,11 @@ We publish drafts intentionally — the design history is part of the engineerin
 
 ## Reference
 
-[`reference/`](reference/) — canonical reference material (e.g. [environment variables](reference/environment-variables.md)).
+[`reference/`](reference/) — canonical reference material:
+
+- [API Reference](reference/api.md)
+- [CLI Reference](reference/cli.md)
+- [Environment Variables](reference/environment-variables.md)
 
 ## A note on transparency
 
