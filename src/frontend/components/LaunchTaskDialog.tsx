@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
-import { AVAILABLE_AGENT_TYPES, type ClientMessage, type AutonomyLevel, type AgentType } from '../../shared/protocol.js';
+import { AVAILABLE_AGENT_TYPES, type ClientMessage, type AgentType } from '../../shared/protocol.js';
 import type { ProjectSummary } from '../../core/project-summary.js';
 import { useKookrStore } from '../store/useStore.js';
 import { track } from '../telemetry.js';
@@ -79,9 +79,6 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     const stored = localStorage.getItem('kookr:defaultAgentType') as AgentType | null;
     return defaultAgentType ?? stored ?? serverDefaultAgentType ?? 'claude-code';
   });
-  const [autonomy, setAutonomy] = useState<AutonomyLevel>(() =>
-    (localStorage.getItem('kookr:defaultAutonomy') as AutonomyLevel) || 'supervised'
-  );
   const [draftRestored, setDraftRestored] = useState(initialHadDraft);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const cwdRef = useRef<HTMLInputElement>(null);
@@ -142,7 +139,6 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     }
     track({ type: 'launch_submitted', method: 'manual' });
     track({ type: 'launch_dialog_closed', submitted: true, dwellMs: Date.now() - openedAtRef.current });
-    localStorage.setItem('kookr:defaultAutonomy', autonomy);
     localStorage.setItem('kookr:defaultAgentType', agentType);
     const excerpt = trimmed.slice(0, 40) + (trimmed.length > 40 ? '…' : '');
     const sent = send({
@@ -150,7 +146,6 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       prompt: trimmed,
       cwd: cwd.trim(),
       criteria: criteria.trim() || undefined,
-      autonomy,
       agentType,
     });
     if (sent) {
@@ -388,32 +383,6 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                     <VoiceInputButton inputId="launch-criteria" onTranscript={(text) => setCriteria(text)} />
                   </Suspense>
                 )}
-              </div>
-            </label>
-            <label className="autonomy-toggle">
-              <span className="autonomy-toggle-label">
-                Autonomy
-              </span>
-              <div className="autonomy-options">
-                <button
-                  type="button"
-                  className={`autonomy-option${autonomy === 'supervised' ? ' active' : ''}`}
-                  onClick={() => setAutonomy('supervised')}
-                >
-                  Supervised
-                </button>
-                <button
-                  type="button"
-                  className={`autonomy-option${autonomy === 'autonomous' ? ' active' : ''}`}
-                  onClick={() => setAutonomy('autonomous')}
-                >
-                  Autonomous
-                </button>
-              </div>
-              <div className="autonomy-hint">
-                {autonomy === 'supervised'
-                  ? 'Pauses and waits for your input when the agent stops.'
-                  : 'Auto-proceeds after 3 min when the agent stops (max 2 retries, then switches to supervised).'}
               </div>
             </label>
             <div className="dialog-actions">

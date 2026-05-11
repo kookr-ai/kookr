@@ -541,7 +541,7 @@ kbd {
 .finding-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .finding-header-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
 
-/* Context line: project · branch · autonomy below task name */
+/* Context line: project · branch below task name */
 .finding-context {
   display: flex;
   align-items: center;
@@ -553,7 +553,6 @@ kbd {
 }
 .finding-context .project-badge { font-size: 10px; }
 .finding-context .branch-label { font-size: 10px; color: var(--text-muted); }
-.finding-context .autonomy-badge-inline { font-size: 9px; }
 .finding-context-sep {
   color: var(--text-muted);
   opacity: 0.5;
@@ -619,15 +618,6 @@ kbd {
 .age-badge.fresh { background: rgba(128,128,128,0.15); color: var(--text-muted); }
 .age-badge.aging { background: rgba(251,191,36,0.15); color: var(--amber); }
 .age-badge.stale { background: rgba(251,146,60,0.15); color: #fb923c; }
-.age-badge.auto-proceed-badge {
-  background: rgba(96,165,250,0.18);
-  color: #60a5fa;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.age-badge.auto-proceed-badge:hover {
-  background: rgba(96,165,250,0.35);
-}
 
 .finding-actions { display: flex; gap: 4px; margin-top: 6px; }
 .btn-xs {
@@ -2333,111 +2323,6 @@ textarea::-webkit-resizer { background: transparent; }
 .agent-type-select.compact select {
   padding: 6px 10px;
   font-size: 12px;
-}
-
-/* Autonomy toggle */
-.autonomy-toggle { margin-top: 4px; }
-.autonomy-toggle-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-.autonomy-badge {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--amber, #f59e0b);
-  color: #000;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.autonomy-options {
-  display: flex;
-  gap: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  width: fit-content;
-}
-.autonomy-option {
-  padding: 4px 14px;
-  font-size: 13px;
-  background: var(--surface);
-  color: var(--text-secondary);
-  border: none;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.autonomy-option:not(:last-child) {
-  border-right: 1px solid var(--border);
-}
-.autonomy-option.active {
-  background: var(--teal);
-  color: #000;
-  font-weight: 600;
-}
-.autonomy-option:hover:not(.active) {
-  background: var(--hover);
-}
-.autonomy-hint {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 4px;
-  line-height: 1.4;
-}
-
-/* Autonomy badge on task cards (inline, clickable) */
-.autonomy-badge-inline {
-  font-size: 9px;
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0;
-  cursor: pointer;
-  transition: opacity 0.15s;
-  flex-shrink: 0;
-}
-.autonomy-badge-inline:hover { opacity: 0.8; }
-.autonomy-badge-inline.auto {
-  background: var(--amber, #f59e0b);
-  color: #000;
-}
-.autonomy-badge-inline.supervised {
-  background: rgba(251,191,36,0.12);
-  color: var(--amber);
-}
-
-/* Autonomy toggle in detail panel header */
-.detail-autonomy-toggle {
-  display: inline-flex;
-  gap: 0;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  overflow: hidden;
-  margin-left: 8px;
-}
-.autonomy-option-sm {
-  padding: 2px 8px;
-  font-size: 11px;
-  background: var(--surface);
-  color: var(--text-muted);
-  border: none;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.autonomy-option-sm:not(:last-child) {
-  border-right: 1px solid var(--border);
-}
-.autonomy-option-sm.active {
-  background: var(--teal);
-  color: #000;
-  font-weight: 600;
-}
-.autonomy-option-sm:hover:not(.active) {
-  background: var(--hover);
 }
 
 .dialog-actions {

@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { AgentType, AutonomyLevel, AvailableAgentType, Playbook, ScheduleResponse } from '../../shared/protocol.js';
+import type { AgentType, AvailableAgentType, Playbook, ScheduleResponse } from '../../shared/protocol.js';
 import { AVAILABLE_AGENT_TYPES } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookSelector } from './PlaybookSelector.js';
 import { PlaybookParameterForm } from './PlaybookParameterForm.js';
-import { AgentExecutionConfig } from './AgentExecutionConfig.js';
+import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 
 interface Props {
@@ -84,9 +84,6 @@ export function SchedulesDialog({ onClose }: Props) {
   const [parameterValues, setParameterValues] = useState<Record<string, string>>({});
   const [agentType, setAgentType] = useState<AgentType>(() =>
     (localStorage.getItem('kookr:defaultAgentType') as AgentType | null) ?? defaultAgentType ?? 'claude-code'
-  );
-  const [autonomy, setAutonomy] = useState<AutonomyLevel>(() =>
-    (localStorage.getItem('kookr:defaultAutonomy') as AutonomyLevel | null) ?? 'autonomous'
   );
   const [enabled, setEnabled] = useState(true);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
@@ -187,7 +184,6 @@ export function SchedulesDialog({ onClose }: Props) {
           ...(maxTriggers.trim() ? { maxTriggers: Number(maxTriggers) } : {}),
           cwd: cwd.trim(),
           enabled,
-          autonomy,
           agentType,
           playbook: {
             path: selectedPlaybook.id,
@@ -328,12 +324,10 @@ export function SchedulesDialog({ onClose }: Props) {
             />
             {fieldErrors.parameters && <div className="schedule-field-error">{fieldErrors.parameters}</div>}
 
-            <AgentExecutionConfig
-              agentType={agentType}
-              onAgentTypeChange={setAgentType}
-              autonomy={autonomy}
-              onAutonomyChange={setAutonomy}
-              agentOptions={agentOptions as AvailableAgentType[]}
+            <AgentTypeSelector
+              value={agentType}
+              onChange={setAgentType}
+              options={agentOptions as AvailableAgentType[]}
             />
 
             <label className="schedule-enable-checkbox">

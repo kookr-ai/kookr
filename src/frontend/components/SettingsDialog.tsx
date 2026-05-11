@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { AutonomyLevel } from '../../shared/protocol.js';
 import { isSoundEnabled, setSoundEnabled } from '../audio/sound.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { HookInventorySection } from './HookInventorySection.js';
@@ -28,9 +27,6 @@ export function SettingsDialog({ onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
-  const [autonomy, setAutonomy] = useState<AutonomyLevel>(() =>
-    (localStorage.getItem('kookr:defaultAutonomy') as AutonomyLevel) || 'supervised'
-  );
   const [soundOn, setSoundOn] = useState(isSoundEnabled);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tabRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
@@ -93,11 +89,6 @@ export function SettingsDialog({ onClose }: Props) {
     debounceRef.current = setTimeout(() => {
       void saveSettings(updated);
     }, 500);
-  }
-
-  function handleAutonomyChange(level: AutonomyLevel) {
-    setAutonomy(level);
-    localStorage.setItem('kookr:defaultAutonomy', level);
   }
 
   function handleSoundToggle() {
@@ -269,32 +260,6 @@ export function SettingsDialog({ onClose }: Props) {
                           max={25}
                           step={1}
                         />
-                      </div>
-                    </div>
-                    <div className="settings-row">
-                      <div className="settings-row-info">
-                        <span className="settings-label">Default autonomy</span>
-                        <span className="settings-desc">
-                          Pre-selected autonomy level when launching new tasks. "Supervised" agents
-                          pause and ask for confirmation before taking significant actions. "Autonomous"
-                          agents proceed without asking, using the --dangerously-skip-permissions flag.
-                        </span>
-                      </div>
-                      <div className="autonomy-options">
-                        <button
-                          type="button"
-                          className={`autonomy-option${autonomy === 'supervised' ? ' active' : ''}`}
-                          onClick={() => handleAutonomyChange('supervised')}
-                        >
-                          Supervised
-                        </button>
-                        <button
-                          type="button"
-                          className={`autonomy-option${autonomy === 'autonomous' ? ' active' : ''}`}
-                          onClick={() => handleAutonomyChange('autonomous')}
-                        >
-                          Autonomous
-                        </button>
                       </div>
                     </div>
                   </div>
