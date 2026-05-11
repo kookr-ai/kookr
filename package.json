@@ -42,6 +42,7 @@
     "kb:usage": "node --import tsx scripts/kb-usage-report.ts",
     "shadow:report": "node --import tsx scripts/shadow-report.ts",
     "test:onboarding": "bash scripts/onboarding-smoke-test.sh",
+    "validate:skills": "node --import tsx scripts/validate-skills.ts",
     "test:hooks": "for t in .claude/hooks-tests/*.test.sh; do echo \"== $t ==\"; bash \"$t\" || exit 1; done",
     "demo:record": "pnpm build && node --import tsx demo/record.ts",
     "codex:rebuild": "bash scripts/rebuild-codex.sh",
@@ -66,7 +67,8 @@
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.11",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.5",
+    "yaml": "^2.9.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.1",

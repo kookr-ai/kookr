@@ -38,6 +38,9 @@ jobs:
       - name: Type-check E2E tests
         run: pnpm check:e2e
 
+      - name: Validate skill frontmatter
+        run: pnpm validate:skills
+
       - name: Run tests
         run: pnpm test
 

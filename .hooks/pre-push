@@ -165,6 +165,13 @@ if ! pnpm check:e2e; then
   exit 1
 fi
 
+echo "Validating skill frontmatter..."
+if ! pnpm validate:skills; then
+  echo ""
+  echo "Push rejected: skill frontmatter validation failed."
+  exit 1
+fi
+
 echo "Running tests..."
 if ! pnpm test; then
   echo ""

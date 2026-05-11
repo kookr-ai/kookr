@@ -2,7 +2,7 @@
 name: kookr-codex-pr-state
 description: State management for codex-pr-lessons playbook — persist learnings and update tracking state
 keywords: codex, pr, state, learnings, persist, json
-related: [[codex-pr-plan]], [[codex-pr-critic]], [[codex-pr-threshold]], [[codex-pr-distill]]
+related: [codex-pr-plan, codex-pr-critic, codex-pr-threshold, codex-pr-distill]
 ---
 
 ## When to Use
