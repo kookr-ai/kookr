@@ -138,6 +138,38 @@ async function main() {
     return c.json({ ok: true });
   });
 
+  // Attach loop state directly for compact-control tests without exposing the
+  // removed generic Ralph API.
+  server.app.post('/api/test/set-ralph-loop/:taskId', async (c) => {
+    const taskId = c.req.param('taskId');
+    const task = server.taskStore.getTask(taskId);
+    if (!task) return c.json({ error: `Task not found: ${taskId}` }, 404);
+
+    const body = await c.req.json().catch(() => ({})) as {
+      status?: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+      iterationCap?: number;
+      currentIteration?: number;
+    };
+    const iterationCap =
+      Number.isInteger(body.iterationCap) && body.iterationCap! > 0 ? body.iterationCap! : 12;
+    const currentIteration =
+      Number.isInteger(body.currentIteration) && body.currentIteration! >= 0 ? body.currentIteration! : 2;
+
+    task.ralphLoop = {
+      prompt: task.prompt,
+      iterationCap,
+      currentIteration,
+      status: body.status ?? 'running',
+      lastIterationStartedAt: Date.now(),
+      cumulativeIterations: currentIteration,
+    };
+    task.updatedAt = new Date();
+
+    const snapshot = server.monitor.getSnapshot();
+    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    return c.json({ ok: true, ralphLoop: task.ralphLoop });
+  });
+
   // Add a contribution record (for project tracking tests).
   // Maps the legacy ContributionRecord shape used by E2E fixtures onto the
   // unified OssAttemptStore. Seeds both the attempts list (so open-PR count

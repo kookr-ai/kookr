@@ -7,16 +7,23 @@ interface LaunchedTask {
 }
 
 async function launchRalphTask(request: APIRequestContext, prompt: string, cwd: string): Promise<LaunchedTask> {
-  const res = await request.post('/api/tasks/ralph-loop', {
+  const res = await request.post('/api/tasks', {
     data: {
       prompt,
       cwd,
-      iterationCap: 12,
       autonomy: 'supervised',
     },
   });
   expect(res.ok()).toBe(true);
-  return await res.json() as LaunchedTask;
+  const task = await res.json() as LaunchedTask;
+  const loopRes = await request.post(`/api/test/set-ralph-loop/${task.id}`, {
+    data: {
+      iterationCap: 12,
+      status: 'running',
+    },
+  });
+  expect(loopRes.ok()).toBe(true);
+  return task;
 }
 
 async function pauseRalphTask(request: APIRequestContext, taskId: string): Promise<void> {

@@ -10,9 +10,7 @@ import { sendDirectAgentInput } from '../use-cases/agent-input.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { launchTask } from '../launch-service.js';
 import { cancelTask as cancelTaskLifecycle } from '../agent-lifecycle.js';
-import { detectStandalonePlugin } from '../../core/ralph-plugin-coexistence.js';
 import { DEFAULT_RALPH_ITERATION_READ_LIMIT, MAX_RALPH_ITERATION_READ_LIMIT, appendIterationRecord, formatIterationLogCsv, readIterationLog } from '../../core/ralph-iteration-log.js';
-import { validateRalphLoopRequest } from '../ralph-loop-service.js';
 import { canonicalizeTarget } from '../../core/ralph-iteration-verdict.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import type { LaunchDependency } from '../../core/playbook.js';
@@ -42,6 +40,13 @@ type EditEventMiss =
 /** Regex used to validate the `:agentId` and `:toolUseId` path params. Length
  *  is capped so oversize inputs 400 before any lookup work. */
 const EDIT_EVENT_PARAM_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+function removedGenericRalphBody(): { error: string; code: 'generic_ralph_removed' } {
+  return {
+    error: 'Generic Ralph task launch and attach endpoints have been removed. Use loopable playbooks instead.',
+    code: 'generic_ralph_removed',
+  };
+}
 
 /** Same shape as EDIT_EVENT_PARAM_RE — reused for session id params that must
  *  not carry path-separator characters. Defense in depth against any future
@@ -144,154 +149,9 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     }
   });
 
-  app.post('/api/tasks/ralph-loop', async (c) => {
-    let body: {
-      prompt?: unknown;
-      cwd?: unknown;
-      criteria?: string;
-      parentTaskId?: unknown;
-      autonomy?: string;
-      agentType?: string;
-      iterationCap?: unknown;
-      stopPredicate?: unknown;
-      stallPredicate?: unknown;
-      zeroDiffConvergence?: unknown;
-      costCapUsd?: unknown;
-      stallConfig?: unknown;
-    };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: 'invalid JSON body' }, 400);
-    }
+  app.post('/api/tasks/ralph-loop', (c) => c.json(removedGenericRalphBody(), 410));
 
-    if (typeof body.cwd !== 'string' || body.cwd.trim().length === 0) {
-      return c.json({ error: 'cwd is required and must be a string' }, 400);
-    }
-    if (body.parentTaskId !== undefined) {
-      if (typeof body.parentTaskId !== 'string') {
-        return c.json({ error: 'parentTaskId must be a string' }, 400);
-      }
-      if (!taskStore.getTask(body.parentTaskId)) {
-        return c.json({ error: `Parent task not found: ${body.parentTaskId}` }, 404);
-      }
-    }
-
-    const ralphInput = validateRalphLoopRequest(body);
-    if (!ralphInput.ok) return c.json({ error: ralphInput.error }, 400);
-
-    const coexistence = await detectStandalonePlugin(body.cwd);
-    if (coexistence.detected) {
-      return c.json({
-        error: 'standalone ralph-wiggum plugin detected — would double-fire on Stop',
-        conflictKind: 'standalone_ralph_plugin',
-        code: 'standalone_ralph_plugin_detected',
-        matchedFiles: coexistence.matchedFiles,
-        reasons: coexistence.reasons,
-      }, 409);
-    }
-
-    try {
-      const rawSource = c.req.header('X-Kookr-Launch-Source');
-      const launchSource: 'cli' | 'ui' | 'api' =
-        rawSource === 'cli' || rawSource === 'ui' ? rawSource : 'api';
-      const autonomy = body.autonomy === 'autonomous' ? 'autonomous' as const : undefined;
-      const result = await launchTask(deps.launchServiceDeps, {
-        prompt: ralphInput.value.prompt,
-        cwd: body.cwd,
-        criteria: body.criteria,
-        parentTaskId: body.parentTaskId,
-        autonomy,
-        agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
-        launchSource,
-        disableDedup: true,
-        // PR4: inject RALPH_VERDICT_FILE on the first agent runtime so
-        // iteration 0 can write a verdict — the launchFreshRuntime path used
-        // for iterations 1+ already does this; this closes the gap.
-        ralphVerdictEnv: true,
-      });
-
-      if (result.duplicate) {
-        return c.json({ error: 'Ralph task launch unexpectedly resolved to an existing task; no loop was attached' }, 409);
-      }
-      // PR4: refuse to attach a Ralph loop to a queued task. Promotion via
-      // `promotePendingTasks` calls adapter.launch with no extraEnv, so a
-      // queued ralph launch would silently lose `RALPH_VERDICT_FILE` on
-      // iteration 0 — the very bug PR4 is fixing for fresh launches. Mirrors
-      // the equivalent rejection in `looped-playbook-launch.ts`.
-      if (result.queued) {
-        return c.json({
-          error: 'Ralph task launch was queued (max active tasks reached). Retry when concurrency frees up.',
-          taskId: result.task.id,
-          status: 'pending',
-        }, 503);
-      }
-
-      await ralphLoopService.startLoop(result.task, ralphInput.value);
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
-      return c.json({ ...result.task }, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return c.json({ error: message }, 500);
-    }
-  });
-
-  /**
-   * Attach a Ralph iteration loop to an existing task.
-   *
-   * Refuses (409) when:
-   *   - the task already has an active loop (would shadow on the next Stop)
-   *   - the standalone `ralph-wiggum@*` Claude Code plugin is enabled in any
-   *     settings file (would double-fire on the same Stop event)
-   *
-   * Requires (400) when:
-   *   - prompt is missing, empty, or non-string
-   *   - iterationCap is missing, non-integer, or non-positive
-   *   - stopPredicate (when present) is non-string
-   *   - stallPredicate (when present) is non-string
-   *   - zeroDiffConvergence.consecutiveIterations (when present) is not a positive integer
-   *   - costCapUsd (when present) is not a positive finite number
-   *   - stallConfig (when present) has invalid fields — see `validateRalphLoopRequest`
-   */
-  app.post('/api/tasks/:id/ralph-loop', async (c) => {
-    const id = c.req.param('id');
-    const task = taskStore.getTask(id);
-    if (!task) return c.json({ error: 'Task not found' }, 404);
-
-    let body: {
-      prompt?: unknown;
-      iterationCap?: unknown;
-      stopPredicate?: unknown;
-      stallPredicate?: unknown;
-      zeroDiffConvergence?: unknown;
-      costCapUsd?: unknown;
-      stallConfig?: unknown;
-    };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: 'invalid JSON body' }, 400);
-    }
-
-    const ralphInput = validateRalphLoopRequest(body);
-    if (!ralphInput.ok) return c.json({ error: ralphInput.error }, 400);
-
-    const coexistence = await detectStandalonePlugin(task.cwd);
-    if (coexistence.detected) {
-      return c.json({
-        error: 'standalone ralph-wiggum plugin detected — would double-fire on Stop',
-        conflictKind: 'standalone_ralph_plugin',
-        code: 'standalone_ralph_plugin_detected',
-        matchedFiles: coexistence.matchedFiles,
-        reasons: coexistence.reasons,
-      }, 409);
-    }
-
-    const result = await ralphLoopService.attachLoop(task, ralphInput.value);
-    if (!result.ok) return c.json(result.body, result.status);
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
-    return c.json({ ok: true, ralphLoop: task.ralphLoop });
-  });
+  app.post('/api/tasks/:id/ralph-loop', (c) => c.json(removedGenericRalphBody(), 410));
 
   app.get('/api/tasks/:id/ralph-loop/iterations', async (c) => {
     const id = c.req.param('id');
