@@ -595,6 +595,15 @@ export function PlaybookBrowser({
   }
 
   function buildPlaybookLaunchPayload(playbookPath: string) {
+    const selectedSourceCwd = selected?.sourceCwd.trim();
+    const pinnedCwd = selected?.cwd?.trim();
+    const targetCwd = effectiveTaskTargetCwd;
+    const payloadTargetCwd = !usesSplitLaunchFields && pinnedCwd ? pinnedCwd : targetCwd;
+    const sourceDiffersFromTarget = Boolean(selectedSourceCwd && selectedSourceCwd !== targetCwd);
+    const shouldSendSplitFields = usesSplitLaunchFields || sourceDiffersFromTarget;
+    const sourceCwd = usesSplitLaunchFields
+      ? effectivePlaybookSourceCwd
+      : selectedSourceCwd || effectivePlaybookSourceCwd;
     const base = {
       playbookPath,
       parameterValues: paramValues,
@@ -602,7 +611,7 @@ export function PlaybookBrowser({
       agentType,
       ...(selected?.scope ? { scope: selected.scope } : {}),
     };
-    if (!usesSplitLaunchFields) {
+    if (!shouldSendSplitFields) {
       return {
         ...base,
         cwd,
@@ -610,8 +619,8 @@ export function PlaybookBrowser({
     }
     return {
       ...base,
-      playbookSourceCwd: effectivePlaybookSourceCwd,
-      taskTargetCwd: effectiveTaskTargetCwd,
+      playbookSourceCwd: sourceCwd,
+      taskTargetCwd: payloadTargetCwd,
       ...(projectContext?.project ? { projectId: projectContext.project } : {}),
     };
   }
