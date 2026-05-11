@@ -18,8 +18,6 @@ You run several Claude Code or Codex CLI agents in parallel. One loops on the sa
 
 <img src="assets/branding/derived/kookr-screenshot.png" alt="Kookr dashboard - detect anomalies, respond, auto-advance" width="960" />
 
-[<img src="demo/assets/kookr-demo.gif" alt="Kookr demo preview - launch agents, triage anomalies, reply, and return to all clear" width="960" />](https://github.com/kookr-ai/kookr/releases/tag/demo-v1)
-
 [Watch the narrated demo video](https://github.com/kookr-ai/kookr/releases/tag/demo-v1)
 
 ## What Kookr Does

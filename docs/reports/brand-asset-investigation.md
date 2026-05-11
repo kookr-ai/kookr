@@ -29,7 +29,7 @@ The static logo is appropriate for restrained brand placement in three spots:
 
 - **Browser favicon and app icon** — the obvious win. Tabs are unbranded today.
 - **Top-bar wordmark** — pair an 18 px brand glyph with the existing `KOOKR` text wordmark. No layout shift, no animation, identity at a glance.
-- **README hero** — a small (~96 px) brand mark above the H1. The current README has a hero demo GIF; the brand mark sits above it without competing.
+- **README hero** — a small (~96 px) brand mark above the H1. At the time of this report, the README already had a hero demo animation; the brand mark sat above it without competing.
 
 These are all integrated in this PR.
 
@@ -39,7 +39,7 @@ The `docs/architecture.md` "operational dashboard" framing and the issue's own d
 
 - **Audio track present.** Cannot be used as-is.
 - **Operational dashboard tone.** A 6-second branded animation competes with task status, terminal output, and findings — exactly what the issue warns against.
-- **README already has motion.** The hero already includes `demo/assets/kookr-demo.gif` and a 76-second narrated demo link. A second animated asset above the demo would dilute attention from the demo, which carries more product information.
+- **README already has motion.** The hero already included a demo animation and a 76-second narrated demo link. A second animated asset above the demo would dilute attention from the demo, which carries more product information.
 - **Bundle/runtime cost.** Even at 1.1 MB muted, this is more weight than a static dashboard should ship for cosmetic motion.
 
 A muted derivative is produced (see below) so a future use case (e.g., a dedicated landing page outside the dashboard) can adopt it without re-processing.
