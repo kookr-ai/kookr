@@ -268,6 +268,19 @@ Body.
     expect(playbook.body).toContain('## Stop Conditions');
   });
 
+  test('shipped parallel issue batch playbook keeps orchestration guardrails', async () => {
+    const playbook = await readFile('.kookr/playbooks/parallel-issue-batch.md', 'utf8');
+    const parsed = parsePlaybook(playbook, 'parallel-issue-batch.md', '/project');
+
+    expect(parsed.name).toBe('Parallel Issue Batch');
+    expect(parsed.parameters.map((p) => p.name)).toContain('repoFullName');
+    expect(parsed.effectiveLoop?.stopPredicate).toContain('.batch-stop');
+    expect(parsed.body).toContain('write-scope matrix');
+    expect(parsed.body).toContain('No two selected issues may have overlapping expected files');
+    expect(parsed.body).toContain('[Pasted text #N +M lines]');
+    expect(parsed.body).toContain('node "$KOOKR_REPO/bin/kookr-spawn.js"');
+  });
+
   test('validates zero-diff convergence against default iteration cap', () => {
     const content = `---
 name: Bad zero-diff
