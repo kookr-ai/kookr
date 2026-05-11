@@ -17,7 +17,6 @@ export interface ParsedArgs {
   positional: string[];
   cwd: string | null;
   agent: 'claude-code' | 'codex-cli' | null;
-  autonomous: boolean;
   criteria: string | null;
   promptFile: string | null;
   help: boolean;
@@ -51,7 +50,6 @@ export interface PostTaskArgs {
   prompt: string;
   cwd: string;
   agent: 'claude-code' | 'codex-cli' | null;
-  autonomous: boolean;
   criteria: string | null;
 }
 

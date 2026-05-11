@@ -819,7 +819,6 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       result = await deps.launchTask({
         prompt: consumed.spec.prompt,
         cwd: consumed.spec.cwd,
-        autonomy: 'supervised',
         agentType: consumed.spec.agentType,
         launchSource: 'remote-chat-telegram',
       });

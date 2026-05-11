@@ -5,7 +5,6 @@ import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
 import type { SnoozeSuppressionTracker } from '../../core/snooze-suppression.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
-import type { AutonomyOrchestrator } from '../autonomy-orchestrator.js';
 import { nowISO } from '../../core/interaction-log.js';
 import { recordFalsePositive } from '../../core/anomaly-detector.js';
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
@@ -14,9 +13,9 @@ import { sendDirectAgentInput } from '../use-cases/agent-input.js';
  * Narrow dependency bag for anomaly-response messages.
  *
  * Groups agent-level triage operations: sending input/keystrokes, clearing
- * or snoozing findings, permission choices, auto-proceed cancellation, and
- * false-positive feedback. These all mutate per-agent state — none of them
- * touch task-level lifecycle or workspace state.
+ * or snoozing findings, permission choices, and false-positive feedback.
+ * These all mutate per-agent state — none of them touch task-level lifecycle
+ * or workspace state.
  */
 export interface AnomalyHandlerDeps {
   send: (msg: ServerMessage) => void;
@@ -26,7 +25,6 @@ export interface AnomalyHandlerDeps {
   queue: AttentionQueue;
   interactionLog?: DeferredInteractionLogWriter;
   suppressionTracker?: SnoozeSuppressionTracker;
-  autonomyOrchestrator?: AutonomyOrchestrator;
   onRespond?: (agentId: string, outcome?: 'used' | 'cleared') => void;
 }
 
@@ -41,7 +39,6 @@ type AnomalyMessage = Extract<ClientMessage, {
     | 'cancelSnooze'
     | 'findingFeedback'
     | 'permissionChoice'
-    | 'cancelAutoProceed'
 }>;
 
 function latestLiveSession(task: Task): Task['sessions'][number] | undefined {
@@ -69,17 +66,6 @@ export class AnomalyHandler {
   ): Promise<void> {
     switch (msg.type) {
       case 'respond': {
-        // Reject if auto-proceed is mid-fire (prevents double input)
-        if (this.deps.autonomyOrchestrator?.isFiring(msg.agentId)) {
-          this.deps.send({
-            type: 'alert', agentId: msg.agentId,
-            summary: 'Auto-proceed in progress, please wait',
-            details: '', severity: 'info',
-          });
-          return;
-        }
-        // Cancel auto-proceed timer and reset retries
-        this.deps.autonomyOrchestrator?.onUserRespond(msg.agentId);
         // Capture anomaly from the queue (persisted detectedAt) before clearing
         const preAnomaly = this.deps.queue.getAnomaly(msg.agentId);
         await this.deps.adapter.sendInput(msg.agentId, msg.input);
@@ -130,7 +116,6 @@ export class AnomalyHandler {
         await sendDirectAgentInput({
           adapter: this.deps.adapter,
           interactionLog: this.deps.interactionLog,
-          autonomyOrchestrator: this.deps.autonomyOrchestrator,
         }, msg.agentId, msg.input, 'direct_reply');
         return;
       }
@@ -321,7 +306,6 @@ export class AnomalyHandler {
       }
 
       case 'permissionChoice': {
-        this.deps.autonomyOrchestrator?.onPermissionChoice(msg.agentId);
         // Validate keystroke: single char from whitelist only
         if (!/^[1-9yna]$/.test(msg.keystroke)) {
           return;
@@ -354,11 +338,6 @@ export class AnomalyHandler {
             timestamp: permTs,
           });
         }
-        return;
-      }
-
-      case 'cancelAutoProceed': {
-        await this.deps.autonomyOrchestrator?.cancelByUser(msg.agentId);
         return;
       }
     }

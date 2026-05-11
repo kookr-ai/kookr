@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { resolve as pathResolve } from 'node:path';
-import type { Task, TaskStore, AutonomyLevel } from '../core/tasks.js';
+import type { Task, TaskStore } from '../core/tasks.js';
 import { type AgentType, DEFAULT_AGENT_TYPE } from '../core/agent-types.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { LaunchDependency } from '../core/playbook.js';
@@ -55,8 +55,6 @@ export interface LaunchOpts {
   playbookId?: string;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
-  /** Autonomy level for the task. Default: 'supervised'. */
-  autonomy?: AutonomyLevel;
   /** Agent type to launch. Defaults to the registry default. */
   agentType?: AgentType;
   /** When true, always create a new task instead of returning an existing active duplicate. */
@@ -201,7 +199,6 @@ export async function launchTask(
     cwd: opts.cwd,
     criteria: opts.criteria,
     parentTaskId: opts.parentTaskId,
-    autonomy: opts.autonomy,
     agentType,
     playbookParameterValues: opts.playbookParameterValues,
   });

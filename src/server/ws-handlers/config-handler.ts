@@ -1,10 +1,8 @@
 import type { ServerMessage, ClientMessage } from '../../shared/contracts/messages.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
 import type { DeferredTelemetryLogWriter } from '../../core/telemetry.js';
-import type { AutonomyOrchestrator } from '../autonomy-orchestrator.js';
 import type { CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
 import type { ProjectConfig, ProjectConfigStore } from '../../core/project-config-store.js';
-import type { TaskStore } from '../../core/tasks.js';
 import { nowISO } from '../../core/interaction-log.js';
 
 /**
@@ -15,10 +13,8 @@ import { nowISO } from '../../core/interaction-log.js';
  */
 export interface ConfigHandlerDeps {
   send: (msg: ServerMessage) => void;
-  taskStore: TaskStore;
   interactionLog?: DeferredInteractionLogWriter;
   telemetryLog?: DeferredTelemetryLogWriter;
-  autonomyOrchestrator?: AutonomyOrchestrator;
   circuitBreakerRegistry?: CircuitBreakerRegistry;
   /** Project config persistence for `setProjectConfig` messages. */
   projectConfigStore?: ProjectConfigStore;
@@ -28,7 +24,6 @@ export interface ConfigHandlerDeps {
 
 type ConfigMessage = Extract<ClientMessage, {
   type:
-    | 'setAutonomy'
     | 'setProjectConfig'
     | 'rearmCircuitBreaker'
     | 'telemetry'
@@ -44,22 +39,6 @@ export class ConfigHandler {
 
   async handle(msg: ConfigMessage): Promise<void> {
     switch (msg.type) {
-      case 'setAutonomy': {
-        const from = this.deps.taskStore.setAutonomy(msg.taskId, msg.level);
-        if (from !== undefined) {
-          // Cancel timers if switching to supervised
-          this.deps.autonomyOrchestrator?.onAutonomyChanged(msg.taskId, msg.level);
-          await this.deps.interactionLog?.append({
-            type: 'autonomy_changed',
-            taskId: msg.taskId,
-            from,
-            to: msg.level,
-            timestamp: nowISO(),
-          });
-        }
-        return;
-      }
-
       case 'setProjectConfig': {
         if (this.deps.projectConfigStore) {
           // Mirror POST /api/projects/configs: patch, persist, broadcast. Only

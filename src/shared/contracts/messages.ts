@@ -7,7 +7,7 @@ import type { QuickAction } from '../../core/response-assist.js';
 import type { TelemetryEvent } from '../../core/telemetry.js';
 import type { ProjectSummary } from '../../core/project-summary.js';
 import type { ProjectConfig } from '../../core/project-config-store.js';
-import type { AutonomyLevel, TaskCompletionFeedback } from '../../core/tasks.js';
+import type { TaskCompletionFeedback } from '../../core/tasks.js';
 import type { AgentType, AvailableAgentType } from '../../core/agent-types.js';
 import type { LaunchDependency } from '../../core/playbook.js';
 import type { QuotaStatus } from '../../core/quota-types.js';
@@ -88,7 +88,6 @@ type LaunchPlaybookBaseMessage = {
   type: 'launchPlaybook';
   playbookPath: string;
   parameterValues: Record<string, string>;
-  autonomy?: AutonomyLevel;
   agentType?: AgentType;
   scope?: PlaybookScope;
 };
@@ -177,7 +176,7 @@ export type ClientMessage =
   | { type: 'skipAll'; agentIds: string[] }
   | { type: 'snooze'; agentId: string; taskId?: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }
   | { type: 'cancelSnooze'; agentId: string; taskId?: string }
-  | { type: 'launch'; prompt: string; cwd: string; criteria?: string; autonomy?: AutonomyLevel; agentType?: AgentType; dependencies?: LaunchDependency[] }
+  | { type: 'launch'; prompt: string; cwd: string; criteria?: string; agentType?: AgentType; dependencies?: LaunchDependency[] }
   | { type: 'completeTask'; taskId: string; feedback?: TaskCompletionFeedback }
   | { type: 'setTaskFeedback'; taskId: string; feedback: TaskCompletionFeedback }
   | { type: 'requestTaskReflect'; taskId: string; direction: 'up' | 'down' }
@@ -196,8 +195,6 @@ export type ClientMessage =
   | { type: 'ackTerminatedTask'; taskId: string }
   | { type: 'achievement:reset' }
   | { type: 'achievement:setEnabled'; enabled: boolean }
-  | { type: 'setAutonomy'; taskId: string; level: AutonomyLevel }
-  | { type: 'cancelAutoProceed'; agentId: string }
   | { type: 'permissionChoice'; agentId: string; keystroke: string }
   | { type: 'rearmCircuitBreaker'; name: string }
   | { type: 'findingFeedback'; agentId: string; anomalyType: AnomalyType; explanation: string; verdict: 'false_positive' }

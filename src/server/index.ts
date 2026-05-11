@@ -77,8 +77,6 @@ import { ACHIEVEMENT_BY_ID } from '../core/achievement-catalog.js';
 import { loadSettings, type KookrSettings } from '../core/settings-store.js';
 import { CircuitBreaker, CircuitBreakerRegistry } from '../core/circuit-breaker.js';
 import { CircuitBreakerLlmClient } from '../core/circuit-breaker-llm-client.js';
-import { AutoProceedService } from './auto-proceed.js';
-import { AutonomyOrchestrator } from './autonomy-orchestrator.js';
 import { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
 import { ScheduleStore } from '../core/schedule.js';
@@ -554,15 +552,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     wsBroadcastCount++;
     // Auto-inject lifetime spending and achievements into snapshot messages
     if (msg.type === 'snapshot') {
-      // Enrich with auto-proceed countdown timestamps
-      if (autonomyOrchestrator) {
-        for (const agent of msg.agents) {
-          const proceedAt = autonomyOrchestrator.getActiveProceedAt(agent.agentId);
-          if (proceedAt && agent.anomaly) {
-            agent.anomaly.autoProceedingAt = proceedAt;
-          }
-        }
-      }
       // Run snapshot-derived achievement check before reading getUnlocked() so
       // any new unlocks land in this same snapshot's achievements field.
       if (snapshotAchievementsReady && achievementWatcher) {
@@ -626,17 +615,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         unlockedAt: unlock.unlockedAt,
       });
     }
-  });
-
-  // --- Auto-proceed service + autonomy orchestrator ---
-
-  const autoProceedService = new AutoProceedService({
-    taskStore, monitor, queue, adapter,
-    interactionLog, broadcastToAll, serverCwd,
-  });
-
-  const autonomyOrchestrator = new AutonomyOrchestrator({
-    taskStore, monitor, queue, autoProceedService, interactionLog,
   });
 
   // Late-bound R16 block-alert callback. The Telegram integration is started
@@ -803,7 +781,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       watchdog,
       shadowRegistry,
       tokenTracker,
-      autonomyOrchestrator,
       suppressionTracker,
       checkpointCycler,
     }),
@@ -814,7 +791,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const { abortPendingSuggestion } = wireEventPipeline({
     adapter, monitor, taskStore, tokenTracker, watchdog,
     githubScanner, llmClient, serverCwd, broadcastToAll,
-    autonomyOrchestrator, telemetryLog,
+    telemetryLog,
     checkpointCycler,
     ralphCycler,
     ralphLoopService,
@@ -851,7 +828,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcastToAll,
     serverCwd,
   });
-  autonomyOrchestrator.rearmAfterRestart();
 
   // Schedule system — load schedules and start the cron runner
   const scheduleStore = new ScheduleStore(kookrDir);
@@ -922,7 +898,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,
-    autonomyOrchestrator, suppressionTracker, scheduleService, scheduleRunner,
+    suppressionTracker, scheduleService, scheduleRunner,
     diagnosticRunner,
     terminalBackend,
     startupRecoverySummary,
@@ -1074,7 +1050,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStore, queue, monitor, adapter, adapterRegistry,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
     serverCwd, sttUrl, abortPendingSuggestion,
-    lifecycleExtras: { hookWatcher, watchdog, shadowRegistry, tokenTracker, autonomyOrchestrator },
+    lifecycleExtras: { hookWatcher, watchdog, shadowRegistry, tokenTracker },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
     broadcastProjectSummaries,
     launchTask: (opts) => launchTask(launchServiceDeps, opts),
@@ -1150,9 +1126,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     // Drain any pending suggestion lifecycles before shutdown
     drainLifecycles(telemetryLog);
-
-    // Stop auto-proceed timers
-    autonomyOrchestrator.dispose();
 
     // Stop diagnostic runner
     diagnosticRunner.dispose();

@@ -169,7 +169,6 @@ export class ScheduleRunner {
         name: launch.name,
         playbookId: launch.playbookId,
         projectId: launch.projectId,
-        autonomy: schedule.autonomy,
         agentType: schedule.agentType,
         disableDedup: true,
       });
