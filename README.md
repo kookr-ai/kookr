@@ -96,7 +96,7 @@ pnpm dev         # backend on :4801 + Vite frontend on :5173
 
 Open `http://localhost:5173` in your browser. You're ready to launch and supervise agents.
 
-If anything goes wrong, run `pnpm doctor` — it checks Node/pnpm versions, build tools, the dtach binary, Docker (for voice features), GPU availability, and whether ports 4800 / 5173 are free, then prints a copy-pasteable summary with fix commands.
+If anything goes wrong, run `pnpm run doctor` — it checks Node/pnpm versions, build tools, the dtach binary, Docker (for voice features), GPU availability, and whether ports 4800 / 5173 are free, then prints a copy-pasteable summary with fix commands.
 
 Optional features (voice, Telegram, LLM-backed AI suggestions) are off by default. Copy [`.env.example`](.env.example) to `.env` and uncomment only what you need — see [`docs/reference/environment-variables.md`](docs/reference/environment-variables.md) for the full reference.
 
@@ -104,7 +104,7 @@ Optional features (voice, Telegram, LLM-backed AI suggestions) are off by defaul
 <summary>Troubleshooting</summary>
 
 - **`serveStatic: root path '...dist/frontend' is not found` on first request** — only emitted by older builds (pre-`fix/onboarding-polish`). In dev the backend on `:4801` does not serve frontend assets — Vite does, on `:5173`. Harmless; gone after `pnpm install` on a current checkout.
-- **`Ignored build scripts: protobufjs@7.5.4` during `pnpm install`** — pnpm 10's secure-by-default behavior. Current `package.json` allow-lists `protobufjs`, so the warning should not appear after a fresh install. If you still see it, run `pnpm install` again to pick up the allow-list.
+- **`Ignored build scripts: protobufjs@7.5.x` or `@google/genai@2.x` during `pnpm install`** — pnpm 10's secure-by-default behavior. Current `package.json` allow-lists both packages, so the warning should not appear after a fresh install. If you still see it, run `pnpm install` again to pick up the allow-list.
 
 </details>
 
@@ -206,6 +206,18 @@ If you use Claude Code or Codex CLI to work on this repo, the bundled `.claude/s
 ```bash
 bash scripts/install-hooks.sh   # installs hooks/oss-stale-scout-gate.sh into ~/.claude/hooks/
 ```
+
+### Onboarding smoke test
+
+Maintainers can run the fresh-environment smoke harness locally or through the manual `Onboarding Smoke Test` GitHub Actions workflow:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... bash scripts/onboarding-smoke-test.sh
+```
+
+The driver `claude` command runs on the host and controls a clean Ubuntu container through Docker. The script preflights host-side Claude Code authentication before starting the walkthrough and writes a failure report if auth is unavailable. Docker uses the default `bridge` network; override with `DOCKER_NETWORK=<name>` only when diagnosing host-specific Docker DNS issues.
+
+Set `ONBOARDING_CONTAINER_AGENT_SMOKE=1` to additionally install Claude Code inside the clean container, pass only `ANTHROPIC_API_KEY` into that `docker exec` process, and verify that Kookr can launch an authenticated Claude Code agent with hooks and toolkit plugin injection. Do not mount your whole `~/.claude` into the container for this test — that would import user-global skills, hooks, MCP config, and auth state that can hide missing Kookr setup.
 
 ### Kookr Toolkit (Claude Code plugin)
 

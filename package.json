@@ -96,6 +96,7 @@
       }
     },
     "onlyBuiltDependencies": [
+      "@google/genai",
       "esbuild",
       "node-pty",
       "protobufjs"

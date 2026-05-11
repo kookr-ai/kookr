@@ -10,12 +10,148 @@ SETTINGS_FILE="$REPORT_DIR/onboarding-settings-$TIMESTAMP.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 STAGING_DIR="$(mktemp -d -t kookr-onboarding-stage-XXXXXX)"
+DOCKER_NETWORK="${DOCKER_NETWORK:-bridge}"
+CLAUDE_PREFLIGHT_TIMEOUT_S="${CLAUDE_PREFLIGHT_TIMEOUT_S:-60}"
+ONBOARDING_CONTAINER_AGENT_SMOKE="${ONBOARDING_CONTAINER_AGENT_SMOKE:-0}"
+
+write_failure_report() {
+  local title="$1"
+  local detail="$2"
+  mkdir -p "$REPORT_DIR"
+  cat > "$REPORT_FILE" <<REPORT
+# Onboarding Smoke Test Report
+
+**Date:** $(date +%Y-%m-%d)
+**README version:** $(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+**Verdict:** FAIL
+
+## Setup Steps
+
+### Preflight: $title
+- **Command:** \`claude -p --settings <settings-file> "Reply exactly KOOKR_PREFLIGHT_OK."\`
+- **Result:** FAILURE
+- **Output:** $detail
+- **Issue:** The smoke harness cannot drive the clean environment unless the host running this script has a noninteractive Claude Code authentication path.
+
+## Gaps Found
+
+1. Claude Code authentication was not available to the smoke-test driver.
+
+## Recommendations
+
+1. In CI, set the \`CLAUDE_API_KEY\` repository secret so the workflow can export \`ANTHROPIC_API_KEY\` for Claude Code.
+2. For local runs, either run \`claude /login\` on the host first or export \`ANTHROPIC_API_KEY\`.
+REPORT
+}
+
+run_claude_preflight() {
+  echo "[preflight] Checking host Claude Code authentication..."
+  if ! command -v claude >/dev/null 2>&1; then
+    write_failure_report "Claude Code CLI missing" "claude command not found"
+    echo "ERROR: claude command not found. Report written to: $REPORT_FILE"
+    return 1
+  fi
+
+  local output_file
+  output_file="$(mktemp -t kookr-claude-preflight-XXXXXX)"
+  local preflight_status=0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$CLAUDE_PREFLIGHT_TIMEOUT_S" \
+      claude -p --settings "$SETTINGS_FILE" "Reply exactly KOOKR_PREFLIGHT_OK." \
+      >"$output_file" 2>&1 || preflight_status=$?
+  else
+    claude -p --settings "$SETTINGS_FILE" "Reply exactly KOOKR_PREFLIGHT_OK." \
+      >"$output_file" 2>&1 || preflight_status=$?
+  fi
+  if [ "$preflight_status" -ne 0 ]; then
+    local detail
+    detail="$(tail -n 20 "$output_file" | sed ':a;N;$!ba;s/\n/\\n/g')"
+    write_failure_report "Claude Code auth unavailable" "$detail"
+    echo "ERROR: Claude Code preflight failed. Report written to: $REPORT_FILE"
+    cat "$REPORT_FILE"
+    rm -f "$output_file"
+    return 1
+  fi
+  rm -f "$output_file"
+}
+
+run_container_agent_smoke() {
+  if [ "$ONBOARDING_CONTAINER_AGENT_SMOKE" != "1" ]; then
+    return 0
+  fi
+
+  echo ""
+  echo "=== Optional Container Agent Launch Smoke ==="
+
+  if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "ERROR: ONBOARDING_CONTAINER_AGENT_SMOKE=1 requires ANTHROPIC_API_KEY."
+    return 1
+  fi
+
+  docker exec -u developer -w /home/developer/kookr "$CONTAINER_NAME" bash -lc '
+    set -euo pipefail
+    export PATH="$HOME/.local/bin:$PATH"
+    if ! command -v claude >/dev/null 2>&1; then
+      curl -fsSL https://claude.ai/install.sh | bash >/tmp/kookr-claude-install.log 2>&1
+    fi
+  '
+
+  docker exec -e ANTHROPIC_API_KEY -u developer -w /home/developer/kookr "$CONTAINER_NAME" bash -lc '
+    set -euo pipefail
+    export PATH="$HOME/.local/bin:$PATH"
+
+    pnpm build >/tmp/kookr-container-build.log 2>&1
+    KOOKR_PORT=4901 ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" PATH="$PATH" \
+      nohup node dist/server/start.js >/tmp/kookr-container-server.log 2>&1 &
+    server_pid=$!
+    trap "kill $server_pid 2>/dev/null || true" EXIT
+
+    for _ in $(seq 1 60); do
+      if curl -fsS http://127.0.0.1:4901/api/health >/tmp/kookr-container-health.json 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    curl -fsS http://127.0.0.1:4901/api/health >/tmp/kookr-container-health.json
+
+    task_json="$(curl -fsS -X POST http://127.0.0.1:4901/api/tasks \
+      -H "Content-Type: application/json" \
+      -d "{\"prompt\":\"Reply exactly KOOKR_CONTAINER_AGENT_OK and then stop. Do not edit files.\",\"cwd\":\"/home/developer/kookr\",\"agentType\":\"claude-code\"}")"
+    printf "%s" "$task_json" >/tmp/kookr-container-task.json
+    task_id="$(printf "%s" "$task_json" | node -e "const fs=require(\"fs\"); const t=JSON.parse(fs.readFileSync(0,\"utf8\")); console.log(t.id)")"
+    session_id="$(printf "%s" "$task_json" | node -e "const fs=require(\"fs\"); const t=JSON.parse(fs.readFileSync(0,\"utf8\")); console.log(t.sessions[0].tmuxSession)")"
+
+    plugin_seen=0
+    stop_seen=0
+    for _ in $(seq 1 90); do
+      if ps -ef | grep -F -- "--plugin-dir /home/developer/kookr/plugin" | grep -v grep >/tmp/kookr-container-agent-ps.txt; then
+        plugin_seen=1
+      fi
+      hook_file="$HOME/.kookr-4901/hooks/$session_id.jsonl"
+      if [ -s "$hook_file" ] && grep -q "\"hook_event_name\":\"Stop\"" "$hook_file"; then
+        stop_seen=1
+        break
+      fi
+      sleep 1
+    done
+
+    hook_file="$HOME/.kookr-4901/hooks/$session_id.jsonl"
+    test "$plugin_seen" = "1"
+    test -s "$hook_file"
+    grep -q "\"hook_event_name\":\"SessionStart\"" "$hook_file"
+    grep -q "\"hook_event_name\":\"UserPromptSubmit\"" "$hook_file"
+    grep -q "\"hook_event_name\":\"Stop\"" "$hook_file"
+    grep -q "KOOKR_CONTAINER_AGENT_OK" "$hook_file"
+
+    curl -fsS -X DELETE "http://127.0.0.1:4901/api/tasks/$task_id" >/dev/null
+  '
+}
 
 cleanup() {
   echo "Cleaning up container $CONTAINER_NAME..."
   docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
   rm -f "$SETTINGS_FILE"
-  rm -rf "$STAGING_DIR" "$HOOKS_DIR"
+  rm -rf "$STAGING_DIR"
 }
 trap cleanup EXIT
 
@@ -32,6 +168,7 @@ docker build -t kookr-onboarding-test -f "$REPO_DIR/e2e/onboarding/Dockerfile" "
 echo "[2/5] Starting clean Ubuntu container..."
 docker run -d \
   --name "$CONTAINER_NAME" \
+  --network "$DOCKER_NETWORK" \
   -v "$REPORT_DIR:/reports" \
   kookr-onboarding-test \
   sleep infinity
@@ -69,6 +206,8 @@ cat > "$SETTINGS_FILE" <<SETTINGS
 }
 SETTINGS
 
+run_claude_preflight
+
 # 5. Read the prompt template and inject runtime values
 echo "[5/5] Launching Claude Code agent (headless / -p mode, default model)..."
 echo "       Container: $CONTAINER_NAME"
@@ -103,6 +242,26 @@ if [ -f "$REPORT_FILE" ]; then
 
   # Check verdict
   if grep -qi "verdict.*pass" "$REPORT_FILE"; then
+    if ! run_container_agent_smoke; then
+      {
+        echo ""
+        echo "## Optional Container Agent Launch Smoke"
+        echo ""
+        echo "- **Result:** FAILURE"
+        echo "- **Issue:** Kookr could not launch an authenticated Claude Code agent from inside the clean container."
+      } >> "$REPORT_FILE"
+      echo "--- RESULT: Onboarding test FAILED — optional container agent smoke failed ---"
+      exit 1
+    fi
+    if [ "$ONBOARDING_CONTAINER_AGENT_SMOKE" = "1" ]; then
+      {
+        echo ""
+        echo "## Optional Container Agent Launch Smoke"
+        echo ""
+        echo "- **Result:** SUCCESS"
+        echo "- **Checks:** Kookr launched Claude Code inside the clean container, injected the toolkit plugin directory, and captured SessionStart/UserPromptSubmit/Stop hook events."
+      } >> "$REPORT_FILE"
+    fi
     echo "--- RESULT: Onboarding test PASSED ---"
     exit 0
   else
