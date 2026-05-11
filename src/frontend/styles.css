@@ -337,6 +337,25 @@ kbd {
   outline-offset: 1px;
 }
 
+.operations-trigger {
+  position: relative;
+}
+.operations-trigger.active {
+  color: var(--text-bright);
+  border-color: var(--teal);
+  background: rgba(45, 212, 191, 0.08);
+}
+.operations-alert-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 0 2px var(--bg-panel);
+}
+
 .btn-launch {
   background: var(--teal);
   color: #0a0e12;
@@ -5449,6 +5468,54 @@ textarea::-webkit-resizer { background: transparent; }
 .cb-rearm-btn:hover {
   background: rgba(248, 113, 113, 0.25);
 }
+.cb-empty {
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 3px 6px;
+  font-style: italic;
+}
+
+/* --- Operations Popover --- */
+.operations-popover-shell {
+  position: fixed;
+  top: 46px;
+  right: 14px;
+  z-index: 90;
+  width: min(440px, calc(100vw - 28px));
+}
+.operations-panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.operations-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-dim);
+}
+.operations-panel-header h2 {
+  margin: 0;
+  color: var(--text-bright);
+  font-size: 13px;
+  line-height: 1.2;
+}
+.operations-panel-close {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.operations-panel-body {
+  max-height: min(560px, calc(100vh - 96px));
+  overflow-y: auto;
+}
+.operations-panel .detection-stats-section:first-child {
+  border-top: none;
+}
 
 /* --- Settings Dialog --- */
 .settings-dialog {
@@ -6516,8 +6583,15 @@ textarea::-webkit-resizer { background: transparent; }
   }
 
   .topbar.compact .btn-settings,
+  .topbar.compact .operations-trigger,
   .topbar.compact .btn-launch {
     min-height: 38px;
+  }
+
+  .operations-popover-shell {
+    top: 86px;
+    right: 10px;
+    width: calc(100vw - 20px);
   }
 
   .project-sidebar {

@@ -4,6 +4,8 @@ import type { ClientMessage, CircuitBreakerSnapshot } from '../../shared/protoco
 
 interface Props {
   send: (msg: ClientMessage) => void;
+  defaultExpanded?: boolean;
+  showEmpty?: boolean;
 }
 
 const STATE_LABEL: Record<string, string> = {
@@ -70,11 +72,11 @@ function BreakerRow({ breaker, send }: { breaker: CircuitBreakerSnapshot; send: 
   );
 }
 
-export function CircuitBreakerPanel({ send }: Props) {
-  const [expanded, setExpanded] = useState(false);
+export function CircuitBreakerPanel({ send, defaultExpanded = false, showEmpty = false }: Props) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const breakers = useKookrStore((s) => s.circuitBreakers);
 
-  if (breakers.length === 0) return null;
+  if (breakers.length === 0 && !showEmpty) return null;
 
   const openCount = breakers.filter(b => b.state !== 'closed').length;
 
@@ -93,7 +95,9 @@ export function CircuitBreakerPanel({ send }: Props) {
       </div>
       {expanded && (
         <div className="cb-body">
-          {breakers.map((b) => (
+          {breakers.length === 0 ? (
+            <div className="cb-empty">No circuit breakers reported yet</div>
+          ) : breakers.map((b) => (
             <BreakerRow key={b.name} breaker={b} send={send} />
           ))}
         </div>

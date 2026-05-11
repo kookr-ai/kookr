@@ -6,8 +6,6 @@ import { agentProviderPresentation, formatDuration, formatAge, ageColor, healthy
 import { Tooltip } from './Tooltip.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
-import { DetectionStatsPanel } from './DetectionStatsPanel.js';
-import { CircuitBreakerPanel } from './CircuitBreakerPanel.js';
 import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import { useDnd } from '../hooks/useDnd.js';
@@ -1031,8 +1029,6 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
         </div>
       )}
       <ScheduleSection schedules={useKookrStore((s) => s.schedules)} />
-      <DetectionStatsPanel />
-      <CircuitBreakerPanel send={send} />
     </div>
   );
 }
