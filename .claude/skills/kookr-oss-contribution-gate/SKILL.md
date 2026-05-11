@@ -2,7 +2,7 @@
 name: kookr-oss-contribution-gate
 description: Rate limiting and blocked-repo enforcement for OSS contributions — hook behavior, oss-gate CLI, ledger format, configuration
 keywords: rate limit, oss, contribution, gate, hook, blocked, ledger, pr, pull request, safety, cadence
-related: [[oss-fork-manager]], [[oss-repo-recon]], [[pr-lifecycle]]
+related: [oss-fork-manager, oss-repo-recon, pr-lifecycle]
 ---
 
 # OSS Contribution Gate

@@ -1,4 +1,5 @@
 ---
+name: hook-driven-workflow-enforcement
 description: Use Claude Code hooks as deterministic workflow enforcement — block-then-instruct pattern, CLI command surfaces for hook interception, when to prefer hooks over CLAUDE.md/memory
 triggers:
   - enforce workflow
