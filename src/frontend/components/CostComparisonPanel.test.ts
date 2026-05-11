@@ -13,7 +13,7 @@ const onClose = vi.fn();
 
 function emptyAgg(agent: 'claude-code' | 'codex-cli', overrides: Partial<AggregateMetrics> = {}): AggregateMetrics {
   return {
-    agent, taskCount: 0, totalCostUsd: 0,
+    agent, taskCount: 0, pricedTaskCount: 0, totalCostUsd: 0,
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
     medianDurationMs: 0, p95DurationMs: 0, maxDurationMs: 0,
     thumbsUpRate: null, thumbsCount: { up: 0, down: 0, none: 0 },
@@ -94,8 +94,8 @@ describe('CostComparisonPanel', () => {
   });
 
   test('renders per-playbook table when rows are present', async () => {
-    const claude: AggregateMetrics = emptyAgg('claude-code', { taskCount: 6, totalCostUsd: 1.86 });
-    const codex: AggregateMetrics = emptyAgg('codex-cli', { taskCount: 4, totalCostUsd: 1.92 });
+    const claude: AggregateMetrics = emptyAgg('claude-code', { taskCount: 8, pricedTaskCount: 6, totalCostUsd: 1.86 });
+    const codex: AggregateMetrics = emptyAgg('codex-cli', { taskCount: 5, pricedTaskCount: 4, totalCostUsd: 1.92 });
     const row: PerPlaybookRow = {
       playbookId: 'pb-1', playbookName: 'oss-pr',
       perAgent: { 'claude-code': claude, 'codex-cli': codex },
@@ -106,13 +106,34 @@ describe('CostComparisonPanel', () => {
     const cells = Array.from(el.querySelectorAll('.cost-per-playbook tbody td'))
       .map((td) => td.textContent?.trim());
     // claude avg = $1.86/6 = $0.31, codex avg = $1.92/4 = $0.48 → codex 1.55×
-    expect(cells).toEqual(['oss-pr', '$0.31×6', '$0.48×4', 'Codex 1.55×', '— / —']);
+    expect(cells).toEqual(['oss-pr', '$0.31 avg n=6', '$0.48 avg n=4', 'Codex 1.55×', '— / —']);
+  });
+
+  test('renders coverage summary when present', async () => {
+    mockFetchSequential([{
+      body: makeResponse({
+        coverage: {
+          taskCount: 147,
+          pricedTaskCount: 139,
+          excludedTaskCount: 8,
+          unboundCodexThreadCount: 46,
+          abandonedCodexRolloutCount: 31,
+          runningTaskCount: 2,
+          liveData: true,
+        },
+      }),
+    }]);
+    const el = mount();
+    await flush();
+    expect(el.querySelector('.cost-coverage-summary')?.textContent).toContain('147 tasks');
+    expect(el.querySelector('.cost-coverage-summary')?.textContent).toContain('139 priced');
+    expect(el.querySelector('.cost-coverage-summary')?.textContent).toContain('2 live');
   });
 
   test('renders aggregate cards when both agents have tasks', async () => {
     const aggregate = {
-      'claude-code': emptyAgg('claude-code', { taskCount: 18, totalCostUsd: 4.21, medianDurationMs: 720_000 }),
-      'codex-cli':   emptyAgg('codex-cli',   { taskCount: 12, totalCostUsd: 6.83, medianDurationMs: 1_080_000 }),
+      'claude-code': emptyAgg('claude-code', { taskCount: 18, pricedTaskCount: 18, totalCostUsd: 4.21, medianDurationMs: 720_000 }),
+      'codex-cli':   emptyAgg('codex-cli',   { taskCount: 12, pricedTaskCount: 12, totalCostUsd: 6.83, medianDurationMs: 1_080_000 }),
     };
     mockFetchSequential([{ body: makeResponse({ aggregate }) }]);
     const el = mount();
@@ -138,7 +159,7 @@ describe('CostComparisonPanel', () => {
     const response = makeResponse({
       perTask: [{
         taskId: 't1', agent: 'codex-cli', model: null, playbookId: null,
-        startedAt: '2026-05-08T11:00:00Z', durationMs: 60_000,
+        startedAt: '2026-05-08T11:00:00Z', status: 'completed', isTerminal: true, durationMs: 60_000,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb: null, dataQuality: 'codex-rollout-not-found',
       }],
@@ -153,6 +174,55 @@ describe('CostComparisonPanel', () => {
     // The visible glyph is "—" (in an aria-hidden span); a sibling sr-only span carries the
     // tooltip text for screen readers. Check the visible glyph specifically.
     expect(costCell?.querySelector('[aria-hidden]')?.textContent).toBe('—');
+    expect(el.querySelector('.cost-quality-badge')?.textContent).toBe('missing rollout');
+  });
+
+  test('renders running duration and missing-usage badge', async () => {
+    const response = makeResponse({
+      perTask: [{
+        taskId: 't1', agent: 'claude-code', model: null, playbookId: null,
+        startedAt: '2026-05-08T11:00:00Z', status: 'inProgress', isTerminal: false, durationMs: null,
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+        estimatedCostUsd: null, thumb: null, dataQuality: 'missing-usage',
+      }],
+    });
+    mockFetchSequential([{ body: response }]);
+    const el = mount();
+    await flush();
+    expect(el.querySelector('.cost-per-task-table')?.textContent).toContain('running');
+    expect(el.querySelector('.cost-quality-badge')?.textContent).toBe('missing usage');
+    expect(el.querySelector('.cost-quality-badge')?.getAttribute('aria-label')).toContain('Usage not available');
+  });
+
+  test('renders unbound Codex as a coverage caveat, not an aggregate peer card', async () => {
+    mockFetchSequential([{
+      body: makeResponse({
+        aggregate: {
+          'claude-code': emptyAgg('claude-code', { taskCount: 1, pricedTaskCount: 1 }),
+          'codex-cli': emptyAgg('codex-cli', { taskCount: 1, pricedTaskCount: 1 }),
+        },
+        unboundCodex: {
+          threadCount: 46,
+          totalCostUsd: 726.28,
+          totalInputTokens: 28_800_000,
+          totalOutputTokens: 2_500_000,
+          totalCachedInputTokens: 1_014_100_000,
+          dataQualityCounts: { complete: 43, 'unknown-pricing': 2, 'codex-no-tokens': 1, 'codex-parse-error': 0 },
+        },
+      }),
+    }]);
+    const el = mount();
+    await flush();
+    const caveat = el.querySelector('.cost-coverage-caveat')?.textContent ?? '';
+    expect(caveat).toContain('Unbound Codex');
+    expect(caveat).toContain('46 threads');
+    expect(caveat).toContain('$726.28 priced');
+    expect(caveat).toContain('28.8M input');
+    expect(caveat).toContain('2.5M output');
+    expect(caveat).toContain('1014.1M cached input');
+    expect(caveat).toContain('2 unknown-pricing');
+    expect(caveat).toContain('1 no-tokens');
+    expect(Array.from(el.querySelectorAll('.cost-aggregate-card h4')).map(h => h.textContent?.trim())).toEqual(['Claude', 'Codex']);
   });
 
   test('renders banner stack: top 3 inline + "n more notes" expander', async () => {

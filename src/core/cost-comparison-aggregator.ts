@@ -32,6 +32,7 @@ import type {
   PerTaskRow,
   UnboundCodexAggregate,
 } from '../shared/contracts/cost-comparison.js';
+import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import type { DiscoveryOutcome, OrphanBinding } from '../adapters/codex-rollout-scanner.js';
 
 const PRICING_STALE_DAYS = 90;
@@ -185,21 +186,27 @@ export function aggregate(input: AggregatorInput): CostComparisonResponse {
   const unboundCodex = (agentFilter === 'claude-code' || inWindowOrphans.length === 0)
     ? undefined
     : computeUnboundCodexAggregate(inWindowOrphans, input.todayMs, unknownModels, stalePricingByModel);
+  const visibleAbandonedCount = perTask.filter(r => r.dataQuality === 'codex-rollout-abandoned').length;
 
   const notes = buildNotes({
     parseErrorPaths,
     parseErrorCount: input.codexStats?.parseErrorCount ?? 0,
     unknownModels,
     stalePricingByModel,
-    abandonedCount: input.codexStats?.abandonedCount ?? 0,
+    abandonedCount: visibleAbandonedCount,
     // Always emit the orphan note when there are in-window orphans. The note
-    // and the card complement each other: the card shows summed metrics, the
-    // note states the count + diagnostic. Old clients (pre-PR-2) ignore
+    // and the coverage caveat complement each other: the caveat shows summed
+    // metrics, the note states the count + diagnostic. Old clients ignore
     // `unboundCodex` and rely on the note alone to surface the signal.
-    showOrphanNote: inWindowOrphans.length > 0,
+    showOrphanNote: unboundCodex !== undefined,
     orphanCount: inWindowOrphans.length,
     codexHomeMissing: (input.codexStats?.rolloutCount ?? 0) === 0
                       && filteredTasks.some(t => t.agentType === 'codex-cli'),
+  });
+  const coverage = buildCoverage({
+    perTask,
+    visibleOrphanCount: unboundCodex ? inWindowOrphans.length : 0,
+    abandonedCount: visibleAbandonedCount,
   });
 
   return {
@@ -209,7 +216,26 @@ export function aggregate(input: AggregatorInput): CostComparisonResponse {
     aggregate: aggregateOut,
     perTask: sortPerTaskByStartedAt(perTask),
     notes,
+    coverage,
     ...(unboundCodex ? { unboundCodex } : {}),
+  };
+}
+
+function buildCoverage(input: {
+  perTask: PerTaskRow[];
+  visibleOrphanCount: number;
+  abandonedCount: number;
+}): CostComparisonResponse['coverage'] {
+  const pricedTaskCount = input.perTask.filter(r => r.dataQuality === 'complete').length;
+  const runningTaskCount = input.perTask.filter(r => r.status === 'inProgress').length;
+  return {
+    taskCount: input.perTask.length,
+    pricedTaskCount,
+    excludedTaskCount: input.perTask.length - pricedTaskCount,
+    unboundCodexThreadCount: input.visibleOrphanCount,
+    abandonedCodexRolloutCount: input.abandonedCount,
+    runningTaskCount,
+    liveData: runningTaskCount > 0,
   };
 }
 
@@ -281,23 +307,21 @@ function computeUnboundCodexAggregate(
 function computePerTaskRow(task: Task, agent: CostAgent, input: AggregatorInput): PerTaskComputed {
   const startedAtMs = task.createdAt instanceof Date ? task.createdAt.getTime() : new Date(task.createdAt).getTime();
   const updatedAtMs = task.updatedAt instanceof Date ? task.updatedAt.getTime() : new Date(task.updatedAt).getTime();
-  const isTerminal = task.status === 'completed' || task.status === 'cancelled' || task.status === 'terminated';
+  const isTerminal = isTerminalStatus(task.status);
   const durationMs = isTerminal && updatedAtMs > startedAtMs ? updatedAtMs - startedAtMs : null;
 
   if (agent === 'claude-code') {
-    return computeClaudeRow(task, startedAtMs, durationMs, input);
+    return computeClaudeRow(task, startedAtMs, durationMs, isTerminal, input);
   }
-  return computeCodexRow(task, startedAtMs, durationMs, input);
+  return computeCodexRow(task, startedAtMs, durationMs, isTerminal, input);
 }
 
 function computeClaudeRow(
-  task: Task, startedAtMs: number, durationMs: number | null, input: AggregatorInput,
+  task: Task, startedAtMs: number, durationMs: number | null, isTerminal: boolean, input: AggregatorInput,
 ): PerTaskComputed {
   // Prefer the live TokenTracker reading from claudeUsage; fall back to the persisted
-  // `task.tokenUsage` snapshot for completed tasks whose transcript is no longer
-  // registered. `null` here means we have no data at all — render as zero with the
-  // 'complete' discriminant (Claude has no codex-equivalent "no-tokens" state since
-  // a Claude task with no usage simply means no API calls were billed).
+  // `task.tokenUsage` snapshot for completed tasks whose transcript is no longer registered.
+  // Missing usage is not a verified zero-cost task; surface it explicitly.
   const usage = input.claudeUsage.get(task.id) ?? task.tokenUsage ?? null;
   const fb = task.completionFeedback?.rating;
   const thumb: 'up' | 'down' | null = fb === 'up' ? 'up' : fb === 'down' ? 'down' : null;
@@ -306,18 +330,18 @@ function computeClaudeRow(
     return {
       row: {
         taskId: task.id, agent: 'claude-code', model: null, playbookId: task.playbookId ?? null,
-        startedAt: new Date(startedAtMs).toISOString(), durationMs,
+        startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-        estimatedCostUsd: 0, thumb, dataQuality: 'complete',
+        estimatedCostUsd: null, thumb, dataQuality: 'missing-usage',
       },
-      contributesToAggregate: true,
+      contributesToAggregate: false,
     };
   }
 
   return {
     row: {
       taskId: task.id, agent: 'claude-code', model: null, playbookId: task.playbookId ?? null,
-      startedAt: new Date(startedAtMs).toISOString(), durationMs,
+      startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
       inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
       cacheReadTokens: usage.cacheReadTokens, cacheWriteTokens: usage.cacheWriteTokens,
       estimatedCostUsd: usage.costUsd, thumb, dataQuality: 'complete',
@@ -327,7 +351,7 @@ function computeClaudeRow(
 }
 
 function computeCodexRow(
-  task: Task, startedAtMs: number, durationMs: number | null, input: AggregatorInput,
+  task: Task, startedAtMs: number, durationMs: number | null, isTerminal: boolean, input: AggregatorInput,
 ): PerTaskComputed {
   const fb = task.completionFeedback?.rating;
   const thumb: 'up' | 'down' | null = fb === 'up' ? 'up' : fb === 'down' ? 'down' : null;
@@ -338,7 +362,7 @@ function computeCodexRow(
     return {
       row: {
         taskId: task.id, agent: 'codex-cli', model: null, playbookId: task.playbookId ?? null,
-        startedAt: new Date(startedAtMs).toISOString(), durationMs,
+        startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'codex-rollout-not-found',
       },
@@ -350,7 +374,7 @@ function computeCodexRow(
     return {
       row: {
         taskId: task.id, agent: 'codex-cli', model: null, playbookId: task.playbookId ?? null,
-        startedAt: new Date(startedAtMs).toISOString(), durationMs,
+        startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'codex-rollout-abandoned',
       },
@@ -362,7 +386,7 @@ function computeCodexRow(
     return {
       row: {
         taskId: task.id, agent: 'codex-cli', model: null, playbookId: task.playbookId ?? null,
-        startedAt: new Date(startedAtMs).toISOString(), durationMs,
+        startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'codex-rollout-not-found',
       },
@@ -375,7 +399,7 @@ function computeCodexRow(
     return {
       row: {
         taskId: task.id, agent: 'codex-cli', model: binding.model, playbookId: task.playbookId ?? null,
-        startedAt: new Date(startedAtMs).toISOString(), durationMs,
+        startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'codex-parse-error',
       },
@@ -387,7 +411,7 @@ function computeCodexRow(
     return {
       row: {
         taskId: task.id, agent: 'codex-cli', model: binding.model, playbookId: task.playbookId ?? null,
-        startedAt: new Date(startedAtMs).toISOString(), durationMs,
+        startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'codex-no-tokens',
       },
@@ -409,7 +433,7 @@ function computeCodexRow(
   return {
     row: {
       taskId: task.id, agent: 'codex-cli', model: binding.model, playbookId: task.playbookId ?? null,
-      startedAt: new Date(startedAtMs).toISOString(), durationMs,
+      startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
       inputTokens: billedInput,
       outputTokens: binding.totalOutputTokens,
       cacheReadTokens: binding.totalCachedInputTokens,
@@ -443,6 +467,7 @@ function accumulateAggregate(
   if (computed.row.durationMs != null) m._durations.push(computed.row.durationMs);
 
   if (!computed.contributesToAggregate) return;
+  m.pricedTaskCount++;
   m.totalCostUsd += computed.row.estimatedCostUsd ?? 0;
   m.inputTokens += computed.row.inputTokens;
   m.outputTokens += computed.row.outputTokens;
@@ -475,6 +500,7 @@ function accumulatePerPlaybook(
   else m.thumbsCount.none++;
   if (computed.row.durationMs != null) m._durations.push(computed.row.durationMs);
   if (!computed.contributesToAggregate) return;
+  m.pricedTaskCount++;
   m.totalCostUsd += computed.row.estimatedCostUsd ?? 0;
   m.inputTokens += computed.row.inputTokens;
   m.outputTokens += computed.row.outputTokens;
@@ -484,7 +510,7 @@ function accumulatePerPlaybook(
 
 function makeEmptyMetrics(agent: CostAgent): AggregateMetrics & { _durations: number[] } {
   return {
-    agent, taskCount: 0,
+    agent, taskCount: 0, pricedTaskCount: 0,
     totalCostUsd: 0,
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
     medianDurationMs: 0, p95DurationMs: 0, maxDurationMs: 0,
@@ -539,7 +565,7 @@ interface NotesInput {
   unknownModels: Set<string>;
   stalePricingByModel: Map<string, string>;
   abandonedCount: number;
-  /** True when the orphan card is suppressed (Claude-only filter) and the count should still surface as a note. */
+  /** True when the orphan caveat is visible and the count should also surface as a note. */
   showOrphanNote: boolean;
   orphanCount: number;
   codexHomeMissing: boolean;
@@ -592,7 +618,7 @@ function buildNotes(input: NotesInput): CostComparisonNote[] {
     });
   } else if (input.showOrphanNote) {
     out.push({
-      message: `${input.orphanCount} Codex rollout${input.orphanCount === 1 ? '' : 's'} not bound to any Kookr task (interactive Codex usage, etc.) — see Unbound Codex card on the All filter`,
+      message: `${input.orphanCount} Codex rollout${input.orphanCount === 1 ? '' : 's'} not bound to any Kookr task (interactive Codex usage, etc.) — see coverage caveats on the All filter`,
     });
   }
 
