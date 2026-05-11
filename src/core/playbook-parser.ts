@@ -3,7 +3,7 @@ import { LAUNCH_DEPENDENCIES } from './playbook.js';
 
 export const PLAYBOOK_LOOP_DEFAULTS = {
   iterationCap: 6,
-  costCapUsd: 5,
+  costCapUsd: 25,
 } as const;
 
 export const PLAYBOOK_LOOP_LIMITS = {
