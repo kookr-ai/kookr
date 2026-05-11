@@ -365,6 +365,144 @@ describe('PlaybookBrowser loopable workflows', () => {
     expect(closeCount).toBe(1);
   });
 
+  test('sends split source and target cwd when a catalog playbook runs in a different cwd', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: async () => ({ id: 'task-1' }),
+    });
+    await act(async () => {
+      useKookrStore.setState({
+        playbooks: [{ ...loopablePlaybook, sourceCwd: '/catalog' }],
+      });
+      root.render(
+        React.createElement(PlaybookBrowser, {
+          cwd: '/target',
+          send: (msg: ClientMessage) => {
+            sent.push(msg);
+            return true;
+          },
+          onClose: () => { closeCount += 1; },
+        }),
+      );
+    });
+    await flush();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLElement>('.playbook-card'))
+        .find((card) => card.textContent?.includes('Workflow'))!
+        .click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('.launch-mode-option'))
+        .find((button) => button.textContent === 'Run looped')!
+        .click();
+    });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/playbooks/ralph-loop', expect.objectContaining({
+      method: 'POST',
+    }));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      playbookPath: 'workflow.md',
+      playbookSourceCwd: '/catalog',
+      taskTargetCwd: '/target',
+      parameterValues: {},
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).not.toHaveProperty('cwd');
+    expect(closeCount).toBe(1);
+  });
+
+  test('sends split source and target cwd for standard catalog playbook launches', async () => {
+    await act(async () => {
+      useKookrStore.setState({
+        playbooks: [{ ...plainPlaybook, sourceCwd: '/catalog' }],
+      });
+      root.render(
+        React.createElement(PlaybookBrowser, {
+          cwd: '/target',
+          send: (msg: ClientMessage) => {
+            sent.push(msg);
+            return true;
+          },
+          onClose: () => { closeCount += 1; },
+        }),
+      );
+    });
+    await flush();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLElement>('.playbook-card'))
+        .find((card) => card.textContent?.includes('Plain'))!
+        .click();
+    });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(sent).toEqual([expect.objectContaining({
+      type: 'launchPlaybook',
+      playbookPath: 'plain.md',
+      playbookSourceCwd: '/catalog',
+      taskTargetCwd: '/target',
+      parameterValues: {},
+    })]);
+    expect(sent[0]).not.toHaveProperty('cwd');
+    expect(closeCount).toBe(1);
+  });
+
+  test('keeps pinned playbook cwd when catalog source differs from target cwd', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: async () => ({ id: 'task-1' }),
+    });
+    await act(async () => {
+      useKookrStore.setState({
+        playbooks: [{ ...loopablePlaybook, sourceCwd: '/catalog', cwd: '/pinned' }],
+      });
+      root.render(
+        React.createElement(PlaybookBrowser, {
+          cwd: '/target',
+          send: (msg: ClientMessage) => {
+            sent.push(msg);
+            return true;
+          },
+          onClose: () => { closeCount += 1; },
+        }),
+      );
+    });
+    await flush();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLElement>('.playbook-card'))
+        .find((card) => card.textContent?.includes('Workflow'))!
+        .click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('.launch-mode-option'))
+        .find((button) => button.textContent === 'Run looped')!
+        .click();
+    });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      playbookPath: 'workflow.md',
+      playbookSourceCwd: '/catalog',
+      taskTargetCwd: '/pinned',
+      parameterValues: {},
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).not.toHaveProperty('cwd');
+    expect(closeCount).toBe(1);
+  });
+
   test('edits the project target cwd without leaving playbook detail or looped mode', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
@@ -556,6 +694,80 @@ describe('PlaybookBrowser loopable workflows', () => {
       playbookSourceCwd: '/catalog',
       taskTargetCwd: '/target',
       projectId: 'github.com/acme/target',
+      parameterValues: {},
+    });
+    expect(body).not.toHaveProperty('cwd');
+    expect(closeCount).toBe(1);
+  });
+
+  test('replace loop sends split source and target cwd for catalog playbook launches', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/playbooks/ralph-loop') {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: 'matching looped playbook task already exists: existing-1',
+            taskId: 'existing-1',
+            conflictKind: 'duplicate_active_loop',
+            ralphLoop: {
+              status: 'running',
+              currentIteration: 4,
+              lastIterationStartedAt: Date.now() - 30_000,
+            },
+          }),
+        };
+      }
+      if (url === '/api/tasks/existing-1/ralph-loop/replace-with-new') {
+        return { ok: true, status: 201, json: async () => ({ id: 'task-new' }) };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    await act(async () => {
+      useKookrStore.setState({
+        playbooks: [{ ...loopablePlaybook, sourceCwd: '/catalog' }],
+      });
+      root.render(
+        React.createElement(PlaybookBrowser, {
+          cwd: '/target',
+          send: (msg: ClientMessage) => {
+            sent.push(msg);
+            return true;
+          },
+          onClose: () => { closeCount += 1; },
+        }),
+      );
+    });
+    await flush();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLElement>('.playbook-card'))
+        .find((card) => card.textContent?.includes('Workflow'))!
+        .click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('.launch-mode-option'))
+        .find((button) => button.textContent === 'Run looped')!
+        .click();
+    });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    const banner = container.querySelector('.ralph-conflict-banner')!;
+    const replaceBtn = Array.from(banner.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Replace it'))!;
+    await act(async () => { replaceBtn.click(); });
+    await flush();
+
+    const replaceCall = fetchMock.mock.calls.find((call) => call[0] === '/api/tasks/existing-1/ralph-loop/replace-with-new');
+    expect(replaceCall).toBeTruthy();
+    const body = JSON.parse(replaceCall![1].body);
+    expect(body).toMatchObject({
+      playbookPath: 'workflow.md',
+      playbookSourceCwd: '/catalog',
+      taskTargetCwd: '/target',
       parameterValues: {},
     });
     expect(body).not.toHaveProperty('cwd');
