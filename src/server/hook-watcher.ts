@@ -6,6 +6,66 @@ import type { AgentAdapter } from '../adapters/agent-adapter.js';
 /** Default poll interval for the backup polling mechanism (ms). */
 const DEFAULT_POLL_INTERVAL_MS = 3_000;
 
+export function splitHookRecords(content: string): { records: string[]; consumedChars: number } {
+  const records: string[] = [];
+  let consumedChars = 0;
+  let i = 0;
+
+  while (i < content.length) {
+    while (i < content.length && /\s/.test(content[i])) i += 1;
+    consumedChars = i;
+    if (i >= content.length) break;
+
+    const start = i;
+    if (content[i] !== '{') {
+      const lineEnd = content.indexOf('\n', i);
+      if (lineEnd === -1) break;
+      records.push(content.slice(start, lineEnd));
+      i = lineEnd + 1;
+      consumedChars = i;
+      continue;
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let complete = false;
+
+    for (; i < content.length; i += 1) {
+      const ch = content[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === '\\') {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+      } else if (ch === '{') {
+        depth += 1;
+      } else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          i += 1;
+          records.push(content.slice(start, i));
+          consumedChars = i;
+          complete = true;
+          break;
+        }
+      }
+    }
+
+    if (!complete) break;
+  }
+
+  return { records, consumedChars };
+}
+
 /**
  * Watches hook JSONL files for new lines and feeds them into the adapter.
  * Each agent's hooks are appended to ~/.kookr/hooks/<tmux-name>.jsonl by
@@ -157,12 +217,12 @@ export class HookFileWatcher {
       const content = await readFile(filePath, 'utf-8');
       const offset = this.offsets.get(tmuxName) ?? 0;
       const newContent = content.slice(offset);
-      this.offsets.set(tmuxName, content.length);
+      const { records, consumedChars } = splitHookRecords(newContent);
+      this.offsets.set(tmuxName, offset + consumedChars);
 
-      if (!newContent.trim()) return;
+      if (records.length === 0) return;
 
-      const lines = newContent.trim().split('\n');
-      for (const line of lines) {
+      for (const line of records) {
         if (!line.trim()) continue;
         try {
           this.adapter.injectHookEvent(tmuxName, line);
