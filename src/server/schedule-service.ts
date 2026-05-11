@@ -48,7 +48,7 @@ export class ScheduleService {
   getStatusSnapshot(): ScheduleStatusSnapshot {
     const loadError = this.store.getLoadError();
     const lastTickCompletedAt = this.lastTickCompletedAt;
-    const schedulerHealthy = !loadError && (!this.runnerStartedAt || !!lastTickCompletedAt || !this.catchUpEnabled);
+    const schedulerHealthy = !loadError && !this.lastError;
     return {
       timezone: currentTimezone(),
       ...(this.runnerStartedAt ? { runnerStartedAt: this.runnerStartedAt } : {}),
@@ -69,6 +69,7 @@ export class ScheduleService {
 
   recordTickCompleted(): void {
     this.lastTickCompletedAt = new Date().toISOString();
+    this.lastError = undefined;
     this.broadcastSchedules();
   }
 
