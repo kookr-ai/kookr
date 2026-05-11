@@ -190,6 +190,17 @@ describe('aggregate — single-agent', () => {
 });
 
 describe('aggregate — dataQuality propagation', () => {
+  test('Claude task without usage evidence is missing-usage, not a verified zero-cost complete row', () => {
+    const t = task({ id: 'missing-claude', agentType: 'claude-code' });
+    const r = aggregate(baseInput({ tasks: [t] }));
+    expect(r.perTask[0].dataQuality).toBe('missing-usage');
+    expect(r.perTask[0].estimatedCostUsd).toBeNull();
+    expect(r.aggregate['claude-code']?.taskCount).toBe(1);
+    expect(r.aggregate['claude-code']?.pricedTaskCount).toBe(0);
+    expect(r.aggregate['claude-code']?.totalCostUsd).toBe(0);
+    expect(r.aggregate['claude-code']?.inputTokens).toBe(0);
+  });
+
   test('codex-rollout-not-found row is included with cost null, but does NOT contribute to aggregate cost', () => {
     const t = task({ id: 'nf', agentType: 'codex-cli' });
     const r = aggregate(baseInput({
@@ -199,6 +210,7 @@ describe('aggregate — dataQuality propagation', () => {
     expect(r.perTask[0].dataQuality).toBe('codex-rollout-not-found');
     expect(r.perTask[0].estimatedCostUsd).toBeNull();
     expect(r.aggregate['codex-cli']?.taskCount).toBe(1);
+    expect(r.aggregate['codex-cli']?.pricedTaskCount).toBe(0);
     expect(r.aggregate['codex-cli']?.totalCostUsd).toBe(0);                // unpriced row excluded
   });
 
@@ -255,6 +267,68 @@ describe('aggregate — dataQuality propagation', () => {
   });
 });
 
+describe('aggregate — coverage summary', () => {
+  test('coverage counts priced, excluded, unbound, abandoned, and live rows', () => {
+    const running = task({ id: 'running', agentType: 'codex-cli', status: 'inProgress' });
+    const missing = task({ id: 'missing', agentType: 'claude-code' });
+    const priced = task({ id: 'priced', agentType: 'claude-code' });
+    const abandoned = task({ id: 'abandoned', agentType: 'codex-cli' });
+    const r = aggregate(baseInput({
+      tasks: [running, missing, priced, abandoned],
+      claudeUsage: new Map([['priced', tokenUsage({ inputTokens: 100, outputTokens: 10, costUsd: 0.25 })]]),
+      codexOutcomes: new Map([
+        ['running', boundOutcome('running', 'gpt-5.3-codex', { in: 1000, out: 100, cached: 0 })],
+        ['abandoned', { kind: 'abandoned', mostRecentRolloutMtimeMs: NOW - ONE_DAY_MS }],
+      ]),
+      codexStats: {
+        rolloutCount: 3,
+        parseErrorCount: 0,
+        abandonedCount: 12,
+        orphanBindings: [fakeOrphanBinding('orphan-1', 'gpt-5.3-codex', { in: 1000, out: 100, cached: 0 })],
+      },
+    }));
+    expect(r.coverage).toEqual({
+      taskCount: 4,
+      pricedTaskCount: 2,
+      excludedTaskCount: 2,
+      unboundCodexThreadCount: 1,
+      abandonedCodexRolloutCount: 1,
+      runningTaskCount: 1,
+      liveData: true,
+    });
+    expect(r.perTask.find(row => row.taskId === 'running')?.isTerminal).toBe(false);
+    expect(r.perTask.find(row => row.taskId === 'running')?.status).toBe('inProgress');
+    expect(r.perTask.find(row => row.taskId === 'running')?.durationMs).toBeNull();
+  });
+
+  test('coverage hides unbound Codex counts under the Claude-only filter', () => {
+    const r = aggregate(baseInput({
+      agentFilter: 'claude-code',
+      tasks: [task({ id: 'c', agentType: 'claude-code' })],
+      codexStats: {
+        rolloutCount: 1,
+        parseErrorCount: 0,
+        abandonedCount: 0,
+        orphanBindings: [fakeOrphanBinding('orphan-1', 'gpt-5.3-codex', { in: 1000, out: 100, cached: 0 })],
+      },
+    }));
+    expect(r.unboundCodex).toBeUndefined();
+    expect(r.coverage?.unboundCodexThreadCount).toBe(0);
+    expect(r.notes.some(n => n.message.includes('not bound to any Kookr task'))).toBe(false);
+  });
+
+  test('open and pending rows are not counted as live running work', () => {
+    const r = aggregate(baseInput({
+      tasks: [
+        task({ id: 'open', agentType: 'claude-code', status: 'open', tokenUsage: tokenUsage({ costUsd: 0.1 }) }),
+        task({ id: 'pending', agentType: 'claude-code', status: 'pending', tokenUsage: tokenUsage({ costUsd: 0.1 }) }),
+      ],
+    }));
+    expect(r.coverage?.runningTaskCount).toBe(0);
+    expect(r.coverage?.liveData).toBe(false);
+  });
+});
+
 describe('aggregate — per-playbook bucketing', () => {
   test('null playbookId tasks are bucketed under "<no-playbook>"', () => {
     const r = aggregate(baseInput({
@@ -268,7 +342,24 @@ describe('aggregate — per-playbook bucketing', () => {
     expect(r.perPlaybook).toHaveLength(1);
     expect(r.perPlaybook[0].playbookName).toBe('<no-playbook>');
     expect(r.perPlaybook[0].perAgent['claude-code']?.taskCount).toBe(1);
+    expect(r.perPlaybook[0].perAgent['claude-code']?.pricedTaskCount).toBe(1);
     expect(r.perPlaybook[0].perAgent['codex-cli']?.taskCount).toBe(1);
+    expect(r.perPlaybook[0].perAgent['codex-cli']?.pricedTaskCount).toBe(1);
+  });
+
+  test('per-playbook cost denominator excludes missing-usage rows', () => {
+    const r = aggregate(baseInput({
+      tasks: [
+        task({ id: 'priced', agentType: 'claude-code', playbookId: 'pb' }),
+        task({ id: 'missing', agentType: 'claude-code', playbookId: 'pb' }),
+      ],
+      claudeUsage: new Map([['priced', tokenUsage({ costUsd: 10 })]]),
+      playbooksById: new Map([['pb', { id: 'pb', name: 'Playbook' } as Playbook]]),
+    }));
+    const metrics = r.perPlaybook[0].perAgent['claude-code'];
+    expect(metrics?.taskCount).toBe(2);
+    expect(metrics?.pricedTaskCount).toBe(1);
+    expect(metrics?.totalCostUsd).toBe(10);
   });
 
   test('per-playbook table sorted alphabetically by playbookName', () => {
@@ -372,10 +463,10 @@ describe('aggregate — notes priority order (R17)', () => {
     expect(stale!.message).toContain('gpt-5.3-codex');
   });
 
-  test('orphan-rollouts note fires alongside the card (note + card complement each other)', () => {
-    // The note states the count + diagnostic; the card sums the metrics.
-    // Both are present so old clients (pre-PR-2) that ignore `unboundCodex`
-    // still see the orphan signal as a note.
+  test('orphan-rollouts note fires alongside the coverage caveat', () => {
+    // The note states the count + diagnostic; the caveat sums the metrics.
+    // Both are present so old clients that ignore `unboundCodex` still see the
+    // orphan signal as a note.
     const r = aggregate(baseInput({
       tasks: [],
       codexStats: {
@@ -388,7 +479,7 @@ describe('aggregate — notes priority order (R17)', () => {
     expect(r.unboundCodex!.threadCount).toBe(1);
   });
 
-  test('orphan-rollouts note fires under the Claude-only filter (where the card is suppressed)', () => {
+  test('orphan-rollouts note is suppressed under the Claude-only filter with the caveat', () => {
     const r = aggregate(baseInput({
       tasks: [],
       agentFilter: 'claude-code',
@@ -397,7 +488,7 @@ describe('aggregate — notes priority order (R17)', () => {
         orphanBindings: [fakeOrphanBinding('orphan-1', 'gpt-5.3-codex', { in: 100, out: 10, cached: 0 })],
       },
     }));
-    expect(r.notes.some(n => n.message.includes('not bound to any Kookr task'))).toBe(true);
+    expect(r.notes.some(n => n.message.includes('not bound to any Kookr task'))).toBe(false);
     expect(r.unboundCodex).toBeUndefined();
   });
 
@@ -411,7 +502,7 @@ describe('aggregate — notes priority order (R17)', () => {
   });
 });
 
-describe('aggregate — unbound Codex card', () => {
+describe('aggregate — unbound Codex coverage caveat', () => {
   test('orphan with priced model: totalCostUsd = sum, dataQualityCounts.complete = 1', () => {
     const r = aggregate(baseInput({
       codexStats: {
