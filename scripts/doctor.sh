@@ -7,7 +7,7 @@
 # affecting the exit code so a healthy minimal install still passes.
 #
 # Usage:
-#   pnpm doctor
+#   pnpm run doctor
 #   scripts/doctor.sh
 #
 # Output is copy-pasteable into a GitHub issue. On any FAIL the script
@@ -232,7 +232,7 @@ case "$PROBE_RESULT" in
     ;;
   not-installed)
     if [ "${PROBE_TIMED_OUT:-0}" = "1" ]; then
-      print_row "Codex --plugin-dir" "unknown" "INFO" "probe timed out — re-run pnpm doctor"
+      print_row "Codex --plugin-dir" "unknown" "INFO" "probe timed out — re-run pnpm run doctor"
     else
       print_row "Codex CLI" "not installed" "INFO" "optional (Codex agent type)"
     fi

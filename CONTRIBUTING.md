@@ -14,7 +14,7 @@ pnpm install
 pnpm dev         # backend on :4801 + Vite frontend on :5173
 ```
 
-If anything fails, run `pnpm doctor` — it diagnoses Node/pnpm versions, build tools, the dtach binary, GPU availability, and port conflicts, then prints copy-pasteable fix commands.
+If anything fails, run `pnpm run doctor` — it diagnoses Node/pnpm versions, build tools, the dtach binary, GPU availability, and port conflicts, then prints copy-pasteable fix commands.
 
 ## Verification matrix
 

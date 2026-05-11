@@ -210,7 +210,7 @@ wait_for_health
 
 # Post-restart capability nag — if the configured Codex binary doesn't
 # advertise --plugin-dir, kookr-spawned codex sessions silently miss the
-# toolkit. Mirrors the `pnpm doctor` row; emits only on missing-flag.
+# toolkit. Mirrors the `pnpm run doctor` row; emits only on missing-flag.
 # See scripts/lib/probe-codex-plugin-dir.sh for the shared contract.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "${SCRIPT_DIR}/lib/probe-codex-plugin-dir.sh"
