@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Installer for Kookr's in-repo Claude Code hooks and companion skills.
 #
-# Hooks installed today (all live under plugin/hooks/ so the marketplace
-# install of the kookr-toolkit plugin is self-contained):
+# Hooks installed today (live under `hooks/` because they integrate with
+# Kookr's HTTP API, `~/.kookr/` config, and `KOOKR_*` env vars — the
+# `plugin/` tree intentionally stays Kookr-agnostic so the marketplace
+# install remains portable for non-Kookr users):
 #   - oss-stale-scout-gate.sh — blocks gh pr create that references a
 #     closed upstream issue. (PreToolUse / Bash)
 #   - pr-workflow-gate.sh — blocks gh pr create until the pre-pr-review
@@ -27,7 +29,7 @@
 #
 # What it does:
 #   1. For each hook listed below, creates a symlink under ~/.claude/hooks/
-#      pointing at plugin/hooks/<name>.sh in this repo. Re-running overwrites the
+#      pointing at hooks/<name>.sh in this repo. Re-running overwrites the
 #      symlink (safe; `ln -sf`).
 #   2. Idempotently adds the PreToolUse registration block to
 #      ~/.claude/settings.json via jq. Never duplicates an existing entry.
@@ -114,7 +116,7 @@ ensure_jq() {
 
 install_symlink() {
   local name="$1"
-  local src="$REPO_DIR/plugin/hooks/$name"
+  local src="$REPO_DIR/hooks/$name"
   local dest="$DEST_DIR/$name"
 
   [ -f "$src" ] || die "Source hook not found: $src"

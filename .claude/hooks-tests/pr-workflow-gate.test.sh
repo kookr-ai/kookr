@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression tests for plugin/hooks/pr-workflow-gate.sh
+# Regression tests for hooks/pr-workflow-gate.sh
 #
 # The hook has no external command dependencies beyond jq, git, and basename,
 # and never calls gh, so no PATH shims are needed. State lives in /dev/shm
@@ -17,7 +17,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
-HOOK="$REPO_ROOT/plugin/hooks/pr-workflow-gate.sh"
+HOOK="$REPO_ROOT/hooks/pr-workflow-gate.sh"
 
 if [ ! -x "$HOOK" ] && [ ! -f "$HOOK" ]; then
   printf 'FAIL: hook script not found at %s\n' "$HOOK" >&2

@@ -14,7 +14,7 @@ Use this before every non-trivial `git push` in Kookr. This skill does not repla
 ## What Is Already Enforced
 
 - **Repo git hook (`.hooks/pre-push`)**: `git push` automatically runs `pnpm build:server`, `pnpm check:e2e`, and `pnpm test`. `package.json` installs the hook via `prepare -> git config core.hooksPath .hooks`. Bundled — runs for every contributor.
-- **Global PR gate (`~/.claude/hooks/pr-workflow-gate.sh` → `plugin/hooks/pr-workflow-gate.sh`)** — bundled with the `kookr-toolkit` plugin and installed by `scripts/install-hooks.sh`. `gh pr create` is blocked until `[[pre-pr-review]]` creates `/dev/shm/.pr-gate-<repo>-<branch>-pre-done`.
+- **Global PR gate (`~/.claude/hooks/pr-workflow-gate.sh` → `hooks/pr-workflow-gate.sh`)** — lives in this repo (not under `plugin/` because it integrates with Kookr config) and is installed by `scripts/install-hooks.sh`. `gh pr create` is blocked until `[[pre-pr-review]]` creates `/dev/shm/.pr-gate-<repo>-<branch>-pre-done`.
 - **Reviewer specialists (`plugin/reviewer-specialists/`)** — bundled with the `kookr-toolkit` plugin. `[[pre-pr-review]]` defines the four-specialist review layer for non-trivial work.
 
 This skill adds the missing delivery-cycle behavior: run the repo's review workflow before the push, not just when the hook or PR gate forces you to.

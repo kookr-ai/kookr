@@ -26,9 +26,9 @@ After installation, the toolkit is available in every Claude Code session on you
 
 **OSS contribution:** `oss-fork-manager`, `oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `pr-contribution-excellence` (bundled with per-repo distilled patterns under `repo/`), `find-best-reviewers`, `rust-lang-rust-{tests,pre-push}`.
 
-**OSS contribution hooks (`plugin/hooks/`):** `pr-workflow-gate.sh`, `oss-stale-scout-gate.sh`, `oss-contribution-gate.sh` (PreToolUse), `oss-contribution-gate-posttool.sh` (PostToolUse). These need registration in `~/.claude/settings.json`; run `scripts/install-hooks.sh` and `scripts/install-oss-tracking-hook.sh` from a Kookr checkout to symlink them and register the entries.
-
 **Reviewer specialists (`plugin/reviewer-specialists/`):** narrow prompt templates (`conventions-specialist`, `correctness-specialist`, `deadcode-specialist`, `test-specialist`, `a11y-specialist`) consumed by the bundled `pre-pr-review` skill.
+
+**OSS contribution hooks (not in the marketplace plugin):** the PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) live in the Kookr repo at `hooks/` and `scripts/`, not under `plugin/`, because they integrate with Kookr's HTTP API and `~/.kookr/` config — keeping `plugin/` Kookr-agnostic preserves portability for non-Kookr users of the marketplace plugin. Clone the Kookr repo and run the install scripts (see next section) to wire them.
 
 **Reviewer distillation experiment:** `reviewer-distillation-{judge,mutate,predict,prepare,select,meta}`.
 
@@ -49,7 +49,7 @@ bash kookr/scripts/install-hooks.sh
 
 - `~/.claude/skills/pr-contribution-excellence` → `<kookr>/plugin/skills/pr-contribution-excellence`
 - `~/.claude/reviewer-specialists` → `<kookr>/plugin/reviewer-specialists`
-- `~/.claude/hooks/{pr-workflow-gate,oss-stale-scout-gate,oss-contribution-gate,post-merge-keyword-scan}.sh` → `<kookr>/plugin/hooks/*`
+- `~/.claude/hooks/{pr-workflow-gate,oss-stale-scout-gate,oss-contribution-gate,post-merge-keyword-scan}.sh` → `<kookr>/hooks/*`
 
 and registers each hook in `~/.claude/settings.json`. Run `bash kookr/scripts/install-oss-tracking-hook.sh` to also wire the `oss-contribution-gate-posttool.sh` tracking hook. See [`docs/hooks-setup.md`](../docs/hooks-setup.md) for the full hook table, scope-list semantics, and uninstall recipe.
 

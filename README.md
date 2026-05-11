@@ -204,7 +204,7 @@ If you use Claude Code or Codex CLI to work on this repo, the bundled `.claude/s
 **Optional in-repo Claude Code hooks** — install the bundled `PreToolUse` hooks (closed-issue scout gate, PR-workflow gate, OSS rate-limit gate, etc.):
 
 ```bash
-bash scripts/install-hooks.sh   # symlinks plugin/hooks/*.sh into ~/.claude/hooks/
+bash scripts/install-hooks.sh   # symlinks hooks/*.sh into ~/.claude/hooks/
 ```
 
 ### Kookr Toolkit (Claude Code plugin)
@@ -223,10 +223,10 @@ claude
 
 Update with `/plugin marketplace update kookr`. See [`plugin/README.md`](plugin/README.md) for the full skill/agent inventory and the maintainer dev workflow (`claude --plugin-dir ~/git/kookr/plugin`).
 
-**OSS extension (bundled)** — Several skills (`pre-pr-review`, `oss-pr-distill`, `codex-pr-distill`, `kookr-oss-issue-scout`, `kookr-oss-repo-recon`, `pr-contribution-excellence`) and the `oss-contribute` playbook depend on an OSS contribution layer. As of `kookr-toolkit` 0.5, that layer ships **inside the plugin**: reviewer-specialist subagent prompts at `plugin/reviewer-specialists/`, distilled PR-contribution patterns at `plugin/skills/pr-contribution-excellence/`, and the PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`, `oss-stale-scout-gate`) at `plugin/hooks/`. **One-time setup** to wire the hooks into your `~/.claude/settings.json`:
+**OSS extension** — Several skills (`pre-pr-review`, `oss-pr-distill`, `codex-pr-distill`, `kookr-oss-issue-scout`, `kookr-oss-repo-recon`, `pr-contribution-excellence`) and the `oss-contribute` playbook depend on an OSS contribution layer. As of `kookr-toolkit` 0.5, the **portable pieces** ship inside the plugin: reviewer-specialist subagent prompts at `plugin/reviewer-specialists/` and distilled PR-contribution patterns at `plugin/skills/pr-contribution-excellence/`. The Kookr-aware PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`, `oss-stale-scout-gate`) live in this repo at `hooks/` and `scripts/` — they integrate with Kookr's HTTP API and `~/.kookr/` config, so the marketplace plugin tree intentionally stays Kookr-agnostic. **One-time setup** from a Kookr checkout:
 
 ```bash
-bash scripts/install-hooks.sh           # PreToolUse hooks (scout, PR gate, rate-limit)
+bash scripts/install-hooks.sh           # PreToolUse hooks + symlinks for the bundled skill/specialists
 bash scripts/install-oss-tracking-hook.sh   # PostToolUse OSS tracking hook
 ```
 

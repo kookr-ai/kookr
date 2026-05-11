@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression tests for plugin/hooks/oss-stale-scout-gate.sh
+# Regression tests for hooks/oss-stale-scout-gate.sh
 #
 # Uses a shim `gh` at $REPO/.claude/hooks-tests/shims/gh that returns
 # canned responses per case via $GH_SHIM_FIXTURE_DIR. No real network.
@@ -11,7 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
-HOOK="$REPO_ROOT/plugin/hooks/oss-stale-scout-gate.sh"
+HOOK="$REPO_ROOT/hooks/oss-stale-scout-gate.sh"
 SHIM_DIR="$SCRIPT_DIR/shims"
 FIXTURE_ROOT="$SCRIPT_DIR/fixtures"
 

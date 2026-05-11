@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression tests for plugin/hooks/post-merge-keyword-scan.sh
+# Regression tests for hooks/post-merge-keyword-scan.sh
 #
 # The hook fires on UserPromptSubmit, matches a small keyword set in the
 # prompt, runs `gh pr list` against the cwd repo, and emits a
@@ -16,7 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
-HOOK="$REPO_ROOT/plugin/hooks/post-merge-keyword-scan.sh"
+HOOK="$REPO_ROOT/hooks/post-merge-keyword-scan.sh"
 SHIM_DIR="$SCRIPT_DIR/shims"
 
 if [ ! -f "$HOOK" ]; then
