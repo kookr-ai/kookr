@@ -123,19 +123,27 @@ export class Monitor {
     // Guard: reject events for explicitly stopped agents (prevents hook watcher race)
     if (this.stoppedAgents.has(agentId)) return;
 
-    // Increment monotonic event counter for self-diagnostic
-    this._eventCounts.set(agentId, (this._eventCounts.get(agentId) ?? 0) + events.length);
+    const previousCount = this._eventCounts.get(agentId) ?? 0;
+    const sequencedEvents = events.map((event, index) => ({
+      ...event,
+      eventSeq: previousCount + index + 1,
+    } as AgentEvent));
+
+    // Increment monotonic event counter for self-diagnostic and client-side
+    // activity history merging. The sequence distinguishes repeated identical
+    // hook events when the UI receives overlapping windowed snapshots.
+    this._eventCounts.set(agentId, previousCount + events.length);
 
     // Append to existing events, capped at windowSize
     const existing = this.agentEvents.get(agentId) ?? [];
-    const combined = [...existing, ...events];
+    const combined = [...existing, ...sequencedEvents];
     const capped = combined.length > this.windowSize
       ? combined.slice(combined.length - this.windowSize)
       : combined;
     this.agentEvents.set(agentId, capped);
 
     // Update subagent tracking before detection so suppression sees current state
-    for (const event of events) {
+    for (const event of sequencedEvents) {
       this.updateSubagentTracking(agentId, event);
     }
 
