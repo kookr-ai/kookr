@@ -40,6 +40,8 @@ export interface LaunchServiceDeps {
   lifecycleDeps: AgentLifecycleDeps;
   /** Live getter for max concurrent tasks. Falls back to static default if not provided. */
   getMaxActiveTasks?: () => number;
+  /** Live getter for the configured default agent type. Falls back to the registry default if not provided. */
+  getDefaultAgentType?: () => AgentType;
   interactionLog?: DeferredInteractionLogWriter;
   dependencyPreflightRunner?: DependencyPreflightRunner;
 }
@@ -152,7 +154,11 @@ export async function launchTask(
 ): Promise<LaunchResult> {
   const { taskStore, adapterRegistry, lifecycleDeps } = deps;
   const maxActive = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
-  const agentType = opts.agentType ?? adapterRegistry.getDefaultType() ?? DEFAULT_AGENT_TYPE;
+  const agentType =
+    opts.agentType ??
+    deps.getDefaultAgentType?.() ??
+    adapterRegistry.getDefaultType() ??
+    DEFAULT_AGENT_TYPE;
 
   // R19 trust-boundary check (rfc-remote-chat-trigger §4): Telegram-spawned
   // Codex is opt-in because its permission model is more permissive than

@@ -67,6 +67,7 @@ export interface WsConnectionDeps {
   suppressionTracker?: SnoozeSuppressionTracker;
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentType;
+  getDefaultAgentType?: () => AgentType;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   /** Get latest self-diagnostic status (for initial connection burst). */
@@ -119,6 +120,7 @@ export function handleWsConnection(
     suppressionTracker: deps.suppressionTracker,
     availableAgentTypes: deps.availableAgentTypes,
     defaultAgentType: deps.defaultAgentType,
+    getDefaultAgentType: deps.getDefaultAgentType,
     scheduleService: deps.scheduleService,
     ralphLoopService: deps.ralphLoopService,
     workspaceEnabled: deps.workspaceEnabled,

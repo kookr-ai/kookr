@@ -5532,6 +5532,10 @@ textarea::-webkit-resizer { background: transparent; }
 
 .settings-row-info { display: flex; flex-direction: column; gap: 2px; }
 
+.settings-agent-select {
+  flex-shrink: 0;
+}
+
 .settings-label {
   font-size: 13px;
   color: var(--text-bright);

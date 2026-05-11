@@ -5,6 +5,7 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { SettingsDialog } from './SettingsDialog.js';
+import type { AgentType } from '../../shared/protocol.js';
 
 interface MockSettings {
   githubPollingEnabled: boolean;
@@ -13,6 +14,7 @@ interface MockSettings {
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
+  defaultAgentType: AgentType;
 }
 
 const DEFAULT_SETTINGS: MockSettings = {
@@ -22,6 +24,7 @@ const DEFAULT_SETTINGS: MockSettings = {
   watchdogStaleThresholdSec: 30,
   repeatedErrorThreshold: 3,
   maxActiveTasks: 10,
+  defaultAgentType: 'claude-code',
 };
 
 async function flush() {
@@ -124,5 +127,30 @@ describe('SettingsDialog tabs', () => {
     expect(document.activeElement).toBe(generalTab);
     expect(container.textContent).toContain('Enable polling');
     expect(container.textContent).not.toContain('SessionStart');
+  });
+
+  test('persists the default agent setting from Task Management', async () => {
+    await flush();
+
+    expect(container.textContent).toContain('Default agent');
+    const select = container.querySelector<HTMLSelectElement>('.settings-agent-select select');
+    expect(select).not.toBeNull();
+    expect(select!.value).toBe('claude-code');
+
+    await act(async () => {
+      select!.value = 'codex-cli';
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    const fetchMock = vi.mocked(fetch);
+    const putCall = fetchMock.mock.calls.find(([url, init]) =>
+      url === '/api/settings' && init && init.method === 'PUT'
+    );
+    expect(putCall).toBeDefined();
+    expect(JSON.parse(String(putCall![1]!.body))).toMatchObject({
+      defaultAgentType: 'codex-cli',
+    });
+    expect(localStorage.getItem('kookr:defaultAgentType')).toBeNull();
   });
 });

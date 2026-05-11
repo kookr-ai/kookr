@@ -445,6 +445,21 @@ The system SHOULD allow authorized Telegram users to choose the coding agent use
 
 **Evidence:** `src/integrations/telegram/index.ts` (`/agent` command, confirmation text, launch call), `src/integrations/telegram/rephrase.ts` (structured `agentType` schema), `src/integrations/telegram/parse-task.ts` (`--agent` parser), `src/integrations/telegram/safety.ts` (persistent per-user defaults), `src/server/launch-service.ts` (`KOOKR_REMOTE_CHAT_ALLOW_CODEX` trust-boundary guard), tests in `src/integrations/telegram/*.test.ts` and `src/server/launch-service.test.ts`.
 
+### R4b.5a: Dashboard Default Agent Selection — SHOULD — `done`
+
+The system SHOULD allow the user to set a dashboard-wide default coding agent for launches that do not provide an explicit agent type.
+
+**Acceptance criteria:**
+- Settings exposes a Default agent control listing server-supported agent types.
+- The selected default is persisted in Kookr settings and survives server restart.
+- Manual Launch, Quick Launch, Playbook launch, Schedule creation, REST API launch, and `kookr-spawn` inherit the persisted default when they do not provide an explicit agent type.
+- Explicit per-launch agent choices override the persisted default.
+- Telegram launches keep the stricter `KOOKR_REMOTE_CHAT_ALLOW_CODEX=1` guard when the default resolves to Codex CLI.
+
+**Rationale:** Agent-spawned child tasks and CLI launches cannot read browser-local preferences. A server-side default keeps Kookr's UI, API, and child-task behavior coherent.
+
+**Evidence:** `src/core/settings-store.ts`, `src/server/launch-service.ts`, `src/server/index.ts`, `src/frontend/components/SettingsDialog.tsx`, tests in `src/core/settings-store.test.ts`, `src/server/settings-api.test.ts`, `src/server/launch-service.test.ts`, and `src/frontend/components/SettingsDialog.test.ts`.
+
 ### R4b.6: Looped Playbook Conflict Guidance [F6.7] — SHOULD — `done`
 
 The system SHOULD surface actionable inline guidance when a looped playbook launch cannot start because an existing Kookr loop or standalone Ralph plugin conflicts with it.
@@ -915,6 +930,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R4b.3 | — | SHOULD | done | useStore, DetailPanel, App |
 | R4b.4 | — | SHOULD | done | QuickLaunch, App |
 | R4b.5 | — | SHOULD | done | telegram/index, telegram/rephrase, launch-service |
+| R4b.5a | — | SHOULD | done | settings-store, launch-service, SettingsDialog |
 | R4b.6 | F6.7 | SHOULD | done | looped-playbook-launch, PlaybookBrowser |
 | R4b.7 | — | SHALL | done | launch-service, ralph-loop-service, implement-github-issue playbook |
 | R4b.8 | F6.2, F6.6 | SHALL | done | LaunchTaskDialog, PlaybookBrowser, playbook-launch, task-routes |

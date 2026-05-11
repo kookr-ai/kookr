@@ -271,7 +271,7 @@ export function PlaybookBrowser({
   }, [paramValues]);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => usageTracker.getPinned());
   const [agentType, setAgentType] = useState<AgentType>(() =>
-    (localStorage.getItem('kookr:defaultAgentType') as AgentType) || defaultAgentType || 'claude-code'
+    defaultAgentType || 'claude-code'
   );
   const [showOtherAuthorWarning, setShowOtherAuthorWarning] = useState(false);
   const [suppressOtherAuthorWarning, setSuppressOtherAuthorWarning] = useState(false);
@@ -454,7 +454,6 @@ export function PlaybookBrowser({
     usageTracker.recordParams(selected.id, selected.sourceCwd, paramValues);
     const trimmedCwd = effectiveTaskTargetCwd;
     if (trimmedCwd) recentPaths.add(trimmedCwd);
-    localStorage.setItem('kookr:defaultAgentType', agentType);
     const excerpt = selected.name.slice(0, 40) + (selected.name.length > 40 ? '…' : '');
     const launchPayload = buildPlaybookLaunchPayload(selected.id);
     if (launchMode === 'looped') {

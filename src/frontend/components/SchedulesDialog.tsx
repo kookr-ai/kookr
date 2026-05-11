@@ -83,7 +83,7 @@ export function SchedulesDialog({ onClose }: Props) {
   const [playbookId, setPlaybookId] = useState('');
   const [parameterValues, setParameterValues] = useState<Record<string, string>>({});
   const [agentType, setAgentType] = useState<AgentType>(() =>
-    (localStorage.getItem('kookr:defaultAgentType') as AgentType | null) ?? defaultAgentType ?? 'claude-code'
+    defaultAgentType ?? 'claude-code'
   );
   const [enabled, setEnabled] = useState(true);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
