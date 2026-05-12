@@ -1,4 +1,5 @@
 import type { TransportSessionSlice, StoreSet } from '../store-types.js';
+import { mergeActivityAgent } from '../activity-history.js';
 
 export function createTransportSessionSlice(set: StoreSet): TransportSessionSlice {
   return {
@@ -20,25 +21,30 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
     totalSpendUsd: 0,
 
     handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning) => {
-      set({
-        agents,
-        agentsHydrated: true,
-        ...(serverCwd !== undefined ? { serverCwd } : {}),
-        ...(availableAgentTypes !== undefined ? { availableAgentTypes } : {}),
-        ...(defaultAgentType !== undefined ? { defaultAgentType } : {}),
-        ...(build !== undefined ? { buildInfo: build } : {}),
-        ...(serverStartedAt !== undefined ? { serverStartedAt } : {}),
-        ...(sttEnabled && sttUrl ? { sttUrl } : {}),
-        ...(totalSpendUsd !== undefined ? { totalSpendUsd } : {}),
-        ...(achievements !== undefined ? { achievements } : {}),
-        ...(workspaceEnabled !== undefined ? { workspaceEnabled } : {}),
-        ...(sweepRunning !== undefined ? { sweepRunning } : {}),
+      set((prev) => {
+        const previousById = new Map(prev.agents.map((agent) => [agent.agentId, agent]));
+        return {
+          agents: agents.map((agent) => mergeActivityAgent(previousById.get(agent.agentId), agent)),
+          agentsHydrated: true,
+          ...(serverCwd !== undefined ? { serverCwd } : {}),
+          ...(availableAgentTypes !== undefined ? { availableAgentTypes } : {}),
+          ...(defaultAgentType !== undefined ? { defaultAgentType } : {}),
+          ...(build !== undefined ? { buildInfo: build } : {}),
+          ...(serverStartedAt !== undefined ? { serverStartedAt } : {}),
+          ...(sttEnabled && sttUrl ? { sttUrl } : {}),
+          ...(totalSpendUsd !== undefined ? { totalSpendUsd } : {}),
+          ...(achievements !== undefined ? { achievements } : {}),
+          ...(workspaceEnabled !== undefined ? { workspaceEnabled } : {}),
+          ...(sweepRunning !== undefined ? { sweepRunning } : {}),
+        };
       });
     },
 
     handleUpdate: (agentId, state) => {
       set((prev) => ({
-        agents: prev.agents.map((agent) => (agent.agentId === agentId ? state : agent)),
+        agents: prev.agents.map((agent) => (
+          agent.agentId === agentId ? mergeActivityAgent(agent, state) : agent
+        )),
       }));
     },
 

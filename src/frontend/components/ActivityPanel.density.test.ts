@@ -43,4 +43,65 @@ describe('ActivityPanel density', () => {
     expect(message.querySelector('summary')?.textContent).toContain('Show full prompt');
     expect(message.textContent).toContain('Step 1: perform one bounded action.');
   });
+
+  test('stays pinned to the latest activity while auto-scroll is locked', () => {
+    let scrollHeight = 120;
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 100 });
+
+    root = renderActivity(container, [{ type: 'user_prompt', sessionId: 's1', prompt: 'Start' }]);
+    const panel = container.querySelector<HTMLDivElement>('.activity-panel')!;
+    Object.defineProperty(panel, 'scrollHeight', { configurable: true, get: () => scrollHeight });
+
+    scrollHeight = 520;
+    act(() => {
+      root!.render(React.createElement(ActivityPanel, {
+        events: [
+          { type: 'user_prompt', sessionId: 's1', prompt: 'Start' },
+          { type: 'stop', sessionId: 's1', lastMessage: 'Latest message' },
+        ],
+      }));
+    });
+
+    expect(panel.scrollTop).toBe(520);
+    expect(container.querySelector('.act-jump-bottom')).toBeNull();
+  });
+
+  test('unlocks auto-scroll when the user scrolls up and relocks via jump to latest', () => {
+    let scrollHeight = 300;
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 100 });
+
+    root = renderActivity(container, [
+      { type: 'user_prompt', sessionId: 's1', prompt: 'Start' },
+      { type: 'stop', sessionId: 's1', lastMessage: 'One' },
+    ]);
+    const panel = container.querySelector<HTMLDivElement>('.activity-panel')!;
+    Object.defineProperty(panel, 'scrollHeight', { configurable: true, get: () => scrollHeight });
+
+    act(() => {
+      panel.scrollTop = 20;
+      panel.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+
+    scrollHeight = 620;
+    act(() => {
+      root!.render(React.createElement(ActivityPanel, {
+        events: [
+          { type: 'user_prompt', sessionId: 's1', prompt: 'Start' },
+          { type: 'stop', sessionId: 's1', lastMessage: 'One' },
+          { type: 'stop', sessionId: 's1', lastMessage: 'Two' },
+        ],
+      }));
+    });
+
+    expect(panel.scrollTop).toBe(20);
+    const jumpButton = container.querySelector<HTMLButtonElement>('.act-jump-bottom')!;
+    expect(jumpButton).not.toBeNull();
+
+    act(() => {
+      jumpButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(panel.scrollTop).toBe(620);
+    expect(container.querySelector('.act-jump-bottom')).toBeNull();
+  });
 });

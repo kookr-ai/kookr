@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useEffect, useState } from 'react';
+import React, { useMemo, useRef, useLayoutEffect, useState } from 'react';
 import type { AgentEvent, ActivityItem, ToolGroup, ToolGroupEntry } from '../../shared/protocol.js';
 import { summarizeActivity, compactToolSummary } from '../../shared/protocol.js';
 import { renderMarkdown } from '../markdown.js';
@@ -170,30 +170,33 @@ function ActivityItemView({
 export function ActivityPanel({ events, anomalyExplanation, onOpenDiff }: Props) {
   const items = useMemo(() => summarizeActivity(events), [events]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const autoScrollLockedRef = useRef(true);
   const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    if (el.scrollHeight <= el.clientHeight) return;
-    const distance = el.scrollHeight - (el.scrollTop + el.clientHeight);
-    if (distance <= 64) {
+    if (autoScrollLockedRef.current) {
       el.scrollTop = el.scrollHeight;
       setHasUnreadBelow(false);
-    } else {
-      setHasUnreadBelow(true);
+      return;
     }
-  }, [items.length]);
+    const distance = el.scrollHeight - (el.scrollTop + el.clientHeight);
+    setHasUnreadBelow(distance > 8);
+  }, [items, anomalyExplanation]);
 
   function handleScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
     const distance = el.scrollHeight - (el.scrollTop + el.clientHeight);
-    if (distance <= 8) setHasUnreadBelow(false);
+    const atBottom = distance <= 8;
+    autoScrollLockedRef.current = atBottom;
+    setHasUnreadBelow(!atBottom);
   }
 
   function jumpToBottom() {
     const el = scrollRef.current;
     if (!el) return;
+    autoScrollLockedRef.current = true;
     el.scrollTop = el.scrollHeight;
     setHasUnreadBelow(false);
   }

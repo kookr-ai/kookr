@@ -32,7 +32,7 @@ export interface HookEventBase {
 }
 
 // Normalized agent events (from architecture.md, adapted from aegiscore)
-export type AgentEvent =
+export type AgentEvent = (
   | {
       type: 'session_start';
       sessionId: string;
@@ -138,7 +138,15 @@ export type AgentEvent =
   | {
       type: 'input_received';
       sessionId: string;
-    };
+    }
+) & {
+  /**
+   * Monotonic sequence assigned by Monitor per supervised session. Used by the
+   * browser to merge overlapping windowed snapshots without collapsing
+   * repeated identical hook events.
+   */
+  eventSeq?: number;
+};
 
 // Type guards for AgentEvent discriminated union
 export function isSessionStartEvent(
