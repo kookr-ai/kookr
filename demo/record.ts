@@ -1152,6 +1152,7 @@ async function record() {
     // The addInitScript curtain has been hiding the dashboard since first
     // paint, so the recording never shows the dashboard before this overlay.
     await showIntroLogoScreen(page);
+    await showCaption(page, NARRATIONS.intro_logo);
     const introLogoStartedAt = Date.now();
     tracker.mark('intro_logo');
 
@@ -1258,7 +1259,7 @@ async function record() {
 
     // Render caption FIRST, then mark so audio fires when visuals are
     // already on screen (avoids 200ms of audio over an empty frame).
-    await showCaption(page, 'Some agents are working. Some need a decision. Which one needs you?');
+    await showCaption(page, NARRATIONS.cold_open);
     tracker.mark('cold_open');
     await page.waitForTimeout(holdTime(audioClips, 'cold_open', 3500));
     await hideCaption(page);
@@ -1266,7 +1267,7 @@ async function record() {
     await page.waitForTimeout(700);
 
     tracker.mark('hook');
-    await showCaption(page, 'Kookr tells you which one. Instantly.');
+    await showCaption(page, NARRATIONS.hook);
     await page.waitForTimeout(holdTime(audioClips, 'hook', 3200));
     await hideCaption(page);
     await page.waitForTimeout(500);
@@ -1275,7 +1276,7 @@ async function record() {
     // ACT 1 — Multi-project, multi-provider landscape (0:11–0:38)
     // =====================================================================
     tracker.mark('projects_open');
-    await showCaption(page, 'Webapp project: auth and login tasks.');
+    await showCaption(page, NARRATIONS.projects_open);
 
     const webappChip = page.getByTestId('project-icon-acme/webapp');
     const apiChip = page.getByTestId('project-icon-acme/api-service');
@@ -1291,13 +1292,13 @@ async function record() {
     await webappChip.click();
     await page.waitForTimeout(2500);
 
-    await showCaption(page, 'API project: backend and rate-limit tasks.');
+    await showCaption(page, NARRATIONS.projects_open);
     await apiChip.hover();
     await page.waitForTimeout(500);
     await apiChip.click();
     await page.waitForTimeout(2500);
 
-    await showCaption(page, 'All projects: one global supervision queue.');
+    await showCaption(page, NARRATIONS.projects_open);
     await allProjectsChip.hover();
     await page.waitForTimeout(500);
     await allProjectsChip.click();
@@ -1307,7 +1308,7 @@ async function record() {
     await page.waitForTimeout(400);
 
     tracker.mark('providers_mixed');
-    await showCaption(page, 'Claude Code + Codex CLI. Same dashboard.');
+    await showCaption(page, NARRATIONS.providers_mixed);
     await page.waitForTimeout(holdTime(audioClips, 'providers_mixed', 4500));
     await hideCaption(page);
     await page.waitForTimeout(500);
@@ -1324,7 +1325,7 @@ async function record() {
     await page.locator('.finding-card').filter({ hasText: 'Fix JWT token refresh in auth.ts' }).first().waitFor({ state: 'visible', timeout: 5000 });
     tracker.mark('permission_block');
     await showInferenceStamp(page, 'rule F2.4 · PermissionRequest → severity=warning', 700);
-    await showCaption(page, 'Permission blocked. Attention routed.');
+    await showCaption(page, NARRATIONS.permission_block);
     await page.waitForTimeout(holdTime(audioClips, 'permission_block', 4500));
     await hideCaption(page);
     await page.waitForTimeout(300);
@@ -1339,7 +1340,7 @@ async function record() {
     await page.waitForTimeout(800);
 
     tracker.mark('permission_allow');
-    await showCaption(page, 'Suggested unblock: Allow Bash test command.');
+    await showCaption(page, NARRATIONS.permission_allow);
     const permissionAllowTotal = holdTime(audioClips, 'permission_allow', 5200);
     const permissionAllowStartedAt = Date.now();
     await page.waitForTimeout(3200);
@@ -1367,7 +1368,7 @@ async function record() {
     await page.waitForTimeout(900);
 
     tracker.mark('two_alerts');
-    await showCaption(page, 'Codex question + Claude merge conflict.');
+    await showCaption(page, NARRATIONS.two_alerts);
     await page.waitForTimeout(holdTime(audioClips, 'two_alerts', 4000));
     await hideCaption(page);
     await page.waitForTimeout(300);
@@ -1394,16 +1395,13 @@ async function record() {
     await page.waitForTimeout(1200);
 
     tracker.mark('ai_suggest');
-    await showCaption(page, 'LLM drafts options. Pick one or write your own.');
+    await showCaption(page, NARRATIONS.ai_suggest);
     const aiSuggestTotal = holdTime(audioClips, 'ai_suggest', 7000);
-    const aiSuggestStartedAt = Date.now();
-    await page.waitForTimeout(4500);
+    await page.waitForTimeout(aiSuggestTotal);
     const aiBtn = page.locator('.btn-quick-action.ai-suggestion').first();
     await aiBtn.waitFor({ state: 'visible', timeout: 5000 });
     await aiBtn.click();
     await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 });
-    await showCaption(page, 'Choice sent. Kookr moves to the next finding.');
-    await page.waitForTimeout(Math.max(0, aiSuggestTotal - (Date.now() - aiSuggestStartedAt)));
     await hideCaption(page);
     await page.waitForTimeout(300);
 
@@ -1421,7 +1419,7 @@ async function record() {
     await page.waitForTimeout(1200);
 
     tracker.mark('snooze_other');
-    await showCaption(page, 'Not urgent? Snooze it for later.');
+    await showCaption(page, NARRATIONS.snooze_other);
     const snoozeTotal = holdTime(audioClips, 'snooze_other', 9000);
     const snoozeStartedAt = Date.now();
     await page.waitForTimeout(2500);
@@ -1493,7 +1491,7 @@ async function record() {
     });
 
     tracker.mark('pr_opened');
-    await showCaption(page, 'Agent opened a PR. Kookr tracks it.');
+    await showCaption(page, NARRATIONS.pr_opened);
     await page.waitForTimeout(holdTime(audioClips, 'pr_opened', 4500));
 
     const githubTab = page.locator('.pane-tab').filter({ hasText: 'GitHub' });
@@ -1513,7 +1511,7 @@ async function record() {
     await page.waitForTimeout(1000);
 
     tracker.mark('ci_failed');
-    await showCaption(page, 'CI failed. Same queue. Same triage.');
+    await showCaption(page, NARRATIONS.ci_failed);
     await page.waitForTimeout(holdTime(audioClips, 'ci_failed', 4500));
     await hideCaption(page);
     await page.waitForTimeout(400);
@@ -1544,7 +1542,7 @@ async function record() {
 
     await showSupervisionAvoidedOverlay(page, '8m 12s', 16, 8);
     tracker.mark('agent_done');
-    await showCaption(page, 'Done. Files, tests, cost — and time saved.');
+    await showCaption(page, NARRATIONS.agent_done);
     await page.waitForTimeout(holdTime(audioClips, 'agent_done', 6500));
     await hideCaption(page);
     await clearSupervisionAvoidedOverlay(page);
@@ -1559,13 +1557,13 @@ async function record() {
     await page.waitForTimeout(800);
 
     tracker.mark('closing');
-    await showCaption(page, 'Local-first. Attention router. Multi-project.');
+    await showCaption(page, NARRATIONS.closing);
     await page.waitForTimeout(holdTime(audioClips, 'closing', 5500));
     await hideCaption(page);
     await page.waitForTimeout(400);
 
     tracker.mark('repo_url');
-    await showCaption(page, 'github.com/kookr-ai/kookr · Apache 2.0');
+    await showCaption(page, NARRATIONS.repo_url);
     await page.waitForTimeout(holdTime(audioClips, 'repo_url', 5500));
     await hideCaption(page);
     await hideClosingCard(page);
