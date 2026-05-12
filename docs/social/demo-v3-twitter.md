@@ -17,7 +17,7 @@ Attach `kookr-demo-4k.mp4`.
 
 ## Thread variant (use only if single-tweet underperforms)
 
-### Tweet 1/3 (270 chars)
+### Tweet 1/4 (270 chars)
 
 > I measured my terminal-switches with 5 AI agents running.
 > ~40 / hour.
@@ -26,27 +26,38 @@ Attach `kookr-demo-4k.mp4`.
 >
 > So I built Kookr — an open-source attention router for parallel AI coding agents.
 >
-> 1/3 ↓
+> 1/4 ↓
 >
 > [video attached]
 
-### Tweet 2/3 (274 chars)
+### Tweet 2/4 (276 chars)
 
 > Kookr watches all your agents at once and routes you to the one that actually needs you.
 >
-> One dashboard for both Claude Code AND Codex CLI agents. Two projects? Sidebar groups them.
+> One dashboard for both Claude Code AND Codex CLI. Two projects? Sidebar groups them.
 >
 > Permission prompt, merge conflict, CI failure — same queue, ranked by urgency.
 >
-> 2/3
+> 2/4
 
-### Tweet 3/3 (266 chars)
+### Tweet 3/4 (272 chars)
 
-> Codex CLI support uses a maintained fork that adds the hooks vanilla Codex is missing.
+> Two pieces I get the most questions about:
 >
-> Local-first. No telemetry. Apache 2.0.
+> Playbooks — reusable parameterized task templates ("Implement issue X") so you stop re-typing prompts.
+>
+> Pre-push hook — deterministic gate that blocks `git push` until reviewer subagents have run against the current HEAD.
+>
+> 3/4
+
+### Tweet 4/4 (271 chars)
+
+> Bundled skills via the kookr-toolkit Claude Code plugin.
+>
+> The standout: RFC iterative review. Drafts an RFC in a worktree, runs parallel critic subagents, incorporates feedback over rounds.
+>
+> Network feedback: "a game changer."
 >
 > Repo: github.com/kookr-ai/kookr
-> Codex fork: github.com/jeanibarz/codex/tree/feat/claude-compat
 >
-> 3/3
+> 4/4
