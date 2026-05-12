@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import type { GitHubReference, GitHubPRState } from './github-types.js';
+import type { GitHubReference, GitHubIssueState, GitHubPRState } from './github-types.js';
 import { GitHubStateStore } from './github-state-store.js';
 
 function makeRef(number = 42, taskId = 'task-1'): GitHubReference {
@@ -9,6 +9,19 @@ function makeRef(number = 42, taskId = 'task-1'): GitHubReference {
     repo: 'kookr',
     number,
     url: `https://github.com/kookr-ai/kookr/pull/${number}`,
+    detectedAt: new Date(),
+    detectedFrom: 'agent-1',
+    taskId,
+  };
+}
+
+function makeIssueRef(number = 42, taskId = 'task-1'): GitHubReference {
+  return {
+    type: 'issue',
+    owner: 'kookr-ai',
+    repo: 'kookr',
+    number,
+    url: `https://github.com/kookr-ai/kookr/issues/${number}`,
     detectedAt: new Date(),
     detectedFrom: 'agent-1',
     taskId,
@@ -32,6 +45,18 @@ function makePRState(ref: GitHubReference): GitHubPRState {
   };
 }
 
+function makeIssueState(ref: GitHubReference): GitHubIssueState {
+  return {
+    ref,
+    title: `Issue #${ref.number}`,
+    status: 'open',
+    author: 'jeanibarz',
+    labels: [],
+    commentCount: 0,
+    lastFetchedAt: new Date(),
+  };
+}
+
 describe('GitHubStateStore', () => {
   test('addReference adds a new reference', () => {
     const store = new GitHubStateStore();
@@ -40,13 +65,38 @@ describe('GitHubStateStore', () => {
     expect(store.getAllReferences()).toHaveLength(1);
   });
 
-  test('addReference deduplicates by owner/repo/number', () => {
+  test('addReference deduplicates by task, type, owner, repo, and number', () => {
     const store = new GitHubStateStore();
     const ref1 = makeRef(42);
     const ref2 = makeRef(42); // same number
     expect(store.addReference(ref1)).toBe(true);
     expect(store.addReference(ref2)).toBe(false);
     expect(store.getAllReferences()).toHaveLength(1);
+  });
+
+  test('addReference keeps the same GitHub object visible for separate tasks', () => {
+    const store = new GitHubStateStore();
+    expect(store.addReference(makeRef(42, 'task-1'))).toBe(true);
+    expect(store.addReference(makeRef(42, 'task-2'))).toBe(true);
+
+    expect(store.getReferences('task-1')).toHaveLength(1);
+    expect(store.getReferences('task-2')).toHaveLength(1);
+    expect(store.getAllReferences()).toHaveLength(2);
+  });
+
+  test('addReference does not collide PR and issue with the same number', () => {
+    const store = new GitHubStateStore();
+    const pr = makeRef(42);
+    const issue = makeIssueRef(42);
+
+    expect(store.addReference(pr)).toBe(true);
+    expect(store.addReference(issue)).toBe(true);
+    store.updatePRState(makePRState(pr));
+    store.updateIssueState(makeIssueState(issue));
+
+    const state = store.getTaskState('task-1');
+    expect(state.prs).toHaveLength(1);
+    expect(state.issues).toHaveLength(1);
   });
 
   test('getReferences filters by taskId', () => {

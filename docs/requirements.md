@@ -632,6 +632,19 @@ The system SHOULD reduce repeated metadata and long prompt noise when a develope
 
 **Evidence:** `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/ActivityPanel.tsx`, `src/frontend/components/ProjectDetailDrawer.tsx`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/components/TopBar.tsx`, density-focused component tests.
 
+### R5.9: API-Minimal GitHub Awareness Polling — SHOULD — `done`
+
+The system SHOULD poll GitHub PR and issue state with the fewest API calls needed for the configured polling interval.
+
+**Acceptance criteria:**
+- GitHub references detected from agent output are fetched immediately without refetching unrelated known references
+- Periodic GitHub state refresh batches all known references by repository
+- Each repository batch uses a single GraphQL request that returns PR metadata, review threads, review decision, comments, checks, issue metadata, labels, and comment counts
+- The same GitHub object referenced by multiple tasks remains visible in each task without causing duplicate query selections
+- Existing WebSocket `githubUpdate` messages and GitHub alert behavior are preserved
+
+**Evidence:** `src/core/github-scanner-service.ts`, `src/core/github-state-store.ts`, `src/adapters/github-fetcher.ts`, `src/core/github-scanner-service.test.ts`, `src/core/github-state-store.test.ts`, `src/adapters/github-fetcher.test.ts`, `docs/reports/2026-05-12-github-polling-api-call-audit.md`.
+
 ---
 
 ## R6: Infrastructure & Platform
