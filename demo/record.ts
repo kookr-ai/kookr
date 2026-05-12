@@ -904,7 +904,7 @@ const NARRATIONS: Record<string, string> = {
 
   // Act 1: Multi-project, multi-provider
   projects_webapp: 'First, the webapp project stays isolated, so you can inspect auth and login work without mixing contexts.',
-  projects_api: 'Then switch to API work and you only see backend tasks: pagination, rate limits, and service changes.',
+  projects_api: 'Then switch to API work and you only see the two backend agents: pagination and rate limiting.',
   projects_all: 'Or return to all projects when you want global supervision across every running agent.',
   providers_mixed: 'Claude Code and Codex CLI land in the same workflow. Different runtimes, one supervision surface.',
 
