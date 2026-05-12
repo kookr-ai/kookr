@@ -903,17 +903,17 @@ const NARRATIONS: Record<string, string> = {
   hook: 'Kookr tells you which one. Instantly.',
 
   // Act 1: Multi-project, multi-provider
-  projects_open: 'Two projects stay separate. Kookr ranks one attention queue across both.',
+  projects_open: 'Two projects stay separate. Filter to webapp tasks, filter to API tasks, or switch back to all tasks for global supervision.',
   providers_mixed: 'Claude Code and Codex CLI agents — same queue, same triage.',
 
   // Act 2: Anomaly detection
   permission_block: 'Permission blocked on the webapp agent. Kookr routes your attention there.',
-  permission_allow: 'One key to allow. The queue rolls forward.',
+  permission_allow: 'Kookr shows the exact unblock action. Read it, press one, and the agent continues.',
 
   // Act 3: Cross-project triage
   two_alerts: 'Codex needs a product decision. Claude hit a merge conflict. Both surfaced.',
-  ai_suggest: 'AI drafts a full answer, not a yes-no nudge. Approve, edit, or write your own.',
-  snooze_other: 'The merge conflict can wait. Snooze it and keep moving.',
+  ai_suggest: 'Kookr asks the LLM for multiple plausible replies. Pick one, approve it, or write a custom response.',
+  snooze_other: 'The merge conflict is real, but not urgent. Open snooze, choose one hour, and keep focus on the active decision.',
 
   // Act 4: GitHub awareness
   pr_opened: 'An agent just opened a pull request.',
@@ -1275,17 +1275,34 @@ async function record() {
     // ACT 1 — Multi-project, multi-provider landscape (0:11–0:38)
     // =====================================================================
     tracker.mark('projects_open');
-    await showCaption(page, 'Separate projects. One ranked attention queue.');
+    await showCaption(page, 'Webapp project: auth and login tasks.');
 
     const webappChip = page.getByTestId('project-icon-acme/webapp');
+    const apiChip = page.getByTestId('project-icon-acme/api-service');
+    const allProjectsChip = page.getByTestId('project-icon-all');
+    const projectsOpenTotal = holdTime(audioClips, 'projects_open', 9000);
+    const projectsStartedAt = Date.now();
+
     await webappChip.waitFor({ state: 'visible', timeout: 5000 });
+    await apiChip.waitFor({ state: 'visible', timeout: 5000 });
+    await allProjectsChip.waitFor({ state: 'visible', timeout: 5000 });
     await webappChip.hover();
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(700);
     await webappChip.click();
-    await page.waitForTimeout(1500);
-    await page.getByTestId('project-icon-all').click();
-    await page.waitForTimeout(600);
-    await page.waitForTimeout(Math.max(0, holdTime(audioClips, 'projects_open', 4500) - 3700));
+    await page.waitForTimeout(2500);
+
+    await showCaption(page, 'API project: backend and rate-limit tasks.');
+    await apiChip.hover();
+    await page.waitForTimeout(500);
+    await apiChip.click();
+    await page.waitForTimeout(2500);
+
+    await showCaption(page, 'All projects: one global supervision queue.');
+    await allProjectsChip.hover();
+    await page.waitForTimeout(500);
+    await allProjectsChip.click();
+    await page.waitForTimeout(2200);
+    await page.waitForTimeout(Math.max(0, projectsOpenTotal - (Date.now() - projectsStartedAt)));
     await hideCaption(page);
     await page.waitForTimeout(400);
 
@@ -1321,17 +1338,15 @@ async function record() {
     ]);
     await page.waitForTimeout(800);
 
-    // Interleave the click DURING the audio rather than after — viewer hears
-    // "One key to allow" and SEES the click at the same beat, not as a delayed
-    // echo of the description.
     tracker.mark('permission_allow');
-    await showCaption(page, 'One key. Allow. Keep moving.');
-    const permissionAllowTotal = holdTime(audioClips, 'permission_allow', 1700);
-    await page.waitForTimeout(700); // brief lead-in so "One key..." begins
+    await showCaption(page, 'Suggested unblock: Allow Bash test command.');
+    const permissionAllowTotal = holdTime(audioClips, 'permission_allow', 5200);
+    const permissionAllowStartedAt = Date.now();
+    await page.waitForTimeout(3200);
     await showKeystroke(page, '1');
     await page.locator('.btn-quick-action', { hasText: 'Allow' }).click();
     await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 });
-    await page.waitForTimeout(Math.max(0, permissionAllowTotal - 700));
+    await page.waitForTimeout(Math.max(0, permissionAllowTotal - (Date.now() - permissionAllowStartedAt)));
     await hideCaption(page);
     await page.waitForTimeout(400);
 
@@ -1378,17 +1393,17 @@ async function record() {
     ]);
     await page.waitForTimeout(1200);
 
-    // Interleave the AI-suggestion click DURING the audio — same fix as the
-    // permission_allow beat above.
     tracker.mark('ai_suggest');
-    await showCaption(page, 'AI drafts a full answer. Approve or edit.');
-    const aiSuggestTotal = holdTime(audioClips, 'ai_suggest', 4000);
-    await page.waitForTimeout(1200); // lead-in so the audio reaches "AI drafts..."
+    await showCaption(page, 'LLM drafts options. Pick one or write your own.');
+    const aiSuggestTotal = holdTime(audioClips, 'ai_suggest', 7000);
+    const aiSuggestStartedAt = Date.now();
+    await page.waitForTimeout(4500);
     const aiBtn = page.locator('.btn-quick-action.ai-suggestion').first();
     await aiBtn.waitFor({ state: 'visible', timeout: 5000 });
     await aiBtn.click();
     await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 });
-    await page.waitForTimeout(Math.max(0, aiSuggestTotal - 1200));
+    await showCaption(page, 'Choice sent. Kookr moves to the next finding.');
+    await page.waitForTimeout(Math.max(0, aiSuggestTotal - (Date.now() - aiSuggestStartedAt)));
     await hideCaption(page);
     await page.waitForTimeout(300);
 
@@ -1403,22 +1418,25 @@ async function record() {
     await broadcastSuggestion(request, tmux4, [], []);
 
     await selectFindingByText(page, 'Implement login redirect fix (#87)');
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(1200);
 
     tracker.mark('snooze_other');
-    await showCaption(page, 'Snooze the other. Keep moving.');
+    await showCaption(page, 'Not urgent? Snooze it for later.');
+    const snoozeTotal = holdTime(audioClips, 'snooze_other', 9000);
+    const snoozeStartedAt = Date.now();
+    await page.waitForTimeout(2500);
     await showKeystroke(page, 'Alt+S');
     await page.keyboard.press('Alt+s');
     const snoozeDialog = page.locator('.snooze-dialog');
     await snoozeDialog.waitFor({ state: 'visible', timeout: 3000 });
     if (await snoozeDialog.isVisible()) {
-      await page.waitForTimeout(1200);
+      await page.waitForTimeout(3200);
       await showKeystroke(page, '2  (1h)');
       await page.keyboard.press('2');
-      await page.waitForTimeout(1200);
+      await page.waitForTimeout(900);
     }
-    await showTimeReclaimedBadge(page, 1500);
-    await page.waitForTimeout(Math.max(0, holdTime(audioClips, 'snooze_other', 2800) - 1500));
+    await showTimeReclaimedBadge(page, 1800);
+    await page.waitForTimeout(Math.max(0, snoozeTotal - (Date.now() - snoozeStartedAt)));
     await hideCaption(page);
     await page.waitForTimeout(400);
 
