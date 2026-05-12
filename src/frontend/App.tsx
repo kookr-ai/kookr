@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { ProjectSummary } from '../core/project-summary.js';
-import { isTerminalStatus } from '../shared/contracts/task-status.js';
-import type { TaskStatus } from '../core/types.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
@@ -10,7 +8,7 @@ import { useAudibleAlert } from './hooks/useAudibleAlert.js';
 import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
 import { track } from './telemetry.js';
-import { isActiveFinding } from './store/finding-helpers.js';
+import { buildAgentBuckets } from './agent-buckets.js';
 import { TopBar } from './components/TopBar.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
 import { DetailPanel } from './components/DetailPanel.js';
@@ -348,29 +346,18 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [agents, agentsHydrated, projectSummaries, projectSummariesHydrated, selectedProject]);
 
-  // Filter agents by selected project
-  const filteredAgents = useMemo(() => {
-    if (!selectedProject) return agents;
-    return agents.filter((a) => a.projectId === selectedProject);
-  }, [agents, selectedProject]);
-
   const selectedAgent = agents.find((a) => a.agentId === selectedAgentId) ?? null;
-  // Exhaustiveness helper: treats undefined as "no task → not terminal".
-  const isTerminal = (s: TaskStatus | undefined): boolean => s !== undefined && isTerminalStatus(s);
-  const pending = filteredAgents.filter((a) => a.taskStatus === 'pending');
-  // 'completed' pane surfaces every task the user is "done with": completed,
-  // cancelled, AND terminated. The distinction matters for the ack flow and
-  // clearCompleted scoping (see D2), but visually they're grouped.
-  const completed = filteredAgents.filter((a) => isTerminal(a.taskStatus));
-  const snoozed = filteredAgents
-    .filter((a) => a.taskStatus !== 'pending' && !isTerminal(a.taskStatus) && (!!a.snoozedUntil || a.suppressed))
-    .sort((a, b) => (a.snoozedUntil ?? 0) - (b.snoozedUntil ?? 0));
-  const findings = filteredAgents.filter((a) => a.taskStatus !== 'pending' && !isTerminal(a.taskStatus) && isActiveFinding(a));
-  // 'healthy' = actively running tasks (not pending, not in any terminal state).
-  // Terminal states include 'terminated' after rfc-task-loss-prevention.
-  const healthy = filteredAgents.filter((a) => a.anomaly === null && !a.snoozedUntil && !a.suppressed && a.taskStatus !== 'pending' && !isTerminal(a.taskStatus));
-  const activeTaskCount = agents.filter((agent) => !isTerminal(agent.taskStatus)).length;
-  const completedTaskCount = agents.filter((agent) => isTerminal(agent.taskStatus)).length;
+  const {
+    filteredAgents,
+    pending,
+    completed,
+    snoozed,
+    findings,
+    healthy,
+    globalHealthyAgents,
+    activeTaskCount,
+    completedTaskCount,
+  } = useMemo(() => buildAgentBuckets(agents, selectedProject), [agents, selectedProject]);
 
   useEffect(() => {
     if (!isMobileViewport) {
@@ -487,7 +474,7 @@ export function App() {
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}`}>
       <TopBar
         findings={findings.length}
-        healthyAgents={healthy}
+        healthyAgents={globalHealthyAgents}
         currentIndex={selectedAgent && selectedAgent.anomaly
           ? findings.findIndex((f) => f.agentId === selectedAgentId)
           : -1}
