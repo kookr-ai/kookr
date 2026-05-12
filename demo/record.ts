@@ -903,7 +903,7 @@ const NARRATIONS: Record<string, string> = {
   hook: 'Kookr tells you which one. Instantly.',
 
   // Act 1: Multi-project, multi-provider
-  projects_open: 'Two projects, side by side. Webapp on the left, API service on the right.',
+  projects_open: 'Two projects stay separate. Kookr ranks one attention queue across both.',
   providers_mixed: 'Claude Code and Codex CLI agents — same queue, same triage.',
 
   // Act 2: Anomaly detection
@@ -1275,7 +1275,7 @@ async function record() {
     // ACT 1 — Multi-project, multi-provider landscape (0:11–0:38)
     // =====================================================================
     tracker.mark('projects_open');
-    await showCaption(page, 'Two projects. One queue. Both runtimes.');
+    await showCaption(page, 'Separate projects. One ranked attention queue.');
 
     const webappChip = page.getByTestId('project-icon-acme/webapp');
     await webappChip.waitFor({ state: 'visible', timeout: 5000 });
