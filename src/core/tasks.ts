@@ -637,6 +637,14 @@ export class TaskStore {
     task.updatedAt = new Date();
   }
 
+  /** Override the agentType on a task. Used by the demo recorder to surface a Codex agent alongside Claude agents without touching adapter routing. */
+  setAgentType(taskId: string, agentType: AgentType): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.agentType = agentType;
+    task.updatedAt = new Date();
+  }
+
   /** Get all unique project IDs across all tasks. */
   getProjectIds(): string[] {
     const ids = new Set<string>();

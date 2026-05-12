@@ -177,7 +177,7 @@ export function cacheRefactorContent(): string {
   ].join('\n');
 }
 
-/** Agent 4: Add rate limiting — reads routes, checks middleware, asks about limits */
+/** Agent 4: Add rate limiting — reads routes, checks middleware, asks about storage strategy */
 export function rateLimitContent(): string {
   return [
     `${D}╭──────────────────────────────────────────────────────────────╮${R}`,
@@ -221,12 +221,12 @@ export function rateLimitContent(): string {
     `${line(7)} // Rate limit: 100 req/min per IP`,
     `${line(8)} users.use(rateLimit(100));`,
     ``,
-    `  I found the existing rate limiter. The /users endpoint allows 100 req/min`,
-    `  and /auth allows 20 req/min. Should I add rate limiting to the pagination`,
-    `  endpoint as well?`,
+    `  I found the existing rate limiter. It stores request windows in memory,`,
+    `  which is fine for one local instance but will drift once the API runs`,
+    `  behind more than one process.`,
     ``,
-    `  ${B}${C}?${R} Should I add rate limiting to the pagination endpoint?`,
-    `    I'd recommend 100 req/min to match the /users limit.`,
+    `  ${B}${C}?${R} Rate-limit storage decision needed before I wire the middleware.`,
+    `    Ship in-memory TTL now with a Redis storage interface, or add Redis immediately?`,
     ``,
   ].join('\n');
 }
