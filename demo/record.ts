@@ -1,5 +1,6 @@
 /**
- * Demo recording script V2 — produces a ~90-120s .webm video showcasing
+ * Demo recording script V3 — produces a narrated 1080p WebM plus a 4K MP4
+ * release asset showcasing
  * the full Kookr feature set.
  *
  * Scenario: "A morning with 5 agents" — launch agents across 2 projects
@@ -15,8 +16,8 @@
  * narration audio for each caption and merges it into the final video with ffmpeg.
  *
  * Usage:
- *   pnpm demo:record                    # Silent video (no TTS needed)
- *   KOOKR_TTS_URL=http://localhost:8004 pnpm demo:record   # With narration
+ *   pnpm demo:record                    # Uses TTS when KOOKR_TTS=true
+ *   KOOKR_TTS_URL=http://localhost:8004 pnpm demo:record   # External narration service
  *
  * Output:
  *   demo/output/kookr-demo.webm
@@ -189,6 +190,30 @@ async function showKeystroke(page: Page, label: string) {
   }, label);
 }
 
+async function waitForDetailTitle(page: Page, title: string, timeout = 3000) {
+  await page.waitForFunction(
+    `document.querySelector('.detail-header-left')?.textContent?.includes(${JSON.stringify(title)}) === true`,
+    undefined,
+    { timeout },
+  );
+}
+
+async function selectFindingByText(page: Page, text: string, expectedTitle = text) {
+  const card = page.locator('.finding-card').filter({ hasText: text }).first();
+  await card.waitFor({ state: 'visible', timeout: 5000 });
+  await card.scrollIntoViewIfNeeded();
+  await card.click({ force: true });
+  await waitForDetailTitle(page, expectedTitle);
+}
+
+async function selectCompletedRowByText(page: Page, text: string) {
+  const row = page.locator('.completed-row').filter({ hasText: text }).first();
+  await row.waitFor({ state: 'visible', timeout: 5000 });
+  await row.scrollIntoViewIfNeeded();
+  await row.click({ force: true });
+  await waitForDetailTitle(page, text);
+}
+
 // ---------------------------------------------------------------------------
 // v3 demo overlays — cold-open grid, provider tooltip, inference stamp,
 // time-reclaimed badge, supervision-avoided digest row. All pure DOM.
@@ -212,7 +237,8 @@ async function showIntroLogoScreen(page: Page) {
       opacity: 1; visibility: visible !important;
     `;
     root.innerHTML = `
-      <video id="demo-intro-logo-video" autoplay muted playsinline
+      <div id="demo-intro-content" style="display:flex;flex-direction:column;align-items:center;gap:28px;opacity:0;">
+      <video id="demo-intro-logo-video" autoplay muted playsinline preload="auto"
              style="width: 360px; height: 540px; display: block; object-fit: contain; visibility: visible;"
              src="/demo-assets/kookr-logo.mp4"></video>
       <div style="font-size: 32px; color: #dfe4f0; font-weight: 600; letter-spacing: 0.2px; text-align: center; visibility: visible;">
@@ -221,8 +247,26 @@ async function showIntroLogoScreen(page: Page) {
       <div style="font-size: 20px; color: #8b94aa; letter-spacing: 0.3px; font-weight: 400; text-align: center; visibility: visible;">
         an attention router for parallel AI coding agents
       </div>
+      </div>
     `;
     document.body.appendChild(root);
+
+    const content = document.getElementById('demo-intro-content') as HTMLElement | null;
+    const video = document.getElementById('demo-intro-logo-video') as HTMLVideoElement | null;
+    content?.setAttribute('data-ready', 'false');
+    video?.load();
+  });
+  await page.waitForFunction(
+    "(() => { const video = document.getElementById('demo-intro-logo-video'); return !video || video.readyState >= 2; })()",
+    undefined,
+    { timeout: 1500 },
+  ).catch(() => {});
+  await page.evaluate(() => {
+    const content = document.getElementById('demo-intro-content') as HTMLElement | null;
+    if (!content) return;
+    content.style.transition = 'opacity 250ms ease-out';
+    content.style.opacity = '1';
+    content.setAttribute('data-ready', 'true');
   });
 }
 
@@ -242,8 +286,8 @@ async function hideIntroLogoScreen(page: Page, durationMs = 600) {
 }
 
 /** 3x2 fake-tmux grid that anchors the "before" pain in Act 0. Six panes
- *  with distinct agent states: waiting, failing, streaming, permission,
- *  generating, retrying. */
+ *  with distinct real-world states: healthy progress, permission prompt,
+ *  product decision, review/CI, planning, retry/backoff. */
 async function showColdOpenGrid(page: Page) {
   await page.evaluate(() => {
     const root = document.createElement('div');
@@ -258,29 +302,29 @@ async function showColdOpenGrid(page: Page) {
     const panes = [
       // Top row
       {
-        color: '#dfe4f0',
-        body: '$ claude code\n> Should I proceed with this approach?\nContinue? [y/n]_',
-      },
-      {
-        color: '#ff6b6b',
-        body: 'FAIL test/auth.spec.ts > token refresh\n  TypeError: jwt.verify is not a function\n  at Object.<anonymous> (auth.ts:42)\n  at Module._compile (node:internal/modules/cjs/loader)',
-      },
-      {
         color: '#48d597',
-        body: '[14:22:11] streaming output...\n[14:22:11] partial result OK\n[14:22:12] retry 3/5...\n[14:22:13] retry 4/5...',
-      },
-      // Bottom row
-      {
-        color: '#dfe4f0',
-        body: '$ codex exec --task "add pagination"\n# (waiting on permission prompt)\n# Allow write to src/routes/users.ts?\n_',
+        body: '$ claude code\n> Implementing cursor pagination\n  Read src/routes/users.ts\n  Edit src/routes/users.ts (+42 -8)\n  npm test -- users\n  PASS users.pagination.test.ts (8/8)\n  next: update API docs',
       },
       {
         color: '#f4c341',
-        body: '● Generating implementation plan...\n  ▸ analyzing repo structure\n  ▸ reading 14 files\n  ▸ drafting approach\n  · 18.4k tokens · 42s elapsed',
+        body: '$ codex exec "fix auth middleware"\nPermission requested\n  Tool: Bash\n  Command: npm test -- --runInBand\nAllow? [1] yes  [2] no\n_',
       },
       {
         color: '#dfe4f0',
-        body: '$ codex exec --task "refactor auth"\n× tool: Edit failed\n× tool: Edit failed\n× tool: Edit failed\n× retrying with backoff...',
+        body: '$ claude code\n> Rate-limit storage decision needed:\n  1. in-memory TTL + Redis adapter\n  2. Redis immediately\n  3. config flag + follow-up issue\nWaiting for product call...',
+      },
+      // Bottom row
+      {
+        color: '#ffb86c',
+        body: '$ claude code\nPR #142 opened\n  review: changes requested\n  CI / build: pass\n  CI / lint: import order failed\n  next: apply reviewer fix',
+      },
+      {
+        color: '#8ab4ff',
+        body: '● Planning security review\n  grep auth guards\n  read 9 files\n  found 3 untested edge cases\n  drafting test plan...\n  18.4k tok · 42s elapsed',
+      },
+      {
+        color: '#dfe4f0',
+        body: '$ codex exec "refresh dependencies"\ntool: pnpm install timed out (network)\nretry 2/5 in 8s\ncache warm, lockfile unchanged\nno code changed yet',
       },
     ];
     for (const p of panes) {
@@ -407,7 +451,7 @@ async function showTimeReclaimedBadge(page: Page, holdMs = 1400) {
 async function showSupervisionAvoidedOverlay(page: Page, taskDurationLabel: string, checks: number, minutes: number) {
   await page.evaluate(({ duration, checkCount, mins }) => {
     // Find the completion digest panel — looks for the bullets list root.
-    const digest = document.querySelector('.completion-digest, .digest, .task-detail-completion');
+    const digest = document.querySelector('.detail-digest, .completion-digest, .digest, .task-detail-completion');
     const anchor = digest ?? document.body;
     const row = document.createElement('div');
     row.id = 'demo-supervision-row';
@@ -436,7 +480,7 @@ async function showSupervisionAvoidedOverlay(page: Page, taskDurationLabel: stri
       // that share that corner (which made it read like a red error frame
       // in the v1 capture).
       row.style.cssText += `
-        position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+        position: fixed; bottom: 132px; left: 50%; transform: translateX(-50%);
         z-index: 99997; min-width: 460px; max-width: 540px;
         background: rgba(45, 212, 191, 0.14);
         border: 1.5px solid rgba(45, 212, 191, 0.55);
@@ -796,6 +840,12 @@ async function seedAgent(
   });
   if (!res.ok()) throw new Error(`seedAgent failed: ${res.status()} ${await res.text()}`);
   const task = (await res.json()) as { id: string };
+  const renameRes = await request.patch(`${BASE}/api/tasks/${task.id}/name`, {
+    data: { name: opts.prompt },
+  });
+  if (!renameRes.ok()) {
+    throw new Error(`seedAgent rename failed: ${renameRes.status()} ${await renameRes.text()}`);
+  }
   if (opts.projectId) {
     await request.post(`${BASE}/api/test/set-project-id`, {
       data: { taskId: task.id, projectId: opts.projectId },
@@ -848,7 +898,8 @@ const TTS_VOICE = process.env.TTS_VOICE ?? '/app/voices/matilda.mp3';
 /** Narration scripts — v3 (critic-informed). See docs/rfc/demo-video-v3-drafts/script-v2.md. */
 const NARRATIONS: Record<string, string> = {
   // Act 0: Cold open + hook
-  cold_open: 'AI coding agents scattered across terminals. Which one needs you?',
+  intro_logo: 'Kookr is an attention router for parallel AI coding agents. It keeps the urgent agent in front of you.',
+  cold_open: 'Some agents are working. Some need a decision. One needs you right now.',
   hook: 'Kookr tells you which one. Instantly.',
 
   // Act 1: Multi-project, multi-provider
@@ -860,8 +911,8 @@ const NARRATIONS: Record<string, string> = {
   permission_allow: 'One key to allow. The queue rolls forward.',
 
   // Act 3: Cross-project triage
-  two_alerts: 'A question on the Codex agent. A merge conflict on Claude. Both surfaced.',
-  ai_suggest: 'AI drafts a response. Approve, edit, or write your own.',
+  two_alerts: 'Codex needs a product decision. Claude hit a merge conflict. Both surfaced.',
+  ai_suggest: 'AI drafts a full answer, not a yes-no nudge. Approve, edit, or write your own.',
   snooze_other: 'The merge conflict can wait. Snooze it and keep moving.',
 
   // Act 4: GitHub awareness
@@ -1092,6 +1143,7 @@ async function record() {
   try {
     // Reset and navigate
     await resetServer(context);
+    tracker.start();
     await page.goto(BASE);
     await page.locator('.logo').waitFor({ state: 'visible' });
 
@@ -1100,6 +1152,8 @@ async function record() {
     // The addInitScript curtain has been hiding the dashboard since first
     // paint, so the recording never shows the dashboard before this overlay.
     await showIntroLogoScreen(page);
+    const introLogoStartedAt = Date.now();
+    tracker.mark('intro_logo');
 
     // Seed project configs so the sidebar appears
     await seedProjectConfigs(request);
@@ -1108,7 +1162,6 @@ async function record() {
     await injectInteractionIndicators(page);
 
     console.log('Recording started. Running demo scenario...');
-    tracker.start();
 
     // =====================================================================
     // PRE-SEED: launch 5 agents directly via API (no UI ceremony).
@@ -1192,9 +1245,10 @@ async function record() {
     // =====================================================================
     // ACT 0 — Intro logo + cold open + hook (0:00–~0:18)
     // =====================================================================
-    // Intro logo is already mounted (above, right after page.goto). Hold for
-    // most of the logo mp4's natural 6.04s duration, then transition.
-    await page.waitForTimeout(5500);
+    // Intro logo is already mounted (above, right after page.goto). Hold until
+    // the intro narration has finished; setup work happens behind the logo.
+    const introLogoHoldMs = holdTime(audioClips, 'intro_logo', 5500, 700);
+    await page.waitForTimeout(Math.max(0, introLogoHoldMs - (Date.now() - introLogoStartedAt)));
 
     // Prepare the cold-open grid BEHIND the intro screen, then fade the
     // intro out so the grid is revealed without flashing the dashboard.
@@ -1204,7 +1258,7 @@ async function record() {
 
     // Render caption FIRST, then mark so audio fires when visuals are
     // already on screen (avoids 200ms of audio over an empty frame).
-    await showCaption(page, 'AI agents scattered across terminals. Which one needs you?');
+    await showCaption(page, 'Some agents are working. Some need a decision. Which one needs you?');
     tracker.mark('cold_open');
     await page.waitForTimeout(holdTime(audioClips, 'cold_open', 3500));
     await hideCaption(page);
@@ -1223,19 +1277,14 @@ async function record() {
     tracker.mark('projects_open');
     await showCaption(page, 'Two projects. One queue. Both runtimes.');
 
-    // Hover + click the webapp project chip if present
-    const webappChip = page.locator('.project-chip, .project-pill, .sidebar-project').filter({ hasText: 'webapp' }).first();
-    if (await webappChip.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await webappChip.hover().catch(() => {});
-      await page.waitForTimeout(800);
-      await webappChip.click().catch(() => {});
-      await page.waitForTimeout(1500);
-      const allChip = page.locator('.project-chip, .project-pill, button').filter({ hasText: /^All$/ }).first();
-      if (await allChip.isVisible({ timeout: 800 }).catch(() => false)) {
-        await allChip.click().catch(() => {});
-      }
-      await page.waitForTimeout(600);
-    }
+    const webappChip = page.getByTestId('project-icon-acme/webapp');
+    await webappChip.waitFor({ state: 'visible', timeout: 5000 });
+    await webappChip.hover();
+    await page.waitForTimeout(800);
+    await webappChip.click();
+    await page.waitForTimeout(1500);
+    await page.getByTestId('project-icon-all').click();
+    await page.waitForTimeout(600);
     await page.waitForTimeout(Math.max(0, holdTime(audioClips, 'projects_open', 4500) - 3700));
     await hideCaption(page);
     await page.waitForTimeout(400);
@@ -1255,7 +1304,7 @@ async function record() {
     // marking, so the audio "Permission blocked on the webapp agent..."
     // fires when the permission card is already visible.
     await injectPermissionEvent(request, tmux1, 'Bash', 'npm test --coverage');
-    await page.locator('.finding-card').first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await page.locator('.finding-card').filter({ hasText: 'Fix JWT token refresh in auth.ts' }).first().waitFor({ state: 'visible', timeout: 5000 });
     tracker.mark('permission_block');
     await showInferenceStamp(page, 'rule F2.4 · PermissionRequest → severity=warning', 700);
     await showCaption(page, 'Permission blocked. Attention routed.');
@@ -1263,8 +1312,8 @@ async function record() {
     await hideCaption(page);
     await page.waitForTimeout(300);
 
-    await page.locator('.finding-card').first().click().catch(() => {});
-    await page.waitForTimeout(1000);
+    await selectFindingByText(page, 'Fix JWT token refresh in auth.ts');
+    await page.waitForTimeout(800);
 
     await broadcastSuggestion(request, tmux1, [], [
       { label: 'Allow', value: 'yes', shortcut: '1' },
@@ -1280,8 +1329,8 @@ async function record() {
     const permissionAllowTotal = holdTime(audioClips, 'permission_allow', 1700);
     await page.waitForTimeout(700); // brief lead-in so "One key..." begins
     await showKeystroke(page, '1');
-    await page.locator('.btn-quick-action', { hasText: 'Allow' }).click().catch(() => {});
-    await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+    await page.locator('.btn-quick-action', { hasText: 'Allow' }).click();
+    await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 });
     await page.waitForTimeout(Math.max(0, permissionAllowTotal - 700));
     await hideCaption(page);
     await page.waitForTimeout(400);
@@ -1292,7 +1341,7 @@ async function record() {
     await injectStopEvent(
       request,
       tmux4,
-      'Should I use Redis or in-memory for rate limit storage? Redis scales beyond one instance; in-memory is fine until ~1k req/min.',
+      'Rate-limit storage choice needed before I wire the middleware. Constraints: single local instance today, low traffic, but likely multi-instance later. Should I ship in-memory TTL now with a Redis storage interface, or add Redis immediately?',
     );
     await setTerminalContent(request, tmux3, mergeConflictContent(), { mode: 'instant' });
     await injectStopEvent(
@@ -1308,30 +1357,37 @@ async function record() {
     await hideCaption(page);
     await page.waitForTimeout(300);
 
-    await page.locator('.finding-card').first().click().catch(() => {});
-    await page.waitForTimeout(1200);
+    await selectFindingByText(page, 'Add rate limiting to pagination endpoint');
+    await page.waitForTimeout(800);
 
     await broadcastSuggestion(request, tmux4, [
-      'Use in-memory with TTL — Redis can wait until 1k req/min',
-      'Use Redis from the start — simpler scaling story later',
-      'Use in-memory with a feature flag to switch to Redis',
+      'Use in-memory TTL for this PR. Add the storage interface now so Redis can replace it when we deploy multiple instances.',
+      'Use Redis immediately if this service will run more than one instance in the next sprint.',
+      'Ship in-memory TTL behind a config flag and add a follow-up issue for Redis before horizontal scaling.',
     ], [
-      { label: 'In-memory', value: 'in-memory', shortcut: '1' },
-      { label: 'Redis', value: 'redis', shortcut: '2' },
+      {
+        label: 'In-memory TTL + adapter',
+        value: 'Use in-memory TTL for this PR. Please keep the storage boundary explicit so Redis can replace it before multi-instance deploys.',
+        shortcut: '1',
+      },
+      {
+        label: 'Redis now',
+        value: 'Use Redis now if this service will run multiple instances in the next sprint; otherwise keep the PR smaller with in-memory TTL.',
+        shortcut: '2',
+      },
     ]);
     await page.waitForTimeout(1200);
 
     // Interleave the AI-suggestion click DURING the audio — same fix as the
     // permission_allow beat above.
     tracker.mark('ai_suggest');
-    await showCaption(page, 'AI drafts a reply. Approve or edit.');
+    await showCaption(page, 'AI drafts a full answer. Approve or edit.');
     const aiSuggestTotal = holdTime(audioClips, 'ai_suggest', 4000);
     await page.waitForTimeout(1200); // lead-in so the audio reaches "AI drafts..."
     const aiBtn = page.locator('.btn-quick-action.ai-suggestion').first();
-    if (await aiBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await aiBtn.click().catch(() => {});
-    }
-    await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+    await aiBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await aiBtn.click();
+    await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 });
     await page.waitForTimeout(Math.max(0, aiSuggestTotal - 1200));
     await hideCaption(page);
     await page.waitForTimeout(300);
@@ -1346,9 +1402,7 @@ async function record() {
     await broadcastSuggestion(request, tmux3, [], []);
     await broadcastSuggestion(request, tmux4, [], []);
 
-    const conflictCard = page.locator('.finding-card').first();
-    await conflictCard.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
-    await conflictCard.click().catch(() => {});
+    await selectFindingByText(page, 'Implement login redirect fix (#87)');
     await page.waitForTimeout(800);
 
     tracker.mark('snooze_other');
@@ -1356,7 +1410,7 @@ async function record() {
     await showKeystroke(page, 'Alt+S');
     await page.keyboard.press('Alt+s');
     const snoozeDialog = page.locator('.snooze-dialog');
-    await snoozeDialog.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+    await snoozeDialog.waitFor({ state: 'visible', timeout: 3000 });
     if (await snoozeDialog.isVisible()) {
       await page.waitForTimeout(1200);
       await showKeystroke(page, '2  (1h)');
@@ -1373,10 +1427,9 @@ async function record() {
     // =====================================================================
     // ACT 4 — GitHub awareness (1:30–1:53)
     // =====================================================================
-    const healthyRow2 = page.locator('.healthy-row').first();
-    if (await healthyRow2.isVisible({ timeout: 1500 }).catch(() => false)) {
-      await healthyRow2.click().catch(() => {});
-    }
+    const paginationRow = page.locator('.healthy-row').filter({ hasText: 'Add pagination to /users endpoint' }).first();
+    await paginationRow.waitFor({ state: 'visible', timeout: 5000 });
+    await paginationRow.click();
     await page.waitForTimeout(1500);
 
     await request.post(`${BASE}/api/test/broadcast-github`, {
@@ -1426,11 +1479,10 @@ async function record() {
     await page.waitForTimeout(holdTime(audioClips, 'pr_opened', 4500));
 
     const githubTab = page.locator('.pane-tab').filter({ hasText: 'GitHub' });
-    if (await githubTab.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await hideCaption(page);
-      await githubTab.click().catch(() => {});
-      await page.waitForTimeout(1000);
-    }
+    await githubTab.waitFor({ state: 'visible', timeout: 5000 });
+    await hideCaption(page);
+    await githubTab.click();
+    await page.waitForTimeout(1000);
     await page.screenshot({ path: join(OUTPUT_DIR, 'kookr-demo-triage.png') });
 
     await request.post(`${BASE}/api/test/broadcast-alert`, {
@@ -1462,16 +1514,15 @@ async function record() {
     });
     await page.waitForTimeout(800);
 
-    const completedHeader = page.locator('.section-header').filter({ hasText: 'Completed' });
-    if (await completedHeader.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await completedHeader.click().catch(() => {});
+    const completedRow = page.locator('.completed-row').filter({ hasText: 'Refactor auth middleware to async/await' }).first();
+    if (!(await completedRow.isVisible({ timeout: 1000 }).catch(() => false))) {
+      const completedHeader = page.locator('.section-header').filter({ hasText: 'Completed' }).first();
+      await completedHeader.waitFor({ state: 'visible', timeout: 5000 });
+      await completedHeader.click();
       await page.waitForTimeout(400);
     }
-    const completedRow = page.locator('.completed-row').first();
-    if (await completedRow.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await completedRow.click().catch(() => {});
-      await page.waitForTimeout(1200);
-    }
+    await selectCompletedRowByText(page, 'Refactor auth middleware to async/await');
+    await page.waitForTimeout(1200);
 
     await showSupervisionAvoidedOverlay(page, '8m 12s', 16, 8);
     tracker.mark('agent_done');
