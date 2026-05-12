@@ -497,7 +497,7 @@ async function clearSupervisionAvoidedOverlay(page: Page) {
   });
 }
 
-/** Full-frame closing card with Kookr wordmark, pills, URL, install line, fork link. */
+/** Full-frame closing card with Kookr wordmark and final call to action. */
 async function showClosingCard(page: Page) {
   await page.evaluate(() => {
     const card = document.createElement('div');
@@ -519,18 +519,8 @@ async function showClosingCard(page: Page) {
         <span style="padding:10px 22px;border-radius:999px;border:1px solid rgba(45,212,191,0.5);color:#2dd4bf;font-weight:600;font-size:18px;">Attention router</span>
         <span style="padding:10px 22px;border-radius:999px;border:1px solid rgba(45,212,191,0.5);color:#2dd4bf;font-weight:600;font-size:18px;">Multi-project</span>
       </div>
-      <div style="font-family:'JetBrains Mono',monospace;font-size:22px;color:#dfe4f0;font-weight:600;">
-        github.com/kookr-ai/kookr
-      </div>
-      <div style="font-family:'JetBrains Mono',monospace;font-size:14px;color:#b3bccc;text-align:center;line-height:1.7;">
-        git clone &amp;&amp; pnpm install<br/>
-        &amp;&amp; pnpm prod:setup &amp;&amp; pnpm prod:update
-      </div>
-      <div style="font-size:16px;color:#b3bccc;text-align:center;margin-top:14px;line-height:1.6;">
-        Codex CLI via <span style="color:#2dd4bf;font-weight:600;">jeanibarz/codex · feat/claude-compat</span>
-      </div>
-      <div style="font-size:13px;color:#8b94aa;text-align:center;">
-        Apache 2.0 · No telemetry · State under ~/.kookr/
+      <div style="font-size:54px;color:#f8fafc;font-weight:800;letter-spacing:0;text-align:center;">
+        Try Kookr!
       </div>
     `;
     document.body.appendChild(card);
@@ -927,7 +917,7 @@ const NARRATIONS: Record<string, string> = {
 
   // Act 6: Closing
   closing: 'Kookr is local-first and open source: an attention router for developers running parallel AI coding agents.',
-  repo_url: 'Ready to step up your multi-agent game? Try Kookr at github.com slash kookr-ai slash kookr. Apache two-point-zero.',
+  repo_url: 'Try Kookr!',
 };
 
 interface AudioClip {
@@ -1574,7 +1564,7 @@ async function record() {
 
     await showCaption(page, NARRATIONS.repo_url);
     tracker.mark('repo_url');
-    await page.waitForTimeout(holdTime(audioClips, 'repo_url', 6000));
+    await page.waitForTimeout(holdTime(audioClips, 'repo_url', 2200));
     await hideCaption(page);
     await hideClosingCard(page);
     await page.waitForTimeout(700);

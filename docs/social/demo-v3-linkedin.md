@@ -54,4 +54,4 @@
 
 ## Video attachment
 
-`kookr-demo-4k.mp4` from the `demo-v3` GitHub Release (3840×2160 H.264 + AAC, 37 MB, 2:28, captions burned in).
+`kookr-demo-4k.mp4` from the `demo-v3` GitHub Release (3840×2160 H.264 + AAC, 38 MB, 2:20, captions burned in).
