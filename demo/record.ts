@@ -895,36 +895,39 @@ async function launchViaQuickLaunch(page: Page, prompt: string) {
 const TTS_URL = process.env.KOOKR_TTS_URL ?? '';
 const TTS_VOICE = process.env.TTS_VOICE ?? '/app/voices/matilda.mp3';
 
-/** Narration scripts — v3 (critic-informed). See docs/rfc/demo-video-v3-drafts/script-v2.md. */
+/** Narration scripts — v3 (critic-informed). */
 const NARRATIONS: Record<string, string> = {
   // Act 0: Cold open + hook
-  intro_logo: 'Kookr is an attention router for parallel AI coding agents. It keeps the urgent agent in front of you.',
-  cold_open: 'Some agents are working. Some need a decision. One needs you right now.',
-  hook: 'Kookr tells you which one. Instantly.',
+  intro_logo: 'Running five coding agents sounds like leverage, until your job becomes checking five terminals.',
+  cold_open: 'Some are making progress. Some are blocked. One needs a decision right now.',
+  hook: 'Kookr turns that noise into one attention queue. It tells you where your review time matters next.',
 
   // Act 1: Multi-project, multi-provider
-  projects_open: 'Two projects stay separate. Filter to webapp tasks, filter to API tasks, or switch back to all tasks for global supervision.',
-  providers_mixed: 'Claude Code and Codex CLI agents — same queue, same triage.',
+  projects_webapp: 'First, the webapp project stays isolated, so you can inspect auth and login work without mixing contexts.',
+  projects_api: 'Then switch to API work and you only see backend tasks: pagination, rate limits, and service changes.',
+  projects_all: 'Or return to all projects when you want global supervision across every running agent.',
+  providers_mixed: 'Claude Code and Codex CLI land in the same workflow. Different runtimes, one supervision surface.',
 
   // Act 2: Anomaly detection
-  permission_block: 'Permission blocked on the webapp agent. Kookr routes your attention there.',
-  permission_allow: 'Kookr shows the exact unblock action. Read it, press one, and the agent continues.',
+  permission_block: 'This is the everyday win: a permission prompt is no longer buried in a terminal.',
+  permission_allow: 'Kookr surfaces the exact command, the exact agent, and the next action to unblock it.',
 
   // Act 3: Cross-project triage
-  two_alerts: 'Codex needs a product decision. Claude hit a merge conflict. Both surfaced.',
-  ai_suggest: 'Kookr asks the LLM for multiple plausible replies. Pick one, approve it, or write a custom response.',
-  snooze_other: 'The merge conflict is real, but not urgent. Open snooze, choose one hour, and keep focus on the active decision.',
+  two_alerts: 'Now two interruptions compete: Codex needs product judgment, while Claude hit a merge conflict.',
+  ai_suggest: 'Kookr keeps the agent context attached and drafts plausible replies. You still decide; it removes the copy-paste and terminal archaeology.',
+  snooze_other: 'Not every interruption deserves the next five minutes. Snooze the merge conflict and keep the active decision in front of you.',
 
   // Act 4: GitHub awareness
-  pr_opened: 'An agent just opened a pull request.',
-  ci_failed: 'CI failed. Same attention queue. Same triage.',
+  pr_opened: 'The handoff does not stop when an agent opens a pull request. Kookr keeps review context attached to the agent that caused it.',
+  ci_failed: 'When CI fails, it re-enters the same attention queue, next to terminal prompts and product decisions.',
 
   // Act 5: Completion + cost + time saved
-  agent_done: "Agent finished. Files changed, tests run, cost — and the supervision time you didn't spend.",
+  agent_done: 'When an agent finishes, Kookr gives you the digest: what changed, what passed, and what it cost.',
+  time_saved: 'The point is not another dashboard. It is avoiding another manual check-in loop.',
 
   // Act 6: Closing
-  closing: 'Local-first. Attention router. Multi-project. Claude Code and Codex CLI.',
-  repo_url: 'github.com slash kookr-ai slash kookr. Apache two-point-zero.',
+  closing: 'Kookr is local-first and open source: an attention router for developers running parallel AI coding agents.',
+  repo_url: 'Ready to step up your multi-agent game? Try Kookr at github.com slash kookr-ai slash kookr. Apache two-point-zero.',
 };
 
 interface AudioClip {
@@ -1030,7 +1033,9 @@ async function mergeAudioIntoVideo(
   for (let i = 0; i < validEntries.length; i++) {
     const inputIdx = i + 1; // 0 is video
     const delayMs = Math.max(0, Math.round(validEntries[i].offsetMs));
-    filterParts.push(`[${inputIdx}:a]adelay=${delayMs}|${delayMs}[a${i}]`);
+    filterParts.push(
+      `[${inputIdx}:a]silenceremove=start_periods=1:start_duration=0.05:start_threshold=-45dB,adelay=${delayMs}|${delayMs}[a${i}]`,
+    );
     mixInputs.push(`[a${i}]`);
   }
 
@@ -1209,10 +1214,10 @@ async function record() {
 
     // Stream terminal content for visual life
     await setTerminalContent(request, tmux1, jwtFixContent(), { mode: 'instant' });
-    await setTerminalContent(request, tmux2, paginationContent(), { mode: 'streaming', lineDelayMs: 60, loop: true });
+    await setTerminalContent(request, tmux2, paginationContent(), { mode: 'streaming', lineDelayMs: 380, loop: false });
     await setTerminalContent(request, tmux3, cacheRefactorContent(), { mode: 'instant' });
     await setTerminalContent(request, tmux4, rateLimitContent(), { mode: 'instant' });
-    await setTerminalContent(request, tmux5, authRefactorContent(), { mode: 'streaming', lineDelayMs: 80, loop: true });
+    await setTerminalContent(request, tmux5, authRefactorContent(), { mode: 'instant' });
 
     // Mark all as running with PreToolUse
     await injectSessionStart(request, tmux1, '/home/dev/webapp');
@@ -1264,52 +1269,51 @@ async function record() {
     await page.waitForTimeout(holdTime(audioClips, 'cold_open', 3500));
     await hideCaption(page);
     await fadeOutColdOpenGrid(page, 500);
-    await page.waitForTimeout(700);
+    await page.waitForTimeout(1200);
 
-    tracker.mark('hook');
     await showCaption(page, NARRATIONS.hook);
-    await page.waitForTimeout(holdTime(audioClips, 'hook', 3200));
+    tracker.mark('hook');
+    await page.waitForTimeout(holdTime(audioClips, 'hook', 5200));
     await hideCaption(page);
     await page.waitForTimeout(500);
 
     // =====================================================================
     // ACT 1 — Multi-project, multi-provider landscape (0:11–0:38)
     // =====================================================================
-    tracker.mark('projects_open');
-    await showCaption(page, NARRATIONS.projects_open);
-
     const webappChip = page.getByTestId('project-icon-acme/webapp');
     const apiChip = page.getByTestId('project-icon-acme/api-service');
     const allProjectsChip = page.getByTestId('project-icon-all');
-    const projectsOpenTotal = holdTime(audioClips, 'projects_open', 9000);
-    const projectsStartedAt = Date.now();
 
     await webappChip.waitFor({ state: 'visible', timeout: 5000 });
     await apiChip.waitFor({ state: 'visible', timeout: 5000 });
     await allProjectsChip.waitFor({ state: 'visible', timeout: 5000 });
+
+    await showCaption(page, NARRATIONS.projects_webapp);
+    tracker.mark('projects_webapp');
     await webappChip.hover();
     await page.waitForTimeout(700);
     await webappChip.click();
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(Math.max(0, holdTime(audioClips, 'projects_webapp', 6500) - 700));
 
-    await showCaption(page, NARRATIONS.projects_open);
+    await showCaption(page, NARRATIONS.projects_api);
+    tracker.mark('projects_api');
     await apiChip.hover();
     await page.waitForTimeout(500);
     await apiChip.click();
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(Math.max(0, holdTime(audioClips, 'projects_api', 6000) - 500));
 
-    await showCaption(page, NARRATIONS.projects_open);
+    await showCaption(page, NARRATIONS.projects_all);
+    tracker.mark('projects_all');
     await allProjectsChip.hover();
     await page.waitForTimeout(500);
     await allProjectsChip.click();
-    await page.waitForTimeout(2200);
-    await page.waitForTimeout(Math.max(0, projectsOpenTotal - (Date.now() - projectsStartedAt)));
+    await page.waitForTimeout(Math.max(0, holdTime(audioClips, 'projects_all', 5200) - 500));
     await hideCaption(page);
     await page.waitForTimeout(400);
 
-    tracker.mark('providers_mixed');
     await showCaption(page, NARRATIONS.providers_mixed);
-    await page.waitForTimeout(holdTime(audioClips, 'providers_mixed', 4500));
+    tracker.mark('providers_mixed');
+    await page.waitForTimeout(holdTime(audioClips, 'providers_mixed', 5600));
     await hideCaption(page);
     await page.waitForTimeout(500);
     // Codex CLI fork detail intentionally deferred to the closing card —
@@ -1323,10 +1327,10 @@ async function record() {
     // fires when the permission card is already visible.
     await injectPermissionEvent(request, tmux1, 'Bash', 'npm test --coverage');
     await page.locator('.finding-card').filter({ hasText: 'Fix JWT token refresh in auth.ts' }).first().waitFor({ state: 'visible', timeout: 5000 });
-    tracker.mark('permission_block');
     await showInferenceStamp(page, 'rule F2.4 · PermissionRequest → severity=warning', 700);
     await showCaption(page, NARRATIONS.permission_block);
-    await page.waitForTimeout(holdTime(audioClips, 'permission_block', 4500));
+    tracker.mark('permission_block');
+    await page.waitForTimeout(holdTime(audioClips, 'permission_block', 5600));
     await hideCaption(page);
     await page.waitForTimeout(300);
 
@@ -1339,14 +1343,15 @@ async function record() {
     ]);
     await page.waitForTimeout(800);
 
-    tracker.mark('permission_allow');
     await showCaption(page, NARRATIONS.permission_allow);
-    const permissionAllowTotal = holdTime(audioClips, 'permission_allow', 5200);
+    tracker.mark('permission_allow');
+    const permissionAllowTotal = holdTime(audioClips, 'permission_allow', 6200);
     const permissionAllowStartedAt = Date.now();
     await page.waitForTimeout(3200);
     await showKeystroke(page, '1');
     await page.locator('.btn-quick-action', { hasText: 'Allow' }).click();
     await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 });
+    await page.waitForTimeout(900);
     await page.waitForTimeout(Math.max(0, permissionAllowTotal - (Date.now() - permissionAllowStartedAt)));
     await hideCaption(page);
     await page.waitForTimeout(400);
@@ -1367,9 +1372,9 @@ async function record() {
     );
     await page.waitForTimeout(900);
 
-    tracker.mark('two_alerts');
     await showCaption(page, NARRATIONS.two_alerts);
-    await page.waitForTimeout(holdTime(audioClips, 'two_alerts', 4000));
+    tracker.mark('two_alerts');
+    await page.waitForTimeout(holdTime(audioClips, 'two_alerts', 5600));
     await hideCaption(page);
     await page.waitForTimeout(300);
 
@@ -1394,9 +1399,9 @@ async function record() {
     ]);
     await page.waitForTimeout(1200);
 
-    tracker.mark('ai_suggest');
     await showCaption(page, NARRATIONS.ai_suggest);
-    const aiSuggestTotal = holdTime(audioClips, 'ai_suggest', 7000);
+    tracker.mark('ai_suggest');
+    const aiSuggestTotal = holdTime(audioClips, 'ai_suggest', 8800);
     await page.waitForTimeout(aiSuggestTotal);
     const aiBtn = page.locator('.btn-quick-action.ai-suggestion').first();
     await aiBtn.waitFor({ state: 'visible', timeout: 5000 });
@@ -1418,17 +1423,17 @@ async function record() {
     await selectFindingByText(page, 'Implement login redirect fix (#87)');
     await page.waitForTimeout(1200);
 
-    tracker.mark('snooze_other');
     await showCaption(page, NARRATIONS.snooze_other);
-    const snoozeTotal = holdTime(audioClips, 'snooze_other', 9000);
+    tracker.mark('snooze_other');
+    const snoozeTotal = holdTime(audioClips, 'snooze_other', 7600);
     const snoozeStartedAt = Date.now();
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(2200);
     await showKeystroke(page, 'Alt+S');
     await page.keyboard.press('Alt+s');
     const snoozeDialog = page.locator('.snooze-dialog');
     await snoozeDialog.waitFor({ state: 'visible', timeout: 3000 });
     if (await snoozeDialog.isVisible()) {
-      await page.waitForTimeout(3200);
+      await page.waitForTimeout(2200);
       await showKeystroke(page, '2  (1h)');
       await page.keyboard.press('2');
       await page.waitForTimeout(900);
@@ -1490,16 +1495,16 @@ async function record() {
       },
     });
 
-    tracker.mark('pr_opened');
-    await showCaption(page, NARRATIONS.pr_opened);
-    await page.waitForTimeout(holdTime(audioClips, 'pr_opened', 4500));
-
     const githubTab = page.locator('.pane-tab').filter({ hasText: 'GitHub' });
     await githubTab.waitFor({ state: 'visible', timeout: 5000 });
-    await hideCaption(page);
     await githubTab.click();
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(800);
     await page.screenshot({ path: join(OUTPUT_DIR, 'kookr-demo-triage.png') });
+
+    await showCaption(page, NARRATIONS.pr_opened);
+    tracker.mark('pr_opened');
+    await page.waitForTimeout(holdTime(audioClips, 'pr_opened', 7600));
+    await hideCaption(page);
 
     await request.post(`${BASE}/api/test/broadcast-alert`, {
       data: {
@@ -1510,9 +1515,9 @@ async function record() {
     });
     await page.waitForTimeout(1000);
 
-    tracker.mark('ci_failed');
     await showCaption(page, NARRATIONS.ci_failed);
-    await page.waitForTimeout(holdTime(audioClips, 'ci_failed', 4500));
+    tracker.mark('ci_failed');
+    await page.waitForTimeout(holdTime(audioClips, 'ci_failed', 6400));
     await hideCaption(page);
     await page.waitForTimeout(400);
 
@@ -1540,10 +1545,15 @@ async function record() {
     await selectCompletedRowByText(page, 'Refactor auth middleware to async/await');
     await page.waitForTimeout(1200);
 
-    await showSupervisionAvoidedOverlay(page, '8m 12s', 16, 8);
-    tracker.mark('agent_done');
     await showCaption(page, NARRATIONS.agent_done);
-    await page.waitForTimeout(holdTime(audioClips, 'agent_done', 6500));
+    tracker.mark('agent_done');
+    await page.waitForTimeout(holdTime(audioClips, 'agent_done', 7000));
+    await hideCaption(page);
+
+    await showSupervisionAvoidedOverlay(page, '8m 12s', 16, 8);
+    await showCaption(page, NARRATIONS.time_saved);
+    tracker.mark('time_saved');
+    await page.waitForTimeout(holdTime(audioClips, 'time_saved', 5200));
     await hideCaption(page);
     await clearSupervisionAvoidedOverlay(page);
     await page.waitForTimeout(400);
@@ -1556,15 +1566,15 @@ async function record() {
     await showClosingCard(page);
     await page.waitForTimeout(800);
 
-    tracker.mark('closing');
     await showCaption(page, NARRATIONS.closing);
-    await page.waitForTimeout(holdTime(audioClips, 'closing', 5500));
+    tracker.mark('closing');
+    await page.waitForTimeout(holdTime(audioClips, 'closing', 6200));
     await hideCaption(page);
     await page.waitForTimeout(400);
 
-    tracker.mark('repo_url');
     await showCaption(page, NARRATIONS.repo_url);
-    await page.waitForTimeout(holdTime(audioClips, 'repo_url', 5500));
+    tracker.mark('repo_url');
+    await page.waitForTimeout(holdTime(audioClips, 'repo_url', 6000));
     await hideCaption(page);
     await hideClosingCard(page);
     await page.waitForTimeout(700);
