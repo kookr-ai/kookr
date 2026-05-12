@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { ProjectSummary } from '../core/project-summary.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import type { TaskStatus } from '../core/types.js';
@@ -36,6 +36,7 @@ import { SweepButton } from './components/SweepButton.js';
 import { OssProductivityView } from './components/OssProductivityView.js';
 import { CostComparisonPanel } from './components/CostComparisonPanel.js';
 import { OnboardingTour } from './components/OnboardingTour.js';
+import { OperationsPanel } from './components/OperationsPanel.js';
 import { maybeOpenForFirstRun } from './store/onboarding-store.js';
 import './styles.css';
 
@@ -80,9 +81,11 @@ export function App() {
   const [showSchedules, setShowSchedules] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showCostComparison, setShowCostComparison] = useState(false);
+  const [showOperations, setShowOperations] = useState(false);
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
   const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
   const [reflectionSuggestion, setReflectionSuggestion] = useState<ReflectionSuggestion | null>(null);
+  const operationsPopoverRef = useRef<HTMLDivElement>(null);
   const {
     agents,
     agentsHydrated,
@@ -130,6 +133,30 @@ export function App() {
     window.addEventListener('resize', updateViewportMode);
     return () => window.removeEventListener('resize', updateViewportMode);
   }, []);
+
+  useEffect(() => {
+    if (!showOperations) return;
+
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.operations-trigger')) return;
+      if (operationsPopoverRef.current?.contains(event.target as Node)) return;
+      setShowOperations(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setShowOperations(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showOperations]);
 
   const selectedProjectSummary = selectedProject
     ? projectSummaries.find((p) => p.project === selectedProject) ?? null
@@ -471,9 +498,16 @@ export function App() {
         onSettings={() => setShowSettings(true)}
         onShowShortcuts={() => setShowShortcuts(true)}
         onOssView={toggleOssView}
+        onOperations={() => setShowOperations((value) => !value)}
+        operationsOpen={showOperations}
         onCostComparison={() => setShowCostComparison(true)}
         sweepSlot={workspaceEnabled ? <SweepButton send={send} projectCount={projectSummaries.length} /> : undefined}
       />
+      {showOperations && (
+        <div className="operations-popover-shell" ref={operationsPopoverRef}>
+          <OperationsPanel send={send} onClose={() => setShowOperations(false)} />
+        </div>
+      )}
       {isMobileViewport ? (
         <>
           {projectSidebar}

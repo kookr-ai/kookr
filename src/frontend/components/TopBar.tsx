@@ -16,6 +16,8 @@ interface Props {
   onSettings: () => void;
   onShowShortcuts: () => void;
   onOssView: () => void;
+  onOperations: () => void;
+  operationsOpen?: boolean;
   /** Open the Cost Comparison panel. Optional — the icon is hidden when undefined. */
   onCostComparison?: () => void;
   /** Optional slot rendered in the right-side action cluster, hidden in compact mode. */
@@ -60,8 +62,8 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onCostComparison, sweepSlot }: Props) {
-  const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents } = useKookrStore();
+export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, operationsOpen = false, onCostComparison, sweepSlot }: Props) {
+  const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
@@ -185,6 +187,9 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
   const toolkitStale = Boolean(deployStatus?.toolkit?.stale);
   const showToolkitSection = Boolean(toolkitStale || toolkitRefreshing || deployStatus?.toolkitError);
   const hasUpdates = (!onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying) || toolkitStale;
+  const operationsNeedsAttention =
+    circuitBreakers.some((breaker) => breaker.state !== 'closed') ||
+    Boolean(diagnosticReport?.findings.length);
 
   return (
     <div className={`topbar kookr-tour-target-layout${compact ? ' compact' : ''}`}>
@@ -344,6 +349,18 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
         </div>
         <div className="metric-group">
           <DndPill />
+          <button
+            className={`btn-icon operations-trigger${operationsOpen ? ' active' : ''}`}
+            onClick={onOperations}
+            title="Diagnostics"
+            aria-label="Diagnostics"
+            aria-pressed={operationsOpen}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 12h4l3-8 4 16 3-8h4" />
+            </svg>
+            {operationsNeedsAttention && <span className="operations-alert-dot" />}
+          </button>
           {!compact && (
             <button className="btn-icon" onClick={onShowShortcuts} title="Help" aria-label="Help">
               ?
