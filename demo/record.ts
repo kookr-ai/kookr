@@ -194,6 +194,53 @@ async function showKeystroke(page: Page, label: string) {
 // time-reclaimed badge, supervision-avoided digest row. All pure DOM.
 // ---------------------------------------------------------------------------
 
+/** Mount the full-screen intro card: animated Kookr logo + playful tagline
+ *  + subtitle. Used at the very start so the recording opens with branding.
+ *  The addInitScript "startup curtain" hides everything else until this
+ *  overlay is on screen — no dashboard flash. */
+async function showIntroLogoScreen(page: Page) {
+  await page.evaluate(() => {
+    if (document.getElementById('demo-intro-logo')) return;
+    const root = document.createElement('div');
+    root.id = 'demo-intro-logo';
+    root.style.cssText = `
+      position: fixed; inset: 0; z-index: 99998;
+      background: #0b0d12;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 28px; padding: 48px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+      opacity: 1; visibility: visible !important;
+    `;
+    root.innerHTML = `
+      <video id="demo-intro-logo-video" autoplay muted playsinline
+             style="width: 360px; height: 540px; display: block; object-fit: contain; visibility: visible;"
+             src="/demo-assets/kookr-logo.mp4"></video>
+      <div style="font-size: 32px; color: #dfe4f0; font-weight: 600; letter-spacing: 0.2px; text-align: center; visibility: visible;">
+        Let your AI agents cook.
+      </div>
+      <div style="font-size: 20px; color: #8b94aa; letter-spacing: 0.3px; font-weight: 400; text-align: center; visibility: visible;">
+        an attention router for parallel AI coding agents
+      </div>
+    `;
+    document.body.appendChild(root);
+  });
+}
+
+async function hideIntroLogoScreen(page: Page, durationMs = 600) {
+  await page.evaluate((d) => {
+    const root = document.getElementById('demo-intro-logo');
+    if (!root) return;
+    root.style.transition = `opacity ${d}ms`;
+    root.style.opacity = '0';
+    setTimeout(() => root.remove(), d + 50);
+  }, durationMs);
+  // Lift the startup curtain so the underlying dashboard becomes visible
+  // when the intro fades out.
+  await page.evaluate(() => {
+    document.getElementById('demo-startup-curtain')?.remove();
+  });
+}
+
 /** 3x2 fake-tmux grid that anchors the "before" pain in Act 0. Six panes
  *  with distinct agent states: waiting, failing, streaming, permission,
  *  generating, retrying. */
@@ -420,9 +467,9 @@ async function showClosingCard(page: Page) {
       opacity: 0; transition: opacity 0.6s;
     `;
     card.innerHTML = `
-      <div style="font-size: 64px; font-weight: 700; color: #dfe4f0; letter-spacing: -1px;">
-        Kookr
-      </div>
+      <video autoplay muted loop playsinline
+             style="width: 200px; height: 300px; display: block; object-fit: contain;"
+             src="/demo-assets/kookr-logo.mp4"></video>
       <div style="display:flex;gap:16px;">
         <span style="padding:10px 22px;border-radius:999px;border:1px solid rgba(45,212,191,0.5);color:#2dd4bf;font-weight:600;font-size:18px;">Local-first</span>
         <span style="padding:10px 22px;border-radius:999px;border:1px solid rgba(45,212,191,0.5);color:#2dd4bf;font-weight:600;font-size:18px;">Attention router</span>
@@ -435,8 +482,10 @@ async function showClosingCard(page: Page) {
         git clone &amp;&amp; pnpm install<br/>
         &amp;&amp; pnpm prod:setup &amp;&amp; pnpm prod:update
       </div>
-      <div style="font-size:13px;color:#8b94aa;text-align:center;margin-top:8px;">
-        Codex CLI via <span style="color:#dfe4f0;">jeanibarz/codex · feat/claude-compat</span><br/>
+      <div style="font-size:16px;color:#b3bccc;text-align:center;margin-top:14px;line-height:1.6;">
+        Codex CLI via <span style="color:#2dd4bf;font-weight:600;">jeanibarz/codex · feat/claude-compat</span>
+      </div>
+      <div style="font-size:13px;color:#8b94aa;text-align:center;">
         Apache 2.0 · No telemetry · State under ~/.kookr/
       </div>
     `;
@@ -805,7 +854,6 @@ const NARRATIONS: Record<string, string> = {
   // Act 1: Multi-project, multi-provider
   projects_open: 'Two projects, side by side. Webapp on the left, API service on the right.',
   providers_mixed: 'Claude Code and Codex CLI agents — same queue, same triage.',
-  codex_fork: 'Codex compatibility runs on a maintained fork. Link below.',
 
   // Act 2: Anomaly detection
   permission_block: 'Permission blocked on the webapp agent. Kookr routes your attention there.',
@@ -1018,7 +1066,26 @@ async function record() {
   });
   await context.addInitScript(() => {
     window.localStorage.setItem('kookr:onboarding:seen-v1', 'true');
+    // Hide the dashboard at startup so the recording shows a clean dark
+    // frame until the imperative intro overlay is mounted. The intro overlay
+    // sets its own visibility:visible and overrides this.
+    const style = document.createElement('style');
+    style.id = 'demo-startup-curtain';
+    style.textContent = `
+      html, body { background: #0b0d12 !important; }
+      body > *:not(#demo-intro-logo):not(style):not(script) { visibility: hidden !important; }
+    `;
+    document.documentElement.appendChild(style);
   });
+
+  // Serve the animated Kookr logo from the repo to the recorded page. Used
+  // by the intro screen and the closing card. Keeps the asset out of the
+  // frontend bundle while letting the <video> element load it normally.
+  const logoPath = resolve(__dirname, '..', 'assets', 'branding', 'kookr-ai-logo-animated.mp4');
+  await context.route('**/demo-assets/kookr-logo.mp4', async (route) => {
+    await route.fulfill({ path: logoPath, contentType: 'video/mp4' });
+  });
+
   const page = await context.newPage();
   const request = context.request;
 
@@ -1027,6 +1094,12 @@ async function record() {
     await resetServer(context);
     await page.goto(BASE);
     await page.locator('.logo').waitFor({ state: 'visible' });
+
+    // Mount the intro logo overlay IMMEDIATELY after navigation so the rest
+    // of the setup (seeding agents, injecting indicators) happens behind it.
+    // The addInitScript curtain has been hiding the dashboard since first
+    // paint, so the recording never shows the dashboard before this overlay.
+    await showIntroLogoScreen(page);
 
     // Seed project configs so the sidebar appears
     await seedProjectConfigs(request);
@@ -1117,11 +1190,22 @@ async function record() {
     await page.waitForTimeout(800);
 
     // =====================================================================
-    // ACT 0 — Cold open + hook (0:00–0:11)
+    // ACT 0 — Intro logo + cold open + hook (0:00–~0:18)
     // =====================================================================
-    tracker.mark('cold_open');
+    // Intro logo is already mounted (above, right after page.goto). Hold for
+    // most of the logo mp4's natural 6.04s duration, then transition.
+    await page.waitForTimeout(5500);
+
+    // Prepare the cold-open grid BEHIND the intro screen, then fade the
+    // intro out so the grid is revealed without flashing the dashboard.
     await showColdOpenGrid(page);
+    await hideIntroLogoScreen(page, 700);
+    await page.waitForTimeout(400);
+
+    // Render caption FIRST, then mark so audio fires when visuals are
+    // already on screen (avoids 200ms of audio over an empty frame).
     await showCaption(page, 'AI agents scattered across terminals. Which one needs you?');
+    tracker.mark('cold_open');
     await page.waitForTimeout(holdTime(audioClips, 'cold_open', 3500));
     await hideCaption(page);
     await fadeOutColdOpenGrid(page, 500);
@@ -1160,20 +1244,19 @@ async function record() {
     await showCaption(page, 'Claude Code + Codex CLI. Same dashboard.');
     await page.waitForTimeout(holdTime(audioClips, 'providers_mixed', 4500));
     await hideCaption(page);
-    await page.waitForTimeout(400);
-
-    tracker.mark('codex_fork');
-    await showCaption(page, 'Codex CLI — patched for missing hooks.');
-    await showProviderTooltip(page, holdTime(audioClips, 'codex_fork', 4500));
-    await hideCaption(page);
     await page.waitForTimeout(500);
+    // Codex CLI fork detail intentionally deferred to the closing card —
+    // it's an implementation detail, not a headline feature.
 
     // =====================================================================
     // ACT 2 — Anomaly detection in action (0:38–0:58)
     // =====================================================================
-    tracker.mark('permission_block');
+    // Inject the permission event + wait for the card to render BEFORE
+    // marking, so the audio "Permission blocked on the webapp agent..."
+    // fires when the permission card is already visible.
     await injectPermissionEvent(request, tmux1, 'Bash', 'npm test --coverage');
     await page.locator('.finding-card').first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    tracker.mark('permission_block');
     await showInferenceStamp(page, 'rule F2.4 · PermissionRequest → severity=warning', 700);
     await showCaption(page, 'Permission blocked. Attention routed.');
     await page.waitForTimeout(holdTime(audioClips, 'permission_block', 4500));
@@ -1189,13 +1272,17 @@ async function record() {
     ]);
     await page.waitForTimeout(800);
 
+    // Interleave the click DURING the audio rather than after — viewer hears
+    // "One key to allow" and SEES the click at the same beat, not as a delayed
+    // echo of the description.
     tracker.mark('permission_allow');
     await showCaption(page, 'One key. Allow. Keep moving.');
-    await page.waitForTimeout(holdTime(audioClips, 'permission_allow', 1700));
+    const permissionAllowTotal = holdTime(audioClips, 'permission_allow', 1700);
+    await page.waitForTimeout(700); // brief lead-in so "One key..." begins
     await showKeystroke(page, '1');
     await page.locator('.btn-quick-action', { hasText: 'Allow' }).click().catch(() => {});
     await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(Math.max(0, permissionAllowTotal - 700));
     await hideCaption(page);
     await page.waitForTimeout(400);
 
@@ -1234,16 +1321,18 @@ async function record() {
     ]);
     await page.waitForTimeout(1200);
 
+    // Interleave the AI-suggestion click DURING the audio — same fix as the
+    // permission_allow beat above.
     tracker.mark('ai_suggest');
     await showCaption(page, 'AI drafts a reply. Approve or edit.');
-    await page.waitForTimeout(holdTime(audioClips, 'ai_suggest', 4000));
-
+    const aiSuggestTotal = holdTime(audioClips, 'ai_suggest', 4000);
+    await page.waitForTimeout(1200); // lead-in so the audio reaches "AI drafts..."
     const aiBtn = page.locator('.btn-quick-action.ai-suggestion').first();
     if (await aiBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
       await aiBtn.click().catch(() => {});
     }
     await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(Math.max(0, aiSuggestTotal - 1200));
     await hideCaption(page);
     await page.waitForTimeout(300);
 
