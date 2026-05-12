@@ -194,31 +194,55 @@ async function showKeystroke(page: Page, label: string) {
 // time-reclaimed badge, supervision-avoided digest row. All pure DOM.
 // ---------------------------------------------------------------------------
 
-/** 2x2 fake-tmux grid that anchors the "before" pain in Act 0. */
+/** 3x2 fake-tmux grid that anchors the "before" pain in Act 0. Six panes
+ *  with distinct agent states: waiting, failing, streaming, permission,
+ *  generating, retrying. */
 async function showColdOpenGrid(page: Page) {
   await page.evaluate(() => {
     const root = document.createElement('div');
     root.id = 'demo-cold-open';
     root.style.cssText = `
       position: fixed; inset: 0; z-index: 99996;
-      display: grid; grid-template: 1fr 1fr / 1fr 1fr;
-      background: #0b0d12; gap: 4px;
-      font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 18px;
+      display: grid; grid-template: 1fr 1fr / 1fr 1fr 1fr;
+      background: #0b0d12; gap: 3px;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 16px;
       transition: opacity 0.5s, transform 0.5s;
     `;
     const panes = [
-      { color: '#dfe4f0', body: '$ claude code\n> Should I proceed with this approach?\nContinue? [y/n]_' },
-      { color: '#ff6b6b', body: 'FAIL test/auth.spec.ts > token refresh\n  TypeError: jwt.verify is not a function\n  at Object.<anonymous> (auth.ts:42)\n  at Module._compile (node:internal/modules/cjs/loader)' },
-      { color: '#48d597', body: '[14:22:11] streaming output...\n[14:22:11] partial result OK\n[14:22:12] retry 3/5...\n[14:22:13] retry 4/5...' },
-      { color: '#dfe4f0', body: '$ codex exec --task "add pagination"\n# (waiting on permission prompt)\n_' },
+      // Top row
+      {
+        color: '#dfe4f0',
+        body: '$ claude code\n> Should I proceed with this approach?\nContinue? [y/n]_',
+      },
+      {
+        color: '#ff6b6b',
+        body: 'FAIL test/auth.spec.ts > token refresh\n  TypeError: jwt.verify is not a function\n  at Object.<anonymous> (auth.ts:42)\n  at Module._compile (node:internal/modules/cjs/loader)',
+      },
+      {
+        color: '#48d597',
+        body: '[14:22:11] streaming output...\n[14:22:11] partial result OK\n[14:22:12] retry 3/5...\n[14:22:13] retry 4/5...',
+      },
+      // Bottom row
+      {
+        color: '#dfe4f0',
+        body: '$ codex exec --task "add pagination"\n# (waiting on permission prompt)\n# Allow write to src/routes/users.ts?\n_',
+      },
+      {
+        color: '#f4c341',
+        body: '● Generating implementation plan...\n  ▸ analyzing repo structure\n  ▸ reading 14 files\n  ▸ drafting approach\n  · 18.4k tokens · 42s elapsed',
+      },
+      {
+        color: '#dfe4f0',
+        body: '$ codex exec --task "refactor auth"\n× tool: Edit failed\n× tool: Edit failed\n× tool: Edit failed\n× retrying with backoff...',
+      },
     ];
     for (const p of panes) {
       const pane = document.createElement('pre');
       pane.style.cssText = `
-        background: #14171f; color: ${p.color}; padding: 40px;
+        background: #14171f; color: ${p.color}; padding: 28px;
         margin: 0; white-space: pre-wrap; overflow: hidden;
-        border: 1px solid #232838; border-radius: 8px;
-        line-height: 1.5;
+        border: 1px solid #232838; border-radius: 6px;
+        line-height: 1.55;
       `;
       pane.textContent = p.body;
       root.appendChild(pane);
@@ -775,7 +799,7 @@ const TTS_VOICE = process.env.TTS_VOICE ?? '/app/voices/matilda.mp3';
 /** Narration scripts — v3 (critic-informed). See docs/rfc/demo-video-v3-drafts/script-v2.md. */
 const NARRATIONS: Record<string, string> = {
   // Act 0: Cold open + hook
-  cold_open: 'Five AI agents in five terminals. Which one needs you?',
+  cold_open: 'AI coding agents scattered across terminals. Which one needs you?',
   hook: 'Kookr tells you which one. Instantly.',
 
   // Act 1: Multi-project, multi-provider
@@ -1097,7 +1121,7 @@ async function record() {
     // =====================================================================
     tracker.mark('cold_open');
     await showColdOpenGrid(page);
-    await showCaption(page, '5 AI agents in 5 terminals. Which one needs you?');
+    await showCaption(page, 'AI agents scattered across terminals. Which one needs you?');
     await page.waitForTimeout(holdTime(audioClips, 'cold_open', 3500));
     await hideCaption(page);
     await fadeOutColdOpenGrid(page, 500);
