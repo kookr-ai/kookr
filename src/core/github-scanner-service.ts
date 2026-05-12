@@ -1,6 +1,13 @@
 import type { TaskStore } from './tasks.js';
 import type { AgentEvent } from './types.js';
-import type { GitHubFetcher, GitHubScannerConfig, GitHubStateChange } from './github-types.js';
+import type {
+  GitHubFetcher,
+  GitHubIssueState,
+  GitHubPRState,
+  GitHubReference,
+  GitHubScannerConfig,
+  GitHubStateChange,
+} from './github-types.js';
 import { GitHubStateStore } from './github-state-store.js';
 import { extractRefsFromEvents, extractRefsFromPrompt, toGitHubReferences } from './github-reference-scanner.js';
 import { diffPRState, diffIssueState } from './github-state-differ.js';
@@ -134,10 +141,10 @@ export class GitHubScannerService {
     const refs = extractRefsFromEvents(events, ownerRepo?.owner, ownerRepo?.repo);
     const ghRefs = toGitHubReferences(refs, agentId, taskId);
 
-    let anyNew = false;
+    const newRefs: GitHubReference[] = [];
     for (const ref of ghRefs) {
       if (this.stateStore.addReference(ref)) {
-        anyNew = true;
+        newRefs.push(ref);
         if (ref.type === 'pr') {
           // Only infer projectId from PR references if not already set explicitly (e.g., by playbook launch)
           const task = this.taskStore.getTask(taskId);
@@ -150,8 +157,8 @@ export class GitHubScannerService {
     }
 
     // If we found new refs, trigger an immediate fetch
-    if (anyNew) {
-      void this.fetchAllStates();
+    if (newRefs.length > 0) {
+      void this.fetchReferences(newRefs);
     }
   }
 
@@ -178,16 +185,16 @@ export class GitHubScannerService {
     }));
     const fullRefs = toGitHubReferences(allExtracted, 'prompt', taskId);
 
-    let anyNew = false;
+    const newRefs: GitHubReference[] = [];
     for (const ref of fullRefs) {
       if (this.stateStore.addReference(ref)) {
-        anyNew = true;
+        newRefs.push(ref);
         console.log(`GitHub: detected ${ref.type} ${ref.owner}/${ref.repo}#${ref.number} from task prompt`);
       }
     }
 
-    if (anyNew) {
-      void this.fetchAllStates();
+    if (newRefs.length > 0) {
+      void this.fetchReferences(newRefs);
     }
   }
 
@@ -199,62 +206,79 @@ export class GitHubScannerService {
 
   /** Fetch current state for all known references and emit changes. */
   private async fetchAllStates(): Promise<void> {
+    await this.fetchReferences(this.stateStore.getAllReferences());
+  }
+
+  /** Fetch current state for the provided references and emit changes. */
+  private async fetchReferences(refs: GitHubReference[]): Promise<void> {
     // Prevent concurrent fetches — if one is already running, skip
     if (this.fetching) return;
     this.fetching = true;
     const gen = this.generation;
 
     try {
-      // Fetch PR states
-      for (const ref of this.stateStore.getPRReferences()) {
-        // Abort if scanner was stopped/reconfigured during iteration
-        if (this.generation !== gen) return;
+      const uniqueRefs = dedupeRefs(refs);
+      if (uniqueRefs.length === 0) return;
+
+      if (this.fetcher.fetchStates) {
         try {
-          const current = await this.fetcher.fetchPRState(ref);
-          if (!current || this.generation !== gen) continue;
+          const batch = await this.fetcher.fetchStates(uniqueRefs);
+          if (this.generation !== gen) return;
 
-          const prev = this.stateStore.updatePRState(current);
-          const changes = diffPRState(prev, current);
-
-          if (changes.length > 0) {
-            for (const change of changes) {
-              this.stateStore.addChange(ref.taskId, change);
-            }
-            this.onChanges(ref.taskId, changes);
-          } else if (!prev) {
-            // First fetch — no changes but notify so frontend gets the initial state
-            this.onStateUpdate?.(ref.taskId);
+          for (const current of batch.prs) {
+            this.applyPRState(current);
+          }
+          for (const current of batch.issues) {
+            this.applyIssueState(current);
           }
         } catch (err) {
-          console.error(`GitHub: error fetching PR ${ref.owner}/${ref.repo}#${ref.number}:`, err);
+          console.error('GitHub: error fetching batched state:', err);
         }
+        return;
       }
 
-      // Fetch issue states
-      for (const ref of this.stateStore.getIssueReferences()) {
+      for (const ref of uniqueRefs) {
         if (this.generation !== gen) return;
         try {
-          const current = await this.fetcher.fetchIssueState(ref);
-          if (!current || this.generation !== gen) continue;
-
-          const prev = this.stateStore.updateIssueState(current);
-          const changes = diffIssueState(prev, current);
-
-          if (changes.length > 0) {
-            for (const change of changes) {
-              this.stateStore.addChange(ref.taskId, change);
-            }
-            this.onChanges(ref.taskId, changes);
-          } else if (!prev) {
-            // First fetch — no changes but notify so frontend gets the initial state
-            this.onStateUpdate?.(ref.taskId);
+          if (ref.type === 'pr') {
+            const current = await this.fetcher.fetchPRState(ref);
+            if (!current || this.generation !== gen) continue;
+            this.applyPRState(current);
+          } else {
+            const current = await this.fetcher.fetchIssueState(ref);
+            if (!current || this.generation !== gen) continue;
+            this.applyIssueState(current);
           }
         } catch (err) {
-          console.error(`GitHub: error fetching issue ${ref.owner}/${ref.repo}#${ref.number}:`, err);
+          console.error(`GitHub: error fetching ${ref.type} ${ref.owner}/${ref.repo}#${ref.number}:`, err);
         }
       }
     } finally {
       this.fetching = false;
+    }
+  }
+
+  private applyPRState(current: GitHubPRState): void {
+    const prev = this.stateStore.updatePRState(current);
+    const changes = diffPRState(prev, current);
+    this.emitStateResult(current.ref.taskId, changes, !prev);
+  }
+
+  private applyIssueState(current: GitHubIssueState): void {
+    const prev = this.stateStore.updateIssueState(current);
+    const changes = diffIssueState(prev, current);
+    this.emitStateResult(current.ref.taskId, changes, !prev);
+  }
+
+  private emitStateResult(taskId: string, changes: GitHubStateChange[], firstFetch: boolean): void {
+    if (changes.length > 0) {
+      for (const change of changes) {
+        this.stateStore.addChange(taskId, change);
+      }
+      this.onChanges(taskId, changes);
+    } else if (firstFetch) {
+      // First fetch — no changes but notify so frontend gets the initial state
+      this.onStateUpdate?.(taskId);
     }
   }
 
@@ -275,4 +299,16 @@ export class GitHubScannerService {
     this.ownerRepoCache.set(cwd, result);
     return result;
   }
+}
+
+function dedupeRefs(refs: GitHubReference[]): GitHubReference[] {
+  const seen = new Set<string>();
+  const unique: GitHubReference[] = [];
+  for (const ref of refs) {
+    const key = `${ref.taskId}:${ref.type}:${ref.owner}/${ref.repo}#${ref.number}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(ref);
+  }
+  return unique;
 }

@@ -82,6 +82,12 @@ export interface GitHubFetcher {
   inferOwnerRepo(cwd: string): Promise<{ owner: string; repo: string } | null>;
   fetchPRState(ref: GitHubReference): Promise<GitHubPRState | null>;
   fetchIssueState(ref: GitHubReference): Promise<GitHubIssueState | null>;
+  fetchStates?(refs: GitHubReference[]): Promise<GitHubFetchBatchResult>;
+}
+
+export interface GitHubFetchBatchResult {
+  prs: GitHubPRState[];
+  issues: GitHubIssueState[];
 }
 
 // --- Scanner Config ---
