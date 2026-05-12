@@ -1427,8 +1427,12 @@ async function record() {
           [
             '-y', '-i', finalPath,
             '-vf', 'scale=3840:2160:flags=lanczos',
-            '-c:v', 'libx264', '-preset', 'slow', '-crf', '18',
-            '-c:a', 'libopus', '-b:a', '128k',
+            '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
+            // Re-encode audio to AAC (not libopus → libopus): in ffmpeg 4.4,
+            // double-opus encoding silently truncated the trailing ~10s of
+            // narration on this pipeline. AAC also has better LinkedIn/X
+            // compatibility for the mp4 container.
+            '-c:a', 'aac', '-b:a', '192k',
             k4Path,
           ],
           { timeout: 600_000 },
