@@ -38,7 +38,7 @@
 > Links + install:
 >
 > Repo: https://github.com/kookr-ai/kookr
-> Demo (1080p + 4K): https://github.com/kookr-ai/kookr/releases/tag/demo-v3
+> Demo: https://youtu.be/DHZrO8T_6Xg
 > Codex CLI fork: https://github.com/jeanibarz/codex/tree/feat/claude-compat
 > Codex setup guide: https://github.com/kookr-ai/kookr/blob/main/docs/codex-cli-setup.md
 >
@@ -54,4 +54,4 @@
 
 ## Video attachment
 
-`kookr-demo-4k.mp4` from the `demo-v3` GitHub Release (3840×2160 H.264 + AAC, 38 MB, 2:20, captions burned in).
+`kookr-demo-4k.mp4` uploaded to YouTube (3840×2160 H.264 + AAC, 38 MB, 2:20, captions burned in): https://youtu.be/DHZrO8T_6Xg
