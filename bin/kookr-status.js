@@ -10,6 +10,7 @@ import { realpathSync } from 'node:fs';
 
 const PORTS_TO_TRY = [4800, 4801];
 const SEVERITIES = /** @type {const} */ (['critical', 'warning', 'info']);
+const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
 
 async function fetchJson(url, timeoutMs = 2000) {
   const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
@@ -59,6 +60,17 @@ function formatCost(usd) {
   return `$${usd.toFixed(2)}`;
 }
 
+function isActiveFinding(agent) {
+  const status = agent.taskStatus;
+  return Boolean(
+    agent.anomaly
+      && !agent.snoozedUntil
+      && !agent.suppressed
+      && status !== 'pending'
+      && !TERMINAL_STATUSES.has(status),
+  );
+}
+
 function summarize(agents) {
   const statusCounts = Object.create(null);
   const severityCounts = Object.create(null);
@@ -72,7 +84,7 @@ function summarize(agents) {
     if (typeof cost === 'number' && Number.isFinite(cost)) {
       totalCost += cost;
     }
-    if (agent.anomaly) {
+    if (isActiveFinding(agent)) {
       const severity = agent.anomaly.severity;
       if (Object.hasOwn(severityCounts, severity)) severityCounts[severity] += 1;
       findings.push({
@@ -194,4 +206,4 @@ if (isInvokedDirectly()) {
   });
 }
 
-export { formatUptime, formatCost, summarize, renderReport, resolvePort, parsePortEnv, main };
+export { formatUptime, formatCost, isActiveFinding, summarize, renderReport, resolvePort, parsePortEnv, main };

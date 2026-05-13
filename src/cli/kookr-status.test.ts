@@ -4,6 +4,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   formatUptime,
   formatCost,
+  isActiveFinding,
   summarize,
   renderReport,
   parsePortEnv,
@@ -144,6 +145,74 @@ describe('kookr-status summarize', () => {
     const { severityCounts } = summarize(agents);
     // Prototype lookup would have let this through in an earlier implementation.
     expect(severityCounts).toEqual({ critical: 0, warning: 0, info: 0 });
+  });
+
+  it('does not count snoozed or suppressed anomalies as active findings', () => {
+    const agents = [
+      {
+        agentId: 'active',
+        taskName: 'active task',
+        taskStatus: 'inProgress',
+        anomaly: { type: 'needs_input', severity: 'info', explanation: 'ready' },
+      },
+      {
+        agentId: 'snoozed',
+        taskName: 'snoozed task',
+        taskStatus: 'inProgress',
+        snoozedUntil: Date.now() + 60_000,
+        anomaly: { type: 'needs_input', severity: 'info', explanation: 'hidden' },
+      },
+      {
+        agentId: 'suppressed',
+        taskName: 'suppressed task',
+        taskStatus: 'inProgress',
+        suppressed: true,
+        anomaly: { type: 'stale_agent', severity: 'warning', explanation: 'hidden' },
+      },
+    ];
+
+    const { severityCounts, findings } = summarize(agents);
+    expect(findings.map((finding) => finding.agentId)).toEqual(['active']);
+    expect(severityCounts).toEqual({ critical: 0, warning: 0, info: 1 });
+  });
+
+  it('does not count pending or terminal anomalies as active findings', () => {
+    const agents = [
+      {
+        agentId: 'pending',
+        taskStatus: 'pending',
+        anomaly: { type: 'needs_input', severity: 'info', explanation: 'not launched' },
+      },
+      {
+        agentId: 'completed',
+        taskStatus: 'completed',
+        anomaly: { type: 'needs_input', severity: 'info', explanation: 'stale' },
+      },
+      {
+        agentId: 'cancelled',
+        taskStatus: 'cancelled',
+        anomaly: { type: 'needs_input', severity: 'info', explanation: 'stale' },
+      },
+      {
+        agentId: 'terminated',
+        taskStatus: 'terminated',
+        anomaly: { type: 'needs_input', severity: 'info', explanation: 'stale' },
+      },
+    ];
+
+    const { findings } = summarize(agents);
+    expect(findings).toEqual([]);
+  });
+});
+
+describe('kookr-status isActiveFinding', () => {
+  it('matches dashboard semantics for snoozed findings', () => {
+    expect(isActiveFinding({
+      agentId: 'snoozed',
+      taskStatus: 'inProgress',
+      snoozedUntil: Date.now() + 60_000,
+      anomaly: { type: 'needs_input', severity: 'info', explanation: 'hidden' },
+    })).toBe(false);
   });
 });
 
