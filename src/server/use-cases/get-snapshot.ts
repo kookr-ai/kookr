@@ -5,7 +5,7 @@ import type { LedgerAnalytics } from '../../core/ledger-analytics.js';
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
 import type { PrLessonsStateHolder } from '../../core/pr-lessons-discovery.js';
 import type { AvailableAgentType, AgentType } from '../../core/agent-types.js';
-import type { ProjectSummary } from '../../core/project-summary.js';
+import type { ProjectSummary, ProjectRepoHealth } from '../../core/project-summary.js';
 import type { SnapshotMessage } from '../../shared/contracts/messages.js';
 import { projectEventForClient } from '../event-projection.js';
 
@@ -45,6 +45,8 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
   /** Read-only accessor for project IDs persisted by the sidebar preference store. */
   getSidebarProjects?: () => string[];
   prLessonsHolder?: PrLessonsStateHolder;
+  /** Repo-health snapshot from the GitHub scanner; flowed onto ProjectSummary.repoHealth. */
+  repoHealthCache?: ReadonlyMap<string, ProjectRepoHealth>;
 }
 
 /**
@@ -97,5 +99,6 @@ export function getProjectSummaries(deps: ProjectSummaryQueryDeps): ProjectSumma
     registryActiveProjects: deps.getRegistryActiveProjects?.(),
     sidebarProjects: deps.getSidebarProjects?.(),
     prLessonsHolder: deps.prLessonsHolder,
+    repoHealthCache: deps.repoHealthCache,
   });
 }

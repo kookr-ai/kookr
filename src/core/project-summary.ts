@@ -2,13 +2,31 @@ import type { AgentState } from './monitor.js';
 import type { LedgerAnalytics } from './ledger-analytics.js';
 import type { ProjectConfig, ProjectConfigStore } from './project-config-store.js';
 import type { PrLessonsStateHolder } from './pr-lessons-discovery.js';
-import { projectDisplayName, projectColorIndex } from './project-identity.js';
+import { projectDisplayName, projectColorIndex, isSafeGithubProjectId } from './project-identity.js';
 
 export interface TaskSummary {
   taskId: string;
   name?: string;
   status: string;
   startedAt?: string;
+}
+
+export interface PendingReviewPr {
+  number: number;
+  title: string;
+  /** Validated to match https://github.com/<owner>/<repo>/pull/<n>. */
+  url: string;
+}
+
+export interface ProjectRepoHealth {
+  openIssues: number;
+  openPullRequests: number;
+  /** Up to 5 PRs that are open, not draft, and not approved. */
+  pendingReviewPrs: PendingReviewPr[];
+  /** Validated to start with https://github.com/<owner>/<repo> of this project. */
+  repoUrl: string;
+  /** ISO string of when this snapshot was fetched. */
+  lastFetchedAt: string;
 }
 
 export interface ProjectSummary {
@@ -20,6 +38,11 @@ export interface ProjectSummary {
   todayPrCount: number;
   weekPrCount: number;
   dailyLimit?: number;
+  /**
+   * Open PRs *authored by Kookr agents* for this project — from the contribution ledger.
+   * Distinct from `repoHealth.openPullRequests` (repo-wide).
+   * Rendered in the drawer with the label "Agent PRs".
+   */
   openPrs: number;
   lastContribution?: string; // ISO date of most recent PR
   recentTasks: TaskSummary[];
@@ -36,6 +59,12 @@ export interface ProjectSummary {
    * start; absent until then.
    */
   localPath?: string;
+  /**
+   * Repo-wide GitHub health (issue count, PR count, pending PRs, repo URL).
+   * Populated only for `github.com/...` projects in the scanner's tracked set;
+   * omitted when unavailable.
+   */
+  repoHealth?: ProjectRepoHealth;
 }
 
 export interface ProjectSummaryDeps {
@@ -49,6 +78,46 @@ export interface ProjectSummaryDeps {
   /** Project IDs persisted by the sidebar preference store. */
   sidebarProjects?: string[];
   prLessonsHolder?: PrLessonsStateHolder;
+  /** Repo-health cache, keyed by project id. Provided by `GitHubScannerService.getRepoHealthSnapshot()`. */
+  repoHealthCache?: ReadonlyMap<string, ProjectRepoHealth>;
+}
+
+/** Hard cap on the number of repos polled per repo-health tick. */
+export const MAX_TRACKED_REPOS = 100;
+
+/**
+ * Single source of truth for the set of project ids that should be visible
+ * (and, for github.com ids, polled for repo-wide stats). Mirrors the union
+ * built in computeProjectSummaries.
+ *
+ * Returns deduped, lowercase ids. Caller is responsible for filtering to
+ * `github.com/` prefix when using the result for the scanner's tracked set.
+ */
+export function deriveActiveProjectIds(deps: ProjectSummaryDeps): string[] {
+  const ids = new Set<string>();
+  for (const agent of deps.agents) {
+    if (agent.projectId) ids.add(agent.projectId);
+  }
+  for (const project of deps.ledgerAnalytics.getProjects()) {
+    ids.add(project);
+  }
+  for (const config of deps.configStore.getAllConfigs()) {
+    if (configSeedsMembership(config)) ids.add(config.project);
+  }
+  for (const project of deps.skillTrackedProjects ?? []) ids.add(project);
+  for (const project of deps.registryActiveProjects ?? []) ids.add(project);
+  for (const project of deps.sidebarProjects ?? []) ids.add(project);
+  return [...ids];
+}
+
+/**
+ * Pick the GitHub project ids the repo-health poller should fetch.
+ * Filters to safe github.com ids and caps at MAX_TRACKED_REPOS.
+ */
+export function deriveTrackedGithubRepos(deps: ProjectSummaryDeps): string[] {
+  return deriveActiveProjectIds(deps)
+    .filter(isSafeGithubProjectId)
+    .slice(0, MAX_TRACKED_REPOS);
 }
 
 /**
@@ -68,7 +137,7 @@ export function configSeedsMembership(config: ProjectConfig): boolean {
  * Groups agents by projectId, computes aggregate stats per project.
  */
 export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummary[] {
-  const { agents, ledgerAnalytics, configStore, skillTrackedProjects, registryActiveProjects, sidebarProjects, prLessonsHolder } = deps;
+  const { agents, ledgerAnalytics, configStore, skillTrackedProjects, registryActiveProjects, sidebarProjects, prLessonsHolder, repoHealthCache } = deps;
 
   // Group agents by projectId (derived from task data)
   const projectAgents = new Map<string, AgentState[]>();
@@ -179,6 +248,7 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       prLessonsDistillations: prLessons?.distillationCount,
       prLessonsRawLines: prLessons?.rawLearningsLines,
       localPath: config?.localPath,
+      repoHealth: repoHealthCache?.get(projectId),
     });
   }
 

@@ -24,8 +24,9 @@ import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { CodexCliAdapter } from '../adapters/codex-cli-adapter.js';
 import { RoutingAgentAdapter } from '../adapters/routing-agent-adapter.js';
-import { ghCliFetcher } from '../adapters/github-fetcher.js';
+import { ghCliFetcher, fetchBatchRepoHealth, getGhUserLogin } from '../adapters/github-fetcher.js';
 import { CircuitBreakerGitHubFetcher } from '../adapters/circuit-breaker-github-fetcher.js';
+import { MAX_TRACKED_REPOS } from '../core/project-summary.js';
 import { reconcile } from './reconciliation.js';
 import {
   runAdapterPreflights,
@@ -433,11 +434,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     stateFetchIntervalMs: currentSettings.githubPollingIntervalSec * 1000,
     referenceExtractionIntervalMs: currentSettings.githubPollingIntervalSec * 1000,
   };
+  // Forward-declared so onRepoHealthChanged can call back into the broadcast
+  // function which references githubScanner.getRepoHealthSnapshot().
+  let broadcastProjectSummariesRef: (() => void) | null = null;
   const githubScanner = new GitHubScannerService({
     taskStore,
     stateStore: githubStateStore,
     fetcher: new CircuitBreakerGitHubFetcher(ghCliFetcher, githubBreaker),
     config: githubScannerConfig,
+    repoHealthFetcher: fetchBatchRepoHealth,
+    ghUserLoginResolver: getGhUserLogin,
+    onRepoHealthChanged: () => {
+      broadcastProjectSummariesRef?.();
+    },
     onStateUpdate: (taskId) => {
       // Broadcast initial state when first fetched (no changes yet)
       const state = githubStateStore.getTaskState(taskId);
@@ -674,11 +683,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       getSkillTrackedProjects: () => skillDiscoveryState.getProjects(),
       getRegistryActiveProjects,
       prLessonsHolder: prLessonsState,
+      repoHealthCache: githubScanner.getRepoHealthSnapshot(),
     });
+    // Reuse the summaries' membership as the single source of truth for which
+    // github.com/... projects the repo-health tick should poll. Cap is applied
+    // inside the scanner via setTrackedGithubRepos (it filters unsafe ids).
+    githubScanner.setTrackedGithubRepos(
+      projects.map((s) => s.project).slice(0, MAX_TRACKED_REPOS),
+    );
     // Always broadcast — user-initiated mutations (track/untrack/rescan) can
     // legitimately transition the list to empty, and clients need the update.
     broadcastToAll({ type: 'projectSummaries', projects });
   }
+  broadcastProjectSummariesRef = broadcastProjectSummaries;
 
   /** Broadcast the current OSS attempts snapshot to all connected clients. */
   function broadcastOssAttempts(): void {

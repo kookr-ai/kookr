@@ -1,4 +1,4 @@
-import { execFile as execFileCb } from 'node:child_process';
+import { execFile as execFileCb, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import type {
   GitHubFetcher,
@@ -10,6 +10,8 @@ import type {
   GitHubReviewer,
   GitHubReviewThread,
 } from '../core/github-types.js';
+import type { ProjectRepoHealth } from '../core/project-summary.js';
+import { isSafePullRequestUrl, projectRepoUrl } from '../core/project-identity.js';
 
 const execFile = promisify(execFileCb);
 
@@ -27,6 +29,24 @@ export async function isGhAvailable(): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Resolve the authenticated GitHub login (e.g. "jeanibarz") via `gh api user`.
+ * Returns null if `gh` is unavailable, the call fails, or the response is malformed.
+ * Used to scope "needs attention" PR searches to the user.
+ */
+export async function getGhUserLogin(): Promise<string | null> {
+  try {
+    const { stdout } = await execFile('gh', ['api', 'user', '--jq', '.login'], {
+      timeout: 5000,
+    });
+    const login = stdout.trim();
+    if (!login || !/^[a-zA-Z0-9-]{1,39}$/.test(login)) return null;
+    return login;
+  } catch {
+    return null;
   }
 }
 
@@ -605,3 +625,169 @@ export const ghCliFetcher: GitHubFetcher = {
   fetchPRState,
   fetchIssueState,
 };
+
+// --- Repo-health batched fetcher --------------------------------------------
+
+/**
+ * Fetch open-issue / open-PR counts and a short list of pending PRs for a
+ * batch of repos in a single GraphQL request. Returns a Map keyed by
+ * `github.com/owner/repo` project id.
+ *
+ * Whole-batch failures (transport, timeout, top-level GraphQL error) return
+ * `null` so the caller can preserve its previous cache. Per-repo NOT_FOUND
+ * surfaces as the repo being omitted from the map.
+ */
+export async function fetchBatchRepoHealth(
+  repos: ReadonlyArray<{ projectId: string; owner: string; repo: string }>,
+  login: string | null,
+): Promise<Map<string, ProjectRepoHealth> | null> {
+  if (repos.length === 0) return new Map();
+  const tickAt = new Date().toISOString();
+
+  // Build aliased GraphQL query. Aliases are deterministic so we can decode
+  // by index without parsing the query back. When a login is known, a parallel
+  // per-repo `s${i}: search(...)` field returns the user's open PRs in that
+  // repo (review-requested, assigned, or authored) — the "needs your attention"
+  // list. When login is null, the search aliases are omitted and the list is
+  // empty per repo.
+  const aliasParts: string[] = [];
+  repos.forEach(({ owner, repo }, i) => {
+    aliasParts.push(
+      `r${i}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(repo)}) {
+        nameWithOwner
+        url
+        openIssues: issues(states: OPEN) { totalCount }
+        openPRs: pullRequests(states: OPEN) { totalCount }
+      }`,
+    );
+    if (login) {
+      // `involves:USER` matches PRs where the user is author, assignee,
+      // reviewer, or commenter — covers every reason the PR might need their
+      // attention in one qualifier (GitHub search does not support OR
+      // between separate qualifiers).
+      const q = `is:pr is:open repo:${owner}/${repo} involves:${login}`;
+      aliasParts.push(
+        `s${i}: search(query: ${JSON.stringify(q)}, type: ISSUE, first: 5) {
+          nodes { ... on PullRequest { number title url } }
+        }`,
+      );
+    }
+  });
+  const query = `{
+${aliasParts.join('\n')}
+}`;
+
+  let json: string;
+  try {
+    const body = JSON.stringify({ query });
+    json = await spawnGhWithStdin(['api', 'graphql', '--input', '-'], body, 30000);
+  } catch (err) {
+    console.warn('[github] fetchBatchRepoHealth: gh api graphql failed:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+
+  let parsed: {
+    data?: Record<string, GhRepoHealthNode | GhSearchNode | null> | null;
+    errors?: Array<{ type?: string; message?: string; path?: unknown[] }>;
+  };
+  try {
+    parsed = JSON.parse(json);
+  } catch (err) {
+    console.warn('[github] fetchBatchRepoHealth: bad JSON response:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+
+  // Top-level failure: data missing or all-null with only errors.
+  if (!parsed.data) {
+    const errMsg = parsed.errors?.[0]?.message ?? 'unknown';
+    console.warn(`[github] fetchBatchRepoHealth: top-level GraphQL error: ${errMsg}`);
+    return null;
+  }
+
+  const result = new Map<string, ProjectRepoHealth>();
+  repos.forEach(({ projectId, owner, repo }, i) => {
+    const node = parsed.data?.[`r${i}`] as GhRepoHealthNode | null | undefined;
+    if (!node) return; // per-repo NOT_FOUND or null — omit from result
+
+    const expectedFullName = `${owner}/${repo}`.toLowerCase();
+    const returnedFullName = (node.nameWithOwner ?? '').toLowerCase();
+    if (returnedFullName && returnedFullName !== expectedFullName) {
+      console.log(`[github] repo rename detected: ${expectedFullName} → ${returnedFullName}`);
+    }
+
+    const safeUrl = projectRepoUrl(projectId);
+    if (!safeUrl) return; // belt-and-suspenders; scanner pre-validates
+
+    const pendingPrs: ProjectRepoHealth['pendingReviewPrs'] = [];
+    const searchNode = parsed.data?.[`s${i}`] as GhSearchNode | undefined;
+    for (const pr of searchNode?.nodes ?? []) {
+      if (!pr || typeof pr.number !== 'number' || !Number.isFinite(pr.number)) continue;
+      const title = typeof pr.title === 'string' ? pr.title : '';
+      const url = typeof pr.url === 'string' ? pr.url : '';
+      if (!isSafePullRequestUrl(url, projectId)) continue;
+      pendingPrs.push({ number: pr.number, title, url });
+      if (pendingPrs.length >= 5) break;
+    }
+
+    const openIssues = Number(node.openIssues?.totalCount);
+    const openPullRequests = Number(node.openPRs?.totalCount);
+    result.set(projectId, {
+      openIssues: Number.isFinite(openIssues) ? openIssues : 0,
+      openPullRequests: Number.isFinite(openPullRequests) ? openPullRequests : 0,
+      pendingReviewPrs: pendingPrs,
+      repoUrl: safeUrl,
+      lastFetchedAt: tickAt,
+    });
+  });
+  return result;
+}
+
+/**
+ * Spawn `gh` with the given args and pipe `stdinData` into its stdin. Returns
+ * stdout. Avoids ARG_MAX issues at large query sizes. Rejects on non-zero exit
+ * or timeout.
+ */
+function spawnGhWithStdin(args: string[], stdinData: string, timeoutMs: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn('gh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (err: Error | null, out: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve(out);
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(new Error(`gh ${args.join(' ')} timed out after ${timeoutMs}ms`), '');
+    }, timeoutMs);
+    timer.unref?.();
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+    child.on('error', (err) => finish(err, ''));
+    child.on('close', (code) => {
+      if (code === 0) finish(null, stdout);
+      else finish(new Error(`gh exited ${code}: ${stderr.trim() || '(no stderr)'}`), '');
+    });
+    child.stdin.write(stdinData);
+    child.stdin.end();
+  });
+}
+
+interface GhRepoHealthNode {
+  nameWithOwner?: string;
+  url?: string;
+  openIssues?: { totalCount?: number };
+  openPRs?: { totalCount?: number };
+}
+
+interface GhSearchNode {
+  nodes?: Array<{
+    number?: number;
+    title?: string;
+    url?: string;
+  } | null>;
+}
