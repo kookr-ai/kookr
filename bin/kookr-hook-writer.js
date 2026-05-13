@@ -27,7 +27,6 @@
 
 import { closeSync, openSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
 
 function parseArgs(argv) {
   let file;
@@ -58,7 +57,7 @@ async function readStdin() {
  * reclaimed — writer is short-lived (~tens of ms), so any lock older than 5
  * seconds belonged to a crashed process.
  */
-export async function withLock(lockPath, fn, opts = {}) {
+async function withLock(lockPath, fn, opts = {}) {
   const maxWaitMs = opts.maxWaitMs ?? 2000;
   const staleMs = opts.staleMs ?? 5000;
   const deadline = Date.now() + maxWaitMs;
@@ -116,7 +115,7 @@ async function postHttp(url, payload, timeoutMs = 1000) {
   }
 }
 
-export async function runWriter(args, payload) {
+async function runWriter(args, payload) {
   await appendRecord(args.file, payload);
   if (args.url) {
     try {

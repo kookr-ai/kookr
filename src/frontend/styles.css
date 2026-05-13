@@ -3840,7 +3840,17 @@ textarea::-webkit-resizer { background: transparent; }
   display: block;
 }
 .act-disclosure-malformed {
+  /* Color is one signal; the warning glyph and a left-border carry the same
+     severity cue for users where color does not (high-contrast themes,
+     red/green deficiency, grayscale rendering). See rfc-activity-log §4. */
   color: var(--amber);
+  border-left: 2px solid var(--amber);
+  padding-left: 6px;
+  font-weight: 500;
+}
+.act-disclosure-icon {
+  display: inline-block;
+  margin-right: 4px;
 }
 .act-disclosure-link {
   color: inherit;

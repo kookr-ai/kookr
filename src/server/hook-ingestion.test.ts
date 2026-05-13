@@ -69,11 +69,12 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
 
     const raw = JSON.stringify({ session_id: 'x', hook_event_name: 'SessionStart' });
     const a = ingestion.ingestFromHttp('kookr-1', raw);
-    const b = ingestion.ingest({ kookrSessionId: 'kookr-1', raw, source: 'file' });
+    // File-source path uses the HookEventInjector entry-point (the same one
+    // HookFileWatcher uses in production) so this test mirrors the real
+    // wiring rather than a now-private internal `ingest` shape.
+    ingestion.injectHookEvent('kookr-1', raw);
 
     expect(a.dispatched).toBe(true);
-    expect(b.dispatched).toBe(false);
-    expect(b.reason).toBe('duplicate');
     expect(adapter.calls).toHaveLength(1);
   });
 
@@ -251,6 +252,84 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger);
       // Only the parent_activity row seeds — the malformed row does not.
       expect(hydrated.hydratedHashes).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a post-restart replay does not advance the sequence counter or write phantom diagnostic rows', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      const raw = JSON.stringify({ session_id: 'parent-1', hook_event_name: 'SessionStart' });
+      const { createHash } = await import('node:crypto');
+      const contentHash = createHash('sha256').update(raw.trim()).digest('hex');
+      // Seed the durable ledger with a single parent_activity row at sequence 7.
+      await ledger.append(envelopeRow({ sequence: 7, contentHash, rawSessionId: 'parent-1' }));
+      await ledger.flush();
+      const initialRowCount = (await ledger.readAll('kookr-1')).length;
+
+      const adapter = makeStubAdapter();
+      const ingestion = new HookIngestion({ adapter, activityLedger: ledger, dedupTtlMs: 5000 });
+      await ingestion.hydrateFromLedger('kookr-1', ledger);
+
+      // File-watcher replay arrives. Must NOT bump the sequence counter
+      // (otherwise the next REAL event jumps to 9 instead of 8) and must NOT
+      // write a diagnostic-only ledger row (otherwise stats inflates by N on
+      // every restart).
+      const result = ingestion.injectHookEvent('kookr-1', raw);
+      expect(result.parseStatus).toBe('ok');
+      expect(adapter.calls).toHaveLength(0);
+
+      const afterRowCount = (await ledger.readAll('kookr-1')).length;
+      expect(afterRowCount).toBe(initialRowCount); // no phantom diagnostic row
+
+      // The next fresh event takes sequence 8, not 9.
+      const adapterWithSeq: HookEventInjector & { lastSeq?: number } = {
+        injectHookEvent(_t, _r, seq) {
+          adapterWithSeq.lastSeq = seq;
+          return { parseStatus: 'ok', agentType: 'claude-code', parentage: 'parent', sequence: seq ?? 0 };
+        },
+      };
+      const ingestion2 = new HookIngestion({ adapter: adapterWithSeq, activityLedger: ledger });
+      await ingestion2.hydrateFromLedger('kookr-1', ledger);
+      ingestion2.injectHookEvent('kookr-1', raw);                // replay hit — counter stays
+      ingestion2.injectHookEvent('kookr-1', JSON.stringify({ n: 'fresh' })); // new record
+      expect(adapterWithSeq.lastSeq).toBe(8);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('hydrated cache entries survive past dedupTtlMs so a slow replay still dedups', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      const raw = JSON.stringify({ session_id: 'parent-1', hook_event_name: 'SessionStart' });
+      const { createHash } = await import('node:crypto');
+      const contentHash = createHash('sha256').update(raw.trim()).digest('hex');
+      await ledger.append(envelopeRow({ sequence: 1, contentHash, rawSessionId: 'parent-1' }));
+      await ledger.flush();
+
+      const adapter = makeStubAdapter();
+      // Aggressively short TTL so the test exercises the pinned-entry path
+      // without needing a long sleep.
+      let clock = 0;
+      const ingestion = new HookIngestion({
+        adapter,
+        activityLedger: ledger,
+        dedupTtlMs: 100,
+        now: () => clock,
+      });
+      await ingestion.hydrateFromLedger('kookr-1', ledger);
+
+      // Advance the clock well past the TTL window.
+      clock = 1_000_000;
+      const result = ingestion.injectHookEvent('kookr-1', raw);
+      expect(result.parseStatus).toBe('ok');
+      // The hydrated entry was NOT swept by gcExpired and intercepted the
+      // would-be re-dispatch.
+      expect(adapter.calls).toHaveLength(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

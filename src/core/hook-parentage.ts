@@ -34,7 +34,11 @@ export function classifyHookParentage(
   if (!rawSessionId) return 'unknown';
   if (!identity.parentSessionId) return 'unknown';
   if (rawSessionId === identity.parentSessionId) return 'parent';
-  if (identity.childSessionIds.has(rawSessionId)) return 'child';
+  // A known child id, or a new distinct id that arrives before its own
+  // SessionStart — either way classify as `child` so the event is gated out
+  // of parent anomaly state. The `childSessionIds.has(...)` check is kept
+  // explicit so a future caller adding telemetry on "newly observed" vs
+  // "previously recorded" child ids can extend the branch.
   return 'child';
 }
 

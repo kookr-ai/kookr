@@ -208,8 +208,14 @@ function ActivityDisclosureBanner({
         </div>
       )}
       {disclosure.malformed && (
-        <div className="act-disclosure-line act-disclosure-malformed">
-          Activity warning:{' '}
+        <div
+          className="act-disclosure-line act-disclosure-malformed"
+          role="status"
+          aria-live="polite"
+        >
+          <span className="act-disclosure-icon" aria-hidden="true">{'⚠'}</span>
+          <span className="sr-only">Warning: </span>
+          <strong>Activity warning:</strong>{' '}
           {disclosure.malformed.malformedCount > 0 && (
             <>
               {disclosure.malformed.malformedCount} hook record
@@ -225,7 +231,13 @@ function ActivityDisclosureBanner({
           {diagHref && (
             <>
               {' — '}
-              <a className="act-disclosure-link" href={diagHref}>
+              <a
+                className="act-disclosure-link"
+                href={diagHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Open activity diagnostics JSON in a new tab"
+              >
                 open diagnostics
               </a>
             </>

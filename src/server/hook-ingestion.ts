@@ -64,6 +64,14 @@ interface CacheEntry {
   result: InjectHookEventResult;
   /** The first record's source — for diagnostics if needed. */
   firstSource: 'file' | 'http';
+  /**
+   * Set when this entry was seeded from a durable ledger (post-restart
+   * hydration) rather than from a live ingest. Hydrated entries skip TTL
+   * GC and skip the duplicate-row ledger write so a file-watcher replay
+   * after a crash does not inflate diagnostic counts or advance the
+   * sequence space. See rfc-activity-log-reliability edge cases.
+   */
+  hydrated?: boolean;
 }
 
 export class HookIngestion implements HookEventInjector {
@@ -97,7 +105,7 @@ export class HookIngestion implements HookEventInjector {
     return this.ingest({ kookrSessionId: sessionId, raw: body, source: 'http' });
   }
 
-  ingest({ kookrSessionId, raw, source }: IngestInput): IngestResult {
+  private ingest({ kookrSessionId, raw, source }: IngestInput): IngestResult {
     const normalized = raw.trim();
     const contentHash = createHash('sha256').update(normalized).digest('hex');
     if (!normalized) {
@@ -119,20 +127,24 @@ export class HookIngestion implements HookEventInjector {
       }
     };
 
-    const sequence = this.nextSequence(kookrSessionId);
-
     const existing = this.cache.get(key);
     if (existing) {
-      // The other source already delivered this record. Note the arrival for
-      // latency telemetry and write a diagnostic-only ledger row so duplicate
-      // counts surface in /api/tasks/:taskId/activity-diagnostics.
       httpTrackerCall();
+      if (existing.hydrated) {
+        // Restart-replay hit: this record was already ledger-recorded before
+        // the crash. Drop silently — no new ledger row, no meta bump, no
+        // sequence allocation. The original arrival's bookkeeping survives.
+        return { dispatched: false, reason: 'duplicate', contentHash, injectResult: existing.result };
+      }
+      // Steady-state dual-delivery: the OTHER source already dispatched this
+      // record. Reuse the original sequence number on the diagnostic ledger
+      // row so the sequence space tracks dispatches, not arrivals.
       this.bumpMeta(kookrSessionId, { duplicate: true });
       this.writeLedger({
         kookrSessionId,
         contentHash,
         source,
-        sequence,
+        sequence: existing.result.sequence ?? 0,
         rawBytes: normalized.length,
         result: existing.result,
         projection: 'diagnostic_only',
@@ -141,6 +153,10 @@ export class HookIngestion implements HookEventInjector {
     }
 
     httpTrackerCall();
+    // First-observation: allocate a fresh sequence AFTER the cache check so
+    // duplicates do not advance the sequence counter (a restart-replay would
+    // otherwise inflate the sequence space by the size of the ledger).
+    const sequence = this.nextSequence(kookrSessionId);
 
     let result: InjectHookEventResult;
     try {
@@ -209,7 +225,6 @@ export class HookIngestion implements HookEventInjector {
     ledger: ActivityLedger,
   ): Promise<{ hydratedHashes: number; maxSequence: number }> {
     const rows = await ledger.readAll(kookrSessionId);
-    const now = this.now();
     let maxSequence = 0;
     let hydratedHashes = 0;
     for (const row of rows) {
@@ -222,9 +237,15 @@ export class HookIngestion implements HookEventInjector {
       if (envelope.parseStatus !== 'ok' || row.projection === 'diagnostic_only') continue;
       const key = `${kookrSessionId}::${envelope.contentHash}`;
       if (this.cache.has(key)) continue;
+      // Pin hydrated entries against the dedup TTL — file replay may take
+      // longer than dedupTtlMs on large ledgers, and re-dispatching a record
+      // because the cache aged out defeats the purpose of hydration.
+      // POSITIVE_INFINITY ensures gcExpired never sweeps these; forgetSession
+      // (and pruneSession via delete-task) is the only path that removes them.
       this.cache.set(key, {
-        ts: now,
+        ts: Number.POSITIVE_INFINITY,
         firstSource: envelope.source,
+        hydrated: true,
         result: {
           parseStatus: 'ok',
           agentType: envelope.provider,
