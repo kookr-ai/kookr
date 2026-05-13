@@ -80,6 +80,7 @@ export function useWebSocket() {
               msg.defaultAgentType,
               msg.workspaceEnabled,
               msg.sweepRunning,
+              msg.maxActiveTasks,
             );
             // Counters / streak ride alongside achievements but live on the
             // achievements slice — write them directly via setState.

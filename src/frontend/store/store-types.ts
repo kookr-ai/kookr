@@ -103,6 +103,13 @@ export interface TransportSessionSlice {
   sttUrl: string;
   activeSTTInputId: string | null;
   totalSpendUsd: number;
+  /**
+   * Server-configured concurrency cap (settings.maxActiveTasks). 0 = unknown
+   * (no snapshot has carried it yet). Sticky: once set, snapshots that omit
+   * the field don't reset it, since most broadcast sites don't thread the
+   * getter through.
+   */
+  maxActiveTasks: number;
 
   handleSnapshot: (
     agents: AgentState[],
@@ -117,6 +124,7 @@ export interface TransportSessionSlice {
     defaultAgentType?: AgentType,
     workspaceEnabled?: boolean,
     sweepRunning?: boolean,
+    maxActiveTasks?: number,
   ) => void;
   handleUpdate: (agentId: string, state: AgentState) => void;
   handlePlaybooks: (playbooks: Playbook[], cwd: string) => void;

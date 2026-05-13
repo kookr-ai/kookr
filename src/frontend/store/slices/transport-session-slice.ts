@@ -76,8 +76,9 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
     sttUrl: '',
     activeSTTInputId: null,
     totalSpendUsd: 0,
+    maxActiveTasks: 0,
 
-    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning) => {
+    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks) => {
       set((prev) => {
         const previousById = new Map(prev.agents.map((agent) => [agent.agentId, agent]));
         const mergedAgents = agents.map((agent) => mergeActivityAgent(previousById.get(agent.agentId), agent));
@@ -95,6 +96,7 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
           ...(achievements !== undefined ? { achievements } : {}),
           ...(workspaceEnabled !== undefined ? { workspaceEnabled } : {}),
           ...(sweepRunning !== undefined ? { sweepRunning } : {}),
+          ...(maxActiveTasks !== undefined ? { maxActiveTasks } : {}),
         };
       });
     },

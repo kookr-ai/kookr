@@ -110,6 +110,13 @@ export type SnapshotMessage = {
   workspaceEnabled?: boolean;
   /** True if a cross-project sweep is currently in progress on this server. */
   sweepRunning?: boolean;
+  /**
+   * Configured concurrency cap (settings.maxActiveTasks). When the count of
+   * inProgress tasks reaches this number, new launches are queued as pending.
+   * Omitted by snapshots produced where the getter isn't wired; the frontend
+   * preserves the last-known value rather than dropping the indicator.
+   */
+  maxActiveTasks?: number;
 };
 
 type LaunchPlaybookBaseMessage = {

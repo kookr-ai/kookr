@@ -27,7 +27,7 @@ import type { TaskCompletionFeedback } from '../shared/contracts/messages.js';
 import { ProjectSidebar } from './components/ProjectSidebar.js';
 import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
 import { ProjectSidebarManager } from './components/ProjectSidebarManager.js';
-import { SettingsDialog } from './components/SettingsDialog.js';
+import { SettingsDialog, type SettingsFocusField } from './components/SettingsDialog.js';
 import { SchedulesDialog } from './components/SchedulesDialog.js';
 import { ContributionWorkspace } from './components/ContributionWorkspace.js';
 import { SweepButton } from './components/SweepButton.js';
@@ -77,6 +77,7 @@ export function App() {
   const [completeFeedback, setCompleteFeedback] = useState<TaskCompletionFeedback | undefined>(undefined);
   const [showProjectSidebarManager, setShowProjectSidebarManager] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsFocus, setSettingsFocus] = useState<SettingsFocusField | undefined>(undefined);
   const [showSchedules, setShowSchedules] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showCostComparison, setShowCostComparison] = useState(false);
@@ -468,7 +469,16 @@ export function App() {
     />
   );
 
-  const projectSidebar = <ProjectSidebar onManage={() => setShowProjectSidebarManager(true)} />;
+  const openSettingsAtMaxActiveTasks = () => {
+    setSettingsFocus('maxActiveTasks');
+    setShowSettings(true);
+  };
+  const projectSidebar = (
+    <ProjectSidebar
+      onManage={() => setShowProjectSidebarManager(true)}
+      onAdjustCap={openSettingsAtMaxActiveTasks}
+    />
+  );
 
   const projectDetailDrawer = selectedProjectSummary && (
     <ProjectDetailDrawer
@@ -496,7 +506,7 @@ export function App() {
         compact={isMobileViewport}
         onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'button' }); setShowLaunch(true); }}
         onSchedules={() => setShowSchedules(true)}
-        onSettings={() => setShowSettings(true)}
+        onSettings={() => { setSettingsFocus(undefined); setShowSettings(true); }}
         onShowShortcuts={() => setShowShortcuts(true)}
         onOssView={toggleOssView}
         onOperations={() => setShowOperations((value) => !value)}
@@ -672,7 +682,12 @@ export function App() {
       )}
       {showSchedules && <SchedulesDialog onClose={() => setShowSchedules(false)} />}
       {showCostComparison && <CostComparisonPanel onClose={() => setShowCostComparison(false)} />}
-      {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <SettingsDialog
+          onClose={() => { setShowSettings(false); setSettingsFocus(undefined); }}
+          focusField={settingsFocus}
+        />
+      )}
       {ossShowView && <OssProductivityView onClose={closeOssView} />}
       {showWorkspace && selectedProject && (
         <ContributionWorkspace

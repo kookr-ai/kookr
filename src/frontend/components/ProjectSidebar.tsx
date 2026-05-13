@@ -165,11 +165,21 @@ function getTaskLoad(activeAgents: number, stalledAgents: number): TaskLoad {
   };
 }
 
-function TaskCountBadge({ taskLoad }: { taskLoad: TaskLoad }) {
-  if (taskLoad.activeAgents <= 0) return null;
+function TaskCountBadge({ taskLoad, pendingCount = 0 }: { taskLoad: TaskLoad; pendingCount?: number }) {
+  if (taskLoad.activeAgents <= 0 && pendingCount <= 0) return null;
+  const className = [
+    'project-icon-task-count',
+    taskLoad.stalledAgents > 0 ? 'has-stalled' : '',
+    pendingCount > 0 ? 'has-pending' : '',
+  ].filter(Boolean).join(' ');
   return (
-    <span className={`project-icon-task-count${taskLoad.stalledAgents > 0 ? ' has-stalled' : ''}`}>
-      {taskLoad.label}
+    <span className={className}>
+      {taskLoad.activeAgents > 0 && taskLoad.label}
+      {pendingCount > 0 && (
+        <span className="project-icon-task-pending">
+          {taskLoad.activeAgents > 0 ? `+${pendingCount}` : pendingCount}
+        </span>
+      )}
     </span>
   );
 }
@@ -192,9 +202,15 @@ function OrganizerButton({ onManage }: { onManage: () => void }) {
 
 interface Props {
   onManage: () => void;
+  /**
+   * Called when the user requests to adjust the server concurrency cap (e.g.
+   * via right-click on the all-projects icon). The parent owns navigation —
+   * typically opens Settings deep-linked to the maxActiveTasks field.
+   */
+  onAdjustCap?: () => void;
 }
 
-export function ProjectSidebar({ onManage }: Props) {
+export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
   const {
     visibleProjectSummaries,
     projectSummaries,
@@ -207,7 +223,22 @@ export function ProjectSidebar({ onManage }: Props) {
     hideSidebarProject,
     moveSidebarProject,
     reorderSidebarProject,
+    agents,
+    maxActiveTasks,
   } = useKookrStore();
+  const pendingCount = useMemo(
+    () => agents.filter((a) => a.taskStatus === 'pending').length,
+    [agents],
+  );
+  // Count compared against `maxActiveTasks` must match the launch-service
+  // gate (`TaskStore.getActiveCount()` in src/core/tasks.ts) so the indicator
+  // doesn't lie. The project-summary `activeAgents` filters out snoozed
+  // tasks, which would let the gauge show "9/10" while the server actually
+  // queues the next launch. Count raw inProgress agents instead.
+  const cappedCount = useMemo(
+    () => agents.filter((a) => a.taskStatus === 'inProgress').length,
+    [agents],
+  );
 
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
@@ -244,11 +275,47 @@ export function ProjectSidebar({ onManage }: Props) {
       getTaskLoad(0, 0),
     );
   }, [projectSummaries]);
+  // Capacity context for the all-projects icon. `hasLimit` gates the cap UI
+  // until the first snapshot carries `maxActiveTasks` (the store treats 0 as
+  // unknown — see TransportSessionSlice.maxActiveTasks docs).
+  const hasLimit = maxActiveTasks > 0;
+  const atCap = hasLimit && cappedCount >= maxActiveTasks;
+  const hasPending = pendingCount > 0;
+  const capLabel = hasLimit ? `${cappedCount}/${maxActiveTasks} of cap` : `${cappedCount} active`;
+  const queueSegment = hasPending
+    ? `${pendingCount} queued${atCap ? ', waiting for a slot' : ''}`
+    : (atCap ? 'at capacity, new launches will queue' : null);
+  const canAdjustCap = Boolean(onAdjustCap) && hasLimit;
+  const adjustHint = canAdjustCap ? 'Right-click or Shift+F10 to adjust cap' : null;
   const allTooltipText = [
     'All Projects',
     `${allTaskLoad.activeAgents} active agent${allTaskLoad.activeAgents !== 1 ? 's' : ''}`,
     `${allTaskLoad.runningAgents} running · ${allTaskLoad.stalledAgents} stalled`,
-  ].join(' · ');
+    capLabel,
+    queueSegment,
+    adjustHint,
+  ].filter((s): s is string => Boolean(s)).join(' · ');
+  // Surface the at-cap / queued state in the accessible name so SR users
+  // get the same information mouse users get from the red ring + badge.
+  const allAriaLabel = [
+    'All Projects',
+    hasLimit ? capLabel : null,
+    hasPending ? `${pendingCount} queued` : null,
+    atCap ? 'at capacity' : null,
+  ].filter((s): s is string => Boolean(s)).join(', ');
+
+  function handleAllProjectsAdjust(event: React.SyntheticEvent) {
+    if (!onAdjustCap || !hasLimit) return;
+    event.preventDefault();
+    onAdjustCap();
+  }
+  function handleAllProjectsKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    // Keyboard equivalent of right-click — mirrors handleProjectMenuKey
+    // below so the deep-link is reachable without a pointing device.
+    if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+      handleAllProjectsAdjust(event);
+    }
+  }
 
   const menuRow = menuProjectId ? visibleRowMap.get(menuProjectId) ?? null : null;
   const menuSection = menuRow?.pinned ? pinnedSummaries : unpinnedSummaries;
@@ -375,14 +442,21 @@ export function ProjectSidebar({ onManage }: Props) {
     <div className="project-sidebar kookr-tour-target-layout" data-testid="project-sidebar">
       <Tooltip text={allTooltipText}>
         <button
-          aria-label="All Projects"
-          className={`project-icon all${selectedProject === null ? ' selected' : ''}`}
+          aria-label={allAriaLabel}
+          className={[
+            'project-icon',
+            'all',
+            selectedProject === null ? 'selected' : '',
+            atCap ? 'at-cap' : '',
+          ].filter(Boolean).join(' ')}
           data-testid="project-icon-all"
           onClick={() => selectProject(null)}
+          onContextMenu={canAdjustCap ? handleAllProjectsAdjust : undefined}
+          onKeyDown={canAdjustCap ? handleAllProjectsKeyDown : undefined}
           type="button"
         >
           <span className="project-icon-letter">*</span>
-          <TaskCountBadge taskLoad={allTaskLoad} />
+          <TaskCountBadge taskLoad={allTaskLoad} pendingCount={pendingCount} />
         </button>
       </Tooltip>
 

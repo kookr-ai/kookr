@@ -40,6 +40,8 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   defaultAgentType?: AgentType;
   workspaceEnabled?: boolean;
   sweepRunning?: boolean;
+  /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
+  getMaxActiveTasks?: () => number;
 }
 
 export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
@@ -112,6 +114,7 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ...(deps.defaultAgentType ? { defaultAgentType: deps.defaultAgentType } : {}),
     ...(deps.workspaceEnabled ? { workspaceEnabled: true } : {}),
     ...(deps.sweepRunning ? { sweepRunning: true } : {}),
+    ...(deps.getMaxActiveTasks ? { maxActiveTasks: deps.getMaxActiveTasks() } : {}),
   };
 }
 

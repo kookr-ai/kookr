@@ -17,15 +17,30 @@ interface ServerSettings {
   loadedFromDefaults?: boolean;
 }
 
+/** Settings field to scroll-and-focus on open. */
+export type SettingsFocusField = 'maxActiveTasks';
+
 interface Props {
   onClose: () => void;
+  /**
+   * If set, the matching input is scrolled into view and focused once
+   * settings load. Lets callers deep-link straight to the relevant control
+   * (e.g. right-click on the all-projects icon → max concurrent tasks).
+   */
+  focusField?: SettingsFocusField;
 }
 
 type SettingsTab = 'general' | 'hooks';
 
 const SETTINGS_TABS: readonly SettingsTab[] = ['general', 'hooks'];
 
-export function SettingsDialog({ onClose }: Props) {
+// Which tab hosts each focusable field. Extend this when SettingsFocusField
+// gains a new value — the Record type makes the requirement exhaustive.
+const FOCUS_FIELD_TAB: Record<SettingsFocusField, SettingsTab> = {
+  maxActiveTasks: 'general',
+};
+
+export function SettingsDialog({ onClose, focusField }: Props) {
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
   const agentOptions = availableAgentTypes.length > 0 ? availableAgentTypes : AVAILABLE_AGENT_TYPES;
@@ -40,6 +55,8 @@ export function SettingsDialog({ onClose }: Props) {
     general: null,
     hooks: null,
   });
+  const maxActiveTasksInputRef = useRef<HTMLInputElement>(null);
+  const didFocusRef = useRef(false);
 
   useEffect(() => {
     fetch('/api/settings')
@@ -53,6 +70,24 @@ export function SettingsDialog({ onClose }: Props) {
         setLoading(false);
       });
   }, []);
+
+  // Deep-link focus: when opened with a target field, switch to the right
+  // tab, scroll the target input into view, focus it, and select its contents
+  // so the user can type a new value immediately. Runs once per mount.
+  // `focus({ preventScroll: true })` keeps the explicit scrollIntoView from
+  // fighting the focus-implied scroll. `aria-label` on the input is set
+  // statically below so SR announcement on focus reads "Max concurrent tasks".
+  useEffect(() => {
+    if (!focusField || !settings || didFocusRef.current) return;
+    setActiveTab(FOCUS_FIELD_TAB[focusField]);
+    const input = focusField === 'maxActiveTasks' ? maxActiveTasksInputRef.current : null;
+    if (input) {
+      input.scrollIntoView({ block: 'center' });
+      input.focus({ preventScroll: true });
+      input.select();
+      didFocusRef.current = true;
+    }
+  }, [focusField, settings]);
 
   const saveSettings = useCallback(async (updated: ServerSettings) => {
     try {
@@ -280,6 +315,8 @@ export function SettingsDialog({ onClose }: Props) {
                       </div>
                       <div className="settings-number-group">
                         <input
+                          ref={maxActiveTasksInputRef}
+                          aria-label="Max concurrent tasks"
                           type="number"
                           className="settings-number"
                           value={settings.maxActiveTasks}
