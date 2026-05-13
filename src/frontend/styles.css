@@ -5343,6 +5343,119 @@ button.project-drawer-link:focus-visible {
   text-align: right;
 }
 
+/* --- Audio Alerts Section --- */
+.audio-alerts-section {
+  border-top: 1px solid var(--border-dim);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.audio-alert-test-btn {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.audio-alert-test-btn:hover {
+  color: var(--text-bright);
+  background: rgba(148, 163, 184, 0.14);
+}
+.audio-alerts-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 6px;
+}
+.audio-alert-summary-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.audio-alert-summary-grid strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.audio-alert-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.audio-alert-count {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.08);
+}
+.audio-alert-count--scheduled {
+  color: var(--green);
+  background: rgba(52, 211, 153, 0.1);
+}
+.audio-alert-count--audio_context_error,
+.audio-alert-count--audio_context_unavailable {
+  color: var(--red);
+  background: rgba(248, 113, 113, 0.1);
+}
+.audio-alert-last {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(52, 211, 153, 0.06);
+}
+.audio-alert-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.audio-alert-row {
+  display: grid;
+  grid-template-columns: 64px 92px 96px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.05);
+}
+.audio-alert-time,
+.audio-alert-source {
+  color: var(--text-muted);
+}
+.audio-alert-outcome {
+  font-weight: 700;
+  color: var(--text-bright);
+}
+.audio-alert-row--scheduled .audio-alert-outcome {
+  color: var(--green);
+}
+.audio-alert-row--audio_context_error .audio-alert-outcome,
+.audio-alert-row--audio_context_unavailable .audio-alert-outcome {
+  color: var(--red);
+}
+.audio-alert-description {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audio-alert-repeat {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
 /* --- Self-Diagnostic Section --- */
 .diagnostic-section {
   margin-bottom: 8px;

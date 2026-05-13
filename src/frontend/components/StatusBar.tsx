@@ -1,8 +1,9 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { FocusZone } from '../store/useStore.js';
 import type { QuotaStatus } from '../../shared/protocol.js';
-import { isSoundEnabled, setSoundEnabled } from '../audio/sound.js';
+import { useSoundPreference } from '../audio/sound.js';
+import { useAudioAlertLog, type LocalAudioAlertDecision } from '../audio/audio-alert-log.js';
 
 interface Props {
   findings: number;
@@ -46,6 +47,23 @@ function quotaColorClass(utilization: number): string {
   return 'quota-low';
 }
 
+function formatRelativeAge(timestamp: string): string {
+  const ageMs = Date.now() - new Date(timestamp).getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0) return 'just now';
+  if (ageMs < 60_000) return 'just now';
+  const minutes = Math.floor(ageMs / 60_000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function soundToggleTitle(soundOn: boolean, lastDecision: LocalAudioAlertDecision | null): string {
+  const action = soundOn ? 'Mute alert sounds' : 'Unmute alert sounds';
+  if (!lastDecision) return action;
+  return `${action}. Last alert: ${lastDecision.source} -> ${lastDecision.outcome}, ${lastDecision.reason}, ${formatRelativeAge(lastDecision.timestamp)}`;
+}
+
 function QuotaDisplay({ quota }: { quota: QuotaStatus }) {
   const staleSec = Math.floor((Date.now() - quota.updatedAt) / 1000);
   const stale = staleSec > 300; // >5 min = stale
@@ -81,7 +99,10 @@ export function StatusBar({
   const achievements = useKookrStore((s) => s.achievements);
   const toggleAchievementsPanel = useKookrStore((s) => s.toggleAchievementsPanel);
   const zoneLabel = ZONE_LABELS[focusZone];
-  const [soundOn, setSoundOn] = useState(isSoundEnabled);
+  const sound = useSoundPreference();
+  const audioAlertSnapshot = useAudioAlertLog(1);
+  const soundOn = sound.enabled;
+  const soundTitle = soundToggleTitle(soundOn, audioAlertSnapshot.lastDecision);
 
   const hasNewAchievements = useMemo(() => {
     const lastOpen = typeof localStorage !== 'undefined'
@@ -91,12 +112,8 @@ export function StatusBar({
   }, [achievements]);
 
   const toggleSound = useCallback(() => {
-    setSoundOn((prev) => {
-      const next = !prev;
-      setSoundEnabled(next);
-      return next;
-    });
-  }, []);
+    sound.setEnabled(!sound.enabled);
+  }, [sound]);
 
   return (
     <div className={`statusbar${compact ? ' compact' : ''}`}>
@@ -108,7 +125,7 @@ export function StatusBar({
         <button
           className={`btn-sound-toggle ${soundOn ? '' : 'muted'}`}
           onClick={toggleSound}
-          title={soundOn ? 'Mute alert sounds' : 'Unmute alert sounds'}
+          title={soundTitle}
           aria-label={soundOn ? 'Mute alert sounds' : 'Unmute alert sounds'}
         >
           {soundOn ? '\u{1F50A}' : '\u{1F507}'}

@@ -2,6 +2,7 @@ import React from 'react';
 import type { ClientMessage } from '../../shared/protocol.js';
 import { DetectionStatsPanel } from './DetectionStatsPanel.js';
 import { CircuitBreakerPanel } from './CircuitBreakerPanel.js';
+import { AudioAlertsPanel } from './AudioAlertsPanel.js';
 
 interface Props {
   send: (msg: ClientMessage) => void;
@@ -18,6 +19,7 @@ export function OperationsPanel({ send, onClose }: Props) {
         </button>
       </div>
       <div className="operations-panel-body">
+        <AudioAlertsPanel />
         <DetectionStatsPanel defaultExpanded showEmpty />
         <CircuitBreakerPanel send={send} defaultExpanded showEmpty />
       </div>

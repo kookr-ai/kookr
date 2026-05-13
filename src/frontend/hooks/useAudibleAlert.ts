@@ -3,6 +3,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { maybePlayChime } from '../audio/sound.js';
 import { isActiveFinding } from '../store/finding-helpers.js';
 import type { AgentState } from '../../shared/protocol.js';
+import type { AudioAlertContext } from '../audio/audio-alert-log.js';
 
 // After an agent leaves the findings list, suppress re-chimes for this long.
 // Guards against transient anomaly flicker (subagent boundaries, watchdog
@@ -20,11 +21,16 @@ export const RECHIME_COOLDOWN_MS = 30_000;
  * deduped reliably and is excluded from the audible-chime path entirely
  * rather than collapsing every undated finding into a single key.
  */
-function findingKey(agent: AgentState): string | null {
+function detectedAtString(agent: AgentState): string | null {
   if (!agent.anomaly?.detectedAt) return null;
-  const detectedAt = agent.anomaly.detectedAt instanceof Date
+  return agent.anomaly.detectedAt instanceof Date
     ? agent.anomaly.detectedAt.toISOString()
     : String(agent.anomaly.detectedAt);
+}
+
+function findingKey(agent: AgentState): string | null {
+  const detectedAt = detectedAtString(agent);
+  if (!agent.anomaly || !detectedAt) return null;
   return `${agent.anomaly.type}:${detectedAt}`;
 }
 
@@ -33,6 +39,41 @@ export interface ChimeRecord {
   key: string;
   /** null = agent currently in findings; non-null = post-clear cooldown deadline. */
   cooldownUntil: number | null;
+}
+
+export interface FindingChimeEvaluation {
+  shouldChime: boolean;
+  evaluationId: string;
+  candidateCount: number;
+  primaryCandidate?: AgentState;
+  context?: AudioAlertContext;
+}
+
+interface FindingCandidate {
+  agent: AgentState;
+  dedupeKey: string;
+  detectedAt: string;
+}
+
+function severityRank(severity: string | undefined): number {
+  if (severity === 'critical') return 2;
+  if (severity === 'warning') return 1;
+  return 0;
+}
+
+function sortFindingCandidates(a: FindingCandidate, b: FindingCandidate): number {
+  const severityDelta = severityRank(b.agent.anomaly?.severity) - severityRank(a.agent.anomaly?.severity);
+  if (severityDelta !== 0) return severityDelta;
+  const detectedDelta = new Date(a.detectedAt).getTime() - new Date(b.detectedAt).getTime();
+  if (detectedDelta !== 0) return detectedDelta;
+  return a.agent.agentId.localeCompare(b.agent.agentId);
+}
+
+function buildFindingReason(primary: AgentState, candidateCount: number): string {
+  const anomaly = primary.anomaly;
+  const suffix = candidateCount > 1 ? ` (+${candidateCount - 1} more)` : '';
+  if (!anomaly) return `finding on ${primary.agentId}${suffix}`;
+  return `${anomaly.type} ${anomaly.severity} on ${primary.taskName ?? primary.agentId}${suffix}`;
 }
 
 /**
@@ -49,8 +90,16 @@ export function evaluateChime(
   state: Map<string, ChimeRecord>,
   now: number,
 ): boolean {
+  return evaluateFindingChime(agents, state, now).shouldChime;
+}
+
+export function evaluateFindingChime(
+  agents: AgentState[],
+  state: Map<string, ChimeRecord>,
+  now: number,
+): FindingChimeEvaluation {
   const activeAgentIds = new Set<string>();
-  let shouldChime = false;
+  const candidates: FindingCandidate[] = [];
 
   for (const agent of agents) {
     if (!isActiveFinding(agent)) continue;
@@ -72,7 +121,11 @@ export function evaluateChime(
       continue;
     }
 
-    shouldChime = true;
+    candidates.push({
+      agent,
+      dedupeKey: `${agent.agentId}:${key}`,
+      detectedAt: detectedAtString(agent) ?? '',
+    });
     state.set(agent.agentId, { key, cooldownUntil: null });
   }
 
@@ -87,7 +140,34 @@ export function evaluateChime(
     }
   }
 
-  return shouldChime;
+  const sortedCandidates = [...candidates].sort(sortFindingCandidates);
+  const primary = sortedCandidates[0]?.agent;
+  const primaryDetectedAt = primary ? detectedAtString(primary) : null;
+  const primaryKey = primary ? findingKey(primary) : null;
+  const candidateCount = candidates.length;
+  return {
+    shouldChime: candidateCount > 0,
+    evaluationId: `finding-${now}-${candidates.map((candidate) => candidate.dedupeKey).sort().join('|')}`,
+    candidateCount,
+    primaryCandidate: primary,
+    context: primary && primary.anomaly && primaryDetectedAt && primaryKey
+      ? {
+          source: 'finding',
+          reason: buildFindingReason(primary, candidateCount),
+          agentId: primary.agentId,
+          taskId: primary.taskId,
+          taskName: primary.taskName,
+          anomalyType: primary.anomaly.type,
+          severity: primary.anomaly.severity,
+          detectedAt: primaryDetectedAt,
+          dedupeKey: `${primary.agentId}:${primaryKey}`,
+          evaluationId: `finding-${now}-${candidates.map((candidate) => candidate.dedupeKey).sort().join('|')}`,
+          candidateCount,
+          primaryCause: 'highest_severity',
+          activeFindingsCount: agents.filter(isActiveFinding).length,
+        }
+      : undefined,
+  };
 }
 
 /**
@@ -98,6 +178,10 @@ export function evaluateChime(
  * functionally identical for production but stable across StrictMode mounts.
  */
 const chimedState = new Map<string, ChimeRecord>();
+
+export function __resetAudibleAlertForTests(): void {
+  chimedState.clear();
+}
 
 /**
  * Plays an audible chime when an agent enters the Supervisor Findings list
@@ -114,9 +198,9 @@ export function useAudibleAlert(): void {
   const agents = useKookrStore((s) => s.agents);
 
   useEffect(() => {
-    const shouldChime = evaluateChime(agents, chimedState, Date.now());
-    if (shouldChime) {
-      maybePlayChime();
+    const evaluation = evaluateFindingChime(agents, chimedState, Date.now());
+    if (evaluation.shouldChime && evaluation.context) {
+      maybePlayChime(evaluation.context);
     }
   }, [agents]);
 }
