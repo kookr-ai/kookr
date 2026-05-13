@@ -22,7 +22,16 @@ export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
       const { validateSettings } = await import('../../core/settings-store.js');
       const validated = validateSettings(body);
       const warnings = await deps.settings.update(validated);
-      deps.broadcastToAll(createSnapshotMessage({ monitor: deps.monitor, serverCwd: deps.serverCwd }));
+      // Pass the live deps so the snapshot carries maxActiveTasks (and sttUrl,
+      // activityMetaProvider, etc.) — without these the broadcast would emit a
+      // partial payload and the frontend would have to fall back on stickiness.
+      deps.broadcastToAll(createSnapshotMessage({
+        monitor: deps.monitor,
+        serverCwd: deps.serverCwd,
+        sttUrl: deps.sttUrl,
+        activityMetaProvider: deps.hookIngestion,
+        getMaxActiveTasks: deps.getMaxActiveTasks,
+      }));
       return c.json({ ...validated, warnings });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

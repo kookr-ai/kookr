@@ -983,6 +983,25 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().workspaceEnabled).toBe(true);
   });
 
+  // --- Capacity (sticky maxActiveTasks) ---
+
+  test('maxActiveTasks defaults to 0 (unknown until first snapshot)', () => {
+    expect(store.getState().maxActiveTasks).toBe(0);
+  });
+
+  test('handleSnapshot sets maxActiveTasks', () => {
+    store.getState().handleSnapshot([], '/cwd', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 7);
+    expect(store.getState().maxActiveTasks).toBe(7);
+  });
+
+  test('handleSnapshot without maxActiveTasks keeps existing value (sticky)', () => {
+    store.getState().handleSnapshot([], '/cwd', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 12);
+    // A subsequent snapshot from a broadcast site that doesn't thread the
+    // getter must not zero out the cap — the indicator depends on stickiness.
+    store.getState().handleSnapshot([], '/cwd');
+    expect(store.getState().maxActiveTasks).toBe(12);
+  });
+
   test('handleWorkspaceView stores view and clears loading', () => {
     store.getState().setWorkspaceLoading(true);
     store.getState().handleWorkspaceView({

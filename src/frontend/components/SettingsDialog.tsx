@@ -34,6 +34,12 @@ type SettingsTab = 'general' | 'hooks';
 
 const SETTINGS_TABS: readonly SettingsTab[] = ['general', 'hooks'];
 
+// Which tab hosts each focusable field. Extend this when SettingsFocusField
+// gains a new value — the Record type makes the requirement exhaustive.
+const FOCUS_FIELD_TAB: Record<SettingsFocusField, SettingsTab> = {
+  maxActiveTasks: 'general',
+};
+
 export function SettingsDialog({ onClose, focusField }: Props) {
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
@@ -65,20 +71,21 @@ export function SettingsDialog({ onClose, focusField }: Props) {
       });
   }, []);
 
-  // Deep-link focus: when opened with a target field, switch to the General
+  // Deep-link focus: when opened with a target field, switch to the right
   // tab, scroll the target input into view, focus it, and select its contents
   // so the user can type a new value immediately. Runs once per mount.
+  // `focus({ preventScroll: true })` keeps the explicit scrollIntoView from
+  // fighting the focus-implied scroll. `aria-label` on the input is set
+  // statically below so SR announcement on focus reads "Max concurrent tasks".
   useEffect(() => {
     if (!focusField || !settings || didFocusRef.current) return;
-    if (focusField === 'maxActiveTasks') {
-      setActiveTab('general');
-      const input = maxActiveTasksInputRef.current;
-      if (input) {
-        input.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        input.focus();
-        input.select();
-        didFocusRef.current = true;
-      }
+    setActiveTab(FOCUS_FIELD_TAB[focusField]);
+    const input = focusField === 'maxActiveTasks' ? maxActiveTasksInputRef.current : null;
+    if (input) {
+      input.scrollIntoView({ block: 'center' });
+      input.focus({ preventScroll: true });
+      input.select();
+      didFocusRef.current = true;
     }
   }, [focusField, settings]);
 
@@ -309,6 +316,7 @@ export function SettingsDialog({ onClose, focusField }: Props) {
                       <div className="settings-number-group">
                         <input
                           ref={maxActiveTasksInputRef}
+                          aria-label="Max concurrent tasks"
                           type="number"
                           className="settings-number"
                           value={settings.maxActiveTasks}

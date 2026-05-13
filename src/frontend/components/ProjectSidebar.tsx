@@ -230,6 +230,15 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
     () => agents.filter((a) => a.taskStatus === 'pending').length,
     [agents],
   );
+  // Count compared against `maxActiveTasks` must match the launch-service
+  // gate (`TaskStore.getActiveCount()` in src/core/tasks.ts) so the indicator
+  // doesn't lie. The project-summary `activeAgents` filters out snoozed
+  // tasks, which would let the gauge show "9/10" while the server actually
+  // queues the next launch. Count raw inProgress agents instead.
+  const cappedCount = useMemo(
+    () => agents.filter((a) => a.taskStatus === 'inProgress').length,
+    [agents],
+  );
 
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
@@ -266,17 +275,18 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
       getTaskLoad(0, 0),
     );
   }, [projectSummaries]);
-  // Capacity context for the all-projects icon. `activeAgents` is server-wide
-  // inProgress count (matches the launch-service gate against maxActiveTasks),
-  // so it's the right number to compare against the cap.
+  // Capacity context for the all-projects icon. `hasLimit` gates the cap UI
+  // until the first snapshot carries `maxActiveTasks` (the store treats 0 as
+  // unknown — see TransportSessionSlice.maxActiveTasks docs).
   const hasLimit = maxActiveTasks > 0;
-  const atCap = hasLimit && allTaskLoad.activeAgents >= maxActiveTasks;
-  const hasQueue = pendingCount > 0;
-  const capLabel = hasLimit ? `${allTaskLoad.activeAgents}/${maxActiveTasks} of cap` : `${allTaskLoad.activeAgents} active`;
-  const queueSegment = hasQueue
-    ? `${pendingCount} queued${atCap ? ' — waiting for a slot' : ''}`
-    : (atCap ? 'at capacity — new launches will queue' : null);
-  const adjustHint = onAdjustCap && hasLimit ? 'Right-click to adjust cap' : null;
+  const atCap = hasLimit && cappedCount >= maxActiveTasks;
+  const hasPending = pendingCount > 0;
+  const capLabel = hasLimit ? `${cappedCount}/${maxActiveTasks} of cap` : `${cappedCount} active`;
+  const queueSegment = hasPending
+    ? `${pendingCount} queued${atCap ? ', waiting for a slot' : ''}`
+    : (atCap ? 'at capacity, new launches will queue' : null);
+  const canAdjustCap = Boolean(onAdjustCap) && hasLimit;
+  const adjustHint = canAdjustCap ? 'Right-click or Shift+F10 to adjust cap' : null;
   const allTooltipText = [
     'All Projects',
     `${allTaskLoad.activeAgents} active agent${allTaskLoad.activeAgents !== 1 ? 's' : ''}`,
@@ -285,6 +295,27 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
     queueSegment,
     adjustHint,
   ].filter((s): s is string => Boolean(s)).join(' · ');
+  // Surface the at-cap / queued state in the accessible name so SR users
+  // get the same information mouse users get from the red ring + badge.
+  const allAriaLabel = [
+    'All Projects',
+    hasLimit ? capLabel : null,
+    hasPending ? `${pendingCount} queued` : null,
+    atCap ? 'at capacity' : null,
+  ].filter((s): s is string => Boolean(s)).join(', ');
+
+  function handleAllProjectsAdjust(event: React.SyntheticEvent) {
+    if (!onAdjustCap || !hasLimit) return;
+    event.preventDefault();
+    onAdjustCap();
+  }
+  function handleAllProjectsKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    // Keyboard equivalent of right-click — mirrors handleProjectMenuKey
+    // below so the deep-link is reachable without a pointing device.
+    if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+      handleAllProjectsAdjust(event);
+    }
+  }
 
   const menuRow = menuProjectId ? visibleRowMap.get(menuProjectId) ?? null : null;
   const menuSection = menuRow?.pinned ? pinnedSummaries : unpinnedSummaries;
@@ -411,14 +442,17 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
     <div className="project-sidebar kookr-tour-target-layout" data-testid="project-sidebar">
       <Tooltip text={allTooltipText}>
         <button
-          aria-label="All Projects"
-          className={`project-icon all${selectedProject === null ? ' selected' : ''}${atCap ? ' at-cap' : ''}${hasQueue ? ' has-queue' : ''}`}
+          aria-label={allAriaLabel}
+          className={[
+            'project-icon',
+            'all',
+            selectedProject === null ? 'selected' : '',
+            atCap ? 'at-cap' : '',
+          ].filter(Boolean).join(' ')}
           data-testid="project-icon-all"
           onClick={() => selectProject(null)}
-          onContextMenu={onAdjustCap && hasLimit ? (event) => {
-            event.preventDefault();
-            onAdjustCap();
-          } : undefined}
+          onContextMenu={canAdjustCap ? handleAllProjectsAdjust : undefined}
+          onKeyDown={canAdjustCap ? handleAllProjectsKeyDown : undefined}
           type="button"
         >
           <span className="project-icon-letter">*</span>

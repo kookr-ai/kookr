@@ -87,6 +87,8 @@ export interface RouteDeps {
     getLoadedFromDefaults: () => boolean;
     update: (settings: KookrSettings) => Promise<string[]>;
   };
+  /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
+  getMaxActiveTasks?: () => number;
   circuitBreakerRegistry?: CircuitBreakerRegistry;
   suppressionTracker?: SnoozeSuppressionTracker;
   scheduleService?: ScheduleService;

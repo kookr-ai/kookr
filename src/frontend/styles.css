@@ -4551,11 +4551,11 @@ textarea::-webkit-resizer { background: transparent; }
   background: rgba(251,191,36,0.1);
 }
 .project-icon-task-count.has-pending {
-  border-color: var(--blue, #60a5fa);
+  border-color: var(--blue);
 }
 .project-icon-task-pending {
   margin-left: 2px;
-  color: var(--blue, #60a5fa);
+  color: var(--blue);
   font-weight: 700;
 }
 .project-icon.all.at-cap {

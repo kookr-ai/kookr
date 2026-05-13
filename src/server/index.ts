@@ -951,11 +951,24 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     tasksFile,
     ralphLoopService,
     worktreeRegistry,
+    getMaxActiveTasks,
     settings: {
       get: () => currentSettings,
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,
       update: async (newSettings: KookrSettings) => {
         const prev = currentSettings;
+        // Persist to disk FIRST. If saveSettings (inside applySettingsSideEffects)
+        // throws, the in-memory `currentSettings` must not advance — otherwise
+        // getMaxActiveTasks and other live getters would diverge from what's
+        // on disk and the next snapshot would lie until the next restart.
+        const warnings = await applySettingsSideEffects({
+          prevSettings: prev,
+          newSettings,
+          settingsFile,
+          githubScanner,
+          watchdog,
+          monitor,
+        });
         currentSettings = newSettings;
         settingsLoadedFromDefaults = false;
         if (prev.autoWatchOssSources !== newSettings.autoWatchOssSources) {
@@ -967,19 +980,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             reconReportWatcher.close();
           }
         }
-        const warnings = await applySettingsSideEffects({
-          prevSettings: prev,
-          newSettings,
-          settingsFile,
-          githubScanner,
-          watchdog,
-          monitor,
-        });
-        // Push a fresh snapshot so the cap indicator reflects the new value
-        // immediately rather than waiting for the next agent event.
-        if (prev.maxActiveTasks !== newSettings.maxActiveTasks) {
-          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
-        }
+        // The settings PUT route broadcasts a fresh snapshot after this
+        // resolves (see settings-routes.ts) and threads `getMaxActiveTasks`
+        // via RouteDeps, so the cap indicator updates live — no need to
+        // duplicate the broadcast here.
         return warnings;
       },
     },
