@@ -34,6 +34,12 @@ export interface ProjectSummary {
   displayName: string;    // "grafana/grafana"
   color: number;          // 0-7 deterministic color
   activeAgents: number;
+  /**
+   * Active agents in this project that currently have an anomaly. Used by the
+   * project sidebar to render healthy/active execution load without overloading
+   * PR contribution counts.
+   */
+  stalledAgents?: number;
   findingCount: number;
   todayPrCount: number;
   weekPrCount: number;
@@ -248,6 +254,10 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       (a) => a.taskStatus === 'inProgress' && !a.snoozedUntil,
     ).length;
 
+    const stalledAgents = agentList.filter(
+      (a) => a.taskStatus === 'inProgress' && a.anomaly !== null && !a.snoozedUntil,
+    ).length;
+
     const findingCount = agentList.filter(
       (a) => a.anomaly !== null && !a.snoozedUntil && a.taskStatus !== 'pending',
     ).length;
@@ -274,6 +284,7 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       displayName: projectDisplayName(projectId),
       color: projectColorIndex(projectId),
       activeAgents,
+      stalledAgents,
       findingCount,
       todayPrCount: todayCount,
       weekPrCount: weekCount,

@@ -115,6 +115,50 @@ describe('ProjectSidebar interactions', () => {
     expect(useKookrStore.getState().selectedProject).toBe('github.com/a');
   });
 
+  test('project icons show executing task counts instead of PR counts', async () => {
+    useKookrStore.getState().handleProjectSummaries([
+      {
+        project: 'github.com/active',
+        displayName: 'org/active',
+        color: 1,
+        activeAgents: 3,
+        stalledAgents: 1,
+        findingCount: 1,
+        todayPrCount: 2,
+        weekPrCount: 2,
+        dailyLimit: 2,
+        openPrs: 2,
+        recentTasks: [],
+      },
+      {
+        project: 'github.com/idle',
+        displayName: 'org/idle',
+        color: 2,
+        activeAgents: 0,
+        stalledAgents: 0,
+        findingCount: 0,
+        todayPrCount: 2,
+        weekPrCount: 2,
+        dailyLimit: 2,
+        openPrs: 2,
+        recentTasks: [],
+      },
+    ]);
+
+    await act(async () => {
+      root.render(React.createElement(ProjectSidebar, { onManage: vi.fn() }));
+    });
+    await flush();
+
+    const activeIcon = container.querySelector('[data-testid="project-icon-github.com/active"]');
+    const idleIcon = container.querySelector('[data-testid="project-icon-github.com/idle"]');
+
+    expect(activeIcon?.querySelector('.project-icon-task-count')?.textContent).toBe('2/3');
+    expect(activeIcon?.querySelector('.project-icon-pr-count')).toBeNull();
+    expect(idleIcon?.querySelector('.project-icon-task-count')).toBeNull();
+    expect(idleIcon?.querySelector('.project-icon-pr-count')).toBeNull();
+  });
+
   test('right click opens context menu and pin action updates store state', async () => {
     await act(async () => {
       root.render(React.createElement(ProjectSidebar, { onManage: vi.fn() }));

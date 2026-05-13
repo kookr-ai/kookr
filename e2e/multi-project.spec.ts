@@ -359,9 +359,9 @@ test.describe('Multi-Project Tracking', () => {
     await expect(projectA.locator('.project-icon-badge.anomaly')).toBeVisible();
     await expect(projectA.locator('.project-icon-badge.anomaly')).toContainText('1');
 
-    // Project B should have active dot, no anomaly badge
+    // Project B should have an executing-task count, no anomaly badge
     const projectB = page.locator('[data-testid="project-icon-github.com/org/repo-b"]');
-    await expect(projectB.locator('.project-icon-dot.active')).toBeVisible();
+    await expect(projectB.locator('.project-icon-task-count')).toContainText('1');
     await expect(projectB.locator('.project-icon-badge')).not.toBeVisible();
   });
 
@@ -392,7 +392,7 @@ test.describe('Multi-Project Tracking', () => {
     await expect(page.locator('.statusbar')).toContainText('1 task', { timeout: 3000 });
   });
 
-  test('contribution limit badge shows on project icon', async ({ page, request }) => {
+  test('project icon shows executing task count instead of contribution count', async ({ page, request }) => {
     // Set up a project with a daily limit of 2
     await setProjectConfig(request, 'github.com/org/limited', { dailyPrLimit: 2 });
 
@@ -434,9 +434,9 @@ test.describe('Multi-Project Tracking', () => {
     await broadcastProjectSummaries(request);
     await expect(page.locator('[data-testid="project-sidebar"]')).toBeVisible({ timeout: 5000 });
 
-    // The limited project should show PR count badge with "exceeded" class
+    // The limited project should show active task load, not the PR count/limit.
     const limitedIcon = page.locator('[data-testid="project-icon-github.com/org/limited"]');
-    await expect(limitedIcon.locator('.project-icon-pr-count.exceeded')).toBeVisible({ timeout: 3000 });
-    await expect(limitedIcon.locator('.project-icon-pr-count')).toContainText('2/2');
+    await expect(limitedIcon.locator('.project-icon-task-count')).toContainText('1', { timeout: 3000 });
+    await expect(limitedIcon.locator('.project-icon-pr-count')).toHaveCount(0);
   });
 });

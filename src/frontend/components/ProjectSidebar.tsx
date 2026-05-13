@@ -103,13 +103,18 @@ function ProjectIcon({
   const letter = (orgChar + repoChar).toUpperCase() || '?';
   const hasFindings = summary.findingCount > 0;
   const isActive = summary.activeAgents > 0;
-  const atLimit = summary.dailyLimit !== undefined && summary.todayPrCount >= summary.dailyLimit;
-  const nearLimit = summary.dailyLimit !== undefined && summary.todayPrCount >= summary.dailyLimit - 1;
+  const stalledAgents = Math.max(0, Math.min(summary.stalledAgents ?? summary.findingCount, summary.activeAgents));
+  const runningAgents = Math.max(0, summary.activeAgents - stalledAgents);
+  const hasStalledAgents = stalledAgents > 0;
+  const taskCountLabel = hasStalledAgents ? `${runningAgents}/${summary.activeAgents}` : `${summary.activeAgents}`;
 
   const tooltipText = [
     summary.displayName,
     pinned ? 'Pinned' : 'In sidebar',
     `${summary.activeAgents} active agent${summary.activeAgents !== 1 ? 's' : ''}`,
+    isActive
+      ? `${runningAgents} running · ${stalledAgents} stalled`
+      : '0 running · 0 stalled',
     `${summary.findingCount} finding${summary.findingCount !== 1 ? 's' : ''}`,
     summary.dailyLimit !== undefined
       ? `PRs today: ${summary.todayPrCount}/${summary.dailyLimit}`
@@ -136,12 +141,9 @@ function ProjectIcon({
         {hasFindings && (
           <span className="project-icon-badge anomaly">{summary.findingCount}</span>
         )}
-        {isActive && !hasFindings && (
-          <span className="project-icon-dot active" />
-        )}
-        {summary.dailyLimit !== undefined && summary.todayPrCount > 0 && (
-          <span className={`project-icon-pr-count${atLimit ? ' exceeded' : nearLimit ? ' approaching' : ''}`}>
-            {summary.todayPrCount}/{summary.dailyLimit}
+        {isActive && (
+          <span className={`project-icon-task-count${hasStalledAgents ? ' has-stalled' : ''}`}>
+            {taskCountLabel}
           </span>
         )}
       </button>
