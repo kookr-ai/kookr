@@ -1,11 +1,21 @@
 // @vitest-environment jsdom
 
-import { describe, test, expect } from 'vitest';
+import React, { StrictMode } from 'react';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, test, expect, vi } from 'vitest';
 import {
+  __resetAudibleAlertForTests,
   evaluateChime,
+  evaluateFindingChime,
   RECHIME_COOLDOWN_MS,
+  useAudibleAlert,
   type ChimeRecord,
 } from './useAudibleAlert.js';
+import { __resetAudioAlertLogForTests, getAudioAlertSnapshot } from '../audio/audio-alert-log.js';
+import { __resetSoundPreferenceForTests } from '../audio/sound.js';
+import { __resetDndForTests, disableDnd } from './useDnd.js';
+import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, AnomalySeverity, AnomalyType } from '../../shared/protocol.js';
 import type { Anomaly } from '../../core/types.js';
 
@@ -92,6 +102,81 @@ describe('evaluateChime — appears-in-findings semantics', () => {
       }),
     ];
     expect(evaluateChime(agents, state, T0)).toBe(false);
+  });
+});
+
+describe('evaluateFindingChime — audio context payload', () => {
+  const T0 = 1_700_000_000_000;
+
+  test('returns deterministic primary candidate and candidate count for one chime attempt', () => {
+    const state = new Map<string, ChimeRecord>();
+    const agents = [
+      mkAgent({
+        agentId: 'warning-agent',
+        anomaly: {
+          type: 'permission_blocked',
+          severity: 'warning',
+          detectedAt: new Date('2026-05-08T12:00:03Z'),
+        },
+        taskStatus: 'inProgress',
+      }),
+      mkAgent({
+        agentId: 'critical-agent',
+        anomaly: {
+          type: 'budget_exceeded',
+          severity: 'critical',
+          detectedAt: new Date('2026-05-08T12:00:05Z'),
+        },
+        taskStatus: 'inProgress',
+      }),
+    ];
+
+    const result = evaluateFindingChime(agents, state, T0);
+
+    expect(result.shouldChime).toBe(true);
+    expect(result.candidateCount).toBe(2);
+    expect(result.context).toMatchObject({
+      source: 'finding',
+      reason: 'budget_exceeded critical on critical-agent (+1 more)',
+      agentId: 'critical-agent',
+      anomalyType: 'budget_exceeded',
+      severity: 'critical',
+      candidateCount: 2,
+      primaryCause: 'highest_severity',
+      activeFindingsCount: 2,
+    });
+    expect(result.context?.dedupeKey).toBe('critical-agent:budget_exceeded:2026-05-08T12:00:05.000Z');
+  });
+
+  test('ties primary candidate by earliest detectedAt then agent id', () => {
+    const state = new Map<string, ChimeRecord>();
+    const agents = [
+      mkAgent({
+        agentId: 'b-agent',
+        anomaly: {
+          type: 'stale_agent',
+          severity: 'warning',
+          detectedAt: new Date('2026-05-08T12:00:03Z'),
+        },
+      }),
+      mkAgent({
+        agentId: 'a-agent',
+        anomaly: {
+          type: 'permission_blocked',
+          severity: 'warning',
+          detectedAt: new Date('2026-05-08T12:00:03Z'),
+        },
+      }),
+    ];
+
+    const result = evaluateFindingChime(agents, state, T0);
+
+    expect(result.context).toMatchObject({
+      agentId: 'a-agent',
+      anomalyType: 'permission_blocked',
+      primaryCause: 'highest_severity',
+      candidateCount: 2,
+    });
   });
 });
 
@@ -279,5 +364,149 @@ describe('evaluateChime — dedup and flicker suppression', () => {
     });
     expect(evaluateChime([undated], state, T0)).toBe(false);
     expect(state.size).toBe(0);
+  });
+});
+
+describe('useAudibleAlert — runtime hook behavior', () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  let audioContextCtor: ReturnType<typeof vi.fn>;
+  let store: Map<string, string>;
+
+  function Wrapper() {
+    useAudibleAlert();
+    return null;
+  }
+
+  function mount(strict = false): void {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    act(() => {
+      root = createRoot(container);
+      const tree = strict
+        ? React.createElement(StrictMode, null, React.createElement(Wrapper))
+        : React.createElement(Wrapper);
+      root.render(tree);
+    });
+  }
+
+  beforeEach(() => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    store = new Map();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+      clear: () => store.clear(),
+    });
+    __resetAudioAlertLogForTests();
+    __resetAudibleAlertForTests();
+    __resetSoundPreferenceForTests();
+    __resetDndForTests();
+    disableDnd();
+
+    audioContextCtor = vi.fn().mockImplementation(function () {
+      return {
+        currentTime: 0,
+        state: 'running',
+        destination: {},
+        close: vi.fn(),
+        createOscillator: () => ({
+          connect: vi.fn(),
+          frequency: { value: 0 },
+          type: '',
+          start: vi.fn(),
+          stop: vi.fn(),
+        }),
+        createGain: () => ({
+          connect: vi.fn(),
+          gain: {
+            setValueAtTime: vi.fn(),
+            exponentialRampToValueAtTime: vi.fn(),
+          },
+        }),
+      };
+    });
+    vi.stubGlobal('AudioContext', audioContextCtor);
+    vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+    useKookrStore.setState({ agents: [], selectedAgentId: null });
+  });
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    container?.remove();
+    __resetAudioAlertLogForTests();
+    __resetAudibleAlertForTests();
+    __resetSoundPreferenceForTests();
+    __resetDndForTests();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    useKookrStore.setState({ agents: [], selectedAgentId: null });
+  });
+
+  test('records one scheduled finding decision with context under StrictMode', () => {
+    const finding = mkAgent({
+      agentId: 'agent-a',
+      taskStatus: 'inProgress',
+      anomaly: {
+        type: 'permission_blocked',
+        severity: 'warning',
+        detectedAt: new Date('2026-05-08T12:00:00Z'),
+      },
+    });
+    useKookrStore.setState({ agents: [finding] });
+
+    mount(true);
+
+    expect(audioContextCtor).toHaveBeenCalledTimes(1);
+    expect(getAudioAlertSnapshot().lastDecision).toMatchObject({
+      source: 'finding',
+      outcome: 'scheduled',
+      agentId: 'agent-a',
+      anomalyType: 'permission_blocked',
+      severity: 'warning',
+      candidateCount: 1,
+      activeFindingsCount: 1,
+    });
+
+    act(() => {
+      useKookrStore.setState({ agents: [{ ...finding }] });
+    });
+
+    expect(audioContextCtor).toHaveBeenCalledTimes(1);
+    expect(getAudioAlertSnapshot().entries).toHaveLength(1);
+  });
+
+  test('reacts when a warning finding appears after mount', () => {
+    useKookrStore.setState({ agents: [] });
+    mount();
+
+    expect(audioContextCtor).not.toHaveBeenCalled();
+
+    act(() => {
+      useKookrStore.setState({
+        agents: [
+          mkAgent({
+            agentId: 'agent-after-mount',
+            taskStatus: 'inProgress',
+            anomaly: {
+              type: 'stale_agent',
+              severity: 'warning',
+              detectedAt: new Date('2026-05-08T13:00:00Z'),
+            },
+          }),
+        ],
+      });
+    });
+
+    expect(audioContextCtor).toHaveBeenCalledTimes(1);
+    expect(getAudioAlertSnapshot().lastDecision).toMatchObject({
+      source: 'finding',
+      outcome: 'scheduled',
+      agentId: 'agent-after-mount',
+      anomalyType: 'stale_agent',
+      severity: 'warning',
+      candidateCount: 1,
+    });
   });
 });

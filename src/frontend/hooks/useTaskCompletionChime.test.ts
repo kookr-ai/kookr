@@ -11,7 +11,8 @@ import {
 } from './useTaskCompletionChime.js';
 import { useKookrStore } from '../store/useStore.js';
 import { __resetDndForTests, enableDnd, disableDnd } from '../hooks/useDnd.js';
-import { setSoundEnabled } from '../audio/sound.js';
+import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound.js';
+import { __resetAudioAlertLogForTests, getAudioAlertSnapshot } from '../audio/audio-alert-log.js';
 import type { TaskStatus } from '../../core/types.js';
 import type { AgentState } from '../../shared/protocol.js';
 
@@ -29,18 +30,21 @@ describe('evaluateCompletionChime — focus and selection guards', () => {
     const result = evaluateCompletionChime({ agentId: 'a', status: 'inProgress' }, null, undefined);
     expect(result.shouldChime).toBe(false);
     expect(result.next).toBeNull();
+    expect(result.reason).toBe('no_selection');
   });
 
   test('selection but agent not in list → no chime, ref cleared', () => {
     const result = evaluateCompletionChime({ agentId: 'a', status: 'inProgress' }, 'a', undefined);
     expect(result.shouldChime).toBe(false);
     expect(result.next).toBeNull();
+    expect(result.reason).toBe('unknown_agent');
   });
 
   test('first observation of a focused agent → prime ref, no chime', () => {
     const result = evaluateCompletionChime(null, 'a', mkAgent('a', 'inProgress'));
     expect(result.shouldChime).toBe(false);
     expect(result.next).toEqual<FocusedStatus>({ agentId: 'a', status: 'inProgress' });
+    expect(result.reason).toBe('focus_changed_prime');
   });
 
   test('hydration: focused agent already terminal at first observation → no chime', () => {
@@ -56,6 +60,17 @@ describe('evaluateCompletionChime — transitions while focused', () => {
     const result = evaluateCompletionChime(prev, 'a', mkAgent('a', 'completed'));
     expect(result.shouldChime).toBe(true);
     expect(result.next).toEqual<FocusedStatus>({ agentId: 'a', status: 'completed' });
+    expect(result.reason).toBe('terminal_transition');
+    expect(result.context).toMatchObject({
+      source: 'task_completion',
+      reason: 'task completed',
+      agentId: 'a',
+      previousStatus: 'inProgress',
+      nextStatus: 'completed',
+      selectedAgentId: 'a',
+      focused: true,
+      primaryCause: 'task_completion',
+    });
   });
 
   test('inProgress → terminated → chime', () => {
@@ -251,27 +266,32 @@ describe('useTaskCompletionChime — runtime hook behavior', () => {
       clear: () => store.clear(),
     });
     __resetDndForTests();
+    __resetSoundPreferenceForTests();
+    __resetAudioAlertLogForTests();
     disableDnd();
 
-    audioContextCtor = vi.fn().mockImplementation(() => ({
-      currentTime: 0,
-      destination: {},
-      close: vi.fn(),
-      createOscillator: () => ({
-        connect: vi.fn(),
-        frequency: { value: 0 },
-        type: '',
-        start: vi.fn(),
-        stop: vi.fn(),
-      }),
-      createGain: () => ({
-        connect: vi.fn(),
-        gain: {
-          setValueAtTime: vi.fn(),
-          exponentialRampToValueAtTime: vi.fn(),
-        },
-      }),
-    }));
+    audioContextCtor = vi.fn().mockImplementation(function () {
+      return {
+        currentTime: 0,
+        state: 'running',
+        destination: {},
+        close: vi.fn(),
+        createOscillator: () => ({
+          connect: vi.fn(),
+          frequency: { value: 0 },
+          type: '',
+          start: vi.fn(),
+          stop: vi.fn(),
+        }),
+        createGain: () => ({
+          connect: vi.fn(),
+          gain: {
+            setValueAtTime: vi.fn(),
+            exponentialRampToValueAtTime: vi.fn(),
+          },
+        }),
+      };
+    });
     vi.stubGlobal('AudioContext', audioContextCtor);
 
     // Reset the store to a known empty state. Direct setState matches
@@ -284,6 +304,8 @@ describe('useTaskCompletionChime — runtime hook behavior', () => {
     act(() => root?.unmount());
     container?.remove();
     __resetDndForTests();
+    __resetSoundPreferenceForTests();
+    __resetAudioAlertLogForTests();
     vi.unstubAllGlobals();
     useKookrStore.setState({ agents: [], selectedAgentId: null });
   });
@@ -301,6 +323,15 @@ describe('useTaskCompletionChime — runtime hook behavior', () => {
       useKookrStore.setState({ agents: [mkAgent('a', 'completed')] });
     });
     expect(audioContextCtor).toHaveBeenCalledTimes(1);
+    expect(getAudioAlertSnapshot().lastDecision).toMatchObject({
+      source: 'task_completion',
+      outcome: 'scheduled',
+      agentId: 'a',
+      previousStatus: 'inProgress',
+      nextStatus: 'completed',
+      selectedAgentId: 'a',
+      focused: true,
+    });
 
     // Repeated delta carrying the same status must not re-fire.
     act(() => {
@@ -401,6 +432,7 @@ describe('useTaskCompletionChime — runtime hook behavior', () => {
       useKookrStore.setState({ agents: [mkAgent('a', 'completed')] });
     });
     expect(audioContextCtor).not.toHaveBeenCalled();
+    expect(getAudioAlertSnapshot().lastDecision?.outcome).toBe('suppressed_muted');
   });
 
   test('DND on: no chime on transition', () => {
@@ -415,5 +447,6 @@ describe('useTaskCompletionChime — runtime hook behavior', () => {
       useKookrStore.setState({ agents: [mkAgent('a', 'completed')] });
     });
     expect(audioContextCtor).not.toHaveBeenCalled();
+    expect(getAudioAlertSnapshot().lastDecision?.outcome).toBe('suppressed_dnd');
   });
 });

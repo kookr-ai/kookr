@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { AVAILABLE_AGENT_TYPES, type AgentType } from '../../shared/protocol.js';
-import { isSoundEnabled, setSoundEnabled } from '../audio/sound.js';
+import { useSoundPreference } from '../audio/sound.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useKookrStore } from '../store/useStore.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
@@ -34,7 +34,7 @@ export function SettingsDialog({ onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
-  const [soundOn, setSoundOn] = useState(isSoundEnabled);
+  const sound = useSoundPreference();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tabRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,
@@ -106,11 +106,7 @@ export function SettingsDialog({ onClose }: Props) {
   }
 
   function handleSoundToggle() {
-    setSoundOn((prev) => {
-      const next = !prev;
-      setSoundEnabled(next);
-      return next;
-    });
+    sound.setEnabled(!sound.enabled);
   }
 
   function handleTabKeyDown(tab: SettingsTab, event: React.KeyboardEvent<HTMLButtonElement>) {
@@ -189,7 +185,7 @@ export function SettingsDialog({ onClose }: Props) {
                         </span>
                       </div>
                       <button
-                        className={`settings-toggle ${soundOn ? 'active' : ''}`}
+                        className={`settings-toggle ${sound.enabled ? 'active' : ''}`}
                         onClick={handleSoundToggle}
                         aria-label="Toggle sound alerts"
                       >
