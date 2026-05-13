@@ -192,6 +192,58 @@ export class HookIngestion implements HookEventInjector {
     return meta ? { ...meta } : undefined;
   }
 
+  /**
+   * Seed the dedup cache + sequence counter for `kookrSessionId` from its
+   * durable ledger. Called by the bootstrap before any file watcher is
+   * armed so a `replayExisting: true` replay does not re-inject records
+   * that were already delivered (via HTTP) and durably recorded before
+   * the server crash. See rfc-activity-log-reliability edge cases.
+   *
+   * No-op when the ledger is empty or absent. Synthesizes a stand-in
+   * {@link InjectHookEventResult} from each row so a subsequent duplicate
+   * arrival can still report parentage / agentType to callers without
+   * re-parsing the raw payload.
+   */
+  async hydrateFromLedger(
+    kookrSessionId: string,
+    ledger: ActivityLedger,
+  ): Promise<{ hydratedHashes: number; maxSequence: number }> {
+    const rows = await ledger.readAll(kookrSessionId);
+    const now = this.now();
+    let maxSequence = 0;
+    let hydratedHashes = 0;
+    for (const row of rows) {
+      const { envelope } = row;
+      if (envelope.sequence > maxSequence) maxSequence = envelope.sequence;
+      // Only parsed-ok rows reached the adapter, so only those can be
+      // duplicates if the file watcher replays them. Malformed / dropped /
+      // duplicate rows were never dispatched — replay would just re-write
+      // their counterparts.
+      if (envelope.parseStatus !== 'ok' || row.projection === 'diagnostic_only') continue;
+      const key = `${kookrSessionId}::${envelope.contentHash}`;
+      if (this.cache.has(key)) continue;
+      this.cache.set(key, {
+        ts: now,
+        firstSource: envelope.source,
+        result: {
+          parseStatus: 'ok',
+          agentType: envelope.provider,
+          parentage: envelope.parentage,
+          rawSessionId: envelope.rawSessionId,
+          rawTurnId: envelope.rawTurnId,
+          rawHookEventName: envelope.rawHookEventName,
+          sequence: envelope.sequence,
+        },
+      });
+      hydratedHashes += 1;
+    }
+    if (maxSequence > 0) {
+      const existing = this.sequenceCounters.get(kookrSessionId) ?? 0;
+      if (maxSequence > existing) this.sequenceCounters.set(kookrSessionId, maxSequence);
+    }
+    return { hydratedHashes, maxSequence };
+  }
+
   /** Forget per-session bookkeeping — called when a task / session is deleted. */
   forgetSession(kookrSessionId: string): void {
     this.metaByKookrSession.delete(kookrSessionId);

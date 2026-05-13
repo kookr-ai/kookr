@@ -1,5 +1,28 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { HookIngestion, type HookEventInjector } from './hook-ingestion.js';
+import { ActivityLedger, type HookEnvelopeV1 } from '../core/activity-ledger.js';
+
+function envelopeRow(overrides: Partial<HookEnvelopeV1>): { envelope: HookEnvelopeV1; projection: 'parent_activity' | 'child_activity' | 'diagnostic_only' } {
+  return {
+    envelope: {
+      schemaVersion: 'hook-envelope.v1',
+      kookrSessionId: 'kookr-1',
+      provider: 'claude-code',
+      source: 'http',
+      observedAt: '2026-05-13T12:00:00.000Z',
+      sequence: 1,
+      contentHash: 'a'.repeat(64),
+      parentage: 'parent',
+      parseStatus: 'ok',
+      rawBytes: 100,
+      ...overrides,
+    },
+    projection: overrides.parentage === 'child' ? 'child_activity' : 'parent_activity',
+  };
+}
 
 function makeStubAdapter(): HookEventInjector & { calls: Array<{ tmux: string; raw: string }> } {
   const calls: Array<{ tmux: string; raw: string }> = [];
@@ -165,5 +188,113 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
     // to retry the same payload.
     const retry = ingestion.ingestFromHttp('kookr-1', raw);
     expect(retry.dispatched).toBe(true);
+  });
+});
+
+describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
+  function makeDir(): string {
+    return mkdtempSync(join(tmpdir(), 'kookr-ingest-hydrate-'));
+  }
+
+  it('seeds the dedup cache so a post-restart file-replay does not re-inject', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      const raw = JSON.stringify({ session_id: 'parent-1', hook_event_name: 'SessionStart' });
+      const { createHash } = await import('node:crypto');
+      const contentHash = createHash('sha256').update(raw.trim()).digest('hex');
+      await ledger.append(envelopeRow({ sequence: 1, contentHash, rawSessionId: 'parent-1' }));
+      await ledger.flush();
+
+      const adapter = makeStubAdapter();
+      const ingestion = new HookIngestion({ adapter, activityLedger: ledger });
+
+      const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger);
+      expect(hydrated.hydratedHashes).toBe(1);
+      expect(hydrated.maxSequence).toBe(1);
+
+      // Simulate file-replay arriving with the same payload — must NOT reach
+      // the adapter because the dedup cache says we already delivered it.
+      const result = ingestion.injectHookEvent('kookr-1', raw);
+      expect(result.parseStatus).toBe('ok');
+      // The injection went through the duplicate path, not the adapter.
+      expect(adapter.calls).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips diagnostic-only rows (duplicates / malformed) so only first-observation hashes seed the cache', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      await ledger.append(envelopeRow({ sequence: 1, contentHash: 'a'.repeat(64) })); // parent_activity
+      await ledger.append({
+        envelope: {
+          schemaVersion: 'hook-envelope.v1',
+          kookrSessionId: 'kookr-1',
+          provider: 'claude-code',
+          source: 'file',
+          observedAt: '2026-05-13T12:00:01.000Z',
+          sequence: 2,
+          contentHash: 'b'.repeat(64),
+          parentage: 'unknown',
+          parseStatus: 'malformed',
+          rawBytes: 50,
+        },
+        projection: 'diagnostic_only',
+      });
+      await ledger.flush();
+
+      const adapter = makeStubAdapter();
+      const ingestion = new HookIngestion({ adapter });
+      const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger);
+      // Only the parent_activity row seeds — the malformed row does not.
+      expect(hydrated.hydratedHashes).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('advances the per-session sequence counter to the hydrated max so post-restart sequences continue', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      await ledger.append(envelopeRow({ sequence: 5 }));
+      await ledger.append(envelopeRow({ sequence: 9, contentHash: 'c'.repeat(64) }));
+      await ledger.flush();
+
+      const adapter = makeStubAdapter();
+      const ingestion = new HookIngestion({ adapter });
+      await ingestion.hydrateFromLedger('kookr-1', ledger);
+
+      // First new event after hydration gets sequence 10 (not 1).
+      const fresh = JSON.stringify({ session_id: 'parent-1', n: 'new' });
+      ingestion.injectHookEvent('kookr-1', fresh);
+      // Stub adapter doesn't expose the actual sequence — we observe via call.
+      // The contract: HookIngestion's internal sequenceCounter advanced.
+      // Re-injecting the same fresh payload would be a duplicate (sequence
+      // doesn't matter for dedup), so we exercise the counter via a SECOND
+      // distinct payload and confirm via the third sequence number visible
+      // through the adapter stub.
+      const adapterWithSeq: HookEventInjector & { lastSeq?: number } = {
+        injectHookEvent(_t, _r, seq) {
+          adapterWithSeq.lastSeq = seq;
+          return {
+            parseStatus: 'ok',
+            agentType: 'claude-code',
+            parentage: 'parent',
+            sequence: seq ?? 0,
+            rawSessionId: 'parent-1',
+          };
+        },
+      };
+      const ingestion2 = new HookIngestion({ adapter: adapterWithSeq });
+      await ingestion2.hydrateFromLedger('kookr-1', ledger);
+      ingestion2.injectHookEvent('kookr-1', JSON.stringify({ session_id: 'parent-1', n: 'new' }));
+      expect(adapterWithSeq.lastSeq).toBe(10);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

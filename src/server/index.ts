@@ -854,6 +854,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd,
     broadcastToAll,
     ralphLoopService,
+    hookIngestion,
+    activityLedger,
   });
   await promotePendingStartupTasks({
     taskStore,
