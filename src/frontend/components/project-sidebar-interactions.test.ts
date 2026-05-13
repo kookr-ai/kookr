@@ -152,11 +152,13 @@ describe('ProjectSidebar interactions', () => {
 
     const activeIcon = container.querySelector('[data-testid="project-icon-github.com/active"]');
     const idleIcon = container.querySelector('[data-testid="project-icon-github.com/idle"]');
+    const allIcon = container.querySelector('[data-testid="project-icon-all"]');
 
     expect(activeIcon?.querySelector('.project-icon-task-count')?.textContent).toBe('2/3');
     expect(activeIcon?.querySelector('.project-icon-pr-count')).toBeNull();
     expect(idleIcon?.querySelector('.project-icon-task-count')).toBeNull();
     expect(idleIcon?.querySelector('.project-icon-pr-count')).toBeNull();
+    expect(allIcon?.querySelector('.project-icon-task-count')?.textContent).toBe('2/3');
   });
 
   test('right click opens context menu and pin action updates store state', async () => {

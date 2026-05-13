@@ -1,5 +1,62 @@
-import type { TransportSessionSlice, StoreSet } from '../store-types.js';
+import type { AgentState, TransportSessionSlice, StoreSet } from '../store-types.js';
+import { SEVERITY_ORDER } from '../store-types.js';
 import { mergeActivityAgent } from '../activity-history.js';
+
+function isTerminalTaskStatus(status: AgentState['taskStatus']): boolean {
+  return status === 'completed' || status === 'cancelled' || status === 'terminated';
+}
+
+function isUserDismissedTaskStatus(status: AgentState['taskStatus']): boolean {
+  return status === 'completed' || status === 'cancelled';
+}
+
+function isActionableFinding(agent: AgentState): boolean {
+  return (
+    agent.anomaly !== null
+    && !agent.snoozedUntil
+    && !agent.suppressed
+    && agent.taskStatus !== 'pending'
+    && !isTerminalTaskStatus(agent.taskStatus)
+  );
+}
+
+function nextActionableFindingId(agents: AgentState[], excludingAgentId: string): string | null {
+  const findings = agents
+    .filter((agent) => agent.agentId !== excludingAgentId && isActionableFinding(agent))
+    .sort((left, right) => SEVERITY_ORDER[left.anomaly!.severity] - SEVERITY_ORDER[right.anomaly!.severity]);
+
+  return findings[0]?.agentId ?? null;
+}
+
+function selectedAgentUpdateAfterServerState(
+  selectedAgentId: string | null,
+  previousAgents: AgentState[],
+  nextAgents: AgentState[],
+): { selectedAgentId?: string | null; respondAllAgentIds?: null; leftPane?: 'activity'; narrowTab?: 'activity'; shortcutsArmed?: false } {
+  if (!selectedAgentId) return {};
+
+  const previousSelected = previousAgents.find((agent) => agent.agentId === selectedAgentId);
+  const nextSelected = nextAgents.find((agent) => agent.agentId === selectedAgentId);
+  if (!nextSelected) {
+    return { selectedAgentId: null, respondAllAgentIds: null };
+  }
+
+  if (
+    previousSelected
+    && !isUserDismissedTaskStatus(previousSelected.taskStatus)
+    && isUserDismissedTaskStatus(nextSelected.taskStatus)
+  ) {
+    return {
+      selectedAgentId: nextActionableFindingId(nextAgents, selectedAgentId),
+      respondAllAgentIds: null,
+      leftPane: 'activity',
+      narrowTab: 'activity',
+      shortcutsArmed: false,
+    };
+  }
+
+  return {};
+}
 
 export function createTransportSessionSlice(set: StoreSet): TransportSessionSlice {
   return {
@@ -23,8 +80,10 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
     handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning) => {
       set((prev) => {
         const previousById = new Map(prev.agents.map((agent) => [agent.agentId, agent]));
+        const mergedAgents = agents.map((agent) => mergeActivityAgent(previousById.get(agent.agentId), agent));
         return {
-          agents: agents.map((agent) => mergeActivityAgent(previousById.get(agent.agentId), agent)),
+          agents: mergedAgents,
+          ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.agents, mergedAgents),
           agentsHydrated: true,
           ...(serverCwd !== undefined ? { serverCwd } : {}),
           ...(availableAgentTypes !== undefined ? { availableAgentTypes } : {}),
@@ -41,11 +100,15 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
     },
 
     handleUpdate: (agentId, state) => {
-      set((prev) => ({
-        agents: prev.agents.map((agent) => (
+      set((prev) => {
+        const agents = prev.agents.map((agent) => (
           agent.agentId === agentId ? mergeActivityAgent(agent, state) : agent
-        )),
-      }));
+        ));
+        return {
+          agents,
+          ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.agents, agents),
+        };
+      });
     },
 
     handlePlaybooks: (playbooks, cwd) => {
