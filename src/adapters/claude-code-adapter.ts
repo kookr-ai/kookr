@@ -25,6 +25,7 @@ import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
+import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -431,20 +432,22 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private generateSettings(tmuxName: string, hookOutputDir: string, permissionAllowlist: string[]): HookSettings {
     const hookFile = `${hookOutputDir}/${tmuxName}.jsonl`;
 
-    // When serverPort is set, dual-write: JSONL file (durable) + HTTP POST (fast).
-    // awk appends a newline-terminated JSONL record and forwards the same record
-    // to curl for immediate HTTP delivery. Some hook payloads arrive without a
-    // trailing newline, so a raw tee/cat append can concatenate adjacent objects.
-    // IMPORTANT: no trailing `&` — Claude Code runs hooks via non-interactive bash,
-    // and `bash -c 'cmd &'` redirects stdin from /dev/null, so the hook would read nothing.
-    // curl's --max-time 1 prevents blocking Claude Code if the server is slow.
-    let hookCommand: string;
-    if (this.serverPort) {
-      const url = `http://localhost:${this.serverPort}/api/hook-event/${tmuxName}`;
-      hookCommand = `awk -v file='${hookFile}' '{ print >> file; print }' | curl -s -X POST ${url} --max-time 1 -H 'Content-Type: application/json' -d @- >/dev/null 2>&1`;
-    } else {
-      hookCommand = `awk -v file='${hookFile}' '{ print >> file }'`;
-    }
+    // Dual-write: JSONL file (durable) + HTTP POST (fast). The Kookr hook
+    // writer serializes large concurrent appends and forwards the same
+    // payload to the server hook endpoint with fail-open behavior; if it
+    // is missing on disk (e.g. fresh checkout pre-install), buildHookCommand
+    // falls back to the legacy awk pipeline so the generated settings still
+    // function. See rfc-activity-log-reliability §6.
+    //
+    // IMPORTANT: no trailing `&` — Claude Code runs hooks via non-interactive
+    // bash, and `bash -c 'cmd &'` redirects stdin from /dev/null, so the hook
+    // would read nothing.
+    const hookCommand = buildHookCommand({
+      tmuxName,
+      hookFile,
+      serverPort: this.serverPort,
+      writerPath: resolveHookWriterPath(),
+    });
 
     const cmd = { type: 'command', command: hookCommand };
     return {

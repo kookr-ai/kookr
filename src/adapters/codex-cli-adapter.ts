@@ -24,6 +24,7 @@ import { resolvePluginDir } from '../core/plugin-paths.js';
 import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
+import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -476,13 +477,15 @@ export class CodexCliAdapter implements AgentAdapter {
   private generateSettings(tmuxName: string, hookOutputDir: string, permissionAllowlist: string[]): CodexHookSettings {
     const hookFile = `${hookOutputDir}/${tmuxName}.jsonl`;
 
-    let hookCommand: string;
-    if (this.serverPort) {
-      const url = `http://localhost:${this.serverPort}/api/hook-event/${tmuxName}`;
-      hookCommand = `awk -v file='${hookFile}' '{ print >> file; print }' | curl -s -X POST ${url} --max-time 1 -H 'Content-Type: application/json' -d @- >/dev/null 2>&1`;
-    } else {
-      hookCommand = `awk -v file='${hookFile}' '{ print >> file }'`;
-    }
+    // See rfc-activity-log-reliability §6. Dual-write durable + HTTP fan-out
+    // via the Kookr hook writer; falls back to the legacy awk pipeline when
+    // the writer is missing on disk.
+    const hookCommand = buildHookCommand({
+      tmuxName,
+      hookFile,
+      serverPort: this.serverPort,
+      writerPath: resolveHookWriterPath(),
+    });
 
     const cmd = { type: 'command', command: hookCommand };
     /** Events whose matchers require a tool-name glob ('*'); all others use ''. */
