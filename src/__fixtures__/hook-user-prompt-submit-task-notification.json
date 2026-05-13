@@ -1,0 +1,8 @@
+{
+  "session_id": "8ee8ff7c-c7ef-4abf-8b03-ff8777ff8916",
+  "transcript_path": "~/.claude/projects/-home-jean-git-kookr/8ee8ff7c-c7ef-4abf-8b03-ff8777ff8916.jsonl",
+  "cwd": "/workspace/kookr",
+  "permission_mode": "acceptEdits",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "<task-notification>\n<task-id>ae8ec495d731d2855</task-id>\n<tool-use-id>toolu_01Gi5pDywBFwyV2iZ2ycw7m8</tool-use-id>\n<output-file>/tmp/claude-1000/-home-jean-git-kookr/8ee8ff7c-c7ef-4abf-8b03-ff8777ff8916/tasks/ae8ec495d731d2855.output</output-file>\n<status>completed</status>\n<summary>Agent \"Conventions review\" completed</summary>\n<result>OK — review notes here.</result>\n</task-notification>"
+}

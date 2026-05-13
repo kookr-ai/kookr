@@ -192,13 +192,24 @@ export function parseHookEvent(raw: string): AgentEvent | null {
         cwd: parsed.cwd,
       };
 
-    case 'UserPromptSubmit':
+    case 'UserPromptSubmit': {
+      const prompt = parsed.prompt ?? '';
+      // Claude Code re-enters the parent agent via UserPromptSubmit when a
+      // subagent (Task tool) completes — the body is a synthetic
+      // <task-notification>…</task-notification> envelope, not something the
+      // user typed. The actual subagent stop is already delivered by the
+      // SubagentStop hook, so drop the synthetic re-entry to avoid labeling
+      // it as a user message ("You") in the activity view.
+      if (prompt.trimStart().startsWith('<task-notification')) {
+        return null;
+      }
       return {
         type: 'user_prompt',
         sessionId,
-        prompt: parsed.prompt ?? '',
+        prompt,
         cwd: parsed.cwd,
       };
+    }
 
     case 'SubagentStart':
       return {
