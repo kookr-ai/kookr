@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import type { TaskStatus, AgentStatus, TokenUsage, GitInfo, CodexHookCapabilities, WorktreeHealth } from './types.js';
+import type {
+  TaskStatus,
+  AgentStatus,
+  TokenUsage,
+  GitInfo,
+  CodexHookCapabilities,
+  WorktreeHealth,
+  ChildSessionInfo,
+} from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 
@@ -226,8 +234,21 @@ export interface SessionInfo {
   agentType: AgentType;
   cwd: string;
   createdAt: Date;
+  /**
+   * Parent runtime session id. Set on the FIRST SessionStart hook for this
+   * Kookr session and frozen thereafter — later distinct session_ids on the
+   * same hook file are recorded under {@link childSessionIds}, not here.
+   * Historical name: `claudeSessionId`, kept for persistence compatibility.
+   */
   claudeSessionId?: string;
+  /** Transcript for the parent runtime session. Frozen with parent. */
   transcriptPath?: string;
+  /**
+   * Runtime session ids that wrote to this Kookr session's hook file after
+   * the parent was established. Typically managed-subagent or inherited-
+   * settings spawns. See rfc-activity-log-reliability §2.
+   */
+  childSessionIds?: Record<string, ChildSessionInfo>;
   codexHookCapabilities?: CodexHookCapabilities;
   lastStatus?: AgentStatus | 'completed' | 'aborted';
   /** Last hook event timestamp (ms since epoch). Persisted for watchdog restart recovery. */
