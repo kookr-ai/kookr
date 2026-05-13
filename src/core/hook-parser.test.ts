@@ -151,6 +151,11 @@ describe('Hook Event Parser', () => {
     });
   });
 
+  test('drops UserPromptSubmit synthetic <task-notification> re-entry', () => {
+    const raw = loadFixture('hook-user-prompt-submit-task-notification.json');
+    expect(parseHookEvent(raw)).toBeNull();
+  });
+
   test('parses StopFailure hook', () => {
     const raw = loadFixture('hook-stop-failure.json');
     const event = parseHookEvent(raw);
