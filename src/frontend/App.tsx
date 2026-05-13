@@ -47,6 +47,7 @@ interface ReflectionSuggestion {
 }
 
 type MobileDashboardTab = 'findings' | 'task';
+type LaunchInitialTab = 'manual' | 'playbooks';
 
 const MOBILE_BREAKPOINT_PX = 768;
 
@@ -82,6 +83,7 @@ export function App() {
   const [showOperations, setShowOperations] = useState(false);
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
   const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
+  const [launchInitialTab, setLaunchInitialTab] = useState<LaunchInitialTab | null>(null);
   const [reflectionSuggestion, setReflectionSuggestion] = useState<ReflectionSuggestion | null>(null);
   const operationsPopoverRef = useRef<HTMLDivElement>(null);
   const {
@@ -164,13 +166,25 @@ export function App() {
     setShowLaunch(false);
     setLaunchProjectContext(null);
     setLaunchProjectCwd(null);
+    setLaunchInitialTab(null);
     clearRelaunchTask();
   }
+
+  const handleLaunchManualTask = useCallback(() => {
+    if (selectedProjectSummary) {
+      setLaunchProjectContext(selectedProjectSummary);
+      setLaunchProjectCwd(deriveLaunchProjectCwd(agents, selectedProjectSummary) ?? '');
+      setLaunchInitialTab('manual');
+      track({ type: 'launch_dialog_opened', method: 'project_drawer_manual' });
+      setShowLaunch(true);
+    }
+  }, [selectedProjectSummary, agents]);
 
   const handleRunPlaybook = useCallback(() => {
     if (selectedProjectSummary) {
       setLaunchProjectContext(selectedProjectSummary);
       setLaunchProjectCwd(deriveLaunchProjectCwd(agents, selectedProjectSummary) ?? '');
+      setLaunchInitialTab('playbooks');
       track({ type: 'launch_dialog_opened', method: 'project_drawer' });
       setShowLaunch(true);
     }
@@ -465,7 +479,9 @@ export function App() {
       onOpenWorkspace={workspaceEnabled ? () => {
         setShowWorkspace(true);
       } : undefined}
+      onLaunchManual={handleLaunchManualTask}
       onRunPlaybook={handleRunPlaybook}
+      compact={isMobileViewport}
     />
   );
 
@@ -678,6 +694,7 @@ export function App() {
           relaunchParameterValues={relaunchTask?.playbookParameterValues}
           projectContext={launchProjectContext ?? undefined}
           projectCwd={launchProjectCwd ?? undefined}
+          initialTab={launchInitialTab ?? undefined}
         />
       )}
     </div>

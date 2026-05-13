@@ -117,7 +117,7 @@ async function openProjectDrawer(page: Page, projectId: string) {
 
 /** Open the workspace overlay by clicking the Workspace button in the drawer. */
 async function openWorkspace(page: Page) {
-  await page.locator('.btn-workspace').click();
+  await page.locator('[data-testid="project-workspace-btn"]').click();
   await expect(page.locator('.workspace-overlay')).toBeVisible({ timeout: 3000 });
 }
 
@@ -134,7 +134,7 @@ test.describe('Contribution Workspace', () => {
 
   test('workspace button not visible when no project selected', async ({ page }) => {
     // No project in sidebar, no drawer, no workspace button
-    await expect(page.locator('.btn-workspace')).not.toBeVisible();
+    await expect(page.locator('[data-testid="project-workspace-btn"]')).not.toBeVisible();
   });
 
   test('project drawer shows workspace button when project selected', async ({ page, request }) => {
@@ -142,8 +142,8 @@ test.describe('Contribution Workspace', () => {
     await setupProjectInSidebar(page, request, projectId);
     await openProjectDrawer(page, projectId);
 
-    await expect(page.locator('.btn-workspace')).toBeVisible();
-    await expect(page.locator('.btn-workspace')).toContainText('Workspace');
+    await expect(page.locator('[data-testid="project-workspace-btn"]')).toBeVisible();
+    await expect(page.locator('[data-testid="project-workspace-btn"]')).toContainText('Workspace');
   });
 
   test('click workspace button opens overlay', async ({ page, request }) => {

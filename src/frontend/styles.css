@@ -5801,11 +5801,66 @@ button.project-drawer-link:focus-visible {
   color: var(--text-muted);
 }
 
-/* --- Project Drawer Workspace Button --- */
+/* --- Project Drawer Actions --- */
 .project-drawer-header-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
-  flex-wrap: wrap;
+}
+
+.project-drawer-action {
+  min-width: 0;
+  min-height: 28px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.06);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, filter 0.15s ease;
+}
+
+.project-drawer-action:hover {
+  background: rgba(148, 163, 184, 0.12);
+  border-color: var(--border);
+  color: var(--text-bright);
+}
+
+.project-drawer-action:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+
+.project-drawer-action-primary {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: #0a0e12;
+}
+
+.project-drawer-action-primary:hover {
+  color: #0a0e12;
+  filter: brightness(1.08);
+}
+
+.project-drawer-action-workspace {
+  grid-column: 1 / -1;
+  background: rgba(45, 212, 191, 0.08);
+  border-color: rgba(45, 212, 191, 0.26);
+  color: var(--text-secondary);
+}
+
+.project-drawer.compact .project-drawer-header-actions {
+  grid-template-columns: 1fr;
+}
+
+.project-drawer.compact .project-drawer-action-workspace {
+  grid-column: auto;
 }
 
 .project-drawer-repo-link {
@@ -5879,16 +5934,6 @@ a.project-drawer-stat-row-link:focus-visible {
   min-width: 0;
   flex: 1;
 }
-.btn-workspace {
-  background: var(--teal);
-  color: var(--bg);
-  border: none;
-  font-weight: 600;
-}
-.btn-workspace:hover {
-  filter: brightness(1.1);
-}
-
 /* --- Contribution Workspace --- */
 
 .workspace-overlay {

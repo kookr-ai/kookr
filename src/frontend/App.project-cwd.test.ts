@@ -96,7 +96,7 @@ describe('App project drawer launch cwd', () => {
     localStorage.clear();
   });
 
-  test('pre-fills Run playbook cwd from project localPath when the project has no agents', async () => {
+  test('pre-fills Playbook task cwd from project localPath when the project has no agents', async () => {
     await act(async () => {
       root.render(React.createElement(App));
     });
@@ -115,7 +115,26 @@ describe('App project drawer launch cwd', () => {
     expect(cwdPaths).toEqual(['/server/cwd', '/work/idle']);
   });
 
-  test('can reopen Run playbook from the same project drawer after closing the dialog', async () => {
+  test('opens a project manual task with the project cwd selected', async () => {
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await flush();
+
+    const manualTask = container.querySelector('[data-testid="launch-manual-task-btn"]');
+    expect(manualTask).not.toBeNull();
+
+    await act(async () => {
+      manualTask!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
+    const cwdInput = container.querySelector<HTMLInputElement>('.combo-input input[type="text"]');
+    expect(cwdInput?.value).toBe('/work/idle');
+  });
+
+  test('can reopen Playbook task from the same project drawer after closing the dialog', async () => {
     await act(async () => {
       root.render(React.createElement(App));
     });

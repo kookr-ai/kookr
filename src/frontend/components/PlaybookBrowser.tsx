@@ -393,7 +393,7 @@ export function PlaybookBrowser({
 
     // Pre-fill from project context: for params with source: tracked-projects,
     // project context wins over param history (the user explicitly clicked
-    // "Run playbook..." from this project's drawer)
+    // "Playbook task" from this project's drawer)
     if (projectContext) {
       for (const param of playbook.parameters) {
         if (param.source === 'tracked-projects') {
