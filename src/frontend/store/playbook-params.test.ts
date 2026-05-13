@@ -104,6 +104,34 @@ describe('mergeParamDefaults', () => {
     });
   });
 
+  test('defaultFrom parameter ignores last-used value by default', () => {
+    const params: PlaybookParameter[] = [{
+      name: 'repoFullName',
+      description: 'Repo',
+      required: false,
+      defaultFrom: 'git-remote',
+    }];
+    expect(mergeParamDefaults(params, { repoFullName: 'old/repo' })).toEqual({
+      repoFullName: '',
+    });
+  });
+
+  test('defaultFrom parameter preserves snapshot for relaunch', () => {
+    const params: PlaybookParameter[] = [{
+      name: 'repoFullName',
+      description: 'Repo',
+      required: false,
+      defaultFrom: 'git-remote',
+    }];
+    expect(
+      mergeParamDefaults(params, { repoFullName: 'old/repo' }, {
+        preserveDefaultFromSnapshot: true,
+      }),
+    ).toEqual({
+      repoFullName: 'old/repo',
+    });
+  });
+
   test('falsy default "0" is correctly used (not dropped by truthiness check)', () => {
     const params = [textParam('count', '0')];
     expect(mergeParamDefaults(params, null)).toEqual({

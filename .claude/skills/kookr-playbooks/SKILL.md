@@ -42,7 +42,8 @@ cwd: /absolute/path/to/working/directory   # Optional — overrides dialog CWD
 parameters:                                # Optional — user fills these in before launch
   - name: repoFullName
     description: "Target repository (owner/repo)"
-    required: true
+    required: false
+    defaultFrom: git-remote                 # Optional — server resolves blank value from launch CWD remote
     type: select                           # Optional — 'text' (default) or 'select'
     source: tracked-projects               # Optional — dynamic data source
     options:                               # Optional — static fallback options (merged with source)
@@ -61,7 +62,7 @@ checklist:                                 # Optional — becomes task completio
 | `name` | Yes | string | Display name in UI |
 | `description` | No | string | Subtitle on playbook card |
 | `cwd` | No | string | Target working directory (absolute path). If omitted, uses the CWD from the launch dialog. Use this when the playbook targets a specific repo. |
-| `parameters` | No | array | Parameters with `name`, `description`, `required`, `default`, `type`, `source`, `options`. |
+| `parameters` | No | array | Parameters with `name`, `description`, `required`, `default`, `defaultFrom`, `type`, `source`, `options`. |
 | `checklist` | No | array of strings | Completion criteria shown in UI and tracked by the supervisor. |
 
 ### Parameter fields
@@ -72,6 +73,7 @@ checklist:                                 # Optional — becomes task completio
 | `description` | No | string | Placeholder hint shown in the form |
 | `required` | No | boolean | If true, the Launch button is disabled until filled |
 | `default` | No | string | Pre-filled value when no history exists |
+| `defaultFrom` | No | `'git-remote'` | Server fills a blank launch value from the launch CWD's `origin` remote. Use for repo params that should follow the current project instead of reusing stale history. |
 | `type` | No | `'text'` or `'select'` | `select` renders a dropdown. Default: `text` |
 | `source` | No | string | Dynamic data source ID (see below). Merged with static `options`. |
 | `options` | No | array of `{label, value}` | Static dropdown options for `type: select` |
@@ -89,6 +91,7 @@ When a parameter has a `source`, the UI resolves it at render time to populate t
 - When option count > 5, the dropdown becomes a filterable search input
 - **Project identity:** When `source: tracked-projects` is present, the selected value is automatically converted to a project ID (`github.com/owner/repo`) and assigned to the task. This makes the task appear under the correct project in the sidebar — not under the Kookr project.
 - **Project drawer launch:** When the user clicks "Run playbook..." from a project's detail drawer, parameters with `source: tracked-projects` are auto-filled with that project's `displayName`.
+- **Git remote defaults:** When a parameter has `defaultFrom: git-remote`, leave it optional in the form. Kookr resolves blank values from the launch CWD's git remote on the server and does not reuse the last manually entered value on future launches.
 
 ### Why `source: tracked-projects` matters for OSS playbooks
 
@@ -183,7 +186,7 @@ curl -s -X POST http://localhost:4800/api/tasks \
 
 1. **Self-contained prompt**: The agent starts fresh — include ALL context it needs
 2. **Concrete commands**: Show exact `gh`, `curl`, `git` commands, not vague instructions
-3. **Minimal parameters**: Only ask for what can't be derived. Use `source: tracked-projects` for repo fields and derive slug/fork/branch in the prompt body.
+3. **Minimal parameters**: Only ask for what can't be derived. Use `defaultFrom: git-remote` for repo fields that should follow the launch project, `source: tracked-projects` when project-drawer launch should pre-fill the selected project, and derive slug/fork/branch in the prompt body.
 4. **Checklist items map to phases**: Each checklist item should correspond to a verifiable phase outcome
 5. **Idempotency section**: If the playbook will run repeatedly, document how to avoid duplicate work
 6. **Anti-patterns section**: Capture past mistakes so the agent doesn't repeat them

@@ -289,7 +289,9 @@ export function PlaybookBrowser({
       if (match) {
         relaunchAppliedRef.current = true;
         setParamValues(
-          mergeParamDefaults(match.parameters, relaunchParameterValues ?? {}),
+          mergeParamDefaults(match.parameters, relaunchParameterValues ?? {}, {
+            preserveDefaultFromSnapshot: true,
+          }),
         );
         setSelected(match);
         return; // skip focusing search — we're in detail view

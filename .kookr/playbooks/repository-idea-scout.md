@@ -7,8 +7,10 @@ loop:
   costCapUsd: 20
 parameters:
   - name: repoFullName
-    description: "Target repository (owner/repo, e.g., owner/project)"
-    required: true
+    description: "Optional repository override (owner/repo). Leave blank to use the launch project or current git remote."
+    required: false
+    source: tracked-projects
+    defaultFrom: git-remote
   - name: localPath
     description: "Optional local checkout path. Leave blank to clone or reuse ~/git/<owner>-<repo>."
     required: false
@@ -78,7 +80,7 @@ checklist:
 
 ## Objective
 
-Suggest multiple new improvement ideas for `{{repoFullName}}` that do not already exist in the issue tracker. Produce exactly `{{targetIdeaCount}}` ideas across the run, one per loop iteration after bootstrap. Each idea must be grounded in the project's current purpose, codebase, documented features, and issue backlog.
+Suggest multiple new improvement ideas for the target repository that do not already exist in the issue tracker. Produce exactly `{{targetIdeaCount}}` ideas across the run, one per loop iteration after bootstrap. Each idea must be grounded in the project's current purpose, codebase, documented features, and issue backlog.
 
 The set of ideas must be diverse:
 
@@ -138,7 +140,14 @@ When `{{ideaFocus}}` is `any`, the canonical rotation order is the order of rows
 
 ## Derived values
 
-Compute these from `{{repoFullName}}`:
+Resolve **repoFullName** before computing other values:
+
+1. If the launch parameter `{{repoFullName}}` is non-empty, use it.
+2. If it is empty, infer it from the current checkout's `origin` remote with `git remote get-url origin`.
+3. Accept GitHub HTTPS and SSH remotes and normalize them to `owner/repo`.
+4. If no valid `owner/repo` can be resolved, mark the run `BLOCKED`; do not create issues.
+
+Compute these from the resolved **repoFullName**:
 
 - **repoSlug**: replace `/` and `.` with `-`.
 - **runKey**: use `$KOOKR_TASK_ID` when set; otherwise use `manual-<UTC timestamp>`.
@@ -156,8 +165,8 @@ Resolve **localPath**:
 
 1. If `{{localPath}}` is non-empty, use it.
 2. Else use `~/git/<repoSlug>`.
-3. If the path does not exist, clone `{{repoFullName}}` there with `gh repo clone`.
-4. If the path exists, verify that either `origin` or `upstream` points at `{{repoFullName}}`. If neither does, mark the run `BLOCKED`; do not analyze that checkout.
+3. If the path does not exist, clone the resolved **repoFullName** there with `gh repo clone`.
+4. If the path exists, verify that either `origin` or `upstream` points at the resolved **repoFullName**. If neither does, mark the run `BLOCKED`; do not analyze that checkout.
 
 The target checkout is for read-only analysis. Record its initial `git status --short` in `<runManifest>` and do not leave new tracked changes there.
 
@@ -236,7 +245,7 @@ block() {
 
 Treat the launch parameters above as prose until they are validated. Do not paste raw parameter values into shell source. Copy each value into a shell variable only after it passes the rules below:
 
-- `repoFullName`: must match `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`
+- `repoFullName`: may be blank only until git-remote inference runs; the resolved value must match `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`
 - `minimumIssueScan`: must be an integer from 20 through 500
 - `ideaFocus`: must be one of `any`, `product`, `developer-experience`, `documentation`, `reliability`, `performance`, `observability`, `operability`, `ux`, `security`, or `testing`
 - `targetIdeaCount`: must be an integer from 1 through 15

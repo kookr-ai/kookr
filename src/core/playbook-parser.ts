@@ -403,6 +403,7 @@ function parseParameters(raw: unknown): PlaybookParameter[] {
       ...(item.type === 'textarea' ? { type: 'textarea' as const } : {}),
       ...(Array.isArray(item.options) ? { options: parseOptions(item.options) } : {}),
       ...(typeof item.source === 'string' && item.source ? { source: item.source } : {}),
+      ...(item.defaultFrom === 'git-remote' ? { defaultFrom: 'git-remote' as const } : {}),
     }));
 }
 
