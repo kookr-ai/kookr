@@ -6,7 +6,7 @@
 
 ## Problem
 
-The Launch dialog at `src/frontend/components/LaunchDialog.tsx` is the primary entry point for starting new tasks in Kookr. It has accumulated useful behavior — MRU autocomplete, draft persistence, agent-type selector, autonomy toggle, voice input, playbook tab — but two friction points remain:
+The Launch dialog at `src/frontend/components/LaunchDialog.tsx` is the primary entry point for starting new tasks in Kookr. It has accumulated useful behavior — MRU autocomplete, draft persistence, agent-type selector, voice input, playbook tab — but two friction points remain:
 
 1. **Working-directory entry is text-only.** Users type the absolute path of the target repo (or pick from the MRU dropdown). This is fine for paths the user already runs tasks in, but painful for first-time entries: there is no way to *browse* the filesystem, no validation that the typed path actually exists or is a git repo, no awareness of worktrees that already exist next to a typed repo, and no quick way to fall back to the server cwd.
 2. **The header reads "Launch New Agent".** The rest of the user-facing surface has converged on *task* — `KOOKR_TASK_ID`, `taskStore`, the post-launch toast `Starting task: …` (`LaunchDialog.tsx:147`). The dialog header is one of the last places the older *agent* term appears in user copy. Internal documents (`docs/features.md` F4.1, `docs/requirements.md` R4.1) legitimately keep *agent* terminology because that is what the system technically launches at the runtime layer — but the user copy can be cleaner.

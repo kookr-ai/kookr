@@ -58,8 +58,7 @@ export function QuickLaunch({ send, onClose }: Props) {
       setAgentType(selected.agentType as AgentType);
       return;
     }
-    const stored = localStorage.getItem('kookr:defaultAgentType') as AgentType | null;
-    setAgentType(stored ?? defaultAgentType ?? 'claude-code');
+    setAgentType(defaultAgentType ?? 'claude-code');
   }, [agents, selectedAgentId, defaultAgentType]);
 
   useEffect(() => {
@@ -70,7 +69,6 @@ export function QuickLaunch({ send, onClose }: Props) {
     const trimmed = prompt.trim();
     if (!trimmed || !cwd) return;
     recentPaths.add(cwd);
-    localStorage.setItem('kookr:defaultAgentType', agentType);
     const excerpt = trimmed.slice(0, 40) + (trimmed.length > 40 ? '…' : '');
     const sent = send({
       type: 'launch',

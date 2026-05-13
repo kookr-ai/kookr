@@ -14,7 +14,7 @@ The supervisor agent is Kookr's core intelligence. It reads normalized agent eve
 ## Owned Responsibilities
 
 - Event-driven processing of per-agent hook files (`HookFileWatcher` → `Monitor.processEvents`)
-- Anomaly detection (V1 rule-based): `needs_input`, `permission_blocked`, `repeated_error`, plus liveness anomalies (`stale_agent`, `hook_disconnected`, `hook_missing`, `tmux_unresponsive`, `api_error`, `merge_conflict`, `auto_proceed_failure`)
+- Anomaly detection (V1 rule-based): `needs_input`, `permission_blocked`, `repeated_error`, plus liveness anomalies (`stale_agent`, `hook_disconnected`, `hook_missing`, `tmux_unresponsive`, `api_error`, `merge_conflict`)
 - Explanation generation (V1 template-based)
 - Sliding per-agent event window and agent registration/unregistration
 - Snooze honouring: detections are still run but results are held via `AttentionQueue` until the snooze expires

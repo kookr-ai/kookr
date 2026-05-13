@@ -36,7 +36,6 @@ const ZERO_COUNTS: Record<AnomalyType, number> = {
   hook_missing: 0,
   tmux_unresponsive: 0,
   api_error: 0,
-  auto_proceed_failure: 0,
   budget_exceeded: 0,
 };
 

@@ -1,7 +1,5 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { ProjectSummary } from '../core/project-summary.js';
-import { isTerminalStatus } from '../shared/contracts/task-status.js';
-import type { TaskStatus } from '../core/types.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
@@ -10,7 +8,7 @@ import { useAudibleAlert } from './hooks/useAudibleAlert.js';
 import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
 import { track } from './telemetry.js';
-import { isActiveFinding } from './store/finding-helpers.js';
+import { buildAgentBuckets } from './agent-buckets.js';
 import { TopBar } from './components/TopBar.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
 import { DetailPanel } from './components/DetailPanel.js';
@@ -36,6 +34,7 @@ import { SweepButton } from './components/SweepButton.js';
 import { OssProductivityView } from './components/OssProductivityView.js';
 import { CostComparisonPanel } from './components/CostComparisonPanel.js';
 import { OnboardingTour } from './components/OnboardingTour.js';
+import { OperationsPanel } from './components/OperationsPanel.js';
 import { maybeOpenForFirstRun } from './store/onboarding-store.js';
 import './styles.css';
 
@@ -80,9 +79,11 @@ export function App() {
   const [showSchedules, setShowSchedules] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showCostComparison, setShowCostComparison] = useState(false);
+  const [showOperations, setShowOperations] = useState(false);
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
   const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
   const [reflectionSuggestion, setReflectionSuggestion] = useState<ReflectionSuggestion | null>(null);
+  const operationsPopoverRef = useRef<HTMLDivElement>(null);
   const {
     agents,
     agentsHydrated,
@@ -130,6 +131,30 @@ export function App() {
     window.addEventListener('resize', updateViewportMode);
     return () => window.removeEventListener('resize', updateViewportMode);
   }, []);
+
+  useEffect(() => {
+    if (!showOperations) return;
+
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.operations-trigger')) return;
+      if (operationsPopoverRef.current?.contains(event.target as Node)) return;
+      setShowOperations(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setShowOperations(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showOperations]);
 
   const selectedProjectSummary = selectedProject
     ? projectSummaries.find((p) => p.project === selectedProject) ?? null
@@ -321,29 +346,18 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [agents, agentsHydrated, projectSummaries, projectSummariesHydrated, selectedProject]);
 
-  // Filter agents by selected project
-  const filteredAgents = useMemo(() => {
-    if (!selectedProject) return agents;
-    return agents.filter((a) => a.projectId === selectedProject);
-  }, [agents, selectedProject]);
-
   const selectedAgent = agents.find((a) => a.agentId === selectedAgentId) ?? null;
-  // Exhaustiveness helper: treats undefined as "no task → not terminal".
-  const isTerminal = (s: TaskStatus | undefined): boolean => s !== undefined && isTerminalStatus(s);
-  const pending = filteredAgents.filter((a) => a.taskStatus === 'pending');
-  // 'completed' pane surfaces every task the user is "done with": completed,
-  // cancelled, AND terminated. The distinction matters for the ack flow and
-  // clearCompleted scoping (see D2), but visually they're grouped.
-  const completed = filteredAgents.filter((a) => isTerminal(a.taskStatus));
-  const snoozed = filteredAgents
-    .filter((a) => a.taskStatus !== 'pending' && !isTerminal(a.taskStatus) && (!!a.snoozedUntil || a.suppressed))
-    .sort((a, b) => (a.snoozedUntil ?? 0) - (b.snoozedUntil ?? 0));
-  const findings = filteredAgents.filter((a) => a.taskStatus !== 'pending' && !isTerminal(a.taskStatus) && isActiveFinding(a));
-  // 'healthy' = actively running tasks (not pending, not in any terminal state).
-  // Terminal states include 'terminated' after rfc-task-loss-prevention.
-  const healthy = filteredAgents.filter((a) => a.anomaly === null && !a.snoozedUntil && !a.suppressed && a.taskStatus !== 'pending' && !isTerminal(a.taskStatus));
-  const activeTaskCount = agents.filter((agent) => !isTerminal(agent.taskStatus)).length;
-  const completedTaskCount = agents.filter((agent) => isTerminal(agent.taskStatus)).length;
+  const {
+    filteredAgents,
+    pending,
+    completed,
+    snoozed,
+    findings,
+    healthy,
+    globalHealthyAgents,
+    activeTaskCount,
+    completedTaskCount,
+  } = useMemo(() => buildAgentBuckets(agents, selectedProject), [agents, selectedProject]);
 
   useEffect(() => {
     if (!isMobileViewport) {
@@ -445,6 +459,7 @@ export function App() {
 
   const projectDetailDrawer = selectedProjectSummary && (
     <ProjectDetailDrawer
+      key={selectedProjectSummary.project}
       project={selectedProjectSummary}
       onClose={() => selectProject(null)}
       send={send}
@@ -452,7 +467,6 @@ export function App() {
         setShowWorkspace(true);
       } : undefined}
       onRunPlaybook={handleRunPlaybook}
-      compact={!isMobileViewport && Boolean(selectedAgent)}
     />
   );
 
@@ -460,7 +474,7 @@ export function App() {
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}`}>
       <TopBar
         findings={findings.length}
-        healthyAgents={healthy}
+        healthyAgents={globalHealthyAgents}
         currentIndex={selectedAgent && selectedAgent.anomaly
           ? findings.findIndex((f) => f.agentId === selectedAgentId)
           : -1}
@@ -471,9 +485,16 @@ export function App() {
         onSettings={() => setShowSettings(true)}
         onShowShortcuts={() => setShowShortcuts(true)}
         onOssView={toggleOssView}
+        onOperations={() => setShowOperations((value) => !value)}
+        operationsOpen={showOperations}
         onCostComparison={() => setShowCostComparison(true)}
         sweepSlot={workspaceEnabled ? <SweepButton send={send} projectCount={projectSummaries.length} /> : undefined}
       />
+      {showOperations && (
+        <div className="operations-popover-shell" ref={operationsPopoverRef}>
+          <OperationsPanel send={send} onClose={() => setShowOperations(false)} />
+        </div>
+      )}
       {isMobileViewport ? (
         <>
           {projectSidebar}

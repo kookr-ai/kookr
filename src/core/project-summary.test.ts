@@ -83,6 +83,41 @@ describe('computeProjectSummaries', () => {
     ];
     const summaries = computeProjectSummaries({ agents, ledgerAnalytics, configStore });
     expect(summaries[0].findingCount).toBe(1);
+    expect(summaries[0].stalledAgents).toBe(1);
+  });
+
+  test('counts stalled agents only from active anomalous tasks', () => {
+    const agents: AgentState[] = [
+      makeAgent({
+        agentId: 'a1',
+        projectId: 'github.com/org/repo',
+        taskStatus: 'inProgress',
+        taskId: 'task-1',
+        anomaly: { agentId: 'a1', type: 'needs_input', severity: 'info', explanation: 'test', detectedAt: new Date() },
+      }),
+      makeAgent({
+        agentId: 'a2',
+        projectId: 'github.com/org/repo',
+        taskStatus: 'completed',
+        taskId: 'task-2',
+        anomaly: { agentId: 'a2', type: 'repeated_error', severity: 'warning', explanation: 'old', detectedAt: new Date() },
+      }),
+      makeAgent({
+        agentId: 'a3',
+        projectId: 'github.com/org/repo',
+        taskStatus: 'inProgress',
+        taskId: 'task-3',
+        anomaly: { agentId: 'a3', type: 'needs_input', severity: 'info', explanation: 'snoozed', detectedAt: new Date() },
+        snoozedUntil: Date.now() + 60_000,
+      }),
+      makeAgent({ agentId: 'a4', projectId: 'github.com/org/repo', taskStatus: 'inProgress', taskId: 'task-4' }),
+    ];
+
+    const summaries = computeProjectSummaries({ agents, ledgerAnalytics, configStore });
+
+    expect(summaries[0].activeAgents).toBe(2);
+    expect(summaries[0].stalledAgents).toBe(1);
+    expect(summaries[0].findingCount).toBe(2);
   });
 
   test('includes projects from config store even with no agents', () => {

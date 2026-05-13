@@ -15,7 +15,6 @@ import {
 } from './agent-lifecycle.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
 import type { CircuitBreakerRegistry } from '../core/circuit-breaker.js';
-import type { AutonomyOrchestrator } from './autonomy-orchestrator.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { AgentType, AvailableAgentType } from '../core/agent-types.js';
 import type { ScheduleService } from './schedule-service.js';
@@ -57,12 +56,12 @@ export interface MessageRouterDeps {
   broadcastToAll?: (msg: ServerMessage) => void;
   launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
   circuitBreakerRegistry?: CircuitBreakerRegistry;
-  autonomyOrchestrator?: AutonomyOrchestrator;
   /** Live getter for max concurrent tasks. */
   getMaxActiveTasks?: () => number;
   suppressionTracker?: SnoozeSuppressionTracker;
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentType;
+  getDefaultAgentType?: () => AgentType;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   /** Workspace services (Phase 1a). */
@@ -106,10 +105,8 @@ export class MessageRouter {
     });
     this.configHandler = new ConfigHandler({
       send: this.deps.send,
-      taskStore: this.deps.taskStore,
       interactionLog: this.deps.interactionLog,
       telemetryLog: this.deps.telemetryLog,
-      autonomyOrchestrator: this.deps.autonomyOrchestrator,
       circuitBreakerRegistry: this.deps.circuitBreakerRegistry,
       projectConfigStore: this.deps.projectConfigStore,
       broadcastProjectSummaries: this.deps.broadcastProjectSummaries,
@@ -130,7 +127,6 @@ export class MessageRouter {
       queue: this.deps.queue,
       interactionLog: this.deps.interactionLog,
       suppressionTracker: this.deps.suppressionTracker,
-      autonomyOrchestrator: this.deps.autonomyOrchestrator,
       onRespond: this.deps.onRespond,
     });
     this.lifecycleHandler = new LifecycleHandler({
@@ -139,7 +135,6 @@ export class MessageRouter {
       monitor: this.deps.monitor,
       queue: this.deps.queue,
       interactionLog: this.deps.interactionLog,
-      autonomyOrchestrator: this.deps.autonomyOrchestrator,
       scheduleService: this.deps.scheduleService,
       ralphLoopService: this.deps.ralphLoopService,
       launchTask: this.deps.launchTask,
@@ -207,7 +202,7 @@ export class MessageRouter {
       serverStartedAt: this.deps.serverStartedAt,
       totalSpendUsd: this.deps.taskStore.getLifetimeSpendUsd(),
       availableAgentTypes: this.deps.availableAgentTypes,
-      defaultAgentType: this.deps.defaultAgentType,
+      defaultAgentType: this.deps.getDefaultAgentType?.() ?? this.deps.defaultAgentType,
       sttUrl: this.deps.sttUrl,
       workspaceEnabled: this.deps.workspaceEnabled,
       sweepRunning: isSweepInProgress(),
@@ -264,7 +259,6 @@ export class MessageRouter {
       case 'snooze':
       case 'cancelSnooze':
       case 'findingFeedback':
-      case 'cancelAutoProceed':
       case 'permissionChoice':
         await this.anomalyHandler.handle(msg, dispatch);
         return;
@@ -289,7 +283,6 @@ export class MessageRouter {
         return;
 
       // --- Configuration ---
-      case 'setAutonomy':
       case 'setProjectConfig':
       case 'rearmCircuitBreaker':
       case 'telemetry':

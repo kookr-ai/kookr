@@ -144,7 +144,6 @@ export async function requestTaskReflect(
       prompt,
       cwd: sourceRepoRoot,
       agentType: 'claude-code',
-      autonomy: 'autonomous',
       disableDedup: true,
       launchSource: 'api',
     });

@@ -11,8 +11,6 @@ import type {
 import type { CompletionDigest } from './completion-digest.js';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 
-export type AutonomyLevel = 'supervised' | 'autonomous';
-
 /**
  * User feedback on a completed task. Drives the per-task self-reflect loop.
  * `rating` is always required; `note` and `downReason` are optional enrichment.
@@ -216,10 +214,27 @@ export interface CreateTaskOptions {
   cwd: string;
   criteria?: string;
   parentTaskId?: string;
-  autonomy?: AutonomyLevel;
   agentType?: AgentType;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
+  /** Advisory diagnostics captured during launch without changing task identity. */
+  launchHealthSummary?: TaskLaunchHealthSummary;
+  /** Warning text prepended to the first agent prompt, but not stored in `prompt`. */
+  launchNote?: string;
+}
+
+export interface TaskLaunchHealthSummary {
+  degradedDependencies: string[];
+  findings: TaskLaunchHealthFinding[];
+}
+
+export interface TaskLaunchHealthFinding {
+  dependency: string;
+  status: 'failed';
+  category: string;
+  summary: string;
+  detail?: string;
+  recommendedAction: string;
 }
 
 export class InvalidTransitionError extends Error {
@@ -284,6 +299,10 @@ export interface Task {
   playbookId?: string;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
+  /** Advisory launch diagnostics. Does not affect duplicate detection. */
+  launchHealthSummary?: TaskLaunchHealthSummary;
+  /** Warning text prepended to the actual launch prompt, but not part of `prompt`. */
+  launchNote?: string;
   parentTaskId?: string;
   childTaskIds?: string[];
   /** Normalized project identifier (e.g. "github.com/owner/repo" or "local/dirname"). */
@@ -297,12 +316,6 @@ export interface Task {
   completionFeedback?: TaskCompletionFeedback;
   /** Marker present iff this task is itself a reflect spawn analyzing another task. */
   reflectMeta?: ReflectMeta;
-  /** Autonomy level: 'supervised' (default) pauses on needs_input; 'autonomous' auto-proceeds stop-type. */
-  autonomy: AutonomyLevel;
-  /** Auto-proceed delay in ms. Default: 180_000 (3 minutes). */
-  autoProceedDelayMs?: number;
-  /** Number of auto-proceed attempts (persisted for crash recovery). Reset on autonomy change or user respond. */
-  autoProceedRetries?: number;
   createdAt: Date;
   updatedAt: Date;
   /** Set when the task transitions to 'terminated' via reconciliation. */
@@ -380,7 +393,16 @@ export class TaskStore {
     const opts: CreateTaskOptions = typeof promptOrOpts === 'string'
       ? { prompt: promptOrOpts, cwd: cwdArg!, criteria: criteriaArg, parentTaskId: parentTaskIdArg }
       : promptOrOpts;
-    const { prompt, cwd, criteria, parentTaskId, autonomy, agentType, playbookParameterValues } = opts;
+    const {
+      prompt,
+      cwd,
+      criteria,
+      parentTaskId,
+      agentType,
+      playbookParameterValues,
+      launchHealthSummary,
+      launchNote,
+    } = opts;
 
     // Validate parent exists if specified
     if (parentTaskId !== undefined && !this.tasks.has(parentTaskId)) {
@@ -397,11 +419,12 @@ export class TaskStore {
       parentTaskId,
       status: 'open',
       sessions: [],
-      autonomy: autonomy ?? 'supervised',
       createdAt: now,
       updatedAt: now,
     };
     if (playbookParameterValues) task.playbookParameterValues = playbookParameterValues;
+    if (launchHealthSummary) task.launchHealthSummary = launchHealthSummary;
+    if (launchNote) task.launchNote = launchNote;
     this.tasks.set(task.id, task);
 
     // Link child to parent
@@ -690,6 +713,14 @@ export class TaskStore {
     task.updatedAt = new Date();
   }
 
+  /** Override the agentType on a task. Used by the demo recorder to surface a Codex agent alongside Claude agents without touching adapter routing. */
+  setAgentType(taskId: string, agentType: AgentType): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.agentType = agentType;
+    task.updatedAt = new Date();
+  }
+
   /** Get all unique project IDs across all tasks. */
   getProjectIds(): string[] {
     const ids = new Set<string>();
@@ -723,8 +754,6 @@ export class TaskStore {
   loadTasks(tasks: Task[], savedLifetimeSpendUsd?: number): void {
     this.tasks.clear();
     for (const task of tasks) {
-      // Default missing autonomy field for tasks created before this feature
-      if (!task.autonomy) task.autonomy = 'supervised';
       this.tasks.set(task.id, task);
     }
     if (savedLifetimeSpendUsd !== undefined && Number.isFinite(savedLifetimeSpendUsd) && savedLifetimeSpendUsd > 0) {
@@ -744,34 +773,5 @@ export class TaskStore {
   /** Get the lifetime total spending in USD. */
   getLifetimeSpendUsd(): number {
     return this.lifetimeSpendUsd;
-  }
-
-  /** Reset auto-proceed retry counter (e.g. after user responds manually). */
-  resetAutoProceedRetries(taskId: string): void {
-    const task = this.tasks.get(taskId);
-    if (!task) return;
-    task.autoProceedRetries = 0;
-    task.updatedAt = new Date();
-  }
-
-  /** Increment auto-proceed retry counter. */
-  incrementAutoProceedRetries(taskId: string): void {
-    const task = this.tasks.get(taskId);
-    if (!task) return;
-    task.autoProceedRetries = (task.autoProceedRetries ?? 0) + 1;
-    task.updatedAt = new Date();
-  }
-
-  /** Change a task's autonomy level. Returns the previous level, or undefined if task not found. */
-  setAutonomy(taskId: string, level: AutonomyLevel): AutonomyLevel | undefined {
-    const task = this.tasks.get(taskId);
-    if (!task) return undefined;
-    const from = task.autonomy;
-    task.autonomy = level;
-    task.updatedAt = new Date();
-    if (level === 'supervised') {
-      task.autoProceedRetries = 0;
-    }
-    return from;
   }
 }

@@ -62,7 +62,6 @@ function agentWithRalph(
     events: [],
     anomaly: null,
     taskStatus: 'inProgress',
-    autonomy: 'supervised',
     cwd: '/tmp/project',
     tokenUsage: overrides.tokenUsage,
     ralphLoop: {
@@ -87,7 +86,6 @@ function agentWithoutRalph(overrides: Partial<AgentState> = {}): AgentState {
     events: [],
     anomaly: null,
     taskStatus: 'inProgress',
-    autonomy: 'supervised',
     cwd: '/tmp/project',
     ...overrides,
   } as AgentState;

@@ -23,7 +23,6 @@ import type { SkillDiscoveryStateHolder } from '../../core/skill-tracked-repo-di
 import type { PrLessonsStateHolder } from '../../core/pr-lessons-discovery.js';
 import type { KookrSettings } from '../../core/settings-store.js';
 import type { CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
-import type { AutonomyOrchestrator } from '../autonomy-orchestrator.js';
 import type { SnoozeSuppressionTracker } from '../../core/snooze-suppression.js';
 import type { ScheduleRunner } from '../schedule-runner.js';
 import type { ScheduleService } from '../schedule-service.js';
@@ -89,7 +88,6 @@ export interface RouteDeps {
     update: (settings: KookrSettings) => Promise<string[]>;
   };
   circuitBreakerRegistry?: CircuitBreakerRegistry;
-  autonomyOrchestrator?: AutonomyOrchestrator;
   suppressionTracker?: SnoozeSuppressionTracker;
   scheduleService?: ScheduleService;
   scheduleRunner?: ScheduleRunner;
@@ -121,4 +119,9 @@ export interface RouteDeps {
    * sibling-path resolver.
    */
   worktreeRegistry?: Pick<WorktreeRegistry, 'all'>;
+  /**
+   * Test seam for routes that inspect or update user-global Claude assets.
+   * Production defaults to os.homedir().
+   */
+  hookHomeDir?: string;
 }

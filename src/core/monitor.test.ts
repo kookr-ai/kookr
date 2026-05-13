@@ -239,6 +239,15 @@ describe('Monitor', () => {
     expect(toolNames).toEqual(['Tool-5', 'Tool-6', 'Tool-7', 'Tool-8', 'Tool-9']);
   });
 
+  test('processEvents stamps monotonic eventSeq for client activity history merging', () => {
+    monitor.processEvents('agent-1', [makeToolUse('s1', 'Bash')]);
+    monitor.processEvents('agent-1', [makeToolUse('s1', 'Bash')]);
+
+    const snapshot = monitor.getSnapshot();
+    const events = snapshot.find((s) => s.agentId === 'agent-1')!.events as Array<AgentEvent & { eventSeq?: number }>;
+    expect(events.map((event) => event.eventSeq)).toEqual([1, 2]);
+  });
+
   test('permission_blocked then stop downgrades to needs_input in queue', () => {
     // First: agent is blocked
     monitor.processEvents('agent-1', [

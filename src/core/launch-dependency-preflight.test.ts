@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'vitest';
 import {
   LaunchPreflightError,
+  classifyKbDoctorCommandResult,
   classifyKbDoctorOutput,
+  classifyKbSearchSmokeResult,
   formatLaunchPreflightError,
+  redactDiagnosticText,
 } from './launch-dependency-preflight.js';
 
 describe('KB launch dependency preflight', () => {
@@ -42,6 +45,53 @@ describe('KB launch dependency preflight', () => {
     });
 
     expect(finding?.category).toBe('empty_index_data');
+  });
+
+  test('parses non-zero kb doctor JSON before falling back to process stderr heuristics', () => {
+    const finding = classifyKbDoctorCommandResult({
+      exitCode: 1,
+      stdout: JSON.stringify({
+        schema_version: 'kb-canonical.v1',
+        status: 'error',
+        checks: [
+          { name: 'index', status: 'error', detail: 'FAISS index has no chunks' },
+        ],
+      }),
+      stderr: 'Error in /home/jean/git/knowledge-base-mcp-server/src/index.ts',
+    });
+
+    expect(finding?.category).toBe('empty_index_data');
+    expect(finding?.summary).toBe('KB dependency preflight failed: index');
+  });
+
+  test('classifies kb search smoke failures separately from doctor failures', () => {
+    const finding = classifyKbSearchSmokeResult({
+      exitCode: 1,
+      stdout: JSON.stringify({
+        error: { message: "Cannot read properties of undefined (reading 'faiss_search_ms')" },
+      }),
+      stderr: 'Loading FAISS index from /home/jean/knowledge_bases/.faiss',
+    });
+
+    expect(finding).toEqual(expect.objectContaining({
+      dependency: 'kb',
+      category: 'query_runtime_failure',
+      summary: 'KB dependency preflight search smoke failed',
+    }));
+    expect(finding?.detail).toContain('faiss_search_ms');
+    expect(finding?.detail).not.toContain('/home/jean');
+  });
+
+  test('redacts and bounds diagnostic snippets', () => {
+    const redacted = redactDiagnosticText(
+      '/home/jean/.config/kb token=sk-secret password=hunter2 '.repeat(30),
+      120,
+    );
+
+    expect(redacted).not.toContain('/home/jean');
+    expect(redacted).not.toContain('sk-secret');
+    expect(redacted).not.toContain('hunter2');
+    expect(redacted.length).toBeLessThanOrEqual(120);
   });
 
   test('formats launch-preflight errors with operator action', () => {

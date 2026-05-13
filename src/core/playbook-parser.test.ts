@@ -126,7 +126,7 @@ Do the durable thing.
     expect(pb.loopValidationError).toBeUndefined();
     expect(pb.effectiveLoop).toEqual({
       iterationCap: 6,
-      costCapUsd: 5,
+      costCapUsd: 25,
       sources: {
         iterationCap: 'default',
         costCapUsd: 'default',

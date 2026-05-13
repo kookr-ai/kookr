@@ -20,7 +20,6 @@ export type { TelemetryEvent, TelemetryEventType } from '../core/telemetry.js';
 export type { ProjectSummary } from '../core/project-summary.js';
 export type { ProjectConfig } from '../core/project-config-store.js';
 export type { AchievementDefinition } from '../core/achievement-catalog.js';
-export type { AutonomyLevel } from '../core/tasks.js';
 export type { AgentType, AvailableAgentType } from '../core/agent-types.js';
 export { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
 export type { QuotaStatus, QuotaWindow } from '../core/quota-types.js';

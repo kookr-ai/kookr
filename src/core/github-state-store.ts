@@ -11,16 +11,34 @@ import type {
  * Tracks known references, their current state, and recent changes.
  */
 export class GitHubStateStore {
-  private references = new Map<string, GitHubReference>(); // key: "owner/repo#number"
+  private references = new Map<string, GitHubReference>(); // key: "taskId:type:owner/repo#number"
   private prStates = new Map<string, GitHubPRState>();
   private issueStates = new Map<string, GitHubIssueState>();
   private recentChanges = new Map<string, GitHubStateChange[]>(); // per task
 
-  private refKey(ref: { owner: string; repo: string; number: number }): string {
-    return `${ref.owner}/${ref.repo}#${ref.number}`;
+  private refKey(ref: GitHubReference): string {
+    return `${ref.taskId}:${ref.type}:${ref.owner}/${ref.repo}#${ref.number}`;
   }
 
-  /** Add a new reference (deduplicates by owner/repo/number). */
+  private findStateKey(
+    type: GitHubReference['type'],
+    ref: { owner: string; repo: string; number: number; taskId?: string },
+  ): string | null {
+    for (const storedRef of this.references.values()) {
+      if (
+        storedRef.type === type
+        && storedRef.owner === ref.owner
+        && storedRef.repo === ref.repo
+        && storedRef.number === ref.number
+        && (!ref.taskId || storedRef.taskId === ref.taskId)
+      ) {
+        return this.refKey(storedRef);
+      }
+    }
+    return null;
+  }
+
+  /** Add a new reference (deduplicates by task, type, owner, repo, and number). */
   addReference(ref: GitHubReference): boolean {
     const key = this.refKey(ref);
     if (this.references.has(key)) return false;
@@ -65,13 +83,15 @@ export class GitHubStateStore {
   }
 
   /** Get current PR state. */
-  getPRState(ref: { owner: string; repo: string; number: number }): GitHubPRState | null {
-    return this.prStates.get(this.refKey(ref)) ?? null;
+  getPRState(ref: { owner: string; repo: string; number: number; taskId?: string }): GitHubPRState | null {
+    const key = this.findStateKey('pr', ref);
+    return key ? this.prStates.get(key) ?? null : null;
   }
 
   /** Get current issue state. */
-  getIssueState(ref: { owner: string; repo: string; number: number }): GitHubIssueState | null {
-    return this.issueStates.get(this.refKey(ref)) ?? null;
+  getIssueState(ref: { owner: string; repo: string; number: number; taskId?: string }): GitHubIssueState | null {
+    const key = this.findStateKey('issue', ref);
+    return key ? this.issueStates.get(key) ?? null : null;
   }
 
   /** Record a state change for a task. */

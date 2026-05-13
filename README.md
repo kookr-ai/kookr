@@ -16,9 +16,11 @@ You run several Claude Code or Codex CLI agents in parallel. One loops on the sa
 
 **Kookr watches the agents, explains what needs attention, and routes you to the most urgent one.**
 
-<img src="assets/branding/derived/kookr-screenshot.png" alt="Kookr dashboard - detect anomalies, respond, auto-advance" width="960" />
+<a href="https://youtu.be/DHZrO8T_6Xg">
+  <img src="https://img.youtube.com/vi/DHZrO8T_6Xg/maxresdefault.jpg" alt="Watch the Kookr narrated demo on YouTube" width="960" />
+</a>
 
-[Watch the narrated demo video](https://github.com/kookr-ai/kookr/releases/tag/demo-v1)
+[Watch the narrated demo video on YouTube](https://youtu.be/DHZrO8T_6Xg)
 
 ## What Kookr Does
 
@@ -40,6 +42,8 @@ pnpm dev
 Open `http://localhost:5173`.
 
 Prerequisites: `git`, Node.js `>=22`, `pnpm >=10`, and build tools for native modules. Claude Code is only required when you want Kookr to launch Claude Code agents.
+
+**Works with Codex CLI** via a maintained fork that adds the Claude-compatible hooks Kookr depends on. See [Codex CLI Setup](docs/codex-cli-setup.md).
 
 If setup fails, run:
 
@@ -70,6 +74,7 @@ See [CLI Reference](docs/reference/cli.md) for `kookr-spawn`, `kookr-status`, an
 | Configure optional features | [Configuration](docs/configuration.md) |
 | Fix setup or runtime issues | [Troubleshooting](docs/troubleshooting.md) |
 | Develop Kookr itself | [Development](docs/development.md) |
+| Understand test suites and coverage reports | [Testing](docs/testing.md) |
 | Understand the system design | [Architecture](docs/architecture.md) |
 | See all API endpoints | [API Reference](docs/reference/api.md) |
 | Understand playbook discovery | [Playbook Scoping](docs/playbook-scoping.md) |
@@ -77,7 +82,7 @@ See [CLI Reference](docs/reference/cli.md) for `kookr-spawn`, `kookr-status`, an
 
 ## Core Features
 
-- Real-time monitoring for Claude Code and Codex CLI agents
+- Real-time monitoring for Claude Code and Codex CLI agents (Codex CLI requires the maintained [`jeanibarz/codex#feat/claude-compat`](docs/codex-cli-setup.md) fork)
 - Anomaly detection and prioritized findings
 - Quick replies and response suggestions
 - Live terminal access through xterm.js and dtach

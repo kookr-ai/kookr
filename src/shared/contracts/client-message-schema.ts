@@ -12,7 +12,6 @@ import type { ClientMessage } from './messages.js';
  * `[key: string]: unknown` shape and use `looseObject` so extra fields survive.
  */
 
-const autonomyLevel = z.enum(['supervised', 'autonomous']);
 const agentType = z.enum(['claude-code', 'codex-cli']);
 const playbookScope = z.enum(['project', 'user', 'plugin']);
 const launchDependency = z.enum(['kb']);
@@ -26,7 +25,6 @@ const anomalyType = z.enum([
   'hook_missing',
   'tmux_unresponsive',
   'api_error',
-  'auto_proceed_failure',
   'budget_exceeded',
 ]);
 
@@ -82,7 +80,6 @@ const launchPlaybookMessage = z.object({
   taskTargetCwd: z.string().optional(),
   projectId: z.string().optional(),
   parameterValues: z.record(z.string(), z.string()),
-  autonomy: autonomyLevel.optional(),
   agentType: agentType.optional(),
   scope: playbookScope.optional(),
 }).superRefine((value, ctx) => {
@@ -127,7 +124,6 @@ const ClientMessageSchemaImpl = z.union([
     prompt: z.string(),
     cwd: z.string(),
     criteria: z.string().optional(),
-    autonomy: autonomyLevel.optional(),
     agentType: agentType.optional(),
     dependencies: z.array(launchDependency).optional(),
   }),
@@ -179,8 +175,6 @@ const ClientMessageSchemaImpl = z.union([
   z.object({ type: z.literal('ackTerminatedTask'), taskId: z.string() }),
   z.object({ type: z.literal('achievement:reset') }),
   z.object({ type: z.literal('achievement:setEnabled'), enabled: z.boolean() }),
-  z.object({ type: z.literal('setAutonomy'), taskId: z.string(), level: autonomyLevel }),
-  z.object({ type: z.literal('cancelAutoProceed'), agentId: z.string() }),
   z.object({ type: z.literal('permissionChoice'), agentId: z.string(), keystroke: z.string() }),
   z.object({ type: z.literal('rearmCircuitBreaker'), name: z.string() }),
   z.object({

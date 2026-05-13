@@ -11,7 +11,6 @@ async function launchRalphTask(request: APIRequestContext, prompt: string, cwd: 
     data: {
       prompt,
       cwd,
-      autonomy: 'supervised',
     },
   });
   expect(res.ok()).toBe(true);

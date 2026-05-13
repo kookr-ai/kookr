@@ -5,10 +5,12 @@ import type { LedgerAnalytics } from '../../core/ledger-analytics.js';
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
 import type { PrLessonsStateHolder } from '../../core/pr-lessons-discovery.js';
 import type { AvailableAgentType, AgentType } from '../../core/agent-types.js';
-import type { ProjectSummary } from '../../core/project-summary.js';
+import type { ProjectSummary, ProjectRepoHealth } from '../../core/project-summary.js';
+import type { GitHubReference } from '../../core/github-types.js';
 import type { SnapshotMessage } from '../../shared/contracts/messages.js';
 import { projectEventForClient } from '../event-projection.js';
 import type { AgentActivityMeta } from '../../core/types.js';
+import { buildGithubTaskOverlay } from './github-task-overlay.js';
 
 export interface SnapshotQueryDeps {
   monitor: Pick<Monitor, 'getSnapshot'>;
@@ -50,6 +52,15 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
   /** Read-only accessor for project IDs persisted by the sidebar preference store. */
   getSidebarProjects?: () => string[];
   prLessonsHolder?: PrLessonsStateHolder;
+  /** Repo-health snapshot from the GitHub scanner; flowed onto ProjectSummary.repoHealth. */
+  repoHealthCache?: ReadonlyMap<string, ProjectRepoHealth>;
+  /**
+   * Read-only accessor for per-task GitHub references. Bound to
+   * `GitHubStateStore.getReferences`; supplied when the scanner is wired.
+   * When absent, the overlay is not computed and the `tied*` fields on
+   * `ProjectSummary` are omitted.
+   */
+  getTaskGithubReferences?: (taskId: string) => GitHubReference[];
 }
 
 /**
@@ -105,13 +116,19 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
 }
 
 export function getProjectSummaries(deps: ProjectSummaryQueryDeps): ProjectSummary[] {
+  const agents = getSnapshotAgentsRaw(deps);
+  const githubTaskOverlay = deps.getTaskGithubReferences
+    ? buildGithubTaskOverlay({ agents, getTaskGithubReferences: deps.getTaskGithubReferences })
+    : undefined;
   return computeProjectSummaries({
-    agents: getSnapshotAgentsRaw(deps),
+    agents,
     ledgerAnalytics: deps.ledgerAnalytics,
     configStore: deps.projectConfigStore,
     skillTrackedProjects: deps.getSkillTrackedProjects?.(),
     registryActiveProjects: deps.getRegistryActiveProjects?.(),
     sidebarProjects: deps.getSidebarProjects?.(),
     prLessonsHolder: deps.prLessonsHolder,
+    repoHealthCache: deps.repoHealthCache,
+    githubTaskOverlay,
   });
 }

@@ -1,7 +1,6 @@
 import { appendFile, readFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AnomalyType } from './types.js';
-import type { AutonomyLevel } from './tasks.js';
 
 // --- Interaction event types ---
 
@@ -14,11 +13,9 @@ export type InteractionEvent =
       type: 'finding_resolved';
       agentId: string;
       anomalyType: AnomalyType;
-      method: 'input' | 'auto_clear' | 'skip' | 'snooze' | 'auto_proceed' | 'auto_proceed_cancelled' | 'auto_proceed_failed' | 'false_positive';
+      method: 'input' | 'auto_clear' | 'skip' | 'snooze' | 'false_positive';
       durationMs: number;
       timestamp: string;
-      autoProceedDetail?: { delayMs: number; deliveryConfirmed: boolean };
-      cancelledBy?: 'user' | 'level_change' | 'agent_stopped' | 'restart' | 'manual_respond' | 'direct_reply' | 'rest_api';
     }
   | { type: 'agent_launched'; agentId: string; taskPrompt: string; timestamp: string }
   | { type: 'agent_stopped'; agentId: string; reason: 'user' | 'completed' | 'error'; timestamp: string }
@@ -31,7 +28,6 @@ export type InteractionEvent =
   | { type: 'worktree_skipped'; taskId: string; worktreePath: string; reason: 'protected' | 'shared' | 'task reopened' | 'not found'; timestamp: string }
   | { type: 'worktree_cleanup_failed'; taskId: string; worktreePath: string; error: string; timestamp: string }
   | { type: 'crash_recovery'; relaunched: number; skipped: number; failed: number; details: unknown; timestamp: string }
-  | { type: 'autonomy_changed'; taskId: string; from: AutonomyLevel; to: AutonomyLevel; timestamp: string }
   | { type: 'submission_rejected_dedup'; existingTaskId: string; promptHash: string; canonicalCwd: string; timestamp: string }
   | { type: 'auto_suppressed'; agentId: string; anomalyType: AnomalyType; suppressionCount: number; timestamp: string }
   | { type: 'monitoring_resumed'; agentId: string; reason: 'respond' | 'cleanup'; timestamp: string }
@@ -154,7 +150,6 @@ const SUBSTANTIVE_EVENT_TYPES: ReadonlySet<InteractionEvent['type']> = new Set([
   'finding_snoozed',
   'finding_resolved',
   'finding_feedback',
-  'autonomy_changed',
 ]);
 
 export function isSubstantiveEvent(event: InteractionEvent): boolean {

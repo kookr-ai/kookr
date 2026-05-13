@@ -24,8 +24,9 @@ import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { CodexCliAdapter } from '../adapters/codex-cli-adapter.js';
 import { RoutingAgentAdapter } from '../adapters/routing-agent-adapter.js';
-import { ghCliFetcher } from '../adapters/github-fetcher.js';
+import { ghCliFetcher, fetchBatchRepoHealth, getGhUserLogin } from '../adapters/github-fetcher.js';
 import { CircuitBreakerGitHubFetcher } from '../adapters/circuit-breaker-github-fetcher.js';
+import { MAX_TRACKED_REPOS } from '../core/project-summary.js';
 import { reconcile } from './reconciliation.js';
 import {
   runAdapterPreflights,
@@ -79,8 +80,6 @@ import { ACHIEVEMENT_BY_ID } from '../core/achievement-catalog.js';
 import { loadSettings, type KookrSettings } from '../core/settings-store.js';
 import { CircuitBreaker, CircuitBreakerRegistry } from '../core/circuit-breaker.js';
 import { CircuitBreakerLlmClient } from '../core/circuit-breaker-llm-client.js';
-import { AutoProceedService } from './auto-proceed.js';
-import { AutonomyOrchestrator } from './autonomy-orchestrator.js';
 import { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
 import { ScheduleStore } from '../core/schedule.js';
@@ -348,7 +347,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const tokenTracker = new TokenTracker();
 
   // Reactive budget threshold checker (issue #98). Threshold is per-task, in USD,
-  // configurable via KOOKR_BUDGET_WARN_USD. Default $5 per task. Setting to 0
+  // configurable via KOOKR_BUDGET_WARN_USD. Default $25 per task. Setting to 0
   // disables the check. Fires `budget_exceeded` anomalies through the attention
   // queue the first time a task crosses threshold and then 2x threshold.
   const budgetThresholdUsd = readBudgetThresholdFromEnv();
@@ -437,11 +436,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     stateFetchIntervalMs: currentSettings.githubPollingIntervalSec * 1000,
     referenceExtractionIntervalMs: currentSettings.githubPollingIntervalSec * 1000,
   };
+  // Forward-declared so onRepoHealthChanged can call back into the broadcast
+  // function which references githubScanner.getRepoHealthSnapshot().
+  let broadcastProjectSummariesRef: (() => void) | null = null;
   const githubScanner = new GitHubScannerService({
     taskStore,
     stateStore: githubStateStore,
     fetcher: new CircuitBreakerGitHubFetcher(ghCliFetcher, githubBreaker),
     config: githubScannerConfig,
+    repoHealthFetcher: fetchBatchRepoHealth,
+    ghUserLoginResolver: getGhUserLogin,
+    onRepoHealthChanged: () => {
+      broadcastProjectSummariesRef?.();
+    },
     onStateUpdate: (taskId) => {
       // Broadcast initial state when first fetched (no changes yet)
       const state = githubStateStore.getTaskState(taskId);
@@ -564,15 +571,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     wsBroadcastCount++;
     // Auto-inject lifetime spending and achievements into snapshot messages
     if (msg.type === 'snapshot') {
-      // Enrich with auto-proceed countdown timestamps
-      if (autonomyOrchestrator) {
-        for (const agent of msg.agents) {
-          const proceedAt = autonomyOrchestrator.getActiveProceedAt(agent.agentId);
-          if (proceedAt && agent.anomaly) {
-            agent.anomaly.autoProceedingAt = proceedAt;
-          }
-        }
-      }
       // Run snapshot-derived achievement check before reading getUnlocked() so
       // any new unlocks land in this same snapshot's achievements field.
       if (snapshotAchievementsReady && achievementWatcher) {
@@ -613,7 +611,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       msg = {
         ...msg,
         availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
-        defaultAgentType: adapterRegistry.getDefaultType(),
+        defaultAgentType: currentSettings.defaultAgentType,
       };
     }
     const data = JSON.stringify(msg);
@@ -636,17 +634,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         unlockedAt: unlock.unlockedAt,
       });
     }
-  });
-
-  // --- Auto-proceed service + autonomy orchestrator ---
-
-  const autoProceedService = new AutoProceedService({
-    taskStore, monitor, queue, adapter,
-    interactionLog, broadcastToAll, serverCwd,
-  });
-
-  const autonomyOrchestrator = new AutonomyOrchestrator({
-    taskStore, monitor, queue, autoProceedService, interactionLog,
   });
 
   // Late-bound R16 block-alert callback. The Telegram integration is started
@@ -706,11 +693,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       getSkillTrackedProjects: () => skillDiscoveryState.getProjects(),
       getRegistryActiveProjects,
       prLessonsHolder: prLessonsState,
+      repoHealthCache: githubScanner.getRepoHealthSnapshot(),
+      getTaskGithubReferences: (taskId) => githubStateStore.getReferences(taskId),
     });
+    // Reuse the summaries' membership as the single source of truth for which
+    // github.com/... projects the repo-health tick should poll. Cap is applied
+    // inside the scanner via setTrackedGithubRepos (it filters unsafe ids).
+    githubScanner.setTrackedGithubRepos(
+      projects.map((s) => s.project).slice(0, MAX_TRACKED_REPOS),
+    );
     // Always broadcast — user-initiated mutations (track/untrack/rescan) can
     // legitimately transition the list to empty, and clients need the update.
     broadcastToAll({ type: 'projectSummaries', projects });
   }
+  broadcastProjectSummariesRef = broadcastProjectSummaries;
 
   /** Broadcast the current OSS attempts snapshot to all connected clients. */
   function broadcastOssAttempts(): void {
@@ -789,10 +785,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Live getter for max active tasks — reads from current settings.
   const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
+  const getDefaultAgentType = () => currentSettings.defaultAgentType;
 
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
-  const launchServiceDeps: LaunchServiceDeps = { taskStore, adapterRegistry, lifecycleDeps, getMaxActiveTasks, interactionLog };
+  const launchServiceDeps: LaunchServiceDeps = {
+    taskStore,
+    adapterRegistry,
+    lifecycleDeps,
+    getMaxActiveTasks,
+    getDefaultAgentType,
+    interactionLog,
+  };
 
   const ralphLoopService = new RalphLoopService({
     taskStore,
@@ -813,7 +817,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       watchdog,
       shadowRegistry,
       tokenTracker,
-      autonomyOrchestrator,
       suppressionTracker,
       checkpointCycler,
     }),
@@ -824,7 +827,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const { abortPendingSuggestion } = wireEventPipeline({
     adapter, monitor, taskStore, tokenTracker, watchdog,
     githubScanner, llmClient, serverCwd, broadcastToAll,
-    autonomyOrchestrator, telemetryLog,
+    telemetryLog,
     checkpointCycler,
     ralphCycler,
     ralphLoopService,
@@ -864,7 +867,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcastToAll,
     serverCwd,
   });
-  autonomyOrchestrator.rearmAfterRestart();
 
   // Schedule system — load schedules and start the cron runner
   const scheduleStore = new ScheduleStore(kookrDir);
@@ -935,7 +937,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,
-    autonomyOrchestrator, suppressionTracker, scheduleService, scheduleRunner,
+    suppressionTracker, scheduleService, scheduleRunner,
     diagnosticRunner,
     terminalBackend,
     startupRecoverySummary,
@@ -1087,7 +1089,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStore, queue, monitor, adapter, adapterRegistry,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
     serverCwd, sttUrl, abortPendingSuggestion,
-    lifecycleExtras: { hookWatcher, watchdog, shadowRegistry, tokenTracker, autonomyOrchestrator },
+    lifecycleExtras: { hookWatcher, watchdog, shadowRegistry, tokenTracker },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
     broadcastProjectSummaries,
     launchTask: (opts) => launchTask(launchServiceDeps, opts),
@@ -1098,7 +1100,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     circuitBreakerRegistry,
     getMaxActiveTasks, suppressionTracker,
     availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
-    defaultAgentType: adapterRegistry.getDefaultType(),
+    defaultAgentType: getDefaultAgentType(),
+    getDefaultAgentType,
     scheduleService,
     ralphLoopService,
     getDiagnosticStatus: () => diagnosticRunner.getStatus(),
@@ -1163,9 +1166,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     // Drain any pending suggestion lifecycles before shutdown
     drainLifecycles(telemetryLog);
-
-    // Stop auto-proceed timers
-    autonomyOrchestrator.dispose();
 
     // Stop diagnostic runner
     diagnosticRunner.dispose();

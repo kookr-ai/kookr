@@ -6,7 +6,6 @@ import { userPlaybooksDir, pluginPlaybooksDir } from '../../core/playbook-discov
 import { getProjectId, projectIdFromRepoSpecifier } from '../../core/project-identity.js';
 import type { AgentType } from '../../core/agent-types.js';
 import type { PlaybookScope } from '../../core/playbook.js';
-import type { AutonomyLevel } from '../../core/tasks.js';
 import { canonicalizeCwd, type LaunchOpts } from '../launch-service.js';
 import { normalizePromptFileReferences } from '../prompt-file-paths.js';
 import { expandConfiguredCwd } from '../cwd-paths.js';
@@ -30,7 +29,6 @@ export interface PreparePlaybookLaunchInput {
   projectId?: string;
   playbookPath: string;
   parameterValues: Record<string, string>;
-  autonomy?: AutonomyLevel;
   agentType?: AgentType;
   /** Where to read the playbook file from. Defaults to 'project' for back-compat. */
   scope?: PlaybookScope;
@@ -123,7 +121,6 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       name: playbook.name,
       playbookId: playbook.id,
       playbookParameterValues: input.parameterValues,
-      autonomy: input.autonomy,
       agentType: input.agentType,
       projectId,
       dependencies: playbook.dependencies,

@@ -3,7 +3,7 @@ import { GitHubScannerService } from './github-scanner-service.js';
 import { GitHubStateStore } from './github-state-store.js';
 import { TaskStore } from './tasks.js';
 import { DEFAULT_GITHUB_SCANNER_CONFIG } from './github-types.js';
-import type { GitHubFetcher, GitHubPRState, GitHubReference } from './github-types.js';
+import type { GitHubFetcher, GitHubIssueState, GitHubPRState, GitHubReference } from './github-types.js';
 import type { AgentEvent } from './types.js';
 
 function createMockFetcher(available = true): GitHubFetcher {
@@ -352,6 +352,88 @@ describe('GitHubScannerService', () => {
       };
     }
 
+    function makeIssueRef(taskId: string, number: number): GitHubReference {
+      return {
+        type: 'issue', owner: 'acme', repo: 'app', number,
+        url: `https://github.com/acme/app/issues/${number}`,
+        taskId, detectedAt: new Date(), detectedFrom: 'agent-1',
+      };
+    }
+
+    function makeIssueState(ref: GitHubReference): GitHubIssueState {
+      return {
+        ref,
+        title: `Issue #${ref.number}`,
+        status: 'open',
+        author: 'alice',
+        labels: [],
+        commentCount: 0,
+        lastFetchedAt: new Date(),
+      };
+    }
+
+    it('uses batched fetchStates once per tick when the fetcher supports it', async () => {
+      const fetcher = createMockFetcher(true);
+      const prRef = makePRRef('task-1', 1);
+      const issueRef = makeIssueRef('task-1', 2);
+      stateStore.addReference(prRef);
+      stateStore.addReference(issueRef);
+      fetcher.fetchStates = vi.fn().mockResolvedValue({
+        prs: [makePRState(prRef)],
+        issues: [makeIssueState(issueRef)],
+      });
+
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher,
+        config: { ...DEFAULT_GITHUB_SCANNER_CONFIG, stateFetchIntervalMs: 1000 },
+        onChanges,
+      });
+      await scanner.start();
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fetcher.fetchStates).toHaveBeenCalledTimes(1);
+      expect(fetcher.fetchStates).toHaveBeenCalledWith([prRef, issueRef]);
+      expect(fetcher.fetchPRState).not.toHaveBeenCalled();
+      expect(fetcher.fetchIssueState).not.toHaveBeenCalled();
+      expect(stateStore.getTaskState('task-1').prs).toHaveLength(1);
+      expect(stateStore.getTaskState('task-1').issues).toHaveLength(1);
+    });
+
+    it('fetches only newly detected refs immediately instead of refetching all known refs', async () => {
+      const fetcher = createMockFetcher(true);
+      fetcher.fetchStates = vi.fn().mockResolvedValue({ prs: [], issues: [] });
+      const task = taskStore.createTask({ prompt: 'do stuff', cwd: '/tmp' });
+      const existingRef = makePRRef(task.id, 1);
+      stateStore.addReference(existingRef);
+      (fetcher.inferOwnerRepo as ReturnType<typeof vi.fn>).mockResolvedValue({ owner: 'acme', repo: 'app' });
+
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher,
+        config: DEFAULT_GITHUB_SCANNER_CONFIG,
+        onChanges,
+      });
+      await scanner.start();
+
+      const events: AgentEvent[] = [
+        {
+          type: 'tool_result',
+          sessionId: 'sess-1',
+          toolName: 'Bash',
+          toolResponse: 'Created PR https://github.com/acme/app/pull/99',
+        },
+      ];
+      await scanner.processEventsImmediate('agent-1', events, task.id);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(fetcher.fetchStates).toHaveBeenCalledTimes(1);
+      expect(fetcher.fetchStates).toHaveBeenCalledWith([
+        expect.objectContaining({ type: 'pr', owner: 'acme', repo: 'app', number: 99 }),
+      ]);
+    });
+
     it('concurrent fetch guard: second call returns immediately while first is in progress', async () => {
       const fetcher = createMockFetcher(true);
       const ref = makePRRef('task-1', 1);
@@ -417,7 +499,7 @@ describe('GitHubScannerService', () => {
       expect(fetcher.fetchPRState).toHaveBeenCalledTimes(2);
       // The error was logged
       expect(consoleError).toHaveBeenCalledWith(
-        expect.stringContaining('error fetching PR'),
+        expect.stringContaining('error fetching pr'),
         expect.any(Error),
       );
 
@@ -452,6 +534,128 @@ describe('GitHubScannerService', () => {
       // First ref was fetched, but second should be skipped due to generation change
       expect(fetcher.fetchPRState).toHaveBeenCalledTimes(1);
       expect(scanner.isActive()).toBe(false);
+    });
+  });
+
+  describe('repo-health tick', () => {
+    it('skips invalid project ids and never calls the fetcher when no tracked repos are set', async () => {
+      const repoHealthFetcher = vi.fn();
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher: createMockFetcher(true),
+        config: DEFAULT_GITHUB_SCANNER_CONFIG,
+        onChanges,
+        repoHealthFetcher,
+      });
+      await scanner.start();
+      // setTrackedGithubRepos silently filters unsafe ids
+      scanner.setTrackedGithubRepos(['github.com/owner/..', 'local/foo']);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(repoHealthFetcher).not.toHaveBeenCalled();
+      expect(scanner.getRepoHealthSnapshot().size).toBe(0);
+    });
+
+    it('drops cached entries for repos that left the tracked set', async () => {
+      const initial = new Map([
+        ['github.com/a/b', {
+          openIssues: 1, openPullRequests: 2,
+          pendingReviewPrs: [], repoUrl: 'https://github.com/a/b',
+          lastFetchedAt: '2025-01-01T00:00:00Z',
+        }],
+      ]);
+      const repoHealthFetcher = vi.fn().mockResolvedValueOnce(initial).mockResolvedValueOnce(new Map());
+      const onRepoHealthChanged = vi.fn();
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher: createMockFetcher(true),
+        config: DEFAULT_GITHUB_SCANNER_CONFIG,
+        onChanges,
+        repoHealthFetcher,
+        onRepoHealthChanged,
+      });
+      await scanner.start();
+
+      scanner.setTrackedGithubRepos(['github.com/a/b']);
+      await vi.runOnlyPendingTimersAsync();
+      // Resolve the awaited first tick
+      await Promise.resolve();
+      await Promise.resolve();
+      // Sanity: first tick populated the cache (via the immediate kick from start())
+      // We don't strictly need to assert here, but it confirms the setup.
+
+      // Now unpin the repo entirely
+      scanner.setTrackedGithubRepos([]);
+      // Next tick should observe empty tracked set and clear the cache
+      await vi.advanceTimersByTimeAsync(600_000);
+      await Promise.resolve();
+      expect(scanner.getRepoHealthSnapshot().size).toBe(0);
+    });
+
+    it('returns the result map via getRepoHealthSnapshot after a successful batch', async () => {
+      const fresh = new Map([
+        ['github.com/cli/cli', {
+          openIssues: 10, openPullRequests: 5,
+          pendingReviewPrs: [],
+          repoUrl: 'https://github.com/cli/cli',
+          lastFetchedAt: '2025-01-01T00:00:00Z',
+        }],
+      ]);
+      const repoHealthFetcher = vi.fn().mockResolvedValue(fresh);
+      const onRepoHealthChanged = vi.fn();
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher: createMockFetcher(true),
+        config: DEFAULT_GITHUB_SCANNER_CONFIG,
+        onChanges,
+        repoHealthFetcher,
+        onRepoHealthChanged,
+      });
+      await scanner.start();
+      scanner.setTrackedGithubRepos(['github.com/cli/cli']);
+      // The first kick was at start() with empty tracked set; trigger another tick now
+      await vi.advanceTimersByTimeAsync(600_000);
+      // Flush awaited microtasks from inside the tick
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const snap = scanner.getRepoHealthSnapshot();
+      expect(snap.get('github.com/cli/cli')?.openIssues).toBe(10);
+      expect(onRepoHealthChanged).toHaveBeenCalled();
+    });
+
+    it('preserves cache on whole-batch failure (fetcher returns null)', async () => {
+      const ok = new Map([
+        ['github.com/cli/cli', {
+          openIssues: 3, openPullRequests: 1,
+          pendingReviewPrs: [],
+          repoUrl: 'https://github.com/cli/cli',
+          lastFetchedAt: '2025-01-01T00:00:00Z',
+        }],
+      ]);
+      const repoHealthFetcher = vi.fn()
+        .mockResolvedValueOnce(ok)
+        .mockResolvedValueOnce(null); // second tick: whole-batch failure
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher: createMockFetcher(true),
+        config: DEFAULT_GITHUB_SCANNER_CONFIG,
+        onChanges,
+        repoHealthFetcher,
+      });
+      await scanner.start();
+      scanner.setTrackedGithubRepos(['github.com/cli/cli']);
+      await vi.advanceTimersByTimeAsync(600_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      // Second tick (null) must not blow away the cache
+      await vi.advanceTimersByTimeAsync(600_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(scanner.getRepoHealthSnapshot().get('github.com/cli/cli')?.openIssues).toBe(3);
     });
   });
 

@@ -1,4 +1,5 @@
 import { readFile, writeFile, rename } from 'node:fs/promises';
+import { DEFAULT_AGENT_TYPE, normalizeAgentType, type AgentType } from './agent-types.js';
 
 export interface KookrSettings {
   githubPollingEnabled: boolean;
@@ -7,6 +8,7 @@ export interface KookrSettings {
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
+  defaultAgentType: AgentType;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -16,6 +18,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   watchdogStaleThresholdSec: 30,
   repeatedErrorThreshold: 3,
   maxActiveTasks: 10,
+  defaultAgentType: DEFAULT_AGENT_TYPE,
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -57,6 +60,11 @@ export function validateSettings(raw: Record<string, unknown>): KookrSettings {
     maxTasks = Math.max(MIN_ACTIVE_TASKS, Math.min(MAX_ACTIVE_TASKS, Math.round(raw.maxActiveTasks)));
   }
 
+  const defaultAgentType =
+    typeof raw.defaultAgentType === 'string'
+      ? normalizeAgentType(raw.defaultAgentType)
+      : DEFAULT_SETTINGS.defaultAgentType;
+
   return {
     githubPollingEnabled: enabled,
     githubPollingIntervalSec: interval,
@@ -64,6 +72,7 @@ export function validateSettings(raw: Record<string, unknown>): KookrSettings {
     watchdogStaleThresholdSec: staleThreshold,
     repeatedErrorThreshold: errorThreshold,
     maxActiveTasks: maxTasks,
+    defaultAgentType,
   };
 }
 

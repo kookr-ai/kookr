@@ -20,7 +20,6 @@ function task(overrides: Partial<Task> = {}): Task {
       gitBranch: 'feat-issue-223-completion-metadata',
       gitCommit: 'head-sha',
     }],
-    autonomy: 'supervised',
     createdAt,
     updatedAt: createdAt,
     ...overrides,

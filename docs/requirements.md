@@ -87,6 +87,17 @@ The system SHOULD preserve enough closeout metadata for completed Kookr-managed 
 
 **Evidence:** `src/core/completion-digest.ts`, `src/server/completion-metadata.ts`, `src/server/ws-handlers/lifecycle-handler.ts`, `src/server/ralph-loop-service.ts`, `src/core/completion-digest.test.ts`, `src/server/completion-metadata.test.ts`.
 
+### R1.8: Acknowledge User Completion Quickly [F4.4] — SHOULD — `done`
+
+The system SHOULD acknowledge a user-initiated task completion before slow terminal teardown or closeout metadata enrichment finishes.
+
+**Acceptance criteria:**
+- Clicking Complete transitions the task to `completed` without waiting for the terminal backend's graceful kill timeout.
+- Completion digest and token/cost enrichment continue in the background and update the completed task when available.
+- Ralph iteration completion MAY remain synchronous when the terminal Stop hook is required to advance the loop.
+
+**Evidence:** `src/server/agent-lifecycle.ts`, `src/server/ws-handlers/lifecycle-handler.ts`, `src/server/agent-lifecycle.test.ts`.
+
 ---
 
 ## R2: Anomaly Detection
@@ -445,6 +456,21 @@ The system SHOULD allow authorized Telegram users to choose the coding agent use
 
 **Evidence:** `src/integrations/telegram/index.ts` (`/agent` command, confirmation text, launch call), `src/integrations/telegram/rephrase.ts` (structured `agentType` schema), `src/integrations/telegram/parse-task.ts` (`--agent` parser), `src/integrations/telegram/safety.ts` (persistent per-user defaults), `src/server/launch-service.ts` (`KOOKR_REMOTE_CHAT_ALLOW_CODEX` trust-boundary guard), tests in `src/integrations/telegram/*.test.ts` and `src/server/launch-service.test.ts`.
 
+### R4b.5a: Dashboard Default Agent Selection — SHOULD — `done`
+
+The system SHOULD allow the user to set a dashboard-wide default coding agent for launches that do not provide an explicit agent type.
+
+**Acceptance criteria:**
+- Settings exposes a Default agent control listing server-supported agent types.
+- The selected default is persisted in Kookr settings and survives server restart.
+- Manual Launch, Quick Launch, Playbook launch, Schedule creation, REST API launch, and `kookr-spawn` inherit the persisted default when they do not provide an explicit agent type.
+- Explicit per-launch agent choices override the persisted default.
+- Telegram launches keep the stricter `KOOKR_REMOTE_CHAT_ALLOW_CODEX=1` guard when the default resolves to Codex CLI.
+
+**Rationale:** Agent-spawned child tasks and CLI launches cannot read browser-local preferences. A server-side default keeps Kookr's UI, API, and child-task behavior coherent.
+
+**Evidence:** `src/core/settings-store.ts`, `src/server/launch-service.ts`, `src/server/index.ts`, `src/frontend/components/SettingsDialog.tsx`, tests in `src/core/settings-store.test.ts`, `src/server/settings-api.test.ts`, `src/server/launch-service.test.ts`, and `src/frontend/components/SettingsDialog.test.ts`.
+
 ### R4b.6: Looped Playbook Conflict Guidance [F6.7] — SHOULD — `done`
 
 The system SHOULD surface actionable inline guidance when a looped playbook launch cannot start because an existing Kookr loop or standalone Ralph plugin conflicts with it.
@@ -601,6 +627,7 @@ The system SHOULD persist project sidebar ordering, pinned projects, hidden proj
 - Pinned projects are included in project summaries after restart even when no active agent currently references them
 - The frontend hydrates sidebar preferences from the backend and migrates existing browser-local sidebar preferences when the backend store is empty
 - Browser `localStorage` remains a fallback/cache rather than the source of truth after backend hydration
+- Project sidebar icons show active task load rather than PR contribution counts; stalled projects show healthy/active task counts.
 
 **Evidence:** `src/core/project-sidebar-store.ts`, `src/server/routes/project-routes.ts` (`/api/projects/sidebar`), `src/frontend/store/slices/project-sidebar-slice.ts`, `src/core/project-sidebar-store.test.ts`, `src/core/project-summary.test.ts`, `src/server/index.test.ts`, `src/frontend/store/slices/project-sidebar-discovery.test.ts`.
 
@@ -609,13 +636,26 @@ The system SHOULD persist project sidebar ordering, pinned projects, hidden proj
 The system SHOULD reduce repeated metadata and long prompt noise when a developer is triaging running tasks on a large dashboard.
 
 **Acceptance criteria:**
-- The selected task header keeps title, status, autonomy, critical worktree health, age, and primary actions visible while moving provider, hooks, project, branch, cost, and token details into a details affordance
+- The selected task header keeps title, status, critical worktree health, age, and primary actions visible while moving provider, hooks, project, branch, cost, and token details into a details affordance
 - When a project and task are both selected on a wide viewport, the project drawer switches to a compact summary instead of showing full contribution history, settings, and recent tasks
 - Oversized launch prompts in the Activity pane render as a bounded preview with an explicit full-prompt expander
 - Healthy task rows avoid repeated project metadata when the user is already scoped to that project
 - The global top bar avoids duplicating finding/healthy counts already shown in the findings and status areas
 
 **Evidence:** `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/ActivityPanel.tsx`, `src/frontend/components/ProjectDetailDrawer.tsx`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/components/TopBar.tsx`, density-focused component tests.
+
+### R5.9: API-Minimal GitHub Awareness Polling — SHOULD — `done`
+
+The system SHOULD poll GitHub PR and issue state with the fewest API calls needed for the configured polling interval.
+
+**Acceptance criteria:**
+- GitHub references detected from agent output are fetched immediately without refetching unrelated known references
+- Periodic GitHub state refresh batches all known references by repository
+- Each repository batch uses a single GraphQL request that returns PR metadata, review threads, review decision, comments, checks, issue metadata, labels, and comment counts
+- The same GitHub object referenced by multiple tasks remains visible in each task without causing duplicate query selections
+- Existing WebSocket `githubUpdate` messages and GitHub alert behavior are preserved
+
+**Evidence:** `src/core/github-scanner-service.ts`, `src/core/github-state-store.ts`, `src/adapters/github-fetcher.ts`, `src/core/github-scanner-service.test.ts`, `src/core/github-state-store.test.ts`, `src/adapters/github-fetcher.test.ts`, `docs/reports/2026-05-12-github-polling-api-call-audit.md`.
 
 ---
 
@@ -915,6 +955,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R4b.3 | — | SHOULD | done | useStore, DetailPanel, App |
 | R4b.4 | — | SHOULD | done | QuickLaunch, App |
 | R4b.5 | — | SHOULD | done | telegram/index, telegram/rephrase, launch-service |
+| R4b.5a | — | SHOULD | done | settings-store, launch-service, SettingsDialog |
 | R4b.6 | F6.7 | SHOULD | done | looped-playbook-launch, PlaybookBrowser |
 | R4b.7 | — | SHALL | done | launch-service, ralph-loop-service, implement-github-issue playbook |
 | R4b.8 | F6.2, F6.6 | SHALL | done | LaunchTaskDialog, PlaybookBrowser, playbook-launch, task-routes |

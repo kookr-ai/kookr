@@ -688,8 +688,11 @@ describe('WebSocket MessageRouter', () => {
     expect(after).toBeDefined();
     expect(after!.events).toEqual([]);
     expect(after!.taskStatus).toBe('completed');
-    expect(after!.completionDigest).toBeDefined();
-    expect(after!.completionDigest!.bullets.length).toBeGreaterThan(0);
+    await vi.waitFor(() => {
+      const withDigest = monitor.getSnapshot().find(a => a.agentId === tmuxName);
+      expect(withDigest!.completionDigest).toBeDefined();
+      expect(withDigest!.completionDigest!.bullets.length).toBeGreaterThan(0);
+    });
   });
 
   test('completeTask with nonexistent task throws', async () => {
@@ -2416,152 +2419,6 @@ describe('WebSocket MessageRouter — cancelSnooze', () => {
       kind: 'finding',
     });
     expect(loggedEvents.filter((e) => e.type === 'finding_resolved')).toHaveLength(0);
-  });
-});
-
-describe('WebSocket MessageRouter — cancelAutoProceed', () => {
-  test('cancelAutoProceed delegates to the autonomy orchestrator', async () => {
-    const taskStore = new TaskStore();
-    const queue = new AttentionQueue();
-    const monitor = new Monitor(taskStore, queue);
-    const terminal = new FakeTerminalBackend();
-    const adapter = new ClaudeCodeAdapter(terminal, taskStore);
-
-    const cancelByUserCalls: string[] = [];
-    const fakeOrchestrator = {
-      isFiring: () => false,
-      onUserRespond: () => {},
-      onDirectReply: () => {},
-      onPermissionChoice: () => {},
-      onRestInput: () => {},
-      onAgentStopped: () => {},
-      onSessionCleanup: () => {},
-      onAutonomyChanged: () => {},
-      cancelByUser: async (agentId: string) => { cancelByUserCalls.push(agentId); },
-      getActiveProceedAt: () => undefined,
-      rearmAfterRestart: () => {},
-      dispose: () => {},
-    };
-
-    const router = new MessageRouter({
-      taskStore, queue, monitor, adapter,
-      send: () => {},
-      autonomyOrchestrator: fakeOrchestrator as unknown as import('./autonomy-orchestrator.js').AutonomyOrchestrator,
-    });
-
-    await router.handleMessage({ type: 'cancelAutoProceed', agentId: 'agent-x' });
-
-    expect(cancelByUserCalls).toEqual(['agent-x']);
-  });
-
-  test('cancelAutoProceed without an orchestrator is a silent no-op', async () => {
-    // Mirrors the production path where autonomy features are off: router is
-    // built with no orchestrator and the message must not throw.
-    const taskStore = new TaskStore();
-    const queue = new AttentionQueue();
-    const monitor = new Monitor(taskStore, queue);
-    const terminal = new FakeTerminalBackend();
-    const adapter = new ClaudeCodeAdapter(terminal, taskStore);
-
-    const router = new MessageRouter({
-      taskStore, queue, monitor, adapter,
-      send: () => {},
-    });
-
-    await expect(
-      router.handleMessage({ type: 'cancelAutoProceed', agentId: 'agent-x' }),
-    ).resolves.toBeUndefined();
-  });
-});
-
-describe('WebSocket MessageRouter — setAutonomy', () => {
-  let taskStore: TaskStore;
-  let queue: AttentionQueue;
-  let monitor: Monitor;
-  let terminal: FakeTerminalBackend;
-  let adapter: ClaudeCodeAdapter;
-  let router: MessageRouter;
-  let loggedEvents: Array<{ type: string; [key: string]: unknown }>;
-
-  beforeEach(() => {
-    taskStore = new TaskStore();
-    queue = new AttentionQueue();
-    monitor = new Monitor(taskStore, queue);
-    terminal = new FakeTerminalBackend();
-    adapter = new ClaudeCodeAdapter(terminal, taskStore);
-    loggedEvents = [];
-
-    const fakeLog = {
-      append: async (event: { type: string; [key: string]: unknown }) => {
-        loggedEvents.push(event);
-      },
-      getFilePath: () => '/fake/path',
-    };
-
-    router = new MessageRouter({
-      taskStore, queue, monitor, adapter,
-      send: () => {},
-      interactionLog: fakeLog as unknown as import('../core/interaction-log.js').DeferredInteractionLogWriter,
-    });
-  });
-
-  test('setAutonomy flips the task level and logs autonomy_changed', async () => {
-    const task = taskStore.createTask('Fix bug', '/cwd');
-    expect(task.autonomy).toBe('supervised');
-
-    await router.handleMessage({
-      type: 'setAutonomy',
-      taskId: task.id,
-      level: 'autonomous',
-    });
-
-    expect(taskStore.getTask(task.id)!.autonomy).toBe('autonomous');
-    const evt = loggedEvents.find((e) => e.type === 'autonomy_changed');
-    expect(evt).toBeDefined();
-    expect(evt!.taskId).toBe(task.id);
-    expect(evt!.from).toBe('supervised');
-    expect(evt!.to).toBe('autonomous');
-  });
-
-  test('setAutonomy for unknown task is a no-op (no log entry)', async () => {
-    await router.handleMessage({
-      type: 'setAutonomy',
-      taskId: 'nonexistent',
-      level: 'autonomous',
-    });
-
-    expect(loggedEvents.filter((e) => e.type === 'autonomy_changed')).toHaveLength(0);
-  });
-
-  test('setAutonomy to supervised cancels auto-proceed timers for the task', async () => {
-    const task = taskStore.createTask({ prompt: 'Fix bug', cwd: '/cwd', autonomy: 'autonomous' });
-    const autonomyChanges: Array<{ taskId: string; level: string }> = [];
-    const fakeOrchestrator = {
-      isFiring: () => false,
-      onUserRespond: () => {},
-      onDirectReply: () => {},
-      onPermissionChoice: () => {},
-      onRestInput: () => {},
-      onAgentStopped: () => {},
-      onSessionCleanup: () => {},
-      onAutonomyChanged: (taskId: string, level: string) => {
-        autonomyChanges.push({ taskId, level });
-      },
-      cancelByUser: async () => {},
-      getActiveProceedAt: () => undefined,
-      rearmAfterRestart: () => {},
-      dispose: () => {},
-    };
-
-    const r = new MessageRouter({
-      taskStore, queue, monitor, adapter,
-      send: () => {},
-      autonomyOrchestrator: fakeOrchestrator as unknown as import('./autonomy-orchestrator.js').AutonomyOrchestrator,
-    });
-
-    await r.handleMessage({ type: 'setAutonomy', taskId: task.id, level: 'supervised' });
-
-    expect(autonomyChanges).toEqual([{ taskId: task.id, level: 'supervised' }]);
   });
 });
 

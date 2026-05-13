@@ -1,13 +1,13 @@
 import { realpathSync } from 'node:fs';
 import { resolve as pathResolve } from 'node:path';
-import type { Task, TaskStore, AutonomyLevel } from '../core/tasks.js';
+import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
 import { type AgentType, DEFAULT_AGENT_TYPE } from '../core/agent-types.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { LaunchDependency } from '../core/playbook.js';
 import {
-  LaunchPreflightError,
-  runLaunchDependencyPreflights,
+  redactDiagnosticText,
   type DependencyPreflightRunner,
+  type LaunchPreflightFinding,
 } from '../core/launch-dependency-preflight.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
@@ -15,6 +15,7 @@ import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import { MAX_ACTIVE_TASKS } from './config.js';
 import { registerNewAgent, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { hashPrompt } from './hash-prompt.js';
+import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails } from './worktree-guardrails.js';
 
@@ -40,6 +41,8 @@ export interface LaunchServiceDeps {
   lifecycleDeps: AgentLifecycleDeps;
   /** Live getter for max concurrent tasks. Falls back to static default if not provided. */
   getMaxActiveTasks?: () => number;
+  /** Live getter for the configured default agent type. Falls back to the registry default if not provided. */
+  getDefaultAgentType?: () => AgentType;
   interactionLog?: DeferredInteractionLogWriter;
   dependencyPreflightRunner?: DependencyPreflightRunner;
 }
@@ -55,8 +58,6 @@ export interface LaunchOpts {
   playbookId?: string;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
-  /** Autonomy level for the task. Default: 'supervised'. */
-  autonomy?: AutonomyLevel;
   /** Agent type to launch. Defaults to the registry default. */
   agentType?: AgentType;
   /** When true, always create a new task instead of returning an existing active duplicate. */
@@ -65,7 +66,7 @@ export interface LaunchOpts {
   projectId?: string;
   /** Where the launch came from — for server-side log provenance. Default: 'api'. */
   launchSource?: 'cli' | 'ui' | 'api' | 'remote-chat-telegram';
-  /** External services that must be available before launching the agent. */
+  /** External services the launch should check and surface as launch health. */
   dependencies?: LaunchDependency[];
   /**
    * When true, inject `RALPH_VERDICT_FILE` and `RALPH_ITERATION` env into
@@ -154,7 +155,11 @@ export async function launchTask(
 ): Promise<LaunchResult> {
   const { taskStore, adapterRegistry, lifecycleDeps } = deps;
   const maxActive = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
-  const agentType = opts.agentType ?? adapterRegistry.getDefaultType() ?? DEFAULT_AGENT_TYPE;
+  const agentType =
+    opts.agentType ??
+    deps.getDefaultAgentType?.() ??
+    adapterRegistry.getDefaultType() ??
+    DEFAULT_AGENT_TYPE;
 
   // R19 trust-boundary check (rfc-remote-chat-trigger §4): Telegram-spawned
   // Codex is opt-in because its permission model is more permissive than
@@ -170,10 +175,12 @@ export async function launchTask(
     );
   }
 
-  const dependencyFindings = await (deps.dependencyPreflightRunner ?? runLaunchDependencyPreflights)(opts.dependencies);
-  if (dependencyFindings.length > 0) {
-    throw new LaunchPreflightError(dependencyFindings);
-  }
+  const dependencyFindings = sanitizeLaunchPreflightFindings(await collectAdvisoryDependencyFindings(
+    deps.dependencyPreflightRunner ?? runLaunchDependencyPreflights,
+    opts.dependencies,
+  ));
+  const launchHealthSummary = summarizeLaunchHealth(dependencyFindings);
+  const launchNote = formatLaunchNote(dependencyFindings);
 
   const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd);
   const effectivePrompt = normalizePromptFileReferences(guardedPrompt, opts.cwd);
@@ -201,9 +208,10 @@ export async function launchTask(
     cwd: opts.cwd,
     criteria: opts.criteria,
     parentTaskId: opts.parentTaskId,
-    autonomy: opts.autonomy,
     agentType,
     playbookParameterValues: opts.playbookParameterValues,
+    launchHealthSummary,
+    launchNote,
   });
 
   if (opts.name) task.name = opts.name;
@@ -228,7 +236,7 @@ export async function launchTask(
     : undefined;
 
   try {
-    await adapterRegistry.get(agentType).launch(task.id, effectivePrompt, opts.cwd, undefined, adapterOpts);
+    await adapterRegistry.get(agentType).launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts);
   } catch (err) {
     // Clean up the task record so dedup doesn't block future retries
     taskStore.deleteTask(task.id);
@@ -238,6 +246,57 @@ export async function launchTask(
   console.log(`[launch] source=${source} agent=${agentType} taskId=${task.id} cwd=${opts.cwd}`);
   await registerNewAgent(task, lifecycleDeps);
   return { task, queued: false };
+}
+
+export function promptWithLaunchNote(task: Pick<Task, 'prompt' | 'launchNote'>): string {
+  return task.launchNote ? `${task.launchNote}\n\n${task.prompt}` : task.prompt;
+}
+
+function summarizeLaunchHealth(findings: LaunchPreflightFinding[]): TaskLaunchHealthSummary | undefined {
+  if (findings.length === 0) return undefined;
+  return {
+    degradedDependencies: [...new Set(findings.map((finding) => finding.dependency))],
+    findings,
+  };
+}
+
+function sanitizeLaunchPreflightFindings(findings: LaunchPreflightFinding[]): LaunchPreflightFinding[] {
+  return findings.map((finding) => ({
+    ...finding,
+    ...(finding.detail ? { detail: redactDiagnosticText(finding.detail, 500) } : {}),
+  }));
+}
+
+function formatLaunchNote(findings: LaunchPreflightFinding[]): string | undefined {
+  if (findings.length === 0) return undefined;
+  const lines = findings.map((finding) => {
+    const detail = finding.detail ? ` Detail: ${finding.detail}` : '';
+    return `- ${finding.summary} (${finding.category}).${detail} Recommended action: ${finding.recommendedAction}`;
+  });
+  return [
+    '[Kookr launch warning] One or more advisory launch dependencies are degraded. Continue the task without assuming those services are available.',
+    ...lines,
+  ].join('\n');
+}
+
+async function collectAdvisoryDependencyFindings(
+  runner: DependencyPreflightRunner,
+  dependencies: LaunchDependency[] | undefined,
+): Promise<LaunchPreflightFinding[]> {
+  try {
+    return await runner(dependencies);
+  } catch (err) {
+    console.warn('[launch] advisory dependency preflight failed internally:', err);
+    if (!dependencies?.includes('kb')) return [];
+    return [{
+      dependency: 'kb',
+      status: 'failed',
+      category: 'unknown',
+      summary: 'KB dependency preflight could not complete',
+      detail: redactDiagnosticText(err instanceof Error ? err.message : String(err), 500),
+      recommendedAction: 'Run `kb doctor --format=json` manually and address the reported KB failure.',
+    }];
+  }
 }
 
 /**

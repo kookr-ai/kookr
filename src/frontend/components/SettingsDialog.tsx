@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { AutonomyLevel } from '../../shared/protocol.js';
-import { isSoundEnabled, setSoundEnabled } from '../audio/sound.js';
+import { AVAILABLE_AGENT_TYPES, type AgentType } from '../../shared/protocol.js';
+import { useSoundPreference } from '../audio/sound.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
+import { useKookrStore } from '../store/useStore.js';
+import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { HookInventorySection } from './HookInventorySection.js';
 
 interface ServerSettings {
@@ -11,6 +13,7 @@ interface ServerSettings {
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
+  defaultAgentType: AgentType;
   loadedFromDefaults?: boolean;
 }
 
@@ -23,15 +26,15 @@ type SettingsTab = 'general' | 'hooks';
 const SETTINGS_TABS: readonly SettingsTab[] = ['general', 'hooks'];
 
 export function SettingsDialog({ onClose }: Props) {
+  const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
+  const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
+  const agentOptions = availableAgentTypes.length > 0 ? availableAgentTypes : AVAILABLE_AGENT_TYPES;
   const [settings, setSettings] = useState<ServerSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
-  const [autonomy, setAutonomy] = useState<AutonomyLevel>(() =>
-    (localStorage.getItem('kookr:defaultAutonomy') as AutonomyLevel) || 'supervised'
-  );
-  const [soundOn, setSoundOn] = useState(isSoundEnabled);
+  const sound = useSoundPreference();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tabRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,
@@ -95,17 +98,15 @@ export function SettingsDialog({ onClose }: Props) {
     }, 500);
   }
 
-  function handleAutonomyChange(level: AutonomyLevel) {
-    setAutonomy(level);
-    localStorage.setItem('kookr:defaultAutonomy', level);
+  function handleDefaultAgentChange(agentType: AgentType) {
+    if (!settings) return;
+    const updated = { ...settings, defaultAgentType: agentType };
+    setSettings(updated);
+    void saveSettings(updated);
   }
 
   function handleSoundToggle() {
-    setSoundOn((prev) => {
-      const next = !prev;
-      setSoundEnabled(next);
-      return next;
-    });
+    sound.setEnabled(!sound.enabled);
   }
 
   function handleTabKeyDown(tab: SettingsTab, event: React.KeyboardEvent<HTMLButtonElement>) {
@@ -184,7 +185,7 @@ export function SettingsDialog({ onClose }: Props) {
                         </span>
                       </div>
                       <button
-                        className={`settings-toggle ${soundOn ? 'active' : ''}`}
+                        className={`settings-toggle ${sound.enabled ? 'active' : ''}`}
                         onClick={handleSoundToggle}
                         aria-label="Toggle sound alerts"
                       >
@@ -252,6 +253,24 @@ export function SettingsDialog({ onClose }: Props) {
                     <div className="settings-section-title">Task Management</div>
                     <div className="settings-row">
                       <div className="settings-row-info">
+                        <span className="settings-label">Default agent</span>
+                        <span className="settings-desc">
+                          Pre-selected agent for new tasks and child task launches when no explicit
+                          agent is supplied.
+                        </span>
+                      </div>
+                      <div className="settings-agent-select">
+                        <AgentTypeSelector
+                          value={settings.defaultAgentType ?? serverDefaultAgentType}
+                          onChange={handleDefaultAgentChange}
+                          options={agentOptions}
+                          label="Agent"
+                          compact
+                        />
+                      </div>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
                         <span className="settings-label">Max concurrent tasks</span>
                         <span className="settings-desc">
                           Maximum number of tasks that can run at the same time. Additional tasks
@@ -269,32 +288,6 @@ export function SettingsDialog({ onClose }: Props) {
                           max={25}
                           step={1}
                         />
-                      </div>
-                    </div>
-                    <div className="settings-row">
-                      <div className="settings-row-info">
-                        <span className="settings-label">Default autonomy</span>
-                        <span className="settings-desc">
-                          Pre-selected autonomy level when launching new tasks. "Supervised" agents
-                          pause and ask for confirmation before taking significant actions. "Autonomous"
-                          agents proceed without asking, using the --dangerously-skip-permissions flag.
-                        </span>
-                      </div>
-                      <div className="autonomy-options">
-                        <button
-                          type="button"
-                          className={`autonomy-option${autonomy === 'supervised' ? ' active' : ''}`}
-                          onClick={() => handleAutonomyChange('supervised')}
-                        >
-                          Supervised
-                        </button>
-                        <button
-                          type="button"
-                          className={`autonomy-option${autonomy === 'autonomous' ? ' active' : ''}`}
-                          onClick={() => handleAutonomyChange('autonomous')}
-                        >
-                          Autonomous
-                        </button>
                       </div>
                     </div>
                   </div>

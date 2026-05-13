@@ -131,19 +131,37 @@ function DiagnosticSection() {
   );
 }
 
-export function DetectionStatsPanel() {
-  const [expanded, setExpanded] = useState(false);
+interface DetectionStatsPanelProps {
+  defaultExpanded?: boolean;
+  showEmpty?: boolean;
+}
+
+export function DetectionStatsPanel({ defaultExpanded = false, showEmpty = false }: DetectionStatsPanelProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const stats = useDetectionStats();
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
   const diagnosticReport = useKookrStore((s) => s.diagnosticReport);
 
-  if (!stats) return null;
+  if (!stats) {
+    if (!showEmpty) return null;
+    return (
+      <div className="detection-stats-section">
+        <div className="section-header">
+          <span className="section-chevron"> </span>
+          <span className="stats-label">Detection Stats</span>
+        </div>
+        <div className="detection-stats-body">
+          <div className="stats-row muted">Loading detection stats...</div>
+        </div>
+      </div>
+    );
+  }
 
   const totalFires = Object.values(stats.fires).reduce((a, b) => a + b, 0);
   const totalChecks = Object.values(stats.checks).reduce((a, b) => a + b, 0);
 
   // Nothing detected yet — don't clutter the panel
-  if (totalChecks === 0) return null;
+  if (totalChecks === 0 && !showEmpty) return null;
 
   // Only show types that have fired at least once
   const firedTypes = Object.entries(stats.fires)
@@ -173,7 +191,9 @@ export function DetectionStatsPanel() {
       {expanded && (
         <div className="detection-stats-body">
           <DiagnosticSection />
-          {firedTypes.length === 0 && (
+          {totalChecks === 0 ? (
+            <div className="stats-row muted">No detection checks recorded yet</div>
+          ) : firedTypes.length === 0 && (
             <div className="stats-row muted">No anomalies detected yet ({totalChecks} checks run)</div>
           )}
           {firedTypes.map(([type, fires]) => {

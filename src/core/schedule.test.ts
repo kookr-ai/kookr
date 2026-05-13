@@ -29,7 +29,6 @@ describe('ScheduleStore', () => {
     expect(schedule.name).toBe('Nightly Triage');
     expect(schedule.cron).toBe('0 0 * * *');
     expect(schedule.enabled).toBe(true);
-    expect(schedule.autonomy).toBe('autonomous');
     expect(schedule.agentType).toBe('claude-code');
   });
 

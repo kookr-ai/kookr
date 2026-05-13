@@ -20,7 +20,6 @@ import { MessageRouter } from './ws.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
 import type { AgentLifecycleDeps } from './agent-lifecycle.js';
 import type { CircuitBreakerRegistry } from '../core/circuit-breaker.js';
-import type { AutonomyOrchestrator } from './autonomy-orchestrator.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { AgentType, AvailableAgentType } from '../core/agent-types.js';
 import type { ScheduleService } from './schedule-service.js';
@@ -48,7 +47,6 @@ export interface WsConnectionDeps {
     watchdog: { unregisterAgent(agentId: string): void };
     shadowRegistry?: { unregisterAgent(agentId: string): void };
     tokenTracker?: { unregister(transcriptPath: string): void };
-    autonomyOrchestrator?: AutonomyOrchestrator;
   };
   agentLifecycleDeps: AgentLifecycleDeps;
   broadcastToAll: (msg: ServerMessage) => void;
@@ -69,6 +67,7 @@ export interface WsConnectionDeps {
   suppressionTracker?: SnoozeSuppressionTracker;
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentType;
+  getDefaultAgentType?: () => AgentType;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   /** Get latest self-diagnostic status (for initial connection burst). */
@@ -117,11 +116,11 @@ export function handleWsConnection(
     lifecycleExtras, sttUrl,
     agentLifecycleDeps, broadcastToAll, launchTask,
     circuitBreakerRegistry: deps.circuitBreakerRegistry,
-    autonomyOrchestrator: lifecycleExtras.autonomyOrchestrator,
     getMaxActiveTasks: deps.getMaxActiveTasks,
     suppressionTracker: deps.suppressionTracker,
     availableAgentTypes: deps.availableAgentTypes,
     defaultAgentType: deps.defaultAgentType,
+    getDefaultAgentType: deps.getDefaultAgentType,
     scheduleService: deps.scheduleService,
     ralphLoopService: deps.ralphLoopService,
     workspaceEnabled: deps.workspaceEnabled,
@@ -161,6 +160,7 @@ export function handleWsConnection(
       getSkillTrackedProjects: () => deps.skillDiscoveryState?.getProjects() ?? [],
       getRegistryActiveProjects: deps.getRegistryActiveProjects,
       prLessonsHolder: deps.prLessonsState,
+      getTaskGithubReferences: (taskId) => githubStateStore.getReferences(taskId),
     });
     if (projects.length > 0 && ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'projectSummaries', projects }));

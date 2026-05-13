@@ -1073,7 +1073,6 @@ Review daily work.
         { label: 'renameTask missing name', payload: { type: 'renameTask', taskId: 't1' }, expectDetailSubstring: 'name' },
         { label: 'telemetry with non-array events', payload: { type: 'telemetry', events: 'nope' }, expectDetailSubstring: 'events' },
         { label: 'launchPlaybook with non-object parameterValues', payload: { type: 'launchPlaybook', playbookPath: 'p', cwd: '/c', parameterValues: 'x' }, expectDetailSubstring: 'parameterValues' },
-        { label: 'setAutonomy with invalid level', payload: { type: 'setAutonomy', taskId: 't1', level: 'chaos' }, expectDetailSubstring: 'level' },
         { label: 'achievement:setEnabled with non-boolean enabled', payload: { type: 'achievement:setEnabled', enabled: 'yes' }, expectDetailSubstring: 'enabled' },
         { label: 'findingFeedback with wrong verdict', payload: { type: 'findingFeedback', agentId: 'a', anomalyType: 'api_error', explanation: 'e', verdict: 'true_positive' }, expectDetailSubstring: 'verdict' },
         { label: 'workspace:getView missing projectId', payload: { type: 'workspace:getView' }, expectDetailSubstring: 'projectId' },

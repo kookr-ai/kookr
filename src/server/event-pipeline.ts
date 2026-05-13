@@ -12,7 +12,6 @@ import { generateSuggestedResponses } from '../core/response-suggest.js';
 import { extractPermissionActions } from '../core/permission-actions.js';
 import { isPermissionRequestEvent } from '../core/types.js';
 import type { LlmClient } from '../core/llm-client.js';
-import type { AutonomyOrchestrator } from './autonomy-orchestrator.js';
 import type { DeferredTelemetryLogWriter } from '../core/telemetry.js';
 import {
   generateSuggestionId, getActiveSuggestionId,
@@ -34,7 +33,6 @@ export interface EventPipelineDeps {
   llmClient: LlmClient | null;
   serverCwd: string;
   broadcastToAll: (msg: ServerMessage) => void;
-  autonomyOrchestrator?: AutonomyOrchestrator;
   telemetryLog?: DeferredTelemetryLogWriter;
   /** Optional v5 checkpoint cycler — advances state on Stop events. */
   checkpointCycler?: CheckpointCycler;
@@ -203,9 +201,6 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     }
     const snapshot = monitor.getSnapshot();
     broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: deps.hookIngestion }));
-
-    // Auto-proceed: delegate scheduling decision to orchestrator
-    deps.autonomyOrchestrator?.scheduleIfNeeded(tmuxName);
 
     // On stop/stop_failure events, immediately scan transcript for updated spending
     if (event.type === 'stop' || event.type === 'stop_failure') {

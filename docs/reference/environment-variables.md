@@ -113,7 +113,7 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
-| `KOOKR_BUDGET_WARN_USD` | `5` | Number in USD, `0` disables | Per-task reactive token-cost warning threshold. Critical alerts fire at twice this value. Invalid or blank values use the default. |
+| `KOOKR_BUDGET_WARN_USD` | `25` | Number in USD, `0` disables | Per-task reactive token-cost warning threshold. Critical alerts fire at twice this value. Invalid or blank values use the default. |
 | `KOOKR_AUTO_REFLECT_DISABLE` | unset | `1` to disable | Kill switch for task-feedback reflection spawning. |
 
 ## Hooks And Contribution Tracking

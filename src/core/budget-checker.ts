@@ -112,7 +112,7 @@ function buildExplanation(
  */
 export function readBudgetThresholdFromEnv(
   env: NodeJS.ProcessEnv = process.env,
-  defaultUsd = 5,
+  defaultUsd = 25,
 ): number {
   const raw = env.KOOKR_BUDGET_WARN_USD;
   if (raw == null || raw.trim() === '') return defaultUsd;

@@ -83,7 +83,6 @@ type LaunchPlaybookMessage = {
   taskTargetCwd?: string;       // where the agent should run
   projectId?: string;           // selected project metadata hint
   parameterValues: Record<string, string>;
-  autonomy?: AutonomyLevel;
   agentType?: AgentType;
 };
 ```
@@ -98,7 +97,6 @@ type NormalizedPlaybookLaunchRequest = {
   playbookPath: string;
   parameterValues: Record<string, string>;
   requestedProjectId?: string;
-  autonomy?: AutonomyLevel;
   agentType?: AgentType;
 };
 ```

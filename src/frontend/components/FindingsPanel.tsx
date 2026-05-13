@@ -1,13 +1,11 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useKookrStore } from '../store/useStore.js';
-import type { AgentState, ClientMessage, AutonomyLevel } from '../../shared/protocol.js';
+import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { track, trackClick } from '../telemetry.js';
 import { agentProviderPresentation, formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch, worktreeHealthLabel, worktreeHealthTitle } from '../presentation.js';
 import { Tooltip } from './Tooltip.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
-import { DetectionStatsPanel } from './DetectionStatsPanel.js';
-import { CircuitBreakerPanel } from './CircuitBreakerPanel.js';
 import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import { useDnd } from '../hooks/useDnd.js';
@@ -179,31 +177,6 @@ function EditableName({ agent, send, onBeforeEdit }: {
   );
 }
 
-function AutonomyBadge({ agent, send }: {
-  agent: AgentState;
-  send: (msg: ClientMessage) => void;
-}) {
-  if (!agent.taskId || !agent.autonomy) return null;
-  const isAuto = agent.autonomy === 'autonomous';
-  const nextLevel: AutonomyLevel = isAuto ? 'supervised' : 'autonomous';
-  const title = isAuto
-    ? 'Autonomous — auto-proceeds when stopped. Click to switch to supervised.'
-    : 'Supervised — waits for your input. Click to switch to autonomous.';
-
-  return (
-    <span
-      className={`autonomy-badge-inline ${isAuto ? 'auto' : 'supervised'}`}
-      title={title}
-      onClick={(e) => {
-        e.stopPropagation();
-        send({ type: 'setAutonomy', taskId: agent.taskId!, level: nextLevel });
-      }}
-    >
-      {isAuto ? 'AUTO' : 'SUPERVISED'}
-    </span>
-  );
-}
-
 function AgentProviderMark({
   agent,
   state,
@@ -232,16 +205,6 @@ function AgentProviderMark({
   );
 }
 
-function formatAutoProceedCountdown(proceedAt: string): string {
-  const remaining = Math.max(0, new Date(proceedAt).getTime() - Date.now());
-  if (remaining === 0) return 'proceeding...';
-  const totalSec = Math.ceil(remaining / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  if (m > 0) return `auto-proceed in ${m}m ${s}s`;
-  return `auto-proceed in ${s}s`;
-}
-
 function FindingCard({ agent, selected, send }: {
   agent: AgentState;
   selected: boolean;
@@ -252,7 +215,6 @@ function FindingCard({ agent, selected, send }: {
   const selectedProject = useKookrStore((s) => s.selectedProject);
   const dnd = useDnd();
   const cls = severityClass(agent);
-  const autoProceedingAt = agent.anomaly?.autoProceedingAt;
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const arrivedDuringDnd =
     dnd.enabled &&
@@ -264,14 +226,6 @@ function FindingCard({ agent, selected, send }: {
   useEffect(() => {
     return () => { if (clickTimer.current) clearTimeout(clickTimer.current); };
   }, []);
-
-  // Tick every second to update countdown
-  const [, setCountdownTick] = useState(0);
-  useEffect(() => {
-    if (!autoProceedingAt) return;
-    const id = setInterval(() => setCountdownTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
-  }, [autoProceedingAt]);
 
   function handleSkip() {
     track({ type: 'finding_skipped', agentId: agent.agentId, anomalyType: agent.anomaly?.type ?? null, method: 'button' });
@@ -341,23 +295,10 @@ function FindingCard({ agent, selected, send }: {
             )}
           </span>
           <span className="finding-meta">
-            {autoProceedingAt ? (
-              <span
-                className="age-badge auto-proceed-badge"
-                title="Click to cancel auto-proceed"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  send({ type: 'cancelAutoProceed', agentId: agent.agentId });
-                }}
-              >
-                {formatAutoProceedCountdown(autoProceedingAt)}
+            {agent.anomaly?.detectedAt && formatAge(agent.anomaly.detectedAt) && (
+              <span className={`age-badge ${ageColor(agent.anomaly.detectedAt)}`}>
+                waiting {formatAge(agent.anomaly.detectedAt)}
               </span>
-            ) : (
-              agent.anomaly?.detectedAt && formatAge(agent.anomaly.detectedAt) && (
-                <span className={`age-badge ${ageColor(agent.anomaly.detectedAt)}`}>
-                  waiting {formatAge(agent.anomaly.detectedAt)}
-                </span>
-              )
             )}
           </span>
         </div>
@@ -393,8 +334,6 @@ function FindingCard({ agent, selected, send }: {
               </span>
             </>
           )}
-          {(agent.cwd || agent.gitBranch || agent.gitCommit) && agent.autonomy && <span className="finding-context-sep">{'·'}</span>}
-          <AutonomyBadge agent={agent} send={send} />
         </div>
         {agent.ralphLoop && (
           <div className="finding-loop-row" onClick={(e) => e.stopPropagation()}>
@@ -489,7 +428,6 @@ function HealthyRow({ agent, selected, send }: {
                   <span className="branch-icon">{'⎇'}</span>{formatBranch(agent.gitBranch, 20)}
                 </span>
               )}
-              <AutonomyBadge agent={agent} send={send} />
             </div>
             <div className="healthy-row-title-line">
               <span className="healthy-row-name" title={agent.taskName ?? agent.agentId}>
@@ -674,7 +612,6 @@ function PendingRow({ agent, selected, send }: {
               {projectLabelText}
             </span>
           )}
-          <AutonomyBadge agent={agent} send={send} />
           <span className="pending-row-name" title={agent.taskName ?? agent.agentId}>
             {agent.taskName ?? agent.agentId}
           </span>
@@ -1092,8 +1029,6 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
         </div>
       )}
       <ScheduleSection schedules={useKookrStore((s) => s.schedules)} />
-      <DetectionStatsPanel />
-      <CircuitBreakerPanel send={send} />
     </div>
   );
 }

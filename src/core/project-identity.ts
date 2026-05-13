@@ -214,6 +214,65 @@ export function deriveCanonicalPath(cwd: string): string | null {
   return cwd;
 }
 
+const GITHUB_SEGMENT_RE = /^[a-z0-9_-][a-z0-9._-]*$/;
+
+/**
+ * Validate that a project id is a safe `github.com/<owner>/<repo>` reference.
+ *
+ * Rejects path-traversal segments, leading-dot segments, `.git` suffix, and
+ * anything beyond GitHub's documented owner (39) / repo (100) length limits.
+ * Defense-in-depth against malformed ids reaching URL construction or the
+ * GraphQL batch fetcher.
+ */
+export function isSafeGithubProjectId(projectId: string): boolean {
+  if (!projectId.startsWith('github.com/')) return false;
+  const tail = projectId.slice('github.com/'.length);
+  const parts = tail.split('/');
+  if (parts.length !== 2) return false;
+  const [owner, repo] = parts;
+  if (owner.length === 0 || owner.length > 39) return false;
+  if (repo.length === 0 || repo.length > 100) return false;
+  for (const seg of [owner, repo]) {
+    if (seg === '.' || seg === '..') return false;
+    if (seg.startsWith('.')) return false;
+    if (seg.endsWith('.git')) return false;
+    if (!GITHUB_SEGMENT_RE.test(seg)) return false;
+  }
+  return true;
+}
+
+/**
+ * Derive the canonical https URL for a GitHub project id.
+ * Returns null when the id is not a safe `github.com/owner/repo`.
+ */
+export function projectRepoUrl(projectId: string): string | null {
+  if (!isSafeGithubProjectId(projectId)) return null;
+  return `https://${projectId}`;
+}
+
+/**
+ * Validate that a URL is a pull request on the given project's repo.
+ * Format: `https://github.com/<owner>/<repo>/pull/<positive-integer>`
+ */
+export function isSafePullRequestUrl(url: string, projectId: string): boolean {
+  const prefix = projectRepoUrl(projectId);
+  if (!prefix) return false;
+  if (!url.startsWith(prefix + '/pull/')) return false;
+  const tail = url.slice((prefix + '/pull/').length);
+  return /^[1-9][0-9]{0,7}$/.test(tail);
+}
+
+/**
+ * Split a `github.com/owner/repo` project id into its owner + repo parts.
+ * Returns null when the id is not a safe GitHub id.
+ */
+export function projectIdToOwnerRepo(projectId: string): { owner: string; repo: string } | null {
+  if (!isSafeGithubProjectId(projectId)) return null;
+  const tail = projectId.slice('github.com/'.length);
+  const [owner, repo] = tail.split('/');
+  return { owner, repo };
+}
+
 /**
  * Deterministic color index (0-7) for a project ID.
  * Same algorithm as presentation.ts projectColor but operates on projectId.

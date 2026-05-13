@@ -6,6 +6,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { StatusBar } from './StatusBar.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import { __resetAudioAlertLogForTests, recordAudioAlertDecision } from '../audio/audio-alert-log.js';
+import { __resetSoundPreferenceForTests } from '../audio/sound.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -36,6 +38,8 @@ describe('StatusBar reflection prompt', () => {
       removeItem: (key: string) => localStore.delete(key),
       clear: () => localStore.clear(),
     });
+    __resetSoundPreferenceForTests();
+    __resetAudioAlertLogForTests();
     syncGlobalStore();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -46,6 +50,8 @@ describe('StatusBar reflection prompt', () => {
     await act(async () => {
       root.unmount();
     });
+    __resetAudioAlertLogForTests();
+    __resetSoundPreferenceForTests();
     document.body.innerHTML = '';
   });
 
@@ -86,5 +92,39 @@ describe('StatusBar reflection prompt', () => {
 
     expect(onReflect).toHaveBeenCalledTimes(1);
     expect(onDismissReflection).toHaveBeenCalledTimes(1);
+  });
+
+  test('sound toggle title includes the last alert decision', async () => {
+    recordAudioAlertDecision({
+      id: 'decision-1',
+      timestamp: new Date().toISOString(),
+      source: 'manual_test',
+      outcome: 'suppressed_muted',
+      reason: 'sound disabled',
+      soundEnabled: false,
+      soundStateSource: 'localStorage',
+      soundStorageAvailable: true,
+      dndEnabled: false,
+      dndExpiresAt: null,
+      pageVisibility: 'visible',
+      documentHasFocus: true,
+      clientSessionId: 'session-1',
+      clientTabId: 'tab-1',
+    });
+
+    await act(async () => {
+      root.render(
+        React.createElement(StatusBar, {
+          findings: 0,
+          total: 2,
+          onShowShortcuts: vi.fn(),
+        }),
+      );
+    });
+    await flush();
+
+    const soundButton = container.querySelector('.btn-sound-toggle');
+    expect(soundButton?.getAttribute('title')).toContain('Last alert: manual_test -> suppressed_muted');
+    expect(soundButton?.getAttribute('title')).toContain('sound disabled');
   });
 });

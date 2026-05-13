@@ -1,6 +1,6 @@
 import type { AgentActivityMeta, AgentEvent, Anomaly, AnomalyType, TokenUsage, WorktreeHealth } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
-import { isTerminalStatus, type TaskStore } from './tasks.js';
+import { isTerminalStatus, type TaskLaunchHealthSummary, type TaskStore } from './tasks.js';
 import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
@@ -31,6 +31,7 @@ export interface AgentState {
   startedAt?: string; // ISO 8601
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
+  launchHealthSummary?: TaskLaunchHealthSummary;
   tokenUsage?: TokenUsage;
   gitBranch?: string;
   gitCommit?: string;
@@ -42,7 +43,6 @@ export interface AgentState {
   projectDisplayLabel?: string;
   completionDigest?: CompletionDigest;
   completionFeedback?: import('./tasks.js').TaskCompletionFeedback;
-  autonomy?: import('./tasks.js').AutonomyLevel;
   ralphLoop?: import('./tasks.js').RalphLoopState;
   /** Activity-panel disclosure counters; populated at snapshot time from
    *  {@link HookIngestion}. See rfc-activity-log-reliability §9. */
@@ -60,6 +60,7 @@ interface SessionSnapshotMeta {
   sessionStatus?: import('./types.js').AgentStatus | 'completed' | 'aborted';
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
+  launchHealthSummary?: TaskLaunchHealthSummary;
   projectId?: string;
   projectDisplayLabel: string;
   gitBranch?: string;
@@ -126,19 +127,27 @@ export class Monitor {
     // Guard: reject events for explicitly stopped agents (prevents hook watcher race)
     if (this.stoppedAgents.has(agentId)) return;
 
-    // Increment monotonic event counter for self-diagnostic
-    this._eventCounts.set(agentId, (this._eventCounts.get(agentId) ?? 0) + events.length);
+    const previousCount = this._eventCounts.get(agentId) ?? 0;
+    const sequencedEvents = events.map((event, index) => ({
+      ...event,
+      eventSeq: previousCount + index + 1,
+    } as AgentEvent));
+
+    // Increment monotonic event counter for self-diagnostic and client-side
+    // activity history merging. The sequence distinguishes repeated identical
+    // hook events when the UI receives overlapping windowed snapshots.
+    this._eventCounts.set(agentId, previousCount + events.length);
 
     // Append to existing events, capped at windowSize
     const existing = this.agentEvents.get(agentId) ?? [];
-    const combined = [...existing, ...events];
+    const combined = [...existing, ...sequencedEvents];
     const capped = combined.length > this.windowSize
       ? combined.slice(combined.length - this.windowSize)
       : combined;
     this.agentEvents.set(agentId, capped);
 
     // Update subagent tracking before detection so suppression sees current state
-    for (const event of events) {
+    for (const event of sequencedEvents) {
       this.updateSubagentTracking(agentId, event);
     }
 
@@ -470,6 +479,7 @@ export class Monitor {
           sessionStatus: session.lastStatus,
           playbookId: task.playbookId,
           playbookParameterValues: task.playbookParameterValues,
+          launchHealthSummary: task.launchHealthSummary,
           projectId: task.projectId,
           projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: session.cwd }),
           gitBranch: session.gitBranch,
@@ -522,6 +532,7 @@ export class Monitor {
         state.startedAt = meta.createdAt.toISOString();
         state.playbookId = meta.playbookId;
         state.playbookParameterValues = meta.playbookParameterValues;
+        state.launchHealthSummary = meta.launchHealthSummary;
         state.gitBranch = meta.gitBranch;
         state.gitCommit = meta.gitCommit;
         state.gitIsWorktree = meta.gitIsWorktree;
@@ -530,11 +541,10 @@ export class Monitor {
         state.worktreeRegistryStale = meta.worktreeRegistryStale;
         state.projectId = meta.projectId;
         state.projectDisplayLabel = meta.projectDisplayLabel;
-        // Enrich with token usage, task status, and autonomy from the task
+        // Enrich with token usage, task status, and ralph loop state from the task
         const task = this.taskStore.getTask(meta.taskId);
         if (task) {
           state.taskStatus = task.status;
-          state.autonomy = task.autonomy;
           state.ralphLoop = task.ralphLoop;
           if (task.tokenUsage) {
             state.tokenUsage = task.tokenUsage;
@@ -561,9 +571,9 @@ export class Monitor {
           startedAt: task.createdAt.toISOString(),
           playbookId: task.playbookId,
           playbookParameterValues: task.playbookParameterValues,
+          launchHealthSummary: task.launchHealthSummary,
           projectId: task.projectId,
           projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: task.cwd }),
-          autonomy: task.autonomy,
           ralphLoop: task.ralphLoop,
         });
       } else if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'terminated') {
@@ -588,6 +598,7 @@ export class Monitor {
             startedAt: task.createdAt.toISOString(),
             playbookId: task.playbookId,
             playbookParameterValues: task.playbookParameterValues,
+            launchHealthSummary: task.launchHealthSummary,
             projectId: task.projectId,
             projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: lastSession?.cwd ?? task.cwd }),
             tokenUsage: task.tokenUsage,
@@ -599,7 +610,6 @@ export class Monitor {
             worktreeRegistryStale: lastSession?.worktreeRegistryStale,
             completionDigest: task.completionDigest,
             completionFeedback: task.completionFeedback,
-            autonomy: task.autonomy,
             ralphLoop: task.ralphLoop,
           });
         }

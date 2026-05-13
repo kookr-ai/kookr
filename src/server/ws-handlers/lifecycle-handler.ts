@@ -4,7 +4,6 @@ import type { TaskStore } from '../../core/tasks.js';
 import type { Monitor } from '../../core/monitor.js';
 import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
-import type { AutonomyOrchestrator } from '../autonomy-orchestrator.js';
 import type { ScheduleService } from '../schedule-service.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
 import type { LaunchOpts, LaunchResult } from '../launch-service.js';
@@ -21,7 +20,7 @@ import { deleteTask } from '../use-cases/delete-task.js';
 import { handleLaunchResult } from './launch-result.js';
 import { writeFeedbackBundle } from '../use-cases/write-feedback-bundle.js';
 import { requestTaskReflect } from '../use-cases/request-task-reflect.js';
-import type { TaskCompletionFeedback } from '../../core/tasks.js';
+import type { Task, TaskCompletionFeedback } from '../../core/tasks.js';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -41,7 +40,6 @@ export interface LifecycleHandlerDeps {
   monitor: Monitor;
   queue: AttentionQueue;
   interactionLog?: DeferredInteractionLogWriter;
-  autonomyOrchestrator?: AutonomyOrchestrator;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
@@ -104,7 +102,6 @@ export class LifecycleHandler {
             prompt: msg.prompt,
             cwd: msg.cwd,
             criteria: msg.criteria,
-            autonomy: msg.autonomy,
             agentType: msg.agentType,
             dependencies: msg.dependencies,
           });
@@ -131,8 +128,6 @@ export class LifecycleHandler {
       }
 
       case 'stop': {
-        // Cancel auto-proceed for this agent
-        this.deps.autonomyOrchestrator?.onAgentStopped(msg.agentId);
         // Legacy: kept for backwards compatibility but UI now uses completeTask/cancelTask
         await cleanupSessionResourcesImpl(msg.agentId, this.deps.getLifecycleDeps());
         // Mark the session completed and reopen the task if all sessions are done.
@@ -198,30 +193,9 @@ export class LifecycleHandler {
           }
         }
 
-        const completionMetadata = completingTask && preEvents.length > 0
-          ? await buildTaskCompletionMetadata(completingTask, preEvents)
-          : undefined;
-
         await completeTaskImpl(msg.taskId, this.deps.getLifecycleDeps());
         await this.deps.scheduleService?.recordTaskTerminalOutcome(msg.taskId, 'completed');
-
-        // Generate and store completion digest
-        if (completingTask && completionMetadata) {
-          this.deps.taskStore.setCompletionDigest(msg.taskId, completionMetadata.digest);
-          if (completionMetadata.taskTokenUsage) {
-            this.deps.taskStore.updateTokenUsage(msg.taskId, completionMetadata.taskTokenUsage);
-          }
-
-          // Toast notification for all clients
-          const taskName = completingTask.name ?? 'Task';
-          this.deps.broadcastToAll?.({
-            type: 'alert',
-            agentId: completingTask.sessions[0]?.tmuxSession ?? '',
-            summary: `Completed: ${taskName} — ${completionMetadata.digest.bullets[0]}`,
-            details: completionMetadata.digest.bullets.slice(1).join(' · '),
-            severity: 'info',
-          });
-        }
+        this.finalizeCompletionMetadata(completingTask, preEvents);
 
         // Apply optional feedback + auto-trigger reflect on thumbs-down.
         // Failure here is fail-open (logged) — never blocks completion.
@@ -456,6 +430,40 @@ export class LifecycleHandler {
         console.log(`[feedback] auto-reflect skipped for ${taskId}: ${result.reason}`);
       }
     }
+  }
+
+  private finalizeCompletionMetadata(task: Task | undefined, preEvents: AgentEvent[]): void {
+    if (!task || preEvents.length === 0) return;
+
+    void (async () => {
+      const completionMetadata = await buildTaskCompletionMetadata(task, preEvents);
+      if (!this.deps.taskStore.getTask(task.id)) return;
+
+      this.deps.taskStore.setCompletionDigest(task.id, completionMetadata.digest);
+      if (completionMetadata.taskTokenUsage) {
+        this.deps.taskStore.updateTokenUsage(task.id, completionMetadata.taskTokenUsage);
+      }
+
+      const taskName = task.name ?? 'Task';
+      this.deps.broadcastToAll?.({
+        type: 'alert',
+        agentId: task.sessions[0]?.tmuxSession ?? '',
+        summary: `Completed: ${taskName} — ${completionMetadata.digest.bullets[0]}`,
+        details: completionMetadata.digest.bullets.slice(1).join(' · '),
+        severity: 'info',
+      });
+
+      const state = getSnapshotAgentsForClient({ monitor: this.deps.monitor })
+        .find((agent) => agent.taskId === task.id);
+      if (state) {
+        this.deps.broadcastToAll?.({ type: 'update', agentId: state.agentId, state });
+      }
+    })().catch((err) => {
+      console.warn(
+        `[completion] metadata finalization failed for ${task.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    });
   }
 }
 

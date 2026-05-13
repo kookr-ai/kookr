@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { AVAILABLE_AGENT_TYPES, type Playbook, type ClientMessage, type AutonomyLevel, type AgentType } from '../../shared/protocol.js';
+import { AVAILABLE_AGENT_TYPES, type Playbook, type ClientMessage, type AgentType } from '../../shared/protocol.js';
 import type { PlaybookParameterOption, PlaybookScope } from '../../core/playbook.js';
 import type { ProjectSummary } from '../../core/project-summary.js';
 import { useKookrStore } from '../store/useStore.js';
@@ -271,10 +271,7 @@ export function PlaybookBrowser({
   }, [paramValues]);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => usageTracker.getPinned());
   const [agentType, setAgentType] = useState<AgentType>(() =>
-    (localStorage.getItem('kookr:defaultAgentType') as AgentType) || defaultAgentType || 'claude-code'
-  );
-  const [autonomy, setAutonomy] = useState<AutonomyLevel>(() =>
-    (localStorage.getItem('kookr:defaultAutonomy') as AutonomyLevel) || 'supervised'
+    defaultAgentType || 'claude-code'
   );
   const [showOtherAuthorWarning, setShowOtherAuthorWarning] = useState(false);
   const [suppressOtherAuthorWarning, setSuppressOtherAuthorWarning] = useState(false);
@@ -457,8 +454,6 @@ export function PlaybookBrowser({
     usageTracker.recordParams(selected.id, selected.sourceCwd, paramValues);
     const trimmedCwd = effectiveTaskTargetCwd;
     if (trimmedCwd) recentPaths.add(trimmedCwd);
-    localStorage.setItem('kookr:defaultAutonomy', autonomy);
-    localStorage.setItem('kookr:defaultAgentType', agentType);
     const excerpt = selected.name.slice(0, 40) + (selected.name.length > 40 ? '…' : '');
     const launchPayload = buildPlaybookLaunchPayload(selected.id);
     if (launchMode === 'looped') {
@@ -607,7 +602,6 @@ export function PlaybookBrowser({
     const base = {
       playbookPath,
       parameterValues: paramValues,
-      autonomy,
       agentType,
       ...(selected?.scope ? { scope: selected.scope } : {}),
     };
@@ -815,30 +809,6 @@ export function PlaybookBrowser({
           options={agentOptions}
         />
 
-        <label className="autonomy-toggle">
-          <span className="autonomy-toggle-label">Autonomy</span>
-          <div className="autonomy-options">
-            <button
-              type="button"
-              className={`autonomy-option${autonomy === 'supervised' ? ' active' : ''}`}
-              onClick={() => setAutonomy('supervised')}
-            >
-              Supervised
-            </button>
-            <button
-              type="button"
-              className={`autonomy-option${autonomy === 'autonomous' ? ' active' : ''}`}
-              onClick={() => setAutonomy('autonomous')}
-            >
-              Autonomous
-            </button>
-          </div>
-          <div className="autonomy-hint">
-            {autonomy === 'supervised'
-              ? 'Pauses and waits for your input when the agent stops.'
-              : 'Auto-proceeds after 3 min when the agent stops (max 2 retries, then switches to supervised).'}
-          </div>
-        </label>
         {conflict && (
           conflict.kind === 'duplicate_active_loop' ? (
             <div className="ralph-conflict-banner" role="alertdialog" aria-label="Loop already running">

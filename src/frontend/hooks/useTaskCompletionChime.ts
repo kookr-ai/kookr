@@ -4,6 +4,7 @@ import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import { useKookrStore } from '../store/useStore.js';
 import { maybePlayChime } from '../audio/sound.js';
 import type { AgentState } from '../../shared/protocol.js';
+import type { AudioAlertContext } from '../audio/audio-alert-log.js';
 
 export interface FocusedStatus {
   agentId: string;
@@ -15,7 +16,18 @@ interface CompletionChimeResult {
   next: FocusedStatus | null;
   /** True when a non-terminal → terminal transition was observed *while focused*. */
   shouldChime: boolean;
+  reason: CompletionChimeReason;
+  context?: AudioAlertContext;
 }
+
+export type CompletionChimeReason =
+  | 'no_selection'
+  | 'unknown_agent'
+  | 'focus_changed_prime'
+  | 'status_unchanged'
+  | 'previous_terminal'
+  | 'next_not_terminal'
+  | 'terminal_transition';
 
 /**
  * Pure decision function for the task-completion chime.
@@ -44,15 +56,22 @@ export function evaluateCompletionChime(
   selectedAgentId: string | null,
   agent: AgentState | undefined,
 ): CompletionChimeResult {
-  if (!selectedAgentId || !agent) {
-    return { next: null, shouldChime: false };
+  if (!selectedAgentId) {
+    return { next: null, shouldChime: false, reason: 'no_selection' };
+  }
+  if (!agent) {
+    return { next: null, shouldChime: false, reason: 'unknown_agent' };
   }
 
   const next = agent.taskStatus;
 
   // Focus changed (or first observation): prime, never chime.
   if (prev?.agentId !== selectedAgentId) {
-    return { next: { agentId: selectedAgentId, status: next }, shouldChime: false };
+    return {
+      next: { agentId: selectedAgentId, status: next },
+      shouldChime: false,
+      reason: 'focus_changed_prime',
+    };
   }
 
   const prevStatus = prev.status;
@@ -61,14 +80,30 @@ export function evaluateCompletionChime(
   // re-chime the same transition.
   const nextRef: FocusedStatus = { agentId: selectedAgentId, status: next };
 
-  if (prevStatus === next) return { next: nextRef, shouldChime: false };
-  if (next === undefined) return { next: nextRef, shouldChime: false };
+  if (prevStatus === next) return { next: nextRef, shouldChime: false, reason: 'status_unchanged' };
+  if (next === undefined) return { next: nextRef, shouldChime: false, reason: 'next_not_terminal' };
   if (prevStatus !== undefined && isTerminalStatus(prevStatus)) {
-    return { next: nextRef, shouldChime: false };
+    return { next: nextRef, shouldChime: false, reason: 'previous_terminal' };
   }
-  if (!isTerminalStatus(next)) return { next: nextRef, shouldChime: false };
+  if (!isTerminalStatus(next)) return { next: nextRef, shouldChime: false, reason: 'next_not_terminal' };
 
-  return { next: nextRef, shouldChime: true };
+  return {
+    next: nextRef,
+    shouldChime: true,
+    reason: 'terminal_transition',
+    context: {
+      source: 'task_completion',
+      reason: `task ${next}`,
+      agentId: agent.agentId,
+      taskId: agent.taskId,
+      taskName: agent.taskName,
+      previousStatus: prevStatus,
+      nextStatus: next,
+      selectedAgentId,
+      focused: true,
+      primaryCause: 'task_completion',
+    },
+  };
 }
 
 /**
@@ -104,8 +139,8 @@ export function useTaskCompletionChime(): void {
       : undefined;
     const result = evaluateCompletionChime(focusRef.current, selectedAgentId, agent);
     focusRef.current = result.next;
-    if (result.shouldChime) {
-      maybePlayChime();
+    if (result.shouldChime && result.context) {
+      maybePlayChime(result.context);
     }
   }, [selectedAgentId, agents]);
 }

@@ -1,5 +1,6 @@
 import type { Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
+import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
 
 export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/settings', (c) => {
@@ -21,6 +22,7 @@ export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
       const { validateSettings } = await import('../../core/settings-store.js');
       const validated = validateSettings(body);
       const warnings = await deps.settings.update(validated);
+      deps.broadcastToAll(createSnapshotMessage({ monitor: deps.monitor, serverCwd: deps.serverCwd }));
       return c.json({ ...validated, warnings });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

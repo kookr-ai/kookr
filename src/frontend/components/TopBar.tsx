@@ -16,6 +16,8 @@ interface Props {
   onSettings: () => void;
   onShowShortcuts: () => void;
   onOssView: () => void;
+  onOperations: () => void;
+  operationsOpen?: boolean;
   /** Open the Cost Comparison panel. Optional — the icon is hidden when undefined. */
   onCostComparison?: () => void;
   /** Optional slot rendered in the right-side action cluster, hidden in compact mode. */
@@ -26,6 +28,8 @@ interface DeployStatus {
   configured: boolean;
   available?: boolean;
   deploying?: boolean;
+  toolkit?: ToolkitStatus;
+  toolkitError?: string;
   currentShort?: string;
   latestShort?: string;
   behindCount?: number;
@@ -35,6 +39,12 @@ interface DeployStatus {
   runningPort?: number;
   /** Port the deploy button targets (the production instance). */
   prodPort?: number;
+}
+
+interface ToolkitStatus {
+  stale: boolean;
+  checkedCount: number;
+  staleCount: number;
 }
 
 function timeAgo(isoString: string): string {
@@ -52,12 +62,13 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onCostComparison, sweepSlot }: Props) {
-  const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents } = useKookrStore();
+export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, operationsOpen = false, onCostComparison, sweepSlot }: Props) {
+  const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
   const [deploying, setDeploying] = useState(false);
+  const [toolkitRefreshing, setToolkitRefreshing] = useState(false);
   const preDeployCommitRef = useRef<string | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
@@ -78,12 +89,12 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
     setDeployLoading(true);
     try {
       const res = await fetch('/api/deploy/status');
+      const data: DeployStatus = await res.json();
       if (res.ok) {
-        const data: DeployStatus = await res.json();
         setDeployStatus(data);
         if (data.deploying) setDeploying(true);
       } else {
-        setDeployStatus({ configured: false, error: 'Failed to check status' });
+        setDeployStatus({ ...data, error: data.error ?? 'Failed to check status' });
       }
     } catch {
       setDeployStatus({ configured: false, error: 'Server unreachable' });
@@ -91,6 +102,10 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
       setDeployLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    checkDeployStatus();
+  }, [checkDeployStatus]);
 
   useEffect(() => {
     if (showPopover) {
@@ -129,6 +144,30 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
     }
   }
 
+  async function refreshToolkitLinks() {
+    setToolkitRefreshing(true);
+    try {
+      const res = await fetch('/api/deploy/toolkit-refresh', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        setDeployStatus((prev) => prev ? { ...prev, toolkit: data.toolkit } : prev);
+      } else {
+        setDeployStatus((prev) => prev ? { ...prev, ...data, error: data.error ?? 'Toolkit refresh failed' } : {
+          configured: false,
+          ...data,
+          error: data.error ?? 'Toolkit refresh failed',
+        });
+      }
+    } catch {
+      setDeployStatus((prev) => prev ? { ...prev, error: 'Toolkit refresh failed' } : {
+        configured: false,
+        error: 'Toolkit refresh failed',
+      });
+    } finally {
+      setToolkitRefreshing(false);
+    }
+  }
+
   const isDev = !buildInfo || buildInfo.commitShort === 'dev';
   const versionLabel = isDev
     ? 'DEV'
@@ -145,7 +184,12 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
     deployStatus?.prodPort !== undefined &&
     deployStatus.runningPort !== deployStatus.prodPort;
 
-  const hasUpdates = !onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying;
+  const toolkitStale = Boolean(deployStatus?.toolkit?.stale);
+  const showToolkitSection = Boolean(toolkitStale || toolkitRefreshing || deployStatus?.toolkitError);
+  const hasUpdates = (!onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying) || toolkitStale;
+  const operationsNeedsAttention =
+    circuitBreakers.some((breaker) => breaker.state !== 'closed') ||
+    Boolean(diagnosticReport?.findings.length);
 
   return (
     <div className={`topbar kookr-tour-target-layout${compact ? ' compact' : ''}`}>
@@ -195,6 +239,9 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
                 {deployStatus?.error && (
                   <div className="version-row deploy-error">{deployStatus.error}</div>
                 )}
+                {deployStatus?.toolkitError && (
+                  <div className="version-row deploy-error">{deployStatus.toolkitError}</div>
+                )}
                 {deployStatus && !deployStatus.configured && !deployStatus.error && (
                   <div className="deploy-uptodate">No production instance configured</div>
                 )}
@@ -239,6 +286,27 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
                 )}
               </>
             )}
+
+            {deployStatus?.configured && showToolkitSection && (
+              <>
+                <div className="deploy-divider" />
+                <div className="toolkit-stale">
+                  Toolkit links {toolkitStale ? 'need refresh' : toolkitRefreshing ? 'refreshing' : 'unavailable'}
+                  {deployStatus.toolkit && (
+                    <span className="deploy-range">
+                      {deployStatus.toolkit.checkedCount - deployStatus.toolkit.staleCount}/{deployStatus.toolkit.checkedCount} current
+                    </span>
+                  )}
+                </div>
+                <button
+                  className="deploy-refresh"
+                  onClick={refreshToolkitLinks}
+                  disabled={toolkitRefreshing || !deployStatus.toolkit?.stale}
+                >
+                  {toolkitRefreshing ? 'Refreshing...' : 'Refresh toolkit links'}
+                </button>
+              </>
+            )}
           </div>
         )}
         {totalFindings > 0 && (
@@ -281,6 +349,18 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
         </div>
         <div className="metric-group">
           <DndPill />
+          <button
+            className={`btn-icon operations-trigger${operationsOpen ? ' active' : ''}`}
+            onClick={onOperations}
+            title="Diagnostics"
+            aria-label="Diagnostics"
+            aria-pressed={operationsOpen}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 12h4l3-8 4 16 3-8h4" />
+            </svg>
+            {operationsNeedsAttention && <span className="operations-alert-dot" />}
+          </button>
           {!compact && (
             <button className="btn-icon" onClick={onShowShortcuts} title="Help" aria-label="Help">
               ?

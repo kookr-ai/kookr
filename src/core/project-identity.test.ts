@@ -14,6 +14,10 @@ import {
   getProjectId,
   projectIdFromPrUrl,
   deriveCanonicalPath,
+  isSafeGithubProjectId,
+  projectRepoUrl,
+  isSafePullRequestUrl,
+  projectIdToOwnerRepo,
 } from './project-identity.js';
 
 function runGit(args: string[]): string {
@@ -288,5 +292,99 @@ describe('deriveCanonicalPath', () => {
     // Even though `bandwidth-surgery` exists, the literal kookr-prod
     // suffix rule does not apply, so cwd is returned verbatim.
     expect(deriveCanonicalPath(worktree)).toBe(worktree);
+  });
+});
+
+describe('isSafeGithubProjectId', () => {
+  test('accepts canonical lowercase ids', () => {
+    expect(isSafeGithubProjectId('github.com/cli/cli')).toBe(true);
+    expect(isSafeGithubProjectId('github.com/grafana/grafana')).toBe(true);
+    expect(isSafeGithubProjectId('github.com/a/b')).toBe(true);
+    expect(isSafeGithubProjectId('github.com/some-org/some.repo_name-1')).toBe(true);
+  });
+
+  test('rejects non-github prefixes', () => {
+    expect(isSafeGithubProjectId('local/myrepo')).toBe(false);
+    expect(isSafeGithubProjectId('gitlab.com/foo/bar')).toBe(false);
+    expect(isSafeGithubProjectId('cli/cli')).toBe(false);
+  });
+
+  test('rejects path-traversal and dot-only segments', () => {
+    expect(isSafeGithubProjectId('github.com/owner/..')).toBe(false);
+    expect(isSafeGithubProjectId('github.com/../repo')).toBe(false);
+    expect(isSafeGithubProjectId('github.com/owner/.')).toBe(false);
+    expect(isSafeGithubProjectId('github.com/./repo')).toBe(false);
+  });
+
+  test('rejects leading-dot segments and .git suffix', () => {
+    expect(isSafeGithubProjectId('github.com/.hidden/repo')).toBe(false);
+    expect(isSafeGithubProjectId('github.com/owner/.hidden')).toBe(false);
+    expect(isSafeGithubProjectId('github.com/owner/repo.git')).toBe(false);
+    expect(isSafeGithubProjectId('github.com/.git/.git')).toBe(false);
+  });
+
+  test('rejects too-long names', () => {
+    const owner40 = 'a'.repeat(40);
+    const repo101 = 'a'.repeat(101);
+    expect(isSafeGithubProjectId(`github.com/${owner40}/repo`)).toBe(false);
+    expect(isSafeGithubProjectId(`github.com/owner/${repo101}`)).toBe(false);
+  });
+
+  test('rejects empty segments and wrong number of segments', () => {
+    expect(isSafeGithubProjectId('github.com/')).toBe(false);
+    expect(isSafeGithubProjectId('github.com//repo')).toBe(false);
+    expect(isSafeGithubProjectId('github.com/owner/')).toBe(false);
+    expect(isSafeGithubProjectId('github.com/owner/repo/extra')).toBe(false);
+  });
+
+  test('rejects uppercase (canonical form is lowercase)', () => {
+    expect(isSafeGithubProjectId('github.com/Cli/Cli')).toBe(false);
+    expect(isSafeGithubProjectId('Github.com/cli/cli')).toBe(false);
+  });
+});
+
+describe('projectRepoUrl', () => {
+  test('returns the https URL for a safe id', () => {
+    expect(projectRepoUrl('github.com/cli/cli')).toBe('https://github.com/cli/cli');
+  });
+
+  test('returns null for unsafe ids', () => {
+    expect(projectRepoUrl('github.com/owner/..')).toBeNull();
+    expect(projectRepoUrl('local/foo')).toBeNull();
+  });
+});
+
+describe('isSafePullRequestUrl', () => {
+  test('accepts matching PR URLs', () => {
+    expect(isSafePullRequestUrl('https://github.com/cli/cli/pull/1', 'github.com/cli/cli')).toBe(true);
+    expect(isSafePullRequestUrl('https://github.com/cli/cli/pull/12345', 'github.com/cli/cli')).toBe(true);
+  });
+
+  test('rejects off-repo URLs', () => {
+    expect(isSafePullRequestUrl('https://github.com/other/other/pull/1', 'github.com/cli/cli')).toBe(false);
+    expect(isSafePullRequestUrl('https://evil.example.com/cli/cli/pull/1', 'github.com/cli/cli')).toBe(false);
+  });
+
+  test('rejects URLs without /pull/<positive-integer>', () => {
+    expect(isSafePullRequestUrl('https://github.com/cli/cli', 'github.com/cli/cli')).toBe(false);
+    expect(isSafePullRequestUrl('https://github.com/cli/cli/pull/abc', 'github.com/cli/cli')).toBe(false);
+    expect(isSafePullRequestUrl('https://github.com/cli/cli/pull/0', 'github.com/cli/cli')).toBe(false);
+    expect(isSafePullRequestUrl('https://github.com/cli/cli/issues/1', 'github.com/cli/cli')).toBe(false);
+  });
+
+  test('rejects when projectId itself is unsafe', () => {
+    expect(isSafePullRequestUrl('https://github.com/owner/repo/pull/1', 'github.com/owner/..')).toBe(false);
+  });
+});
+
+describe('projectIdToOwnerRepo', () => {
+  test('splits valid ids', () => {
+    expect(projectIdToOwnerRepo('github.com/cli/cli')).toEqual({ owner: 'cli', repo: 'cli' });
+    expect(projectIdToOwnerRepo('github.com/grafana/grafana')).toEqual({ owner: 'grafana', repo: 'grafana' });
+  });
+
+  test('returns null for unsafe ids', () => {
+    expect(projectIdToOwnerRepo('local/foo')).toBeNull();
+    expect(projectIdToOwnerRepo('github.com/owner/..')).toBeNull();
   });
 });
