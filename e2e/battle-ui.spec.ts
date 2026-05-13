@@ -9,6 +9,7 @@ import {
   resetServer,
   launchViaUI,
   getLatestTmuxName,
+  getTmuxNameForPrompt,
   getTasks,
   injectSessionStart,
   injectStopEvent,
@@ -453,13 +454,15 @@ test.describe('Focus management', () => {
   });
 
   test('anomaly does not steal focus from rename input', async ({ page, request }) => {
-    await launchViaUI(page, 'Rename focus', '/test/a');
-    const tmuxA = await getLatestTmuxName(request);
+    const renamePrompt = 'Rename focus';
+    const backgroundPrompt = 'Background';
+    await launchViaUI(page, renamePrompt, '/test/a');
+    const tmuxA = await getTmuxNameForPrompt(request, renamePrompt);
     await injectSessionStart(request, tmuxA);
     await injectStopEvent(request, tmuxA);
 
-    await launchViaUI(page, 'Background', '/test/b');
-    const tmuxB = await getLatestTmuxName(request);
+    await launchViaUI(page, backgroundPrompt, '/test/b');
+    const tmuxB = await getTmuxNameForPrompt(request, backgroundPrompt);
     await injectSessionStart(request, tmuxB);
 
     // Start renaming agent A
