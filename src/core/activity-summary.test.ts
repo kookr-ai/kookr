@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import {
+  buildActivityDisclosure,
   summarizeActivity,
   compactToolSummary,
   categorizeTool,
@@ -7,7 +8,21 @@ import {
   type ActivityItem,
   type ToolGroup,
 } from './activity-summary.js';
-import type { AgentEvent } from './types.js';
+import type { AgentActivityMeta, AgentEvent } from './types.js';
+
+function emptyMeta(overrides: Partial<AgentActivityMeta> = {}): AgentActivityMeta {
+  return {
+    totalEventsSeen: 0,
+    parentEventCount: 0,
+    childEventCount: 0,
+    foreignEventCount: 0,
+    unknownParentageCount: 0,
+    malformedRecordCount: 0,
+    droppedRecordCount: 0,
+    duplicateRecordCount: 0,
+    ...overrides,
+  };
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -501,5 +516,49 @@ describe('compactToolSummary', () => {
     const items = summarizeActivity(events);
     const group = items[0] as ToolGroup;
     expect(compactToolSummary(group)).toBe('ran 1 command, 2 git ops');
+  });
+});
+
+describe('buildActivityDisclosure (rfc-activity-log-reliability §4)', () => {
+  test('returns null when no metadata is available', () => {
+    expect(buildActivityDisclosure(10, undefined)).toBeNull();
+  });
+
+  test('returns null when everything is in sync and nothing to disclose', () => {
+    expect(buildActivityDisclosure(10, emptyMeta({ totalEventsSeen: 10, parentEventCount: 10 }))).toBeNull();
+  });
+
+  test('emits partialWindow when total seen exceeds events shown', () => {
+    const d = buildActivityDisclosure(50, emptyMeta({ totalEventsSeen: 75, parentEventCount: 75 }));
+    expect(d?.partialWindow).toEqual({ eventsShown: 50, totalEventsSeen: 75 });
+  });
+
+  test('does not emit partialWindow when events shown matches total seen', () => {
+    const d = buildActivityDisclosure(75, emptyMeta({ totalEventsSeen: 75, parentEventCount: 75 }));
+    expect(d?.partialWindow).toBeUndefined();
+  });
+
+  test('emits childActivity when childEventCount > 0', () => {
+    const d = buildActivityDisclosure(50, emptyMeta({
+      totalEventsSeen: 70, parentEventCount: 50, childEventCount: 20,
+    }));
+    expect(d?.childActivity).toEqual({ eventCount: 20, foreignCount: 0 });
+  });
+
+  test('emits malformed when malformed or dropped count > 0', () => {
+    const d = buildActivityDisclosure(10, emptyMeta({
+      totalEventsSeen: 12, malformedRecordCount: 2, droppedRecordCount: 1,
+    }));
+    expect(d?.malformed).toEqual({ malformedCount: 2, droppedCount: 1 });
+  });
+
+  test('can emit all three disclosures together', () => {
+    const d = buildActivityDisclosure(50, emptyMeta({
+      totalEventsSeen: 100, parentEventCount: 60, childEventCount: 30,
+      malformedRecordCount: 4, foreignEventCount: 2,
+    }));
+    expect(d?.partialWindow).toBeDefined();
+    expect(d?.childActivity).toEqual({ eventCount: 30, foreignCount: 2 });
+    expect(d?.malformed).toEqual({ malformedCount: 4, droppedCount: 0 });
   });
 });

@@ -1,9 +1,9 @@
 // Shared protocol types — the contract between frontend and server.
 // Both sides import from here; neither imports directly from the other.
 
-export type { AnomalySeverity, AnomalyType, AgentEvent, TokenUsage } from '../core/types.js';
-export type { ActivityItem, ToolGroup, UserMessage, AgentMessage, SystemNotice, ToolGroupEntry, ToolCategory } from '../core/activity-summary.js';
-export { summarizeActivity, compactToolSummary, categorizeTool } from '../core/activity-summary.js';
+export type { AnomalySeverity, AnomalyType, AgentEvent, AgentActivityMeta, TokenUsage } from '../core/types.js';
+export type { ActivityItem, ActivityDisclosure, ToolGroup, UserMessage, AgentMessage, SystemNotice, ToolGroupEntry, ToolCategory } from '../core/activity-summary.js';
+export { summarizeActivity, compactToolSummary, categorizeTool, buildActivityDisclosure } from '../core/activity-summary.js';
 export type { AgentState } from '../core/monitor.js';
 export type { CompletionDigest } from '../core/completion-digest.js';
 export type {

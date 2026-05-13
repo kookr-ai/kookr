@@ -1,4 +1,4 @@
-import type { AgentEvent } from './types.js';
+import type { AgentActivityMeta, AgentEvent } from './types.js';
 
 // ── Activity item types ──────────────────────────────────────────────
 
@@ -344,4 +344,51 @@ export function compactToolSummary(group: ToolGroup): string {
   }
 
   return parts.join(', ');
+}
+
+// ── Activity panel disclosure (rfc-activity-log-reliability §4) ──────
+
+/**
+ * Disclosure rows the activity panel shows above the conversation when the
+ * Kookr-side {@link AgentActivityMeta} indicates that what's on screen is
+ * not the full story. Each property is set only when there's something to
+ * say — when all three are absent, no banner is rendered.
+ */
+export interface ActivityDisclosure {
+  /** "Showing last N of M events" — set when the monitor window is capped. */
+  partialWindow?: { eventsShown: number; totalEventsSeen: number };
+  /** "Child agent activity: X events" — child sessions wrote to the same
+   *  Kookr hook file. */
+  childActivity?: { eventCount: number; foreignCount: number };
+  /** "Y hook records malformed/dropped" — invites the operator to open
+   *  diagnostics. */
+  malformed?: { malformedCount: number; droppedCount: number };
+}
+
+export function buildActivityDisclosure(
+  eventsShown: number,
+  activityMeta?: AgentActivityMeta,
+): ActivityDisclosure | null {
+  if (!activityMeta) return null;
+  const out: ActivityDisclosure = {};
+
+  if (activityMeta.totalEventsSeen > eventsShown) {
+    out.partialWindow = {
+      eventsShown,
+      totalEventsSeen: activityMeta.totalEventsSeen,
+    };
+  }
+  if (activityMeta.childEventCount > 0 || activityMeta.foreignEventCount > 0) {
+    out.childActivity = {
+      eventCount: activityMeta.childEventCount,
+      foreignCount: activityMeta.foreignEventCount,
+    };
+  }
+  if (activityMeta.malformedRecordCount > 0 || activityMeta.droppedRecordCount > 0) {
+    out.malformed = {
+      malformedCount: activityMeta.malformedRecordCount,
+      droppedCount: activityMeta.droppedRecordCount,
+    };
+  }
+  return out.partialWindow || out.childActivity || out.malformed ? out : null;
 }
