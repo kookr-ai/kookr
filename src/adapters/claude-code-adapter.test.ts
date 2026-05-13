@@ -820,6 +820,43 @@ describe('ClaudeCodeAdapter', () => {
       ]);
     });
 
+    test('hydrates parent/child identity from TaskStore after restart without launch map', () => {
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      taskStore.addSession(task.id, {
+        tmuxSession: 'kookr-restarted',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date('2026-05-13T12:00:00Z'),
+        lastStatus: 'running',
+        claudeSessionId: 'parent-1',
+        transcriptPath: '/t/parent-1.jsonl',
+        childSessionIds: {
+          'child-1': {
+            firstSeenAt: '2026-05-13T12:00:01.000Z',
+            transcriptPath: '/t/child-1.jsonl',
+            reason: 'inherited_settings',
+          },
+        },
+      });
+
+      const observed: Array<{ raw?: string; parentage: string }> = [];
+      adapter.onEvent((_id, _event, meta) => {
+        observed.push({ raw: meta.rawSessionId, parentage: meta.parentage });
+      });
+
+      adapter.injectHookEvent('kookr-restarted', JSON.stringify({
+        session_id: 'child-1',
+        transcript_path: '/t/child-1.jsonl',
+        cwd: '/cwd',
+        hook_event_name: 'Stop',
+        lastMessage: 'done',
+      }));
+
+      expect(observed).toEqual([{ raw: 'child-1', parentage: 'child' }]);
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === 'kookr-restarted')!;
+      expect(session.claudeSessionId).toBe('parent-1');
+    });
+
     test('CWD changes from a child session do not move the parent task cwd', async () => {
       const task = taskStore.createTask('Fix bug', '/cwd');
       const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');

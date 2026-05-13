@@ -400,7 +400,11 @@ export class CodexCliAdapter implements AgentAdapter {
       };
     }
 
-    const taskId = this.tmuxToTaskId.get(tmuxName);
+    const taskId = this.tmuxToTaskId.get(tmuxName)
+      ?? this.taskStore.findTaskBySession(tmuxName)?.id;
+    if (taskId && !this.tmuxToTaskId.has(tmuxName)) {
+      this.tmuxToTaskId.set(tmuxName, taskId);
+    }
     const rawSessionId = 'sessionId' in event ? event.sessionId : header.rawSessionId;
 
     const identity = this.getOrHydrateIdentity(tmuxName, taskId);

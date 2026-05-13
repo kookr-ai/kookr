@@ -179,6 +179,7 @@ describe('ActivityLedger', () => {
       expect(rotatedRows[0].envelope.sequence).toBe(1);
       expect(currentRows).toHaveLength(1);
       expect(currentRows[0].envelope.sequence).toBe(2);
+      expect((await ledger.readAll('kookr-test')).map((row) => row.envelope.sequence)).toEqual([1, 2]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -201,6 +202,7 @@ describe('ActivityLedger', () => {
       // Row 1 has been discarded by the second rotation; .1 now holds row 2.
       expect(rotatedRows.map((r) => r.envelope.sequence)).toEqual([2]);
       expect(currentRows.map((r) => r.envelope.sequence)).toEqual([3]);
+      expect((await ledger.readAll('kookr-test')).map((row) => row.envelope.sequence)).toEqual([2, 3]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -242,5 +244,12 @@ describe('ActivityLedger', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('rejects unsafe session ids before constructing a ledger path', () => {
+    const ledger = new ActivityLedger('/tmp/kookr-ledger-test');
+
+    expect(() => ledger.pathFor('../escape')).toThrow('Invalid Kookr session id');
+    expect(() => ledger.pathFor('kookr/escape')).toThrow('Invalid Kookr session id');
   });
 });

@@ -59,6 +59,7 @@ export interface ActivityLedgerStats {
 /** Owner-only directory bits — locks the activity ledger to the running user. */
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 /** Default size cap per ledger file before rotation. 10 MiB — generous for
  *  long sessions but small enough that worst-case disk usage is bounded:
  *  current + one rotation = ~20 MiB per Kookr session. */
@@ -162,20 +163,30 @@ export class ActivityLedger {
   }
 
   pathFor(kookrSessionId: string): string {
+    if (!SAFE_SESSION_ID_RE.test(kookrSessionId)) {
+      throw new Error(`Invalid Kookr session id: ${kookrSessionId}`);
+    }
     return join(this.activityDir, `${kookrSessionId}.jsonl`);
   }
 
   async readAll(kookrSessionId: string): Promise<ActivityLedgerRow[]> {
     await this.flush(kookrSessionId);
     const path = this.pathFor(kookrSessionId);
+    const rows: ActivityLedgerRow[] = [];
+    for (const p of [`${path}.1`, path]) {
+      await this.readRowsFromFile(p, rows);
+    }
+    return rows;
+  }
+
+  private async readRowsFromFile(path: string, rows: ActivityLedgerRow[]): Promise<void> {
     let content: string;
     try {
       content = await readFile(path, 'utf8');
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
       throw err;
     }
-    const rows: ActivityLedgerRow[] = [];
     for (const line of content.split('\n')) {
       if (!line) continue;
       try {
@@ -184,7 +195,6 @@ export class ActivityLedger {
         // Ledger row is self-malformed — extremely rare, ignore for stats.
       }
     }
-    return rows;
   }
 
   async stats(kookrSessionId: string): Promise<ActivityLedgerStats> {
@@ -252,4 +262,3 @@ export class ActivityLedger {
     }
   }
 }
-

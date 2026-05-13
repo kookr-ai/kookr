@@ -8,6 +8,8 @@ import { getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
 import { buildReflectionRecommendationResponse } from '../reflection-task.js';
 import type { RouteDeps } from './shared.js';
 
+const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
 
@@ -113,6 +115,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
   app.post('/api/hook-event/:sessionId', async (c) => {
     const sessionId = c.req.param('sessionId');
+    if (!SESSION_ID_RE.test(sessionId)) {
+      return c.json({ error: 'Invalid session id' }, 400);
+    }
     const body = await c.req.text();
     if (!body.trim()) return c.json({ status: 'empty' }, 400);
 

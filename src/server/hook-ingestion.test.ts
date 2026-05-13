@@ -197,7 +197,7 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
     return mkdtempSync(join(tmpdir(), 'kookr-ingest-hydrate-'));
   }
 
-  it('seeds the dedup cache so a post-restart file-replay does not re-inject', async () => {
+  it('replays hydrated records into live state without writing duplicate ledger rows', async () => {
     const dir = makeDir();
     try {
       const ledger = new ActivityLedger(dir);
@@ -214,12 +214,15 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       expect(hydrated.hydratedHashes).toBe(1);
       expect(hydrated.maxSequence).toBe(1);
 
-      // Simulate file-replay arriving with the same payload — must NOT reach
-      // the adapter because the dedup cache says we already delivered it.
+      const initialRowCount = (await ledger.readAll('kookr-1')).length;
+
+      // Simulate file-replay arriving with the same payload. It must rebuild
+      // in-memory monitor/watchdog state after restart, but must not append a
+      // duplicate diagnostic ledger row.
       const result = ingestion.injectHookEvent('kookr-1', raw);
       expect(result.parseStatus).toBe('ok');
-      // The injection went through the duplicate path, not the adapter.
-      expect(adapter.calls).toHaveLength(0);
+      expect(adapter.calls).toHaveLength(1);
+      expect(await ledger.readAll('kookr-1')).toHaveLength(initialRowCount);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -273,13 +276,13 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       const ingestion = new HookIngestion({ adapter, activityLedger: ledger, dedupTtlMs: 5000 });
       await ingestion.hydrateFromLedger('kookr-1', ledger);
 
-      // File-watcher replay arrives. Must NOT bump the sequence counter
-      // (otherwise the next REAL event jumps to 9 instead of 8) and must NOT
-      // write a diagnostic-only ledger row (otherwise stats inflates by N on
-      // every restart).
+      // File-watcher replay arrives. It rebuilds live state, but must NOT
+      // bump the sequence counter (otherwise the next REAL event jumps to 9
+      // instead of 8) and must NOT write a diagnostic-only ledger row
+      // (otherwise stats inflates by N on every restart).
       const result = ingestion.injectHookEvent('kookr-1', raw);
       expect(result.parseStatus).toBe('ok');
-      expect(adapter.calls).toHaveLength(0);
+      expect(adapter.calls).toHaveLength(1);
 
       const afterRowCount = (await ledger.readAll('kookr-1')).length;
       expect(afterRowCount).toBe(initialRowCount); // no phantom diagnostic row
@@ -327,9 +330,9 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       clock = 1_000_000;
       const result = ingestion.injectHookEvent('kookr-1', raw);
       expect(result.parseStatus).toBe('ok');
-      // The hydrated entry was NOT swept by gcExpired and intercepted the
-      // would-be re-dispatch.
-      expect(adapter.calls).toHaveLength(0);
+      // The hydrated entry was NOT swept by gcExpired; replay still uses the
+      // original sequence and dispatches once into live state.
+      expect(adapter.calls).toHaveLength(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

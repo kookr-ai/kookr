@@ -132,9 +132,18 @@ export class HookIngestion implements HookEventInjector {
       httpTrackerCall();
       if (existing.hydrated) {
         // Restart-replay hit: this record was already ledger-recorded before
-        // the crash. Drop silently — no new ledger row, no meta bump, no
-        // sequence allocation. The original arrival's bookkeeping survives.
-        return { dispatched: false, reason: 'duplicate', contentHash, injectResult: existing.result };
+        // the crash, but the in-memory monitor/watchdog state is empty after
+        // restart. Re-dispatch into live state using the original Kookr
+        // sequence while suppressing duplicate ledger writes and sequence
+        // allocation.
+        const result = this.adapter.injectHookEvent(
+          kookrSessionId,
+          normalized,
+          existing.result.sequence,
+        );
+        this.cache.set(key, { ts: now, result, firstSource: existing.firstSource });
+        this.bumpMeta(kookrSessionId, { duplicate: false, result });
+        return { dispatched: result.parseStatus === 'ok', contentHash, injectResult: result };
       }
       // Steady-state dual-delivery: the OTHER source already dispatched this
       // record. Reuse the original sequence number on the diagnostic ledger
