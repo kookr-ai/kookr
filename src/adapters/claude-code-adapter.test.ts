@@ -765,4 +765,77 @@ describe('ClaudeCodeAdapter', () => {
       expect(spec.env?.KOOKR_TASK_ID).toBe(task.id);
     });
   });
+
+  describe('parent runtime session freezing (rfc-activity-log-reliability §2)', () => {
+    function sessionStart(sessionId: string, transcriptPath = `/t/${sessionId}.jsonl`) {
+      return JSON.stringify({
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        cwd: '/cwd',
+        hook_event_name: 'SessionStart',
+      });
+    }
+
+    test('first SessionStart claims parent and freezes it against four reviewer sessions', async () => {
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+      adapter.injectHookEvent(sessionId, sessionStart('parent-1'));
+      for (const id of ['child-1', 'child-2', 'child-3', 'child-4']) {
+        adapter.injectHookEvent(sessionId, sessionStart(id));
+      }
+
+      const updated = taskStore.getTask(task.id)!;
+      const session = updated.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.claudeSessionId).toBe('parent-1');
+      expect(session.transcriptPath).toBe('/t/parent-1.jsonl');
+      expect(Object.keys(session.childSessionIds ?? {}).sort()).toEqual([
+        'child-1', 'child-2', 'child-3', 'child-4',
+      ]);
+    });
+
+    test('handler receives parent classification for parent SessionStart and child for later ones', async () => {
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+      const observed: Array<{ raw?: string; parentage: string }> = [];
+      adapter.onEvent((_id, _event, meta) => {
+        observed.push({ raw: meta.rawSessionId, parentage: meta.parentage });
+      });
+
+      adapter.injectHookEvent(sessionId, sessionStart('parent-1'));
+      adapter.injectHookEvent(sessionId, sessionStart('child-1'));
+      adapter.injectHookEvent(sessionId, JSON.stringify({
+        session_id: 'child-1',
+        transcript_path: '/t/child-1.jsonl',
+        cwd: '/cwd',
+        hook_event_name: 'Stop',
+        lastMessage: 'done',
+      }));
+
+      expect(observed).toEqual([
+        { raw: 'parent-1', parentage: 'parent' },
+        { raw: 'child-1', parentage: 'child' },
+        { raw: 'child-1', parentage: 'child' },
+      ]);
+    });
+
+    test('CWD changes from a child session do not move the parent task cwd', async () => {
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+
+      adapter.injectHookEvent(sessionId, sessionStart('parent-1'));
+      adapter.injectHookEvent(sessionId, JSON.stringify({
+        session_id: 'child-1',
+        transcript_path: '/t/child-1.jsonl',
+        cwd: '/elsewhere',
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Read',
+        tool_input: {},
+      }));
+
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.cwd).toBe('/cwd');
+    });
+  });
 });

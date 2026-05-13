@@ -687,3 +687,74 @@ describe('event-pipeline: R13 subagent_stop registration', () => {
     expect(usage!.outputTokens).toBe(500);                            // not 1000
   });
 });
+
+// ---------------------------------------------------------------------------
+// rfc-activity-log-reliability §3: only parent events drive monitor /
+// watchdog / anomaly detection. Child events still feed token tracking, but
+// they MUST NOT produce parent needs_input or count as parent activity.
+// ---------------------------------------------------------------------------
+
+describe('event-pipeline: parentage gating (rfc-activity-log-reliability)', () => {
+  test('child Stop does not call monitor.processEvents or watchdog.recordEvents', () => {
+    const { deps, fireEvent } = createMockDeps();
+    wireEventPipeline(deps);
+
+    fireEvent('kookr-parent', {
+      type: 'stop',
+      sessionId: 'codex-child-1',
+      lastMessage: 'child finished',
+    }, { parentage: 'child' });
+
+    expect(deps.monitor.processEvents).not.toHaveBeenCalled();
+    expect(deps.watchdog.recordEvents).not.toHaveBeenCalled();
+  });
+
+  test('child tool_use does not call monitor.processEvents', () => {
+    const { deps, fireEvent } = createMockDeps();
+    wireEventPipeline(deps);
+
+    fireEvent('kookr-parent', {
+      type: 'tool_use',
+      sessionId: 'codex-child-1',
+      toolName: 'Read',
+      toolUseId: 'tu-1',
+    }, { parentage: 'child' });
+
+    expect(deps.monitor.processEvents).not.toHaveBeenCalled();
+  });
+
+  test('parent Stop still drives monitor.processEvents and watchdog', () => {
+    const { deps, fireEvent } = createMockDeps();
+    wireEventPipeline(deps);
+
+    fireEvent('kookr-parent', {
+      type: 'stop',
+      sessionId: 'codex-parent',
+      lastMessage: 'parent finished',
+    }, { parentage: 'parent' });
+
+    expect(deps.monitor.processEvents).toHaveBeenCalledTimes(1);
+    expect(deps.watchdog.recordEvents).toHaveBeenCalledTimes(1);
+  });
+
+  test('child session_start still registers transcript with parent task for token rollup', () => {
+    const { deps, fireEvent } = createMockDeps();
+    (deps.taskStore as any).findTaskBySession = vi.fn().mockReturnValue({
+      id: 'parent-task-1',
+      sessions: [{ tmuxSession: 'kookr-parent' }],
+    });
+    wireEventPipeline(deps);
+
+    fireEvent('kookr-parent', {
+      type: 'session_start',
+      sessionId: 'codex-child-1',
+      transcriptPath: '/t/child.jsonl',
+    }, { parentage: 'child' });
+
+    // RFC §3: "child events feed token tracking" — the child's transcript
+    // must still register against the parent task so its tokens roll up.
+    expect(deps.tokenTracker.register).toHaveBeenCalledWith('/t/child.jsonl', 'parent-task-1');
+    // But the child must NOT drive parent anomaly detection.
+    expect(deps.monitor.processEvents).not.toHaveBeenCalled();
+  });
+});

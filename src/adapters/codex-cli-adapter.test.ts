@@ -662,6 +662,31 @@ describe('CodexCliAdapter', () => {
       expect(promptIdx).toBeGreaterThan(idx);
     });
 
+    test('parent SessionStart is frozen against later distinct Codex session ids', async () => {
+      const a = new CodexCliAdapter(backend, taskStore, { trustWorkspace: false });
+      const task = taskStore.createTask('reviewer-bug', '/cwd');
+      const sessionId = await a.launch(task.id, 'do work', '/cwd');
+
+      const sessionStart = (id: string) => JSON.stringify({
+        session_id: id,
+        transcript_path: `/t/${id}.jsonl`,
+        cwd: '/cwd',
+        hook_event_name: 'SessionStart',
+      });
+
+      a.injectHookEvent(sessionId, sessionStart('codex-parent'));
+      for (const id of ['codex-r1', 'codex-r2', 'codex-r3', 'codex-r4']) {
+        a.injectHookEvent(sessionId, sessionStart(id));
+      }
+
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.claudeSessionId).toBe('codex-parent');
+      expect(session.transcriptPath).toBe('/t/codex-parent.jsonl');
+      expect(Object.keys(session.childSessionIds ?? {}).sort()).toEqual([
+        'codex-r1', 'codex-r2', 'codex-r3', 'codex-r4',
+      ]);
+    });
+
     test('probe runs only once per adapter (memoized across launches)', async () => {
       let helpCalls = 0;
       const counting: import('./probe-agent-binary.js').ProbeExecRunner = async (_file, args) => {
