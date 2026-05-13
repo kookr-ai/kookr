@@ -209,6 +209,7 @@ export class MessageRouter {
       workspaceEnabled: this.deps.workspaceEnabled,
       sweepRunning: isSweepInProgress(),
       activityMetaProvider: this.deps.activityMetaProvider,
+      getMaxActiveTasks: this.deps.getMaxActiveTasks,
     }));
   }
 

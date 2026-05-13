@@ -251,6 +251,7 @@ export function handleWsConnection(
             serverCwd,
             sttUrl,
             activityMetaProvider: deps.activityMetaProvider,
+            getMaxActiveTasks: deps.getMaxActiveTasks,
           }));
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
@@ -323,6 +324,7 @@ export function handleWsConnection(
         serverCwd,
         sttUrl,
         activityMetaProvider: deps.activityMetaProvider,
+        getMaxActiveTasks: deps.getMaxActiveTasks,
       }));
       broadcastProjectSummaries();
     } catch (err) {

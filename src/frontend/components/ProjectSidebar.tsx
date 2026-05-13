@@ -165,11 +165,21 @@ function getTaskLoad(activeAgents: number, stalledAgents: number): TaskLoad {
   };
 }
 
-function TaskCountBadge({ taskLoad }: { taskLoad: TaskLoad }) {
-  if (taskLoad.activeAgents <= 0) return null;
+function TaskCountBadge({ taskLoad, pendingCount = 0 }: { taskLoad: TaskLoad; pendingCount?: number }) {
+  if (taskLoad.activeAgents <= 0 && pendingCount <= 0) return null;
+  const className = [
+    'project-icon-task-count',
+    taskLoad.stalledAgents > 0 ? 'has-stalled' : '',
+    pendingCount > 0 ? 'has-pending' : '',
+  ].filter(Boolean).join(' ');
   return (
-    <span className={`project-icon-task-count${taskLoad.stalledAgents > 0 ? ' has-stalled' : ''}`}>
-      {taskLoad.label}
+    <span className={className}>
+      {taskLoad.activeAgents > 0 && taskLoad.label}
+      {pendingCount > 0 && (
+        <span className="project-icon-task-pending">
+          {taskLoad.activeAgents > 0 ? `+${pendingCount}` : pendingCount}
+        </span>
+      )}
     </span>
   );
 }
@@ -192,9 +202,15 @@ function OrganizerButton({ onManage }: { onManage: () => void }) {
 
 interface Props {
   onManage: () => void;
+  /**
+   * Called when the user requests to adjust the server concurrency cap (e.g.
+   * via right-click on the all-projects icon). The parent owns navigation —
+   * typically opens Settings deep-linked to the maxActiveTasks field.
+   */
+  onAdjustCap?: () => void;
 }
 
-export function ProjectSidebar({ onManage }: Props) {
+export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
   const {
     visibleProjectSummaries,
     projectSummaries,
@@ -207,7 +223,13 @@ export function ProjectSidebar({ onManage }: Props) {
     hideSidebarProject,
     moveSidebarProject,
     reorderSidebarProject,
+    agents,
+    maxActiveTasks,
   } = useKookrStore();
+  const pendingCount = useMemo(
+    () => agents.filter((a) => a.taskStatus === 'pending').length,
+    [agents],
+  );
 
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
@@ -244,11 +266,25 @@ export function ProjectSidebar({ onManage }: Props) {
       getTaskLoad(0, 0),
     );
   }, [projectSummaries]);
+  // Capacity context for the all-projects icon. `activeAgents` is server-wide
+  // inProgress count (matches the launch-service gate against maxActiveTasks),
+  // so it's the right number to compare against the cap.
+  const hasLimit = maxActiveTasks > 0;
+  const atCap = hasLimit && allTaskLoad.activeAgents >= maxActiveTasks;
+  const hasQueue = pendingCount > 0;
+  const capLabel = hasLimit ? `${allTaskLoad.activeAgents}/${maxActiveTasks} of cap` : `${allTaskLoad.activeAgents} active`;
+  const queueSegment = hasQueue
+    ? `${pendingCount} queued${atCap ? ' — waiting for a slot' : ''}`
+    : (atCap ? 'at capacity — new launches will queue' : null);
+  const adjustHint = onAdjustCap && hasLimit ? 'Right-click to adjust cap' : null;
   const allTooltipText = [
     'All Projects',
     `${allTaskLoad.activeAgents} active agent${allTaskLoad.activeAgents !== 1 ? 's' : ''}`,
     `${allTaskLoad.runningAgents} running · ${allTaskLoad.stalledAgents} stalled`,
-  ].join(' · ');
+    capLabel,
+    queueSegment,
+    adjustHint,
+  ].filter((s): s is string => Boolean(s)).join(' · ');
 
   const menuRow = menuProjectId ? visibleRowMap.get(menuProjectId) ?? null : null;
   const menuSection = menuRow?.pinned ? pinnedSummaries : unpinnedSummaries;
@@ -376,13 +412,17 @@ export function ProjectSidebar({ onManage }: Props) {
       <Tooltip text={allTooltipText}>
         <button
           aria-label="All Projects"
-          className={`project-icon all${selectedProject === null ? ' selected' : ''}`}
+          className={`project-icon all${selectedProject === null ? ' selected' : ''}${atCap ? ' at-cap' : ''}${hasQueue ? ' has-queue' : ''}`}
           data-testid="project-icon-all"
           onClick={() => selectProject(null)}
+          onContextMenu={onAdjustCap && hasLimit ? (event) => {
+            event.preventDefault();
+            onAdjustCap();
+          } : undefined}
           type="button"
         >
           <span className="project-icon-letter">*</span>
-          <TaskCountBadge taskLoad={allTaskLoad} />
+          <TaskCountBadge taskLoad={allTaskLoad} pendingCount={pendingCount} />
         </button>
       </Tooltip>
 

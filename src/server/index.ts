@@ -267,6 +267,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   let currentSettings = settingsResult.settings;
   let settingsLoadedFromDefaults = settingsResult.loadedFromDefaults;
 
+  // Live getter for max active tasks — reads from current settings. Defined
+  // early so it can be threaded into snapshot broadcasts registered before
+  // the lifecycle deps are assembled below.
+  const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
+
   // Circuit breaker registry — protects external service calls.
   // V8 (rfc-v8-tmux-removal.md) removed the `'tmux'` breaker: its failures
   // were always logic bugs (the adapter calling tmux on a dtach-only
@@ -681,7 +686,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Metadata-only refresh (e.g. git info captured) — broadcast snapshot without injecting events
   adapter.onRefreshNeeded(() => {
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
     broadcastProjectSummaries();
   });
 
@@ -769,7 +774,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         if (current && !current.name) {
           taskStore.renameTask(taskId, name);
           console.log(`[task-naming] Named task ${taskId}: "${name}"`);
-          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion }));
+          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
         }
       })
       .catch((err) => {
@@ -785,8 +790,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     projectConfigStore,
   };
 
-  // Live getter for max active tasks — reads from current settings.
-  const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
   const getDefaultAgentType = () => currentSettings.defaultAgentType;
 
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
@@ -964,7 +967,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             reconReportWatcher.close();
           }
         }
-        return applySettingsSideEffects({
+        const warnings = await applySettingsSideEffects({
           prevSettings: prev,
           newSettings,
           settingsFile,
@@ -972,6 +975,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           watchdog,
           monitor,
         });
+        // Push a fresh snapshot so the cap indicator reflects the new value
+        // immediately rather than waiting for the next agent event.
+        if (prev.maxActiveTasks !== newSettings.maxActiveTasks) {
+          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
+        }
+        return warnings;
       },
     },
   });

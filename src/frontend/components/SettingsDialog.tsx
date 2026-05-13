@@ -17,15 +17,24 @@ interface ServerSettings {
   loadedFromDefaults?: boolean;
 }
 
+/** Settings field to scroll-and-focus on open. */
+export type SettingsFocusField = 'maxActiveTasks';
+
 interface Props {
   onClose: () => void;
+  /**
+   * If set, the matching input is scrolled into view and focused once
+   * settings load. Lets callers deep-link straight to the relevant control
+   * (e.g. right-click on the all-projects icon → max concurrent tasks).
+   */
+  focusField?: SettingsFocusField;
 }
 
 type SettingsTab = 'general' | 'hooks';
 
 const SETTINGS_TABS: readonly SettingsTab[] = ['general', 'hooks'];
 
-export function SettingsDialog({ onClose }: Props) {
+export function SettingsDialog({ onClose, focusField }: Props) {
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
   const agentOptions = availableAgentTypes.length > 0 ? availableAgentTypes : AVAILABLE_AGENT_TYPES;
@@ -40,6 +49,8 @@ export function SettingsDialog({ onClose }: Props) {
     general: null,
     hooks: null,
   });
+  const maxActiveTasksInputRef = useRef<HTMLInputElement>(null);
+  const didFocusRef = useRef(false);
 
   useEffect(() => {
     fetch('/api/settings')
@@ -53,6 +64,23 @@ export function SettingsDialog({ onClose }: Props) {
         setLoading(false);
       });
   }, []);
+
+  // Deep-link focus: when opened with a target field, switch to the General
+  // tab, scroll the target input into view, focus it, and select its contents
+  // so the user can type a new value immediately. Runs once per mount.
+  useEffect(() => {
+    if (!focusField || !settings || didFocusRef.current) return;
+    if (focusField === 'maxActiveTasks') {
+      setActiveTab('general');
+      const input = maxActiveTasksInputRef.current;
+      if (input) {
+        input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        input.focus();
+        input.select();
+        didFocusRef.current = true;
+      }
+    }
+  }, [focusField, settings]);
 
   const saveSettings = useCallback(async (updated: ServerSettings) => {
     try {
@@ -280,6 +308,7 @@ export function SettingsDialog({ onClose }: Props) {
                       </div>
                       <div className="settings-number-group">
                         <input
+                          ref={maxActiveTasksInputRef}
                           type="number"
                           className="settings-number"
                           value={settings.maxActiveTasks}

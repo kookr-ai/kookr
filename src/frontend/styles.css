@@ -4550,6 +4550,22 @@ textarea::-webkit-resizer { background: transparent; }
   border-color: var(--amber);
   background: rgba(251,191,36,0.1);
 }
+.project-icon-task-count.has-pending {
+  border-color: var(--blue, #60a5fa);
+}
+.project-icon-task-pending {
+  margin-left: 2px;
+  color: var(--blue, #60a5fa);
+  font-weight: 700;
+}
+.project-icon.all.at-cap {
+  box-shadow: 0 0 0 1px var(--red);
+}
+.project-icon.all.at-cap .project-icon-task-count {
+  color: var(--red);
+  border-color: var(--red);
+  background: rgba(248,113,113,0.1);
+}
 
 .project-sidebar-drop-target {
   position: relative;
