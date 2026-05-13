@@ -1,6 +1,13 @@
 import React, { useMemo, useRef, useEffect, useState } from 'react';
-import type { AgentEvent, ActivityItem, ToolGroup, ToolGroupEntry } from '../../shared/protocol.js';
-import { summarizeActivity, compactToolSummary } from '../../shared/protocol.js';
+import type {
+  AgentActivityMeta,
+  AgentEvent,
+  ActivityDisclosure,
+  ActivityItem,
+  ToolGroup,
+  ToolGroupEntry,
+} from '../../shared/protocol.js';
+import { buildActivityDisclosure, summarizeActivity, compactToolSummary } from '../../shared/protocol.js';
 import { renderMarkdown } from '../markdown.js';
 
 /**
@@ -20,6 +27,12 @@ interface Props {
   anomalyExplanation?: string;
   /** Called when the user clicks an Edit/Write file entry. */
   onOpenDiff?: (target: DiffClickTarget) => void;
+  /** Counters from the Kookr-side ingestion so the panel can disclose
+   *  partial-window, child-activity, and malformed-record context. */
+  activityMeta?: AgentActivityMeta;
+  /** Task id used to deep-link the disclosure banner to its
+   *  /api/tasks/:taskId/activity-diagnostics view. */
+  taskId?: string;
 }
 
 function ToolIcon({ entry }: { entry: ToolGroupEntry }) {
@@ -167,8 +180,69 @@ function ActivityItemView({
   }
 }
 
-export function ActivityPanel({ events, anomalyExplanation, onOpenDiff }: Props) {
+function ActivityDisclosureBanner({
+  disclosure,
+  taskId,
+}: {
+  disclosure: ActivityDisclosure;
+  taskId?: string;
+}) {
+  const diagHref = taskId ? `/api/tasks/${taskId}/activity-diagnostics` : undefined;
+  return (
+    <div className="act-disclosure-banner" data-testid="act-disclosure-banner">
+      {disclosure.partialWindow && (
+        <div className="act-disclosure-line act-disclosure-partial">
+          Showing last {disclosure.partialWindow.eventsShown} of{' '}
+          {disclosure.partialWindow.totalEventsSeen} events.
+        </div>
+      )}
+      {disclosure.childActivity && (
+        <div className="act-disclosure-line act-disclosure-child">
+          Child agent activity:{' '}
+          {disclosure.childActivity.eventCount} event
+          {disclosure.childActivity.eventCount === 1 ? '' : 's'}
+          {disclosure.childActivity.foreignCount > 0
+            ? ` (+${disclosure.childActivity.foreignCount} foreign)`
+            : ''}{' '}
+          not shown.
+        </div>
+      )}
+      {disclosure.malformed && (
+        <div className="act-disclosure-line act-disclosure-malformed">
+          Activity warning:{' '}
+          {disclosure.malformed.malformedCount > 0 && (
+            <>
+              {disclosure.malformed.malformedCount} hook record
+              {disclosure.malformed.malformedCount === 1 ? '' : 's'} malformed
+            </>
+          )}
+          {disclosure.malformed.malformedCount > 0 && disclosure.malformed.droppedCount > 0 && ', '}
+          {disclosure.malformed.droppedCount > 0 && (
+            <>
+              {disclosure.malformed.droppedCount} dropped
+            </>
+          )}
+          {diagHref && (
+            <>
+              {' — '}
+              <a className="act-disclosure-link" href={diagHref}>
+                open diagnostics
+              </a>
+            </>
+          )}
+          .
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ActivityPanel({ events, anomalyExplanation, onOpenDiff, activityMeta, taskId }: Props) {
   const items = useMemo(() => summarizeActivity(events), [events]);
+  const disclosure = useMemo(
+    () => buildActivityDisclosure(events.length, activityMeta),
+    [events.length, activityMeta],
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
 
@@ -201,6 +275,7 @@ export function ActivityPanel({ events, anomalyExplanation, onOpenDiff }: Props)
   if (items.length === 0) {
     return (
       <div className="activity-panel">
+        {disclosure && <ActivityDisclosureBanner disclosure={disclosure} taskId={taskId} />}
         <div className="act-empty">
           <p>No activity yet.</p>
           <p className="act-empty-hint">Messages and tool activity will appear here as the agent works.</p>
@@ -218,6 +293,7 @@ export function ActivityPanel({ events, anomalyExplanation, onOpenDiff }: Props)
             <div className="act-alert-body">{anomalyExplanation}</div>
           </div>
         )}
+        {disclosure && <ActivityDisclosureBanner disclosure={disclosure} taskId={taskId} />}
         {items.map((item, i) => (
           <ActivityItemView key={i} item={item} onOpenDiff={onOpenDiff} />
         ))}
