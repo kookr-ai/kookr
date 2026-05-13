@@ -34,6 +34,7 @@ import {
 } from './agent-preflight.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { HookFileWatcher } from './hook-watcher.js';
+import { HookIngestion } from './hook-ingestion.js';
 import { generateTaskName } from '../core/task-naming.js';
 import { createLlmClient } from '../core/llm-client.js';
 import { FakeTerminalBridge } from './fake-terminal-bridge.js';
@@ -521,7 +522,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Hook watcher created here but resumed-session replay is deferred to after crash recovery,
   // so relaunched sessions have their new tmux names before snooze restore + hook replay.
-  const hookWatcher = new HookFileWatcher(hooksDir, adapter);
+  // HookIngestion serializes file-source and http-source delivery through a
+  // content-hash dedup window so the same record never reaches the adapter
+  // twice. See rfc-activity-log-reliability §5.
+  const hookIngestion = new HookIngestion({ adapter, httpPushTracker });
+  const hookWatcher = new HookFileWatcher(hooksDir, hookIngestion);
 
   // Register transcripts for resumed sessions so token tracker picks up existing data
   for (const task of taskStore.getAllTasks()) {
@@ -918,7 +923,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     interactionLog,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, frontendDir, broadcastToAll,
-    shadowRegistry, httpPushTracker, launchServiceDeps, sttUrl,
+    shadowRegistry, httpPushTracker, hookIngestion, launchServiceDeps, sttUrl,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,

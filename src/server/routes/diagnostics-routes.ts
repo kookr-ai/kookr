@@ -81,10 +81,19 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const body = await c.req.text();
     if (!body.trim()) return c.json({ status: 'empty' }, 400);
 
+    if (deps.hookIngestion) {
+      // Active fast path: feed the body into the same ingestion service the
+      // file watcher uses. Dedup by content hash keeps a single record from
+      // reaching the adapter twice when the file watcher also delivers it.
+      // See rfc-activity-log-reliability §5.
+      const result = deps.hookIngestion.ingestFromHttp(sessionId, body);
+      return c.json({ status: 'received', dispatched: result.dispatched });
+    }
+
+    // Fallback: timing-only — shadow-detection era behavior.
     if (deps.httpPushTracker) {
       deps.httpPushTracker.recordHttpArrival(sessionId, body);
     }
-
     return c.json({ status: 'received' });
   });
 

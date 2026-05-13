@@ -4,6 +4,7 @@ import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { AgentAdapter } from '../../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../../adapters/terminal-backend.js';
 import type { HookFileWatcher } from '../hook-watcher.js';
+import type { HookIngestion } from '../hook-ingestion.js';
 import type { Watchdog } from '../../core/watchdog.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
 import type { GitHubScannerService } from '../../core/github-scanner-service.js';
@@ -52,6 +53,13 @@ export interface RouteDeps {
   broadcastToAll: (msg: ServerMessage) => void;
   shadowRegistry?: ShadowDetectorRegistry;
   httpPushTracker?: HttpPushTracker;
+  /**
+   * Dedup + active-delivery service used by the file watcher and the
+   * `/api/hook-event/:sessionId` HTTP route. When present, the HTTP route
+   * actively injects payloads into the monitor; otherwise it falls back to
+   * timing-only behavior. See rfc-activity-log-reliability §5.
+   */
+  hookIngestion?: HookIngestion;
   launchServiceDeps: LaunchServiceDeps;
   sttUrl?: string;
   projectConfigStore?: ProjectConfigStore;
