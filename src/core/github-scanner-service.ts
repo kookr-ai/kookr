@@ -11,6 +11,21 @@ import type {
 import { GitHubStateStore } from './github-state-store.js';
 import { extractRefsFromEvents, extractRefsFromPrompt, toGitHubReferences } from './github-reference-scanner.js';
 import { diffPRState, diffIssueState } from './github-state-differ.js';
+import { isSafeGithubProjectId, projectIdToOwnerRepo } from './project-identity.js';
+import type { ProjectRepoHealth } from './project-summary.js';
+
+/** How often the per-repo health batch (issues/PRs counts + pending list) is refetched. */
+export const REPO_HEALTH_INTERVAL_MS = 600_000;
+/** Watchdog: force-clear repoHealthInflight if a tick has not finished within this window. */
+const REPO_HEALTH_WATCHDOG_MS = 60_000;
+
+export type RepoHealthFetcher = (
+  repos: ReadonlyArray<{ projectId: string; owner: string; repo: string }>,
+  login: string | null,
+) => Promise<Map<string, ProjectRepoHealth> | null>;
+
+/** Resolves the authenticated `gh` login (e.g. "jeanibarz") or null if unauthed. */
+export type GhUserLoginResolver = () => Promise<string | null>;
 
 export interface GitHubScannerDeps {
   taskStore: TaskStore;
@@ -20,6 +35,17 @@ export interface GitHubScannerDeps {
   onChanges: (taskId: string, changes: GitHubStateChange[]) => void;
   /** Called when state is fetched for the first time (even with no changes). */
   onStateUpdate?: (taskId: string) => void;
+  /**
+   * Batch fetch for repo-wide stats. When omitted the third interval is not
+   * armed and `getRepoHealthSnapshot()` returns an empty map. Bypasses the
+   * circuit breaker by design — failures are idempotent and one whole-batch
+   * miss costs only one GraphQL point.
+   */
+  repoHealthFetcher?: RepoHealthFetcher;
+  /** Resolves the GitHub login used to scope "needs attention" PRs. Called once at start(). */
+  ghUserLoginResolver?: GhUserLoginResolver;
+  /** Called whenever the repo-health cache changes so the server can rebroadcast summaries. */
+  onRepoHealthChanged?: () => void;
 }
 
 /**
@@ -33,13 +59,24 @@ export class GitHubScannerService {
   private config: GitHubScannerConfig;
   private onChanges: (taskId: string, changes: GitHubStateChange[]) => void;
   private onStateUpdate?: (taskId: string) => void;
+  private repoHealthFetcher?: RepoHealthFetcher;
+  private ghUserLoginResolver?: GhUserLoginResolver;
+  private ghUserLogin: string | null = null;
+  private onRepoHealthChanged?: () => void;
 
   private scanInterval: ReturnType<typeof setInterval> | null = null;
   private fetchInterval: ReturnType<typeof setInterval> | null = null;
+  private repoHealthInterval: ReturnType<typeof setInterval> | null = null;
   private ghAvailable = false;
   private fetching = false;
+  private repoHealthInflight = false;
   /** Generation counter — incremented on stop/reconfigure to cancel orphaned fetches. */
   private generation = 0;
+
+  /** Repo-health cache: project id (`github.com/owner/repo`) → ProjectRepoHealth (view-model shape). */
+  private repoHealth = new Map<string, ProjectRepoHealth>();
+  /** The set of project ids the next repo-health tick should fetch (push-fed). */
+  private trackedRepos = new Set<string>();
 
   // Cache: cwd → { owner, repo }
   private ownerRepoCache = new Map<string, { owner: string; repo: string } | null>();
@@ -54,6 +91,9 @@ export class GitHubScannerService {
     this.config = deps.config;
     this.onChanges = deps.onChanges;
     this.onStateUpdate = deps.onStateUpdate;
+    this.repoHealthFetcher = deps.repoHealthFetcher;
+    this.ghUserLoginResolver = deps.ghUserLoginResolver;
+    this.onRepoHealthChanged = deps.onRepoHealthChanged;
   }
 
   /** Start the periodic scanner. Idempotent — stops first if already running. Returns false if gh is not available. */
@@ -69,6 +109,18 @@ export class GitHubScannerService {
       return false;
     }
 
+    // Resolve the authenticated login once for scoping "needs attention" lists.
+    if (this.ghUserLoginResolver) {
+      try {
+        this.ghUserLogin = await this.ghUserLoginResolver();
+        if (this.ghUserLogin) {
+          console.log(`[github] resolved login: ${this.ghUserLogin}`);
+        }
+      } catch {
+        this.ghUserLogin = null;
+      }
+    }
+
     console.log('GitHub PR awareness enabled (polling every', this.config.stateFetchIntervalMs / 1000, 's)');
 
     // Reference extraction runs on its own interval
@@ -80,6 +132,14 @@ export class GitHubScannerService {
     this.fetchInterval = setInterval(() => {
       void this.fetchAllStates();
     }, this.config.stateFetchIntervalMs);
+
+    if (this.repoHealthFetcher) {
+      this.repoHealthInterval = setInterval(() => {
+        void this.repoHealthTick();
+      }, REPO_HEALTH_INTERVAL_MS);
+      // Kick an immediate first fetch so the drawer is populated before the first 10-min interval elapses.
+      void this.repoHealthTick();
+    }
 
     return true;
   }
@@ -94,6 +154,10 @@ export class GitHubScannerService {
     if (this.fetchInterval) {
       clearInterval(this.fetchInterval);
       this.fetchInterval = null;
+    }
+    if (this.repoHealthInterval) {
+      clearInterval(this.repoHealthInterval);
+      this.repoHealthInterval = null;
     }
   }
 
@@ -116,6 +180,11 @@ export class GitHubScannerService {
         this.fetchInterval = setInterval(() => {
           void this.fetchAllStates();
         }, this.config.stateFetchIntervalMs);
+        if (this.repoHealthFetcher) {
+          this.repoHealthInterval = setInterval(() => {
+            void this.repoHealthTick();
+          }, REPO_HEALTH_INTERVAL_MS);
+        }
       }
     }
   }
@@ -279,6 +348,96 @@ export class GitHubScannerService {
     } else if (firstFetch) {
       // First fetch — no changes but notify so frontend gets the initial state
       this.onStateUpdate?.(taskId);
+    }
+  }
+
+  /**
+   * Update the set of project ids the next repo-health tick should fetch.
+   * Pushed from the server's broadcastProjectSummaries path; the scanner does
+   * not query presentation state itself. Ids that fail safe-validation are
+   * silently dropped here so the batch never poisons.
+   */
+  setTrackedGithubRepos(projectIds: ReadonlyArray<string>): void {
+    const next = new Set<string>();
+    for (const id of projectIds) {
+      if (isSafeGithubProjectId(id)) next.add(id);
+    }
+    // If any new repo appeared in the set, kick a tick so the drawer
+    // doesn't have to wait up to 10 min for its first data.
+    let hasNew = false;
+    for (const id of next) {
+      if (!this.trackedRepos.has(id)) { hasNew = true; break; }
+    }
+    this.trackedRepos = next;
+    if (hasNew && this.repoHealthFetcher && this.ghAvailable) {
+      void this.repoHealthTick();
+    }
+  }
+
+  /** Read-only view of the current repo-health cache. Passed to project-summary computation. */
+  getRepoHealthSnapshot(): ReadonlyMap<string, ProjectRepoHealth> {
+    return this.repoHealth;
+  }
+
+  /** Visible for tests. */
+  isRepoHealthInflight(): boolean {
+    return this.repoHealthInflight;
+  }
+
+  /**
+   * One periodic batch fetch. Returns silently when no fetcher is wired or
+   * no repos are tracked. Re-entrant calls are skipped; a 60 s watchdog
+   * guarantees the inflight flag never sticks.
+   */
+  private async repoHealthTick(): Promise<void> {
+    if (!this.repoHealthFetcher) return;
+    if (this.repoHealthInflight) return;
+    if (this.trackedRepos.size === 0) {
+      if (this.repoHealth.size > 0) {
+        this.repoHealth = new Map();
+        this.onRepoHealthChanged?.();
+      }
+      return;
+    }
+
+    this.repoHealthInflight = true;
+    const watchdog = setTimeout(() => {
+      console.warn('[github] repo-health tick watchdog fired; clearing inflight flag');
+      this.repoHealthInflight = false;
+    }, REPO_HEALTH_WATCHDOG_MS);
+    watchdog.unref?.();
+
+    try {
+      const batch: Array<{ projectId: string; owner: string; repo: string }> = [];
+      for (const id of this.trackedRepos) {
+        const parsed = projectIdToOwnerRepo(id);
+        if (parsed) batch.push({ projectId: id, owner: parsed.owner, repo: parsed.repo });
+      }
+      if (batch.length === 0) return;
+
+      const fresh = await this.repoHealthFetcher(batch, this.ghUserLogin);
+      if (fresh === null) return; // whole-batch failure — preserve previous cache
+
+      // Eviction-race fix: re-read the tracked set at write time and only
+      // commit entries for repos still in it.
+      const currentTracked = this.trackedRepos;
+      const next = new Map<string, ProjectRepoHealth>();
+      for (const [projectId, prev] of this.repoHealth) {
+        if (!currentTracked.has(projectId)) continue;
+        if (fresh.has(projectId)) continue; // about to overwrite
+        next.set(projectId, prev);
+      }
+      for (const [projectId, entry] of fresh) {
+        if (!currentTracked.has(projectId)) continue;
+        next.set(projectId, entry);
+      }
+      this.repoHealth = next;
+      this.onRepoHealthChanged?.();
+    } catch (err) {
+      console.warn('[github] repo-health tick error:', err instanceof Error ? err.message : String(err));
+    } finally {
+      clearTimeout(watchdog);
+      this.repoHealthInflight = false;
     }
   }
 

@@ -7,20 +7,22 @@ interface Props {
   send: (msg: ClientMessage) => void;
   onOpenWorkspace?: () => void;
   onRunPlaybook?: () => void;
+  compact?: boolean;
 }
 
 const COLLAPSED_TASK_COUNT = 3;
 
-function relativeDays(iso: string): string {
+function relativeAgo(iso: string): string {
   const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return '';
-  const diffMs = Date.now() - then;
-  const days = Math.floor(diffMs / 86_400_000);
-  if (days <= 0) return 'today';
-  if (days === 1) return 'yesterday';
-  if (days < 30) return `${days}d ago`;
-  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
-  return `${Math.floor(days / 365)}y ago`;
+  if (!Number.isFinite(then)) return '';
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
 }
 
 function StatRow({ label, value, hint }: { label: string; value: React.ReactNode; hint?: React.ReactNode }) {
@@ -46,21 +48,14 @@ function TaskRow({ task }: { task: TaskSummary }) {
   );
 }
 
-export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, onRunPlaybook }: Props) {
+export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, onRunPlaybook, compact = false }: Props) {
   const [dailyLimit, setDailyLimit] = useState<string>(project.dailyLimit?.toString() ?? '');
   const [notes, setNotes] = useState(project.notes ?? '');
   const [dirty, setDirty] = useState(false);
   const [tasksExpanded, setTasksExpanded] = useState(false);
 
   const atLimit = project.dailyLimit !== undefined && project.todayPrCount >= project.dailyLimit;
-  const showWeek = project.weekPrCount > 0;
-  const showOpenPrs = project.openPrs > 0;
-  const showPrLessons = project.prLessonsProcessed !== undefined;
-  const showToday = project.dailyLimit !== undefined || project.todayPrCount > 0;
-  const hasAnyStat = showToday || showWeek || showOpenPrs || showPrLessons;
-
-  const visibleTasks = tasksExpanded ? project.recentTasks : project.recentTasks.slice(0, COLLAPSED_TASK_COUNT);
-  const hiddenTaskCount = Math.max(0, project.recentTasks.length - COLLAPSED_TASK_COUNT);
+  const limitPct = project.dailyLimit ? Math.min(100, Math.round((project.todayPrCount / project.dailyLimit) * 100)) : 0;
 
   function handleSave() {
     const limit = parseInt(dailyLimit, 10);
@@ -76,64 +71,122 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
     setDirty(false);
   }
 
-  const subParts: string[] = [];
-  if (project.lastContribution) subParts.push(`Last PR ${relativeDays(project.lastContribution)}`);
-  if (project.activeAgents > 0) subParts.push(`${project.activeAgents} running`);
-  if (project.findingCount > 0) subParts.push(`${project.findingCount} finding${project.findingCount === 1 ? '' : 's'}`);
-  if (subParts.length === 0) subParts.push('Idle');
+  const repoHealth = project.repoHealth;
+  const repoHealthFetchedAt = repoHealth?.lastFetchedAt;
+  const repoHealthTooltip = repoHealthFetchedAt
+    ? `Updated ${new Date(repoHealthFetchedAt).toLocaleString()}`
+    : undefined;
+  const repoHealthAgo = repoHealthFetchedAt ? relativeAgo(repoHealthFetchedAt) : undefined;
+  const updatedHint = repoHealthAgo ? <span className="project-drawer-stat-hint"> · {repoHealthAgo}</span> : null;
 
-  const limitPct = project.dailyLimit ? Math.min(100, Math.round((project.todayPrCount / project.dailyLimit) * 100)) : 0;
+  const visibleTasks = tasksExpanded ? project.recentTasks : project.recentTasks.slice(0, COLLAPSED_TASK_COUNT);
+  const hiddenTaskCount = Math.max(0, project.recentTasks.length - COLLAPSED_TASK_COUNT);
 
   return (
-    <div className="project-drawer" data-testid="project-detail-drawer">
-      <header className="project-drawer-head">
-        <h3 className="project-drawer-title" title={project.displayName}>{project.displayName}</h3>
-        <button className="project-drawer-close" onClick={onClose} title="Close" aria-label="Close">×</button>
-        <div className="project-drawer-sub">{subParts.join(' · ')}</div>
-      </header>
-
-      {(onRunPlaybook || onOpenWorkspace) && (
-        <div className="project-drawer-actions">
-          {onRunPlaybook && (
-            <button className="btn-primary project-drawer-cta" onClick={onRunPlaybook} data-testid="run-playbook-btn">
-              Run playbook
-            </button>
+    <div className={`project-drawer${compact ? ' compact' : ''}`} data-testid="project-detail-drawer">
+      <div className="project-drawer-header">
+        <div className="project-drawer-header-row">
+          <h3>{project.displayName}</h3>
+          {repoHealth?.repoUrl && (
+            <a
+              className="project-drawer-repo-link"
+              href={repoHealth.repoUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open ${repoHealth.repoUrl}`}
+              aria-label="Open repository on GitHub"
+              data-testid="open-on-github"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
+            </a>
           )}
-          {onOpenWorkspace && (
-            <button className="project-drawer-link btn-workspace" onClick={onOpenWorkspace}>Workspace</button>
-          )}
+          <button className="project-drawer-close" onClick={onClose} title="Close" aria-label="Close">
+            {'×'}
+          </button>
         </div>
-      )}
+        {(onRunPlaybook || onOpenWorkspace) && (
+          <div className="project-drawer-header-actions">
+            {onRunPlaybook && (
+              <button className="btn-xs btn-primary" onClick={onRunPlaybook} data-testid="run-playbook-btn">Run playbook...</button>
+            )}
+            {onOpenWorkspace && (
+              <button className="btn-xs btn-workspace" onClick={onOpenWorkspace}>Workspace</button>
+            )}
+          </div>
+        )}
+        {compact && (
+          <div className="project-drawer-compact-stats" aria-label="Project summary">
+            <span>{project.activeAgents} agent{project.activeAgents === 1 ? '' : 's'}</span>
+            <span>{project.findingCount} finding{project.findingCount === 1 ? '' : 's'}</span>
+            <span>{project.openPrs} agent PR{project.openPrs === 1 ? '' : 's'}</span>
+          </div>
+        )}
+      </div>
 
-      {hasAnyStat && (
+      {!compact && (
         <section className="project-drawer-stats" aria-label="Project stats">
-          {showToday && (
-            <div className={`project-drawer-stat-row${atLimit ? ' at-limit' : ''}`}>
-              <span className="project-drawer-stat-label">Today</span>
-              <span className="project-drawer-stat-value">
-                {project.dailyLimit !== undefined ? (
-                  <span
-                    className="project-drawer-meter"
-                    role="progressbar"
-                    aria-valuenow={project.todayPrCount}
-                    aria-valuemin={0}
-                    aria-valuemax={project.dailyLimit}
-                    aria-label={`${project.todayPrCount} of ${project.dailyLimit} daily PRs${atLimit ? ' (limit reached)' : ''}`}
-                  >
-                    <span className="project-drawer-meter-track">
-                      <span className="project-drawer-meter-fill" style={{ width: `${limitPct}%` }} />
-                    </span>
-                    <span className="project-drawer-meter-text">{project.todayPrCount}/{project.dailyLimit}</span>
+          <div className={`project-drawer-stat-row${atLimit ? ' at-limit' : ''}`}>
+            <span className="project-drawer-stat-label">Today</span>
+            <span className="project-drawer-stat-value">
+              {project.dailyLimit !== undefined ? (
+                <span
+                  className="project-drawer-meter"
+                  role="progressbar"
+                  aria-valuenow={project.todayPrCount}
+                  aria-valuemin={0}
+                  aria-valuemax={project.dailyLimit}
+                  aria-label={`${project.todayPrCount} of ${project.dailyLimit} daily PRs${atLimit ? ' (limit reached)' : ''}`}
+                >
+                  <span className="project-drawer-meter-track">
+                    <span className="project-drawer-meter-fill" style={{ width: `${limitPct}%` }} />
                   </span>
-                ) : (
-                  project.todayPrCount
-                )}
+                  <span className="project-drawer-meter-text">{project.todayPrCount}/{project.dailyLimit}</span>
+                </span>
+              ) : (
+                project.todayPrCount
+              )}
+            </span>
+          </div>
+          <StatRow label="This week" value={project.weekPrCount} />
+          <StatRow label="Agent PRs" value={project.openPrs} />
+          <StatRow label="Active agents" value={project.activeAgents} />
+          {repoHealth && Number.isFinite(repoHealth.openIssues) && (
+            <a
+              className="project-drawer-stat-row project-drawer-stat-row-link"
+              href={`${repoHealth.repoUrl}/issues`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={repoHealthTooltip}
+              data-testid="repo-open-issues"
+            >
+              <span className="project-drawer-stat-label">Open issues</span>
+              <span className="project-drawer-stat-value">
+                {repoHealth.openIssues}
+                {updatedHint}
               </span>
-            </div>
+            </a>
           )}
-          {showWeek && <StatRow label="This week" value={project.weekPrCount} />}
-          {showOpenPrs && <StatRow label="Open PRs" value={project.openPrs} />}
-          {showPrLessons && (
+          {repoHealth && Number.isFinite(repoHealth.openPullRequests) && (
+            <a
+              className="project-drawer-stat-row project-drawer-stat-row-link"
+              href={`${repoHealth.repoUrl}/pulls`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={repoHealthTooltip}
+              data-testid="repo-open-prs"
+            >
+              <span className="project-drawer-stat-label">Open PRs</span>
+              <span className="project-drawer-stat-value">
+                {repoHealth.openPullRequests}
+                {updatedHint}
+              </span>
+            </a>
+          )}
+          {project.prLessonsProcessed !== undefined && (
             <StatRow
               label="PR lessons"
               value={`${project.prLessonsProcessed} PRs`}
@@ -145,7 +198,28 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
         </section>
       )}
 
-      {project.recentTasks.length > 0 && (
+      {!compact && repoHealth && repoHealth.pendingReviewPrs.length > 0 && (
+        <div className="project-drawer-section" data-testid="pending-review-section">
+          <h4>Needs your attention</h4>
+          <div className="project-drawer-pending-prs">
+            {repoHealth.pendingReviewPrs.map((pr) => (
+              <a
+                key={pr.number}
+                className="project-drawer-pending-pr"
+                href={pr.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={pr.title}
+              >
+                <span className="pending-pr-number">#{pr.number}</span>
+                <span className="pending-pr-title">{pr.title}</span>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!compact && project.recentTasks.length > 0 && (
         <section className="project-drawer-section" aria-labelledby={`recent-agents-${project.project}`}>
           <h4 id={`recent-agents-${project.project}`}>Recent agents</h4>
           <div className="project-drawer-tasks">
@@ -159,39 +233,41 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
         </section>
       )}
 
-      <section className="project-drawer-section" aria-labelledby={`settings-${project.project}`}>
-        <h4 id={`settings-${project.project}`}>Settings</h4>
-        <div className="project-drawer-setting">
-          <label htmlFor={`daily-limit-${project.project}`}>Daily PR cap</label>
-          <input
-            id={`daily-limit-${project.project}`}
-            type="number"
-            min="0"
-            max="100"
-            value={dailyLimit}
-            placeholder="—"
-            onChange={(e) => { setDailyLimit(e.target.value); setDirty(true); }}
-            className="project-drawer-input"
-            data-testid="daily-limit-input"
-          />
-        </div>
-        <div className="project-drawer-setting project-drawer-setting-block">
-          <label htmlFor={`notes-${project.project}`}>Notes</label>
-          <textarea
-            id={`notes-${project.project}`}
-            value={notes}
-            onChange={(e) => { setNotes(e.target.value); setDirty(true); }}
-            className="project-drawer-textarea"
-            placeholder="Contribution strategy…"
-            data-testid="project-notes-input"
-          />
-        </div>
-        {dirty && (
-          <button className="btn-primary project-drawer-save" onClick={handleSave} data-testid="save-config">
-            Save
-          </button>
-        )}
-      </section>
+      {!compact && (
+        <section className="project-drawer-section" aria-labelledby={`settings-${project.project}`}>
+          <h4 id={`settings-${project.project}`}>Settings</h4>
+          <div className="project-drawer-setting">
+            <label htmlFor={`daily-limit-${project.project}`}>Daily PR cap</label>
+            <input
+              id={`daily-limit-${project.project}`}
+              type="number"
+              min="0"
+              max="100"
+              value={dailyLimit}
+              placeholder="—"
+              onChange={(e) => { setDailyLimit(e.target.value); setDirty(true); }}
+              className="project-drawer-input"
+              data-testid="daily-limit-input"
+            />
+          </div>
+          <div className="project-drawer-setting project-drawer-setting-block">
+            <label htmlFor={`notes-${project.project}`}>Notes</label>
+            <textarea
+              id={`notes-${project.project}`}
+              value={notes}
+              onChange={(e) => { setNotes(e.target.value); setDirty(true); }}
+              className="project-drawer-textarea"
+              placeholder="Contribution strategy…"
+              data-testid="project-notes-input"
+            />
+          </div>
+          {dirty && (
+            <button className="btn-primary project-drawer-save" onClick={handleSave} data-testid="save-config">
+              Save
+            </button>
+          )}
+        </section>
+      )}
     </div>
   );
 }
