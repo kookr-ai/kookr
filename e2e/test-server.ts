@@ -15,6 +15,7 @@ import type { Playbook } from '../src/core/playbook.js';
 let playbookOverrides: Map<string, Playbook[]> | null = null;
 
 const PORT = process.env.E2E_PORT !== undefined ? Number(process.env.E2E_PORT) : 4802;
+const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
 const tempDir = mkdtempSync(join(tmpdir(), 'kookr-e2e-'));
 const claudeDir = join(tempDir, 'claude');
 const terminal = new FakeTerminalBackend();
@@ -48,7 +49,14 @@ async function main() {
     const { tmuxName, event } = await c.req.json();
     server.adapter.injectHookEvent(tmuxName, JSON.stringify(event));
     const snapshot = server.monitor.getSnapshot();
-    return c.json({ ok: true, agentCount: snapshot.length, findingCount: snapshot.filter(a => a.anomaly).length });
+    const findingCount = snapshot.filter(
+      (a) => a.anomaly
+        && !a.snoozedUntil
+        && !a.suppressed
+        && a.taskStatus !== 'pending'
+        && !TERMINAL_STATUSES.has(a.taskStatus ?? ''),
+    ).length;
+    return c.json({ ok: true, agentCount: snapshot.length, findingCount });
   });
 
   // Get the interaction log path (for tests to read or verify)

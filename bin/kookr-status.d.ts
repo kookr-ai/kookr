@@ -23,6 +23,8 @@ export interface AgentLike {
   agentId: string;
   taskName?: string;
   taskStatus?: string;
+  snoozedUntil?: number | null;
+  suppressed?: boolean;
   tokenUsage?: { costUsd?: number };
   anomaly?: {
     type: string;
@@ -57,6 +59,7 @@ export interface MainDeps {
 
 export function formatUptime(ms: number): string;
 export function formatCost(usd: number): string;
+export function isActiveFinding(agent: AgentLike): boolean;
 export function summarize(agents: AgentLike[]): Summary;
 export function renderReport(args: RenderReportArgs): string;
 export function parsePortEnv(
