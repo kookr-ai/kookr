@@ -28,7 +28,7 @@ Add `.kookr/playbooks/repository-idea-scout.md`.
 
 The playbook accepts:
 
-- `repoFullName`: required free-text GitHub repository in `owner/repo` format. A select-only tracked-projects source was rejected because the workflow must work for arbitrary GitHub repositories, not only projects already tracked by Kookr.
+- `repoFullName`: optional GitHub repository override in `owner/repo` format. When omitted, Kookr resolves it from the launch CWD's git remote; project-drawer launches can still prefill the selected tracked project. A select-only tracked-projects source was rejected because the workflow must work for arbitrary GitHub repositories, not only projects already tracked by Kookr.
 - `localPath`: optional path to an existing local checkout. If omitted, the agent derives common paths and clones read-only only when needed.
 - `ideaFocus`: optional focus area selector, defaulting to `any`.
 - `minimumIssueScan`: optional issue scan count, defaulting to `100`.
@@ -93,7 +93,7 @@ Rejected. The task is intended to be read-only by default. Writing under `~/.koo
 - Loop-safety review: state is now task-scoped with a run manifest, terminal `DONE` and `BLOCKED` markers are handled at iteration start, and terminal failures cancel the loop instead of churning to the cap.
 - Duplicate-search review: the playbook now requires a candidate-specific query matrix, adjacent issue/PR comment fetches, and a final duplicate evidence table.
 - Correctness review: raw playbook parameters were removed from runnable shell snippets; the prompt now validates parameter values as prose first, then uses sanitized variables, exact remote matching, and data-bound `QUERY` values for GitHub searches.
-- Design-minimalist review: no framework changes were added; the generic repo requirement is handled by making `repoFullName` free text, while checkout safety is handled in the prompt through collision-safe paths and remote verification.
+- Design-minimalist review: the generic repo requirement is handled by keeping `repoFullName` as an optional free-text override with git-remote inference, while checkout safety is handled in the prompt through collision-safe paths and remote verification.
 
 ## Update: Diverse multi-idea production (2026-05-03)
 

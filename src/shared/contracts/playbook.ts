@@ -20,6 +20,8 @@ export interface PlaybookParameter {
   options?: PlaybookParameterOption[];
   /** Dynamic data source ID (e.g., 'tracked-projects'). Resolved at render time. */
   source?: string;
+  /** Server-side default resolver used when the launch form leaves this parameter blank. */
+  defaultFrom?: 'git-remote';
 }
 
 export interface PlaybookLoopConfig {

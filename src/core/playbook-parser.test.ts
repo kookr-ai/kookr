@@ -531,6 +531,21 @@ Body.
     const pb = parsePlaybook(VALID_PLAYBOOK, 'create-mr.md', '/project');
     expect(pb.parameters[0].source).toBeUndefined();
   });
+
+  test('parses git-remote default resolver on optional parameter', () => {
+    const content = `---
+name: Current repo
+parameters:
+  - name: repoFullName
+    description: Target repository
+    required: false
+    defaultFrom: git-remote
+---
+Target: {{repoFullName}}.
+`;
+    const pb = parsePlaybook(content, 'current-repo.md', '/p');
+    expect(pb.parameters[0].defaultFrom).toBe('git-remote');
+  });
 });
 
 describe('interpolateParameters', () => {

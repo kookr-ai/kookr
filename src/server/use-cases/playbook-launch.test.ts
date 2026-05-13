@@ -1,8 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { preparePlaybookLaunch } from './playbook-launch.js';
+
+function cleanGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_CEILING_DIRECTORIES',
+    'GIT_COMMON_DIR',
+    'GIT_DIR',
+    'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_PREFIX',
+    'GIT_WORK_TREE',
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
 
 describe('preparePlaybookLaunch', () => {
   it('parses a playbook into launch opts', async () => {
@@ -119,6 +137,70 @@ Work on {{repoFullName}}
       });
 
       expect(launch.projectId).toBe('github.com/grafana/grafana');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fills blank git-remote default parameters from the launch cwd remote', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      const env = cleanGitEnv();
+      execFileSync('git', ['init', '--initial-branch=main'], { cwd, env });
+      execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:Acme/Widget.git'], { cwd, env });
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'ideas.md'), `---
+name: Ideas
+parameters:
+  - name: repoFullName
+    required: false
+    defaultFrom: git-remote
+---
+
+Repo {{repoFullName}}
+`);
+
+      const launch = await preparePlaybookLaunch({
+        cwd,
+        playbookPath: 'ideas.md',
+        parameterValues: { repoFullName: '' },
+      });
+
+      expect(launch.prompt).toBe('Repo acme/widget');
+      expect(launch.projectId).toBe('github.com/acme/widget');
+      expect(launch.playbookParameterValues).toEqual({ repoFullName: 'acme/widget' });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an explicit parameter value when git-remote default is available', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      const env = cleanGitEnv();
+      execFileSync('git', ['init', '--initial-branch=main'], { cwd, env });
+      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/widget.git'], { cwd, env });
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'ideas.md'), `---
+name: Ideas
+parameters:
+  - name: repoFullName
+    required: false
+    defaultFrom: git-remote
+---
+
+Repo {{repoFullName}}
+`);
+
+      const launch = await preparePlaybookLaunch({
+        cwd,
+        playbookPath: 'ideas.md',
+        parameterValues: { repoFullName: 'other/project' },
+      });
+
+      expect(launch.prompt).toBe('Repo other/project');
+      expect(launch.projectId).toBe('github.com/other/project');
+      expect(launch.playbookParameterValues).toEqual({ repoFullName: 'other/project' });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

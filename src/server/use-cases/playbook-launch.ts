@@ -3,9 +3,9 @@ import { join, relative, resolve, sep } from 'node:path';
 import { existsSync } from 'node:fs';
 import { parsePlaybook, interpolateParameters } from '../../core/playbook-parser.js';
 import { userPlaybooksDir, pluginPlaybooksDir } from '../../core/playbook-discovery.js';
-import { getProjectId, projectIdFromRepoSpecifier } from '../../core/project-identity.js';
+import { getProjectId, projectDisplayName, projectIdFromRepoSpecifier } from '../../core/project-identity.js';
 import type { AgentType } from '../../core/agent-types.js';
-import type { PlaybookScope } from '../../core/playbook.js';
+import type { PlaybookParameter, PlaybookScope } from '../../core/playbook.js';
 import { canonicalizeCwd, type LaunchOpts } from '../launch-service.js';
 import { normalizePromptFileReferences } from '../prompt-file-paths.js';
 import { expandConfiguredCwd } from '../cwd-paths.js';
@@ -90,15 +90,21 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       + 'Clone or create it first.',
     );
   }
+  const parameterValues = await resolveParameterValuesFromLaunchContext(
+    playbook.parameters,
+    input.parameterValues,
+    effectiveCwd,
+  );
+
   const prompt = normalizePromptFileReferences(
-    interpolateParameters(playbook.body, playbook.parameters, input.parameterValues),
+    interpolateParameters(playbook.body, playbook.parameters, parameterValues),
     effectiveCwd,
   );
 
   // Derive project ID from the first parameter with source: tracked-projects.
   // Project-drawer launches can also send an explicit projectId. Accept it
   // only when it matches any tracked-project value and the target cwd.
-  const parameterProjectId = projectIdFromTrackedProjectParam(playbook, input.parameterValues);
+  const parameterProjectId = projectIdFromTrackedProjectParam(playbook, parameterValues);
   const requestedProjectId = normalizeRequestedProjectId(input.projectId);
   let projectId = parameterProjectId;
   if (requestedProjectId) {
@@ -111,6 +117,12 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
     }
     projectId = requestedProjectId;
   }
+  if (!projectId) {
+    const repoFullName = parameterValues.repoFullName;
+    if (repoFullName) {
+      projectId = projectIdFromRepoSpecifier(repoFullName) ?? undefined;
+    }
+  }
 
   return {
     playbook,
@@ -120,7 +132,7 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       criteria,
       name: playbook.name,
       playbookId: playbook.id,
-      playbookParameterValues: input.parameterValues,
+      playbookParameterValues: parameterValues,
       agentType: input.agentType,
       projectId,
       dependencies: playbook.dependencies,
@@ -157,6 +169,35 @@ export function normalizePlaybookLaunchInput(input: PreparePlaybookLaunchInput):
     taskTargetCwd: resolve(expandConfiguredCwd(rawTargetCwd)),
     taskTargetCwdExplicit,
   };
+}
+
+async function resolveParameterValuesFromLaunchContext(
+  parameters: PlaybookParameter[],
+  inputValues: Record<string, string>,
+  cwd: string,
+): Promise<Record<string, string>> {
+  const values = { ...inputValues };
+  let gitRemoteRepo: string | null | undefined;
+
+  for (const param of parameters) {
+    if (param.defaultFrom !== 'git-remote') continue;
+    const currentValue = values[param.name]?.trim();
+    if (currentValue) continue;
+
+    gitRemoteRepo ??= await resolveGithubRepoFromCwd(cwd);
+    if (gitRemoteRepo) {
+      values[param.name] = gitRemoteRepo;
+    }
+  }
+
+  return values;
+}
+
+async function resolveGithubRepoFromCwd(cwd: string): Promise<string | null> {
+  const projectId = await getProjectId(cwd);
+  if (!projectId.startsWith('github.com/')) return null;
+  const displayName = projectDisplayName(projectId);
+  return /^[^/\s]+\/[^/\s]+$/.test(displayName) ? displayName : null;
 }
 
 function projectIdFromTrackedProjectParam(
