@@ -4431,7 +4431,7 @@ textarea::-webkit-resizer { background: transparent; }
 }
 .project-icon-dot.active { background: var(--green); }
 
-.project-icon-pr-count {
+.project-icon-task-count {
   position: absolute;
   bottom: -2px;
   right: -4px;
@@ -4443,8 +4443,11 @@ textarea::-webkit-resizer { background: transparent; }
   color: var(--text-secondary);
   border: 1px solid var(--border-dim);
 }
-.project-icon-pr-count.approaching { color: var(--amber); border-color: var(--amber); }
-.project-icon-pr-count.exceeded { color: var(--red); border-color: var(--red); background: rgba(248,113,113,0.1); }
+.project-icon-task-count.has-stalled {
+  color: var(--amber);
+  border-color: var(--amber);
+  background: rgba(251,191,36,0.1);
+}
 
 .project-sidebar-drop-target {
   position: relative;
