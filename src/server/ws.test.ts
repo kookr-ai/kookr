@@ -688,8 +688,11 @@ describe('WebSocket MessageRouter', () => {
     expect(after).toBeDefined();
     expect(after!.events).toEqual([]);
     expect(after!.taskStatus).toBe('completed');
-    expect(after!.completionDigest).toBeDefined();
-    expect(after!.completionDigest!.bullets.length).toBeGreaterThan(0);
+    await vi.waitFor(() => {
+      const withDigest = monitor.getSnapshot().find(a => a.agentId === tmuxName);
+      expect(withDigest!.completionDigest).toBeDefined();
+      expect(withDigest!.completionDigest!.bullets.length).toBeGreaterThan(0);
+    });
   });
 
   test('completeTask with nonexistent task throws', async () => {

@@ -433,6 +433,36 @@ describe('completeTask', () => {
     expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-42');
   });
 
+  test('does not wait for terminal stop before marking task completed', async () => {
+    const task = makeTask({
+      id: 'task-42',
+      status: 'inProgress',
+      sessions: [
+        { tmuxSession: 'kookr-s1', lastStatus: 'inProgress' },
+      ] as any,
+    });
+    let resolveStop!: () => void;
+    const stop = vi.fn(() => new Promise<void>((resolve) => {
+      resolveStop = resolve;
+    }));
+    const deps = makeLifecycleDeps({
+      adapter: { stop },
+    });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    const result = await Promise.race([
+      completeTask('task-42', deps).then(() => 'completed'),
+      new Promise((resolve) => setTimeout(() => resolve('blocked'), 10)),
+    ]);
+
+    expect(result).toBe('completed');
+    expect(stop).toHaveBeenCalledWith('kookr-s1');
+    expect(deps.taskStore.updateSession).toHaveBeenCalledWith('task-42', 'kookr-s1', { lastStatus: 'completed' });
+    expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-42');
+
+    resolveStop();
+  });
+
   test('skips cleanup for sessions already in terminal state (completed/aborted)', async () => {
     const task = makeTask({
       id: 'task-42',
