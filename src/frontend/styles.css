@@ -1290,23 +1290,6 @@ kbd {
     0 0 12px rgba(45, 212, 191, 0.35),
     inset 0 0 18px rgba(45, 212, 191, 0.08);
 }
-.terminal-col.zone-active::before {
-  content: "TERMINAL FOCUSED";
-  position: absolute;
-  top: -1px;
-  right: 8px;
-  transform: translateY(-50%);
-  font-family: var(--font-mono, monospace);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.9px;
-  padding: 1px 6px;
-  color: var(--bg-terminal);
-  background: var(--teal);
-  border-radius: 3px;
-  pointer-events: none;
-  z-index: 2;
-}
 .terminal-btn {
   background: var(--bg-card);
   border: 1px solid var(--border);
