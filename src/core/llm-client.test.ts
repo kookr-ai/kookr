@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest';
-import { FallbackLlmClient } from './llm-client.js';
-import type { LlmClient, LlmCompletionRequest } from './llm-client.js';
+import { FallbackLlmClient } from './llm-factory.js';
+import type { LlmClient, LlmCompletionRequest } from './llm-types.js';
 
 function makeClient(
   provider: string,

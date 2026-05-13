@@ -10,7 +10,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import type { LlmClient, LlmCompletionRequest } from './llm-client.js';
+import type { LlmClient, LlmCompletionRequest } from './llm-types.js';
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 
