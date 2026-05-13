@@ -75,8 +75,12 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
  * server-internal caller that needs the raw toolResponse / toolInput / lastMessage.
  */
 export function getSnapshotAgentsRaw(deps: SnapshotQueryDeps): AgentState[] {
-  return deps.monitor.getSnapshot().map((agent) => {
-    const activityMeta = deps.activityMetaProvider?.getActivityMeta(agent.agentId);
+  const raw = deps.monitor.getSnapshot();
+  // Preserve identity when no provider is wired — callers (and tests) that
+  // assert reference equality on the bare monitor snapshot stay green.
+  if (!deps.activityMetaProvider) return raw;
+  return raw.map((agent) => {
+    const activityMeta = deps.activityMetaProvider!.getActivityMeta(agent.agentId);
     return activityMeta ? { ...agent, activityMeta } : agent;
   });
 }
