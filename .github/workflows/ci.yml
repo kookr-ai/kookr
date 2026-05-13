@@ -41,8 +41,27 @@ jobs:
       - name: Validate skill frontmatter
         run: pnpm validate:skills
 
-      - name: Run tests
-        run: pnpm test
+      # Reporter list and reportOnFailure live in vitest.config.ts so local
+      # `pnpm test:coverage` and CI produce the same artifacts. `--coverage`
+      # is the only flag this step adds; do not re-pass reporters here or
+      # the CLI list will override the config and they will drift.
+      - name: Run tests with coverage
+        run: pnpm exec vitest run --coverage
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage/coverage-summary.json
+            coverage/lcov.info
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Summarize coverage
+        if: always()
+        run: pnpm coverage:summary >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run hook regression tests
         run: pnpm test:hooks
