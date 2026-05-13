@@ -94,7 +94,11 @@ export const test = base.extend<{ suppressOnboarding: boolean }, { serverURL: st
   page: async ({ page, suppressOnboarding }, use) => {
     if (suppressOnboarding) {
       await page.addInitScript(() => {
-        try { window.localStorage.setItem('kookr:onboarding:seen-v1', 'true'); }
+        try {
+          window.localStorage.removeItem('kookr:projectSidebarCatalog');
+          window.localStorage.removeItem('kookr:projectSidebarPrefs');
+          window.localStorage.setItem('kookr:onboarding:seen-v1', 'true');
+        }
         catch { /* ignore */ }
       });
     }

@@ -7,6 +7,10 @@ async function resetServer(request: APIRequestContext) {
 }
 
 async function getLatestTmuxName(request: APIRequestContext): Promise<string> {
+  return getLatestUnseenTmuxName(request, new Set());
+}
+
+async function getLatestUnseenTmuxName(request: APIRequestContext, seen: Set<string>): Promise<string> {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const res = await request.get('/api/tasks');
@@ -15,9 +19,12 @@ async function getLatestTmuxName(request: APIRequestContext): Promise<string> {
       sessions: Array<{ tmuxSession: string }>;
     }>;
     const inProgress = tasks.filter((t) => t.status === 'inProgress');
-    const last = inProgress[inProgress.length - 1];
-    if (last?.sessions?.length > 0) {
-      return last.sessions[last.sessions.length - 1].tmuxSession;
+    for (let i = inProgress.length - 1; i >= 0; i--) {
+      const task = inProgress[i];
+      for (let j = task.sessions.length - 1; j >= 0; j--) {
+        const tmuxName = task.sessions[j].tmuxSession;
+        if (!seen.has(tmuxName)) return tmuxName;
+      }
     }
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -76,11 +83,13 @@ async function waitForAgentCount(page: Page, count: number) {
 /** Launch N agents with permission_blocked anomaly. Returns tmux names. */
 async function setupPermissionGroup(page: Page, request: APIRequestContext, count: number) {
   const tmuxNames: string[] = [];
+  const seen = new Set<string>();
   for (let i = 1; i <= count; i++) {
     await launchViaUI(page, `Task ${i}`, '/test/project');
-    const tmux = await getLatestTmuxName(request);
+    const tmux = await getLatestUnseenTmuxName(request, seen);
     await injectPermissionEvent(request, tmux);
     tmuxNames.push(tmux);
+    seen.add(tmux);
   }
   await waitForAgentCount(page, count);
   await expect(page.locator('.finding-group')).toBeVisible({ timeout: 5000 });
@@ -133,13 +142,15 @@ test.describe('Finding Groups — duplicate anomaly grouping', () => {
 
   test('ungrouped findings (<3 of same type) display as individual cards', async ({ page, request }) => {
     // 2 permission_blocked + 1 needs_input = 3 findings, none grouped
+    const seen = new Set<string>();
     for (let i = 1; i <= 2; i++) {
       await launchViaUI(page, `Permission task ${i}`, '/test/project');
-      const tmux = await getLatestTmuxName(request);
+      const tmux = await getLatestUnseenTmuxName(request, seen);
       await injectPermissionEvent(request, tmux);
+      seen.add(tmux);
     }
     await launchViaUI(page, 'Input task', '/test/project');
-    const tmuxStop = await getLatestTmuxName(request);
+    const tmuxStop = await getLatestUnseenTmuxName(request, seen);
     await injectStopEvent(request, tmuxStop);
 
     await waitForAgentCount(page, 3);
@@ -151,13 +162,15 @@ test.describe('Finding Groups — duplicate anomaly grouping', () => {
 
   test('mixed: some types grouped, others ungrouped', async ({ page, request }) => {
     // 3 permission_blocked (grouped) + 1 needs_input (ungrouped)
+    const seen = new Set<string>();
     for (let i = 1; i <= 3; i++) {
       await launchViaUI(page, `Permission task ${i}`, '/test/project');
-      const tmux = await getLatestTmuxName(request);
+      const tmux = await getLatestUnseenTmuxName(request, seen);
       await injectPermissionEvent(request, tmux);
+      seen.add(tmux);
     }
     await launchViaUI(page, 'Input task', '/test/project');
-    const tmuxStop = await getLatestTmuxName(request);
+    const tmuxStop = await getLatestUnseenTmuxName(request, seen);
     await injectStopEvent(request, tmuxStop);
 
     await waitForAgentCount(page, 4);
