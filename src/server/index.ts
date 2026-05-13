@@ -1,92 +1,29 @@
-import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { join } from 'node:path';
-import { mkdir, writeFile, readdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { getRequestListener } from '@hono/node-server';
-import type { Hono } from 'hono';
-import { WebSocketServer, WebSocket } from 'ws';
 
-import { TaskStore } from '../core/tasks.js';
-import { AttentionQueue } from '../core/attention-queue.js';
-import { Monitor } from '../core/monitor.js';
-import { loadBuildInfo } from '../core/build-info.js';
 import { loadTasks, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
-import { TokenTracker } from '../core/token-tracker.js';
-import { BudgetChecker, readBudgetThresholdFromEnv } from '../core/budget-checker.js';
-import { DeferredInteractionLogWriter } from '../core/interaction-log.js';
-import { DeferredTelemetryLogWriter } from '../core/telemetry.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
 import { GitHubScannerService } from '../core/github-scanner-service.js';
 import { DEFAULT_GITHUB_SCANNER_CONFIG } from '../core/github-types.js';
-import { HOOK_EVENTS, LOAD_BEARING_HOOKS } from '../core/hook-spec.js';
-import type { AgentAdapter } from '../adapters/agent-adapter.js';
-import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
-import { CodexCliAdapter } from '../adapters/codex-cli-adapter.js';
-import { RoutingAgentAdapter } from '../adapters/routing-agent-adapter.js';
 import { ghCliFetcher, fetchBatchRepoHealth, getGhUserLogin } from '../adapters/github-fetcher.js';
 import { CircuitBreakerGitHubFetcher } from '../adapters/circuit-breaker-github-fetcher.js';
-import { MAX_TRACKED_REPOS } from '../core/project-summary.js';
 import { reconcile } from './reconciliation.js';
-import {
-  runAdapterPreflights,
-  type AgentPreflightSnapshot,
-  type PreflightLogger,
-} from './agent-preflight.js';
+import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { HookFileWatcher } from './hook-watcher.js';
 import { HookIngestion } from './hook-ingestion.js';
 import { ActivityLedger } from '../core/activity-ledger.js';
 import { generateTaskName } from '../core/task-naming.js';
-import { createLlmClient } from '../core/llm-client.js';
-import { FakeTerminalBridge } from './fake-terminal-bridge.js';
-import { SessionBridge } from './session-bridge.js';
 import type { BackendError, TerminalBackend } from '../adapters/terminal-backend.js';
-import { Watchdog } from '../core/watchdog.js';
 import { formatGitHubAlert } from '../core/github-alerts.js';
 import { wireEventPipeline } from './event-pipeline.js';
-import {
-  CheckpointCycler,
-  readTriggerRatioFromEnv,
-  readMaxCancelledAttemptsFromEnv,
-} from '../core/checkpoint-cycler.js';
-import { RalphCycler } from '../core/ralph-cycler.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
-import { startLifecycleTimers, clearAllTimers } from './lifecycle-timers.js';
-import {
-  completeTask,
-  handleTerminalInput, handleTerminalKeystroke,
-  type AgentLifecycleDeps, type TerminalInputDeps,
-} from './agent-lifecycle.js';
+import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
-import { ShadowDetectorRegistry } from '../core/shadow-detector.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
-import { PaneSemanticsStrategy } from '../core/pane-patterns.js';
-import { ProcessLivenessStrategy } from '../core/process-liveness.js';
-import { CombinedShadowStrategy } from '../core/combined-shadow-strategy.js';
-import { HttpPushTracker } from '../core/http-push-tracker.js';
-import { ProjectConfigStore } from '../core/project-config-store.js';
-import { ProjectSidebarStore } from '../core/project-sidebar-store.js';
-import { OssAttemptStore } from '../core/oss-attempt-store.js';
-import { LedgerAnalytics } from '../core/ledger-analytics.js';
-import { OssRefresher, loadExternalReposFromRegistry } from './oss-refresh.js';
-import { toOssAttemptsSnapshot } from './oss-attempts-snapshot.js';
-import { SkillDiscoveryStateHolder, SkillTrackedRepoDiscovery } from '../core/skill-tracked-repo-discovery.js';
-import { PrLessonsDiscovery, PrLessonsStateHolder } from '../core/pr-lessons-discovery.js';
-import { AchievementWatcher, loadAchievements } from './achievement-watcher.js';
-import { ACHIEVEMENT_BY_ID } from '../core/achievement-catalog.js';
-import { loadSettings, type KookrSettings } from '../core/settings-store.js';
-import { CircuitBreaker, CircuitBreakerRegistry } from '../core/circuit-breaker.js';
-import { CircuitBreakerLlmClient } from '../core/circuit-breaker-llm-client.js';
-import { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
+import type { KookrSettings } from '../core/settings-store.js';
 import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
-import { ScheduleStore } from '../core/schedule.js';
-import { ScheduleRunner, isTaskBlockingSchedule } from './schedule-runner.js';
-import { ScheduleValidator } from './schedule-validator.js';
-import { ScheduleService } from './schedule-service.js';
-import { startLedgerWatcher } from './ledger-watcher.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
 import { DiagnosticRunner } from './diagnostic-runner.js';
 import { getDetectionStats } from '../core/detection-stats.js';
@@ -99,19 +36,19 @@ import {
   runStartupRecoveryPhase,
 } from './startup-recovery.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
-import { createSnapshotMessage, getProjectSummaries } from './use-cases/get-snapshot.js';
+import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler } from './system-resource-sampler.js';
 import { createResourceStatusService } from './resource-status-service.js';
-import {
-  OssRegistryWatcher,
-  ReconReportWatcher,
-  type OssSourceWatcherFs,
-} from './oss-source-watcher.js';
-import { projectIdForRepo } from '../core/oss-attempt-store.js';
-import { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
+import { type OssSourceWatcherFs } from './oss-source-watcher.js';
 import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
+import { createAgentRuntime } from './bootstrap/create-agent-runtime.js';
+import { createCoreStores } from './bootstrap/create-core-stores.js';
+import { createOssServices, createOssSourceWatchers } from './bootstrap/create-oss-services.js';
+import { createRealtimeServices } from './bootstrap/create-realtime-services.js';
+import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
+import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 
 // --- Exported types ---
 
@@ -196,29 +133,6 @@ function formatBackendErrorLine(err: BackendError): string {
   }
 }
 
-/**
- * Find the most recent session directory that was created within `maxAgeMs` milliseconds.
- * Session directory names are ISO timestamps with colons/dots replaced by hyphens.
- * Returns the directory name if found, or null to create a new session.
- */
-async function findRecentSession(sessionsDir: string, maxAgeMs: number): Promise<string | null> {
-  try {
-    const entries = await readdir(sessionsDir);
-    if (entries.length === 0) return null;
-    // Sort descending — most recent first
-    entries.sort().reverse();
-    const latest = entries[0];
-    // Parse the directory name back to a timestamp
-    const isoStr = latest.replace(/-(\d{2})-(\d{2})-(\d{3})Z$/, ':$1:$2.$3Z');
-    const ts = new Date(isoStr).getTime();
-    if (isNaN(ts)) return null;
-    if (Date.now() - ts <= maxAgeMs) return latest;
-  } catch {
-    // sessions dir doesn't exist yet
-  }
-  return null;
-}
-
 // --- Server factory ---
 
 export async function createKookrServer(config: KookrConfig): Promise<KookrServer> {
@@ -236,198 +150,59 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     lifecycleSignal,
   } = config;
 
-  // Ensure directories exist
-  await mkdir(kookrDir, { recursive: true });
-  await mkdir(hooksDir, { recursive: true });
-  await mkdir(settingsDir, { recursive: true });
-
-  // Create core dependencies
-  // Session creation is deferred until the first substantive event (agent_launched,
-  // user_input, finding) to prevent empty sessions from dashboard opens, page
-  // reloads, or server restarts with no agent activity. See issue #73.
-  // Resume window is 30 min so reconnects land in the same session.
-  const sessionsDir = join(kookrDir, 'sessions');
-  let materializedSessionId: string | null = null;
-  const resolveSessionId = async (): Promise<string> => {
-    if (materializedSessionId) return materializedSessionId;
-    materializedSessionId = await findRecentSession(sessionsDir, 30 * 60_000)
-      ?? new Date().toISOString().replace(/[:.]/g, '-');
-    return materializedSessionId;
-  };
-  const interactionLog = new DeferredInteractionLogWriter(sessionsDir, resolveSessionId);
-  const telemetryLog = new DeferredTelemetryLogWriter(sessionsDir, () => materializedSessionId);
-
-  // Load build metadata (generated by scripts/generate-build-info.ts during build)
-  const buildInfo = await loadBuildInfo(frontendDir);
-  const serverStartedAt = new Date().toISOString();
-
-  // Load user settings (early — needed for watchdog/monitor construction)
-  const settingsFile = join(kookrDir, 'settings.json');
-  const settingsResult = await loadSettings(settingsFile);
-  let currentSettings = settingsResult.settings;
-  let settingsLoadedFromDefaults = settingsResult.loadedFromDefaults;
-
-  // Live getter for max active tasks — reads from current settings. Defined
-  // early so it can be threaded into snapshot broadcasts registered before
-  // the lifecycle deps are assembled below.
+  const coreStores = await createCoreStores({ kookrDir, hooksDir, settingsDir, frontendDir });
+  let currentSettings = coreStores.currentSettings;
+  let settingsLoadedFromDefaults = coreStores.settingsLoadedFromDefaults;
+  const {
+    interactionLog,
+    telemetryLog,
+    buildInfo,
+    serverStartedAt,
+    settingsFile,
+    circuitBreakerRegistry,
+    githubBreaker,
+    taskStore,
+    worktreeRegistry,
+    queue,
+    suppressionTracker,
+    monitor,
+    watchdog,
+    checkpointCycler,
+    ralphCycler,
+    tokenTracker,
+    budgetChecker,
+    projectConfigStore,
+    projectSidebarStore,
+    shadowRegistry,
+    httpPushTracker,
+    llmClient,
+  } = coreStores;
   const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
 
-  // Circuit breaker registry — protects external service calls.
-  // V8 (rfc-v8-tmux-removal.md) removed the `'tmux'` breaker: its failures
-  // were always logic bugs (the adapter calling tmux on a dtach-only
-  // session), and dtach binary / socket failures are surfaced directly
-  // via `terminalBackend.onBackendError` into the anomaly queue and
-  // `/api/health.terminalBackend`.
-  const circuitBreakerRegistry = new CircuitBreakerRegistry();
-  const llmBreaker = new CircuitBreaker({ name: 'llm', failureThreshold: 5, failureWindowMs: 60_000, resetTimeoutMs: 30_000 });
-  const githubBreaker = new CircuitBreaker({ name: 'github', failureThreshold: 5, failureWindowMs: 60_000, resetTimeoutMs: 60_000 });
-  const hookWatcherBreaker = new CircuitBreaker({ name: 'hook-watcher', failureThreshold: 10, failureWindowMs: 60_000, resetTimeoutMs: 30_000 });
-  circuitBreakerRegistry.register(llmBreaker);
-  circuitBreakerRegistry.register(githubBreaker);
-  circuitBreakerRegistry.register(hookWatcherBreaker);
-
-  const taskStore = new TaskStore();
-  const worktreeRegistry = new WorktreeRegistry();
-  // Snoozes are keyed by taskId so they survive session rotation (Ralph
-  // iterations, crash-recovery launches, redeploys mid-gap between iterations).
-  // See src/core/attention-queue.ts and src/core/task-persistence.ts.
-  const queue = new AttentionQueue({
-    taskIdFor: (agentId) => taskStore.findTaskBySession(agentId)?.id ?? null,
-  });
-  const suppressionTracker = new SnoozeSuppressionTracker();
-  const monitor = new Monitor(taskStore, queue, {
-    repeatedErrorThreshold: currentSettings.repeatedErrorThreshold,
-  }, undefined, suppressionTracker);
-  const watchdog = new Watchdog({
-    staleThresholdMs: currentSettings.watchdogStaleThresholdSec * 1000,
-    unconditionalStaleThresholdMs: currentSettings.watchdogStaleThresholdSec * 2 * 1000,
-  });
-  // v5 checkpoint cycler — single instance shared between the periodic timer
-  // (where `tick()` reads transcript fill ratios) and the event pipeline
-  // (where Stop events advance the per-session state machine). Both consumers
-  // are fail-open: a cycler error never breaks task launch or normal operation.
-  const checkpointCycler = new CheckpointCycler({
-    triggerRatio: readTriggerRatioFromEnv(),
-    maxCancelledAttempts: readMaxCancelledAttemptsFromEnv(),
-  });
-
-  // Ralph iteration cycler — single instance shared between the event pipeline
-  // (Stop events advance the loop state machine) and the task routes (attach/
-  // resume catch-up dispatches fresh runtimes via the same cycler I/O surface).
-  const ralphCycler = new RalphCycler();
-
-  const claudeCodeAdapter = new ClaudeCodeAdapter(terminalBackend, taskStore, {
+  const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
+    terminalBackend,
+    taskStore,
     hooksDir,
     settingsDir,
-    writeFile: (path, content) => writeFile(path, content, 'utf-8'),
     serverPort: port,
     agentBin,
+    codexBin,
     bypassAllPermissions,
-    kookrDataDir: kookrDir,
-  });
-  const codexCliAdapter = new CodexCliAdapter(terminalBackend, taskStore, {
-    hooksDir,
-    settingsDir,
-    writeFile: (path, content) => writeFile(path, content, 'utf-8'),
-    serverPort: port,
-    agentBin: codexBin,
-    bypassAllPermissions,
-    kookrDataDir: kookrDir,
+    kookrDir,
+    preflightOnFatal,
+    preflightLogger,
   });
 
-  // Register adapters — first registered becomes the default
-  const adapterRegistry = new AdapterRegistry();
-  adapterRegistry.register(claudeCodeAdapter);
-  adapterRegistry.register(codexCliAdapter);
-  const adapter = new RoutingAgentAdapter(taskStore, adapterRegistry);
-
-  // Verify each adapter's binary is reachable BEFORE the HTTP server starts
-  // accepting connections. Mirrors `resolveDtachBinaryOrExit` in start.ts:
-  // env-configured binaries that are unreachable are fatal; default-PATH
-  // misses are warn-and-continue so a Claude-only deployment can still boot.
-  const agentPreflight = await runAdapterPreflights(adapterRegistry, {
-    onFatal: preflightOnFatal ?? ((): never => process.exit(1)),
-    logger: preflightLogger,
-  });
-
-  // Create token tracker
-  const tokenTracker = new TokenTracker();
-
-  // Reactive budget threshold checker (issue #98). Threshold is per-task, in USD,
-  // configurable via KOOKR_BUDGET_WARN_USD. Default $25 per task. Setting to 0
-  // disables the check. Fires `budget_exceeded` anomalies through the attention
-  // queue the first time a task crosses threshold and then 2x threshold.
-  const budgetThresholdUsd = readBudgetThresholdFromEnv();
-  const budgetChecker = new BudgetChecker(budgetThresholdUsd);
-  if (budgetThresholdUsd > 0) {
-    console.log(`[budget] Warning threshold: $${budgetThresholdUsd.toFixed(2)} per task (critical at 2x)`);
-  } else {
-    console.log('[budget] Budget alerts disabled (KOOKR_BUDGET_WARN_USD=0)');
-  }
-
-  // Project config store (daily/weekly PR limits, tracked flag, notes)
-  const projectConfigStore = new ProjectConfigStore(kookrDir);
-  await projectConfigStore.load();
-  await projectConfigStore.loadRateLimits(); // Rate limits from oss-contribution-gate hook
-  const projectSidebarStore = new ProjectSidebarStore(kookrDir);
-  await projectSidebarStore.load();
-
-  // OSS contribution lifecycle store (rfc-oss-contribution-tracking). Single
-  // source of truth for outgoing PR attempts — absorbs the previous
-  // ContributionStore role (ledger ingestion, today/week counts) alongside the
-  // richer scouted → pr_open → merged/closed state machine.
-  const ossAttemptStore = new OssAttemptStore(kookrDir);
-  await ossAttemptStore.load();
-  await ossAttemptStore.loadFromLedger(); // Authoritative source: contribution-ledger.jsonl
-  const ledgerAnalytics = new LedgerAnalytics(ossAttemptStore);
-  const ossRegistryPath = join(kookrDir, 'oss-repos.json');
-  let ossRegistryActiveRepos = await loadExternalReposFromRegistry(
-    ossRegistryPath,
-    ossAttemptStore.getOwnNamespaces(),
-  );
-  const getRegistryActiveProjects = () => ossRegistryActiveRepos.map(projectIdForRepo);
-  const getRegistryActiveRepos = () => [...ossRegistryActiveRepos];
-  const ossRefresher = new OssRefresher({ store: ossAttemptStore, kookrDir, registryPath: ossRegistryPath });
-
-  // Skill-tracked OSS discovery (read-only scan of ~/.claude/*-recon/recon-report.md).
-  // One server-owned snapshot with last-known-good semantics.
-  const resolvedClaudeDir = claudeDir ?? join(homedir(), '.claude');
-  const skillDiscoveryState = new SkillDiscoveryStateHolder(
-    new SkillTrackedRepoDiscovery(resolvedClaudeDir),
-  );
-  const initialDiscovery = await skillDiscoveryState.rescan();
-  if (initialDiscovery.warnings.length > 0) {
-    console.warn(
-      `[skill-discovery] ${initialDiscovery.warnings.length} warning(s): ${initialDiscovery.warnings.join('; ')}`,
-    );
-  }
-  if (initialDiscovery.lastError) {
-    console.warn(`[skill-discovery] Initial scan failed: ${initialDiscovery.lastError}`);
-  } else {
-    console.log(`[skill-discovery] Loaded ${initialDiscovery.projects.length} skill-tracked repo(s)`);
-  }
-
-  // PR lessons discovery (read-only scan of ~/.claude/*-pr-lessons/state.json).
-  const prLessonsState = new PrLessonsStateHolder(
-    new PrLessonsDiscovery(resolvedClaudeDir),
-  );
-  await prLessonsState.rescan();
-
-  // Create shadow detection registry with Phase 1-3 strategies (all in shadow mode)
-  const shadowRegistry = new ShadowDetectorRegistry();
-  shadowRegistry.register(new PaneSemanticsStrategy());
-  shadowRegistry.register(new ProcessLivenessStrategy());
-  shadowRegistry.register(new CombinedShadowStrategy());
-  const httpPushTracker = new HttpPushTracker();
-
-  // AI features (task naming, response suggestions) — enabled when any LLM API key is set
-  const rawLlmClient = await createLlmClient();
-  const llmClient = rawLlmClient ? new CircuitBreakerLlmClient(rawLlmClient, llmBreaker) : null;
-  if (rawLlmClient) {
-    console.log(`[llm] Provider: ${rawLlmClient.provider} (${rawLlmClient.model})`);
-  } else {
-    console.log('[llm] AI features disabled (set GROQ_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY)');
-  }
+  const ossServices = await createOssServices({ kookrDir, claudeDir });
+  const {
+    ossAttemptStore,
+    ledgerAnalytics,
+    skillDiscoveryState,
+    prLessonsState,
+    ossRefresher,
+    getRegistryActiveProjects,
+    getRegistryActiveRepos,
+  } = ossServices;
 
   // STT feature (opt-in via KOOKR_STT_URL)
   if (sttUrl) {
@@ -435,6 +210,33 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   } else {
     console.log('[stt] Speech-to-text disabled (no KOOKR_STT_URL)');
   }
+
+  const getDefaultAgentType = () => currentSettings.defaultAgentType;
+  const realtime = await createRealtimeServices({
+    kookrDir,
+    taskStore,
+    queue,
+    monitor,
+    adapterRegistry,
+    serverCwd,
+    sttUrl,
+    ledgerAnalytics,
+    projectConfigStore,
+    projectSidebarStore,
+    skillDiscoveryState,
+    prLessonsState,
+    getRegistryActiveProjects,
+    getRegistryActiveRepos,
+    ossAttemptStore,
+    getDefaultAgentType,
+  });
+  const {
+    clients,
+    achievementWatcher,
+    broadcastToAll,
+    broadcastProjectSummaries,
+    broadcastOssAttempts,
+  } = realtime;
 
   // Create GitHub scanner with user-configured intervals
   const githubStateStore = new GitHubStateStore();
@@ -496,6 +298,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       }
     },
   });
+  realtime.setProjectSummaryGitHubDeps({
+    getRepoHealthSnapshot: () => githubScanner.getRepoHealthSnapshot(),
+    getTaskGithubReferences: (taskId) => githubStateStore.getReferences(taskId),
+    setTrackedGithubRepos: (repos) => githubScanner.setTrackedGithubRepos(repos),
+  });
+  broadcastProjectSummariesRef = broadcastProjectSummaries;
 
   // Load persisted tasks
   const persisted = await loadTasks(tasksFile);
@@ -556,93 +364,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
   }
 
-  // --- Achievements (must be created before broadcastToAll, which injects achievement state) ---
-
-  const achievementsFile = join(kookrDir, 'achievements.json');
-  const achievementState = await loadAchievements(achievementsFile);
-
-  // --- WebSocket ---
-
-  const clients = new Set<WebSocket>();
-
-  // AchievementWatcher needs broadcastToAll for unlock notifications, and broadcastToAll
-  // needs achievementWatcher for snapshot injection — break the cycle with a late-bound ref.
-  let achievementWatcher: AchievementWatcher;
-
-  let wsBroadcastCount = 0;
-  // Set to true once scheduleStore (line 783) and other late-init stores are
-  // ready, so the snapshot achievement check can read them without TDZ risk.
-  let snapshotAchievementsReady = false;
-
-  function broadcastToAll(msg: ServerMessage): void {
-    wsBroadcastCount++;
-    // Auto-inject lifetime spending and achievements into snapshot messages
-    if (msg.type === 'snapshot') {
-      // Run snapshot-derived achievement check before reading getUnlocked() so
-      // any new unlocks land in this same snapshot's achievements field.
-      if (snapshotAchievementsReady && achievementWatcher) {
-        try {
-          const tasks = taskStore.listTasks();
-          const distinctProjectIds = new Set(
-            tasks.map((t) => t.projectId).filter((p): p is string => !!p),
-          );
-          achievementWatcher.check({
-            type: 'snapshot',
-            state: {
-              scheduleCount: scheduleStore.list().length,
-              projectCount: distinctProjectIds.size,
-              hasCodexTask: tasks.some((t) => t.agentType === 'codex-cli'),
-              hasFeedbackTask: tasks.some((t) => !!t.completionFeedback),
-              hasSnoozedFinding: queue.getSnoozed().length > 0,
-              hasKookrSubject: tasks.some(
-                (t) => /\bkookr\b/i.test(t.name ?? '') || /\bkookr\b/i.test(t.prompt ?? ''),
-              ),
-              unsnoozedFindingCount: queue.getAll().length,
-            },
-          });
-        } catch (err) {
-          console.warn('[achievements] Snapshot state check failed, continuing', err);
-        }
-      }
-      msg = {
-        ...msg,
-        totalSpendUsd: taskStore.getLifetimeSpendUsd(),
-        achievements: achievementWatcher?.getUnlocked(),
-        ...(achievementWatcher
-          ? {
-              achievementCounters: achievementWatcher.getCounters(),
-              achievementStreak: achievementWatcher.getStreak(),
-            }
-          : {}),
-      };
-      msg = {
-        ...msg,
-        availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
-        defaultAgentType: currentSettings.defaultAgentType,
-      };
-    }
-    const data = JSON.stringify(msg);
-    for (const ws of clients) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
-      }
-    }
-  }
-
-  achievementWatcher = new AchievementWatcher(achievementsFile, achievementState, (unlock) => {
-    const def = ACHIEVEMENT_BY_ID.get(unlock.id);
-    if (def) {
-      broadcastToAll({
-        type: 'achievement:unlocked',
-        id: unlock.id,
-        name: def.name,
-        emoji: def.emoji,
-        description: def.description,
-        unlockedAt: unlock.unlockedAt,
-      });
-    }
-  });
-
   // Late-bound R16 block-alert callback. The Telegram integration is started
   // later in bootstrap (after launchServiceDeps is fully built); this holder
   // lets wireEventPipeline take a stable callback shape now and the integration
@@ -690,74 +411,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcastProjectSummaries();
   });
 
-  /** Compute and broadcast project summaries to all connected clients. */
-  function broadcastProjectSummaries(): void {
-    const projects = getProjectSummaries({
-      monitor,
-      ledgerAnalytics,
-      projectConfigStore,
-      getSidebarProjects: () => projectSidebarStore.getSeedProjects(),
-      getSkillTrackedProjects: () => skillDiscoveryState.getProjects(),
-      getRegistryActiveProjects,
-      prLessonsHolder: prLessonsState,
-      repoHealthCache: githubScanner.getRepoHealthSnapshot(),
-      getTaskGithubReferences: (taskId) => githubStateStore.getReferences(taskId),
-    });
-    // Reuse the summaries' membership as the single source of truth for which
-    // github.com/... projects the repo-health tick should poll. Cap is applied
-    // inside the scanner via setTrackedGithubRepos (it filters unsafe ids).
-    githubScanner.setTrackedGithubRepos(
-      projects.map((s) => s.project).slice(0, MAX_TRACKED_REPOS),
-    );
-    // Always broadcast — user-initiated mutations (track/untrack/rescan) can
-    // legitimately transition the list to empty, and clients need the update.
-    broadcastToAll({ type: 'projectSummaries', projects });
-  }
-  broadcastProjectSummariesRef = broadcastProjectSummaries;
-
-  /** Broadcast the current OSS attempts snapshot to all connected clients. */
-  function broadcastOssAttempts(): void {
-    broadcastToAll({
-      type: 'ossAttempts',
-      store: toOssAttemptsSnapshot(ossAttemptStore, ossRegistryActiveRepos),
-    });
-  }
-
-  async function reloadOssRegistryActiveRepos(): Promise<void> {
-    ossRegistryActiveRepos = await loadExternalReposFromRegistry(
-      ossRegistryPath,
-      ossAttemptStore.getOwnNamespaces(),
-    );
-    broadcastProjectSummaries();
-    broadcastOssAttempts();
-  }
-
-  const ossRegistryWatcher = new OssRegistryWatcher({
-    registryPath: ossRegistryPath,
-    enabled: () => currentSettings.autoWatchOssSources,
+  const { ossRegistryWatcher, reconReportWatcher } = createOssSourceWatchers({
+    services: ossServices,
+    settings: () => currentSettings,
     debounceMs: ossSourceWatcherDebounceMs,
     runFs: ossSourceWatcherFs,
-    onChange: reloadOssRegistryActiveRepos,
+    broadcastProjectSummaries,
+    broadcastOssAttempts,
   });
-  const reconReportWatcher = new ReconReportWatcher({
-    claudeDir: resolvedClaudeDir,
-    enabled: () => currentSettings.autoWatchOssSources,
-    debounceMs: ossSourceWatcherDebounceMs,
-    runFs: ossSourceWatcherFs,
-    onChange: async () => {
-      const snapshot = await skillDiscoveryState.rescan();
-      if (snapshot.lastError) {
-        console.warn(`[skill-discovery] Auto rescan failed: ${snapshot.lastError}`);
-      }
-      broadcastProjectSummaries();
-    },
-  });
-  if (currentSettings.autoWatchOssSources) {
-    ossRegistryWatcher.start();
-    reconReportWatcher.start();
-  } else {
-    console.log('[settings] OSS source auto-watch disabled by user settings');
-  }
 
   // --- Auto-naming helper ---
 
@@ -789,8 +450,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
     projectConfigStore,
   };
-
-  const getDefaultAgentType = () => currentSettings.defaultAgentType;
 
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
@@ -873,40 +532,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd,
   });
 
-  // Schedule system — load schedules and start the cron runner
-  const scheduleStore = new ScheduleStore(kookrDir);
-  await scheduleStore.load();
-  // scheduleStore is now safe to read from broadcastToAll's snapshot branch.
-  snapshotAchievementsReady = true;
-  const scheduleValidator = new ScheduleValidator();
-  const scheduleService = new ScheduleService({
-    store: scheduleStore,
-    validator: scheduleValidator,
-    broadcast: (payload) => {
-      broadcastToAll({ type: 'schedules', ...payload });
-    },
-  });
-  await scheduleService.reconcileOnStartup(taskStore);
-  const ACTIVE_STATUSES = new Set(['open', 'pending', 'inProgress']);
-  const scheduleRunner = new ScheduleRunner({
-    store: scheduleStore,
-    service: scheduleService,
-    validator: scheduleValidator,
-    launcher: (opts) => launchTask(launchServiceDeps, opts),
-    getActiveCount: () => taskStore.getActiveCount(),
+  const { scheduleStore, scheduleService, scheduleRunner } = await createScheduleRuntime({
+    kookrDir,
+    taskStore,
+    launchServiceDeps,
     getMaxActiveTasks,
-    isTaskBlockingSchedule: (taskId) => {
-      const task = taskStore.getTask(taskId);
-      const blocking = isTaskBlockingSchedule(task);
-      if (task && !blocking && ACTIVE_STATUSES.has(task.status)) {
-        const ageHours = (Date.now() - task.updatedAt.getTime()) / 3_600_000;
-        console.warn(
-          `[schedule] Task ${taskId} treated as abandoned (${ageHours.toFixed(1)}h since update); allowing next run`,
-        );
-      }
-      return blocking;
-    },
+    broadcastToAll,
   });
+  realtime.setScheduleStore(scheduleStore);
+  realtime.setSnapshotAchievementsReady(true);
 
   // --- Self-diagnostic runner ---
   const serverStartMs = Date.now();
@@ -914,7 +548,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDetectionStats,
     getAgentCount: () => taskStore.listTasks().length,
     getUptimeMs: () => Date.now() - serverStartMs,
-    getWsBroadcastCount: () => wsBroadcastCount,
+    getWsBroadcastCount: () => realtime.getWsBroadcastCount(),
     getEventCounts: () => monitor.getEventCounts(),
     measureSnapshotSizeBytes: () => {
       const msg = createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion });
@@ -989,86 +623,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
 
-  // --- HTTP Server + WebSocket Server ---
-
-  const requestListener = getRequestListener(app.fetch);
-  const httpServer = createServer(requestListener);
-
-  const wss = new WebSocketServer({ noServer: true });
-  const terminalWss = new WebSocketServer({ noServer: true });
-
-  httpServer.on('upgrade', (req: IncomingMessage, socket, head) => {
-    const url = req.url ?? '';
-
-    if (url === '/ws') {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit('connection', ws, req);
-      });
-    } else if (url.startsWith('/ws/terminal/')) {
-      terminalWss.handleUpgrade(req, socket, head, (ws) => {
-        terminalWss.emit('connection', ws, req);
-      });
-    } else {
-      socket.destroy();
-    }
-  });
-
-  // Terminal WebSocket: bridge xterm.js to an agent session.
-  // v7 Main B.b per-session routing:
-  //   1. Fake bridge for E2E / demo mode.
-  //   2. If terminalBackend is present AND knows about this sessionId →
-  //      v7 SessionBridge (byte-transparent, ring-buffered).
-  //   3. Otherwise legacy TerminalBridge (tmux attach). Covers the
-  //      KOOKR_BACKEND=tmux escape hatch AND the cutover case where
-  //      a live tmux-era session is still running alongside new
-  //      dtach-backed sessions. Users re-launching the task moves it
-  //      to the dtach path.
-  // V8: two bridge kinds — Fake (E2E/demo) and Session (production). The
-  // legacy TerminalBridge (which spawned `tmux attach` directly) is gone;
-  // all production WS attaches go through `SessionBridge`, which subscribes
-  // to the backend's byte stream.
-  const activeBridges = new Map<WebSocket, FakeTerminalBridge | SessionBridge>();
-
-  terminalWss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-    const url = req.url ?? '';
-    const sessionName = decodeURIComponent(url.replace('/ws/terminal/', ''));
-
-    if (!sessionName) {
-      ws.close(1008, 'Missing session name');
-      return;
-    }
-
-    void (async () => {
-      const bridgeKind: 'fake' | 'session' = useFakeTerminalBridge ? 'fake' : 'session';
-      console.log(`Terminal bridge opened for ${sessionName} (kind=${bridgeKind})`);
-
-      if (bridgeKind === 'fake') {
-        const content = FakeTerminalBridge.getContent(sessionName);
-        const bridge = new FakeTerminalBridge(sessionName, ws, content);
-        activeBridges.set(ws, bridge);
-        bridge.start();
-        return;
-      }
-
-      const sb = new SessionBridge(
-        sessionName,
-        ws,
-        terminalBackend,
-        (id) => handleTerminalInput(terminalDeps, id),
-        (id) => handleTerminalKeystroke(terminalDeps, id),
-      );
-      activeBridges.set(ws, sb);
-      sb.start().catch((err) => {
-        console.error(`[session-bridge] attach failed for ${sessionName}:`, err);
-      });
-    })();
-
-    ws.on('close', () => {
-      console.log(`Terminal bridge closed for ${sessionName}`);
-      activeBridges.delete(ws);
-    });
-  });
-
   // --- Contribution Workspace services (Phase 1a) ---
   const leaseService = new WorktreeLeaseService();
   const serverProjectId = await getProjectId(serverCwd);
@@ -1105,6 +659,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcastToAll,
   });
 
+  // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---
+  const quotaAdapter = new QuotaAdapter(120_000); // 120s interval
+
   const wsConnectionDeps: WsConnectionDeps = {
     taskStore, queue, monitor, adapter, adapterRegistry,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
@@ -1135,13 +692,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     takePredeleteSnapshot,
   };
 
-  // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---
-  const quotaAdapter = new QuotaAdapter(120_000); // 120s interval
-
-  wss.on('connection', (ws: WebSocket) => {
-    handleWsConnection(ws, clients, wsConnectionDeps);
-  });
-
   const backgroundServices = startBackgroundServices({
     ossAttemptStore,
     ledgerAnalytics,
@@ -1165,6 +715,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       getDashboardClientCount: () => clients.size,
     },
   });
+
+  const { httpServer, wss, terminalWss, activeBridges } = await startHttpAndWebSockets({
+    app,
+    port,
+    host,
+    tasksFile,
+    hooksDir,
+    terminalBackend,
+    terminalDeps,
+    useFakeTerminalBridge,
+    onDashboardConnection: (ws) => handleWsConnection(ws, clients, wsConnectionDeps),
+  });
+
+  // Start background services that should wait for the server to be listening.
+  backgroundServices.startAfterListen();
 
   // --- Close ---
 
@@ -1234,30 +799,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       httpServer.close(() => resolve());
     });
   }
-
-  // --- Start ---
-
-  await new Promise<void>((resolve) => {
-    httpServer.listen(port, host, () => {
-      console.log(`Kookr server listening on http://${host}:${port}`);
-      console.log(`WebSocket endpoint: ws://${host}:${port}/ws`);
-      console.log(`Task file: ${tasksFile}`);
-      console.log(`Hook files: ${hooksDir}`);
-      console.log(
-        JSON.stringify({
-          msg: 'hooks_inventory_loaded',
-          eventCount: HOOK_EVENTS.length,
-          loadBearingCount: LOAD_BEARING_HOOKS.size,
-        }),
-      );
-      console.log('\nManaged agents run under dtach sessions prefixed with "kookr-".');
-      console.log('Attach a Kookr-managed terminal through the dashboard terminal panel.\n');
-      resolve();
-    });
-  });
-
-  // Start background services that should wait for the server to be listening.
-  backgroundServices.startAfterListen();
 
   // --- Telegram remote-chat trigger (opt-in; off by default) ---
   // See docs/rfc/rfc-remote-chat-trigger.md. Enabled when KOOKR_TELEGRAM_BOT_TOKEN
