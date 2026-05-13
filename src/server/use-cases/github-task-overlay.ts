@@ -1,23 +1,18 @@
 import type { AgentState } from '../../core/monitor.js';
 import type { GitHubReference } from '../../core/github-types.js';
-import { isSafeGithubProjectId, projectIdToOwnerRepo } from '../../core/project-identity.js';
+import type { GithubTaskOverlayEntry } from '../../core/project-summary.js';
+import { projectIdToOwnerRepo } from '../../core/project-identity.js';
 
-export interface GithubTaskOverlayLink {
-  kind: 'issue' | 'pr';
-  number: number;
-  taskId: string;
-  taskName?: string;
-}
+export type GithubTaskOverlay = GithubTaskOverlayEntry;
 
-export interface GithubTaskOverlay {
-  tiedOpenIssueNumbers: Set<number>;
-  tiedOpenPrNumbers: Set<number>;
-  links: GithubTaskOverlayLink[];
-}
-
-export interface BuildOverlayInput {
+export interface BuildGithubTaskOverlayInput {
   agents: AgentState[];
-  getReferences: (taskId: string) => GitHubReference[];
+  /**
+   * Per-task GitHub reference accessor. Bound at call sites to
+   * `GitHubStateStore.getReferences(taskId)`. Must return an array (empty when
+   * no refs) — uncaught throws will abort overlay computation for all projects.
+   */
+  getTaskGithubReferences: (taskId: string) => GitHubReference[];
 }
 
 /**
@@ -34,14 +29,18 @@ export interface BuildOverlayInput {
  * ignored — a task linking to an upstream issue in a fork project would not
  * inflate the upstream's overlay.
  */
-export function buildGithubTaskOverlay(input: BuildOverlayInput): Map<string, GithubTaskOverlay> {
+export function buildGithubTaskOverlay(input: BuildGithubTaskOverlayInput): Map<string, GithubTaskOverlay> {
   const out = new Map<string, GithubTaskOverlay>();
 
   for (const agent of input.agents) {
     if (agent.taskStatus !== 'inProgress') continue;
     if (agent.snoozedUntil) continue;
     if (!agent.taskId || !agent.projectId) continue;
-    if (!isSafeGithubProjectId(agent.projectId)) continue;
+
+    // projectIdToOwnerRepo already enforces `isSafeGithubProjectId` and
+    // returns lowercase owner/repo. GitHub URLs are case-insensitive but the
+    // ref scanner stores owner/repo verbatim from the captured URL — compare
+    // lowercase on both sides so `Octo/Cat` ↔ `octo/cat` matches correctly.
     const ownerRepo = projectIdToOwnerRepo(agent.projectId);
     if (!ownerRepo) continue;
 
@@ -52,8 +51,9 @@ export function buildGithubTaskOverlay(input: BuildOverlayInput): Map<string, Gi
     }
 
     const seenForTask = new Set<string>();
-    for (const ref of input.getReferences(agent.taskId)) {
-      if (ref.owner !== ownerRepo.owner || ref.repo !== ownerRepo.repo) continue;
+    for (const ref of input.getTaskGithubReferences(agent.taskId)) {
+      if (ref.owner.toLowerCase() !== ownerRepo.owner) continue;
+      if (ref.repo.toLowerCase() !== ownerRepo.repo) continue;
       const dedupeKey = `${ref.type}:${ref.number}`;
       if (seenForTask.has(dedupeKey)) continue;
       seenForTask.add(dedupeKey);

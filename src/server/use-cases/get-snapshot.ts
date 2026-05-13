@@ -102,7 +102,7 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
 export function getProjectSummaries(deps: ProjectSummaryQueryDeps): ProjectSummary[] {
   const agents = getSnapshotAgentsRaw(deps);
   const githubTaskOverlay = deps.getTaskGithubReferences
-    ? buildGithubTaskOverlay({ agents, getReferences: deps.getTaskGithubReferences })
+    ? buildGithubTaskOverlay({ agents, getTaskGithubReferences: deps.getTaskGithubReferences })
     : undefined;
   return computeProjectSummaries({
     agents,

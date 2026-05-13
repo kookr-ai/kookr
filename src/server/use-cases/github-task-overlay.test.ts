@@ -41,8 +41,33 @@ function refsFromList(refs: GitHubReference[]) {
 
 describe('buildGithubTaskOverlay', () => {
   test('returns empty map when no agents are active', () => {
-    const overlay = buildGithubTaskOverlay({ agents: [], getReferences: () => [] });
+    const overlay = buildGithubTaskOverlay({ agents: [], getTaskGithubReferences: () => [] });
     expect(overlay.size).toBe(0);
+  });
+
+  test('skips agents missing taskId or projectId', () => {
+    const overlay = buildGithubTaskOverlay({
+      agents: [
+        makeAgent({ agentId: 'a-1', taskId: 't-1' }),
+        makeAgent({ agentId: 'a-2', projectId: 'github.com/octo/cat' }),
+      ],
+      getTaskGithubReferences: () => [makeRef('octo', 'cat', 'issue', 1, 't-1')],
+    });
+    expect(overlay.size).toBe(0);
+  });
+
+  test('matches refs case-insensitively against the project owner/repo', () => {
+    // GitHub URLs are case-insensitive; the ref scanner stores owner/repo
+    // verbatim from the captured URL while the projectId is canonicalised
+    // lowercase. The overlay must still recognise the match.
+    const overlay = buildGithubTaskOverlay({
+      agents: [
+        makeAgent({ agentId: 'a-1', taskId: 't-1', projectId: 'github.com/octo/cat' }),
+      ],
+      getTaskGithubReferences: refsFromList([makeRef('Octo', 'Cat', 'issue', 7, 't-1')]),
+    });
+    const entry = overlay.get('github.com/octo/cat')!;
+    expect(Array.from(entry.tiedOpenIssueNumbers)).toEqual([7]);
   });
 
   test('skips completed and snoozed agents', () => {
@@ -55,7 +80,7 @@ describe('buildGithubTaskOverlay', () => {
         makeAgent({ agentId: 'a-1', taskId: 't-1', projectId: 'github.com/octo/cat', taskStatus: 'completed' }),
         makeAgent({ agentId: 'a-2', taskId: 't-2', projectId: 'github.com/octo/cat', snoozedUntil: Date.now() + 60_000 }),
       ],
-      getReferences: refsFromList(refs),
+      getTaskGithubReferences: refsFromList(refs),
     });
     expect(overlay.size).toBe(0);
   });
@@ -70,7 +95,7 @@ describe('buildGithubTaskOverlay', () => {
         makeAgent({ agentId: 'a-1', taskId: 't-1', projectId: 'github.com/octo/cat', taskName: 'fix #42' }),
         makeAgent({ agentId: 'a-2', taskId: 't-2', projectId: 'github.com/octo/cat', taskName: 'fix #99' }),
       ],
-      getReferences: refsFromList(refs),
+      getTaskGithubReferences: refsFromList(refs),
     });
     const entry = overlay.get('github.com/octo/cat');
     expect(entry).toBeDefined();
@@ -89,7 +114,7 @@ describe('buildGithubTaskOverlay', () => {
         makeAgent({ agentId: 'a-1', taskId: 't-1', projectId: 'github.com/octo/cat', taskName: 'task A' }),
         makeAgent({ agentId: 'a-2', taskId: 't-2', projectId: 'github.com/octo/cat', taskName: 'task B' }),
       ],
-      getReferences: refsFromList(refs),
+      getTaskGithubReferences: refsFromList(refs),
     });
     const entry = overlay.get('github.com/octo/cat')!;
     expect(entry.tiedOpenIssueNumbers.size).toBe(1);
@@ -106,7 +131,7 @@ describe('buildGithubTaskOverlay', () => {
       agents: [
         makeAgent({ agentId: 'a-1', taskId: 't-1', projectId: 'github.com/octo/cat' }),
       ],
-      getReferences: refsFromList(refs),
+      getTaskGithubReferences: refsFromList(refs),
     });
     const entry = overlay.get('github.com/octo/cat')!;
     expect(Array.from(entry.tiedOpenIssueNumbers)).toEqual([8]);
@@ -121,7 +146,7 @@ describe('buildGithubTaskOverlay', () => {
       agents: [
         makeAgent({ agentId: 'a-1', taskId: 't-1', projectId: 'github.com/octo/cat' }),
       ],
-      getReferences: refsFromList(refs),
+      getTaskGithubReferences: refsFromList(refs),
     });
     const entry = overlay.get('github.com/octo/cat')!;
     expect(entry.tiedOpenIssueNumbers.size).toBe(1);
@@ -149,7 +174,7 @@ describe('buildGithubTaskOverlay', () => {
       agents: [
         makeAgent({ agentId: 'a-1', taskId: 't-1', projectId: 'github.com/octo/cat' }),
       ],
-      getReferences: refsFromList(refs),
+      getTaskGithubReferences: refsFromList(refs),
     });
     const entry = overlay.get('github.com/octo/cat')!;
     expect(entry.tiedOpenIssueNumbers.size).toBe(1);

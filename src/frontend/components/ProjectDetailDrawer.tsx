@@ -134,17 +134,14 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
             <span>{project.activeAgents} agent{project.activeAgents === 1 ? '' : 's'}</span>
             <span>{project.findingCount} finding{project.findingCount === 1 ? '' : 's'}</span>
             <span>{project.openPrs} agent PR{project.openPrs === 1 ? '' : 's'}</span>
-            {(tiedIssues > 0 || tiedPrs > 0) && (
-              <span
-                data-testid="compact-tied"
-                title={linksTooltip(links)}
-              >
-                {tiedIssues > 0 && repoHealth && Number.isFinite(repoHealth.openIssues)
-                  ? ` · ${tiedIssues}/${repoHealth.openIssues} issue${tiedIssues === 1 ? '' : 's'}`
-                  : ''}
-                {tiedPrs > 0 && repoHealth && Number.isFinite(repoHealth.openPullRequests)
-                  ? ` · ${tiedPrs}/${repoHealth.openPullRequests} PR${tiedPrs === 1 ? '' : 's'}`
-                  : ''}
+            {tiedIssues > 0 && repoHealth && Number.isFinite(repoHealth.openIssues) && (
+              <span data-testid="compact-tied-issues" title={linksTooltip(issueLinks)}>
+                {tiedIssues}/{repoHealth.openIssues} issue{tiedIssues === 1 ? '' : 's'}
+              </span>
+            )}
+            {tiedPrs > 0 && repoHealth && Number.isFinite(repoHealth.openPullRequests) && (
+              <span data-testid="compact-tied-prs" title={linksTooltip(prLinks)}>
+                {tiedPrs}/{repoHealth.openPullRequests} PR{tiedPrs === 1 ? '' : 's'}
               </span>
             )}
           </div>

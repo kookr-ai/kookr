@@ -106,12 +106,17 @@ export interface ProjectSummaryDeps {
   /**
    * Per-project active-task GitHub overlay (tied issue/PR counts and links).
    * Keyed by project id. Caller pre-computes via `buildGithubTaskOverlay`.
+   * The element shape is structurally identical to the use-case helper's
+   * `GithubTaskOverlay`; this inline type keeps `core/` free of a reverse
+   * dependency on `server/use-cases/`.
    */
-  githubTaskOverlay?: ReadonlyMap<string, {
-    tiedOpenIssueNumbers: Set<number>;
-    tiedOpenPrNumbers: Set<number>;
-    links: ProjectGithubLink[];
-  }>;
+  githubTaskOverlay?: ReadonlyMap<string, GithubTaskOverlayEntry>;
+}
+
+export interface GithubTaskOverlayEntry {
+  tiedOpenIssueNumbers: Set<number>;
+  tiedOpenPrNumbers: Set<number>;
+  links: ProjectGithubLink[];
 }
 
 /** Hard cap on the number of repos polled per repo-health tick. */

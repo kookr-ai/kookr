@@ -91,7 +91,7 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
     expect(prsTied?.textContent).toContain('289');
   });
 
-  test('tooltip lists tied items in compact mode', () => {
+  test('tooltip lists tied items in compact mode (issues only)', () => {
     renderDrawer(baseProject({
       openIssuesTiedToActiveTasks: 1,
       openPrsTiedToActiveTasks: 0,
@@ -100,16 +100,32 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
       ],
     }), true);
 
-    const compact = container.querySelector('[data-testid="compact-tied"]');
-    expect(compact).not.toBeNull();
-    expect(compact?.textContent).toContain('1/4127');
-    expect(compact?.getAttribute('title')).toContain('#42');
-    expect(compact?.getAttribute('title')).toContain('fix #42');
+    const issues = container.querySelector('[data-testid="compact-tied-issues"]');
+    expect(issues).not.toBeNull();
+    expect(issues?.textContent).toContain('1/4127');
+    expect(issues?.getAttribute('title')).toContain('#42');
+    expect(issues?.getAttribute('title')).toContain('fix #42');
+    expect(container.querySelector('[data-testid="compact-tied-prs"]')).toBeNull();
   });
 
-  test('hides the compact tied span when nothing is tied', () => {
+  test('renders both compact pills when issues and PRs are tied', () => {
+    renderDrawer(baseProject({
+      openIssuesTiedToActiveTasks: 2,
+      openPrsTiedToActiveTasks: 3,
+      activeTaskGithubLinks: [
+        { kind: 'issue', number: 1, taskId: 't-1', taskName: 'task A' },
+        { kind: 'pr', number: 9, taskId: 't-2', taskName: 'task B' },
+      ],
+    }), true);
+
+    expect(container.querySelector('[data-testid="compact-tied-issues"]')?.textContent).toContain('2/4127');
+    expect(container.querySelector('[data-testid="compact-tied-prs"]')?.textContent).toContain('3/289');
+  });
+
+  test('hides the compact tied spans when nothing is tied', () => {
     renderDrawer(baseProject({ openIssuesTiedToActiveTasks: 0, openPrsTiedToActiveTasks: 0 }), true);
-    expect(container.querySelector('[data-testid="compact-tied"]')).toBeNull();
+    expect(container.querySelector('[data-testid="compact-tied-issues"]')).toBeNull();
+    expect(container.querySelector('[data-testid="compact-tied-prs"]')).toBeNull();
   });
 
   test('omits the fraction when repoHealth is absent', () => {
@@ -120,5 +136,17 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
     }));
     expect(container.querySelector('[data-testid="repo-open-issues"]')).toBeNull();
     expect(container.querySelector('[data-testid="repo-open-prs"]')).toBeNull();
+    expect(container.querySelector('[data-testid="open-issues-tied"]')).toBeNull();
+    expect(container.querySelector('[data-testid="open-prs-tied"]')).toBeNull();
+  });
+
+  test('compact mode suppresses tied pills when repoHealth denominators are absent', () => {
+    renderDrawer(baseProject({
+      repoHealth: undefined,
+      openIssuesTiedToActiveTasks: 2,
+      openPrsTiedToActiveTasks: 1,
+    }), true);
+    expect(container.querySelector('[data-testid="compact-tied-issues"]')).toBeNull();
+    expect(container.querySelector('[data-testid="compact-tied-prs"]')).toBeNull();
   });
 });
