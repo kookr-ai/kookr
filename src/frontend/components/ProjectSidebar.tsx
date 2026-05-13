@@ -103,17 +103,14 @@ function ProjectIcon({
   const letter = (orgChar + repoChar).toUpperCase() || '?';
   const hasFindings = summary.findingCount > 0;
   const isActive = summary.activeAgents > 0;
-  const stalledAgents = Math.max(0, Math.min(summary.stalledAgents ?? summary.findingCount, summary.activeAgents));
-  const runningAgents = Math.max(0, summary.activeAgents - stalledAgents);
-  const hasStalledAgents = stalledAgents > 0;
-  const taskCountLabel = hasStalledAgents ? `${runningAgents}/${summary.activeAgents}` : `${summary.activeAgents}`;
+  const taskLoad = getTaskLoad(summary.activeAgents, summary.stalledAgents ?? summary.findingCount);
 
   const tooltipText = [
     summary.displayName,
     pinned ? 'Pinned' : 'In sidebar',
     `${summary.activeAgents} active agent${summary.activeAgents !== 1 ? 's' : ''}`,
     isActive
-      ? `${runningAgents} running · ${stalledAgents} stalled`
+      ? `${taskLoad.runningAgents} running · ${taskLoad.stalledAgents} stalled`
       : '0 running · 0 stalled',
     `${summary.findingCount} finding${summary.findingCount !== 1 ? 's' : ''}`,
     summary.dailyLimit !== undefined
@@ -142,12 +139,38 @@ function ProjectIcon({
           <span className="project-icon-badge anomaly">{summary.findingCount}</span>
         )}
         {isActive && (
-          <span className={`project-icon-task-count${hasStalledAgents ? ' has-stalled' : ''}`}>
-            {taskCountLabel}
-          </span>
+          <TaskCountBadge taskLoad={taskLoad} />
         )}
       </button>
     </Tooltip>
+  );
+}
+
+interface TaskLoad {
+  activeAgents: number;
+  runningAgents: number;
+  stalledAgents: number;
+  label: string;
+}
+
+function getTaskLoad(activeAgents: number, stalledAgents: number): TaskLoad {
+  const safeActiveAgents = Math.max(0, activeAgents);
+  const safeStalledAgents = Math.max(0, Math.min(stalledAgents, safeActiveAgents));
+  const runningAgents = Math.max(0, safeActiveAgents - safeStalledAgents);
+  return {
+    activeAgents: safeActiveAgents,
+    runningAgents,
+    stalledAgents: safeStalledAgents,
+    label: safeStalledAgents > 0 ? `${runningAgents}/${safeActiveAgents}` : `${safeActiveAgents}`,
+  };
+}
+
+function TaskCountBadge({ taskLoad }: { taskLoad: TaskLoad }) {
+  if (taskLoad.activeAgents <= 0) return null;
+  return (
+    <span className={`project-icon-task-count${taskLoad.stalledAgents > 0 ? ' has-stalled' : ''}`}>
+      {taskLoad.label}
+    </span>
   );
 }
 
@@ -174,6 +197,7 @@ interface Props {
 export function ProjectSidebar({ onManage }: Props) {
   const {
     visibleProjectSummaries,
+    projectSummaries,
     projectSidebarRows,
     selectedProject,
     selectProject,
@@ -205,6 +229,26 @@ export function ProjectSidebar({ onManage }: Props) {
     () => visibleProjectSummaries.filter((summary) => !visibleRowMap.get(summary.project)?.pinned),
     [visibleProjectSummaries, visibleRowMap],
   );
+  const allTaskLoad = useMemo(() => {
+    return projectSummaries.reduce(
+      (total, summary) => {
+        const projectTaskLoad = getTaskLoad(
+          summary.activeAgents,
+          summary.stalledAgents ?? summary.findingCount,
+        );
+        return getTaskLoad(
+          total.activeAgents + projectTaskLoad.activeAgents,
+          total.stalledAgents + projectTaskLoad.stalledAgents,
+        );
+      },
+      getTaskLoad(0, 0),
+    );
+  }, [projectSummaries]);
+  const allTooltipText = [
+    'All Projects',
+    `${allTaskLoad.activeAgents} active agent${allTaskLoad.activeAgents !== 1 ? 's' : ''}`,
+    `${allTaskLoad.runningAgents} running · ${allTaskLoad.stalledAgents} stalled`,
+  ].join(' · ');
 
   const menuRow = menuProjectId ? visibleRowMap.get(menuProjectId) ?? null : null;
   const menuSection = menuRow?.pinned ? pinnedSummaries : unpinnedSummaries;
@@ -329,7 +373,7 @@ export function ProjectSidebar({ onManage }: Props) {
 
   return (
     <div className="project-sidebar kookr-tour-target-layout" data-testid="project-sidebar">
-      <Tooltip text="All Projects">
+      <Tooltip text={allTooltipText}>
         <button
           aria-label="All Projects"
           className={`project-icon all${selectedProject === null ? ' selected' : ''}`}
@@ -338,6 +382,7 @@ export function ProjectSidebar({ onManage }: Props) {
           type="button"
         >
           <span className="project-icon-letter">*</span>
+          <TaskCountBadge taskLoad={allTaskLoad} />
         </button>
       </Tooltip>
 
