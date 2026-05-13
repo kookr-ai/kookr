@@ -148,6 +148,95 @@ export type AgentEvent = (
   eventSeq?: number;
 };
 
+/**
+ * Parentage classification for a hook record, relative to the Kookr terminal
+ * session that owns the hook file. See rfc-activity-log-reliability §3.
+ *
+ * - `parent`  : provider session_id matches the parent runtime session for this Kookr session.
+ * - `child`   : provider session_id is a different one, recorded as a child of the parent.
+ * - `foreign` : provider session_id maps to another active Kookr session/task. (Reserved — Phase 3.)
+ * - `unknown` : session_id missing, or parent has not yet been established.
+ */
+export type EventParentage = 'parent' | 'child' | 'foreign' | 'unknown';
+
+/**
+ * Outer metadata attached to every parsed hook event as it travels through
+ * the ingestion pipeline. Kept separate from {@link AgentEvent} so the
+ * normalized event type remains provider-agnostic. Phase 1 in-memory shape;
+ * Phase 3 persists a richer {@link HookEnvelopeV1} ledger row.
+ */
+export interface EventMeta {
+  parentage: EventParentage;
+  /** Provider session id from the raw payload (`session_id`). */
+  rawSessionId?: string;
+  /** Kookr-assigned monotonic sequence number per kookrSessionId. */
+  sequence: number;
+  /** ms since epoch when Kookr observed the record. */
+  observedAt: number;
+}
+
+/**
+ * Per-Kookr-session record of which provider runtime session owns the hook
+ * file (parent) and which other session ids have appeared on the same file
+ * (children). Frozen-after-first-set semantics: the parent is the first
+ * SessionStart for the Kookr session; later distinct session_ids are recorded
+ * as children, never overwriting the parent.
+ */
+export interface ChildSessionInfo {
+  firstSeenAt: string;
+  transcriptPath?: string;
+  reason: 'subagent_hook' | 'inherited_settings' | 'unknown';
+}
+
+/**
+ * Aggregate counters published on each {@link AgentState} so the activity
+ * panel can disclose partial-window state and child / malformed counts
+ * without re-reading the durable ledger on every snapshot tick. Maintained
+ * in memory by {@link HookIngestion}; the diagnostics endpoint surfaces a
+ * richer breakdown from the on-disk ledger. See rfc-activity-log-reliability §9.
+ *
+ * Counts are scoped to a single Kookr terminal session.
+ */
+export interface AgentActivityMeta {
+  /** Distinct hook records observed (dedup-aware: duplicates do not double-count). */
+  totalEventsSeen: number;
+  parentEventCount: number;
+  childEventCount: number;
+  foreignEventCount: number;
+  unknownParentageCount: number;
+  malformedRecordCount: number;
+  droppedRecordCount: number;
+  duplicateRecordCount: number;
+}
+
+/**
+ * Outcome of a single hook record injection — describes what the adapter
+ * observed so {@link HookIngestion} can build a {@link HookEnvelopeV1} for
+ * the activity ledger without re-parsing the raw payload. See
+ * rfc-activity-log-reliability §1.
+ *
+ * Adapters MUST return a result for every call, including parse failures
+ * (parseStatus = 'malformed') and unknown hook event names
+ * (parseStatus = 'dropped'). They MUST NOT throw on a malformed payload.
+ */
+export interface InjectHookEventResult {
+  parseStatus: 'ok' | 'malformed' | 'dropped';
+  /** Provider session id from the raw payload. Present for ok / dropped; may
+   *  be missing for malformed. */
+  rawSessionId?: string;
+  rawTurnId?: string;
+  rawHookEventName?: string;
+  /** Classified parentage relative to the Kookr terminal session. Set when
+   *  parseStatus is 'ok' or 'dropped' (the header is still inspectable). */
+  parentage?: EventParentage;
+  /** Sequence number used in EventMeta for this record, when ok. */
+  sequence?: number;
+  /** Adapter type that handled the inject — feeds HookEnvelopeV1.provider. */
+  agentType: import('./agent-types.js').AgentType;
+  /** Free-text reason when parseStatus !== 'ok'. */
+  error?: string;
+}
+
 // Type guards for AgentEvent discriminated union
 export function isSessionStartEvent(
   event: AgentEvent,

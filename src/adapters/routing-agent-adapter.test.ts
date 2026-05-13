@@ -107,7 +107,10 @@ describe('RoutingAgentAdapter', () => {
 
       router.injectHookEvent('kookr-codex-3', '{"event":"test"}');
 
-      expect(codexAdapter.injectHookEvent).toHaveBeenCalledWith('kookr-codex-3', '{"event":"test"}');
+      // Third arg is the optional Kookr-side sequence threaded by HookIngestion;
+      // RoutingAgentAdapter forwards it as-is. The test driver doesn't pass one,
+      // so the adapter sees `undefined` and falls back to its own counter.
+      expect(codexAdapter.injectHookEvent).toHaveBeenCalledWith('kookr-codex-3', '{"event":"test"}', undefined);
     });
 
     test('routes getEffectiveHookSettings to the correct adapter by session agentType', () => {

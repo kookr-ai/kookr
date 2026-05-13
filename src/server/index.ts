@@ -35,6 +35,8 @@ import {
 } from './agent-preflight.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { HookFileWatcher } from './hook-watcher.js';
+import { HookIngestion } from './hook-ingestion.js';
+import { ActivityLedger } from '../core/activity-ledger.js';
 import { generateTaskName } from '../core/task-naming.js';
 import { createLlmClient } from '../core/llm-client.js';
 import { FakeTerminalBridge } from './fake-terminal-bridge.js';
@@ -528,7 +530,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Hook watcher created here but resumed-session replay is deferred to after crash recovery,
   // so relaunched sessions have their new tmux names before snooze restore + hook replay.
-  const hookWatcher = new HookFileWatcher(hooksDir, adapter);
+  // HookIngestion serializes file-source and http-source delivery through a
+  // content-hash dedup window so the same record never reaches the adapter
+  // twice. The ActivityLedger captures a durable per-session ledger row for
+  // every observed record — parent, child, malformed, duplicate — under
+  // <kookrDir>/activity/ for /api/tasks/:taskId/activity-diagnostics.
+  // See rfc-activity-log-reliability §5, §7.
+  const activityLedger = new ActivityLedger(join(kookrDir, 'activity'));
+  const hookIngestion = new HookIngestion({ adapter, httpPushTracker, activityLedger, taskStore });
+  const hookWatcher = new HookFileWatcher(hooksDir, hookIngestion);
 
   // Register transcripts for resumed sessions so token tracker picks up existing data
   for (const task of taskStore.getAllTasks()) {
@@ -669,7 +679,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Metadata-only refresh (e.g. git info captured) — broadcast snapshot without injecting events
   adapter.onRefreshNeeded(() => {
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion }));
     broadcastProjectSummaries();
   });
 
@@ -757,7 +767,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         if (current && !current.name) {
           taskStore.renameTask(taskId, name);
           console.log(`[task-naming] Named task ${taskId}: "${name}"`);
-          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl }));
+          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion }));
         }
       })
       .catch((err) => {
@@ -821,6 +831,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     checkpointCycler,
     ralphCycler,
     ralphLoopService,
+    hookIngestion,
     onPermissionBlocked: (taskId, promptText) => {
       onPermissionBlockedHolder?.(taskId, promptText);
     },
@@ -846,6 +857,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd,
     broadcastToAll,
     ralphLoopService,
+    hookIngestion,
+    activityLedger,
   });
   await promotePendingStartupTasks({
     taskStore,
@@ -899,7 +912,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getWsBroadcastCount: () => wsBroadcastCount,
     getEventCounts: () => monitor.getEventCounts(),
     measureSnapshotSizeBytes: () => {
-      const msg = createSnapshotMessage({ monitor, serverCwd });
+      const msg = createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion });
       return JSON.stringify(msg).length;
     },
     onReport: (report) => {
@@ -920,7 +933,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     interactionLog,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, frontendDir, broadcastToAll,
-    shadowRegistry, httpPushTracker, launchServiceDeps, sttUrl,
+    shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,
@@ -1089,6 +1102,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
     defaultAgentType: getDefaultAgentType(),
     getDefaultAgentType,
+    activityMetaProvider: hookIngestion,
     scheduleService,
     ralphLoopService,
     getDiagnosticStatus: () => diagnosticRunner.getStatus(),

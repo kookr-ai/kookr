@@ -24,6 +24,7 @@ import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { AgentType, AvailableAgentType } from '../core/agent-types.js';
 import type { ScheduleService } from './schedule-service.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
+import type { AgentActivityMeta } from '../core/types.js';
 import type { WorkspaceAttemptRepository } from '../core/workspace-attempt-repository.js';
 import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
@@ -68,6 +69,7 @@ export interface WsConnectionDeps {
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentType;
   getDefaultAgentType?: () => AgentType;
+  activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   /** Get latest self-diagnostic status (for initial connection burst). */
@@ -121,6 +123,7 @@ export function handleWsConnection(
     availableAgentTypes: deps.availableAgentTypes,
     defaultAgentType: deps.defaultAgentType,
     getDefaultAgentType: deps.getDefaultAgentType,
+    activityMetaProvider: deps.activityMetaProvider,
     scheduleService: deps.scheduleService,
     ralphLoopService: deps.ralphLoopService,
     workspaceEnabled: deps.workspaceEnabled,
@@ -236,7 +239,12 @@ export function handleWsConnection(
           if (ws.readyState === 1) {
             ws.send(JSON.stringify({ type: 'achievement:reset:ack', success: true }));
           }
-          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl }));
+          broadcastToAll(createSnapshotMessage({
+            monitor,
+            serverCwd,
+            sttUrl,
+            activityMetaProvider: deps.activityMetaProvider,
+          }));
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           if (ws.readyState === 1) {
@@ -303,7 +311,12 @@ export function handleWsConnection(
       }
 
       // Broadcast state change to all clients
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl }));
+      broadcastToAll(createSnapshotMessage({
+        monitor,
+        serverCwd,
+        sttUrl,
+        activityMetaProvider: deps.activityMetaProvider,
+      }));
       broadcastProjectSummaries();
     } catch (err) {
       console.error('Error handling WebSocket message:', err);

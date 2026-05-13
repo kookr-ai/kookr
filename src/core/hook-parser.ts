@@ -67,6 +67,33 @@ const KNOWN_HOOK_EVENTS: Set<string> = new Set([
   'SessionEnd',
 ]);
 
+/**
+ * Header-only inspector for activity-ledger envelopes. Pulls `session_id`,
+ * `turn_id`, and `hook_event_name` without enforcing them to be a known
+ * event type. Throws {@link HookParseError} on malformed JSON. Used by
+ * HookIngestion to populate {@link HookEnvelopeV1} fields even when the
+ * payload's hook_event_name is unknown to Kookr.
+ */
+export interface RawHookHeader {
+  rawSessionId?: string;
+  rawTurnId?: string;
+  rawHookEventName?: string;
+}
+
+export function extractRawHookHeader(raw: string): RawHookHeader {
+  let parsed: { session_id?: unknown; turn_id?: unknown; hook_event_name?: unknown };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new HookParseError(`Malformed JSON: ${raw.slice(0, 100)}`);
+  }
+  return {
+    rawSessionId: typeof parsed.session_id === 'string' ? parsed.session_id : undefined,
+    rawTurnId: typeof parsed.turn_id === 'string' ? parsed.turn_id : undefined,
+    rawHookEventName: typeof parsed.hook_event_name === 'string' ? parsed.hook_event_name : undefined,
+  };
+}
+
 export function parseHookEvent(raw: string): AgentEvent | null {
   let parsed: RawHookPayload;
   try {

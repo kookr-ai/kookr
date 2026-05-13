@@ -2,8 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import type { TerminalBackend } from './terminal-backend.js';
 import type { TaskStore } from '../core/tasks.js';
-import type { AgentEvent } from '../core/types.js';
 import type {
+  AgentEvent,
+  EventMeta,
+  EventParentage,
+  InjectHookEventResult,
+} from '../core/types.js';
+import type {
+  AdapterEventHandler,
   AgentAdapter,
   AdapterLaunchOptions,
   EffectiveHookSettings,
@@ -11,13 +17,20 @@ import type {
   ResumeContext,
 } from './agent-adapter.js';
 import { probeAgentBinary, type ProbeExecRunner } from './probe-agent-binary.js';
-import { parseHookEvent } from '../core/hook-parser.js';
+import { extractRawHookHeader, parseHookEvent, HookParseError } from '../core/hook-parser.js';
+import {
+  classifyHookParentage,
+  createSessionRuntimeIdentity,
+  recordSessionStart,
+  type SessionRuntimeIdentity,
+} from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { buildAgentLaunchContext } from './agent-launch-context.js';
 import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
+import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -87,10 +100,14 @@ export { resolvePluginDir } from '../core/plugin-paths.js';
 
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly agentType = 'claude-code';
-  private eventHandlers: Array<(tmuxName: string, event: AgentEvent) => void> = [];
+  private eventHandlers: Array<AdapterEventHandler> = [];
   private refreshHandlers: Array<() => void> = [];
   private settingsMap = new Map<string, HookSettings>();
   private tmuxToTaskId = new Map<string, string>();
+  /** In-memory parentage view per Kookr session; hydrated lazily from SessionInfo. */
+  private identities = new Map<string, SessionRuntimeIdentity>();
+  /** Kookr-assigned monotonic sequence per Kookr session, threaded through EventMeta. */
+  private sequenceCounters = new Map<string, number>();
   private hooksDir: string;
   private settingsDir: string;
   private writeFile?: (path: string, content: string) => Promise<void>;
@@ -273,9 +290,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   /**
-   * Register an event handler for AgentEvents from hook events.
+   * Register an event handler for AgentEvents from hook events. Handlers
+   * may declare 2 args (back-compat) or 3 args to receive the parentage-
+   * carrying {@link EventMeta} envelope.
    */
-  onEvent(handler: (tmuxName: string, event: AgentEvent) => void): void {
+  onEvent(handler: AdapterEventHandler): void {
     this.eventHandlers.push(handler);
   }
 
@@ -289,36 +308,97 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
   /**
    * Inject a raw hook event (for testing or from hook file tailing).
-   * Parses the JSON, emits the AgentEvent, and updates session metadata.
-   * Detects CWD changes and git commands to refresh git info.
+   * Parses the JSON, classifies parentage, freezes parent metadata against
+   * later distinct session ids, and emits the {@link AgentEvent} alongside
+   * an {@link EventMeta} envelope. CWD/git refresh is applied only for
+   * parent events so a child reviewer session cannot mutate parent state.
+   * NEVER throws on a malformed payload — returns parseStatus='malformed'
+   * so HookIngestion can record a diagnostic ledger row. See
+   * rfc-activity-log-reliability §1–§3.
    */
-  injectHookEvent(tmuxName: string, rawJson: string): void {
-    const event = parseHookEvent(rawJson);
-    if (!event) return; // Unknown hook type — silently skip
-    const taskId = this.tmuxToTaskId.get(tmuxName);
+  injectHookEvent(tmuxName: string, rawJson: string, externalSequence?: number): InjectHookEventResult {
+    const observedAt = Date.now();
+    const observedAtIso = new Date(observedAt).toISOString();
 
-    // Update session metadata on SessionStart
-    if (event.type === 'session_start' && taskId) {
-      this.taskStore.updateSession(taskId, tmuxName, {
-        claudeSessionId: event.sessionId,
-        transcriptPath: event.transcriptPath,
-      });
+    let header: { rawSessionId?: string; rawTurnId?: string; rawHookEventName?: string };
+    try {
+      header = extractRawHookHeader(rawJson);
+    } catch (err) {
+      const reason = err instanceof HookParseError ? err.message : String(err);
+      return { parseStatus: 'malformed', agentType: this.agentType, error: reason };
     }
 
-    // Detect CWD changes and git commands to refresh git info
-    if (taskId && 'cwd' in event && event.cwd) {
+    let event: AgentEvent | null;
+    try {
+      event = parseHookEvent(rawJson);
+    } catch (err) {
+      const reason = err instanceof HookParseError ? err.message : String(err);
+      return {
+        parseStatus: 'malformed',
+        agentType: this.agentType,
+        rawSessionId: header.rawSessionId,
+        rawTurnId: header.rawTurnId,
+        rawHookEventName: header.rawHookEventName,
+        error: reason,
+      };
+    }
+    if (!event) {
+      // Known-shape JSON but unknown hook_event_name. Surface as 'dropped'.
+      return {
+        parseStatus: 'dropped',
+        agentType: this.agentType,
+        rawSessionId: header.rawSessionId,
+        rawTurnId: header.rawTurnId,
+        rawHookEventName: header.rawHookEventName,
+        parentage: 'unknown',
+      };
+    }
+
+    const taskId = this.tmuxToTaskId.get(tmuxName)
+      ?? this.taskStore.findTaskBySession(tmuxName)?.id;
+    if (taskId && !this.tmuxToTaskId.has(tmuxName)) {
+      this.tmuxToTaskId.set(tmuxName, taskId);
+    }
+    const rawSessionId = 'sessionId' in event ? event.sessionId : header.rawSessionId;
+
+    const identity = this.getOrHydrateIdentity(tmuxName, taskId);
+
+    let parentage: EventParentage;
+    if (event.type === 'session_start' && rawSessionId) {
+      parentage = recordSessionStart(identity, rawSessionId, event.transcriptPath, observedAtIso);
+      if (taskId) {
+        if (parentage === 'parent') {
+          const task = this.taskStore.getTask(taskId);
+          const session = task?.sessions.find((s) => s.tmuxSession === tmuxName);
+          if (session && !session.claudeSessionId) {
+            this.taskStore.updateSession(taskId, tmuxName, {
+              claudeSessionId: event.sessionId,
+              transcriptPath: event.transcriptPath,
+            });
+          }
+        } else if (parentage === 'child') {
+          this.taskStore.recordChildSession(taskId, tmuxName, rawSessionId, {
+            firstSeenAt: observedAtIso,
+            transcriptPath: event.transcriptPath,
+            reason: 'inherited_settings',
+          });
+        }
+      }
+    } else {
+      parentage = classifyHookParentage(rawSessionId, identity);
+    }
+
+    if (parentage === 'parent' && taskId && 'cwd' in event && event.cwd) {
       const task = this.taskStore.getTask(taskId);
       const session = task?.sessions.find((s) => s.tmuxSession === tmuxName);
       if (session) {
         let shouldRefreshGit = false;
 
-        // Trigger 1: CWD changed — agent moved to a different directory
         if (event.cwd !== session.cwd) {
           this.taskStore.updateSessionCwd(taskId, tmuxName, event.cwd);
           shouldRefreshGit = true;
         }
 
-        // Trigger 2: Git command detected — branch may have changed in same directory
         if (event.type === 'tool_result' && event.toolName === 'Bash' && isGitBranchCommand(event.toolResponse)) {
           shouldRefreshGit = true;
         }
@@ -339,10 +419,49 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       }
     }
 
-    // Emit to all handlers with tmuxName for routing
+    const sequence = externalSequence ?? (this.sequenceCounters.get(tmuxName) ?? 0) + 1;
+    this.sequenceCounters.set(tmuxName, sequence);
+    const meta: EventMeta = { parentage, rawSessionId, sequence, observedAt };
+
     for (const handler of this.eventHandlers) {
-      handler(tmuxName, event);
+      handler(tmuxName, event, meta);
     }
+
+    return {
+      parseStatus: 'ok',
+      agentType: this.agentType,
+      rawSessionId: header.rawSessionId,
+      rawTurnId: header.rawTurnId,
+      rawHookEventName: header.rawHookEventName,
+      parentage,
+      sequence,
+    };
+  }
+
+  /**
+   * Lookup the per-Kookr-session ownership view, lazily hydrating from
+   * persisted SessionInfo so server restarts and crash recovery see the
+   * same frozen-parent semantics as a long-lived process.
+   */
+  private getOrHydrateIdentity(tmuxName: string, taskId: string | undefined): SessionRuntimeIdentity {
+    let identity = this.identities.get(tmuxName);
+    if (identity) return identity;
+    identity = createSessionRuntimeIdentity();
+    if (taskId) {
+      const task = this.taskStore.getTask(taskId);
+      const session = task?.sessions.find((s) => s.tmuxSession === tmuxName);
+      if (session?.claudeSessionId) {
+        identity.parentSessionId = session.claudeSessionId;
+        identity.parentTranscriptPath = session.transcriptPath;
+      }
+      if (session?.childSessionIds) {
+        for (const [id, info] of Object.entries(session.childSessionIds)) {
+          identity.childSessionIds.set(id, info);
+        }
+      }
+    }
+    this.identities.set(tmuxName, identity);
+    return identity;
   }
 
   /**
@@ -367,20 +486,22 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private generateSettings(tmuxName: string, hookOutputDir: string, permissionAllowlist: string[]): HookSettings {
     const hookFile = `${hookOutputDir}/${tmuxName}.jsonl`;
 
-    // When serverPort is set, dual-write: JSONL file (durable) + HTTP POST (fast).
-    // awk appends a newline-terminated JSONL record and forwards the same record
-    // to curl for immediate HTTP delivery. Some hook payloads arrive without a
-    // trailing newline, so a raw tee/cat append can concatenate adjacent objects.
-    // IMPORTANT: no trailing `&` — Claude Code runs hooks via non-interactive bash,
-    // and `bash -c 'cmd &'` redirects stdin from /dev/null, so the hook would read nothing.
-    // curl's --max-time 1 prevents blocking Claude Code if the server is slow.
-    let hookCommand: string;
-    if (this.serverPort) {
-      const url = `http://localhost:${this.serverPort}/api/hook-event/${tmuxName}`;
-      hookCommand = `awk -v file='${hookFile}' '{ print >> file; print }' | curl -s -X POST ${url} --max-time 1 -H 'Content-Type: application/json' -d @- >/dev/null 2>&1`;
-    } else {
-      hookCommand = `awk -v file='${hookFile}' '{ print >> file }'`;
-    }
+    // Dual-write: JSONL file (durable) + HTTP POST (fast). The Kookr hook
+    // writer serializes large concurrent appends and forwards the same
+    // payload to the server hook endpoint with fail-open behavior; if it
+    // is missing on disk (e.g. fresh checkout pre-install), buildHookCommand
+    // falls back to the legacy awk pipeline so the generated settings still
+    // function. See rfc-activity-log-reliability §6.
+    //
+    // IMPORTANT: no trailing `&` — Claude Code runs hooks via non-interactive
+    // bash, and `bash -c 'cmd &'` redirects stdin from /dev/null, so the hook
+    // would read nothing.
+    const hookCommand = buildHookCommand({
+      tmuxName,
+      hookFile,
+      serverPort: this.serverPort,
+      writerPath: resolveHookWriterPath(),
+    });
 
     const cmd = { type: 'command', command: hookCommand };
     return {

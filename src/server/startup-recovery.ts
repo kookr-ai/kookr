@@ -10,6 +10,8 @@ import type { ServerMessage } from '../shared/protocol.js';
 import { promotePendingTasks, registerNewAgent, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { recoverCrashedSessions, type CrashRecoveryResult } from './crash-recovery.js';
 import type { HookFileWatcher } from './hook-watcher.js';
+import type { HookIngestion } from './hook-ingestion.js';
+import type { ActivityLedger } from '../core/activity-ledger.js';
 import type { ReconciliationResult } from './reconciliation.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
 
@@ -28,6 +30,10 @@ interface StartupRecoveryDeps {
   serverCwd: string;
   broadcastToAll: (msg: ServerMessage) => void;
   ralphLoopService: RalphLoopService;
+  /** Used to hydrate the ingestion dedup cache before resumed sessions
+   *  replay their hook files. See rfc-activity-log-reliability edge cases. */
+  hookIngestion?: HookIngestion;
+  activityLedger?: ActivityLedger;
 }
 
 interface PromotePendingStartupTasksDeps {
@@ -53,6 +59,8 @@ export async function runStartupRecoveryPhase({
   serverCwd,
   broadcastToAll,
   ralphLoopService,
+  hookIngestion,
+  activityLedger,
 }: StartupRecoveryDeps): Promise<CrashRecoveryResult | null> {
   let startupRecoverySummary: CrashRecoveryResult | null = null;
 
@@ -123,6 +131,17 @@ export async function runStartupRecoveryPhase({
     const resumedTask = taskStore.findTaskBySession(tmuxName);
     const resumedSession = resumedTask?.sessions.find((session) => session.tmuxSession === tmuxName);
     watchdog.registerAgent(tmuxName, resumedSession?.lastEventAt);
+    // Hydrate dedup cache from the durable ledger BEFORE the file watcher
+    // replays the JSONL — otherwise records that were already delivered (via
+    // HTTP) and durably written before the crash would be re-injected on
+    // replay. See rfc-activity-log-reliability edge cases.
+    if (hookIngestion && activityLedger) {
+      try {
+        await hookIngestion.hydrateFromLedger(tmuxName, activityLedger);
+      } catch (err) {
+        console.warn(`[hook-ingestion] hydrate failed for ${tmuxName}:`, err);
+      }
+    }
     hookWatcher.watch(tmuxName, { replayExisting: true });
   }
 

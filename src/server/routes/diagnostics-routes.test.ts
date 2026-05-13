@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -126,6 +126,19 @@ describe('diagnostics routes', () => {
       });
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ status: 'empty' });
+    });
+
+    test('rejects unsafe session ids before ingestion', async () => {
+      const ingestFromHttp = vi.fn();
+      const res = await mkApp({ hookIngestion: { ingestFromHttp } as never })
+        .request('/api/hook-event/..%2Fescape', {
+          method: 'POST',
+          body: JSON.stringify({ hook_event_name: 'PreToolUse' }),
+        });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid session id' });
+      expect(ingestFromHttp).not.toHaveBeenCalled();
     });
   });
 

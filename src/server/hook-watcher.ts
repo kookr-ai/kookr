@@ -1,7 +1,7 @@
 import { watch, type FSWatcher, statSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AgentAdapter } from '../adapters/agent-adapter.js';
+import type { HookEventInjector } from './hook-ingestion.js';
 
 /** Default poll interval for the backup polling mechanism (ms). */
 const DEFAULT_POLL_INTERVAL_MS = 3_000;
@@ -83,11 +83,11 @@ export class HookFileWatcher {
   private offsets = new Map<string, number>();
   private reading = new Set<string>(); // Mutex: prevent concurrent reads for same agent
   private pollIntervalMs: number;
-  private adapter: AgentAdapter;
+  private adapter: HookEventInjector;
 
   constructor(
     private hooksDir: string,
-    adapter: AgentAdapter,
+    adapter: HookEventInjector,
     options?: { pollIntervalMs?: number },
   ) {
     this.pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;

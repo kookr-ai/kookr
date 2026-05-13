@@ -684,6 +684,8 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
                     events={agent.events}
                     anomalyExplanation={agent.anomaly?.explanation}
                     onOpenDiff={handleOpenDiff}
+                    activityMeta={agent.activityMeta}
+                    taskId={agent.taskId}
                   />
                 )}
               </div>

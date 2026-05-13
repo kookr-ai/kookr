@@ -1,10 +1,11 @@
 import type { Monitor } from '../core/monitor.js';
+import type { HookIngestion } from './hook-ingestion.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { TokenTracker } from '../core/token-tracker.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import type { GitHubScannerService } from '../core/github-scanner-service.js';
-import type { AgentEvent } from '../core/types.js';
+import type { AgentEvent, EventMeta } from '../core/types.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { shouldOfferAssist, extractQuickActions } from '../core/response-assist.js';
 import { generateSuggestedResponses } from '../core/response-suggest.js';
@@ -53,6 +54,8 @@ export interface EventPipelineDeps {
   ralphCycler?: RalphCycler;
   /** Singleton Ralph loop service shared with routes and startup recovery. */
   ralphLoopService: RalphLoopService;
+  /** Provides per-Kookr-session activityMeta for the snapshot. */
+  hookIngestion?: HookIngestion;
 }
 
 /**
@@ -106,8 +109,13 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
   // is findable (race between hook event and task creation), retry on next event.
   const pendingTranscriptRegistrations = new Map<string, string>();
 
-  const handleEvent = (tmuxName: string, event: AgentEvent) => {
-    // Register transcript for token tracking when session starts
+  const handleEvent = (tmuxName: string, event: AgentEvent, meta: EventMeta) => {
+    // Token tracking runs for ALL parentages: a cross-session child writing to
+    // the same Kookr hook file still has tokens that should roll up to the
+    // parent task. The token tracker is path-keyed, so a child SessionStart
+    // with a distinct transcriptPath registers a separate transcript that
+    // findTaskBySession associates with the parent task. See
+    // rfc-activity-log-reliability §3.
     if (event.type === 'session_start' && event.transcriptPath) {
       const task = taskStore.findTaskBySession(tmuxName);
       if (task) {
@@ -137,6 +145,14 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
         pendingTranscriptRegistrations.delete(tmuxName);
       }
     }
+
+    // Cross-session child events do not drive parent anomaly detection,
+    // watchdog liveness, completion summaries, autonomy decisions, or Ralph /
+    // checkpoint cyclers. `unknown` is treated conservatively as parent-ish so
+    // events that arrive before the parent SessionStart still flow into
+    // anomaly detection — V1 SHALL keep existing detection unless a record is
+    // confidently classified as non-parent. See rfc §3.
+    if (meta.parentage === 'child' || meta.parentage === 'foreign') return;
 
     // ⚠ ORDERING CONTRACT: pre-capture must precede processEvents();
     // post-capture must follow it. The anomaly-diff detects any transition
@@ -184,7 +200,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
       if (session) session.lastEventAt = Date.now();
     }
     const snapshot = monitor.getSnapshot();
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: deps.hookIngestion }));
 
     // On stop/stop_failure events, immediately scan transcript for updated spending
     if (event.type === 'stop' || event.type === 'stop_failure') {
@@ -202,7 +218,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
               watchdog.recordTokenActivity(session.tmuxSession);
             }
           }
-          broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: deps.hookIngestion }));
         }).catch(() => { /* scan failure is non-critical — fallback poll will catch it */ });
       }
 
@@ -227,7 +243,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
       if (stopTask?.ralphLoop?.status === 'completed') {
         deps.ralphLoopService.finalizeCompletedLoopStop(stopTask, tmuxName, event)
           .then((changed) => {
-            if (changed) broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+            if (changed) broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: deps.hookIngestion }));
           })
           .catch((err) => {
             console.error('[ralph-loop-service] finalizeCompletedLoopStop failed:', err);

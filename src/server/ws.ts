@@ -1,4 +1,4 @@
-import type { Anomaly } from '../core/types.js';
+import type { AgentActivityMeta, Anomaly } from '../core/types.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Monitor } from '../core/monitor.js';
@@ -62,6 +62,7 @@ export interface MessageRouterDeps {
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentType;
   getDefaultAgentType?: () => AgentType;
+  activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   /** Workspace services (Phase 1a). */
@@ -139,6 +140,7 @@ export class MessageRouter {
       ralphLoopService: this.deps.ralphLoopService,
       launchTask: this.deps.launchTask,
       broadcastToAll: this.deps.broadcastToAll,
+      activityMetaProvider: this.deps.activityMetaProvider,
       takePredeleteSnapshot: this.deps.takePredeleteSnapshot,
       getLifecycleDeps: () => this.lifecycleDeps,
       tryPromotePending: () => this.tryPromotePending(),
@@ -206,6 +208,7 @@ export class MessageRouter {
       sttUrl: this.deps.sttUrl,
       workspaceEnabled: this.deps.workspaceEnabled,
       sweepRunning: isSweepInProgress(),
+      activityMetaProvider: this.deps.activityMetaProvider,
     }));
   }
 
@@ -335,7 +338,10 @@ export class MessageRouter {
 
   /** Broadcast an update for a specific agent. */
   broadcastUpdate(agentId: string): void {
-    const snapshot = getSnapshotAgentsForClient({ monitor: this.deps.monitor });
+    const snapshot = getSnapshotAgentsForClient({
+      monitor: this.deps.monitor,
+      activityMetaProvider: this.deps.activityMetaProvider,
+    });
     const state = snapshot.find((s) => s.agentId === agentId);
     if (state) {
       this.deps.send({ type: 'update', agentId, state });

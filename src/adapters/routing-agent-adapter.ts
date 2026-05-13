@@ -1,7 +1,12 @@
 import type { TaskStore } from '../core/tasks.js';
 import { normalizeAgentType } from '../core/agent-types.js';
-import type { AgentEvent } from '../core/types.js';
-import type { AdapterLaunchOptions, AgentAdapter, EffectiveHookSettings, ResumeContext } from './agent-adapter.js';
+import type {
+  AdapterEventHandler,
+  AdapterLaunchOptions,
+  AgentAdapter,
+  EffectiveHookSettings,
+  ResumeContext,
+} from './agent-adapter.js';
 import { AdapterRegistry } from './agent-adapter.js';
 
 /**
@@ -11,7 +16,7 @@ import { AdapterRegistry } from './agent-adapter.js';
 export class RoutingAgentAdapter implements AgentAdapter {
   readonly agentType = 'claude-code' as const;
 
-  private eventHandlers: Array<(tmuxName: string, event: AgentEvent) => void> = [];
+  private eventHandlers: Array<AdapterEventHandler> = [];
   private refreshHandlers: Array<() => void> = [];
 
   constructor(
@@ -19,9 +24,9 @@ export class RoutingAgentAdapter implements AgentAdapter {
     private registry: AdapterRegistry,
   ) {
     for (const adapter of registry.getAll()) {
-      adapter.onEvent((tmuxName, event) => {
+      adapter.onEvent((tmuxName, event, meta) => {
         for (const handler of this.eventHandlers) {
-          handler(tmuxName, event);
+          handler(tmuxName, event, meta);
         }
       });
       adapter.onRefreshNeeded(() => {
@@ -58,7 +63,7 @@ export class RoutingAgentAdapter implements AgentAdapter {
     return this.resolve(tmuxName).captureDisplay(tmuxName);
   }
 
-  onEvent(handler: (tmuxName: string, event: AgentEvent) => void): void {
+  onEvent(handler: AdapterEventHandler): void {
     this.eventHandlers.push(handler);
   }
 
@@ -66,8 +71,8 @@ export class RoutingAgentAdapter implements AgentAdapter {
     this.refreshHandlers.push(handler);
   }
 
-  injectHookEvent(tmuxName: string, rawJson: string): void {
-    this.resolve(tmuxName).injectHookEvent(tmuxName, rawJson);
+  injectHookEvent(tmuxName: string, rawJson: string, sequence?: number) {
+    return this.resolve(tmuxName).injectHookEvent(tmuxName, rawJson, sequence);
   }
 
   getEffectiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined {

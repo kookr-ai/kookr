@@ -52,6 +52,38 @@ describe('deleteTask use case', () => {
     expect(taskStore.deleteTask).toHaveBeenCalledWith('task-1');
   });
 
+  it('prunes the activity ledger and clears HookIngestion bookkeeping for every session', async () => {
+    const taskStore = {
+      getTask: vi.fn().mockReturnValue({
+        id: 'task-1',
+        sessions: [
+          { tmuxSession: 'live-1', lastStatus: 'inProgress' },
+          { tmuxSession: 'done-1', lastStatus: 'completed' },
+        ],
+      }),
+      deleteTask: vi.fn(),
+    } as any;
+
+    const activityLedger = { pruneSession: vi.fn().mockResolvedValue(undefined) };
+    const hookIngestion = { forgetSession: vi.fn() };
+
+    await deleteTask({
+      taskStore,
+      adapter: { stop: vi.fn().mockResolvedValue(undefined) },
+      monitor: { unregisterAgent: vi.fn() } as any,
+      activityLedger,
+      hookIngestion,
+    } as any, 'task-1');
+
+    // Both sessions get their ledger pruned + ingestion bookkeeping forgotten,
+    // including the already-completed one whose terminal resources were
+    // already released.
+    expect(activityLedger.pruneSession).toHaveBeenCalledWith('live-1');
+    expect(activityLedger.pruneSession).toHaveBeenCalledWith('done-1');
+    expect(hookIngestion.forgetSession).toHaveBeenCalledWith('live-1');
+    expect(hookIngestion.forgetSession).toHaveBeenCalledWith('done-1');
+  });
+
   it('stops hook watchers for terminal sessions before deleting the task', async () => {
     const taskStore = {
       getTask: vi.fn().mockReturnValue({
@@ -94,5 +126,31 @@ describe('deleteTask use case', () => {
     expect(suppressionTracker.reset).toHaveBeenCalledWith('aborted-before-hook-file');
     expect(suppressionTracker.reset).toHaveBeenCalledWith('completed-before-hook-file');
     expect(taskStore.deleteTask).toHaveBeenCalledWith('task-1');
+  });
+
+  it('treats activity-ledger pruning as best-effort — does not fail the delete on filesystem error', async () => {
+    const taskStore = {
+      getTask: vi.fn().mockReturnValue({
+        id: 'task-1',
+        sessions: [{ tmuxSession: 'live-1', lastStatus: 'inProgress' }],
+      }),
+      deleteTask: vi.fn(),
+    } as any;
+
+    const activityLedger = { pruneSession: vi.fn().mockRejectedValue(new Error('EBUSY')) };
+    const hookIngestion = { forgetSession: vi.fn() };
+
+    const ok = await deleteTask({
+      taskStore,
+      adapter: { stop: vi.fn().mockResolvedValue(undefined) },
+      monitor: { unregisterAgent: vi.fn() } as any,
+      activityLedger,
+      hookIngestion,
+    } as any, 'task-1');
+
+    expect(ok).toBe(true);
+    expect(taskStore.deleteTask).toHaveBeenCalledWith('task-1');
+    // Ingestion bookkeeping is still cleared even when the ledger prune fails.
+    expect(hookIngestion.forgetSession).toHaveBeenCalledWith('live-1');
   });
 });

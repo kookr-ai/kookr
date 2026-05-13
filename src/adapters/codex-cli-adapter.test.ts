@@ -662,6 +662,69 @@ describe('CodexCliAdapter', () => {
       expect(promptIdx).toBeGreaterThan(idx);
     });
 
+    test('parent SessionStart is frozen against later distinct Codex session ids', async () => {
+      const a = new CodexCliAdapter(backend, taskStore, { trustWorkspace: false });
+      const task = taskStore.createTask('reviewer-bug', '/cwd');
+      const sessionId = await a.launch(task.id, 'do work', '/cwd');
+
+      const sessionStart = (id: string) => JSON.stringify({
+        session_id: id,
+        transcript_path: `/t/${id}.jsonl`,
+        cwd: '/cwd',
+        hook_event_name: 'SessionStart',
+      });
+
+      a.injectHookEvent(sessionId, sessionStart('codex-parent'));
+      for (const id of ['codex-r1', 'codex-r2', 'codex-r3', 'codex-r4']) {
+        a.injectHookEvent(sessionId, sessionStart(id));
+      }
+
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.claudeSessionId).toBe('codex-parent');
+      expect(session.transcriptPath).toBe('/t/codex-parent.jsonl');
+      expect(Object.keys(session.childSessionIds ?? {}).sort()).toEqual([
+        'codex-r1', 'codex-r2', 'codex-r3', 'codex-r4',
+      ]);
+    });
+
+    test('hydrates parent/child identity from TaskStore after restart without launch map', () => {
+      const a = new CodexCliAdapter(backend, taskStore, { trustWorkspace: false });
+      const task = taskStore.createTask('reviewer-bug', '/cwd');
+      taskStore.addSession(task.id, {
+        tmuxSession: 'kookr-restarted',
+        agentType: 'codex-cli',
+        cwd: '/cwd',
+        createdAt: new Date('2026-05-13T12:00:00Z'),
+        lastStatus: 'running',
+        claudeSessionId: 'codex-parent',
+        transcriptPath: '/t/codex-parent.jsonl',
+        childSessionIds: {
+          'codex-r1': {
+            firstSeenAt: '2026-05-13T12:00:01.000Z',
+            transcriptPath: '/t/codex-r1.jsonl',
+            reason: 'inherited_settings',
+          },
+        },
+      });
+
+      const observed: Array<{ raw?: string; parentage: string }> = [];
+      a.onEvent((_id, _event, meta) => {
+        observed.push({ raw: meta.rawSessionId, parentage: meta.parentage });
+      });
+
+      a.injectHookEvent('kookr-restarted', JSON.stringify({
+        session_id: 'codex-r1',
+        transcript_path: '/t/codex-r1.jsonl',
+        cwd: '/cwd',
+        hook_event_name: 'Stop',
+        lastMessage: 'done',
+      }));
+
+      expect(observed).toEqual([{ raw: 'codex-r1', parentage: 'child' }]);
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === 'kookr-restarted')!;
+      expect(session.claudeSessionId).toBe('codex-parent');
+    });
+
     test('probe runs only once per adapter (memoized across launches)', async () => {
       let helpCalls = 0;
       const counting: import('./probe-agent-binary.js').ProbeExecRunner = async (_file, args) => {

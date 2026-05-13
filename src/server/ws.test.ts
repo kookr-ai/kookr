@@ -81,6 +81,41 @@ describe('WebSocket MessageRouter', () => {
     }
   });
 
+  test('client connects - snapshot includes activity metadata when provider is wired', () => {
+    monitor.processEvents('agent-1', [
+      { type: 'tool_use', sessionId: 's1', toolName: 'Read', toolInput: {} },
+    ]);
+    const routerWithMeta = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+      activityMetaProvider: {
+        getActivityMeta: () => ({
+          totalEventsSeen: 2,
+          parentEventCount: 1,
+          childEventCount: 1,
+          foreignEventCount: 0,
+          unknownParentageCount: 0,
+          malformedRecordCount: 0,
+          droppedRecordCount: 0,
+          duplicateRecordCount: 0,
+        }),
+      },
+      launchTask: async () => {
+        throw new Error('not used');
+      },
+      ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
+    });
+
+    routerWithMeta.handleConnect();
+
+    const msg = sentMessages.at(-1);
+    expect(msg?.type).toBe('snapshot');
+    if (msg?.type === 'snapshot') {
+      expect(msg.agents[0].activityMeta?.childEventCount).toBe(1);
+    }
+  });
+
   test('agent state changes - broadcasts update message with state', () => {
     monitor.processEvents('agent-1', [
       { type: 'stop', sessionId: 's1', lastMessage: 'Need help' },

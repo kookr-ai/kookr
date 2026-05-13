@@ -8,6 +8,8 @@ import { getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
 import { buildReflectionRecommendationResponse } from '../reflection-task.js';
 import type { RouteDeps } from './shared.js';
 
+const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
 
@@ -76,15 +78,62 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     return c.json(deps.circuitBreakerRegistry.getAllSnapshots());
   });
 
+  app.get('/api/tasks/:taskId/activity-diagnostics', async (c) => {
+    const taskId = c.req.param('taskId');
+    const task = taskStore.getTask(taskId);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+
+    const kookrSessions = [];
+    for (const session of task.sessions) {
+      const kookrSessionId = session.tmuxSession;
+      const monitorWindowSize = deps.monitor.getAgentEvents(kookrSessionId).length;
+      const ledgerStats = deps.activityLedger
+        ? await deps.activityLedger.stats(kookrSessionId)
+        : undefined;
+      const memMeta = deps.hookIngestion?.getActivityMeta(kookrSessionId);
+      // Ledger is source of truth for durable counts; in-memory counters fill
+      // gaps when the ledger is not configured.
+      kookrSessions.push({
+        kookrSessionId,
+        parentSessionId: session.claudeSessionId,
+        childSessionIds: Object.keys(session.childSessionIds ?? {}),
+        rawRecordCount: ledgerStats?.rawRecordCount ?? memMeta?.totalEventsSeen ?? 0,
+        parsedRecordCount: ledgerStats?.parsedRecordCount
+          ?? ((memMeta?.parentEventCount ?? 0) + (memMeta?.childEventCount ?? 0)
+              + (memMeta?.foreignEventCount ?? 0) + (memMeta?.unknownParentageCount ?? 0)),
+        malformedRecordCount: ledgerStats?.malformedRecordCount ?? memMeta?.malformedRecordCount ?? 0,
+        duplicateRecordCount: ledgerStats?.duplicateRecordCount ?? memMeta?.duplicateRecordCount ?? 0,
+        unknownParentageCount: ledgerStats?.unknownParentageCount ?? memMeta?.unknownParentageCount ?? 0,
+        droppedRecordCount: ledgerStats?.droppedRecordCount ?? memMeta?.droppedRecordCount ?? 0,
+        monitorWindowSize,
+        totalActivityEvents: ledgerStats?.rawRecordCount ?? memMeta?.totalEventsSeen ?? 0,
+      });
+    }
+
+    return c.json({ taskId, kookrSessions });
+  });
+
   app.post('/api/hook-event/:sessionId', async (c) => {
     const sessionId = c.req.param('sessionId');
+    if (!SESSION_ID_RE.test(sessionId)) {
+      return c.json({ error: 'Invalid session id' }, 400);
+    }
     const body = await c.req.text();
     if (!body.trim()) return c.json({ status: 'empty' }, 400);
 
+    if (deps.hookIngestion) {
+      // Active fast path: feed the body into the same ingestion service the
+      // file watcher uses. Dedup by content hash keeps a single record from
+      // reaching the adapter twice when the file watcher also delivers it.
+      // See rfc-activity-log-reliability §5.
+      const result = deps.hookIngestion.ingestFromHttp(sessionId, body);
+      return c.json({ status: 'received', dispatched: result.dispatched });
+    }
+
+    // Fallback: timing-only — shadow-detection era behavior.
     if (deps.httpPushTracker) {
       deps.httpPushTracker.recordHttpArrival(sessionId, body);
     }
-
     return c.json({ status: 'received' });
   });
 

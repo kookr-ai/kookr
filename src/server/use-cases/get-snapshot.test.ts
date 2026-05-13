@@ -36,6 +36,35 @@ describe('snapshot use cases', () => {
     expect(msg.agents).toHaveLength(1);
   });
 
+  it('includes activity metadata when provider is wired', () => {
+    const monitor = {
+      getSnapshot: () => [{ agentId: 'a-1', events: [], anomaly: null }] as any,
+    };
+
+    const msg = createSnapshotMessage({
+      monitor,
+      serverCwd: '/repo',
+      activityMetaProvider: {
+        getActivityMeta: () => ({
+          totalEventsSeen: 3,
+          parentEventCount: 1,
+          childEventCount: 1,
+          foreignEventCount: 0,
+          unknownParentageCount: 0,
+          malformedRecordCount: 1,
+          droppedRecordCount: 0,
+          duplicateRecordCount: 0,
+        }),
+      },
+    });
+
+    expect(msg.agents[0].activityMeta).toMatchObject({
+      totalEventsSeen: 3,
+      childEventCount: 1,
+      malformedRecordCount: 1,
+    });
+  });
+
   it('delegates raw snapshot reads to the monitor', () => {
     const agents = [{ agentId: 'x' }] as any;
     expect(getSnapshotAgentsRaw({ monitor: { getSnapshot: () => agents } as any })).toBe(agents);

@@ -54,7 +54,7 @@ function removedGenericRalphBody(): { error: string; code: 'generic_ralph_remove
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
-  const { taskStore, monitor, adapter, hookWatcher, watchdog, interactionLog, broadcastToAll, serverCwd, serverStartedAt } = deps;
+  const { taskStore, monitor, adapter, hookWatcher, watchdog, interactionLog, broadcastToAll, serverCwd, serverStartedAt, hookIngestion } = deps;
   const { ralphLoopService } = deps;
 
   app.get('/api/tasks', (c) => {
@@ -85,7 +85,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     }
 
     const updated = taskStore.renameTask(id, body.name);
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
     return c.json({ ok: true, task: updated });
   });
 
@@ -132,7 +132,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         return c.json({ task, duplicate: true }, 200);
       }
 
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
       return c.json({ ...task, ...(queued ? { queued: true } : {}) }, 201);
     } catch (err) {
       if (isLaunchDependencyValidationError(err)) {
@@ -308,7 +308,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     }
 
     task.updatedAt = new Date();
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
     return c.json({ ok: true, burnedOutTargets: loop.burnedOutTargets });
   });
 
@@ -325,7 +325,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     const result = ralphLoopService.cancelLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
     }
     return c.json({ ok: true, status: task.ralphLoop.status });
   });
@@ -343,7 +343,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     const result = ralphLoopService.completeLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
     }
     return c.json({ ok: true, status: task.ralphLoop.status });
   });
@@ -363,7 +363,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
 
     const result = await ralphLoopService.updatePrompt(task, body.prompt);
     if (!result.ok) return c.json(result.body, result.status);
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
     return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
   });
 
@@ -376,7 +376,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     const result = ralphLoopService.pauseLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
     }
     return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
   });
@@ -390,7 +390,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     const result = await ralphLoopService.resumeLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
     }
     return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
   });
@@ -410,8 +410,10 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         shadowRegistry: deps.shadowRegistry,
         suppressionTracker: deps.suppressionTracker,
         queue: deps.queue,
+        activityLedger: deps.activityLedger,
+        hookIngestion: deps.hookIngestion,
       }, id);
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
       return c.json({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -497,7 +499,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         scope,
       });
 
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
       return c.json({ ...result.task, ...(result.queued ? { queued: true } : {}) }, 201);
     } catch (err) {
       if (err instanceof LoopedPlaybookLaunchError) {
@@ -630,7 +632,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         scope,
       });
 
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
       return c.json(
         {
           ...result.task,
@@ -743,7 +745,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         interactionLog,
       }, agentId, body.input);
 
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
       return c.json({ ok: true, agentId, delivered: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -52,4 +52,25 @@ describe('activity history merging', () => {
 
     expect(merged.events.filter((event) => event.type === 'tool_use')).toHaveLength(4);
   });
+
+  test('preserves activityMeta when a snapshot omits it', () => {
+    const previous = {
+      ...agent([tool(1)]),
+      activityMeta: {
+        totalEventsSeen: 4,
+        parentEventCount: 2,
+        childEventCount: 1,
+        foreignEventCount: 0,
+        unknownParentageCount: 0,
+        malformedRecordCount: 1,
+        droppedRecordCount: 0,
+        duplicateRecordCount: 0,
+      },
+    };
+    const incoming = agent([tool(2)]);
+
+    const merged = mergeActivityAgent(previous, incoming);
+
+    expect(merged.activityMeta).toEqual(previous.activityMeta);
+  });
 });

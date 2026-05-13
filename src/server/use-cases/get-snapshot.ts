@@ -9,10 +9,15 @@ import type { ProjectSummary, ProjectRepoHealth } from '../../core/project-summa
 import type { GitHubReference } from '../../core/github-types.js';
 import type { SnapshotMessage } from '../../shared/contracts/messages.js';
 import { projectEventForClient } from '../event-projection.js';
+import type { AgentActivityMeta } from '../../core/types.js';
 import { buildGithubTaskOverlay } from './github-task-overlay.js';
 
 export interface SnapshotQueryDeps {
   monitor: Pick<Monitor, 'getSnapshot'>;
+  /** Optional provider of per-Kookr-session activity counters. Wires
+   *  {@link AgentState.activityMeta} on each snapshot so the activity panel
+   *  can disclose partial-window state and child / malformed counts. */
+  activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
 }
 
 export interface SnapshotMessageDeps extends SnapshotQueryDeps {
@@ -65,10 +70,14 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
  * See docs/rfc/rfc-snapshot-payload-slimming.md.
  */
 export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[] {
-  return deps.monitor.getSnapshot().map((agent) => ({
-    ...agent,
-    events: agent.events.map(projectEventForClient),
-  }));
+  return deps.monitor.getSnapshot().map((agent) => {
+    const activityMeta = deps.activityMetaProvider?.getActivityMeta(agent.agentId);
+    return {
+      ...agent,
+      events: agent.events.map(projectEventForClient),
+      ...(activityMeta ? { activityMeta } : {}),
+    };
+  });
 }
 
 /**
@@ -77,7 +86,14 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
  * server-internal caller that needs the raw toolResponse / toolInput / lastMessage.
  */
 export function getSnapshotAgentsRaw(deps: SnapshotQueryDeps): AgentState[] {
-  return deps.monitor.getSnapshot();
+  const raw = deps.monitor.getSnapshot();
+  // Preserve identity when no provider is wired — callers (and tests) that
+  // assert reference equality on the bare monitor snapshot stay green.
+  if (!deps.activityMetaProvider) return raw;
+  return raw.map((agent) => {
+    const activityMeta = deps.activityMetaProvider!.getActivityMeta(agent.agentId);
+    return activityMeta ? { ...agent, activityMeta } : agent;
+  });
 }
 
 export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessage {
