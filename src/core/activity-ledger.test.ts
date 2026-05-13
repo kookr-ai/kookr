@@ -155,6 +155,79 @@ describe('ActivityLedger', () => {
     }
   });
 
+  it('rotates the current ledger to <name>.1 when adding a row would exceed maxFileBytes', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir, { maxFileBytes: 250 });
+      // First row creates the file under the cap. The second row overflows it
+      // — the cap-check fires BEFORE the write, so row 1 is moved to .1 and
+      // row 2 lands in a fresh file. This is the simple single-step rotation
+      // RFC §7 describes; .1 is overwritten on each subsequent rollover
+      // rather than archived indefinitely.
+      await ledger.append({ envelope: envelope({ sequence: 1, rawBytes: 64 }) });
+      await ledger.append({ envelope: envelope({ sequence: 2, rawBytes: 64 }) });
+      await ledger.flush();
+
+      const { readFileSync, existsSync } = await import('node:fs');
+      const rotatedPath = `${ledger.pathFor('kookr-test')}.1`;
+      expect(existsSync(rotatedPath)).toBe(true);
+      const current = readFileSync(ledger.pathFor('kookr-test'), 'utf8');
+      const rotated = readFileSync(rotatedPath, 'utf8');
+      const currentRows = current.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      const rotatedRows = rotated.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      expect(rotatedRows).toHaveLength(1);
+      expect(rotatedRows[0].envelope.sequence).toBe(1);
+      expect(currentRows).toHaveLength(1);
+      expect(currentRows[0].envelope.sequence).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('subsequent rotations overwrite the prior .1 — total disk usage stays bounded', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir, { maxFileBytes: 250 });
+      for (const sequence of [1, 2, 3]) {
+        await ledger.append({ envelope: envelope({ sequence, rawBytes: 64 }) });
+      }
+      await ledger.flush();
+
+      const { readFileSync } = await import('node:fs');
+      const current = readFileSync(ledger.pathFor('kookr-test'), 'utf8');
+      const rotated = readFileSync(`${ledger.pathFor('kookr-test')}.1`, 'utf8');
+      const currentRows = current.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      const rotatedRows = rotated.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      // Row 1 has been discarded by the second rotation; .1 now holds row 2.
+      expect(rotatedRows.map((r) => r.envelope.sequence)).toEqual([2]);
+      expect(currentRows.map((r) => r.envelope.sequence)).toEqual([3]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('pruneSession removes both the current ledger file and the .1 rotation', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir, { maxFileBytes: 250 });
+      await ledger.append({ envelope: envelope({ sequence: 1, rawBytes: 64 }) });
+      await ledger.append({ envelope: envelope({ sequence: 2, rawBytes: 64 }) });
+      await ledger.append({ envelope: envelope({ sequence: 3, rawBytes: 64 }) });
+      await ledger.flush();
+
+      const { existsSync } = await import('node:fs');
+      const main = ledger.pathFor('kookr-test');
+      const rotated = `${main}.1`;
+      expect(existsSync(rotated)).toBe(true);
+
+      await ledger.pruneSession('kookr-test');
+      expect(existsSync(main)).toBe(false);
+      expect(existsSync(rotated)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not duplicate raw payload bytes in ledger rows', async () => {
     // RFC §11 privacy guardrail: ledger row carries rawBytes count, not raw text.
     const dir = makeDir();

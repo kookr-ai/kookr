@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentType } from './agent-types.js';
 import type { AgentEvent, EventParentage } from './types.js';
@@ -59,6 +59,15 @@ export interface ActivityLedgerStats {
 /** Owner-only directory bits — locks the activity ledger to the running user. */
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
+/** Default size cap per ledger file before rotation. 10 MiB — generous for
+ *  long sessions but small enough that worst-case disk usage is bounded:
+ *  current + one rotation = ~20 MiB per Kookr session. */
+const DEFAULT_MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+export interface ActivityLedgerOptions {
+  /** Override the default 10 MiB rotation threshold. */
+  maxFileBytes?: number;
+}
 
 /**
  * Append-only JSONL ledger of all hook records observed for a Kookr session,
@@ -70,8 +79,11 @@ const FILE_MODE = 0o600;
 export class ActivityLedger {
   private writeQueues = new Map<string, Promise<void>>();
   private dirEnsured = false;
+  private maxFileBytes: number;
 
-  constructor(private activityDir: string) {}
+  constructor(private activityDir: string, options: ActivityLedgerOptions = {}) {
+    this.maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+  }
 
   /**
    * Queue an append for `row`. Returns the chained promise so tests can
@@ -95,11 +107,42 @@ export class ActivityLedger {
     }
     const path = this.pathFor(row.envelope.kookrSessionId);
     const line = `${JSON.stringify(row)}\n`;
+
+    let currentSize = 0;
+    try {
+      const st = await stat(path);
+      currentSize = st.size;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    if (currentSize > 0 && currentSize + Buffer.byteLength(line, 'utf8') > this.maxFileBytes) {
+      await this.rotate(path);
+    }
+
     const handle = await open(path, 'a', FILE_MODE);
     try {
       await handle.appendFile(line, 'utf8');
     } finally {
       await handle.close();
+    }
+  }
+
+  /**
+   * Atomically move the current ledger file aside to `<path>.1`,
+   * overwriting any previous rotation. Best-effort: a missing source file
+   * is treated as success because another writer may have rotated first.
+   */
+  private async rotate(path: string): Promise<void> {
+    const rotated = `${path}.1`;
+    try {
+      await unlink(rotated);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    try {
+      await rename(path, rotated);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
   }
 
@@ -195,15 +238,17 @@ export class ActivityLedger {
     return out;
   }
 
-  /** Delete this session's ledger file. Used when a task is deleted. */
+  /** Delete this session's ledger file AND any rotated `.1` companion.
+   *  Used when a task is deleted. */
   async pruneSession(kookrSessionId: string): Promise<void> {
     await this.flush(kookrSessionId);
     this.writeQueues.delete(kookrSessionId);
-    const path = this.pathFor(kookrSessionId);
-    try {
-      await unlink(path);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    for (const path of [this.pathFor(kookrSessionId), `${this.pathFor(kookrSessionId)}.1`]) {
+      try {
+        await unlink(path);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
     }
   }
 }
