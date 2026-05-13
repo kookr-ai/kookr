@@ -35,6 +35,7 @@ import {
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { HookFileWatcher } from './hook-watcher.js';
 import { HookIngestion } from './hook-ingestion.js';
+import { ActivityLedger } from '../core/activity-ledger.js';
 import { generateTaskName } from '../core/task-naming.js';
 import { createLlmClient } from '../core/llm-client.js';
 import { FakeTerminalBridge } from './fake-terminal-bridge.js';
@@ -524,8 +525,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // so relaunched sessions have their new tmux names before snooze restore + hook replay.
   // HookIngestion serializes file-source and http-source delivery through a
   // content-hash dedup window so the same record never reaches the adapter
-  // twice. See rfc-activity-log-reliability §5.
-  const hookIngestion = new HookIngestion({ adapter, httpPushTracker });
+  // twice. The ActivityLedger captures a durable per-session ledger row for
+  // every observed record — parent, child, malformed, duplicate — under
+  // <kookrDir>/activity/ for /api/tasks/:taskId/activity-diagnostics.
+  // See rfc-activity-log-reliability §5, §7.
+  const activityLedger = new ActivityLedger(join(kookrDir, 'activity'));
+  const hookIngestion = new HookIngestion({ adapter, httpPushTracker, activityLedger, taskStore });
   const hookWatcher = new HookFileWatcher(hooksDir, hookIngestion);
 
   // Register transcripts for resumed sessions so token tracker picks up existing data

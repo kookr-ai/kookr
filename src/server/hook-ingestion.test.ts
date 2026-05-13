@@ -5,8 +5,15 @@ function makeStubAdapter(): HookEventInjector & { calls: Array<{ tmux: string; r
   const calls: Array<{ tmux: string; raw: string }> = [];
   return {
     calls,
-    injectHookEvent(tmux: string, raw: string) {
+    injectHookEvent(tmux: string, raw: string, sequence?: number) {
       calls.push({ tmux, raw });
+      return {
+        parseStatus: 'ok' as const,
+        agentType: 'claude-code' as const,
+        rawSessionId: 'stub-session',
+        parentage: 'parent' as const,
+        sequence: sequence ?? 0,
+      };
     },
   };
 }
@@ -140,6 +147,13 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
           throwOnce = false;
           throw new Error('boom');
         }
+        return {
+          parseStatus: 'ok' as const,
+          agentType: 'claude-code' as const,
+          parentage: 'parent' as const,
+          rawSessionId: 'x',
+          sequence: 1,
+        };
       },
     };
     const ingestion = new HookIngestion({ adapter });

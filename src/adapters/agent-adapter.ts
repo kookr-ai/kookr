@@ -1,4 +1,4 @@
-import type { AgentEvent, EventMeta } from '../core/types.js';
+import type { AgentEvent, EventMeta, InjectHookEventResult } from '../core/types.js';
 import type { AgentType } from '../core/agent-types.js';
 
 /**
@@ -126,8 +126,13 @@ export interface AgentAdapter {
   /** Register handler for metadata-only refreshes (e.g., git info updates). */
   onRefreshNeeded(handler: () => void): void;
 
-  /** Inject a raw hook event line for parsing and dispatch. */
-  injectHookEvent(tmuxName: string, rawJson: string): void;
+  /** Inject a raw hook event line for parsing and dispatch. Returns an
+   *  {@link InjectHookEventResult} describing what happened so HookIngestion
+   *  can build the ledger envelope without re-parsing. Adapters MUST NOT
+   *  throw on malformed payloads. The optional `sequence` lets callers thread
+   *  a Kookr-side sequence number into the emitted EventMeta; when omitted,
+   *  the adapter falls back to its own per-session counter. */
+  injectHookEvent(tmuxName: string, rawJson: string, sequence?: number): InjectHookEventResult;
 
   /**
    * Return the hook settings Kookr passed to --settings for a given session,

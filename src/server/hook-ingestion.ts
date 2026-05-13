@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { HttpPushTracker } from '../core/http-push-tracker.js';
+import type { TaskStore } from '../core/tasks.js';
+import type { ActivityLedger, ActivityLedgerRow, HookEnvelopeV1 } from '../core/activity-ledger.js';
+import type { InjectHookEventResult } from '../core/types.js';
 
 /**
  * Narrow surface the {@link HookIngestion} service needs from an adapter.
@@ -7,12 +10,17 @@ import type { HttpPushTracker } from '../core/http-push-tracker.js';
  * interface so ingestion can be tested in isolation with a 1-method stub.
  */
 export interface HookEventInjector {
-  injectHookEvent(tmuxName: string, rawJson: string): void;
+  injectHookEvent(tmuxName: string, rawJson: string, sequence?: number): InjectHookEventResult;
 }
 
 export interface HookIngestionDeps {
   adapter: HookEventInjector;
   httpPushTracker?: HttpPushTracker;
+  /** Optional ledger for diagnostics. When set, every observed record
+   *  (parent / child / malformed / duplicate) gets a row appended. */
+  activityLedger?: ActivityLedger;
+  /** Used to resolve `taskId` for ledger envelopes; optional in tests. */
+  taskStore?: Pick<TaskStore, 'findTaskBySession'>;
   /**
    * Dedup TTL window. Defaults to 5 seconds — comfortably covers both
    * arrival orderings: the file watcher's 3s poll backup, and the
@@ -34,6 +42,10 @@ export interface IngestResult {
   dispatched: boolean;
   reason?: 'duplicate' | 'empty';
   contentHash: string;
+  /** The adapter's classification of this record (or the first occurrence's
+   *  classification on a dedup hit). Surfaced so callers can inspect parse
+   *  status / parentage without re-parsing. */
+  injectResult: InjectHookEventResult;
 }
 
 /**
@@ -46,23 +58,37 @@ export interface IngestResult {
  *
  * See rfc-activity-log-reliability §5.
  */
+interface CacheEntry {
+  ts: number;
+  /** The first record's adapter result — duplicates inherit it for the ledger. */
+  result: InjectHookEventResult;
+  /** The first record's source — for diagnostics if needed. */
+  firstSource: 'file' | 'http';
+}
+
 export class HookIngestion implements HookEventInjector {
-  private cache = new Map<string, number>();
+  private cache = new Map<string, CacheEntry>();
+  private sequenceCounters = new Map<string, number>();
   private adapter: HookEventInjector;
   private httpPushTracker?: HttpPushTracker;
+  private activityLedger?: ActivityLedger;
+  private taskStore?: Pick<TaskStore, 'findTaskBySession'>;
   private dedupTtlMs: number;
   private now: () => number;
 
   constructor(deps: HookIngestionDeps) {
     this.adapter = deps.adapter;
     this.httpPushTracker = deps.httpPushTracker;
+    this.activityLedger = deps.activityLedger;
+    this.taskStore = deps.taskStore;
     this.dedupTtlMs = deps.dedupTtlMs ?? 5000;
     this.now = deps.now ?? Date.now;
   }
 
   /** HookFileWatcher-compatible alias. Treats the call as file-source. */
-  injectHookEvent(tmuxName: string, rawJson: string): void {
-    this.ingest({ kookrSessionId: tmuxName, raw: rawJson, source: 'file' });
+  injectHookEvent(tmuxName: string, rawJson: string): InjectHookEventResult {
+    const result = this.ingest({ kookrSessionId: tmuxName, raw: rawJson, source: 'file' });
+    return result.injectResult;
   }
 
   /** HTTP /api/hook-event/:sessionId entry point. */
@@ -73,7 +99,14 @@ export class HookIngestion implements HookEventInjector {
   ingest({ kookrSessionId, raw, source }: IngestInput): IngestResult {
     const normalized = raw.trim();
     const contentHash = createHash('sha256').update(normalized).digest('hex');
-    if (!normalized) return { dispatched: false, reason: 'empty', contentHash };
+    if (!normalized) {
+      return {
+        dispatched: false,
+        reason: 'empty',
+        contentHash,
+        injectResult: { parseStatus: 'dropped', agentType: 'claude-code', error: 'empty payload' },
+      };
+    }
 
     const key = `${kookrSessionId}::${contentHash}`;
     const now = this.now();
@@ -85,30 +118,119 @@ export class HookIngestion implements HookEventInjector {
       }
     };
 
-    if (this.cache.has(key)) {
+    const sequence = this.nextSequence(kookrSessionId);
+
+    const existing = this.cache.get(key);
+    if (existing) {
       // The other source already delivered this record. Note the arrival for
-      // latency telemetry but do not re-inject.
+      // latency telemetry and write a diagnostic-only ledger row so duplicate
+      // counts surface in /api/tasks/:taskId/activity-diagnostics.
       httpTrackerCall();
-      return { dispatched: false, reason: 'duplicate', contentHash };
+      this.writeLedger({
+        kookrSessionId,
+        contentHash,
+        source,
+        sequence,
+        rawBytes: normalized.length,
+        result: existing.result,
+        projection: 'diagnostic_only',
+      });
+      return { dispatched: false, reason: 'duplicate', contentHash, injectResult: existing.result };
     }
 
-    this.cache.set(key, now);
     httpTrackerCall();
 
+    let result: InjectHookEventResult;
     try {
-      this.adapter.injectHookEvent(kookrSessionId, normalized);
+      result = this.adapter.injectHookEvent(kookrSessionId, normalized, sequence);
     } catch (err) {
-      // Allow a retry from the other source on transient failures.
-      this.cache.delete(key);
+      // Adapters MUST NOT throw on a malformed payload, but if a different
+      // bug surfaces, record a malformed ledger row and rethrow so callers
+      // see the failure. Cache stays empty so a replay can retry.
+      this.writeLedger({
+        kookrSessionId,
+        contentHash,
+        source,
+        sequence,
+        rawBytes: normalized.length,
+        result: {
+          parseStatus: 'malformed',
+          agentType: 'claude-code',
+          error: err instanceof Error ? err.message : String(err),
+        },
+        projection: 'diagnostic_only',
+      });
       throw err;
     }
-    return { dispatched: true, contentHash };
+
+    if (result.parseStatus === 'ok') {
+      this.cache.set(key, { ts: now, result, firstSource: source });
+    }
+    this.writeLedger({
+      kookrSessionId,
+      contentHash,
+      source,
+      sequence,
+      rawBytes: normalized.length,
+      result,
+      projection: ledgerProjection(result),
+    });
+    return { dispatched: result.parseStatus === 'ok', contentHash, injectResult: result };
+  }
+
+  private nextSequence(kookrSessionId: string): number {
+    const next = (this.sequenceCounters.get(kookrSessionId) ?? 0) + 1;
+    this.sequenceCounters.set(kookrSessionId, next);
+    return next;
+  }
+
+  private writeLedger(args: {
+    kookrSessionId: string;
+    contentHash: string;
+    source: 'file' | 'http';
+    sequence: number;
+    rawBytes: number;
+    result: InjectHookEventResult;
+    projection: ActivityLedgerRow['projection'];
+  }): void {
+    if (!this.activityLedger) return;
+    const taskId = this.taskStore?.findTaskBySession(args.kookrSessionId)?.id;
+    const envelope: HookEnvelopeV1 = {
+      schemaVersion: 'hook-envelope.v1',
+      kookrSessionId: args.kookrSessionId,
+      taskId,
+      provider: args.result.agentType,
+      rawSessionId: args.result.rawSessionId,
+      rawTurnId: args.result.rawTurnId,
+      rawHookEventName: args.result.rawHookEventName,
+      source: args.source,
+      observedAt: new Date(this.now()).toISOString(),
+      sequence: args.sequence,
+      contentHash: args.contentHash,
+      parentage: args.result.parentage ?? 'unknown',
+      parseStatus: args.result.parseStatus,
+      rawBytes: args.rawBytes,
+    };
+    const row: ActivityLedgerRow = {
+      envelope,
+      projection: args.projection,
+      ...(args.result.error ? { error: args.result.error } : {}),
+    };
+    // Fire-and-forget: ledger latency must not sit in front of hook delivery.
+    void this.activityLedger.append(row).catch(() => { /* diagnostics-only path */ });
   }
 
   private gcExpired(now: number): void {
     const threshold = now - this.dedupTtlMs;
-    for (const [key, ts] of this.cache) {
-      if (ts < threshold) this.cache.delete(key);
+    for (const [key, entry] of this.cache) {
+      if (entry.ts < threshold) this.cache.delete(key);
     }
   }
+}
+
+function ledgerProjection(result: InjectHookEventResult): ActivityLedgerRow['projection'] {
+  if (result.parseStatus !== 'ok') return 'diagnostic_only';
+  if (result.parentage === 'parent') return 'parent_activity';
+  if (result.parentage === 'child') return 'child_activity';
+  return 'diagnostic_only';
 }

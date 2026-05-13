@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { TerminalBackend } from './terminal-backend.js';
 import type { TaskStore } from '../core/tasks.js';
-import type { AgentEvent, EventMeta, EventParentage } from '../core/types.js';
+import type {
+  AgentEvent,
+  EventMeta,
+  EventParentage,
+  InjectHookEventResult,
+} from '../core/types.js';
 import type {
   AdapterEventHandler,
   AgentAdapter,
@@ -10,7 +15,7 @@ import type {
   PreflightResult,
 } from './agent-adapter.js';
 import { probeAgentBinary, probeBinaryFlagSupport, type ProbeExecRunner } from './probe-agent-binary.js';
-import { parseHookEvent } from '../core/hook-parser.js';
+import { extractRawHookHeader, parseHookEvent, HookParseError } from '../core/hook-parser.js';
 import {
   classifyHookParentage,
   createSessionRuntimeIdentity,
@@ -354,15 +359,49 @@ export class CodexCliAdapter implements AgentAdapter {
    * hook_event_name values and field structure as Claude Code, so we
    * reuse parseHookEvent directly. Parentage is classified before any
    * task-metadata mutation; only the first parent SessionStart sets
-   * claudeSessionId / transcriptPath. See rfc-activity-log-reliability §2.
+   * claudeSessionId / transcriptPath. NEVER throws on malformed payloads —
+   * returns parseStatus='malformed' so HookIngestion can record a
+   * diagnostic ledger row. See rfc-activity-log-reliability §2.
    */
-  injectHookEvent(tmuxName: string, rawJson: string): void {
-    const event = parseHookEvent(rawJson);
-    if (!event) return;
-    const taskId = this.tmuxToTaskId.get(tmuxName);
+  injectHookEvent(tmuxName: string, rawJson: string, externalSequence?: number): InjectHookEventResult {
     const observedAt = Date.now();
     const observedAtIso = new Date(observedAt).toISOString();
-    const rawSessionId = 'sessionId' in event ? event.sessionId : undefined;
+
+    let header: { rawSessionId?: string; rawTurnId?: string; rawHookEventName?: string };
+    try {
+      header = extractRawHookHeader(rawJson);
+    } catch (err) {
+      const reason = err instanceof HookParseError ? err.message : String(err);
+      return { parseStatus: 'malformed', agentType: this.agentType, error: reason };
+    }
+
+    let event: AgentEvent | null;
+    try {
+      event = parseHookEvent(rawJson);
+    } catch (err) {
+      const reason = err instanceof HookParseError ? err.message : String(err);
+      return {
+        parseStatus: 'malformed',
+        agentType: this.agentType,
+        rawSessionId: header.rawSessionId,
+        rawTurnId: header.rawTurnId,
+        rawHookEventName: header.rawHookEventName,
+        error: reason,
+      };
+    }
+    if (!event) {
+      return {
+        parseStatus: 'dropped',
+        agentType: this.agentType,
+        rawSessionId: header.rawSessionId,
+        rawTurnId: header.rawTurnId,
+        rawHookEventName: header.rawHookEventName,
+        parentage: 'unknown',
+      };
+    }
+
+    const taskId = this.tmuxToTaskId.get(tmuxName);
+    const rawSessionId = 'sessionId' in event ? event.sessionId : header.rawSessionId;
 
     const identity = this.getOrHydrateIdentity(tmuxName, taskId);
 
@@ -422,13 +461,23 @@ export class CodexCliAdapter implements AgentAdapter {
       }
     }
 
-    const sequence = (this.sequenceCounters.get(tmuxName) ?? 0) + 1;
+    const sequence = externalSequence ?? (this.sequenceCounters.get(tmuxName) ?? 0) + 1;
     this.sequenceCounters.set(tmuxName, sequence);
     const meta: EventMeta = { parentage, rawSessionId, sequence, observedAt };
 
     for (const handler of this.eventHandlers) {
       handler(tmuxName, event, meta);
     }
+
+    return {
+      parseStatus: 'ok',
+      agentType: this.agentType,
+      rawSessionId: header.rawSessionId,
+      rawTurnId: header.rawTurnId,
+      rawHookEventName: header.rawHookEventName,
+      parentage,
+      sequence,
+    };
   }
 
   private getOrHydrateIdentity(tmuxName: string, taskId: string | undefined): SessionRuntimeIdentity {

@@ -180,6 +180,34 @@ export interface ChildSessionInfo {
   reason: 'subagent_hook' | 'inherited_settings' | 'unknown';
 }
 
+/**
+ * Outcome of a single hook record injection — describes what the adapter
+ * observed so {@link HookIngestion} can build a {@link HookEnvelopeV1} for
+ * the activity ledger without re-parsing the raw payload. See
+ * rfc-activity-log-reliability §1.
+ *
+ * Adapters MUST return a result for every call, including parse failures
+ * (parseStatus = 'malformed') and unknown hook event names
+ * (parseStatus = 'dropped'). They MUST NOT throw on a malformed payload.
+ */
+export interface InjectHookEventResult {
+  parseStatus: 'ok' | 'malformed' | 'dropped';
+  /** Provider session id from the raw payload. Present for ok / dropped; may
+   *  be missing for malformed. */
+  rawSessionId?: string;
+  rawTurnId?: string;
+  rawHookEventName?: string;
+  /** Classified parentage relative to the Kookr terminal session. Set when
+   *  parseStatus is 'ok' or 'dropped' (the header is still inspectable). */
+  parentage?: EventParentage;
+  /** Sequence number used in EventMeta for this record, when ok. */
+  sequence?: number;
+  /** Adapter type that handled the inject — feeds HookEnvelopeV1.provider. */
+  agentType: import('./agent-types.js').AgentType;
+  /** Free-text reason when parseStatus !== 'ok'. */
+  error?: string;
+}
+
 // Type guards for AgentEvent discriminated union
 export function isSessionStartEvent(
   event: AgentEvent,

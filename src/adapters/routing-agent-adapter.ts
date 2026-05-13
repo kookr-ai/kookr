@@ -71,8 +71,8 @@ export class RoutingAgentAdapter implements AgentAdapter {
     this.refreshHandlers.push(handler);
   }
 
-  injectHookEvent(tmuxName: string, rawJson: string): void {
-    this.resolve(tmuxName).injectHookEvent(tmuxName, rawJson);
+  injectHookEvent(tmuxName: string, rawJson: string, sequence?: number) {
+    return this.resolve(tmuxName).injectHookEvent(tmuxName, rawJson, sequence);
   }
 
   getEffectiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined {
