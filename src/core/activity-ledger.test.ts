@@ -116,6 +116,10 @@ describe('ActivityLedger', () => {
         { envelope: envelope({ sequence: 1, parentage: 'parent', parseStatus: 'ok', rawBytes: 100 }), projection: 'parent_activity' },
         { envelope: envelope({ sequence: 2, parentage: 'child', parseStatus: 'ok', rawBytes: 200 }), projection: 'child_activity' },
         { envelope: envelope({ sequence: 3, parentage: 'unknown', parseStatus: 'malformed', rawBytes: 50 }), error: 'bad json' },
+        // Duplicate of row 1 (same hash arriving via the other source). RFC §8:
+        // a duplicate row inherits the original parentage in the envelope but
+        // does NOT re-count toward parentEventCount — duplicateRecordCount is
+        // a separate bucket.
         { envelope: envelope({ sequence: 4, parentage: 'parent', parseStatus: 'ok', rawBytes: 150 }), projection: 'diagnostic_only' },
       ];
       for (const r of rows) await ledger.append(r);
@@ -124,9 +128,11 @@ describe('ActivityLedger', () => {
       expect(s.parsedRecordCount).toBe(3);
       expect(s.malformedRecordCount).toBe(1);
       expect(s.duplicateRecordCount).toBe(1);
-      expect(s.parentEventCount).toBe(2);
+      expect(s.parentEventCount).toBe(1);
       expect(s.childEventCount).toBe(1);
-      expect(s.unknownParentageCount).toBe(1);
+      // Malformed rows don't contribute to parentage buckets — they go into
+      // malformedRecordCount only.
+      expect(s.unknownParentageCount).toBe(0);
       expect(s.rawBytesTotal).toBe(500);
     } finally {
       rmSync(dir, { recursive: true, force: true });

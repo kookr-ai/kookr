@@ -160,22 +160,37 @@ export class ActivityLedger {
       rawBytesTotal: 0,
     };
     for (const row of rows) {
-      const { envelope } = row;
+      const { envelope, projection } = row;
       out.rawBytesTotal += envelope.rawBytes;
-      if (envelope.parseStatus === 'ok' || envelope.parseStatus === 'repaired') {
-        out.parsedRecordCount += 1;
-      } else if (envelope.parseStatus === 'malformed') {
+
+      // Each row contributes to exactly one parseStatus bucket.
+      if (envelope.parseStatus === 'malformed') {
         out.malformedRecordCount += 1;
-      } else if (envelope.parseStatus === 'dropped') {
+        continue;
+      }
+      if (envelope.parseStatus === 'dropped') {
         out.droppedRecordCount += 1;
+        continue;
       }
-      if (row.projection === 'diagnostic_only' && envelope.parseStatus !== 'malformed' && envelope.parseStatus !== 'dropped') {
+
+      // 'ok' or 'repaired' from here.
+      out.parsedRecordCount += 1;
+
+      // diagnostic_only projection on a parsed-ok row marks the second arrival
+      // of an already-dispatched record — count as duplicate, do NOT re-count
+      // parentage (the original arrival's parentage row already did).
+      if (projection === 'diagnostic_only') {
         out.duplicateRecordCount += 1;
+        continue;
       }
-      if (envelope.parentage === 'parent') out.parentEventCount += 1;
-      else if (envelope.parentage === 'child') out.childEventCount += 1;
-      else if (envelope.parentage === 'foreign') out.foreignEventCount += 1;
-      else if (envelope.parentage === 'unknown') out.unknownParentageCount += 1;
+
+      switch (envelope.parentage) {
+        case 'parent': out.parentEventCount += 1; break;
+        case 'child': out.childEventCount += 1; break;
+        case 'foreign': out.foreignEventCount += 1; break;
+        case 'unknown':
+        default: out.unknownParentageCount += 1; break;
+      }
     }
     return out;
   }
