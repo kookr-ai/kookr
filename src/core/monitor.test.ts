@@ -21,6 +21,10 @@ function makeToolResult(sessionId: string, toolName: string, toolUseId?: string,
   return { type: 'tool_result', sessionId, toolName, toolUseId, toolResponse };
 }
 
+function makeSubagentStop(sessionId: string, agentId = 'subagent-1'): AgentEvent {
+  return { type: 'subagent_stop', sessionId, agentId, agentType: 'test-agent', lastMessage: 'subagent done' };
+}
+
 describe('Monitor', () => {
   let taskStore: TaskStore;
   let queue: AttentionQueue;
@@ -61,6 +65,22 @@ describe('Monitor', () => {
       makeToolUse('s1', 'Bash'),
     ]);
     expect(queue.next()).toBeNull();
+  });
+
+  test('Stop followed by SubagentStop and idle notification remains queued as needs_input', () => {
+    monitor.processEvents('agent-1', [makeStop('s1', 'PR opened. Nothing to do until review.')]);
+    expect(queue.next()!.anomaly.type).toBe('needs_input');
+
+    monitor.processEvents('agent-1', [makeSubagentStop('s1')]);
+    expect(queue.next()!.anomaly.type).toBe('needs_input');
+
+    monitor.processEvents('agent-1', [
+      { type: 'notification', sessionId: 's1', notificationType: 'idle_prompt', message: 'Claude is waiting for your input' },
+    ]);
+    const next = queue.next();
+    expect(next).not.toBeNull();
+    expect(next!.anomaly.type).toBe('needs_input');
+    expect(next!.anomaly.explanation).toContain('PR opened');
   });
 
   test('repeated same-tool calls do not produce anomaly', () => {
@@ -466,6 +486,21 @@ describe('Monitor', () => {
       expect(a1!.anomaly).toBeNull();
     });
 
+    test('clears needs_input after Stop followed by SubagentStop bookkeeping', () => {
+      monitor.processEvents('agent-1', [
+        makeStop('s1', 'Waiting after closeout'),
+        makeSubagentStop('s1'),
+      ]);
+      expect(queue.next()!.anomaly.type).toBe('needs_input');
+
+      expect(monitor.markInputReceived('agent-1')).toBe(true);
+
+      expect(queue.next()).toBeNull();
+      const snapshot = monitor.getSnapshot();
+      const a1 = snapshot.find((s) => s.agentId === 'agent-1');
+      expect(a1!.anomaly).toBeNull();
+    });
+
     test('clears needs_input after AskUserQuestion', () => {
       monitor.processEvents('agent-1', [
         makeToolUse('s1', 'AskUserQuestion'),
@@ -845,15 +880,16 @@ describe('Monitor', () => {
     test('in-batch ordering: [subagent_start, stop, subagent_stop] in one batch — stop fires (subagent already drained)', () => {
       // Documents the contract from the RFC's "in-batch event ordering" section:
       // tracking is updated for ALL events before detection runs, so this batch
-      // ends with an empty set when detectAnomalies sees the trailing Stop.
+      // ends with an empty set when detectAnomalies sees the effective trailing
+      // Stop. The final SubagentStop is bookkeeping, not the parent state.
       monitor.processEvents('agent-1', [
         makeSubagentStart('s1', 'sub-A'),
         makeStop('s1', 'transient stop'),
         makeSubagentStop('s1', 'sub-A'),
       ]);
-      // Because the trailing event is subagent_stop (not Stop), no needs_input
-      // anomaly fires from the trailing-event check. Queue should be empty.
-      expect(queue.next()).toBeNull();
+      const next = queue.next();
+      expect(next).not.toBeNull();
+      expect(next!.anomaly.type).toBe('needs_input');
     });
 
     test('suppression counter increments once per Stop, not per snapshot read', () => {

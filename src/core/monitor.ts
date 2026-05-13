@@ -274,14 +274,20 @@ export class Monitor {
     const events = this.agentEvents.get(agentId);
     if (!events) return false;
 
-    // Only inject if the agent is actually waiting for input
+    // Only inject if the agent is actually waiting for input. Prefer the
+    // derived anomaly state over the raw last event so trailing bookkeeping
+    // events (for example SubagentStop after Stop) do not make a visible
+    // needs_input finding impossible to clear.
     const last = events[events.length - 1];
     if (!last) return false;
+    const currentAnomaly = this.getCurrentAnomaly(agentId);
     const isWaiting = last.type === 'stop'
       || last.type === 'stop_failure'
       || last.type === 'notification'
       || last.type === 'permission_request'
-      || (last.type === 'tool_use' && last.toolName === 'AskUserQuestion');
+      || (last.type === 'tool_use' && last.toolName === 'AskUserQuestion')
+      || currentAnomaly?.type === 'needs_input'
+      || currentAnomaly?.type === 'permission_blocked';
     if (!isWaiting) return false;
 
     const syntheticEvent: AgentEvent = {

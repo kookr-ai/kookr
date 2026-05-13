@@ -31,6 +31,10 @@ function makeToolResult(sessionId: string, toolName: string, toolUseId?: string)
   return { type: 'tool_result', sessionId, toolName, toolUseId };
 }
 
+function makeSubagentStop(sessionId: string, agentId = 'subagent-1'): AgentEvent {
+  return { type: 'subagent_stop', sessionId, agentId, agentType: 'test-agent', lastMessage: 'subagent done' };
+}
+
 describe('Anomaly Detector', () => {
   const agentId = 'agent-1';
 
@@ -62,6 +66,22 @@ describe('Anomaly Detector', () => {
 
       const anomaly = detectAnomalies(events, agentId);
       expect(anomaly).toBeNull();
+    });
+
+    test('Stop followed by SubagentStop and idle notification still produces needs_input', () => {
+      const events: AgentEvent[] = [
+        makeToolUse('s1', 'Bash'),
+        makeToolResult('s1', 'Bash'),
+        makeStop('s1', 'PR opened. Nothing to do until review.'),
+        makeSubagentStop('s1'),
+        { type: 'notification', sessionId: 's1', notificationType: 'idle_prompt', message: 'Claude is waiting for your input' },
+      ];
+
+      const anomaly = detectAnomalies(events, agentId);
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.type).toBe('needs_input');
+      expect(anomaly!.subType).toBe('stop');
+      expect(anomaly!.explanation).toContain('PR opened');
     });
   });
 

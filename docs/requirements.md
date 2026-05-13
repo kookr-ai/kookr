@@ -112,8 +112,9 @@ The system SHALL detect when a managed agent is waiting for developer input.
 - Agent enters the attention queue with anomaly type `needs_input`
 - Severity: `info` for Stop events, `warning` for AskUserQuestion (higher urgency since the agent is explicitly asking)
 - AskUserQuestion anomaly is cleared when a subsequent `tool_result` event is received (question was answered)
+- A Stop-derived `needs_input` state remains active when trailing bookkeeping or overlay events arrive after the Stop, including `SubagentStop` and `Notification(idle_prompt)`, until real user input, new tool activity, or session end changes the agent state
 
-**Evidence:** `src/core/hook-parser.ts` (Stop → stop event, PreToolUse → tool_use event), `src/core/anomaly-detector.ts` (needs_input via detectNeedsInput + detectAskUserQuestion), `src/core/monitor.ts` (event → queue), `src/core/monitor.test.ts` ("Stop event enters attention queue as needs_input", "AskUserQuestion tool enters queue as needs_input with warning severity"). Validated by [PoC 001](poc/001-hook-mechanism-validation.md).
+**Evidence:** `src/core/hook-parser.ts` (Stop → stop event, PreToolUse → tool_use event), `src/core/anomaly-detector.ts` (needs_input via detectNeedsInput + detectAskUserQuestion), `src/core/monitor.ts` (event → queue), `src/core/monitor.test.ts` ("Stop event enters attention queue as needs_input", "Stop followed by SubagentStop and idle notification remains queued as needs_input", "AskUserQuestion tool enters queue as needs_input with warning severity"). Validated by [PoC 001](poc/001-hook-mechanism-validation.md).
 
 ### R2.2: Detect Stuck Loops [F2.2] — SHOULD — `deferred`
 

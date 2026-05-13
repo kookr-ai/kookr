@@ -25,6 +25,10 @@ const SEVERITY_ORDER: Record<AnomalySeverity, number> = {
   info: 2,
 };
 
+function isTrailingStateOverlay(event: AgentEvent): boolean {
+  return event.type === 'notification' || event.type === 'subagent_stop';
+}
+
 export interface AnomalyDetectionEvaluation {
   anomaly: Anomaly | null;
   checkedTypes: AnomalyType[];
@@ -61,11 +65,16 @@ export function evaluateAnomalies(
 
   if (window.length === 0) return { anomaly: null, checkedTypes };
 
-  // Trim trailing notification events to find the effective state.
-  // Notifications are async signals (idle_prompt, auth_success, etc.) that should
-  // not change the agent's primary state — they are overlays, not state transitions.
+  // Trim trailing overlay/bookkeeping events to find the effective state.
+  // Notifications are async signals (idle_prompt, auth_success, etc.).
+  // SubagentStop can arrive after the parent's Stop hook as cleanup metadata.
+  // Neither should replace the parent agent's primary state; real user input,
+  // tool activity, and session_end remain state transitions and are not trimmed.
   let effectiveWindow = window;
-  while (effectiveWindow.length > 0 && effectiveWindow[effectiveWindow.length - 1].type === 'notification') {
+  while (
+    effectiveWindow.length > 0
+    && isTrailingStateOverlay(effectiveWindow[effectiveWindow.length - 1])
+  ) {
     effectiveWindow = effectiveWindow.slice(0, -1);
   }
   if (effectiveWindow.length === 0) return { anomaly: null, checkedTypes };
