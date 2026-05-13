@@ -1,0 +1,108 @@
+# Testing
+
+This page is the durable entry point for "what testing means in Kookr." It explains the suite inventory, which workflow runs which command, how to interpret the coverage number that CI publishes, where to find live numbers on a PR, and what to do when something looks wrong.
+
+For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc/rfc-testing-surfacing.md).
+
+## Suite Inventory
+
+| Command | What it runs | Where it runs |
+| --- | --- | --- |
+| `pnpm test` | Vitest unit tests under `src/**/*.test.ts` (no coverage). | Local. CI uses `--coverage`. |
+| `pnpm test:coverage` | Vitest with V8 coverage. | Local. |
+| `pnpm test:watch` | Vitest watch mode. | Local. |
+| `pnpm check:e2e` | TypeScript check for Playwright tests. | Local + CI (`test` job). |
+| `pnpm exec playwright test` | Browser E2E. | Local + CI (`build` job, Playwright container). |
+| `pnpm test:hooks` | Shell regression tests for project hooks. | Local + CI (`test` job). |
+| `CANARY=1 pnpm exec playwright test e2e/canary.spec.ts` | Real-agent canary, validates mock event fixtures against real Claude Code (Haiku). Local/manual due to API cost. | Local only. |
+
+## CI Mapping
+
+| Workflow | Triggers | Jobs |
+| --- | --- | --- |
+| `.github/workflows/ci.yml` | Push to `main`, PRs targeting `main`. | `test` (typecheck, skill validation, Vitest + coverage, hook tests), `build` (Playwright). |
+| `.github/workflows/e2e.yml` | Manual `/run-e2e` PR comment. | Full Playwright run, uploads HTML report on every run, comments result on the PR. |
+| `.github/workflows/staging.yml` | Staging-branch flow. | Plain `pnpm test` (no coverage). The testing-surfacing RFC defers staging coverage to a later phase. |
+
+### Artifacts
+
+| Artifact | Job | When uploaded | Retention |
+| --- | --- | --- | --- |
+| `coverage` (`coverage-summary.json` + `lcov.info`) | `test` | Every PR run, pass or fail (Vitest is invoked with `--coverage.reportOnFailure`). | 14 days |
+| `playwright-report` | `build` | Failed runs only on `ci.yml`; every run on `e2e.yml`. | 7 days |
+
+## Finding the Live Coverage Numbers on a PR
+
+The README links here, not to a live number. The numbers are produced per-PR by CI. To find them:
+
+1. Open the PR's **Checks** tab.
+2. Click the **`test`** job.
+3. In the left sidebar, click **`Summary`**.
+4. Scroll to the **Coverage summary** section at the bottom of the job summary.
+
+The summary shows:
+
+- A four-row metric table (Lines, Statements, Branches, Functions).
+- A breakdown by the five risk layers the RFC names: orchestration, hooks, process lifecycle, terminal sessions, WebSocket state.
+- Top-10 lists of files by uncovered lines/branches, suppressed when totals are healthy to avoid noise.
+
+If the **`test`** job failed before coverage finalized, the summary will say "Coverage data unavailable" and a GitHub Actions `::notice::` annotation will surface in the Checks UI.
+
+## Interpretation Rules
+
+- **Coverage is a trend and gap-finding signal, not a target.** A high percent does not mean the code is well-tested; it means the lines were executed.
+- **The published number is server/core only.** `vitest.config.ts` excludes `src/frontend/**` from V8 coverage. The step summary subtitles the number `(server/core; frontend excluded)` so reviewers do not read it as whole-repo coverage. A frontend coverage strategy needs its own RFC.
+- **Branch coverage matters more for orchestration code.** For hooks, lifecycle handlers, and WebSocket dispatch, branch coverage is the earliest warning that a code path is untested.
+- **Browser report artifacts are for failure investigation.** Default CI uploads them only on failure; the manual `/run-e2e` workflow uploads on every requested run.
+
+## Local Commands
+
+Reproduce CI locally:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm exec vitest run --coverage --coverage.reportOnFailure --coverage.reporter=text-summary --coverage.reporter=json-summary --coverage.reporter=lcov
+node --import tsx scripts/coverage-summary.ts coverage/coverage-summary.json
+```
+
+The last command prints the same Markdown that CI writes to the GitHub Actions step summary.
+
+Open the HTML report locally with:
+
+```bash
+pnpm test:coverage
+xdg-open coverage/index.html   # or `open coverage/index.html` on macOS
+```
+
+The HTML report is not uploaded by CI by default (it is large and noisy on routine runs).
+
+## Troubleshooting
+
+### Coverage artifact missing on a PR
+
+The `Run tests with coverage` step likely exited before finalizing the report. With `--coverage.reportOnFailure` set, this should be rare; if it happens, check the test step logs for an early crash (process killed, OOM, native module failure).
+
+### Step summary shows "Coverage data unavailable" or is blank
+
+The summary script printed the unavailable notice because `coverage/coverage-summary.json` did not exist. This usually means the test step itself failed early. Inspect the `Run tests with coverage` step output for the upstream cause.
+
+### `::error::` annotation in the Checks UI from the summary script
+
+The script distinguishes three error paths:
+
+- "Coverage JSON malformed at ..." — the file exists but cannot be parsed. Rerun the job or inspect the uploaded artifact.
+- "Coverage JSON has no `total` key" — the reporter output is incompatible. Likely a version bump in `@vitest/coverage-v8` or `istanbul-reports` changed the schema.
+- "coverage-summary.ts crashed: ..." — unexpected runtime error. The annotation text includes the error message.
+
+### Coverage numbers look implausibly low or high
+
+Check `vitest.config.ts` `include` and `exclude` lists. The most common cause is the frontend exclusion (`src/frontend/**` is omitted by design); the second most common is a new directory under `src/` that has no `*.test.ts` siblings yet.
+
+### Preview the summary locally before pushing
+
+```bash
+pnpm exec vitest run --coverage --coverage.reporter=json-summary
+node --import tsx scripts/coverage-summary.ts coverage/coverage-summary.json
+```
+
+This prints the Markdown to your terminal so you can see the per-layer breakdown before relying on CI.

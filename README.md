@@ -70,6 +70,7 @@ See [CLI Reference](docs/reference/cli.md) for `kookr-spawn`, `kookr-status`, an
 | Configure optional features | [Configuration](docs/configuration.md) |
 | Fix setup or runtime issues | [Troubleshooting](docs/troubleshooting.md) |
 | Develop Kookr itself | [Development](docs/development.md) |
+| Understand test suites and coverage reports | [Testing](docs/testing.md) |
 | Understand the system design | [Architecture](docs/architecture.md) |
 | See all API endpoints | [API Reference](docs/reference/api.md) |
 | Understand playbook discovery | [Playbook Scoping](docs/playbook-scoping.md) |
