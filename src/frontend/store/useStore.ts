@@ -6,6 +6,7 @@ import { createTransportSessionSlice } from './slices/transport-session-slice.js
 import { createTriageNavigationSlice } from './slices/triage-navigation-slice.js';
 import { createWorkspaceSlice } from './slices/workspace-slice.js';
 import { createOssAttemptsSlice } from './slices/oss-attempts-slice.js';
+import { createSystemStatusSlice } from './slices/system-status-slice.js';
 import type {
   AchievementToast,
   Alert,
@@ -45,6 +46,7 @@ function createKookrStoreState(
     ...createAchievementsSystemSlice(set, get),
     ...createWorkspaceSlice(set, get),
     ...createOssAttemptsSlice(set, get),
+    ...createSystemStatusSlice(set),
   };
 }
 

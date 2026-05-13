@@ -37,7 +37,13 @@ export type {
   RepoPolicy,
   StartWorkHandoff,
 } from '../core/workspace-types.js';
-export type { ClientMessage, ServerMessage, SnapshotMessage } from './contracts/messages.js';
+export type {
+  ClientMessage,
+  ResourceUnavailableReason,
+  ServerMessage,
+  SnapshotMessage,
+  SystemResourceStatus,
+} from './contracts/messages.js';
 export type {
   RalphLoopStatus,
   RalphLoopState,

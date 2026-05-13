@@ -1,9 +1,17 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { FocusZone } from '../store/useStore.js';
 import type { QuotaStatus } from '../../shared/protocol.js';
 import { useSoundPreference } from '../audio/sound.js';
 import { useAudioAlertLog, type LocalAudioAlertDecision } from '../audio/audio-alert-log.js';
+import {
+  cpuSeverity,
+  eventLoopSeverity,
+  formatResourceDetails,
+  formatResourcePercent,
+  isResourceStatusStale,
+  memorySeverity,
+} from '../resource-status.js';
 
 interface Props {
   findings: number;
@@ -84,6 +92,64 @@ function QuotaDisplay({ quota }: { quota: QuotaStatus }) {
   );
 }
 
+function ResourceDisplay({ compact }: { compact: boolean }) {
+  const resourceStatus = useKookrStore((s) => s.resourceStatus);
+  const receivedAtMs = useKookrStore((s) => s.resourceStatusReceivedAtMs);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!resourceStatus) return;
+    const timer = setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [resourceStatus]);
+
+  if (!resourceStatus) return null;
+
+  const stale = isResourceStatusStale(receivedAtMs, nowMs);
+  const cpuLabel = formatResourcePercent(resourceStatus.host.cpuUsagePercent);
+  const memoryLabel = formatResourcePercent(resourceStatus.host.memoryUsedPercent);
+  const cpuClass = cpuSeverity(resourceStatus.host.cpuUsagePercent);
+  const memoryClass = memorySeverity(resourceStatus);
+  const loopClass = eventLoopSeverity(resourceStatus.server.eventLoopDelayP95Ms);
+  const showLoopWarning = loopClass === 'high' || loopClass === 'critical';
+  const details = formatResourceDetails(resourceStatus, nowMs);
+  const ariaLabel = [
+    `CPU ${cpuLabel}`,
+    `RAM ${memoryLabel}`,
+    ...details,
+    stale ? 'Resource data is stale' : '',
+  ].filter(Boolean).join('. ');
+
+  return (
+    <span className={`resource-status ${compact ? 'compact' : ''} ${stale ? 'stale' : ''} ${showLoopWarning ? `loop-${loopClass}` : ''}`}>
+      <button
+        type="button"
+        className="resource-status-trigger"
+        title={ariaLabel}
+        aria-label={ariaLabel}
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        <span className={`resource-pill resource-${cpuClass}`}>CPU {cpuLabel}</span>
+        <span className={`resource-pill resource-${memoryClass}`}>RAM {memoryLabel}</span>
+        {showLoopWarning && (
+          <span className={`resource-pill resource-${loopClass}`}>
+            Loop {resourceStatus.server.eventLoopDelayP95Ms === null ? '--' : `${Math.round(resourceStatus.server.eventLoopDelayP95Ms)}ms`}
+          </span>
+        )}
+      </button>
+      {open && (
+        <span className="resource-status-popover" role="tooltip">
+          {details.map((line) => (
+            <span key={line}>{line}</span>
+          ))}
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function StatusBar({
   findings,
   total,
@@ -120,6 +186,7 @@ export function StatusBar({
       <span className="statusbar-left">
         {zoneLabel && <span className="focus-zone-pill">{zoneLabel}</span>}
         <span>{total} task{total !== 1 ? 's' : ''} · {findings} finding{findings !== 1 ? 's' : ''}</span>
+        <ResourceDisplay compact={compact} />
         {quotaStatus && <QuotaDisplay quota={quotaStatus} />}
         {sttUrl && <span className="stt-status-pill" title="Speech-to-text enabled">STT</span>}
         <button

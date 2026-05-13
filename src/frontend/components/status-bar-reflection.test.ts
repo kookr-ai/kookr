@@ -127,4 +127,84 @@ describe('StatusBar reflection prompt', () => {
     expect(soundButton?.getAttribute('title')).toContain('Last alert: manual_test -> suppressed_muted');
     expect(soundButton?.getAttribute('title')).toContain('sound disabled');
   });
+
+  test('renders resource status with keyboard accessible detail', async () => {
+    useKookrStore.getState().handleResourceStatus({
+      source: { kind: 'server-host' },
+      sampledAt: new Date().toISOString(),
+      sampleGapMs: 2_000,
+      timerDriftMs: 15,
+      host: {
+        cpuUsagePercent: 42,
+        memoryUsedPercent: 68,
+        memoryFreeBytes: 4_000_000_000,
+        memoryTotalBytes: 12_000_000_000,
+      },
+      server: {
+        eventLoopDelayP95Ms: 21,
+        processRssBytes: 160_000_000,
+        processHeapUsedBytes: 70_000_000,
+        processHeapTotalBytes: 100_000_000,
+      },
+      unavailable: [],
+    }, Date.now());
+
+    await act(async () => {
+      root.render(
+        React.createElement(StatusBar, {
+          findings: 0,
+          total: 2,
+          onShowShortcuts: vi.fn(),
+        }),
+      );
+    });
+    await flush();
+
+    expect(container.textContent).toContain('CPU 42%');
+    expect(container.textContent).toContain('RAM 68%');
+    const resourceButton = container.querySelector<HTMLButtonElement>('.resource-status-trigger');
+    expect(resourceButton?.getAttribute('aria-label')).toContain('Server loop p95 21 ms');
+
+    await act(async () => {
+      resourceButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain('Kookr RSS');
+  });
+
+  test('surfaces high event-loop delay visibly', async () => {
+    useKookrStore.getState().handleResourceStatus({
+      source: { kind: 'server-host' },
+      sampledAt: new Date().toISOString(),
+      sampleGapMs: 2_000,
+      timerDriftMs: 0,
+      host: {
+        cpuUsagePercent: 42,
+        memoryUsedPercent: 68,
+        memoryFreeBytes: 4_000_000_000,
+        memoryTotalBytes: 12_000_000_000,
+      },
+      server: {
+        eventLoopDelayP95Ms: 180,
+        processRssBytes: 160_000_000,
+        processHeapUsedBytes: 70_000_000,
+        processHeapTotalBytes: 100_000_000,
+      },
+      unavailable: [],
+    }, Date.now());
+
+    await act(async () => {
+      root.render(
+        React.createElement(StatusBar, {
+          findings: 0,
+          total: 2,
+          compact: true,
+          onShowShortcuts: vi.fn(),
+        }),
+      );
+    });
+    await flush();
+
+    expect(container.textContent).toContain('Loop 180ms');
+  });
 });

@@ -6,6 +6,7 @@ import { clearAllTimers, startLifecycleTimers, type TimerDeps, type TimerHandles
 import { startLedgerWatcher } from '../ledger-watcher.js';
 import type { ScheduleRunner } from '../schedule-runner.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
+import type { ResourceStatusService } from '../resource-status-service.js';
 
 export interface BackgroundServicesDeps {
   ossAttemptStore: OssAttemptStore;
@@ -19,6 +20,7 @@ export interface BackgroundServicesDeps {
   githubPollingEnabled: boolean;
   scheduleRunner: ScheduleRunner;
   timerDeps: TimerDeps;
+  resourceStatusService?: ResourceStatusService;
 }
 
 export interface BackgroundServices {
@@ -45,6 +47,8 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
     console.log('[settings] GitHub polling disabled by user settings');
   }
 
+  deps.resourceStatusService?.start();
+
   return {
     timerHandles,
     startAfterListen(): void {
@@ -54,6 +58,7 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
       clearAllTimers(timerHandles);
       deps.scheduleRunner.stop();
       deps.githubScanner.stop();
+      deps.resourceStatusService?.stop();
       ledgerWatcher.close();
     },
   };

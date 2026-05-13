@@ -51,6 +51,34 @@ export interface OssAttemptsSnapshot {
   lastRefreshIssueCheckErrors: IssueCheckError[];
 }
 
+export type ResourceUnavailableReason =
+  | 'cpu_warming_up'
+  | 'cpu_unavailable'
+  | 'cpu_delta_invalid'
+  | 'memory_unavailable'
+  | 'event_loop_unavailable'
+  | 'sampler_error';
+
+export interface SystemResourceStatus {
+  source: { kind: 'server-host' };
+  sampledAt: string;
+  sampleGapMs: number | null;
+  timerDriftMs: number | null;
+  host: {
+    cpuUsagePercent: number | null;
+    memoryUsedPercent: number | null;
+    memoryFreeBytes: number | null;
+    memoryTotalBytes: number | null;
+  };
+  server: {
+    eventLoopDelayP95Ms: number | null;
+    processRssBytes: number | null;
+    processHeapUsedBytes: number | null;
+    processHeapTotalBytes: number | null;
+  };
+  unavailable: ResourceUnavailableReason[];
+}
+
 export type SnapshotMessage = {
   type: 'snapshot';
   agents: AgentState[];
@@ -133,6 +161,7 @@ export type ServerMessage =
   | { type: 'achievement:unlocked'; id: string; name: string; emoji: string; description: string; unlockedAt: string }
   | { type: 'achievement:reset:ack'; success: boolean; error?: string }
   | { type: 'quotaStatus'; quota: QuotaStatus }
+  | { type: 'resourceStatus'; status: SystemResourceStatus }
   | { type: 'circuitBreakerStatus'; breakers: CircuitBreakerSnapshot[] }
   | { type: 'schedules'; schedules: ScheduleResponse[]; revision: number; status: ScheduleStatusSnapshot }
   | { type: 'scheduleFired'; scheduleId: string; taskId: string }
