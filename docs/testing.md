@@ -61,11 +61,11 @@ Reproduce CI locally:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm exec vitest run --coverage --coverage.reportOnFailure --coverage.reporter=text-summary --coverage.reporter=json-summary --coverage.reporter=lcov
-node --import tsx scripts/coverage-summary.ts coverage/coverage-summary.json
+pnpm test:coverage           # vitest --coverage; reporter list lives in vitest.config.ts
+pnpm coverage:summary        # renders coverage/coverage-summary.json to Markdown
 ```
 
-The last command prints the same Markdown that CI writes to the GitHub Actions step summary.
+`pnpm coverage:summary` prints the same Markdown that CI writes to the GitHub Actions step summary, so you can preview the layer breakdown before pushing.
 
 Open the HTML report locally with:
 
@@ -101,8 +101,8 @@ Check `vitest.config.ts` `include` and `exclude` lists. The most common cause is
 ### Preview the summary locally before pushing
 
 ```bash
-pnpm exec vitest run --coverage --coverage.reporter=json-summary
-node --import tsx scripts/coverage-summary.ts coverage/coverage-summary.json
+pnpm test:coverage
+pnpm coverage:summary
 ```
 
 This prints the Markdown to your terminal so you can see the per-layer breakdown before relying on CI.

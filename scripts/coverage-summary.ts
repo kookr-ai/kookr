@@ -26,7 +26,18 @@ interface Layer {
   patterns: string[];
 }
 
+// Substring-matched against the absolute file paths Vitest emits in
+// coverage-summary.json. Each file is attributed to the FIRST matching layer
+// (precedence order below) so a file like
+// `src/server/ws-handlers/lifecycle-handler.ts` does not double-count under
+// both WebSocket state and Process lifecycle. See the RFC Problem section
+// for what each layer is meant to surface; tighten patterns rather than
+// reorder if a future file lands in the wrong bucket.
 const LAYERS: Layer[] = [
+  {
+    name: 'WebSocket state',
+    patterns: ['/ws-', '/ws.ts', 'ws-handlers', 'ws-connection'],
+  },
   {
     name: 'Orchestration',
     patterns: ['orchestrat', 'event-pipeline', 'event-projection', 'launch-service'],
@@ -36,19 +47,17 @@ const LAYERS: Layer[] = [
     patterns: ['hook-watcher', 'hook-runner', 'hook-event', '/hooks/'],
   },
   {
-    name: 'Process lifecycle',
-    patterns: ['lifecycle', 'crash-recovery'],
-  },
-  {
     name: 'Terminal sessions',
     patterns: ['terminal-backend', 'dtach-backend', 'session-bridge', 'terminal-bridge'],
   },
   {
-    name: 'WebSocket state',
-    patterns: ['/ws-', '/ws.ts', 'ws-handlers', 'ws-connection'],
+    name: 'Process lifecycle',
+    patterns: ['agent-lifecycle', 'lifecycle-timers', 'lifecycle-handler', 'crash-recovery'],
   },
 ];
 
+// Suppress the top-N file lists once total coverage clears these percents —
+// healthy runs stay uncluttered; degraded runs surface the worst offenders.
 const TOP_LINES_THRESHOLD = 80;
 const TOP_BRANCHES_THRESHOLD = 70;
 const TOP_N = 10;
@@ -76,36 +85,51 @@ function pctFromTotals(covered: number, total: number): number | string {
   return total > 0 ? (covered / total) * 100 : 'Unknown';
 }
 
-function aggregateLayer(
+interface LayerTotals {
+  files: number;
+  linesTotal: number;
+  linesCovered: number;
+  branchesTotal: number;
+  branchesCovered: number;
+}
+
+function firstMatchingLayer(path: string): Layer | undefined {
+  return LAYERS.find((layer) => layer.patterns.some((p) => path.includes(p)));
+}
+
+function aggregateByLayer(
   files: Array<[string, FileCoverage]>,
-  patterns: string[],
-): { files: number; linesPct: number | string; branchesPct: number | string } {
-  let lTotal = 0;
-  let lCovered = 0;
-  let bTotal = 0;
-  let bCovered = 0;
-  let fileCount = 0;
-  for (const [path, cov] of files) {
-    if (patterns.some((p) => path.includes(p))) {
-      fileCount += 1;
-      lTotal += cov.lines.total;
-      lCovered += cov.lines.covered;
-      bTotal += cov.branches.total;
-      bCovered += cov.branches.covered;
-    }
+): Map<string, LayerTotals> {
+  const buckets = new Map<string, LayerTotals>();
+  for (const layer of LAYERS) {
+    buckets.set(layer.name, {
+      files: 0,
+      linesTotal: 0,
+      linesCovered: 0,
+      branchesTotal: 0,
+      branchesCovered: 0,
+    });
   }
-  return {
-    files: fileCount,
-    linesPct: pctFromTotals(lCovered, lTotal),
-    branchesPct: pctFromTotals(bCovered, bTotal),
-  };
+  for (const [path, cov] of files) {
+    const layer = firstMatchingLayer(path);
+    if (!layer) continue;
+    const bucket = buckets.get(layer.name);
+    if (!bucket) continue;
+    bucket.files += 1;
+    bucket.linesTotal += cov.lines.total;
+    bucket.linesCovered += cov.lines.covered;
+    bucket.branchesTotal += cov.branches.total;
+    bucket.branchesCovered += cov.branches.covered;
+  }
+  return buckets;
 }
 
 function renderLayerTable(fileEntries: Array<[string, FileCoverage]>): string {
+  const buckets = aggregateByLayer(fileEntries);
   const rows = LAYERS.map((layer) => {
-    const a = aggregateLayer(fileEntries, layer.patterns);
-    if (a.files === 0) return `| ${layer.name} | 0 | — | — |`;
-    return `| ${layer.name} | ${a.files} | ${fmtPct(a.linesPct)} | ${fmtPct(a.branchesPct)} |`;
+    const b = buckets.get(layer.name);
+    if (!b || b.files === 0) return `| ${layer.name} | 0 | — | — |`;
+    return `| ${layer.name} | ${b.files} | ${fmtPct(pctFromTotals(b.linesCovered, b.linesTotal))} | ${fmtPct(pctFromTotals(b.branchesCovered, b.branchesTotal))} |`;
   });
   return [
     '| Layer | Files | Lines % | Branches % |',
@@ -153,7 +177,7 @@ function main(): void {
       `Coverage data unavailable at ${path} — tests likely failed before coverage finalized; see the test step logs.`,
     );
     process.stdout.write(
-      '### Coverage summary\n\n_Coverage data unavailable — tests likely failed before coverage finalized._\n',
+      '### Coverage summary\n\n_Coverage data unavailable — tests likely failed before coverage finalized; see the **Run tests with coverage** step logs._\n',
     );
     return;
   }
@@ -235,5 +259,10 @@ try {
   main();
 } catch (err) {
   emitAnnotation('error', `coverage-summary.ts crashed: ${(err as Error).message}`);
+  // Keep the step summary surface non-empty so reviewers see the crash signal
+  // alongside the annotation in the Checks UI instead of a blank section.
+  process.stdout.write(
+    '### Coverage summary\n\n_Summary script crashed — see the `::error::` annotation in the job log._\n',
+  );
   process.exit(1);
 }
