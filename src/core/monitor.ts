@@ -1,4 +1,4 @@
-import type { AgentEvent, Anomaly, AnomalyType, TokenUsage, WorktreeHealth } from './types.js';
+import type { AgentActivityMeta, AgentEvent, Anomaly, AnomalyType, TokenUsage, WorktreeHealth } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import { isTerminalStatus, type TaskStore } from './tasks.js';
 import type { AttentionQueue } from './attention-queue.js';
@@ -44,6 +44,9 @@ export interface AgentState {
   completionFeedback?: import('./tasks.js').TaskCompletionFeedback;
   autonomy?: import('./tasks.js').AutonomyLevel;
   ralphLoop?: import('./tasks.js').RalphLoopState;
+  /** Activity-panel disclosure counters; populated at snapshot time from
+   *  {@link HookIngestion}. See rfc-activity-log-reliability §9. */
+  activityMeta?: AgentActivityMeta;
 }
 
 interface SessionSnapshotMeta {

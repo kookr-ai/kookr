@@ -692,7 +692,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Metadata-only refresh (e.g. git info captured) — broadcast snapshot without injecting events
   adapter.onRefreshNeeded(() => {
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion }));
     broadcastProjectSummaries();
   });
 
@@ -771,7 +771,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         if (current && !current.name) {
           taskStore.renameTask(taskId, name);
           console.log(`[task-naming] Named task ${taskId}: "${name}"`);
-          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl }));
+          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion }));
         }
       })
       .catch((err) => {
@@ -828,6 +828,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     checkpointCycler,
     ralphCycler,
     ralphLoopService,
+    hookIngestion,
     onPermissionBlocked: (taskId, promptText) => {
       onPermissionBlockedHolder?.(taskId, promptText);
     },
@@ -907,7 +908,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getWsBroadcastCount: () => wsBroadcastCount,
     getEventCounts: () => monitor.getEventCounts(),
     measureSnapshotSizeBytes: () => {
-      const msg = createSnapshotMessage({ monitor, serverCwd });
+      const msg = createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion });
       return JSON.stringify(msg).length;
     },
     onReport: (report) => {
@@ -928,7 +929,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     interactionLog,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, frontendDir, broadcastToAll,
-    shadowRegistry, httpPushTracker, hookIngestion, launchServiceDeps, sttUrl,
+    shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,

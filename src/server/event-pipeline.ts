@@ -1,4 +1,5 @@
 import type { Monitor } from '../core/monitor.js';
+import type { HookIngestion } from './hook-ingestion.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { TokenTracker } from '../core/token-tracker.js';
 import type { Watchdog } from '../core/watchdog.js';
@@ -55,6 +56,8 @@ export interface EventPipelineDeps {
   ralphCycler?: RalphCycler;
   /** Singleton Ralph loop service shared with routes and startup recovery. */
   ralphLoopService: RalphLoopService;
+  /** Provides per-Kookr-session activityMeta for the snapshot. */
+  hookIngestion?: HookIngestion;
 }
 
 /**
@@ -199,7 +202,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
       if (session) session.lastEventAt = Date.now();
     }
     const snapshot = monitor.getSnapshot();
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: deps.hookIngestion }));
 
     // Auto-proceed: delegate scheduling decision to orchestrator
     deps.autonomyOrchestrator?.scheduleIfNeeded(tmuxName);
@@ -220,7 +223,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
               watchdog.recordTokenActivity(session.tmuxSession);
             }
           }
-          broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: deps.hookIngestion }));
         }).catch(() => { /* scan failure is non-critical — fallback poll will catch it */ });
       }
 
@@ -245,7 +248,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
       if (stopTask?.ralphLoop?.status === 'completed') {
         deps.ralphLoopService.finalizeCompletedLoopStop(stopTask, tmuxName, event)
           .then((changed) => {
-            if (changed) broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+            if (changed) broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: deps.hookIngestion }));
           })
           .catch((err) => {
             console.error('[ralph-loop-service] finalizeCompletedLoopStop failed:', err);

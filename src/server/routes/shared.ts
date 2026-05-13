@@ -5,6 +5,7 @@ import type { AgentAdapter } from '../../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../../adapters/terminal-backend.js';
 import type { HookFileWatcher } from '../hook-watcher.js';
 import type { HookIngestion } from '../hook-ingestion.js';
+import type { ActivityLedger } from '../../core/activity-ledger.js';
 import type { Watchdog } from '../../core/watchdog.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
 import type { GitHubScannerService } from '../../core/github-scanner-service.js';
@@ -60,6 +61,13 @@ export interface RouteDeps {
    * timing-only behavior. See rfc-activity-log-reliability §5.
    */
   hookIngestion?: HookIngestion;
+  /**
+   * Durable per-session activity ledger used by
+   * `/api/tasks/:taskId/activity-diagnostics`. Absence collapses the
+   * diagnostics endpoint to in-memory counters from HookIngestion.
+   * See rfc-activity-log-reliability §7–§8.
+   */
+  activityLedger?: ActivityLedger;
   launchServiceDeps: LaunchServiceDeps;
   sttUrl?: string;
   projectConfigStore?: ProjectConfigStore;

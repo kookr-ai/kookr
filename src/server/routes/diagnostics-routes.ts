@@ -76,6 +76,41 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     return c.json(deps.circuitBreakerRegistry.getAllSnapshots());
   });
 
+  app.get('/api/tasks/:taskId/activity-diagnostics', async (c) => {
+    const taskId = c.req.param('taskId');
+    const task = taskStore.getTask(taskId);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+
+    const kookrSessions = [];
+    for (const session of task.sessions) {
+      const kookrSessionId = session.tmuxSession;
+      const monitorWindowSize = deps.monitor.getAgentEvents(kookrSessionId).length;
+      const ledgerStats = deps.activityLedger
+        ? await deps.activityLedger.stats(kookrSessionId)
+        : undefined;
+      const memMeta = deps.hookIngestion?.getActivityMeta(kookrSessionId);
+      // Ledger is source of truth for durable counts; in-memory counters fill
+      // gaps when the ledger is not configured.
+      kookrSessions.push({
+        kookrSessionId,
+        parentSessionId: session.claudeSessionId,
+        childSessionIds: Object.keys(session.childSessionIds ?? {}),
+        rawRecordCount: ledgerStats?.rawRecordCount ?? memMeta?.totalEventsSeen ?? 0,
+        parsedRecordCount: ledgerStats?.parsedRecordCount
+          ?? ((memMeta?.parentEventCount ?? 0) + (memMeta?.childEventCount ?? 0)
+              + (memMeta?.foreignEventCount ?? 0) + (memMeta?.unknownParentageCount ?? 0)),
+        malformedRecordCount: ledgerStats?.malformedRecordCount ?? memMeta?.malformedRecordCount ?? 0,
+        duplicateRecordCount: ledgerStats?.duplicateRecordCount ?? memMeta?.duplicateRecordCount ?? 0,
+        unknownParentageCount: ledgerStats?.unknownParentageCount ?? memMeta?.unknownParentageCount ?? 0,
+        droppedRecordCount: ledgerStats?.droppedRecordCount ?? memMeta?.droppedRecordCount ?? 0,
+        monitorWindowSize,
+        totalActivityEvents: ledgerStats?.rawRecordCount ?? memMeta?.totalEventsSeen ?? 0,
+      });
+    }
+
+    return c.json({ taskId, kookrSessions });
+  });
+
   app.post('/api/hook-event/:sessionId', async (c) => {
     const sessionId = c.req.param('sessionId');
     const body = await c.req.text();

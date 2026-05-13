@@ -181,6 +181,27 @@ export interface ChildSessionInfo {
 }
 
 /**
+ * Aggregate counters published on each {@link AgentState} so the activity
+ * panel can disclose partial-window state and child / malformed counts
+ * without re-reading the durable ledger on every snapshot tick. Maintained
+ * in memory by {@link HookIngestion}; the diagnostics endpoint surfaces a
+ * richer breakdown from the on-disk ledger. See rfc-activity-log-reliability §9.
+ *
+ * Counts are scoped to a single Kookr terminal session.
+ */
+export interface AgentActivityMeta {
+  /** Distinct hook records observed (dedup-aware: duplicates do not double-count). */
+  totalEventsSeen: number;
+  parentEventCount: number;
+  childEventCount: number;
+  foreignEventCount: number;
+  unknownParentageCount: number;
+  malformedRecordCount: number;
+  droppedRecordCount: number;
+  duplicateRecordCount: number;
+}
+
+/**
  * Outcome of a single hook record injection — describes what the adapter
  * observed so {@link HookIngestion} can build a {@link HookEnvelopeV1} for
  * the activity ledger without re-parsing the raw payload. See

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { HttpPushTracker } from '../core/http-push-tracker.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { ActivityLedger, ActivityLedgerRow, HookEnvelopeV1 } from '../core/activity-ledger.js';
-import type { InjectHookEventResult } from '../core/types.js';
+import type { AgentActivityMeta, InjectHookEventResult } from '../core/types.js';
 
 /**
  * Narrow surface the {@link HookIngestion} service needs from an adapter.
@@ -69,6 +69,7 @@ interface CacheEntry {
 export class HookIngestion implements HookEventInjector {
   private cache = new Map<string, CacheEntry>();
   private sequenceCounters = new Map<string, number>();
+  private metaByKookrSession = new Map<string, AgentActivityMeta>();
   private adapter: HookEventInjector;
   private httpPushTracker?: HttpPushTracker;
   private activityLedger?: ActivityLedger;
@@ -126,6 +127,7 @@ export class HookIngestion implements HookEventInjector {
       // latency telemetry and write a diagnostic-only ledger row so duplicate
       // counts surface in /api/tasks/:taskId/activity-diagnostics.
       httpTrackerCall();
+      this.bumpMeta(kookrSessionId, { duplicate: true });
       this.writeLedger({
         kookrSessionId,
         contentHash,
@@ -147,17 +149,19 @@ export class HookIngestion implements HookEventInjector {
       // Adapters MUST NOT throw on a malformed payload, but if a different
       // bug surfaces, record a malformed ledger row and rethrow so callers
       // see the failure. Cache stays empty so a replay can retry.
+      const malformed: InjectHookEventResult = {
+        parseStatus: 'malformed',
+        agentType: 'claude-code',
+        error: err instanceof Error ? err.message : String(err),
+      };
+      this.bumpMeta(kookrSessionId, { duplicate: false, result: malformed });
       this.writeLedger({
         kookrSessionId,
         contentHash,
         source,
         sequence,
         rawBytes: normalized.length,
-        result: {
-          parseStatus: 'malformed',
-          agentType: 'claude-code',
-          error: err instanceof Error ? err.message : String(err),
-        },
+        result: malformed,
         projection: 'diagnostic_only',
       });
       throw err;
@@ -166,6 +170,7 @@ export class HookIngestion implements HookEventInjector {
     if (result.parseStatus === 'ok') {
       this.cache.set(key, { ts: now, result, firstSource: source });
     }
+    this.bumpMeta(kookrSessionId, { duplicate: false, result });
     this.writeLedger({
       kookrSessionId,
       contentHash,
@@ -176,6 +181,50 @@ export class HookIngestion implements HookEventInjector {
       projection: ledgerProjection(result),
     });
     return { dispatched: result.parseStatus === 'ok', contentHash, injectResult: result };
+  }
+
+  /**
+   * Returns the in-memory counters published to {@link AgentState.activityMeta}.
+   * Undefined when no events have been observed for this Kookr session.
+   */
+  getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined {
+    const meta = this.metaByKookrSession.get(kookrSessionId);
+    return meta ? { ...meta } : undefined;
+  }
+
+  /** Forget per-session bookkeeping — called when a task / session is deleted. */
+  forgetSession(kookrSessionId: string): void {
+    this.metaByKookrSession.delete(kookrSessionId);
+    this.sequenceCounters.delete(kookrSessionId);
+    // Drop dedup entries for this session.
+    for (const key of [...this.cache.keys()]) {
+      if (key.startsWith(`${kookrSessionId}::`)) this.cache.delete(key);
+    }
+  }
+
+  private bumpMeta(
+    kookrSessionId: string,
+    args: { duplicate: boolean; result?: InjectHookEventResult },
+  ): void {
+    const meta = this.metaByKookrSession.get(kookrSessionId) ?? emptyMeta();
+    if (args.duplicate) {
+      meta.duplicateRecordCount += 1;
+    } else {
+      meta.totalEventsSeen += 1;
+      const r = args.result!;
+      if (r.parseStatus === 'malformed') meta.malformedRecordCount += 1;
+      else if (r.parseStatus === 'dropped') meta.droppedRecordCount += 1;
+      else {
+        switch (r.parentage) {
+          case 'parent': meta.parentEventCount += 1; break;
+          case 'child': meta.childEventCount += 1; break;
+          case 'foreign': meta.foreignEventCount += 1; break;
+          case 'unknown':
+          default: meta.unknownParentageCount += 1; break;
+        }
+      }
+    }
+    this.metaByKookrSession.set(kookrSessionId, meta);
   }
 
   private nextSequence(kookrSessionId: string): number {
@@ -233,4 +282,17 @@ function ledgerProjection(result: InjectHookEventResult): ActivityLedgerRow['pro
   if (result.parentage === 'parent') return 'parent_activity';
   if (result.parentage === 'child') return 'child_activity';
   return 'diagnostic_only';
+}
+
+function emptyMeta(): AgentActivityMeta {
+  return {
+    totalEventsSeen: 0,
+    parentEventCount: 0,
+    childEventCount: 0,
+    foreignEventCount: 0,
+    unknownParentageCount: 0,
+    malformedRecordCount: 0,
+    droppedRecordCount: 0,
+    duplicateRecordCount: 0,
+  };
 }
