@@ -102,6 +102,8 @@ import type { KookrServerInternal } from './server-test-helpers.js';
 import { createSnapshotMessage, getProjectSummaries } from './use-cases/get-snapshot.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
 import { RalphLoopService } from './ralph-loop-service.js';
+import { createSystemResourceSampler } from './system-resource-sampler.js';
+import { createResourceStatusService } from './resource-status-service.js';
 import {
   OssRegistryWatcher,
   ReconReportWatcher,
@@ -1085,6 +1087,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     );
   };
 
+  const resourceStatusService = createResourceStatusService({
+    sampler: createSystemResourceSampler(),
+    broadcastToAll,
+  });
+
   const wsConnectionDeps: WsConnectionDeps = {
     taskStore, queue, monitor, adapter, adapterRegistry,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
@@ -1106,6 +1113,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     scheduleService,
     ralphLoopService,
     getDiagnosticStatus: () => diagnosticRunner.getStatus(),
+    getLatestResourceStatus: () => resourceStatusService.getLatest(),
     workspaceEnabled: true,
     attemptRepository,
     policyResolver,
@@ -1131,6 +1139,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubScanner,
     githubPollingEnabled: currentSettings.githubPollingEnabled,
     scheduleRunner,
+    resourceStatusService,
     timerDeps: {
       monitor, taskStore, queue, adapter, adapterRegistry, tokenTracker, watchdog,
       hookWatcher, terminalBackend, hooksDir, tasksFile, serverCwd,

@@ -61,6 +61,31 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().serverCwd).toBe('');
   });
 
+  test('handleResourceStatus stores latest resource snapshot and receive time', () => {
+    store.getState().handleResourceStatus({
+      source: { kind: 'server-host' },
+      sampledAt: '2026-05-13T00:00:00.000Z',
+      sampleGapMs: null,
+      timerDriftMs: null,
+      host: {
+        cpuUsagePercent: 42,
+        memoryUsedPercent: 68,
+        memoryFreeBytes: 4_000_000_000,
+        memoryTotalBytes: 12_000_000_000,
+      },
+      server: {
+        eventLoopDelayP95Ms: 21,
+        processRssBytes: 160_000_000,
+        processHeapUsedBytes: 70_000_000,
+        processHeapTotalBytes: 100_000_000,
+      },
+      unavailable: [],
+    }, 123);
+
+    expect(store.getState().resourceStatus?.host.cpuUsagePercent).toBe(42);
+    expect(store.getState().resourceStatusReceivedAtMs).toBe(123);
+  });
+
   test('handleUpdate updates single agent', () => {
     // First, set initial state
     store.getState().handleSnapshot([

@@ -19,6 +19,7 @@ import type {
   CleanupDiagnosticLaunch,
   WorkspaceView,
   CleanupResultSummary,
+  SystemResourceStatus,
 } from '../../shared/protocol.js';
 import type {
   ProjectSidebarCatalogEntry,
@@ -320,13 +321,21 @@ export interface OssAttemptsSlice {
   fetchOssAttempts: () => Promise<void>;
 }
 
+export interface SystemStatusSlice {
+  resourceStatus: SystemResourceStatus | null;
+  resourceStatusReceivedAtMs: number | null;
+
+  handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
+}
+
 export type KookrStore =
   & TransportSessionSlice
   & TriageNavigationSlice
   & ProjectSidebarSlice
   & AchievementsSystemSlice
   & WorkspaceSlice
-  & OssAttemptsSlice;
+  & OssAttemptsSlice
+  & SystemStatusSlice;
 
 export type StoreSet = (
   partial: Partial<KookrStore> | ((state: KookrStore) => Partial<KookrStore>),

@@ -658,6 +658,20 @@ The system SHOULD poll GitHub PR and issue state with the fewest API calls neede
 
 **Evidence:** `src/core/github-scanner-service.ts`, `src/core/github-state-store.ts`, `src/adapters/github-fetcher.ts`, `src/core/github-scanner-service.test.ts`, `src/core/github-state-store.test.ts`, `src/adapters/github-fetcher.test.ts`, `docs/reports/2026-05-12-github-polling-api-call-audit.md`.
 
+### R5.10: System Resource Visibility — SHOULD — `done`
+
+The system SHOULD show lightweight host and Kookr-server resource status in the dashboard status bar.
+
+**Acceptance criteria:**
+- The backend samples host CPU and approximate RAM usage every 2 seconds using Node built-in APIs.
+- The backend samples Kookr server event-loop delay and process memory without persisting resource samples.
+- WebSocket clients receive `resourceStatus` updates and a newly connected client receives the latest cached status after the initial snapshot when one exists.
+- The frontend shows CPU and RAM in the existing status bar, renders unavailable metrics as `--`, and marks data stale when no resource message has arrived for more than 10 seconds.
+- Resource detail is available through keyboard/touch-accessible status bar controls and includes event-loop delay, Kookr RSS, RAM free/total, and sample timing.
+- Resource status is passive context only; it does not alert, throttle, schedule, or create findings.
+
+**Evidence:** `src/core/system-resource-metrics.ts`, `src/server/system-resource-sampler.ts`, `src/server/resource-status-service.ts`, `src/server/ws-connection-handler.ts`, `src/frontend/resource-status.ts`, `src/frontend/components/StatusBar.tsx`, related tests.
+
 ---
 
 ## R6: Infrastructure & Platform
@@ -969,6 +983,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R5.5 | F5.5 | SHALL | done | useWebSocket, ws, useStore |
 | R5.7 | — | SHOULD | done | project-sidebar-store, project-routes, project-sidebar-slice |
 | R5.8 | — | SHOULD | done | DetailPanel, ActivityPanel, ProjectDetailDrawer, FindingsPanel, TopBar |
+| R5.10 | — | SHOULD | done | system-resource-metrics, resource-status-service, useWebSocket, StatusBar |
 | R6.1 | ADR-007 / ADR-014 | SHALL | done | local-dtach-backend |
 | R6.2 | PoC 001 | SHALL | done | claude-code-adapter, hook-watcher, hook-parser |
 | R6.3 | ADR-008 (superseded by ADR-014) | SHALL | done | reconciliation, local-dtach-backend |

@@ -14,7 +14,7 @@ import type { ProjectSidebarStore } from '../core/project-sidebar-store.js';
 import type { SkillDiscoveryStateHolder } from '../core/skill-tracked-repo-discovery.js';
 import type { PrLessonsStateHolder } from '../core/pr-lessons-discovery.js';
 import type { AchievementWatcher } from './achievement-watcher.js';
-import type { ServerMessage, ClientMessage, QuotaStatus } from '../shared/protocol.js';
+import type { ServerMessage, ClientMessage, QuotaStatus, SystemResourceStatus } from '../shared/protocol.js';
 import { ClientMessageSchema, summarizeZodIssues } from '../shared/contracts/client-message-schema.js';
 import { MessageRouter } from './ws.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
@@ -74,6 +74,8 @@ export interface WsConnectionDeps {
   ralphLoopService: RalphLoopService;
   /** Get latest self-diagnostic status (for initial connection burst). */
   getDiagnosticStatus?: () => { report: import('../core/self-diagnostic.js').DiagnosticReport | null; lastError: string | null };
+  /** Get latest server-host resource status for the initial connection burst. */
+  getLatestResourceStatus?: () => SystemResourceStatus | null;
   /** Workspace services (Phase 1a). */
   workspaceEnabled?: boolean;
   attemptRepository?: WorkspaceAttemptRepository;
@@ -138,6 +140,11 @@ export function handleWsConnection(
 
   // Send initial snapshot
   router.handleConnect();
+
+  const latestResourceStatus = deps.getLatestResourceStatus?.();
+  if (latestResourceStatus && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'resourceStatus', status: latestResourceStatus }));
+  }
 
   // Send initial GitHub state for all tasks with references
   for (const taskId of githubStateStore.getTaskIdsWithReferences()) {

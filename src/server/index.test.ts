@@ -890,6 +890,36 @@ Review daily work.
       await new Promise<void>((r) => ws.on('close', () => r()));
     });
 
+    test('sends cached resource status after the initial snapshot', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+
+      const messages = await new Promise<Array<{ type: string; status?: unknown }>>((resolve, reject) => {
+        const seen: Array<{ type: string; status?: unknown }> = [];
+        const timer = setTimeout(() => reject(new Error('WS timeout')), 3000);
+        ws.on('message', (data) => {
+          const parsed = JSON.parse(data.toString());
+          seen.push(parsed);
+          if (seen.some((msg) => msg.type === 'snapshot') && seen.some((msg) => msg.type === 'resourceStatus')) {
+            clearTimeout(timer);
+            resolve(seen);
+          }
+        });
+        ws.on('error', reject);
+      });
+
+      expect(messages[0].type).toBe('snapshot');
+      const resource = messages.find((msg) => msg.type === 'resourceStatus');
+      expect(resource?.status).toEqual(expect.objectContaining({
+        source: { kind: 'server-host' },
+        host: expect.objectContaining({
+          memoryUsedPercent: expect.any(Number),
+        }),
+      }));
+
+      ws.close();
+      await new Promise<void>((r) => ws.on('close', () => r()));
+    });
+
     test('launch creates task and broadcasts snapshot', async () => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
 
@@ -1223,9 +1253,16 @@ Review daily work.
         cwd: '/cwd',
       }));
 
-      // Wait for launch broadcast
+      // Wait for launch snapshot; resourceStatus messages may be interleaved.
       await new Promise<void>((resolve) => {
-        ws.once('message', () => resolve());
+        const handler = (data: unknown) => {
+          const parsed = JSON.parse(data!.toString());
+          if (parsed.type === 'snapshot') {
+            ws.off('message', handler);
+            resolve();
+          }
+        };
+        ws.on('message', handler);
       });
 
       // Get the tmux session name from the task
@@ -1245,7 +1282,14 @@ Review daily work.
 
       // Wait for the broadcast triggered by the event
       const msg = await new Promise<string>((resolve) => {
-        ws.once('message', (data) => resolve(data.toString()));
+        const handler = (data: unknown) => {
+          const parsed = JSON.parse(data!.toString());
+          if (parsed.type === 'snapshot') {
+            ws.off('message', handler);
+            resolve(data!.toString());
+          }
+        };
+        ws.on('message', handler);
       });
 
       const parsed = JSON.parse(msg);

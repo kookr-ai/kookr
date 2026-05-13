@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import { initTelemetry, track } from '../telemetry.js';
 import type { ClientMessage } from '../../shared/protocol.js';
+import { isSystemResourceStatus } from '../resource-status.js';
 
 const RECONNECT_DELAY_MS = 2000;
 
@@ -31,6 +32,7 @@ export function useWebSocket() {
     handleSweepComplete,
     handleSweepBusy,
     handleOssAttempts,
+    handleResourceStatus,
     setConnected,
   } = useKookrStore();
 
@@ -136,6 +138,11 @@ export function useWebSocket() {
           case 'quotaStatus':
             handleQuotaStatus(msg.quota);
             break;
+          case 'resourceStatus':
+            if (isSystemResourceStatus(msg.status)) {
+              handleResourceStatus(msg.status, Date.now());
+            }
+            break;
           case 'circuitBreakerStatus':
             handleCircuitBreakerStatus(msg.breakers);
             break;
@@ -190,7 +197,7 @@ export function useWebSocket() {
     ws.onerror = () => {
       ws.close();
     };
-  }, [handleSnapshot, handleUpdate, handleAlert, handleGitHubUpdate, handlePlaybooks, handleSuggestion, hydrateProjectSidebarFromServer, handleProjectSummaries, handleAchievementUnlocked, handleQuotaStatus, handleCircuitBreakerStatus, handleDiagnosticReport, handleSchedules, handleWorkspaceView, handleWorkspaceCleanupDetail, handleWorkspaceStartWorkAck, handleSweepComplete, handleSweepBusy, handleOssAttempts, setConnected]);
+  }, [handleSnapshot, handleUpdate, handleAlert, handleGitHubUpdate, handlePlaybooks, handleSuggestion, hydrateProjectSidebarFromServer, handleProjectSummaries, handleAchievementUnlocked, handleQuotaStatus, handleResourceStatus, handleCircuitBreakerStatus, handleDiagnosticReport, handleSchedules, handleWorkspaceView, handleWorkspaceCleanupDetail, handleWorkspaceStartWorkAck, handleSweepComplete, handleSweepBusy, handleOssAttempts, setConnected]);
 
   useEffect(() => {
     connect();
