@@ -1,6 +1,6 @@
 import type { AgentEvent, Anomaly, AnomalyType, TokenUsage, WorktreeHealth } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
-import { isTerminalStatus, type TaskStore } from './tasks.js';
+import { isTerminalStatus, type TaskLaunchHealthSummary, type TaskStore } from './tasks.js';
 import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
@@ -31,6 +31,7 @@ export interface AgentState {
   startedAt?: string; // ISO 8601
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
+  launchHealthSummary?: TaskLaunchHealthSummary;
   tokenUsage?: TokenUsage;
   gitBranch?: string;
   gitCommit?: string;
@@ -56,6 +57,7 @@ interface SessionSnapshotMeta {
   sessionStatus?: import('./types.js').AgentStatus | 'completed' | 'aborted';
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
+  launchHealthSummary?: TaskLaunchHealthSummary;
   projectId?: string;
   projectDisplayLabel: string;
   gitBranch?: string;
@@ -474,6 +476,7 @@ export class Monitor {
           sessionStatus: session.lastStatus,
           playbookId: task.playbookId,
           playbookParameterValues: task.playbookParameterValues,
+          launchHealthSummary: task.launchHealthSummary,
           projectId: task.projectId,
           projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: session.cwd }),
           gitBranch: session.gitBranch,
@@ -526,6 +529,7 @@ export class Monitor {
         state.startedAt = meta.createdAt.toISOString();
         state.playbookId = meta.playbookId;
         state.playbookParameterValues = meta.playbookParameterValues;
+        state.launchHealthSummary = meta.launchHealthSummary;
         state.gitBranch = meta.gitBranch;
         state.gitCommit = meta.gitCommit;
         state.gitIsWorktree = meta.gitIsWorktree;
@@ -564,6 +568,7 @@ export class Monitor {
           startedAt: task.createdAt.toISOString(),
           playbookId: task.playbookId,
           playbookParameterValues: task.playbookParameterValues,
+          launchHealthSummary: task.launchHealthSummary,
           projectId: task.projectId,
           projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: task.cwd }),
           ralphLoop: task.ralphLoop,
@@ -590,6 +595,7 @@ export class Monitor {
             startedAt: task.createdAt.toISOString(),
             playbookId: task.playbookId,
             playbookParameterValues: task.playbookParameterValues,
+            launchHealthSummary: task.launchHealthSummary,
             projectId: task.projectId,
             projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: lastSession?.cwd ?? task.cwd }),
             tokenUsage: task.tokenUsage,

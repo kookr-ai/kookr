@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { checkSubmission, launchTask, type LaunchServiceDeps } from './launch-service.js';
-import { LaunchPreflightError, type LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
+import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 
 // Minimal stubs for adapter and lifecycle deps
 function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
@@ -234,7 +234,7 @@ describe('launchTask', () => {
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
   });
 
-  it('runs declared dependency preflights before creating a task', async () => {
+  it('records declared KB dependency preflight failures as advisory launch health', async () => {
     const finding: LaunchPreflightFinding = {
       dependency: 'kb',
       status: 'failed',
@@ -246,15 +246,147 @@ describe('launchTask', () => {
     const dependencyPreflightRunner = vi.fn().mockResolvedValue([finding]);
     const depsWithPreflight = { ...deps, dependencyPreflightRunner };
 
-    await expect(launchTask(depsWithPreflight, {
+    const result = await launchTask(depsWithPreflight, {
       prompt: 'needs kb',
       cwd: '/tmp',
       dependencies: ['kb'],
-    })).rejects.toBeInstanceOf(LaunchPreflightError);
+    });
 
     expect(dependencyPreflightRunner).toHaveBeenCalledWith(['kb']);
-    expect(store.listTasks()).toHaveLength(0);
+    expect(result.task.prompt).toBe('needs kb');
+    expect(result.task.launchHealthSummary).toEqual({
+      degradedDependencies: ['kb'],
+      findings: [finding],
+    });
+    expect(result.task.launchNote).toContain('KB unavailable');
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
+      result.task.id,
+      expect.stringContaining('KB unavailable'),
+      '/tmp',
+      undefined,
+      undefined,
+    );
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
+      result.task.id,
+      expect.stringContaining('needs kb'),
+      '/tmp',
+      undefined,
+      undefined,
+    );
+  });
+
+  it('keeps advisory launch notes out of the task prompt used for dedup', async () => {
+    const finding: LaunchPreflightFinding = {
+      dependency: 'kb',
+      status: 'failed',
+      category: 'query_runtime_failure',
+      summary: 'KB search smoke failed',
+      detail: 'Cannot read properties of undefined',
+      recommendedAction: 'Run `kb doctor --format=json` and `kb search` manually.',
+    };
+    const dependencyPreflightRunner = vi.fn()
+      .mockResolvedValueOnce([finding])
+      .mockResolvedValueOnce([]);
+    const depsWithPreflight = { ...deps, dependencyPreflightRunner };
+
+    const first = await launchTask(depsWithPreflight, {
+      prompt: 'needs kb',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    const second = await launchTask(depsWithPreflight, {
+      prompt: 'needs kb',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(first.task.prompt).toBe('needs kb');
+    expect(second.duplicate).toBe(true);
+    expect(second.task.id).toBe(first.task.id);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('preserves advisory launch health for queued tasks', async () => {
+    const finding: LaunchPreflightFinding = {
+      dependency: 'kb',
+      status: 'failed',
+      category: 'empty_index_data',
+      summary: 'KB index is empty',
+      detail: 'FAISS index has no chunks',
+      recommendedAction: 'Ingest the knowledge base.',
+    };
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([finding]);
+    const result = await launchTask({
+      ...deps,
+      getMaxActiveTasks: () => 0,
+      dependencyPreflightRunner,
+    }, {
+      prompt: 'queued kb task',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(result.queued).toBe(true);
+    expect(result.task.prompt).toBe('queued kb task');
+    expect(result.task.launchHealthSummary?.findings).toEqual([finding]);
+    expect(result.task.launchNote).toContain('KB index is empty');
     expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('redacts and bounds advisory dependency details before storing or launching', async () => {
+    const rawDetail = '/home/jean/.config/kb token=sk-secret password=hunter2 '.repeat(30);
+    const finding: LaunchPreflightFinding = {
+      dependency: 'kb',
+      status: 'failed',
+      category: 'query_runtime_failure',
+      summary: 'KB search smoke failed',
+      detail: rawDetail,
+      recommendedAction: 'Run `kb doctor --format=json` and `kb search` manually.',
+    };
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([finding]);
+
+    const result = await launchTask({ ...deps, dependencyPreflightRunner }, {
+      prompt: 'needs kb',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    const storedDetail = result.task.launchHealthSummary?.findings[0]?.detail ?? '';
+    expect(storedDetail.length).toBeLessThanOrEqual(500);
+    expect(storedDetail).not.toContain('/home/jean');
+    expect(storedDetail).not.toContain('sk-secret');
+    expect(storedDetail).not.toContain('hunter2');
+    const launchPrompt = vi.mocked(deps.adapterRegistry.get('claude-code').launch).mock.calls[0]?.[1] ?? '';
+    expect(launchPrompt).not.toContain('/home/jean');
+    expect(launchPrompt).not.toContain('sk-secret');
+    expect(launchPrompt).not.toContain('hunter2');
+  });
+
+  it('does not block launch when advisory preflight infrastructure throws', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const dependencyPreflightRunner = vi.fn().mockRejectedValue(
+      new Error('/home/jean/.config/kb token=sk-secret broke'),
+    );
+
+    try {
+      const result = await launchTask({ ...deps, dependencyPreflightRunner }, {
+        prompt: 'needs kb',
+        cwd: '/tmp',
+        dependencies: ['kb'],
+      });
+
+      expect(result.queued).toBe(false);
+      expect(result.task.prompt).toBe('needs kb');
+      expect(result.task.launchHealthSummary?.findings[0]).toEqual(expect.objectContaining({
+        category: 'unknown',
+        summary: 'KB dependency preflight could not complete',
+      }));
+      expect(result.task.launchHealthSummary?.findings[0]?.detail).not.toContain('/home/jean');
+      expect(result.task.launchHealthSummary?.findings[0]?.detail).not.toContain('sk-secret');
+      expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('launches normally when dependency preflights pass', async () => {

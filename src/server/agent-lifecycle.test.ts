@@ -774,6 +774,38 @@ describe('promotePendingTasks', () => {
     );
   });
 
+  test('passes stored advisory launch note when promoting a pending task', async () => {
+    const pendingTask = makeTask({
+      id: 'pending-1',
+      status: 'pending',
+      launchNote: '[Kookr launch warning] KB unavailable.',
+    });
+    const mockTaskStore = {
+      getActiveCount: vi.fn()
+        .mockReturnValueOnce(0)
+        .mockReturnValueOnce(1),
+      getNextPending: vi.fn()
+        .mockReturnValueOnce(pendingTask)
+        .mockReturnValueOnce(undefined),
+      cancelTask: vi.fn(),
+    };
+    const lifecycleDeps = makeDeps();
+    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
+    const deps = makePromotionDeps({
+      taskStore: mockTaskStore as any,
+      lifecycleDeps,
+    });
+
+    const result = await promotePendingTasks(deps);
+
+    expect(result).toBe(1);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
+      'pending-1',
+      '[Kookr launch warning] KB unavailable.\n\nFix the bug in auth',
+      '/home/user/project',
+    );
+  });
+
   test('returns 0 and does not broadcast when no pending tasks', async () => {
     const deps = makePromotionDeps();
 
