@@ -1,4 +1,3 @@
-import { execFile } from 'node:child_process';
 import type { LaunchDependency } from './playbook.js';
 
 export type LaunchPreflightFailureCategory =
@@ -6,6 +5,7 @@ export type LaunchPreflightFailureCategory =
   | 'configuration'
   | 'empty_index_data'
   | 'provider_api'
+  | 'query_runtime_failure'
   | 'unknown';
 
 export interface LaunchPreflightFinding {
@@ -21,6 +21,12 @@ export type DependencyPreflightRunner = (
   dependencies: LaunchDependency[] | undefined,
 ) => Promise<LaunchPreflightFinding[]>;
 
+export interface DependencyCommandResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
 export class LaunchPreflightError extends Error {
   readonly findings: LaunchPreflightFinding[];
 
@@ -29,25 +35,6 @@ export class LaunchPreflightError extends Error {
     this.name = 'LaunchPreflightError';
     this.findings = findings;
   }
-}
-
-export async function runLaunchDependencyPreflights(
-  dependencies: LaunchDependency[] | undefined,
-): Promise<LaunchPreflightFinding[]> {
-  const unique = [...new Set(dependencies ?? [])];
-  const findings: LaunchPreflightFinding[] = [];
-
-  for (const dependency of unique) {
-    switch (dependency) {
-      case 'kb': {
-        const finding = await runKbAvailabilityPreflight();
-        if (finding) findings.push(finding);
-        break;
-      }
-    }
-  }
-
-  return findings;
 }
 
 export function formatLaunchPreflightError(findings: LaunchPreflightFinding[]): string {
@@ -60,54 +47,46 @@ export function formatLaunchPreflightError(findings: LaunchPreflightFinding[]): 
     .join(' ');
 }
 
-async function runKbAvailabilityPreflight(): Promise<LaunchPreflightFinding | null> {
-  let result: CommandResult;
-  try {
-    result = await execFileBounded('kb', ['doctor', '--format=json'], 5_000);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return kbFindingFromCommandFailure(message, '');
-  }
-
-  if (result.exitCode !== 0) {
-    return kbFindingFromCommandFailure(result.stderr || result.stdout || `kb doctor exited ${result.exitCode}`, result.stdout);
-  }
-
+export function classifyKbDoctorCommandResult(result: DependencyCommandResult): LaunchPreflightFinding | null {
   let parsed: KbDoctorOutput;
   try {
     parsed = JSON.parse(result.stdout) as KbDoctorOutput;
   } catch {
+    if (result.exitCode !== 0) {
+      return kbFindingFromCommandFailure(
+        result.stderr || result.stdout || `kb doctor exited ${result.exitCode}`,
+        result.stdout,
+      );
+    }
     return {
       dependency: 'kb',
       status: 'failed',
       category: 'unknown',
       summary: 'KB preflight could not parse `kb doctor --format=json` output',
-      detail: result.stdout.slice(0, 500),
+      detail: redactDiagnosticText(result.stdout, 500),
       recommendedAction: 'Run `kb doctor --format=json` manually and fix the reported output or CLI version.',
     };
   }
 
-  return classifyKbDoctorOutput(parsed);
+  const doctorFinding = classifyKbDoctorOutput(parsed);
+  if (doctorFinding || result.exitCode === 0) return doctorFinding;
+  return kbFindingFromCommandFailure(
+    result.stderr || result.stdout || `kb doctor exited ${result.exitCode}`,
+    result.stdout,
+  );
 }
 
-interface CommandResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
-function execFileBounded(file: string, args: string[], timeoutMs: number): Promise<CommandResult> {
-  return new Promise((resolve, reject) => {
-    execFile(file, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-      const nodeError = error as NodeJS.ErrnoException | null;
-      if (nodeError?.code === 'ENOENT') {
-        reject(error);
-        return;
-      }
-      const exitCode = typeof nodeError?.code === 'number' ? nodeError.code : error ? 1 : 0;
-      resolve({ stdout: String(stdout), stderr: String(stderr), exitCode });
-    });
-  });
+export function classifyKbSearchSmokeResult(result: DependencyCommandResult): LaunchPreflightFinding | null {
+  if (result.exitCode === 0) return null;
+  const message = [result.stdout, result.stderr].filter(Boolean).join('\n') || `kb search exited ${result.exitCode}`;
+  return {
+    dependency: 'kb',
+    status: 'failed',
+    category: 'query_runtime_failure',
+    summary: 'KB dependency preflight search smoke failed',
+    detail: redactDiagnosticText(message, 500),
+    recommendedAction: recommendedKbAction('query_runtime_failure'),
+  };
 }
 
 interface KbDoctorCheck {
@@ -142,7 +121,7 @@ export function classifyKbDoctorOutput(parsed: KbDoctorOutput): LaunchPreflightF
     status: 'failed',
     category,
     summary: `KB dependency preflight failed: ${name}`,
-    detail,
+    detail: redactDiagnosticText(detail, 500),
     recommendedAction: recommendedKbAction(category),
   };
 }
@@ -155,7 +134,7 @@ function kbFindingFromCommandFailure(message: string, stdout: string): LaunchPre
     status: 'failed',
     category,
     summary: 'KB dependency preflight failed before launch',
-    detail: message.slice(0, 500),
+    detail: redactDiagnosticText(message, 500),
     recommendedAction: recommendedKbAction(category),
   };
 }
@@ -174,6 +153,7 @@ function classifyKbFailure(name: string, detail: string): LaunchPreflightFailure
   }
   if (
     text.includes('api key') ||
+    text.includes('apikey') ||
     text.includes('provider') ||
     text.includes('ollama') ||
     text.includes('openai') ||
@@ -215,7 +195,20 @@ function recommendedKbAction(category: LaunchPreflightFailureCategory): string {
       return 'Ingest or refresh the knowledge-base index before launching this KB-dependent task.';
     case 'provider_api':
       return 'Start or reconfigure the embedding provider/API used by the KB index.';
+    case 'query_runtime_failure':
+      return 'Run `kb doctor --format=json` and a small `kb search` manually; fix the KB query path before relying on KB-backed task context.';
     case 'unknown':
       return 'Run `kb doctor --format=json` manually and address the reported KB failure.';
   }
+}
+
+export function redactDiagnosticText(input: string, maxLength = 500): string {
+  const redacted = input
+    .replace(/\/home\/[^/\s]+/g, '~')
+    .replace(/([?&](?:token|api[_-]?key|password|secret)=)[^&\s]+/gi, '$1<redacted>')
+    .replace(/\b(token|api[_-]?key|password|secret)=\S+/gi, '$1=<redacted>')
+    .replace(/\bsk-[A-Za-z0-9_-]+/g, 'sk-<redacted>');
+
+  if (redacted.length <= maxLength) return redacted;
+  return redacted.slice(0, Math.max(0, maxLength - 3)) + '...';
 }

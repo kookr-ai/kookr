@@ -209,6 +209,24 @@ export interface CreateTaskOptions {
   agentType?: AgentType;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
+  /** Advisory diagnostics captured during launch without changing task identity. */
+  launchHealthSummary?: TaskLaunchHealthSummary;
+  /** Warning text prepended to the first agent prompt, but not stored in `prompt`. */
+  launchNote?: string;
+}
+
+export interface TaskLaunchHealthSummary {
+  degradedDependencies: string[];
+  findings: TaskLaunchHealthFinding[];
+}
+
+export interface TaskLaunchHealthFinding {
+  dependency: string;
+  status: 'failed';
+  category: string;
+  summary: string;
+  detail?: string;
+  recommendedAction: string;
 }
 
 export class InvalidTransitionError extends Error {
@@ -260,6 +278,10 @@ export interface Task {
   playbookId?: string;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
+  /** Advisory launch diagnostics. Does not affect duplicate detection. */
+  launchHealthSummary?: TaskLaunchHealthSummary;
+  /** Warning text prepended to the actual launch prompt, but not part of `prompt`. */
+  launchNote?: string;
   parentTaskId?: string;
   childTaskIds?: string[];
   /** Normalized project identifier (e.g. "github.com/owner/repo" or "local/dirname"). */
@@ -350,7 +372,16 @@ export class TaskStore {
     const opts: CreateTaskOptions = typeof promptOrOpts === 'string'
       ? { prompt: promptOrOpts, cwd: cwdArg!, criteria: criteriaArg, parentTaskId: parentTaskIdArg }
       : promptOrOpts;
-    const { prompt, cwd, criteria, parentTaskId, agentType, playbookParameterValues } = opts;
+    const {
+      prompt,
+      cwd,
+      criteria,
+      parentTaskId,
+      agentType,
+      playbookParameterValues,
+      launchHealthSummary,
+      launchNote,
+    } = opts;
 
     // Validate parent exists if specified
     if (parentTaskId !== undefined && !this.tasks.has(parentTaskId)) {
@@ -371,6 +402,8 @@ export class TaskStore {
       updatedAt: now,
     };
     if (playbookParameterValues) task.playbookParameterValues = playbookParameterValues;
+    if (launchHealthSummary) task.launchHealthSummary = launchHealthSummary;
+    if (launchNote) task.launchNote = launchNote;
     this.tasks.set(task.id, task);
 
     // Link child to parent

@@ -370,7 +370,8 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
 
     try {
       const adapter = adapterRegistry.get(pending.agentType);
-      await adapter.launch(pending.id, pending.prompt, pending.cwd);
+      const launchPrompt = pending.launchNote ? `${pending.launchNote}\n\n${pending.prompt}` : pending.prompt;
+      await adapter.launch(pending.id, launchPrompt, pending.cwd);
       await registerNewAgent(pending, lifecycleDeps);
       promoted++;
     } catch (err) {
