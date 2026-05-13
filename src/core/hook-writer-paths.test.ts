@@ -40,9 +40,10 @@ describe('buildHookCommand', () => {
       hookFile: '/tmp/kookr-hooks/kookr-deadbeef.jsonl',
       serverPort: 4800,
       writerPath: '/opt/kookr/bin/kookr-hook-writer.js',
+      nodePath: '/usr/bin/node',
     });
     expect(cmd).toBe(
-      "node '/opt/kookr/bin/kookr-hook-writer.js' --session 'kookr-deadbeef' --file '/tmp/kookr-hooks/kookr-deadbeef.jsonl' --url 'http://localhost:4800/api/hook-event/kookr-deadbeef'",
+      "'/usr/bin/node' '/opt/kookr/bin/kookr-hook-writer.js' --session 'kookr-deadbeef' --file '/tmp/kookr-hooks/kookr-deadbeef.jsonl' --url 'http://localhost:4800/api/hook-event/kookr-deadbeef'",
     );
   });
 
@@ -51,8 +52,21 @@ describe('buildHookCommand', () => {
       tmuxName: 'kookr-deadbeef',
       hookFile: '/h.jsonl',
       writerPath: '/opt/kookr/bin/kookr-hook-writer.js',
+      nodePath: '/usr/bin/node',
     });
-    expect(cmd).toBe("node '/opt/kookr/bin/kookr-hook-writer.js' --session 'kookr-deadbeef' --file '/h.jsonl'");
+    expect(cmd).toBe("'/usr/bin/node' '/opt/kookr/bin/kookr-hook-writer.js' --session 'kookr-deadbeef' --file '/h.jsonl'");
+  });
+
+  it('quotes the node path used for the writer command', () => {
+    const cmd = buildHookCommand({
+      tmuxName: 'kookr-deadbeef',
+      hookFile: '/h.jsonl',
+      writerPath: '/opt/kookr/bin/kookr-hook-writer.js',
+      nodePath: "/tmp/node's/bin/node",
+    });
+    expect(cmd).toBe(
+      "'/tmp/node'\\''s/bin/node' '/opt/kookr/bin/kookr-hook-writer.js' --session 'kookr-deadbeef' --file '/h.jsonl'",
+    );
   });
 
   it('falls back to legacy awk + curl when writerPath is missing', () => {

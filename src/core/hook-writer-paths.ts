@@ -31,17 +31,22 @@ export function buildHookCommand(opts: {
   hookFile: string;
   serverPort?: number;
   writerPath?: string;
+  nodePath?: string;
 }): string {
-  const { tmuxName, hookFile, serverPort, writerPath } = opts;
+  const { tmuxName, hookFile, serverPort, writerPath, nodePath = process.execPath } = opts;
   const url = serverPort ? `http://localhost:${serverPort}/api/hook-event/${tmuxName}` : undefined;
 
   if (writerPath) {
-    const urlArg = url ? ` --url '${url}'` : '';
-    return `node '${writerPath}' --session '${tmuxName}' --file '${hookFile}'${urlArg}`;
+    const urlArg = url ? ` --url ${shellQuote(url)}` : '';
+    return `${shellQuote(nodePath)} ${shellQuote(writerPath)} --session ${shellQuote(tmuxName)} --file ${shellQuote(hookFile)}${urlArg}`;
   }
 
   if (url) {
     return `awk -v file='${hookFile}' '{ print >> file; print }' | curl -s -X POST ${url} --max-time 1 -H 'Content-Type: application/json' -d @- >/dev/null 2>&1`;
   }
   return `awk -v file='${hookFile}' '{ print >> file }'`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
