@@ -260,7 +260,7 @@ describe('extractRefsFromEvents', () => {
     expect(refs[0]).toMatchObject({ type: 'issue', owner: 'kookr-ai', repo: 'kookr', number: 16, url: 'https://github.com/kookr-ai/kookr/issues/16' });
   });
 
-  test('extracts PR URLs from any command (e.g. git log)', () => {
+  test('ignores PR URLs from read-only commands like git log', () => {
     const events: AgentEvent[] = [
       {
         type: 'tool_use',
@@ -277,11 +277,10 @@ describe('extractRefsFromEvents', () => {
     ];
 
     const refs = extractRefsFromEvents(events);
-    expect(refs).toHaveLength(1);
-    expect(refs[0]).toMatchObject({ type: 'pr', number: 19, owner: 'kookr-ai', repo: 'kookr', url: 'https://github.com/kookr-ai/kookr/pull/19' });
+    expect(refs).toHaveLength(0);
   });
 
-  test('extracts PR refs from gh pr view', () => {
+  test('ignores PR refs from read-only gh pr view output', () => {
     const events: AgentEvent[] = [
       {
         type: 'tool_use',
@@ -298,11 +297,10 @@ describe('extractRefsFromEvents', () => {
     ];
 
     const refs = extractRefsFromEvents(events);
-    expect(refs).toHaveLength(1);
-    expect(refs[0]).toMatchObject({ type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 19, url: 'https://github.com/kookr-ai/kookr/pull/19' });
+    expect(refs).toHaveLength(0);
   });
 
-  test('extracts issue refs from gh issue view', () => {
+  test('ignores issue refs from read-only gh issue view output', () => {
     const events: AgentEvent[] = [
       {
         type: 'tool_use',
@@ -319,8 +317,30 @@ describe('extractRefsFromEvents', () => {
     ];
 
     const refs = extractRefsFromEvents(events);
-    expect(refs).toHaveLength(1);
-    expect(refs[0]).toMatchObject({ type: 'issue', owner: 'kookr-ai', repo: 'kookr', number: 26, url: 'https://github.com/kookr-ai/kookr/issues/26' });
+    expect(refs).toHaveLength(0);
+  });
+
+  test('ignores issue refs from read-only gh issue list output', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'gh issue list --repo kookr-ai/kookr --limit 50' },
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolResponse: [
+          '26\tOPEN\tfirst issue\thttps://github.com/kookr-ai/kookr/issues/26',
+          '27\tOPEN\tsecond issue\thttps://github.com/kookr-ai/kookr/issues/27',
+        ].join('\n'),
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(0);
   });
 
   test('extracts refs from stop event lastMessage', () => {
@@ -344,7 +364,7 @@ describe('extractRefsFromEvents', () => {
     expect(refs[0].url).toBeUndefined();
   });
 
-  test('extracts refs from tool_result without preceding tool_use', () => {
+  test('ignores Bash tool_result refs without paired tool command context', () => {
     const events: AgentEvent[] = [
       {
         type: 'tool_result',
@@ -355,17 +375,24 @@ describe('extractRefsFromEvents', () => {
     ];
 
     const refs = extractRefsFromEvents(events);
-    expect(refs).toHaveLength(1);
-    expect(refs[0]).toMatchObject({ type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 42, url: 'https://github.com/kookr-ai/kookr/pull/42' });
+    expect(refs).toHaveLength(0);
   });
 
-  test('fills in default owner/repo for bare refs', () => {
+  test('fills in default owner/repo for bare refs from mutating commands', () => {
     const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'gh pr create --title "Created"' },
+        toolUseId: 'tool-1',
+      },
       {
         type: 'tool_result',
         sessionId: 's1',
         toolName: 'Bash',
         toolResponse: 'Created PR #42',
+        toolUseId: 'tool-1',
       },
     ];
 
@@ -378,10 +405,18 @@ describe('extractRefsFromEvents', () => {
   test('handles object toolResponse', () => {
     const events: AgentEvent[] = [
       {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'gh pr create --title "Created"' },
+        toolUseId: 'tool-1',
+      },
+      {
         type: 'tool_result',
         sessionId: 's1',
         toolName: 'Bash',
         toolResponse: { output: 'https://github.com/owner/repo/pull/5' },
+        toolUseId: 'tool-1',
       },
     ];
 
@@ -411,7 +446,7 @@ describe('extractRefsFromEvents', () => {
     expect(refs[0]).toMatchObject({ type: 'pr', owner: 'owner', repo: 'repo', number: 42, url: 'https://github.com/owner/repo/pull/42' });
   });
 
-  test('extracts from all tool_result events regardless of command', () => {
+  test('extracts only refs from mutating tool_result commands', () => {
     const events: AgentEvent[] = [
       // git log
       { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'git log --oneline' } },
@@ -420,34 +455,37 @@ describe('extractRefsFromEvents', () => {
       { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'gh pr list' } },
       { type: 'tool_result', sessionId: 's1', toolName: 'Bash', toolResponse: '#11 open https://github.com/o/r/pull/11' },
       // gh pr create
-      { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'gh pr create --title "New"' } },
-      { type: 'tool_result', sessionId: 's1', toolName: 'Bash', toolResponse: 'https://github.com/o/r/pull/20\n' },
+      { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'gh pr create --title "New"' }, toolUseId: 'tool-20' },
+      { type: 'tool_result', sessionId: 's1', toolName: 'Bash', toolResponse: 'https://github.com/o/r/pull/20\n', toolUseId: 'tool-20' },
       // gh issue view
       { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'gh issue view 30' } },
       { type: 'tool_result', sessionId: 's1', toolName: 'Bash', toolResponse: 'https://github.com/o/r/issues/30' },
+      // gh issue create
+      { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'gh issue create --title "New"' }, toolUseId: 'tool-31' },
+      { type: 'tool_result', sessionId: 's1', toolName: 'Bash', toolResponse: 'https://github.com/o/r/issues/31\n', toolUseId: 'tool-31' },
     ];
 
     const refs = extractRefsFromEvents(events);
-    expect(refs).toHaveLength(4);
-    expect(refs.find((r) => r.number === 10)).toMatchObject({ type: 'pr', owner: 'o', repo: 'r', url: 'https://github.com/o/r/pull/10' });
-    expect(refs.find((r) => r.number === 11)).toMatchObject({ type: 'pr', owner: 'o', repo: 'r', url: 'https://github.com/o/r/pull/11' });
+    expect(refs).toHaveLength(2);
     expect(refs.find((r) => r.number === 20)).toMatchObject({ type: 'pr', owner: 'o', repo: 'r', url: 'https://github.com/o/r/pull/20' });
-    expect(refs.find((r) => r.number === 30)).toMatchObject({ type: 'issue', owner: 'o', repo: 'r', url: 'https://github.com/o/r/issues/30' });
+    expect(refs.find((r) => r.number === 31)).toMatchObject({ type: 'issue', owner: 'o', repo: 'r', url: 'https://github.com/o/r/issues/31' });
   });
 
-  test('extracts refs from curl API output', () => {
+  test('extracts refs from mutating curl API output', () => {
     const events: AgentEvent[] = [
       {
         type: 'tool_use',
         sessionId: 's1',
         toolName: 'Bash',
-        toolInput: { command: 'curl -s https://api.github.com/repos/o/r/pulls' },
+        toolInput: { command: 'curl -s -X POST https://api.github.com/repos/o/r/pulls' },
+        toolUseId: 'tool-55',
       },
       {
         type: 'tool_result',
         sessionId: 's1',
         toolName: 'Bash',
         toolResponse: '{"html_url":"https://github.com/o/r/pull/55"}',
+        toolUseId: 'tool-55',
       },
     ];
 

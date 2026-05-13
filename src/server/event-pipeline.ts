@@ -363,7 +363,8 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     if (githubScanner.isActive()) {
       const ghTask = taskStore.findTaskBySession(tmuxName);
       if (ghTask && ghTask.status === 'inProgress') {
-        void githubScanner.processEventsImmediate(tmuxName, [event], ghTask.id);
+        const ghEvents = postState?.events.slice(-20) ?? [event];
+        void githubScanner.processEventsImmediate(tmuxName, ghEvents, ghTask.id);
       }
     }
   };

@@ -203,13 +203,21 @@ describe('GitHubScannerService', () => {
       });
       await scanner.start();
 
-      // Build a tool_result event that contains a PR URL
+      // Build the gh pr create tool_use/tool_result pair that contains a PR URL
       const events: AgentEvent[] = [
+        {
+          type: 'tool_use',
+          sessionId: 'sess-1',
+          toolName: 'Bash',
+          toolInput: { command: 'gh pr create --title "Fix bug"' },
+          toolUseId: 'tool-1',
+        },
         {
           type: 'tool_result',
           sessionId: 'sess-1',
           toolName: 'Bash',
           toolResponse: 'Created PR https://github.com/acme/app/pull/99',
+          toolUseId: 'tool-1',
         },
       ];
 
@@ -242,10 +250,18 @@ describe('GitHubScannerService', () => {
 
       const events: AgentEvent[] = [
         {
+          type: 'tool_use',
+          sessionId: 'sess-1',
+          toolName: 'Bash',
+          toolInput: { command: 'gh pr create --title "Fix bug"' },
+          toolUseId: 'tool-1',
+        },
+        {
           type: 'tool_result',
           sessionId: 'sess-1',
           toolName: 'Bash',
           toolResponse: 'Created PR https://github.com/acme/app/pull/99',
+          toolUseId: 'tool-1',
         },
       ];
 
@@ -419,10 +435,18 @@ describe('GitHubScannerService', () => {
 
       const events: AgentEvent[] = [
         {
+          type: 'tool_use',
+          sessionId: 'sess-1',
+          toolName: 'Bash',
+          toolInput: { command: 'gh pr create --title "Fix"' },
+          toolUseId: 'tool-99',
+        },
+        {
           type: 'tool_result',
           sessionId: 'sess-1',
           toolName: 'Bash',
           toolResponse: 'Created PR https://github.com/acme/app/pull/99',
+          toolUseId: 'tool-99',
         },
       ];
       await scanner.processEventsImmediate('agent-1', events, task.id);
