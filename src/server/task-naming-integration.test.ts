@@ -414,13 +414,19 @@ describe('AI task naming integration', () => {
       ws.once('message', () => resolve());
     });
 
-    // Find the new task (not the original)
-    const tasks = server.taskStore.listTasks();
-    const newTask = tasks.find((t) => t.id !== original.id);
-    expect(newTask).toBeDefined();
+    // Find the new task (not the original). Relaunch completion is delivered
+    // over the same websocket channel as snapshots, so the first message after
+    // send is not guaranteed to be the post-launch state.
+    let newTaskId: string | undefined;
+    await vi.waitFor(() => {
+      const tasks = server.taskStore.listTasks();
+      const newTask = tasks.find((t) => t.id !== original.id);
+      expect(newTask).toBeDefined();
+      newTaskId = newTask!.id;
+    });
 
     // Wait for naming
-    const name = await waitForTaskName(server, newTask!.id);
+    const name = await waitForTaskName(server, newTaskId!);
     expect(name).toBe('Fix JWT Token Invalidation');
 
     ws.close();
