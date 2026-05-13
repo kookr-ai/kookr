@@ -1,13 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import type { AgentState } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
-import { CapacityGauge } from './CapacityGauge.js';
 import { DndPill } from './DndPill.js';
 import { formatCost } from '../presentation.js';
 
 interface Props {
   findings: number;
-  healthyAgents: AgentState[];
   currentIndex: number;
   totalFindings: number;
   compact?: boolean;
@@ -62,7 +59,7 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, operationsOpen = false, onCostComparison, sweepSlot }: Props) {
+export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, operationsOpen = false, onCostComparison, sweepSlot }: Props) {
   const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
@@ -339,7 +336,6 @@ export function TopBar({ findings, healthyAgents, currentIndex, totalFindings, c
         )}
       </div>
       <div className="topbar-right">
-        {!compact && <CapacityGauge agents={healthyAgents} />}
         <div className="metric-group topbar-spend-group">
           {totalSpendUsd > 0 && (
             <span className="topbar-spend" title={`Lifetime total across ${agents.length} task${agents.length !== 1 ? 's' : ''}`}>

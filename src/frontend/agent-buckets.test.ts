@@ -14,7 +14,7 @@ function agent(id: string, projectId: string, patch: Partial<AgentState> = {}): 
 }
 
 describe('agent buckets', () => {
-  test('keeps top-bar capacity agents global when a project is selected', () => {
+  test('keeps active task count global when a project is selected', () => {
     const buckets = buildAgentBuckets([
       agent('project-a-running', 'project-a'),
       agent('project-b-running', 'project-b'),
@@ -23,9 +23,6 @@ describe('agent buckets', () => {
 
     expect(buckets.healthy.map((a) => a.agentId)).toEqual(['project-a-running']);
     expect(buckets.filteredAgents.map((a) => a.agentId)).toEqual(['project-a-running']);
-    expect(buckets.globalHealthyAgents.map((a) => a.agentId)).toEqual([
-      'project-a-running',
-      'project-b-running',
-    ]);
+    expect(buckets.activeTaskCount).toBe(3);
   });
 });

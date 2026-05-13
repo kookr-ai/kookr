@@ -10,7 +10,6 @@ export interface AgentBuckets {
   snoozed: AgentState[];
   findings: AgentState[];
   healthy: AgentState[];
-  globalHealthyAgents: AgentState[];
   activeTaskCount: number;
   completedTaskCount: number;
 }
@@ -41,7 +40,6 @@ export function buildAgentBuckets(agents: AgentState[], selectedProject: string 
       .sort((a, b) => (a.snoozedUntil ?? 0) - (b.snoozedUntil ?? 0)),
     findings: filteredAgents.filter((agent) => agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && isActiveFinding(agent)),
     healthy: filteredAgents.filter(isHealthyRunningAgent),
-    globalHealthyAgents: agents.filter(isHealthyRunningAgent),
     activeTaskCount: agents.filter((agent) => !isTerminalTaskStatus(agent.taskStatus)).length,
     completedTaskCount: agents.filter((agent) => isTerminalTaskStatus(agent.taskStatus)).length,
   };

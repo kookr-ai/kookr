@@ -354,7 +354,6 @@ export function App() {
     snoozed,
     findings,
     healthy,
-    globalHealthyAgents,
     activeTaskCount,
     completedTaskCount,
   } = useMemo(() => buildAgentBuckets(agents, selectedProject), [agents, selectedProject]);
@@ -474,7 +473,6 @@ export function App() {
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}`}>
       <TopBar
         findings={findings.length}
-        healthyAgents={globalHealthyAgents}
         currentIndex={selectedAgent && selectedAgent.anomaly
           ? findings.findIndex((f) => f.agentId === selectedAgentId)
           : -1}

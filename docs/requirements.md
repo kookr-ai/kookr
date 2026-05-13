@@ -616,7 +616,7 @@ The system SHOULD persist project sidebar ordering, pinned projects, hidden proj
 - Pinned projects are included in project summaries after restart even when no active agent currently references them
 - The frontend hydrates sidebar preferences from the backend and migrates existing browser-local sidebar preferences when the backend store is empty
 - Browser `localStorage` remains a fallback/cache rather than the source of truth after backend hydration
-- Project sidebar icons show active task load rather than PR contribution counts; stalled projects show healthy/active task counts.
+- Project sidebar icons show active task load rather than PR contribution counts; stalled projects show healthy/active task counts; the all-projects icon shows aggregate active task load.
 
 **Evidence:** `src/core/project-sidebar-store.ts`, `src/server/routes/project-routes.ts` (`/api/projects/sidebar`), `src/frontend/store/slices/project-sidebar-slice.ts`, `src/core/project-sidebar-store.test.ts`, `src/core/project-summary.test.ts`, `src/server/index.test.ts`, `src/frontend/store/slices/project-sidebar-discovery.test.ts`.
 
