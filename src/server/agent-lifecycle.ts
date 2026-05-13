@@ -176,6 +176,26 @@ export interface LifecycleDeps {
   attemptRepository?: import('../core/workspace-attempt-repository.js').WorkspaceAttemptRepository;
 }
 
+function unregisterTranscript(tmuxName: string, deps: LifecycleDeps): void {
+  if (!deps.tokenTracker) return;
+  const task = deps.taskStore.findTaskBySession(tmuxName);
+  if (!task) return;
+  for (const session of task.sessions) {
+    if (session.tmuxSession === tmuxName && session.transcriptPath) {
+      deps.tokenTracker.unregister(session.transcriptPath);
+    }
+  }
+}
+
+function forgetSessionBookkeeping(tmuxName: string, deps: LifecycleDeps): void {
+  deps.monitor.unregisterAgent(tmuxName);
+  deps.hookWatcher?.stop(tmuxName);
+  deps.watchdog?.unregisterAgent(tmuxName);
+  deps.shadowRegistry?.unregisterAgent(tmuxName);
+  deps.suppressionTracker?.reset(tmuxName);
+  deps.checkpointCycler?.forget(tmuxName);
+}
+
 /**
  * Clean up all resources associated with a single agent session.
  * Stops tmux, unregisters from monitor/watchdog/shadow, and stops hook watcher.
@@ -185,25 +205,9 @@ export async function cleanupSessionResources(
   tmuxName: string,
   deps: LifecycleDeps,
 ): Promise<void> {
-  // Unregister transcript from token tracker before stopping the session
-  if (deps.tokenTracker) {
-    const task = deps.taskStore.findTaskBySession(tmuxName);
-    if (task) {
-      for (const session of task.sessions) {
-        if (session.tmuxSession === tmuxName && session.transcriptPath) {
-          deps.tokenTracker.unregister(session.transcriptPath);
-        }
-      }
-    }
-  }
-
+  unregisterTranscript(tmuxName, deps);
   await deps.adapter.stop(tmuxName);
-  deps.monitor.unregisterAgent(tmuxName);
-  deps.hookWatcher?.stop(tmuxName);
-  deps.watchdog?.unregisterAgent(tmuxName);
-  deps.shadowRegistry?.unregisterAgent(tmuxName);
-  deps.suppressionTracker?.reset(tmuxName);
-  deps.checkpointCycler?.forget(tmuxName);
+  forgetSessionBookkeeping(tmuxName, deps);
 }
 
 /**
@@ -224,6 +228,22 @@ async function stopAllLiveSessions(
   }
 }
 
+function completeLiveSessionsInBackground(task: Task, deps: LifecycleDeps): void {
+  for (const session of task.sessions) {
+    if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {
+      deps.taskStore.updateSession(task.id, session.tmuxSession, { lastStatus: 'completed' });
+      unregisterTranscript(session.tmuxSession, deps);
+      forgetSessionBookkeeping(session.tmuxSession, deps);
+      void deps.adapter.stop(session.tmuxSession).catch((err) => {
+        console.warn(
+          `[lifecycle] background cleanup failed for ${session.tmuxSession}:`,
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }
+  }
+}
+
 function markCompletedMissingWorktreesCleanedUp(task: Task, deps: LifecycleDeps): void {
   for (const session of task.sessions) {
     if (isMissingWorktreeHealth(session.worktreeHealth)) {
@@ -233,8 +253,8 @@ function markCompletedMissingWorktreesCleanedUp(task: Task, deps: LifecycleDeps)
 }
 
 /**
- * Complete a task: stop all active sessions, mark completed,
- * log the event, and fire-and-forget worktree cleanup.
+ * Complete a task: mark completed immediately, then stop active sessions in
+ * the background so a slow terminal shutdown does not block the dashboard.
  */
 export async function completeTask(
   taskId: string,
@@ -243,7 +263,7 @@ export async function completeTask(
   const task = deps.taskStore.getTask(taskId);
   if (!task) throw new Error(`Task not found: ${taskId}`);
 
-  await stopAllLiveSessions(task, deps, 'completed');
+  completeLiveSessionsInBackground(task, deps);
   deps.queue?.purgeTask(taskId);
   deps.taskStore.completeTask(taskId);
   markCompletedMissingWorktreesCleanedUp(task, deps);

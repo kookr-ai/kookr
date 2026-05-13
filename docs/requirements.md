@@ -87,6 +87,17 @@ The system SHOULD preserve enough closeout metadata for completed Kookr-managed 
 
 **Evidence:** `src/core/completion-digest.ts`, `src/server/completion-metadata.ts`, `src/server/ws-handlers/lifecycle-handler.ts`, `src/server/ralph-loop-service.ts`, `src/core/completion-digest.test.ts`, `src/server/completion-metadata.test.ts`.
 
+### R1.8: Acknowledge User Completion Quickly [F4.4] — SHOULD — `done`
+
+The system SHOULD acknowledge a user-initiated task completion before slow terminal teardown or closeout metadata enrichment finishes.
+
+**Acceptance criteria:**
+- Clicking Complete transitions the task to `completed` without waiting for the terminal backend's graceful kill timeout.
+- Completion digest and token/cost enrichment continue in the background and update the completed task when available.
+- Ralph iteration completion MAY remain synchronous when the terminal Stop hook is required to advance the loop.
+
+**Evidence:** `src/server/agent-lifecycle.ts`, `src/server/ws-handlers/lifecycle-handler.ts`, `src/server/agent-lifecycle.test.ts`.
+
 ---
 
 ## R2: Anomaly Detection
