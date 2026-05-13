@@ -30,6 +30,9 @@ const BARE_REF_RE = /(?:^|\s)#(\d+)\b/g;
  */
 const ACTION_ISSUE_RE = /\b(?:fix|fixes|resolve|resolves|close|closes|implement|implements|address|addresses|work\s+on|start\s+working\s+on)\s+#(\d+)/gi;
 
+const MUTATING_GH_COMMAND_RE = /\bgh\s+(?:issue\s+(?:create|edit|close|reopen|comment|transfer|pin|unpin|lock|unlock)|pr\s+(?:create|edit|merge|close|reopen|comment|review|ready|lock|unlock))\b/i;
+const MUTATING_API_COMMAND_RE = /\b(?:gh\s+api|curl)\b[\s\S]*(?:^|\s)-X\s+(?:POST|PATCH|PUT|DELETE)\b/i;
+
 export interface ExtractedRef {
   type: 'pr' | 'issue';
   owner?: string;
@@ -141,9 +144,13 @@ export function extractRefsFromEvents(
 ): ExtractedRef[] {
   const allRefs: ExtractedRef[] = [];
   const seen = new Set<string>();
+  const toolUsesById = new Map<string, Extract<AgentEvent, { type: 'tool_use' }>>();
+  let lastToolUse: Extract<AgentEvent, { type: 'tool_use' }> | null = null;
 
-  function addRefs(refs: ExtractedRef[]): void {
+  function addRefs(refs: ExtractedRef[], options: { includeIssues: boolean }): void {
     for (const ref of refs) {
+      if (ref.type === 'issue' && !options.includeIssues) continue;
+
       const owner = ref.owner ?? defaultOwner;
       const repo = ref.repo ?? defaultRepo;
       const key = `${ref.type}:${owner ?? ''}/${repo ?? ''}#${ref.number}`;
@@ -160,18 +167,51 @@ export function extractRefsFromEvents(
   }
 
   for (const event of events) {
-    if (event.type === 'tool_result') {
+    if (event.type === 'tool_use') {
+      lastToolUse = event;
+      if (event.toolUseId) {
+        toolUsesById.set(event.toolUseId, event);
+      }
+    } else if (event.type === 'tool_result') {
       const response = event.toolResponse;
       if (typeof response !== 'string' && typeof response !== 'object') continue;
+      if (!shouldScanToolResult(event, toolUsesById, lastToolUse)) continue;
 
       const text = typeof response === 'string' ? response : JSON.stringify(response);
-      addRefs(extractRefsFromText(text));
+      addRefs(extractRefsFromText(text), { includeIssues: true });
     } else if (event.type === 'stop' || event.type === 'stop_failure') {
-      addRefs(extractRefsFromText(event.lastMessage));
+      addRefs(extractRefsFromText(event.lastMessage), { includeIssues: false });
     }
   }
 
   return allRefs;
+}
+
+function shouldScanToolResult(
+  event: Extract<AgentEvent, { type: 'tool_result' }>,
+  toolUsesById: ReadonlyMap<string, Extract<AgentEvent, { type: 'tool_use' }>>,
+  lastToolUse: Extract<AgentEvent, { type: 'tool_use' }> | null,
+): boolean {
+  if (event.toolName !== 'Bash') {
+    return true;
+  }
+
+  const pairedUse = event.toolUseId ? toolUsesById.get(event.toolUseId) : lastToolUse;
+  const command = extractCommand(pairedUse?.toolInput);
+
+  if (!command) {
+    return false;
+  }
+
+  return MUTATING_GH_COMMAND_RE.test(command) || MUTATING_API_COMMAND_RE.test(command);
+}
+
+function extractCommand(toolInput: unknown): string | null {
+  if (typeof toolInput === 'string') return toolInput;
+  if (!toolInput || typeof toolInput !== 'object') return null;
+
+  const command = (toolInput as Record<string, unknown>).command;
+  return typeof command === 'string' ? command : null;
 }
 
 /**
