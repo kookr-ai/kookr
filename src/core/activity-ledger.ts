@@ -1,0 +1,195 @@
+import { mkdir, open, readFile, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { AgentType } from './agent-types.js';
+import type { AgentEvent, EventParentage } from './types.js';
+
+/**
+ * Durable per-Kookr-session ingestion record. Phase 3 of
+ * rfc-activity-log-reliability §1. Distinct from {@link AgentEvent}: the
+ * envelope is the ledger's source of truth; AgentEvent is the normalized
+ * projection that flows into the monitor window.
+ */
+export interface HookEnvelopeV1 {
+  schemaVersion: 'hook-envelope.v1';
+  kookrSessionId: string;
+  taskId?: string;
+  provider: AgentType;
+  rawSessionId?: string;
+  rawTurnId?: string;
+  rawHookEventName?: string;
+  source: 'file' | 'http';
+  /** ISO timestamp when Kookr observed the record. */
+  observedAt: string;
+  /** Kookr-assigned monotonic per-kookrSessionId sequence. */
+  sequence: number;
+  /** sha256 of trimmed raw payload. */
+  contentHash: string;
+  parentage: EventParentage;
+  parseStatus: 'ok' | 'repaired' | 'malformed' | 'dropped';
+  /** Byte length of the raw payload — the raw bytes themselves are not
+   *  duplicated here. Operators correlate to the original
+   *  `~/.kookr/hooks/<session>.jsonl` line via contentHash if needed. */
+  rawBytes: number;
+}
+
+export interface ActivityLedgerRow {
+  envelope: HookEnvelopeV1;
+  /** Normalized event when parsing succeeded; absent for malformed/dropped. */
+  event?: AgentEvent;
+  /** Where this row affected live state, or whether it was diagnostic-only. */
+  projection?: 'parent_activity' | 'child_activity' | 'diagnostic_only';
+  /** Free-text reason for parseStatus !== 'ok'. */
+  error?: string;
+}
+
+export interface ActivityLedgerStats {
+  kookrSessionId: string;
+  rawRecordCount: number;
+  parsedRecordCount: number;
+  malformedRecordCount: number;
+  duplicateRecordCount: number;
+  droppedRecordCount: number;
+  parentEventCount: number;
+  childEventCount: number;
+  foreignEventCount: number;
+  unknownParentageCount: number;
+  rawBytesTotal: number;
+}
+
+/** Owner-only directory bits — locks the activity ledger to the running user. */
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
+
+/**
+ * Append-only JSONL ledger of all hook records observed for a Kookr session,
+ * including malformed and duplicate ones. Lives under
+ * `<activityDir>/<kookrSessionId>.jsonl` with owner-only permissions. The
+ * ledger is for diagnostics — live anomaly state still lives in the
+ * monitor's bounded window. See rfc-activity-log-reliability §7.
+ */
+export class ActivityLedger {
+  private writeQueues = new Map<string, Promise<void>>();
+  private dirEnsured = false;
+
+  constructor(private activityDir: string) {}
+
+  /**
+   * Queue an append for `row`. Returns the chained promise so tests can
+   * await flush; production callers fire-and-forget so ledger latency
+   * never sits in front of hook delivery.
+   */
+  append(row: ActivityLedgerRow): Promise<void> {
+    const session = row.envelope.kookrSessionId;
+    const prior = this.writeQueues.get(session) ?? Promise.resolve();
+    const next = prior
+      .catch(() => { /* swallow previous failure for chain continuity */ })
+      .then(() => this.appendOnce(row));
+    this.writeQueues.set(session, next);
+    return next;
+  }
+
+  private async appendOnce(row: ActivityLedgerRow): Promise<void> {
+    if (!this.dirEnsured) {
+      await mkdir(this.activityDir, { recursive: true, mode: DIR_MODE });
+      this.dirEnsured = true;
+    }
+    const path = this.pathFor(row.envelope.kookrSessionId);
+    const line = `${JSON.stringify(row)}\n`;
+    const handle = await open(path, 'a', FILE_MODE);
+    try {
+      await handle.appendFile(line, 'utf8');
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /**
+   * Flush all pending writes for `kookrSessionId` (or every session when
+   * omitted). Tests use this to await durability before asserting.
+   */
+  async flush(kookrSessionId?: string): Promise<void> {
+    if (kookrSessionId) {
+      const q = this.writeQueues.get(kookrSessionId);
+      if (q) await q.catch(() => {});
+      return;
+    }
+    await Promise.all(
+      [...this.writeQueues.values()].map((q) => q.catch(() => {})),
+    );
+  }
+
+  pathFor(kookrSessionId: string): string {
+    return join(this.activityDir, `${kookrSessionId}.jsonl`);
+  }
+
+  async readAll(kookrSessionId: string): Promise<ActivityLedgerRow[]> {
+    await this.flush(kookrSessionId);
+    const path = this.pathFor(kookrSessionId);
+    let content: string;
+    try {
+      content = await readFile(path, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
+    }
+    const rows: ActivityLedgerRow[] = [];
+    for (const line of content.split('\n')) {
+      if (!line) continue;
+      try {
+        rows.push(JSON.parse(line) as ActivityLedgerRow);
+      } catch {
+        // Ledger row is self-malformed — extremely rare, ignore for stats.
+      }
+    }
+    return rows;
+  }
+
+  async stats(kookrSessionId: string): Promise<ActivityLedgerStats> {
+    const rows = await this.readAll(kookrSessionId);
+    const out: ActivityLedgerStats = {
+      kookrSessionId,
+      rawRecordCount: rows.length,
+      parsedRecordCount: 0,
+      malformedRecordCount: 0,
+      duplicateRecordCount: 0,
+      droppedRecordCount: 0,
+      parentEventCount: 0,
+      childEventCount: 0,
+      foreignEventCount: 0,
+      unknownParentageCount: 0,
+      rawBytesTotal: 0,
+    };
+    for (const row of rows) {
+      const { envelope } = row;
+      out.rawBytesTotal += envelope.rawBytes;
+      if (envelope.parseStatus === 'ok' || envelope.parseStatus === 'repaired') {
+        out.parsedRecordCount += 1;
+      } else if (envelope.parseStatus === 'malformed') {
+        out.malformedRecordCount += 1;
+      } else if (envelope.parseStatus === 'dropped') {
+        out.droppedRecordCount += 1;
+      }
+      if (row.projection === 'diagnostic_only' && envelope.parseStatus !== 'malformed' && envelope.parseStatus !== 'dropped') {
+        out.duplicateRecordCount += 1;
+      }
+      if (envelope.parentage === 'parent') out.parentEventCount += 1;
+      else if (envelope.parentage === 'child') out.childEventCount += 1;
+      else if (envelope.parentage === 'foreign') out.foreignEventCount += 1;
+      else if (envelope.parentage === 'unknown') out.unknownParentageCount += 1;
+    }
+    return out;
+  }
+
+  /** Delete this session's ledger file. Used when a task is deleted. */
+  async pruneSession(kookrSessionId: string): Promise<void> {
+    await this.flush(kookrSessionId);
+    this.writeQueues.delete(kookrSessionId);
+    const path = this.pathFor(kookrSessionId);
+    try {
+      await unlink(path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  }
+}
+
