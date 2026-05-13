@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { wireEventPipeline, type EventPipelineDeps } from './event-pipeline.js';
-import type { AgentEvent } from '../core/types.js';
+import type { AgentEvent, EventMeta } from '../core/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
@@ -37,11 +37,11 @@ import { RalphLoopService } from './ralph-loop-service.js';
 // Mock-based tests: controlled pre/post anomaly snapshots
 // ---------------------------------------------------------------------------
 
-type EventHandler = (tmuxName: string, event: AgentEvent) => void;
+type EventHandler = (tmuxName: string, event: AgentEvent, meta: EventMeta) => void;
 
 function createMockDeps(): {
   deps: EventPipelineDeps;
-  fireEvent: (tmuxName: string, event: AgentEvent) => void;
+  fireEvent: (tmuxName: string, event: AgentEvent, meta?: Partial<EventMeta>) => void;
   broadcasts: ServerMessage[];
 } {
   let eventHandler: EventHandler | null = null;
@@ -91,11 +91,19 @@ function createMockDeps(): {
     } as unknown as RalphLoopService,
   };
 
+  let sequence = 0;
   return {
     deps,
-    fireEvent: (tmuxName: string, event: AgentEvent) => {
+    fireEvent: (tmuxName: string, event: AgentEvent, meta?: Partial<EventMeta>) => {
       if (!eventHandler) throw new Error('Event handler not registered');
-      eventHandler(tmuxName, event);
+      sequence += 1;
+      const fullMeta: EventMeta = {
+        parentage: meta?.parentage ?? 'parent',
+        rawSessionId: meta?.rawSessionId ?? ('sessionId' in event ? event.sessionId : undefined),
+        sequence: meta?.sequence ?? sequence,
+        observedAt: meta?.observedAt ?? Date.now(),
+      };
+      eventHandler(tmuxName, event, fullMeta);
     },
     broadcasts,
   };
@@ -107,7 +115,7 @@ function suggestionBroadcasts(broadcasts: ServerMessage[]): ServerMessage[] {
 
 describe('event-pipeline: anomaly-diff clearing (mock-based)', () => {
   let deps: EventPipelineDeps;
-  let fireEvent: (tmuxName: string, event: AgentEvent) => void;
+  let fireEvent: (tmuxName: string, event: AgentEvent, meta?: Partial<EventMeta>) => void;
   let broadcasts: ServerMessage[];
 
   beforeEach(() => {
@@ -398,7 +406,7 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
 
 describe('event-pipeline: R16 onPermissionBlocked transition guard', () => {
   let deps: EventPipelineDeps;
-  let fireEvent: (tmuxName: string, event: AgentEvent) => void;
+  let fireEvent: (tmuxName: string, event: AgentEvent, meta?: Partial<EventMeta>) => void;
   let onPermissionBlocked: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
