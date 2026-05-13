@@ -1,0 +1,339 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kookr.ai/schemas/critic-trace.v1.json",
+  "title": "critic-trace.v1",
+  "description": "Append-only event records for Kookr RFC critic meta-analysis traces.",
+  "oneOf": [
+    { "$ref": "#/$defs/invocation" },
+    { "$ref": "#/$defs/finding" },
+    { "$ref": "#/$defs/outcome" },
+    { "$ref": "#/$defs/missedRisk" }
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["schemaVersion", "recordType"],
+      "properties": {
+        "schemaVersion": {
+          "const": "critic-trace.v1"
+        },
+        "recordType": {
+          "type": "string"
+        }
+      }
+    },
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["agent_output", "manual_excerpt", "unavailable"]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "excerptHash": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref", "summary"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "pr",
+            "test",
+            "review_comment",
+            "feedback_bundle_export",
+            "runtime_observation",
+            "user_feedback",
+            "other"
+          ]
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "invocation": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "recordType",
+            "rfcPath",
+            "round",
+            "critic",
+            "sourceRef",
+            "substantiveFindingsExtracted",
+            "extractedFindingIds",
+            "noSubstantiveFindings"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": "critic-trace.v1"
+            },
+            "recordType": {
+              "const": "invocation"
+            },
+            "rfcPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "round": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "critic": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sourceRef": {
+              "$ref": "#/$defs/sourceRef"
+            },
+            "substantiveFindingsExtracted": {
+              "type": "boolean"
+            },
+            "extractedFindingIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "noSubstantiveFindings": {
+              "type": "boolean"
+            },
+            "extractionNote": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "finding": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "recordType",
+            "rfcPath",
+            "round",
+            "critic",
+            "findingId",
+            "summary",
+            "rawFinding",
+            "sourceRef",
+            "disposition",
+            "dispositionReason"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": "critic-trace.v1"
+            },
+            "recordType": {
+              "const": "finding"
+            },
+            "rfcPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "round": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "critic": {
+              "type": "string",
+              "minLength": 1
+            },
+            "findingId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "rawFinding": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sourceRef": {
+              "$ref": "#/$defs/sourceRef"
+            },
+            "disposition": {
+              "enum": [
+                "used",
+                "partially_used",
+                "rejected",
+                "deferred",
+                "duplicate",
+                "needs_empirical_check"
+              ]
+            },
+            "dispositionReason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "valueNote": {
+              "type": "string"
+            },
+            "duplicateOfFindingId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "duplicateContext": {
+              "enum": [
+                "parallel_independent",
+                "sequential_blind",
+                "sequential_exposed",
+                "unknown"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "outcome": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "recordType",
+            "findingId",
+            "assessedAt",
+            "assessor",
+            "horizon",
+            "outcome",
+            "evidence"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": "critic-trace.v1"
+            },
+            "recordType": {
+              "const": "outcome"
+            },
+            "findingId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "assessedAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "assessor": {
+              "enum": ["rfc_author", "implementer", "reviewer", "user", "reflection_task"]
+            },
+            "horizon": {
+              "enum": [
+                "post_approval",
+                "post_pr_open",
+                "post_review",
+                "post_merge",
+                "post_production"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "validated",
+                "partially_validated",
+                "neutral",
+                "falsified",
+                "expired_unknown"
+              ]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            },
+            "evidenceRefs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/evidenceRef"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "missedRisk": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "recordType",
+            "rfcPath",
+            "discoveredAt",
+            "evidence",
+            "expectedCritics",
+            "matchedFindingIds",
+            "note"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": "critic-trace.v1"
+            },
+            "recordType": {
+              "const": "missed_risk"
+            },
+            "rfcPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "discoveredAt": {
+              "type": "string",
+              "minLength": 1
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedCritics": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "matchedFindingIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}
