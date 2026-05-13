@@ -73,7 +73,7 @@ test.describe('Build version info', () => {
     await page.locator('.version-badge').click();
     await expect(page.locator('.version-popover')).toBeVisible();
 
-    await page.locator('.topbar-right').click();
+    await page.mouse.click(10, 10);
     await expect(page.locator('.version-popover')).not.toBeVisible();
   });
 });

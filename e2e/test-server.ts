@@ -18,6 +18,24 @@ const PORT = process.env.E2E_PORT !== undefined ? Number(process.env.E2E_PORT) :
 const tempDir = mkdtempSync(join(tmpdir(), 'kookr-e2e-'));
 const claudeDir = join(tempDir, 'claude');
 const terminal = new FakeTerminalBackend();
+const injectedSessionIds = new Map<string, string>();
+
+function stableInjectedSessionId(tmuxName: string): string {
+  return `e2e-${tmuxName.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+}
+
+function normalizeInjectedEvent(tmuxName: string, event: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...event };
+  const sessionId = normalized.session_id;
+  if (typeof sessionId !== 'string' || !sessionId.startsWith('sess-')) {
+    return normalized;
+  }
+
+  const stableSessionId = injectedSessionIds.get(tmuxName) ?? stableInjectedSessionId(tmuxName);
+  injectedSessionIds.set(tmuxName, stableSessionId);
+  normalized.session_id = stableSessionId;
+  return normalized;
+}
 
 async function main() {
   mkdirSync(claudeDir, { recursive: true });
@@ -46,7 +64,7 @@ async function main() {
   // Returns the post-injection snapshot so tests can verify state without racing WS delivery.
   server.app.post('/api/test/inject-event', async (c) => {
     const { tmuxName, event } = await c.req.json();
-    server.adapter.injectHookEvent(tmuxName, JSON.stringify(event));
+    server.adapter.injectHookEvent(tmuxName, JSON.stringify(normalizeInjectedEvent(tmuxName, event)));
     const snapshot = server.monitor.getSnapshot();
     return c.json({ ok: true, agentCount: snapshot.length, findingCount: snapshot.filter(a => a.anomaly).length });
   });
@@ -299,6 +317,8 @@ async function main() {
     // from earlier tests sharing the same worker-scoped server.
     server.projectConfigStore.clearForTests();
     await server.projectConfigStore.save();
+    server.projectSidebarStore.setState({ version: 1, ordered: [], pinned: [], hidden: [], catalog: {} });
+    await server.projectSidebarStore.save();
     await server.ossAttemptStore.clearForTests();
 
     // Stop all hook watchers
@@ -310,6 +330,7 @@ async function main() {
     // Clear fake terminal sessions and content
     terminal.sessions.clear();
     FakeTerminalBridge.clearContent();
+    injectedSessionIds.clear();
 
     server.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/home/user/projects' });
     server.broadcastToAll({ type: 'projectSummaries', projects: [] });

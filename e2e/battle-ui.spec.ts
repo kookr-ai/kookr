@@ -9,6 +9,7 @@ import {
   resetServer,
   launchViaUI,
   getLatestTmuxName,
+  getTmuxNameForPrompt,
   getTasks,
   injectSessionStart,
   injectStopEvent,
@@ -64,12 +65,12 @@ test.describe('UI layout', () => {
 
   test('queue dots update count with multiple findings', async ({ page, request }) => {
     await launchViaUI(page, 'A', '/test/a');
-    const tmuxA = await getLatestTmuxName(request);
+    const tmuxA = await getTmuxNameForPrompt(request, 'A');
     await injectSessionStart(request, tmuxA);
     await injectStopEvent(request, tmuxA);
 
     await launchViaUI(page, 'B', '/test/b');
-    const tmuxB = await getLatestTmuxName(request);
+    const tmuxB = await getTmuxNameForPrompt(request, 'B');
     await injectSessionStart(request, tmuxB);
     await injectStopEvent(request, tmuxB);
 
@@ -453,13 +454,15 @@ test.describe('Focus management', () => {
   });
 
   test('anomaly does not steal focus from rename input', async ({ page, request }) => {
-    await launchViaUI(page, 'Rename focus', '/test/a');
-    const tmuxA = await getLatestTmuxName(request);
+    const renamePrompt = 'Rename focus';
+    const backgroundPrompt = 'Background';
+    await launchViaUI(page, renamePrompt, '/test/a');
+    const tmuxA = await getTmuxNameForPrompt(request, renamePrompt);
     await injectSessionStart(request, tmuxA);
     await injectStopEvent(request, tmuxA);
 
-    await launchViaUI(page, 'Background', '/test/b');
-    const tmuxB = await getLatestTmuxName(request);
+    await launchViaUI(page, backgroundPrompt, '/test/b');
+    const tmuxB = await getTmuxNameForPrompt(request, backgroundPrompt);
     await injectSessionStart(request, tmuxB);
 
     // Start renaming agent A
@@ -610,13 +613,13 @@ test.describe('sidebar collapsible sections', () => {
   test('all sections scroll together in single container', async ({ page, request }) => {
     // Create agents in different states: finding + healthy + snoozed
     await launchViaUI(page, 'Finding agent', '/test/f');
-    const fTmux = await getLatestTmuxName(request);
+    const fTmux = await getTmuxNameForPrompt(request, 'Finding agent');
     await injectSessionStart(request, fTmux);
     await injectStopEvent(request, fTmux);
     await expect(page.locator('.finding-card')).toBeVisible({ timeout: 3000 });
 
     await launchViaUI(page, 'Healthy agent', '/test/h');
-    const hTmux = await getLatestTmuxName(request);
+    const hTmux = await getTmuxNameForPrompt(request, 'Healthy agent');
     await injectSessionStart(request, hTmux);
     await injectToolUse(request, hTmux);
 

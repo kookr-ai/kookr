@@ -35,6 +35,24 @@ async function getLatestTmuxName(request: APIRequestContext): Promise<string> {
   throw new Error('Timed out waiting for an inProgress task with sessions');
 }
 
+async function getTmuxNameForPrompt(request: APIRequestContext, prompt: string): Promise<string> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const res = await request.get('/api/tasks');
+    const tasks = (await res.json()) as Array<{
+      prompt: string;
+      status: string;
+      sessions: Array<{ tmuxSession: string }>;
+    }>;
+    const task = [...tasks].reverse().find((candidate) => candidate.prompt === prompt && candidate.status === 'inProgress');
+    if (task?.sessions.length) {
+      return task.sessions[task.sessions.length - 1].tmuxSession;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`Timed out waiting for task "${prompt}" with sessions`);
+}
+
 async function getTaskId(request: APIRequestContext, index = 0): Promise<string> {
   const res = await request.get('/api/tasks');
   const tasks = (await res.json()) as Array<{ id: string }>;
@@ -142,13 +160,15 @@ test.describe('Supervisor flow — auto-advance', () => {
 
   test('skipping a finding auto-advances to the next finding', async ({ page, request }) => {
     // Launch two agents with anomalies
-    await launchViaUI(page, 'Skip Agent A', '/test/a');
-    const tmuxA = await getLatestTmuxName(request);
+    const promptA = 'Skip Agent A';
+    const promptB = 'Skip Agent B';
+    await launchViaUI(page, promptA, '/test/a');
+    const tmuxA = await getTmuxNameForPrompt(request, promptA);
     await injectSessionStart(request, tmuxA);
     await injectStopEvent(request, tmuxA);
 
-    await launchViaUI(page, 'Skip Agent B', '/test/b');
-    const tmuxB = await getLatestTmuxName(request);
+    await launchViaUI(page, promptB, '/test/b');
+    const tmuxB = await getTmuxNameForPrompt(request, promptB);
     await injectSessionStart(request, tmuxB);
     await injectStopEvent(request, tmuxB);
 
