@@ -1102,6 +1102,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
     defaultAgentType: getDefaultAgentType(),
     getDefaultAgentType,
+    activityMetaProvider: hookIngestion,
     scheduleService,
     ralphLoopService,
     getDiagnosticStatus: () => diagnosticRunner.getStatus(),

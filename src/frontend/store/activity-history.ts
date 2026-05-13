@@ -57,5 +57,8 @@ export function mergeActivityAgent(previous: AgentState | undefined, incoming: A
   return {
     ...incoming,
     events: mergeActivityEvents(previous, incoming),
+    ...(incoming.activityMeta === undefined && previous?.activityMeta !== undefined
+      ? { activityMeta: previous.activityMeta }
+      : {}),
   };
 }

@@ -1,4 +1,4 @@
-import type { AgentEvent } from '../../core/types.js';
+import type { AgentActivityMeta, AgentEvent } from '../../core/types.js';
 import type { ServerMessage, ClientMessage } from '../../shared/contracts/messages.js';
 import type { TaskStore } from '../../core/tasks.js';
 import type { Monitor } from '../../core/monitor.js';
@@ -44,6 +44,7 @@ export interface LifecycleHandlerDeps {
   ralphLoopService: RalphLoopService;
   launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
   broadcastToAll?: (msg: ServerMessage) => void;
+  activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   takePredeleteSnapshot?: () => Promise<void>;
   /**
    * Thunk that rebuilds the LifecycleDeps used by agent-lifecycle / delete-task.
@@ -152,7 +153,10 @@ export class LifecycleHandler {
       case 'getNext': {
         const next = this.deps.queue.next();
         if (next) {
-          const snapshot = getSnapshotAgentsForClient({ monitor: this.deps.monitor });
+          const snapshot = getSnapshotAgentsForClient({
+            monitor: this.deps.monitor,
+            activityMetaProvider: this.deps.activityMetaProvider,
+          });
           const state = snapshot.find((s) => s.agentId === next.agentId);
           if (state) {
             this.deps.send({ type: 'update', agentId: next.agentId, state });
@@ -453,7 +457,10 @@ export class LifecycleHandler {
         severity: 'info',
       });
 
-      const state = getSnapshotAgentsForClient({ monitor: this.deps.monitor })
+      const state = getSnapshotAgentsForClient({
+        monitor: this.deps.monitor,
+        activityMetaProvider: this.deps.activityMetaProvider,
+      })
         .find((agent) => agent.taskId === task.id);
       if (state) {
         this.deps.broadcastToAll?.({ type: 'update', agentId: state.agentId, state });

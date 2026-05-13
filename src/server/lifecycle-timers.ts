@@ -1,6 +1,6 @@
 import type { Monitor } from '../core/monitor.js';
 import { isActiveStatus, type Task, type TaskStore } from '../core/tasks.js';
-import type { Anomaly } from '../core/types.js';
+import type { AgentActivityMeta, Anomaly } from '../core/types.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
@@ -62,6 +62,7 @@ export interface TimerDeps {
   worktreeRegistryRepoPath?: string;
   /** Live dashboard client count; registry polling is skipped when zero. */
   getDashboardClientCount?: () => number;
+  activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
 }
 
 export interface TimerHandles {
@@ -186,7 +187,11 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         }
       }
       if (changed) {
-        broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+        broadcastToAll(createSnapshotMessage({
+          monitor,
+          serverCwd,
+          activityMetaProvider: deps.activityMetaProvider,
+        }));
       }
 
       // v5 checkpoint cycle: each tick, ask the cycler whether any session
@@ -276,7 +281,11 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }
 
     if (changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+      broadcastToAll(createSnapshotMessage({
+        monitor,
+        serverCwd,
+        activityMetaProvider: deps.activityMetaProvider,
+      }));
     }
   }, 5_000);
 
@@ -323,7 +332,11 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
             getMaxActiveTasks: deps.getMaxActiveTasks,
           });
         }
-        broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+        broadcastToAll(createSnapshotMessage({
+          monitor,
+          serverCwd,
+          activityMetaProvider: deps.activityMetaProvider,
+        }));
       }
     } catch (err) {
       console.error('Error during liveness check:', err);
@@ -333,7 +346,11 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   const snoozeExpiryInterval = setInterval(() => {
     try {
       if (restoreExpiredSnoozes(queue, taskStore)) {
-        broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+        broadcastToAll(createSnapshotMessage({
+          monitor,
+          serverCwd,
+          activityMetaProvider: deps.activityMetaProvider,
+        }));
       }
     } catch (err) {
       console.error('Error expiring snoozes:', err);
