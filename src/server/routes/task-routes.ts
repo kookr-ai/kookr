@@ -413,6 +413,8 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         shadowRegistry: deps.shadowRegistry,
         suppressionTracker: deps.suppressionTracker,
         queue: deps.queue,
+        activityLedger: deps.activityLedger,
+        hookIngestion: deps.hookIngestion,
       }, id);
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
       return c.json({ ok: true });
