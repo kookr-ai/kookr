@@ -33,7 +33,7 @@ import type {
   UnboundCodexAggregate,
 } from '../shared/contracts/cost-comparison.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
-import type { DiscoveryOutcome, OrphanBinding } from '../adapters/codex-rollout-scanner.js';
+import type { DiscoveryOutcome, OrphanBinding } from './cost-comparison-scanner-contracts.js';
 
 const PRICING_STALE_DAYS = 90;
 

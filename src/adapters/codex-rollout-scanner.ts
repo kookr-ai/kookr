@@ -21,6 +21,20 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Stats } from 'node:fs';
+import type {
+  BoundTaskTokens,
+  CodexRolloutMeta,
+  DiscoveryOutcome,
+  OrphanBinding,
+} from '../core/cost-comparison-scanner-contracts.js';
+
+export type {
+  BoundTaskTokens,
+  CodexRolloutMeta,
+  CodexTokenSnapshot,
+  DiscoveryOutcome,
+  OrphanBinding,
+} from '../core/cost-comparison-scanner-contracts.js';
 
 const SIXTY_S_MS = 60_000;
 const ONE_DAY_MS = 86_400_000;
@@ -75,87 +89,6 @@ const FRESH_MTIME_WINDOW_MS = 5_000;
  * Round-3 failure-mode-analyst F1.
  */
 const ABANDON_THRESHOLD_MS = 24 * 60 * 60 * 1000;
-
-/** Per-rollout token snapshot, sourced from the last `token_count` event with non-null `info`. */
-export interface CodexTokenSnapshot {
-  /** Codex's `input_tokens` is the GROSS prompt total (it INCLUDES `cached_input_tokens`). Aggregator subtracts. */
-  inputTokens: number;
-  outputTokens: number;
-  /** Subset of inputTokens that was served from prompt cache. */
-  cachedInputTokens: number;
-  reasoningOutputTokens: number;
-}
-
-/** Result of parsing a single rollout file. */
-export interface CodexRolloutMeta {
-  /** Absolute path to the rollout file. */
-  path: string;
-  /** session_meta.id — the rollout's primary key, used as the parent_thread_id target by sub-agents. */
-  id: string;
-  /** session_meta.cwd — what Codex was launched into. */
-  cwd: string;
-  /** session_meta.timestamp parsed as UTC. */
-  startedAt: Date;
-  /** session_meta.cli_version. Surfaced for forward-compatibility (sub-agent rule may become version-keyed). */
-  cliVersion: string | null;
-  /** Forked-from id chain link for resumed sessions. v1 does NOT chain — surfaced only. */
-  forkedFromId: string | null;
-  /** Sub-agent's parent thread id; null on top-level rollouts. */
-  parentThreadId: string | null;
-  /** session_meta.source.subagent.thread_spawn.agent_nickname. */
-  agentNickname: string | null;
-  /** First non-null `turn_context.model` (mixed-model task: first wins, mirrors token-tracker.ts behavior). */
-  model: string | null;
-  /** Last-seen `total_token_usage` snapshot; null when the rollout has no token telemetry yet. */
-  totalUsage: CodexTokenSnapshot | null;
-  /** True iff the rollout has a `task_complete` or `session_end` event. */
-  hasTerminalEvent: boolean;
-  /** File mtime ms-since-epoch (used to gate the abandoned-rollout check + the last-line freshness skip). */
-  mtimeMs: number;
-  /** When set, the row is poisoned: schema mismatch, unreadable file, or canonical token keys missing. */
-  parseError: string | null;
-}
-
-/** Aggregated tokens for a Kookr task — parent rollout + recursively-bound sub-agents. */
-export interface BoundTaskTokens {
-  taskId: string;
-  parent: CodexRolloutMeta;
-  subagents: CodexRolloutMeta[];
-  /** Sum of input_tokens across parent + sub-agents (gross — still includes cached). */
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  totalCachedInputTokens: number;
-  /** First non-null model among parent + sub-agents (parent first). */
-  model: string | null;
-  /** True iff at least one rollout in the binding had non-null `totalUsage`. */
-  hasTokenData: boolean;
-  /** True iff at least one rollout in the binding raised a parse error. */
-  hasParseError: boolean;
-}
-
-/**
- * Top-level rollout chain that no Kookr task claimed — same shape as
- * `BoundTaskTokens` minus the taskId. Sub-agents reachable via
- * `parent_thread_id` from the orphan parent are summed in (matches the binding
- * rule), so an interactive Codex session that spawned 3 sub-agents counts as
- * one orphan binding with the full thread total, not 1 + 3 = 4 separate items.
- */
-export interface OrphanBinding {
-  parent: CodexRolloutMeta;
-  subagents: CodexRolloutMeta[];
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  totalCachedInputTokens: number;
-  model: string | null;
-  hasTokenData: boolean;
-  hasParseError: boolean;
-}
-
-/** Per-rollout discovery result for a Kookr task. */
-export type DiscoveryOutcome =
-  | { kind: 'bound'; binding: BoundTaskTokens }
-  | { kind: 'not-found'; reason: 'no-candidates' | 'ambiguous'; candidateCount: number }
-  | { kind: 'abandoned'; mostRecentRolloutMtimeMs: number };
 
 /** Input to the binder: the Kookr-side view of a Codex task. */
 export interface KookrCodexTaskInput {

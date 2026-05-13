@@ -7,7 +7,8 @@ import type {
   BoundTaskTokens,
   CodexRolloutMeta,
   DiscoveryOutcome,
-} from '../adapters/codex-rollout-scanner.js';
+  OrphanBinding,
+} from './cost-comparison-scanner-contracts.js';
 import type { CostAgent } from '../shared/contracts/cost-comparison.js';
 
 const NOW = new Date('2026-05-08T12:00:00.000Z').getTime();
@@ -74,7 +75,7 @@ function fakeOrphanBinding(
   model: string | null,
   totals: { in: number; out: number; cached: number },
   opts: { hasParseError?: boolean; hasTokenData?: boolean } = {},
-): import('../adapters/codex-rollout-scanner.js').OrphanBinding {
+): OrphanBinding {
   const parent = fakeRollout(id, model, '/elsewhere', totals);
   return {
     parent,
