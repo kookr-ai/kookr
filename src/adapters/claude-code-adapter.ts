@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import type { TerminalBackend } from './terminal-backend.js';
 import type { TaskStore } from '../core/tasks.js';
-import type { AgentEvent } from '../core/types.js';
+import type { AgentEvent, EventMeta, EventParentage } from '../core/types.js';
 import type {
+  AdapterEventHandler,
   AgentAdapter,
   AdapterLaunchOptions,
   EffectiveHookSettings,
@@ -12,6 +13,12 @@ import type {
 } from './agent-adapter.js';
 import { probeAgentBinary, type ProbeExecRunner } from './probe-agent-binary.js';
 import { parseHookEvent } from '../core/hook-parser.js';
+import {
+  classifyHookParentage,
+  createSessionRuntimeIdentity,
+  recordSessionStart,
+  type SessionRuntimeIdentity,
+} from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { buildAgentLaunchContext } from './agent-launch-context.js';
 import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
@@ -87,10 +94,14 @@ export { resolvePluginDir } from '../core/plugin-paths.js';
 
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly agentType = 'claude-code';
-  private eventHandlers: Array<(tmuxName: string, event: AgentEvent) => void> = [];
+  private eventHandlers: Array<AdapterEventHandler> = [];
   private refreshHandlers: Array<() => void> = [];
   private settingsMap = new Map<string, HookSettings>();
   private tmuxToTaskId = new Map<string, string>();
+  /** In-memory parentage view per Kookr session; hydrated lazily from SessionInfo. */
+  private identities = new Map<string, SessionRuntimeIdentity>();
+  /** Kookr-assigned monotonic sequence per Kookr session, threaded through EventMeta. */
+  private sequenceCounters = new Map<string, number>();
   private hooksDir: string;
   private settingsDir: string;
   private writeFile?: (path: string, content: string) => Promise<void>;
@@ -273,9 +284,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   /**
-   * Register an event handler for AgentEvents from hook events.
+   * Register an event handler for AgentEvents from hook events. Handlers
+   * may declare 2 args (back-compat) or 3 args to receive the parentage-
+   * carrying {@link EventMeta} envelope.
    */
-  onEvent(handler: (tmuxName: string, event: AgentEvent) => void): void {
+  onEvent(handler: AdapterEventHandler): void {
     this.eventHandlers.push(handler);
   }
 
@@ -289,36 +302,58 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
   /**
    * Inject a raw hook event (for testing or from hook file tailing).
-   * Parses the JSON, emits the AgentEvent, and updates session metadata.
-   * Detects CWD changes and git commands to refresh git info.
+   * Parses the JSON, classifies parentage, freezes parent metadata against
+   * later distinct session ids, and emits the {@link AgentEvent} alongside
+   * an {@link EventMeta} envelope. CWD/git refresh is applied only for
+   * parent events so a child reviewer session cannot mutate parent state.
+   * See rfc-activity-log-reliability §1–§3.
    */
   injectHookEvent(tmuxName: string, rawJson: string): void {
     const event = parseHookEvent(rawJson);
     if (!event) return; // Unknown hook type — silently skip
     const taskId = this.tmuxToTaskId.get(tmuxName);
+    const observedAt = Date.now();
+    const observedAtIso = new Date(observedAt).toISOString();
+    const rawSessionId = 'sessionId' in event ? event.sessionId : undefined;
 
-    // Update session metadata on SessionStart
-    if (event.type === 'session_start' && taskId) {
-      this.taskStore.updateSession(taskId, tmuxName, {
-        claudeSessionId: event.sessionId,
-        transcriptPath: event.transcriptPath,
-      });
+    const identity = this.getOrHydrateIdentity(tmuxName, taskId);
+
+    let parentage: EventParentage;
+    if (event.type === 'session_start' && rawSessionId) {
+      parentage = recordSessionStart(identity, rawSessionId, event.transcriptPath, observedAtIso);
+      if (taskId) {
+        if (parentage === 'parent') {
+          const task = this.taskStore.getTask(taskId);
+          const session = task?.sessions.find((s) => s.tmuxSession === tmuxName);
+          if (session && !session.claudeSessionId) {
+            this.taskStore.updateSession(taskId, tmuxName, {
+              claudeSessionId: event.sessionId,
+              transcriptPath: event.transcriptPath,
+            });
+          }
+        } else if (parentage === 'child') {
+          this.taskStore.recordChildSession(taskId, tmuxName, rawSessionId, {
+            firstSeenAt: observedAtIso,
+            transcriptPath: event.transcriptPath,
+            reason: 'inherited_settings',
+          });
+        }
+      }
+    } else {
+      parentage = classifyHookParentage(rawSessionId, identity);
     }
 
-    // Detect CWD changes and git commands to refresh git info
-    if (taskId && 'cwd' in event && event.cwd) {
+    if (parentage === 'parent' && taskId && 'cwd' in event && event.cwd) {
       const task = this.taskStore.getTask(taskId);
       const session = task?.sessions.find((s) => s.tmuxSession === tmuxName);
       if (session) {
         let shouldRefreshGit = false;
 
-        // Trigger 1: CWD changed — agent moved to a different directory
         if (event.cwd !== session.cwd) {
           this.taskStore.updateSessionCwd(taskId, tmuxName, event.cwd);
           shouldRefreshGit = true;
         }
 
-        // Trigger 2: Git command detected — branch may have changed in same directory
         if (event.type === 'tool_result' && event.toolName === 'Bash' && isGitBranchCommand(event.toolResponse)) {
           shouldRefreshGit = true;
         }
@@ -339,10 +374,39 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       }
     }
 
-    // Emit to all handlers with tmuxName for routing
+    const sequence = (this.sequenceCounters.get(tmuxName) ?? 0) + 1;
+    this.sequenceCounters.set(tmuxName, sequence);
+    const meta: EventMeta = { parentage, rawSessionId, sequence, observedAt };
+
     for (const handler of this.eventHandlers) {
-      handler(tmuxName, event);
+      handler(tmuxName, event, meta);
     }
+  }
+
+  /**
+   * Lookup the per-Kookr-session ownership view, lazily hydrating from
+   * persisted SessionInfo so server restarts and crash recovery see the
+   * same frozen-parent semantics as a long-lived process.
+   */
+  private getOrHydrateIdentity(tmuxName: string, taskId: string | undefined): SessionRuntimeIdentity {
+    let identity = this.identities.get(tmuxName);
+    if (identity) return identity;
+    identity = createSessionRuntimeIdentity();
+    if (taskId) {
+      const task = this.taskStore.getTask(taskId);
+      const session = task?.sessions.find((s) => s.tmuxSession === tmuxName);
+      if (session?.claudeSessionId) {
+        identity.parentSessionId = session.claudeSessionId;
+        identity.parentTranscriptPath = session.transcriptPath;
+      }
+      if (session?.childSessionIds) {
+        for (const [id, info] of Object.entries(session.childSessionIds)) {
+          identity.childSessionIds.set(id, info);
+        }
+      }
+    }
+    this.identities.set(tmuxName, identity);
+    return identity;
   }
 
   /**

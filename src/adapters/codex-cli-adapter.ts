@@ -1,10 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import type { TerminalBackend } from './terminal-backend.js';
 import type { TaskStore } from '../core/tasks.js';
-import type { AgentEvent } from '../core/types.js';
-import type { AgentAdapter, AdapterLaunchOptions, EffectiveHookSettings, PreflightResult } from './agent-adapter.js';
+import type { AgentEvent, EventMeta, EventParentage } from '../core/types.js';
+import type {
+  AdapterEventHandler,
+  AgentAdapter,
+  AdapterLaunchOptions,
+  EffectiveHookSettings,
+  PreflightResult,
+} from './agent-adapter.js';
 import { probeAgentBinary, probeBinaryFlagSupport, type ProbeExecRunner } from './probe-agent-binary.js';
 import { parseHookEvent } from '../core/hook-parser.js';
+import {
+  classifyHookParentage,
+  createSessionRuntimeIdentity,
+  recordSessionStart,
+  type SessionRuntimeIdentity,
+} from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { buildAgentLaunchContext } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
@@ -107,10 +119,14 @@ export const CODEX_AGENT_BIN_ENV = 'KOOKR_CODEX_BIN';
  */
 export class CodexCliAdapter implements AgentAdapter {
   readonly agentType = 'codex-cli';
-  private eventHandlers: Array<(tmuxName: string, event: AgentEvent) => void> = [];
+  private eventHandlers: Array<AdapterEventHandler> = [];
   private refreshHandlers: Array<() => void> = [];
   private settingsMap = new Map<string, CodexHookSettings>();
   private tmuxToTaskId = new Map<string, string>();
+  /** In-memory parentage view per Kookr session; hydrated lazily from SessionInfo. */
+  private identities = new Map<string, SessionRuntimeIdentity>();
+  /** Kookr-assigned monotonic sequence per Kookr session. */
+  private sequenceCounters = new Map<string, number>();
   private hooksDir: string;
   private settingsDir: string;
   private writeFile?: (path: string, content: string) => Promise<void>;
@@ -324,7 +340,7 @@ export class CodexCliAdapter implements AgentAdapter {
     return textDecoder.decode(bytes);
   }
 
-  onEvent(handler: (tmuxName: string, event: AgentEvent) => void): void {
+  onEvent(handler: AdapterEventHandler): void {
     this.eventHandlers.push(handler);
   }
 
@@ -334,25 +350,48 @@ export class CodexCliAdapter implements AgentAdapter {
 
   /**
    * Inject a raw hook event. Codex CLI's hook payloads use the same
-   * hook_event_name values and field structure as Claude Code, so
-   * we reuse parseHookEvent directly.
+   * hook_event_name values and field structure as Claude Code, so we
+   * reuse parseHookEvent directly. Parentage is classified before any
+   * task-metadata mutation; only the first parent SessionStart sets
+   * claudeSessionId / transcriptPath. See rfc-activity-log-reliability §2.
    */
   injectHookEvent(tmuxName: string, rawJson: string): void {
     const event = parseHookEvent(rawJson);
     if (!event) return;
     const taskId = this.tmuxToTaskId.get(tmuxName);
+    const observedAt = Date.now();
+    const observedAtIso = new Date(observedAt).toISOString();
+    const rawSessionId = 'sessionId' in event ? event.sessionId : undefined;
 
-    // Update session metadata on SessionStart
-    if (event.type === 'session_start' && taskId) {
-      this.taskStore.updateSession(taskId, tmuxName, {
-        claudeSessionId: event.sessionId,
-        transcriptPath: event.transcriptPath,
-        codexHookCapabilities: event.codexHookCapabilities,
-      });
+    const identity = this.getOrHydrateIdentity(tmuxName, taskId);
+
+    let parentage: EventParentage;
+    if (event.type === 'session_start' && rawSessionId) {
+      parentage = recordSessionStart(identity, rawSessionId, event.transcriptPath, observedAtIso);
+      if (taskId) {
+        if (parentage === 'parent') {
+          const task = this.taskStore.getTask(taskId);
+          const session = task?.sessions.find((s) => s.tmuxSession === tmuxName);
+          if (session && !session.claudeSessionId) {
+            this.taskStore.updateSession(taskId, tmuxName, {
+              claudeSessionId: event.sessionId,
+              transcriptPath: event.transcriptPath,
+              codexHookCapabilities: event.codexHookCapabilities,
+            });
+          }
+        } else if (parentage === 'child') {
+          this.taskStore.recordChildSession(taskId, tmuxName, rawSessionId, {
+            firstSeenAt: observedAtIso,
+            transcriptPath: event.transcriptPath,
+            reason: 'inherited_settings',
+          });
+        }
+      }
+    } else {
+      parentage = classifyHookParentage(rawSessionId, identity);
     }
 
-    // Detect CWD changes and git commands to refresh git info
-    if (taskId && 'cwd' in event && event.cwd) {
+    if (parentage === 'parent' && taskId && 'cwd' in event && event.cwd) {
       const task = this.taskStore.getTask(taskId);
       const session = task?.sessions.find((s) => s.tmuxSession === tmuxName);
       if (session) {
@@ -382,9 +421,34 @@ export class CodexCliAdapter implements AgentAdapter {
       }
     }
 
+    const sequence = (this.sequenceCounters.get(tmuxName) ?? 0) + 1;
+    this.sequenceCounters.set(tmuxName, sequence);
+    const meta: EventMeta = { parentage, rawSessionId, sequence, observedAt };
+
     for (const handler of this.eventHandlers) {
-      handler(tmuxName, event);
+      handler(tmuxName, event, meta);
     }
+  }
+
+  private getOrHydrateIdentity(tmuxName: string, taskId: string | undefined): SessionRuntimeIdentity {
+    let identity = this.identities.get(tmuxName);
+    if (identity) return identity;
+    identity = createSessionRuntimeIdentity();
+    if (taskId) {
+      const task = this.taskStore.getTask(taskId);
+      const session = task?.sessions.find((s) => s.tmuxSession === tmuxName);
+      if (session?.claudeSessionId) {
+        identity.parentSessionId = session.claudeSessionId;
+        identity.parentTranscriptPath = session.transcriptPath;
+      }
+      if (session?.childSessionIds) {
+        for (const [id, info] of Object.entries(session.childSessionIds)) {
+          identity.childSessionIds.set(id, info);
+        }
+      }
+    }
+    this.identities.set(tmuxName, identity);
+    return identity;
   }
 
   getGeneratedSettings(tmuxName: string): CodexHookSettings | undefined {

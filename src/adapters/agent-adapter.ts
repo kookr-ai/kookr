@@ -1,5 +1,18 @@
-import type { AgentEvent } from '../core/types.js';
+import type { AgentEvent, EventMeta } from '../core/types.js';
 import type { AgentType } from '../core/agent-types.js';
+
+/**
+ * Handler signature for adapter hook events. The optional third argument is
+ * the Kookr-side {@link EventMeta} envelope carrying parentage classification
+ * relative to the Kookr terminal session. Existing 2-arg subscribers still
+ * type-check (TS function parameter contravariance). New code that needs to
+ * route based on parent/child should accept the third argument.
+ */
+export type AdapterEventHandler = (
+  tmuxName: string,
+  event: AgentEvent,
+  meta: EventMeta,
+) => void;
 
 /**
  * Common interface for all agent adapters (Claude Code, Codex CLI, etc.).
@@ -105,8 +118,10 @@ export interface AgentAdapter {
   /** Capture the current terminal display. */
   captureDisplay(tmuxName: string): Promise<string>;
 
-  /** Register handler for normalized AgentEvents from hook events. */
-  onEvent(handler: (tmuxName: string, event: AgentEvent) => void): void;
+  /** Register handler for normalized AgentEvents from hook events.
+   *  The third argument carries Kookr-side parentage classification; see
+   *  {@link AdapterEventHandler}. */
+  onEvent(handler: AdapterEventHandler): void;
 
   /** Register handler for metadata-only refreshes (e.g., git info updates). */
   onRefreshNeeded(handler: () => void): void;

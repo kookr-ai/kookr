@@ -561,6 +561,28 @@ export class TaskStore {
     return task;
   }
 
+  /**
+   * Idempotently record a non-parent runtime session id observed on this
+   * Kookr session's hook file. First-write wins per child id — repeated
+   * SessionStart events for the same child do not overwrite firstSeenAt.
+   * See rfc-activity-log-reliability §2.
+   */
+  recordChildSession(
+    taskId: string,
+    tmuxName: string,
+    childSessionId: string,
+    info: ChildSessionInfo,
+  ): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    const session = task.sessions.find((s) => s.tmuxSession === tmuxName);
+    if (!session) return;
+    const existing = session.childSessionIds ?? {};
+    if (existing[childSessionId]) return;
+    session.childSessionIds = { ...existing, [childSessionId]: info };
+    task.updatedAt = new Date();
+  }
+
   updateSessionGitInfo(taskId: string, tmuxSession: string, gitInfo: GitInfo): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
