@@ -684,6 +684,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       getRegistryActiveProjects,
       prLessonsHolder: prLessonsState,
       repoHealthCache: githubScanner.getRepoHealthSnapshot(),
+      getTaskGithubReferences: (taskId) => githubStateStore.getReferences(taskId),
     });
     // Reuse the summaries' membership as the single source of truth for which
     // github.com/... projects the repo-health tick should poll. Cap is applied

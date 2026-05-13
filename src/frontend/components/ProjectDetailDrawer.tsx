@@ -79,6 +79,17 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
   const repoHealthAgo = repoHealthFetchedAt ? relativeAgo(repoHealthFetchedAt) : undefined;
   const updatedHint = repoHealthAgo ? <span className="project-drawer-stat-hint"> · {repoHealthAgo}</span> : null;
 
+  const tiedIssues = project.openIssuesTiedToActiveTasks ?? 0;
+  const tiedPrs = project.openPrsTiedToActiveTasks ?? 0;
+  const links = project.activeTaskGithubLinks ?? [];
+  const issueLinks = links.filter((l) => l.kind === 'issue');
+  const prLinks = links.filter((l) => l.kind === 'pr');
+  const linksTooltip = (kindLinks: typeof links): string | undefined => {
+    if (kindLinks.length === 0) return undefined;
+    const lines = kindLinks.map((l) => `#${l.number} ← ${l.taskName ?? l.taskId.slice(0, 8)}`);
+    return repoHealthTooltip ? [...lines, '', repoHealthTooltip].join('\n') : lines.join('\n');
+  };
+
   const visibleTasks = tasksExpanded ? project.recentTasks : project.recentTasks.slice(0, COLLAPSED_TASK_COUNT);
   const hiddenTaskCount = Math.max(0, project.recentTasks.length - COLLAPSED_TASK_COUNT);
 
@@ -123,6 +134,19 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
             <span>{project.activeAgents} agent{project.activeAgents === 1 ? '' : 's'}</span>
             <span>{project.findingCount} finding{project.findingCount === 1 ? '' : 's'}</span>
             <span>{project.openPrs} agent PR{project.openPrs === 1 ? '' : 's'}</span>
+            {(tiedIssues > 0 || tiedPrs > 0) && (
+              <span
+                data-testid="compact-tied"
+                title={linksTooltip(links)}
+              >
+                {tiedIssues > 0 && repoHealth && Number.isFinite(repoHealth.openIssues)
+                  ? ` · ${tiedIssues}/${repoHealth.openIssues} issue${tiedIssues === 1 ? '' : 's'}`
+                  : ''}
+                {tiedPrs > 0 && repoHealth && Number.isFinite(repoHealth.openPullRequests)
+                  ? ` · ${tiedPrs}/${repoHealth.openPullRequests} PR${tiedPrs === 1 ? '' : 's'}`
+                  : ''}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -160,12 +184,20 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
               href={`${repoHealth.repoUrl}/issues`}
               target="_blank"
               rel="noopener noreferrer"
-              title={repoHealthTooltip}
+              title={linksTooltip(issueLinks) ?? repoHealthTooltip}
               data-testid="repo-open-issues"
             >
               <span className="project-drawer-stat-label">Open issues</span>
               <span className="project-drawer-stat-value">
-                {repoHealth.openIssues}
+                {tiedIssues > 0 ? (
+                  <span data-testid="open-issues-tied">
+                    <span className="project-drawer-tied-count">{tiedIssues}</span>
+                    <span className="project-drawer-tied-sep">/</span>
+                    {repoHealth.openIssues}
+                  </span>
+                ) : (
+                  repoHealth.openIssues
+                )}
                 {updatedHint}
               </span>
             </a>
@@ -176,12 +208,20 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
               href={`${repoHealth.repoUrl}/pulls`}
               target="_blank"
               rel="noopener noreferrer"
-              title={repoHealthTooltip}
+              title={linksTooltip(prLinks) ?? repoHealthTooltip}
               data-testid="repo-open-prs"
             >
               <span className="project-drawer-stat-label">Open PRs</span>
               <span className="project-drawer-stat-value">
-                {repoHealth.openPullRequests}
+                {tiedPrs > 0 ? (
+                  <span data-testid="open-prs-tied">
+                    <span className="project-drawer-tied-count">{tiedPrs}</span>
+                    <span className="project-drawer-tied-sep">/</span>
+                    {repoHealth.openPullRequests}
+                  </span>
+                ) : (
+                  repoHealth.openPullRequests
+                )}
                 {updatedHint}
               </span>
             </a>

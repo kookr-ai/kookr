@@ -65,6 +65,29 @@ export interface ProjectSummary {
    * omitted when unavailable.
    */
   repoHealth?: ProjectRepoHealth;
+  /**
+   * Count of distinct open issues in this repo currently referenced by an
+   * `inProgress`, non-snoozed Kookr task. Computed live per snapshot from the
+   * agents + GitHub state stores. Absent when no active task touches the repo.
+   */
+  openIssuesTiedToActiveTasks?: number;
+  /**
+   * Count of distinct open PRs in this repo currently referenced by an
+   * `inProgress`, non-snoozed Kookr task. Same semantics as above.
+   */
+  openPrsTiedToActiveTasks?: number;
+  /**
+   * Per-tied-item rows for the drawer tooltip: which task is driving which
+   * issue/PR number. Bounded by `activeAgents × refs per task`.
+   */
+  activeTaskGithubLinks?: ProjectGithubLink[];
+}
+
+export interface ProjectGithubLink {
+  kind: 'issue' | 'pr';
+  number: number;
+  taskId: string;
+  taskName?: string;
 }
 
 export interface ProjectSummaryDeps {
@@ -80,6 +103,15 @@ export interface ProjectSummaryDeps {
   prLessonsHolder?: PrLessonsStateHolder;
   /** Repo-health cache, keyed by project id. Provided by `GitHubScannerService.getRepoHealthSnapshot()`. */
   repoHealthCache?: ReadonlyMap<string, ProjectRepoHealth>;
+  /**
+   * Per-project active-task GitHub overlay (tied issue/PR counts and links).
+   * Keyed by project id. Caller pre-computes via `buildGithubTaskOverlay`.
+   */
+  githubTaskOverlay?: ReadonlyMap<string, {
+    tiedOpenIssueNumbers: Set<number>;
+    tiedOpenPrNumbers: Set<number>;
+    links: ProjectGithubLink[];
+  }>;
 }
 
 /** Hard cap on the number of repos polled per repo-health tick. */
@@ -137,7 +169,7 @@ export function configSeedsMembership(config: ProjectConfig): boolean {
  * Groups agents by projectId, computes aggregate stats per project.
  */
 export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummary[] {
-  const { agents, ledgerAnalytics, configStore, skillTrackedProjects, registryActiveProjects, sidebarProjects, prLessonsHolder, repoHealthCache } = deps;
+  const { agents, ledgerAnalytics, configStore, skillTrackedProjects, registryActiveProjects, sidebarProjects, prLessonsHolder, repoHealthCache, githubTaskOverlay } = deps;
 
   // Group agents by projectId (derived from task data)
   const projectAgents = new Map<string, AgentState[]>();
@@ -230,6 +262,8 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
     // PR lessons state (augment only — does not seed sidebar membership)
     const prLessons = prLessonsHolder?.getForProject(projectId);
 
+    const overlay = githubTaskOverlay?.get(projectId);
+
     summaries.push({
       project: projectId,
       displayName: projectDisplayName(projectId),
@@ -249,6 +283,9 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       prLessonsRawLines: prLessons?.rawLearningsLines,
       localPath: config?.localPath,
       repoHealth: repoHealthCache?.get(projectId),
+      openIssuesTiedToActiveTasks: overlay ? overlay.tiedOpenIssueNumbers.size : undefined,
+      openPrsTiedToActiveTasks: overlay ? overlay.tiedOpenPrNumbers.size : undefined,
+      activeTaskGithubLinks: overlay && overlay.links.length > 0 ? overlay.links : undefined,
     });
   }
 

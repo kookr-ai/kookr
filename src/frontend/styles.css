@@ -4905,6 +4905,15 @@ textarea::-webkit-resizer { background: transparent; }
   font-size: 11px;
 }
 
+.project-drawer-tied-count {
+  color: var(--accent, #4f8cff);
+  font-weight: 600;
+}
+.project-drawer-tied-sep {
+  color: var(--text-muted);
+  margin: 0 1px;
+}
+
 .project-drawer-meter {
   display: inline-flex;
   align-items: center;
