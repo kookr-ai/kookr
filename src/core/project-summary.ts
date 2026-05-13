@@ -60,7 +60,7 @@ export interface ProjectSummary {
   prLessonsRawLines?: number;
   /**
    * Absolute local checkout path, mirrored from ProjectConfig.localPath. Used
-   * by the launch dialog to pre-fill the cwd field when "Run playbook…" is
+   * by the launch dialog to pre-fill the cwd field when "Playbook task" is
    * invoked from the project drawer. Stamped server-side on first task
    * start; absent until then.
    */

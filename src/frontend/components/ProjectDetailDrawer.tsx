@@ -6,6 +6,7 @@ interface Props {
   onClose: () => void;
   send: (msg: ClientMessage) => void;
   onOpenWorkspace?: () => void;
+  onLaunchManual?: () => void;
   onRunPlaybook?: () => void;
   compact?: boolean;
 }
@@ -48,7 +49,7 @@ function TaskRow({ task }: { task: TaskSummary }) {
   );
 }
 
-export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, onRunPlaybook, compact = false }: Props) {
+export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, onLaunchManual, onRunPlaybook, compact = false }: Props) {
   const [dailyLimit, setDailyLimit] = useState<string>(project.dailyLimit?.toString() ?? '');
   const [notes, setNotes] = useState(project.notes ?? '');
   const [dirty, setDirty] = useState(false);
@@ -119,13 +120,28 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
             {'×'}
           </button>
         </div>
-        {(onRunPlaybook || onOpenWorkspace) && (
+        {(onLaunchManual || onRunPlaybook || onOpenWorkspace) && (
           <div className="project-drawer-header-actions">
+            {onLaunchManual && (
+              <button
+                className="project-drawer-action project-drawer-action-primary"
+                onClick={onLaunchManual}
+                data-testid="launch-manual-task-btn"
+              >
+                Manual task
+              </button>
+            )}
             {onRunPlaybook && (
-              <button className="btn-xs btn-primary" onClick={onRunPlaybook} data-testid="run-playbook-btn">Run playbook...</button>
+              <button className="project-drawer-action" onClick={onRunPlaybook} data-testid="run-playbook-btn">Playbook task</button>
             )}
             {onOpenWorkspace && (
-              <button className="btn-xs btn-workspace" onClick={onOpenWorkspace}>Workspace</button>
+              <button
+                className="project-drawer-action project-drawer-action-workspace"
+                onClick={onOpenWorkspace}
+                data-testid="project-workspace-btn"
+              >
+                Workspace
+              </button>
             )}
           </div>
         )}

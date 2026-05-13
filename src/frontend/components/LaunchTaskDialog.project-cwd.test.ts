@@ -31,7 +31,13 @@ function getCwdEl(container: HTMLElement): HTMLInputElement {
 
 function renderDialog(
   container: HTMLElement,
-  props: { projectCwd?: string; defaultCwd?: string; projectContext?: ProjectSummary; send?: (msg: ClientMessage) => boolean } = {},
+  props: {
+    projectCwd?: string;
+    defaultCwd?: string;
+    projectContext?: ProjectSummary;
+    initialTab?: 'manual' | 'playbooks';
+    send?: (msg: ClientMessage) => boolean;
+  } = {},
 ): { root: Root } {
   const root = createRoot(container);
   act(() => {
@@ -42,6 +48,7 @@ function renderDialog(
         projectCwd: props.projectCwd,
         defaultCwd: props.defaultCwd,
         projectContext: props.projectContext,
+        initialTab: props.initialTab,
       }),
     );
   });
@@ -158,6 +165,45 @@ describe('LaunchTaskDialog projectCwd prop', () => {
     expect(container.textContent).toContain('/server/cwd');
     expect(container.textContent).not.toContain('/old/draft/path');
     expect(Array.from(container.querySelectorAll('.playbook-resolved-cwd-path')).map((el) => el.textContent)).toEqual(['/server/cwd', '']);
+
+    act(() => root.unmount());
+  });
+
+  test('project context can open directly to manual without listing playbooks', async () => {
+    const sent: ClientMessage[] = [];
+    const { root } = renderDialog(container, {
+      projectCwd: '/work/grafana',
+      projectContext: projectSummary,
+      initialTab: 'manual',
+      send: (msg) => {
+        sent.push(msg);
+        return true;
+      },
+    });
+    await flush();
+
+    expect(sent).toEqual([]);
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
+    expect(getCwdEl(container).value).toBe('/work/grafana');
+
+    act(() => root.unmount());
+  });
+
+  test('project context manual launch with unknown cwd keeps cwd blank', async () => {
+    localStorage.setItem(
+      LAUNCH_TASK_DIALOG_DRAFT_KEY,
+      JSON.stringify({ prompt: 'pending', cwd: '/old/draft/path', criteria: '' }),
+    );
+    const { root } = renderDialog(container, {
+      projectCwd: '',
+      projectContext: projectSummary,
+      initialTab: 'manual',
+    });
+    await flush();
+
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
+    expect(getCwdEl(container).value).toBe('');
+    expect(container.textContent).not.toContain('/old/draft/path');
 
     act(() => root.unmount());
   });

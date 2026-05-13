@@ -36,9 +36,11 @@ interface Props {
   projectContext?: ProjectSummary;
   /** When launched from a selected project, pre-fill cwd with that project's local checkout. */
   projectCwd?: string;
+  /** Controls which launch surface is shown first when both manual and playbook context are valid. */
+  initialTab?: Tab;
 }
 
-export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext, projectCwd }: Props) {
+export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext, projectCwd, initialTab: requestedInitialTab }: Props) {
   const serverCwd = useKookrStore((s) => s.serverCwd);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
@@ -71,7 +73,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const [criteria, setCriteria] = useState(defaultCriteria ?? initialDraft?.criteria ?? '');
   const [showDropdown, setShowDropdown] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(-1);
-  const [tab, setTab] = useState<Tab>(relaunchPlaybookId || projectContext ? 'playbooks' : 'manual');
+  const initialTab: Tab = relaunchPlaybookId
+    ? 'playbooks'
+    : requestedInitialTab ?? (projectContext ? 'playbooks' : 'manual');
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [submitting, setSubmitting] = useState(false);
   const [agentType, setAgentType] = useState<AgentType>(
     () => defaultAgentType ?? serverDefaultAgentType ?? 'claude-code',
@@ -107,9 +112,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     if (tab === 'manual') promptRef.current?.focus();
   }, [tab]);
 
-  // When opening for playbook relaunch or project context, ensure playbook list is fetched
+  // When opening directly to playbooks, ensure the list is fetched.
   useEffect(() => {
-    if (relaunchPlaybookId || projectContext) {
+    if (relaunchPlaybookId || (projectContext && initialTab === 'playbooks')) {
       const targetCwd = projectContext ? serverCwd : (cwd.trim() || serverCwd);
       const isFresh =
         playbooksLastFetchedCwd === targetCwd &&

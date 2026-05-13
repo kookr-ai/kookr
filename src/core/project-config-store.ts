@@ -20,7 +20,7 @@ export interface ProjectConfig {
   notes?: string;        // Developer notes about contribution strategy
   /**
    * Absolute local checkout path for this project. Stamped on first task
-   * start so the launch dialog can pre-fill the cwd when "Run playbook…"
+   * start so the launch dialog can pre-fill the cwd when "Playbook task"
    * is invoked from the project drawer.
    *
    * Machine-local — not meaningful when ~/.kookr/project-configs.json is
