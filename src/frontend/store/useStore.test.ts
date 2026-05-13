@@ -286,6 +286,151 @@ describe('Kookr Zustand Store', () => {
     expect(a.startedAt).toBe('2026-03-24T10:00:00.000Z');
   });
 
+  test('handleUpdate moves selection to the next finding when selected task completes', () => {
+    store.getState().handleSnapshot([
+      {
+        agentId: 'agent-done',
+        taskId: 'task-done',
+        taskStatus: 'inProgress',
+        events: [],
+        anomaly: null,
+      },
+      {
+        agentId: 'agent-needs-input',
+        taskId: 'task-needs-input',
+        taskStatus: 'inProgress',
+        events: [],
+        anomaly: {
+          agentId: 'agent-needs-input',
+          type: 'needs_input',
+          severity: 'warning',
+          explanation: 'Waiting',
+          detectedAt: new Date(),
+        },
+      },
+    ]);
+    store.getState().selectAgent('agent-done');
+
+    store.getState().handleUpdate('agent-done', {
+      agentId: 'agent-done',
+      taskId: 'task-done',
+      taskStatus: 'completed',
+      events: [],
+      anomaly: null,
+    });
+
+    expect(store.getState().selectedAgentId).toBe('agent-needs-input');
+  });
+
+  test('handleUpdate clears selection when selected task completes with no remaining findings', () => {
+    store.getState().handleSnapshot([
+      {
+        agentId: 'agent-done',
+        taskId: 'task-done',
+        taskStatus: 'inProgress',
+        events: [],
+        anomaly: null,
+      },
+      {
+        agentId: 'agent-healthy',
+        taskId: 'task-healthy',
+        taskStatus: 'inProgress',
+        events: [],
+        anomaly: null,
+      },
+    ]);
+    store.getState().selectAgent('agent-done');
+
+    store.getState().handleUpdate('agent-done', {
+      agentId: 'agent-done',
+      taskId: 'task-done',
+      taskStatus: 'completed',
+      events: [],
+      anomaly: null,
+    });
+
+    expect(store.getState().selectedAgentId).toBeNull();
+  });
+
+  test('handleUpdate clears selection when selected task is cancelled', () => {
+    store.getState().handleSnapshot([
+      {
+        agentId: 'agent-cancelled',
+        taskId: 'task-cancelled',
+        taskStatus: 'inProgress',
+        events: [],
+        anomaly: null,
+      },
+    ]);
+    store.getState().selectAgent('agent-cancelled');
+
+    store.getState().handleUpdate('agent-cancelled', {
+      agentId: 'agent-cancelled',
+      taskId: 'task-cancelled',
+      taskStatus: 'cancelled',
+      events: [],
+      anomaly: null,
+    });
+
+    expect(store.getState().selectedAgentId).toBeNull();
+  });
+
+  test('handleUpdate keeps selected terminated task visible for acknowledgement', () => {
+    store.getState().handleSnapshot([
+      {
+        agentId: 'agent-terminated',
+        taskId: 'task-terminated',
+        taskStatus: 'inProgress',
+        events: [],
+        anomaly: null,
+      },
+    ]);
+    store.getState().selectAgent('agent-terminated');
+
+    store.getState().handleUpdate('agent-terminated', {
+      agentId: 'agent-terminated',
+      taskId: 'task-terminated',
+      taskStatus: 'terminated',
+      events: [],
+      anomaly: null,
+    });
+
+    expect(store.getState().selectedAgentId).toBe('agent-terminated');
+  });
+
+  test('handleSnapshot clears selection when selected task disappears after clear completed', () => {
+    store.getState().handleSnapshot([
+      {
+        agentId: 'agent-cleared',
+        taskId: 'task-cleared',
+        taskStatus: 'completed',
+        events: [],
+        anomaly: null,
+      },
+    ]);
+    store.getState().selectAgent('agent-cleared');
+
+    store.getState().handleSnapshot([]);
+
+    expect(store.getState().selectedAgentId).toBeNull();
+  });
+
+  test('handleSnapshot preserves explicit completed-task selection while it still exists', () => {
+    const completedAgent: AgentState = {
+      agentId: 'agent-completed',
+      taskId: 'task-completed',
+      taskStatus: 'completed',
+      events: [],
+      anomaly: null,
+    };
+    store.getState().handleSnapshot([completedAgent]);
+    store.getState().selectAgent('agent-completed');
+
+    store.getState().handleSnapshot([{ ...completedAgent, taskName: 'Already done' }]);
+
+    expect(store.getState().selectedAgentId).toBe('agent-completed');
+  });
+
   test('sentOverlay defaults to null', () => {
     expect(store.getState().sentOverlay).toBeNull();
   });
