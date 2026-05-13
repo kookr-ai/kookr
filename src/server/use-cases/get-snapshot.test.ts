@@ -164,4 +164,56 @@ describe('snapshot use cases', () => {
 
     expect(summaries).toHaveLength(0);
   });
+
+  it('stamps active-task GitHub overlay fields when getTaskGithubReferences is supplied', () => {
+    const summaries = getProjectSummaries({
+      monitor: {
+        getSnapshot: () => [{
+          agentId: 'a-1',
+          taskId: 'task-1',
+          taskName: 'Fix #42',
+          taskStatus: 'inProgress',
+          projectId: 'github.com/octo/cat',
+          cwd: '/repo',
+          events: [],
+          anomaly: null,
+          summary: '',
+          summarizedAt: null,
+          lastActivityAt: 0,
+        }] as any,
+      } as any,
+      ledgerAnalytics: {
+        getTodayCount: () => 0,
+        getWeekCount: () => 0,
+        getAttemptsByProject: () => [],
+        getAttemptsByProjectRecent: () => [],
+        getProjects: () => [],
+        getTodayBlockedEntries: () => [],
+      } as any,
+      projectConfigStore: {
+        getConfig: () => undefined,
+        getRateLimit: () => undefined,
+        getAllConfigs: () => [],
+        getEffectiveDailyLimit: () => undefined,
+      } as any,
+      getTaskGithubReferences: (taskId: string) => taskId === 'task-1' ? [{
+        type: 'issue' as const,
+        owner: 'octo',
+        repo: 'cat',
+        number: 42,
+        url: 'https://github.com/octo/cat/issues/42',
+        detectedAt: new Date(),
+        detectedFrom: 'agent-1',
+        taskId: 'task-1',
+      }] : [],
+    });
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].openIssuesTiedToActiveTasks).toBe(1);
+    expect(summaries[0].openPrsTiedToActiveTasks).toBe(0);
+    expect(summaries[0].activeTaskGithubLinks).toHaveLength(1);
+    expect(summaries[0].activeTaskGithubLinks?.[0]).toMatchObject({
+      kind: 'issue', number: 42, taskId: 'task-1', taskName: 'Fix #42',
+    });
+  });
 });

@@ -160,6 +160,7 @@ export function handleWsConnection(
       getSkillTrackedProjects: () => deps.skillDiscoveryState?.getProjects() ?? [],
       getRegistryActiveProjects: deps.getRegistryActiveProjects,
       prLessonsHolder: deps.prLessonsState,
+      getTaskGithubReferences: (taskId) => githubStateStore.getReferences(taskId),
     });
     if (projects.length > 0 && ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'projectSummaries', projects }));

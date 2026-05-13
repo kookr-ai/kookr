@@ -19,6 +19,7 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       getSidebarProjects: () => deps.projectSidebarStore?.getSeedProjects() ?? [],
       prLessonsHolder: deps.prLessonsState,
       repoHealthCache: deps.githubScanner.getRepoHealthSnapshot(),
+      getTaskGithubReferences: (taskId) => deps.githubStateStore.getReferences(taskId),
     });
     return c.json(summaries);
   });
