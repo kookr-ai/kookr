@@ -37,12 +37,12 @@ describe('buildHookCommand', () => {
   it('emits the writer pipeline when writerPath is provided + serverPort set', () => {
     const cmd = buildHookCommand({
       tmuxName: 'kookr-deadbeef',
-      hookFile: '/home/u/.kookr/hooks/kookr-deadbeef.jsonl',
+      hookFile: '/tmp/kookr-hooks/kookr-deadbeef.jsonl',
       serverPort: 4800,
       writerPath: '/opt/kookr/bin/kookr-hook-writer.js',
     });
     expect(cmd).toBe(
-      "node '/opt/kookr/bin/kookr-hook-writer.js' --session 'kookr-deadbeef' --file '/home/u/.kookr/hooks/kookr-deadbeef.jsonl' --url 'http://localhost:4800/api/hook-event/kookr-deadbeef'",
+      "node '/opt/kookr/bin/kookr-hook-writer.js' --session 'kookr-deadbeef' --file '/tmp/kookr-hooks/kookr-deadbeef.jsonl' --url 'http://localhost:4800/api/hook-event/kookr-deadbeef'",
     );
   });
 
