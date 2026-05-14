@@ -243,6 +243,26 @@ describe('POST /api/tasks error paths', () => {
     vi.clearAllMocks();
   });
 
+  test('accepts a 500 KB launch prompt body', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const prompt = 'x'.repeat(500_000);
+
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, cwd: '/cwd' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.prompt).toHaveLength(prompt.length);
+    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      prompt,
+      cwd: '/cwd',
+    }));
+  });
+
   test('returns 500 when launchTask throws', async () => {
     vi.mocked(launchTask).mockRejectedValueOnce(new Error('adapter blew up'));
 

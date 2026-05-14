@@ -1809,6 +1809,7 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
   test('sends keystroke to agent when permission_blocked', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const before = terminal.getWrittenText(tmuxName).length;
     monitor.registerAgent(tmuxName);
     monitor.processEvents(tmuxName, [
       { type: 'permission_request', sessionId: 's1', toolName: 'Bash' },
@@ -1821,7 +1822,7 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
     });
 
     // Keystroke '1' translates to the single UTF-8 byte '1'.
-    expect(terminal.getWrittenText(tmuxName)).toBe('1');
+    expect(terminal.getWrittenText(tmuxName).slice(before)).toBe('1');
   });
 
   test('clears anomaly and suggestions on permission choice', async () => {
@@ -1854,6 +1855,7 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
   test('rejects invalid keystrokes', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const before = terminal.getWrittenText(tmuxName).length;
     monitor.registerAgent(tmuxName);
     monitor.processEvents(tmuxName, [
       { type: 'permission_request', sessionId: 's1', toolName: 'Bash' },
@@ -1867,12 +1869,13 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
     });
 
     // Invalid keystroke must be rejected before touching the backend.
-    expect(terminal.getWrittenText(tmuxName)).toBe('');
+    expect(terminal.getWrittenText(tmuxName).slice(before)).toBe('');
   });
 
   test('ignores permissionChoice when agent is not permission_blocked', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const before = terminal.getWrittenText(tmuxName).length;
     monitor.registerAgent(tmuxName);
     // Agent is in needs_input, not permission_blocked
     monitor.processEvents(tmuxName, [
@@ -1886,7 +1889,7 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
     });
 
     // Stale guard must reject — no byte should reach the backend.
-    expect(terminal.getWrittenText(tmuxName)).toBe('');
+    expect(terminal.getWrittenText(tmuxName).slice(before)).toBe('');
   });
 
   test('accepts all valid keystroke characters', async () => {
@@ -1894,6 +1897,7 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
     for (const key of validKeys) {
       const task = taskStore.createTask('Fix bug', '/cwd');
       const tmuxName = await adapter.launch(task.id, 'Fix bug', '/cwd');
+      const before = terminal.getWrittenText(tmuxName).length;
       monitor.registerAgent(tmuxName);
       monitor.processEvents(tmuxName, [
         { type: 'permission_request', sessionId: 's1', toolName: 'Bash' },
@@ -1905,9 +1909,8 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
         keystroke: key,
       });
 
-      // Each loop iteration launches a fresh session, so getWrittenText
-      // should hold exactly the single-byte keystroke that was accepted.
-      expect(terminal.getWrittenText(tmuxName)).toBe(key);
+      // The accepted keystroke is the only write after launch-time prompt delivery.
+      expect(terminal.getWrittenText(tmuxName).slice(before)).toBe(key);
     }
   });
 

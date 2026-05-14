@@ -289,8 +289,9 @@ test.describe('Send & Next — input delivery', () => {
     // The selection should NOT have advanced (still on the same finding)
     await expect(page.locator('.detail-badge')).toContainText('NEEDS INPUT');
 
-    // The input was NOT delivered to the terminal
+    // The follow-up input was NOT delivered to the terminal. The launched
+    // task's initial prompt may already be present in keysReceived.
     const keys = await getKeysReceived(request, tmux);
-    expect(keys).toHaveLength(0);
+    expect(keys).not.toContain(inputText);
   });
 });

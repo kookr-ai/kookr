@@ -49,6 +49,19 @@ describe('ClaudeCodeAdapter', () => {
     expect(spec.args).toContain('--settings');
   });
 
+  test('launch delivers a large initial prompt through stdin instead of argv', async () => {
+    const largePrompt = 'x'.repeat(200_000);
+    const task = taskStore.createTask(largePrompt, '/workspace/project');
+    const sessionId = await adapter.launch(task.id, largePrompt, '/workspace/project');
+
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args.some((arg) => arg.includes(largePrompt))).toBe(false);
+    const written = backend.getWrittenText(sessionId);
+    expect(written.length).toBe(largePrompt.length + 1);
+    expect(written.startsWith(largePrompt)).toBe(true);
+    expect(written.endsWith('\r')).toBe(true);
+  });
+
   test('launch does NOT include --dangerously-skip-permissions or --setting-sources by default', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
@@ -443,12 +456,13 @@ describe('ClaudeCodeAdapter', () => {
   test('sendInput writes text + Enter to backend', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const before = backend.getWrittenText(sessionId).length;
 
     await adapter.sendInput(sessionId, 'yes, continue');
 
     // V8: sendInput calls backend.writeSequence([text_bytes, ENTER_BYTES]).
     // FakeTerminalBackend concatenates written payloads; decoded, that's text + '\r'.
-    expect(backend.getWrittenText(sessionId)).toBe('yes, continue\r');
+    expect(backend.getWrittenText(sessionId).slice(before)).toBe('yes, continue\r');
   });
 
   test('sendInput records the submitted text in keysReceived', async () => {
@@ -458,10 +472,11 @@ describe('ClaudeCodeAdapter', () => {
     // empty string, producing [""]. See #57.
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const before = backend.sessions.get(sessionId)!.keysReceived.length;
 
     await adapter.sendInput(sessionId, 'yes, continue');
 
-    expect(backend.sessions.get(sessionId)!.keysReceived).toEqual(['yes, continue']);
+    expect(backend.sessions.get(sessionId)!.keysReceived.slice(before)).toEqual(['yes, continue']);
   });
 
   test('multiple sendInput calls record separate keysReceived entries in order', async () => {
@@ -469,11 +484,12 @@ describe('ClaudeCodeAdapter', () => {
     // submission; the second must not carry text from the first. See #57.
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const before = backend.sessions.get(sessionId)!.keysReceived.length;
 
     await adapter.sendInput(sessionId, 'first input');
     await adapter.sendInput(sessionId, 'second input');
 
-    expect(backend.sessions.get(sessionId)!.keysReceived).toEqual([
+    expect(backend.sessions.get(sessionId)!.keysReceived.slice(before)).toEqual([
       'first input',
       'second input',
     ]);
@@ -485,11 +501,12 @@ describe('ClaudeCodeAdapter', () => {
     // See #57.
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const before = backend.sessions.get(sessionId)!.keysReceived.length;
 
     await adapter.sendKeystroke(sessionId, '1');
     await adapter.sendInput(sessionId, 'follow-up message');
 
-    expect(backend.sessions.get(sessionId)!.keysReceived).toEqual(['follow-up message']);
+    expect(backend.sessions.get(sessionId)!.keysReceived.slice(before)).toEqual(['follow-up message']);
   });
 
   test('stop terminates the backend session', async () => {
