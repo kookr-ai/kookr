@@ -40,8 +40,20 @@ function syncGlobalStore() {
 }
 
 async function flush() {
-  await act(async () => { await Promise.resolve(); });
-  await act(async () => { await Promise.resolve(); });
+  await act(async () => {
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function waitForElement<T extends Element>(container: Element, selector: string): Promise<T> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 1_000) {
+    await flush();
+    const element = container.querySelector<T>(selector);
+    if (element) return element;
+  }
+  throw new Error(`Timed out waiting for ${selector}`);
 }
 
 describe('App project drawer launch cwd', () => {
@@ -100,15 +112,12 @@ describe('App project drawer launch cwd', () => {
     await act(async () => {
       root.render(React.createElement(App));
     });
-    await flush();
-
-    const runPlaybook = container.querySelector('[data-testid="run-playbook-btn"]');
-    expect(runPlaybook).not.toBeNull();
+    const runPlaybook = await waitForElement<HTMLButtonElement>(container, '[data-testid="run-playbook-btn"]');
 
     await act(async () => {
-      runPlaybook!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      runPlaybook.click();
     });
-    await flush();
+    await waitForElement(container, '.playbook-resolved-cwd-path');
 
     const cwdPaths = Array.from(container.querySelectorAll('.playbook-resolved-cwd-path'))
       .map((el) => el.textContent);
@@ -119,15 +128,12 @@ describe('App project drawer launch cwd', () => {
     await act(async () => {
       root.render(React.createElement(App));
     });
-    await flush();
-
-    const manualTask = container.querySelector('[data-testid="launch-manual-task-btn"]');
-    expect(manualTask).not.toBeNull();
+    const manualTask = await waitForElement<HTMLButtonElement>(container, '[data-testid="launch-manual-task-btn"]');
 
     await act(async () => {
-      manualTask!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      manualTask.click();
     });
-    await flush();
+    await waitForElement(container, '.dialog-tab.active');
 
     expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
     const cwdInput = container.querySelector<HTMLInputElement>('.combo-input input[type="text"]');
@@ -138,36 +144,31 @@ describe('App project drawer launch cwd', () => {
     await act(async () => {
       root.render(React.createElement(App));
     });
-    await flush();
-
-    const firstRunPlaybook = container.querySelector('[data-testid="run-playbook-btn"]');
-    expect(firstRunPlaybook).not.toBeNull();
+    const firstRunPlaybook = await waitForElement<HTMLButtonElement>(container, '[data-testid="run-playbook-btn"]');
 
     await act(async () => {
-      firstRunPlaybook!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      firstRunPlaybook.click();
     });
-    await flush();
+    await waitForElement(container, '.dialog');
 
     expect(container.querySelector('.dialog')).not.toBeNull();
 
-    const closeButton = container.querySelector<HTMLButtonElement>('.dialog-close');
-    expect(closeButton).not.toBeNull();
+    const closeButton = await waitForElement<HTMLButtonElement>(container, '.dialog-close');
 
     await act(async () => {
-      closeButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      closeButton!.click();
     });
     await flush();
 
     expect(container.querySelector('.dialog')).toBeNull();
     expect(container.querySelector('[data-testid="project-detail-drawer"]')).not.toBeNull();
 
-    const secondRunPlaybook = container.querySelector('[data-testid="run-playbook-btn"]');
-    expect(secondRunPlaybook).not.toBeNull();
+    const secondRunPlaybook = await waitForElement<HTMLButtonElement>(container, '[data-testid="run-playbook-btn"]');
 
     await act(async () => {
-      secondRunPlaybook!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      secondRunPlaybook.click();
     });
-    await flush();
+    await waitForElement(container, '.dialog');
 
     expect(container.querySelector('.dialog')).not.toBeNull();
   });

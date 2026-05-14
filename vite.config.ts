@@ -17,6 +17,17 @@ export default defineConfig({
     outDir: '../../dist/frontend',
     emptyOutDir: true,
     sourcemap: 'hidden',
+    rolldownOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('/node_modules/')) return undefined;
+          if (id.includes('/react/') || id.includes('/react-dom/')) return 'vendor-react';
+          if (id.includes('/zustand/')) return 'vendor-state';
+          if (id.includes('/@xterm/')) return 'vendor-terminal';
+          return 'vendor';
+        },
+      },
+    },
   },
   server: {
     host: devHost,
