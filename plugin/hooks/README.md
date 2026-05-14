@@ -60,12 +60,14 @@ catch-net for what slips through here.
 
 ### Bypass-mode coverage
 
-Empirically untested as of writing. PoC 008 (a 15-minute probe) is
-recommended before depending on this gate to catch placement issues
-inside Kookr sessions launched with `KOOKR_BYPASS_ALL_PERMISSIONS=true`.
-Whichever way PoC 008 resolves, this gate ships in advisory mode either
-way — the result only edits one sentence here and in the
-`kookr-toolkit:placement-picker` skill body.
+**Verified to fire under bypass mode.** PoC 008 confirmed that this
+plugin's `PreToolUse` hook is dispatched when Claude Code is launched
+with the full bypass flag combo (`--dangerously-skip-permissions
+--setting-sources '' --plugin-dir <kookr>/plugin`). The `--setting-
+sources ''` flag strips file-based agents and settings-installed hooks,
+but does not affect `--plugin-dir`-loaded plugin hooks — they're loaded
+by different code paths. See `docs/poc/008-plugin-hook-bypass-
+survival.md` for the probe and result.
 
 ### Design reference
 
