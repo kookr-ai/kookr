@@ -16,6 +16,7 @@ export default defineConfig({
   build: {
     outDir: '../../dist/frontend',
     emptyOutDir: true,
+    sourcemap: 'hidden',
   },
   server: {
     host: devHost,
