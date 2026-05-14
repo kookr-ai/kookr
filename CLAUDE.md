@@ -150,9 +150,9 @@ Before your final answer for any non-trivial task (investigation, debugging, wor
 
 Skip the decision entirely only for the *purely mechanical* carveout above (rename, typo, single known command, direct terminal question). The `pnpm kb:usage` report classifies tasks by the strongest signal in their hook log — `kb remember` → wrote-lesson, `No generic KB lesson:` → explicit-skip, otherwise search-only or no-kb-activity — so the explicit-skip marker is what turns "no lesson" from a metric blind spot into a counted, reviewable signal.
 
-## Placement Picker
+## Persistence Mechanism Picker
 
-Canonical body: `kookr-toolkit:placement-picker` plugin skill. Stub fallback for sessions without `--plugin-dir`:
+Canonical body: `kookr-toolkit:placement-picker` plugin skill (full surface inventory, worked examples, anti-patterns, surface-not-available fallback). Stub fallback below for sessions without `--plugin-dir` loaded:
 
 | KIND of artifact   | s1: me, all projects | s2: this repo | s3: kookr-toolkit users, all repos | s4: kookr-internal only |
 |--------------------|----------------------|---------------|-------------------------------------|--------------------------|
