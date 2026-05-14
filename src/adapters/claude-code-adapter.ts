@@ -13,7 +13,7 @@ import type {
 import { probeAgentBinary, type ProbeExecRunner } from './probe-agent-binary.js';
 import { parseHookEvent } from '../core/hook-parser.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
-import { buildAgentLaunchContext } from './agent-launch-context.js';
+import { buildAgentLaunchContext, deliverInitialPromptToSession } from './agent-launch-context.js';
 import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
@@ -176,7 +176,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       (!resume.transcriptPath || (await fileExists(resume.transcriptPath)));
 
     // Argv-based launch — zero shell features needed per docs/spikes/argv-audit.md.
-    // Env lives in SessionSpec.env; each flag and the prompt are argv entries.
+    // Env lives in SessionSpec.env; flags are argv entries. The initial prompt
+    // is delivered through the terminal after spawn so large prompts cannot
+    // hit ARG_MAX or leak into parent-session hook command scanners.
     // --dangerously-skip-permissions is conditional on opt-in via
     // KOOKR_BYPASS_ALL_PERMISSIONS=true. --append-system-prompt is conditional
     // on checkpointing being wired (see docs/poc/005-checkpoint-cycle-mechanics.md).
@@ -208,7 +210,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       args.push('--settings', settingsPath);
     } else {
       if (checkpointInstruction) args.push('--append-system-prompt', checkpointInstruction);
-      args.push('--settings', settingsPath, prompt);
+      args.push('--settings', settingsPath);
     }
 
     await this.backend.createSession({
@@ -219,6 +221,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       cwd,
       size: { cols: 200, rows: 50 },
     });
+    if (!useResume) {
+      await deliverInitialPromptToSession(this.backend, tmuxName, prompt);
+    }
 
     // Register session with task store
     this.taskStore.addSession(taskId, {

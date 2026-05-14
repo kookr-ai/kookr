@@ -1,6 +1,11 @@
 import { readFile, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { TaskStore } from '../core/tasks.js';
+import { ENTER_BYTES } from './keystroke.js';
+import type { SessionId, TerminalBackend } from './terminal-backend.js';
+
+const promptEncoder = new TextEncoder();
+export const INITIAL_PROMPT_CHUNK_BYTES = 16 * 1024;
 
 export interface AgentLaunchContext {
   env: Record<string, string>;
@@ -66,6 +71,20 @@ export async function buildAgentLaunchContext(
   }
 
   return { env, permissionAllowlist };
+}
+
+export async function deliverInitialPromptToSession(
+  backend: TerminalBackend,
+  sessionId: SessionId,
+  prompt: string,
+): Promise<void> {
+  const promptBytes = promptEncoder.encode(prompt);
+  const payloads: Uint8Array[] = [];
+  for (let offset = 0; offset < promptBytes.length; offset += INITIAL_PROMPT_CHUNK_BYTES) {
+    payloads.push(promptBytes.subarray(offset, offset + INITIAL_PROMPT_CHUNK_BYTES));
+  }
+  payloads.push(ENTER_BYTES);
+  await backend.writeSequence(sessionId, payloads);
 }
 
 async function resolveGitCommonDir(cwd: string): Promise<string | null> {

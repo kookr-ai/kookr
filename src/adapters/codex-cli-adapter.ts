@@ -6,7 +6,7 @@ import type { AgentAdapter, AdapterLaunchOptions, EffectiveHookSettings, Preflig
 import { probeAgentBinary, probeBinaryFlagSupport, type ProbeExecRunner } from './probe-agent-binary.js';
 import { parseHookEvent } from '../core/hook-parser.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
-import { buildAgentLaunchContext } from './agent-launch-context.js';
+import { buildAgentLaunchContext, deliverInitialPromptToSession } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
 import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
@@ -241,7 +241,9 @@ export class CodexCliAdapter implements AgentAdapter {
       : '--full-auto';
 
     // V8: argv-based launch through the backend. No shell features needed;
-    // env goes in SessionSpec.env, each flag and the prompt become argv.
+    // env goes in SessionSpec.env, flags become argv. The initial prompt is
+    // delivered through the terminal after spawn so large prompts cannot hit
+    // ARG_MAX or leak into parent-session hook command scanners.
     const args = [
       '-c', 'features.codex_hooks=true',
       permissionFlagStr,
@@ -267,7 +269,6 @@ export class CodexCliAdapter implements AgentAdapter {
         );
       }
     }
-    args.push(promptWithCheckpoint);
     await this.backend.createSession({
       id: tmuxName,
       command: this.agentBin,
@@ -276,6 +277,7 @@ export class CodexCliAdapter implements AgentAdapter {
       cwd,
       size: { cols: 200, rows: 50 },
     });
+    await deliverInitialPromptToSession(this.backend, tmuxName, promptWithCheckpoint);
 
     this.taskStore.addSession(taskId, {
       tmuxSession: tmuxName,

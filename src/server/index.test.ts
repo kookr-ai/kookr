@@ -55,10 +55,12 @@ describe('createKookrServer', () => {
   let port: number;
   let baseUrl: string;
   let serverClosed: boolean;
+  let terminalBackend: FakeTerminalBackend;
 
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'kookr-test-'));
     serverClosed = false;
+    terminalBackend = new FakeTerminalBackend();
 
     server = await createKookrServerInternal({
       port: 0,
@@ -71,7 +73,7 @@ describe('createKookrServer', () => {
       frontendDir: join(tempDir, 'frontend'),
       saveIntervalMs: 600_000,
       livenessIntervalMs: 600_000,
-      terminalBackend: new FakeTerminalBackend(),
+      terminalBackend,
       claudeDir: join(tempDir, 'claude'),
     });
     port = getActualPort(server);
@@ -250,6 +252,26 @@ describe('createKookrServer', () => {
       const tasks = await listRes.json();
       expect(tasks).toHaveLength(1);
       expect(tasks[0].id).toBe(task.id);
+    });
+
+    test('POST /api/tasks accepts a 500 KB prompt without putting it in launch argv', async () => {
+      const prompt = 'x'.repeat(500_000);
+      const res = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          cwd: '/test/project',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const task = await res.json();
+      expect(task.prompt).toHaveLength(prompt.length);
+      const sessionId = task.sessions[0].tmuxSession;
+      const spec = terminalBackend.sessions.get(sessionId)!.spec;
+      expect(spec.args.some((arg) => arg.includes(prompt))).toBe(false);
+      expect(terminalBackend.getWrittenText(sessionId)).toBe(`${prompt}\r`);
     });
 
     test('POST /api/tasks with parentTaskId links child to parent', async () => {

@@ -71,6 +71,19 @@ describe('CodexCliAdapter', () => {
     expect(spec.args).toContain('--settings');
   });
 
+  test('launch delivers a large initial prompt through stdin instead of argv', async () => {
+    const largePrompt = 'x'.repeat(200_000);
+    const task = taskStore.createTask(largePrompt, '/cwd');
+    const sessionId = await adapter.launch(task.id, largePrompt, '/cwd');
+
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args.some((arg) => arg.includes(largePrompt))).toBe(false);
+    const written = backend.getWrittenText(sessionId);
+    expect(written.length).toBe(largePrompt.length + 1);
+    expect(written.startsWith(largePrompt)).toBe(true);
+    expect(written.endsWith('\r')).toBe(true);
+  });
+
   test('launch uses --full-auto and NOT the dangerous bypass flag by default', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
@@ -123,7 +136,8 @@ describe('CodexCliAdapter', () => {
       const sessionId = await checkpointAdapter.launch(task.id, 'original prompt', cwd);
 
       const spec = backend.sessions.get(sessionId)!.spec;
-      const prompt = spec.args.at(-1)!;
+      const prompt = backend.getWrittenText(sessionId);
+      expect(spec.args).not.toContain('original prompt');
       expect(prompt).toContain('CHECKPOINT.json is not present');
       expect(prompt).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
       expect(prompt).toContain('original prompt');
@@ -457,6 +471,7 @@ describe('CodexCliAdapter', () => {
   test('sendInput writes text and Enter as two distinct payloads in submission order', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const before = backend.getWrittenBytes(sessionId).length;
 
     await adapter.sendInput(sessionId, 'yes, continue');
 
@@ -464,7 +479,7 @@ describe('CodexCliAdapter', () => {
     // syscall boundary. writeSequence([text, ENTER]) must preserve that split
     // inside a single mutex acquisition — the fake captures each payload
     // separately in submission order.
-    const written = backend.getWrittenBytes(sessionId);
+    const written = backend.getWrittenBytes(sessionId).slice(before);
     expect(written).toHaveLength(2);
     expect(new TextDecoder().decode(written[0])).toBe('yes, continue');
     expect(written[1]).toEqual(Uint8Array.of(0x0d));
@@ -597,10 +612,8 @@ describe('CodexCliAdapter', () => {
       const idx = spec.args.indexOf('--plugin-dir');
       expect(idx).toBeGreaterThanOrEqual(0);
       expect(spec.args[idx + 1]).toBe(validPluginDir);
-      // Locate the prompt by exact match (not length offset) so the
-      // assertion stays load-bearing if args grow.
-      const promptIdx = spec.args.lastIndexOf('my-prompt');
-      expect(promptIdx).toBeGreaterThan(idx);
+      expect(spec.args).not.toContain('my-prompt');
+      expect(backend.getWrittenText(sessionId)).toBe('my-prompt\r');
     });
 
     test('skips injection when binary does NOT advertise --plugin-dir (stock codex)', async () => {
@@ -658,8 +671,8 @@ describe('CodexCliAdapter', () => {
       // still appear before --plugin-dir, which must come before the prompt.
       expect(spec.args).toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.args).not.toContain('--full-auto');
-      const promptIdx = spec.args.lastIndexOf('my-prompt');
-      expect(promptIdx).toBeGreaterThan(idx);
+      expect(spec.args).not.toContain('my-prompt');
+      expect(backend.getWrittenText(sessionId)).toBe('my-prompt\r');
     });
 
     test('probe runs only once per adapter (memoized across launches)', async () => {
