@@ -173,6 +173,21 @@ Use when the change touches module boundaries, imports, or public APIs:
 1. Prepare context: `git diff main..HEAD` and `git diff main..HEAD --stat`
 2. Launch selected agents **in parallel** as subagents, passing the diff and repo path.
    For the test-focused reviewer, explicitly ask whether the changed runtime path is tested directly or only inferred through helper/unit coverage.
+
+   **Claude Code:** spawn each Layer-1 specialist via the `Agent` tool, reading the specialist's `.md` file from `plugin/reviewer-specialists/` as the prompt body:
+   ```
+   Agent({ subagent_type: "general-purpose", prompt: "<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>" })
+   ```
+   For Layer-2 architecture agents use `Agent({ subagent_type: "kookr-toolkit:<name>" })`.
+
+   **Codex CLI:** spawn each Layer-1 specialist via the `spawn_agent` tool with the specialist's `.md` content as the task instructions. This is an *authorized skill-workflow spawn* under clause (b) of the `spawn_agent` tool description — you do NOT need the user to re-confirm. Pattern:
+   ```
+   spawn_agent({
+     task_name: "review_correctness",
+     instructions: "<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>"
+   })
+   ```
+   Then `wait_agent` on all spawned ids. Do NOT fall back to forging a `.review-state/<branch>.json` marker via shell — that bypasses the review the gate exists to enforce. Layer-2 architecture agents on Codex follow the same `spawn_agent` pattern, naming the role in `task_name`.
 3. Collect findings — fix any **blocking** issues before proceeding.
 4. Note informational findings in the PR description if relevant.
 
