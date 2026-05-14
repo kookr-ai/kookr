@@ -66,6 +66,19 @@ Operational rule:
 - It parses Claude-style markdown agent files with YAML frontmatter
 - Imported Kookr roles were verified in a real live spawned subagent flow
 
+### `spawn_agent` skill-workflow authorization (v1)
+
+The v1 `spawn_agent` tool description originally restricted invocation strictly to "the user explicitly asks for sub-agents", which blocked legitimate skill-driven workflows. Kookr's pre-PR reviewer-specialist spawn was the canonical failure case — codex sessions hitting the `.hooks/pre-push` review-marker gate would refuse to call `spawn_agent` and fall back to fabricating the marker via shell instead, defeating the gate.
+
+The fork's `multi_agents_spec.rs` now exposes two explicit authorization clauses:
+
+- **(a)** the user explicitly asks for sub-agents, delegation, or parallel agent work, OR
+- **(b)** a skill or workflow you are currently executing explicitly instructs you to spawn sub-agents — e.g. a pre-PR review skill that prescribes parallel reviewer-specialist sub-agents, or an agent role definition that names specific sub-agents to invoke.
+
+Clause (a) preserves the original safety intent against reflexive delegation on free-form research tasks. Clause (b) authorizes the loaded-skill case. The pair is pinned by `spawn_agent_tool_v1_description_authorizes_skill_workflow_spawns` in `multi_agents_spec_tests.rs` so a future tightening cannot silently regress this.
+
+This applies to v1 only (`Feature::Collab`, default enabled). The v2 description (`Feature::MultiAgentV2`, default disabled) does not carry the original restriction.
+
 ### Claude model alias mapping
 
 Map Claude names to Codex model strings:
