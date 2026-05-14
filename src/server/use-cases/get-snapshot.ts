@@ -22,6 +22,8 @@ export interface SnapshotQueryDeps {
 
 export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   serverCwd: string;
+  /** Optional remote-session revision. Local-only callers leave this unset. */
+  serverRevision?: number;
   buildInfo?: BuildInfo;
   serverStartedAt?: string;
   sttUrl?: string;
@@ -103,6 +105,7 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     type: 'snapshot',
     agents: getSnapshotAgentsForClient(deps),
     serverCwd: deps.serverCwd,
+    ...(deps.serverRevision !== undefined ? { serverRevision: deps.serverRevision } : {}),
     ...(deps.buildInfo ? { build: deps.buildInfo } : {}),
     ...(deps.serverStartedAt ? { serverStartedAt: deps.serverStartedAt } : {}),
     ...(deps.sttUrl ? { sttEnabled: true, sttUrl: deps.sttUrl } : {}),

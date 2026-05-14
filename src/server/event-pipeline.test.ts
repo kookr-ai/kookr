@@ -36,7 +36,6 @@ import { RalphLoopService } from './ralph-loop-service.js';
 // ---------------------------------------------------------------------------
 // Mock-based tests: controlled pre/post anomaly snapshots
 // ---------------------------------------------------------------------------
-
 type EventHandler = (tmuxName: string, event: AgentEvent, meta: EventMeta) => void;
 
 function createMockDeps(): {
