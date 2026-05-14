@@ -12,6 +12,20 @@ function makeTelemetryEvent(type: string): TelemetryEvent {
   return { type: type as TelemetryEvent['type'], timestamp: new Date().toISOString(), sessionId: 'test', platform: 'linux' };
 }
 
+async function waitForFile(path: string, timeoutMs = 1000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      return await readFile(path, 'utf-8');
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw lastError;
+}
+
 describe('AchievementWatcher', () => {
   let tmpDir: string;
   let filePath: string;
@@ -256,10 +270,7 @@ describe('AchievementWatcher', () => {
     test('unlocks are persisted to file', async () => {
       watcher.check({ type: 'client', action: 'respond' });
 
-      // Wait for async persistence
-      await new Promise((r) => setTimeout(r, 100));
-
-      const raw = await readFile(filePath, 'utf-8');
+      const raw = await waitForFile(filePath);
       const data = JSON.parse(raw);
       expect(data.unlocked).toHaveProperty('first-response');
     });
@@ -485,10 +496,7 @@ describe('AchievementWatcher', () => {
   describe('reset', () => {
     test('clears unlocked map and deletes file', async () => {
       watcher.check({ type: 'client', action: 'respond' });
-      // Wait for async persistence
-      await new Promise((r) => setTimeout(r, 100));
-      // File should exist
-      await expect(access(filePath)).resolves.toBeUndefined();
+      await waitForFile(filePath);
 
       await watcher.reset();
       expect(watcher.getUnlocked()).toEqual({});

@@ -8,16 +8,51 @@
 #   exit 2  → block (Claude Code aborts the tool call; agent sees the message)
 #   exit *  → fail-closed: treated as block by Claude Code
 #
-# We deliberately do NOT parse YAML in bash. Memory gate decisions must be
-# precise, and shell YAML parsing is a known footgun. The bash entrypoint only:
-#   - verifies `bun` is available (fail-closed if not)
-#   - tee's stdin to the TS parser
+# We deliberately do NOT parse YAML in bash. The bash entrypoint only filters
+# out non-memory paths before requiring Bun, so ordinary edits in toolkit-user
+# repos are not blocked by a missing Bun install.
 
 set -euo pipefail
 
-# Fail-closed if bun is missing — better to block than to allow with no parser.
+PAYLOAD=$(cat)
+
+if command -v node >/dev/null 2>&1; then
+  PREFILTER=$(REFLECT_MEMORY_GATE_PAYLOAD="$PAYLOAD" node <<'NODE'
+const home = process.env.HOME || '';
+let event;
+try {
+  event = JSON.parse(process.env.REFLECT_MEMORY_GATE_PAYLOAD || '{}');
+} catch {
+  console.log('memory');
+  process.exit(0);
+}
+const toolName = event.tool_name || '';
+if (!['Write', 'Edit', 'MultiEdit'].includes(toolName)) {
+  console.log('skip');
+  process.exit(0);
+}
+const input = event.tool_input || {};
+const filePath = typeof input.file_path === 'string' ? input.file_path : '';
+if (home && filePath.startsWith(`${home}/.claude/projects/`) && filePath.includes('/memory/')) {
+  console.log('memory');
+} else {
+  console.log('skip');
+}
+NODE
+)
+  if [ "$PREFILTER" != "memory" ]; then
+    exit 0
+  fi
+else
+  case "$PAYLOAD" in
+    *"\"file_path\""*"$HOME/.claude/projects/"*"/memory/"*) ;;
+    *) exit 0 ;;
+  esac
+fi
+
+# Fail-closed for memory paths if bun is missing.
 if ! command -v bun >/dev/null 2>&1; then
-  echo "reflect-memory-frontmatter-gate: bun not on PATH; blocking write to be safe." >&2
+  echo "reflect-memory-frontmatter-gate: bun not on PATH; blocking memory write to be safe." >&2
   exit 2
 fi
 
@@ -32,4 +67,4 @@ if [[ ! -f "$PARSER" ]]; then
 fi
 
 # Pipe the hook event JSON to the parser. The parser decides allow/block.
-exec bun run "$PARSER"
+printf '%s' "$PAYLOAD" | bun run "$PARSER"
