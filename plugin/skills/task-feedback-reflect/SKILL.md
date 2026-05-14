@@ -59,15 +59,9 @@ Your branch depends on `downReason`:
 | `my_prompt` | The user blames their prompt, not the agent. Do NOT propose skill/CLAUDE.md/hook changes. Write an observation explaining what was unclear and how to phrase it next time. Stop. |
 | (absent / undefined) | The user didn't classify. Do NOT propose structural fixes — ask. Produce an observation summarizing what you saw in the bundle and ask the user to clarify whether the failure was theirs (prompt clarity) or the agent's (behavior). Stop. |
 
-## Step 3 — The Persistence Mechanism Picker (thumbs-down + agent_behavior only)
+## Step 3 — Placement Picker (thumbs-down + agent_behavior only)
 
-Project CLAUDE.md ranks: **Hook > Skill > CLAUDE.md > New skill**. **Memory is BANNED for behavioral rules** in this project (Codex CLI cannot read it, half the runtime is invisible to memory). The frontmatter gate hook will block any memory write whose frontmatter is `type: feedback` — this is a backstop, not a license to try.
-
-For each candidate fix, ask in order:
-
-1. **Could a deterministic shell command detect the wrong behavior?** → Propose a hook (`.claude/hooks/` or `~/.claude/hooks/`).
-2. **Is the correct behavior a workflow with repeatable steps?** → Update or sharpen an existing skill. Prefer existing-skill updates over new-skill creation.
-3. **Is it a universal one-line rule?** → Add a line to project CLAUDE.md or `~/.claude/CLAUDE.md`.
+Load `placement-picker` and use its routing matrix before choosing a remediation surface. For this reflection workflow, the usual ranking is **Hook > Skill update > CLAUDE.md**; memory remains banned for behavioral rules because Codex CLI cannot read it.
 
 Pick the strongest option that applies. Do not stack multiple fixes for one mistake — ONE fix, then stop.
 

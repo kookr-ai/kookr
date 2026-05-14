@@ -170,5 +170,8 @@ vendor/
 # never commit these.
 .review-state/
 
+# Local-only opt-in marker for plugin/hooks/placement-gate.sh strict mode.
+.kookr-placement-gate-strict
+
 # Graphify per-session artifact directory.
 graphify-out/
