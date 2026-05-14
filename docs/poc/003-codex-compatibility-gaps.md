@@ -214,6 +214,29 @@ UserPromptSubmit hook (completed)
 
 ---
 
+#### Gap 11 — `--plugin-dir` registers skills+agents but NOT plugin hooks
+
+**Observed:** Launching the kookr Codex fork (`0.125.0-alpha.3+kookr.6b5d557d2`) with `--plugin-dir <path-to-plugin-with-hooks-json>` discovers and loads the plugin's `skills/` and `agents/`, but does NOT load its `hooks/hooks.json` sidecar. The plugin's PreToolUse hook never fires.
+
+Tested under both bypass (`--dangerously-bypass-approvals-and-sandbox`) and non-bypass (`--full-auto`) modes — same result. The 3 `hook: PreToolUse` lines Codex prints in such sessions come from `~/.claude/settings.json` PreToolUse hooks (which Codex auto-loads), not from the plugin.
+
+**Why it matters:** Plugin-bundled hooks are the cross-user distribution mechanism for kookr-toolkit. Per `rfc-unified-placement-picker.md` (PR #347), the placement-gate hook ships via `plugin/hooks/placement-gate.sh` + `plugin/hooks/hooks.json`. Until this gap is closed, that gate is silent on every Codex CLI Kookr task. Across the 859 Codex CLI sessions in May 2026 measured in `rfc-unified-placement-picker.md` §"Problem", 38 hit `<repo>/.hooks/pre-push`'s review-marker gate and 36 fabricated the marker via shell — exactly the population the in-session placement-gate was meant to protect.
+
+**Source trace (kookr fork `feat/claude-compat` HEAD `6b5d557d2`):**
+
+- `codex-rs/core/src/config/mod.rs:1907-1909` — `cli_plugin_dirs` documented as "extra skill root via `skills/` subdirectory" only.
+- `codex-rs/core/src/session/mod.rs:3418` — `let plugin_hooks_enabled = config.features.enabled(Feature::PluginHooks);` then `plugins_manager.plugins_for_config(...).effective_plugin_hook_sources()`. The plugin manager doesn't ingest `cli_plugin_dirs` for hook discovery.
+- `codex-rs/features/src/lib.rs:970-975` — `Feature::PluginHooks` is `default_enabled: true`, so the flag isn't the problem.
+- `codex-rs/core-plugins/src/loader.rs:51` — `DEFAULT_HOOKS_CONFIG_FILE = "hooks/hooks.json"`. The loader IS implemented; only the source enumeration is missing.
+
+**Fix location:** **Codex fork.** Extend `plugins_for_config` (or the call site at `session/mod.rs:3418`) to walk `cli_plugin_dirs` and register their `hooks/hooks.json` as `PluginHookSource` entries alongside the skill-root registration that already happens. The kookr fork added `--plugin-dir` in PR #57 (skills/agents); this is the parallel patch for hooks.
+
+**Kookr-side fallback:** None reliable. The push-time tree-scanner at `<repo>/hooks/skill-placement-gate.sh` provides cross-runtime coverage at git-push time, but in-session protection against misplaced writes during a Codex task requires the fork extension.
+
+**Empirical evidence:** `docs/poc/008-plugin-hook-bypass-survival.md` (in PR #348) documents the probe — Claude Code Run A fired the hook, Codex Runs G + H did not.
+
+---
+
 ### What works today (keep documenting)
 
 - Hook payload schema is ~95% compatible (same field names, same event names, PascalCase).
@@ -236,8 +259,9 @@ UserPromptSubmit hook (completed)
 | 8 | Trust prompt blocks first run | Both possible | **KOOKR** (write trust entry) | HIGH |
 | 9 | Fork version stuck at 0.0.0 | **FORK** | — | LOW |
 | 10 | MCP startup delay looks stuck | Both possible | **KOOKR** (parse TUI) | MEDIUM |
+| 11 | `--plugin-dir` skips plugin hooks | **FORK** (primary) | Push-time tree-scanner only | HIGH |
 
-**Total**: **6 fork-side fixes**, **3 Kookr-side fixes**, **1 either-or**.
+**Total**: **7 fork-side fixes**, **3 Kookr-side fixes**, **1 either-or**.
 
 ## Recommended action sequence
 

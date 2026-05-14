@@ -204,13 +204,14 @@ This proved Codex was using the imported `.claude/agents` role metadata in a rea
 
 **Before starting any new compatibility work, read `docs/poc/003-codex-compatibility-gaps.md`.**
 
-That PoC runs both CLIs with identical hook settings and documents 10 concrete gaps with their exact fix locations (fork vs Kookr) and severity. Each gap is tracked as a GitHub issue on `kookr-ai/kookr` for one-at-a-time execution in the recommended sequence. Search issues with label `codex-compat` for the current list.
+That PoC runs both CLIs with identical hook settings and documents 11 concrete gaps with their exact fix locations (fork vs Kookr) and severity. Each gap is tracked as a GitHub issue on `kookr-ai/kookr` for one-at-a-time execution in the recommended sequence. Search issues with label `codex-compat` for the current list.
 
 Top findings to know before editing the adapter or the fork:
 
 - **`--settings FILE` was previously silently broken in the installed binary.** The hook-parity batch fixed the root CLI plumbing and added regressions; if this regresses again, treat it as a critical blocker because Kookr loses hook coverage.
 - **`codex_hooks` feature flag is off by default.** Enable via `-c features.codex_hooks=true` or `[features] codex_hooks = true` in `~/.codex/config.toml`.
 - **Codex emits 8/12 hook events.** Missing: `SessionEnd`, `StopFailure`, `SubagentStart`, `SubagentStop`.
+- **`--plugin-dir` registers skills + agents but NOT plugin hooks** (Gap 11, 2026-05-14). PR #57 added `--plugin-dir` for the skill-root path; the parallel registration for `plugin/hooks/hooks.json` was never wired. `cli_plugin_dirs` reaches the skill-discovery path but not `plugins_manager.plugins_for_config(...).effective_plugin_hook_sources()`. Empirically verified in `docs/poc/008-plugin-hook-bypass-survival.md`. Until this lands, any plugin-bundled hook (like the placement-gate from rfc-unified-placement-picker PR #348) is silent on Codex sessions regardless of mode. Catch-net is the push-time tree-scanner gate at `<repo>/hooks/`.
 - **Payload format is ~95% compatible.** Same event names, same field names, same PascalCase, same `tool_name: "Bash"`, `tool_input.command` is a **string** (not an array as earlier RFCs guessed).
 
 When patching the fork, patch `feat/claude-compat` directly. Do not resurrect older compatibility branches or use a sync branch as the primary place where the work lives.
