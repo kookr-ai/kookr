@@ -14,6 +14,43 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  smoke-filter:
+    runs-on: ubuntu-latest
+    outputs:
+      src: ${{ steps.filter.outputs.src }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            src:
+              - 'src/**'
+
+  smoke:
+    needs: smoke-filter
+    if: github.event_name != 'pull_request' || needs.smoke-filter.outputs.src == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run local-only smoke gates
+        run: pnpm test:smoke
+        env:
+          KOOKR_RELAY_URL: ''
+          KOOKR_FAKE_TERMINAL: 'false'
+          KOOKR_USE_FAKE_AGENT: 'false'
+
   test:
     runs-on: ubuntu-latest
     strategy:

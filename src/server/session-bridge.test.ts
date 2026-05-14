@@ -12,6 +12,8 @@
  *   - closes the WS when the session is gone
  */
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { SessionBridge } from './session-bridge.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import {
@@ -145,6 +147,22 @@ describe('SessionBridge', () => {
 
     expect(onAny).toHaveBeenCalledTimes(2);
     expect(onInput).toHaveBeenCalledTimes(1);
+  });
+
+  it('matches the byte-equality golden stream for replay, live output, and input echo', async () => {
+    const backend = await makeReadySession('golden');
+    backend.setCaptureContent('golden', 'replay:\x1b[31mred\x1b[0m\n');
+    const ws = new FakeWs();
+    const bridge = new SessionBridge('golden', ws as unknown as never, backend);
+    await bridge.start();
+
+    backend.emit('golden', new Uint8Array([0x00, 0x41, 0xff, 0x0a]));
+    ws.emit('message', Buffer.from([0xc3, 0xa9, 0x0d]), true);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const actual = Buffer.concat(ws.sent.filter(Buffer.isBuffer));
+    const expected = readFileSync(join(process.cwd(), 'src/server/__fixtures__/session-bridge-golden.bin'));
+    expect(actual).toEqual(expected);
   });
 
   it('closes the WS when captureBytes reports the session is gone', async () => {
