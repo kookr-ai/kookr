@@ -2,8 +2,14 @@
 
 ## Status
 
-**Draft v3 — post-round-2-critic**
+**Draft v3.1 — post-PoC-008 correction**
 **Date:** 2026-05-14
+
+**v3.1 update (this revision):**
+
+- **PoC 008 cross-runtime result.** v3 named the bypass-mode probe but described it as "likely yes per structural evidence." The actual probe (Run A: Claude Code; Run G/H: Codex CLI both bypass and non-bypass) produced an asymmetric result: **Claude Code fires plugin hooks under bypass; Codex CLI does NOT fire plugin hooks at all via `--plugin-dir`**, regardless of mode. The kookr Codex fork's `--plugin-dir` registers `cli_plugin_dirs` as skill roots only (per `codex-rs/core/src/config/mod.rs:1907`). Plugin-hook loader exists and `Feature::PluginHooks` is default-on; the wiring just doesn't feed `cli_plugin_dirs` into it.
+- **Impact reframed.** The placement-gate hook from PR #348 covers Claude Code Kookr tasks fully and is silent on Codex CLI Kookr tasks. The 38/859 May-2026 sessions that motivated this RFC were Codex sessions; PR #348 alone does NOT close that gap. The push-time tree-scanner gate (`<repo>/hooks/skill-placement-gate.sh`) remains the cross-runtime catch-net. Codex coverage of the in-session gate requires a follow-up codex-fork extension to register `cli_plugin_dirs` as plugin-hook sources.
+- **Surface inventory row 9** updated: "Plugin hook" runtime visibility now reads "Claude Code: yes (`--plugin-dir`); Codex CLI: **NO via `--plugin-dir` until fork extension lands**."
 
 **Major v3 revisions** (round-2 substantive findings — incorporated):
 
@@ -67,7 +73,7 @@ Neither answers questions like *"this new rule could go in user CLAUDE.md, proje
 | 6 | Plugin skills | `<repo>/plugin/skills/<name>/SKILL.md` | every kookr-toolkit user, every repo they run in | yes (`--plugin-dir`) | yes (dir-symlink overlay, rfc-skill-agent-distribution §G — **dynamic per empirical probe**) | **yes** | on plugin update |
 | 7 | User hooks | `~/.claude/hooks/*.sh` registered in `~/.claude/settings.json` | every session, this machine | yes | partial: see surface 8 note | no | next session |
 | 8 | Project (in-repo) hooks | `<repo>/hooks/*.sh` (Kookr runtime) + `<repo>/.hooks/*` (git plumbing), installed via `scripts/install-hooks.sh` | this machine after install | yes | partial — Codex emits `PreToolUse` only for `Bash` (per PoC 003 Gap 6); file ops appear as `Bash` commands | no — must install | one-shot install |
-| 9 | Plugin hooks | `<repo>/plugin/hooks/<name>.sh` registered via `<repo>/plugin/hooks/hooks.json` (sidecar — **NOT plugin.json**, per empirical probe) | every kookr-toolkit user | yes | partial (as 8 — same PreToolUse-on-Bash semantics) | yes | on plugin update |
+| 9 | Plugin hooks | `<repo>/plugin/hooks/<name>.sh` registered via `<repo>/plugin/hooks/hooks.json` (sidecar — **NOT plugin.json**, per empirical probe) | every kookr-toolkit user | yes (`--plugin-dir`) | **NO via `--plugin-dir`** — kookr Codex fork's `cli_plugin_dirs` registers skill roots only, not hook sources (`config/mod.rs:1907`); closing requires fork extension. Push-time tree-scanner gate at `<repo>/hooks/` is the catch-net until then. | yes | on plugin update |
 | 10 | Knowledge base | `~/knowledge_bases/<kb-name>/`, searchable via `kb` CLI | every shell on this machine | via Bash | via Bash | no | immediate |
 | 11 | Project agents | `<repo>/.claude/agents/*.md` | this repo only (NOT in bypass mode per memory note) | yes | yes | with the repo | next session |
 | 12 | Plugin agents | `<repo>/plugin/agents/*.md` | every kookr-toolkit user | yes | yes | yes | on plugin update |
@@ -259,7 +265,7 @@ The sentinel file is added to `.gitignore` (v3 PR1 deliverable) so accidental `g
 
 **Operating mode**: advisory (warn-on-stderr-and-allow) by default. Strict mode (hard-block) is opt-in via the sentinel above. Suppression for a single call: prepend `KOOKR_PLACEMENT_GATE_SKIP=1` to the env (read by the script as an explicit skip signal; rare).
 
-**Bypass-mode handling**: empirically untested. The probe `docs/poc/008-plugin-hook-bypass-survival.md` is recommended before PR1's README is finalized (15-min test); it's not a hard blocker because PR1 ships in advisory mode either way. The probe's outcome determines a single sentence in `plugin/hooks/README.md` ("Gate is/is-not active in bypass mode") and a corresponding note in `placement-picker/SKILL.md`.
+**Runtime coverage (PoC 008 result, v3.1)**: the placement-gate hook fires on **Claude Code** in both supervised and bypass modes (Run A verified). It **does NOT fire on Codex CLI** in either mode (Run G/H), regardless of `--plugin-dir`. The kookr Codex fork registers `cli_plugin_dirs` as skill roots only (`codex-rs/core/src/config/mod.rs:1907`); the plugin-hook loader exists and `Feature::PluginHooks` is default-on, but the wiring doesn't feed `cli_plugin_dirs` into it. Codex coverage of the in-session gate requires a follow-up codex-fork extension. Until that lands, the push-time tree-scanner gate at `<repo>/hooks/skill-placement-gate.sh` remains the cross-runtime catch-net (it inspects the final tree regardless of which runtime wrote the files). See `docs/poc/008-plugin-hook-bypass-survival.md` for the full probe.
 
 ### C2. The literal CLAUDE.md replacement (v3 — concrete text per round-2 R4)
 
