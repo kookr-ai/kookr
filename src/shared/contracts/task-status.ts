@@ -1,4 +1,18 @@
-import type { TaskStatus } from '../../core/types.js';
+export type AgentStatus =
+  | 'starting'
+  | 'running'
+  | 'stuck'
+  | 'errored'
+  | 'completed'
+  | 'snoozed';
+
+export type TaskStatus =
+  | 'open'
+  | 'pending'
+  | 'inProgress'
+  | 'completed'
+  | 'terminated'
+  | 'cancelled';
 
 export function isTerminalStatus(s: TaskStatus): boolean {
   switch (s) {

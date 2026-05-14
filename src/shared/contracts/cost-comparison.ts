@@ -1,4 +1,4 @@
-import type { TaskStatus } from '../../core/types.js';
+import type { TaskStatus } from './task-status.js';
 
 /**
  * Wire types for the Cost Comparison panel.

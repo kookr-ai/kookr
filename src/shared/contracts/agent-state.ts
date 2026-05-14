@@ -1,0 +1,40 @@
+import type { AgentType } from './agent-types.js';
+import type { AgentEvent } from './agent-events.js';
+import type { AgentActivityMeta } from './hook-events.js';
+import type { Anomaly } from './anomalies.js';
+import type { CompletionDigest } from './completion-digest.js';
+import type { RalphLoopState, TaskCompletionFeedback, TaskLaunchHealthSummary } from './task.js';
+import type { TaskStatus } from './task-status.js';
+import type { TokenUsage } from './usage.js';
+import type { WorktreeHealth } from './session.js';
+
+export interface AgentState {
+  agentId: string;
+  events: AgentEvent[];
+  anomaly: Anomaly | null;
+  snoozedUntil?: number;
+  suppressed?: boolean;
+  taskId?: string;
+  taskName?: string;
+  taskStatus?: TaskStatus;
+  description?: string;
+  cwd?: string;
+  agentType?: AgentType;
+  startedAt?: string;
+  playbookId?: string;
+  playbookParameterValues?: Record<string, string>;
+  launchHealthSummary?: TaskLaunchHealthSummary;
+  tokenUsage?: TokenUsage;
+  gitBranch?: string;
+  gitCommit?: string;
+  gitIsWorktree?: boolean;
+  worktreeHealth?: WorktreeHealth;
+  worktreeHealthObservedAt?: string;
+  worktreeRegistryStale?: boolean;
+  projectId?: string;
+  projectDisplayLabel?: string;
+  completionDigest?: CompletionDigest;
+  completionFeedback?: TaskCompletionFeedback;
+  ralphLoop?: RalphLoopState;
+  activityMeta?: AgentActivityMeta;
+}

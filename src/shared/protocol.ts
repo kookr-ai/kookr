@@ -1,42 +1,59 @@
 // Shared protocol types — the contract between frontend and server.
 // Both sides import from here; neither imports directly from the other.
 
-export type { AnomalySeverity, AnomalyType, AgentEvent, AgentActivityMeta, TokenUsage } from '../core/types.js';
-export type { ActivityItem, ActivityDisclosure, ToolGroup, UserMessage, AgentMessage, SystemNotice, ToolGroupEntry, ToolCategory } from '../core/activity-summary.js';
-export { summarizeActivity, compactToolSummary, categorizeTool, buildActivityDisclosure } from '../core/activity-summary.js';
-export type { AgentState } from '../core/monitor.js';
-export type { CompletionDigest } from '../core/completion-digest.js';
+export type { AgentState } from './contracts/agent-state.js';
+export type { AgentType, AvailableAgentType } from './contracts/agent-types.js';
+export { AVAILABLE_AGENT_TYPES } from './contracts/agent-types.js';
+export type { AgentEvent } from './contracts/agent-events.js';
+export type { AnomalySeverity, AnomalyType } from './contracts/anomalies.js';
 export type {
-  GitHubPRState,
-  GitHubIssueState,
-  GitHubStateChange,
-  GitHubReviewThread,
+  ActivityDisclosure,
+  ActivityItem,
+  AgentMessage,
+  SystemNotice,
+  ToolCategory,
+  ToolGroup,
+  ToolGroupEntry,
+  UserMessage,
+} from './contracts/activity-summary.js';
+export {
+  buildActivityDisclosure,
+  categorizeTool,
+  compactToolSummary,
+  summarizeActivity,
+} from './contracts/activity-summary.js';
+export type { BuildInfo } from './contracts/build-info.js';
+export type { CircuitBreakerSnapshot } from './contracts/circuit-breaker.js';
+export type { CompletionDigest } from './contracts/completion-digest.js';
+export type {
   GitHubCheck,
-} from '../core/github-types.js';
-export type { BuildInfo } from '../core/build-info.js';
-export type { Playbook } from '../core/playbook.js';
-export type { QuickAction } from '../core/response-assist.js';
-export type { TelemetryEvent, TelemetryEventType } from '../core/telemetry.js';
-export type { ProjectSummary } from '../core/project-summary.js';
-export type { ProjectConfig } from '../core/project-config-store.js';
-export type { AchievementDefinition } from '../core/achievement-catalog.js';
-export type { AgentType, AvailableAgentType } from '../core/agent-types.js';
-export { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
-export type { QuotaStatus, QuotaWindow } from '../core/quota-types.js';
-export type { CircuitBreakerSnapshot } from '../core/circuit-breaker.js';
-export type { ScheduleResponse, ScheduleListResponse, ScheduleStatusSnapshot } from '../core/schedule.js';
+  GitHubIssueState,
+  GitHubPRState,
+  GitHubReviewThread,
+  GitHubStateChange,
+} from './contracts/github.js';
+export type { AgentActivityMeta } from './contracts/hook-events.js';
+export type { Playbook } from './contracts/playbook.js';
+export type { ProjectConfig } from './contracts/project-config.js';
+export type { ProjectSummary, TaskSummary } from './contracts/project-summary.js';
+export type { QuotaStatus, QuotaWindow } from './contracts/quota.js';
+export type { QuickAction } from './contracts/quick-action.js';
+export type { ScheduleResponse, ScheduleListResponse, ScheduleStatusSnapshot } from './contracts/schedule.js';
+export type { TaskCompletionFeedback } from './contracts/task.js';
+export type { TelemetryEvent, TelemetryEventType } from './contracts/telemetry.js';
+export type { TokenUsage } from './contracts/usage.js';
 export type {
   CleanupCandidateAssessment,
   CleanupCandidateDetail,
   CleanupClassification,
   CleanupDiagnosticLaunch,
   CleanupResultSummary,
+  RepoPolicy,
+  StartWorkHandoff,
   WorkspaceAttemptRecord,
   WorkspaceView,
   WorktreeLease,
-  RepoPolicy,
-  StartWorkHandoff,
-} from '../core/workspace-types.js';
+} from './contracts/workspace.js';
 export type {
   ClientMessage,
   ResourceUnavailableReason,
