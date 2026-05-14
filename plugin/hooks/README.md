@@ -58,16 +58,29 @@ watched paths. The following slip past the matcher and are NOT covered:
 The gate is best-effort; the existing tree-scanner push-time gate is the
 catch-net for what slips through here.
 
-### Bypass-mode coverage
+### Runtime coverage
 
-**Verified to fire under bypass mode.** PoC 008 confirmed that this
-plugin's `PreToolUse` hook is dispatched when Claude Code is launched
-with the full bypass flag combo (`--dangerously-skip-permissions
---setting-sources '' --plugin-dir <kookr>/plugin`). The `--setting-
-sources ''` flag strips file-based agents and settings-installed hooks,
-but does not affect `--plugin-dir`-loaded plugin hooks — they're loaded
-by different code paths. See `docs/poc/008-plugin-hook-bypass-
-survival.md` for the probe and result.
+PoC 008 probed plugin-hook firing across both Kookr-supported runtimes:
+
+- **Claude Code 2.1.141** — fires under both supervised and bypass modes.
+  `--setting-sources ''` strips file-based agents and settings hooks but
+  does not affect `--plugin-dir`-loaded plugin hooks (different code
+  paths).
+- **Codex CLI (kookr fork, build `0.125.0-alpha.3+kookr.6b5d557d2`)** —
+  **does NOT fire**, regardless of mode. The fork's `--plugin-dir`
+  registers the plugin's `skills/` and `agents/` subdirs but NOT its
+  `hooks/hooks.json` sidecar. See `codex-rs/core/src/config/mod.rs:1907`
+  in the kookr Codex fork for the source-level confirmation.
+
+So in current production: this gate covers Claude Code-spawned Kookr
+tasks fully, and is silent on Codex CLI-spawned Kookr tasks. The
+push-time tree-scanner gate (`<repo>/hooks/skill-placement-gate.sh`)
+remains the cross-runtime catch-net. A future codex-fork extension can
+close the Codex gap by also registering `cli_plugin_dirs` as plugin-
+hook sources.
+
+See `docs/poc/008-plugin-hook-bypass-survival.md` for the full probe
+results, source traces, and follow-up requirements.
 
 ### Design reference
 
