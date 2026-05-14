@@ -17,6 +17,24 @@ describe('generateTaskName', () => {
     expect(result).toBe('Fix JWT token invalidation');
   });
 
+  test('returns name from structured LLM response', async () => {
+    const client = mockClient('{"name":"Fix JWT token invalidation"}');
+    const result = await generateTaskName(client, 'Fix the auth bug', '/home/user/project');
+    expect(result).toBe('Fix JWT token invalidation');
+  });
+
+  test('strips common prose wrapper from fallback text response', async () => {
+    const client = mockClient('Here is a name that you could use for the task: Fix login timeout');
+    const result = await generateTaskName(client, 'Fix login timeout bug', '/home/user/project');
+    expect(result).toBe('Fix login timeout');
+  });
+
+  test('strips quotes and trailing punctuation from fallback text response', async () => {
+    const client = mockClient('"Fix login timeout."');
+    const result = await generateTaskName(client, 'Fix login timeout bug', '/home/user/project');
+    expect(result).toBe('Fix login timeout');
+  });
+
   test('passes prompt, cwd, and criteria in the user message', async () => {
     const client = mockClient('Add user pagination');
     await generateTaskName(client, 'Add pagination', '/project', 'All tests pass');
@@ -46,8 +64,46 @@ describe('generateTaskName', () => {
     expect(call.timeoutMs).toBeLessThanOrEqual(30000);
   });
 
+  test('requests structured output for task naming', async () => {
+    const client = mockClient('{"name":"Short name"}');
+    await generateTaskName(client, 'Do something', '/project');
+
+    const call = (client.complete as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.system).toContain('ONLY a JSON object');
+    expect(call.responseFormat).toEqual({
+      type: 'json_schema',
+      jsonSchema: {
+        name: 'task_name',
+        schema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 80,
+            },
+          },
+          required: ['name'],
+          additionalProperties: false,
+        },
+      },
+    });
+  });
+
   test('returns null when LLM returns null', async () => {
     const client = mockClient(null);
+    const result = await generateTaskName(client, 'Fix bug', '/project');
+    expect(result).toBeNull();
+  });
+
+  test('returns null when structured response has no name', async () => {
+    const client = mockClient('{"title":"Fix bug"}');
+    const result = await generateTaskName(client, 'Fix bug', '/project');
+    expect(result).toBeNull();
+  });
+
+  test('returns null when normalized name is too long', async () => {
+    const client = mockClient('This task name is much too long because it contains far more than twelve words and should not be stored directly');
     const result = await generateTaskName(client, 'Fix bug', '/project');
     expect(result).toBeNull();
   });

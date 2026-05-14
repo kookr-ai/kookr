@@ -2,6 +2,72 @@ import type { LlmClient } from './llm-client.js';
 import { logTaskNaming } from './training-data-logger.js';
 
 const TIMEOUT_MS = 5000;
+const MAX_NAME_LENGTH = 80;
+const MAX_NAME_WORDS = 12;
+
+const SYSTEM_PROMPT = `You generate short names for coding tasks.
+
+You MUST respond with ONLY a JSON object matching this shape:
+{ "name": "3-8 word task name" }
+
+Rules:
+- The name must be plain text, not markdown.
+- Do not include quotes inside the name.
+- Do not include labels such as "Task name:".
+- Do not include explanations, alternatives, or surrounding prose.`;
+
+const TASK_NAME_SCHEMA = {
+  type: 'object',
+  properties: {
+    name: {
+      type: 'string',
+      minLength: 1,
+      maxLength: MAX_NAME_LENGTH,
+    },
+  },
+  required: ['name'],
+  additionalProperties: false,
+};
+
+function extractStructuredName(raw: string): string | null | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === 'string') return parsed;
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) && 'name' in parsed) {
+      const name = parsed.name;
+      return typeof name === 'string' ? name : null;
+    }
+    return null;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeTaskName(raw: string): string | null {
+  let name = raw
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .trim();
+
+  name = name.replace(
+    /^(?:here(?:'s| is)\s+)?(?:a\s+|the\s+)?(?:concise\s+|short\s+|suggested\s+|descriptive\s+)*(?:task\s+)?name(?:\s+that\s+you\s+could\s+use(?:\s+for\s+the\s+task)?)?\s*:\s*/i,
+    '',
+  ).trim();
+  name = name.replace(/[.!?;:]+$/g, '').trim();
+
+  if (name.length === 0 || name.length > MAX_NAME_LENGTH) return null;
+  if (name.split(/\s+/).filter(Boolean).length > MAX_NAME_WORDS) return null;
+  return name;
+}
+
+function parseTaskName(raw: string): string | null {
+  const structuredName = extractStructuredName(raw);
+  if (structuredName === null) return null;
+  return normalizeTaskName(structuredName ?? raw);
+}
 
 /** Generates a short task name via an LLM. Returns null on any failure. */
 export async function generateTaskName(
@@ -19,12 +85,21 @@ export async function generateTaskName(
   }
 
   try {
-    const name = await client.complete({
+    const rawName = await client.complete({
       maxTokens: 30,
-      userMessage: `Given this coding task, generate a short descriptive name (3-8 words, no quotes, no punctuation at the end). The name should help a developer instantly understand what this task is about when scanning a list of tasks.\n\n${contextParts.join('\n')}`,
+      system: SYSTEM_PROMPT,
+      userMessage: `Generate a task name for this coding task.\n\n${contextParts.join('\n')}`,
+      responseFormat: {
+        type: 'json_schema',
+        jsonSchema: {
+          name: 'task_name',
+          schema: TASK_NAME_SCHEMA,
+        },
+      },
       timeoutMs: TIMEOUT_MS,
     });
 
+    const name = rawName ? parseTaskName(rawName) : null;
     if (name) {
       logTaskNaming(prompt, cwd, criteria, name);
     }
