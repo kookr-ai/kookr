@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { ProjectSummary } from '../core/project-summary.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
@@ -13,30 +13,39 @@ import { TopBar } from './components/TopBar.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
 import { DetailPanel } from './components/DetailPanel.js';
 import { StatusBar } from './components/StatusBar.js';
-import { LaunchTaskDialog } from './components/LaunchTaskDialog.js';
-import { QuickLaunch } from './components/QuickLaunch.js';
 import { Toasts } from './components/Toasts.js';
 import { AchievementToasts } from './components/AchievementToast.js';
 import { SentOverlay } from './components/SentOverlay.js';
-import { ShortcutsHelp } from './components/ShortcutsHelp.js';
-import { AchievementsPanel } from './components/AchievementsPanel.js';
 import { SnoozeDialog } from './components/SnoozeDialog.js';
 import { ConfirmDialog } from './components/ConfirmDialog.js';
 import { CompleteDialogFooter } from './components/CompleteDialogFooter.js';
 import type { TaskCompletionFeedback } from '../shared/contracts/messages.js';
 import { ProjectSidebar } from './components/ProjectSidebar.js';
 import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
-import { ProjectSidebarManager } from './components/ProjectSidebarManager.js';
-import { SettingsDialog, type SettingsFocusField } from './components/SettingsDialog.js';
-import { SchedulesDialog } from './components/SchedulesDialog.js';
-import { ContributionWorkspace } from './components/ContributionWorkspace.js';
+import type { SettingsFocusField } from './components/SettingsDialog.js';
 import { SweepButton } from './components/SweepButton.js';
-import { OssProductivityView } from './components/OssProductivityView.js';
-import { CostComparisonPanel } from './components/CostComparisonPanel.js';
 import { OnboardingTour } from './components/OnboardingTour.js';
-import { OperationsPanel } from './components/OperationsPanel.js';
 import { maybeOpenForFirstRun } from './store/onboarding-store.js';
 import './styles.css';
+
+type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
+
+function pickLazyExport<T>(module: unknown, exportName: string): T {
+  const lazyModule = module as LazyModule;
+  return (lazyModule[exportName] ?? lazyModule.default?.[exportName]) as T;
+}
+
+const LaunchTaskDialog = lazy(() => import('./components/LaunchTaskDialog.js').then((m) => ({ default: pickLazyExport<typeof m.LaunchTaskDialog>(m, 'LaunchTaskDialog') })));
+const QuickLaunch = lazy(() => import('./components/QuickLaunch.js').then((m) => ({ default: pickLazyExport<typeof m.QuickLaunch>(m, 'QuickLaunch') })));
+const ShortcutsHelp = lazy(() => import('./components/ShortcutsHelp.js').then((m) => ({ default: pickLazyExport<typeof m.ShortcutsHelp>(m, 'ShortcutsHelp') })));
+const AchievementsPanel = lazy(() => import('./components/AchievementsPanel.js').then((m) => ({ default: pickLazyExport<typeof m.AchievementsPanel>(m, 'AchievementsPanel') })));
+const ProjectSidebarManager = lazy(() => import('./components/ProjectSidebarManager.js').then((m) => ({ default: pickLazyExport<typeof m.ProjectSidebarManager>(m, 'ProjectSidebarManager') })));
+const SettingsDialog = lazy(() => import('./components/SettingsDialog.js').then((m) => ({ default: pickLazyExport<typeof m.SettingsDialog>(m, 'SettingsDialog') })));
+const SchedulesDialog = lazy(() => import('./components/SchedulesDialog.js').then((m) => ({ default: pickLazyExport<typeof m.SchedulesDialog>(m, 'SchedulesDialog') })));
+const ContributionWorkspace = lazy(() => import('./components/ContributionWorkspace.js').then((m) => ({ default: pickLazyExport<typeof m.ContributionWorkspace>(m, 'ContributionWorkspace') })));
+const OssProductivityView = lazy(() => import('./components/OssProductivityView.js').then((m) => ({ default: pickLazyExport<typeof m.OssProductivityView>(m, 'OssProductivityView') })));
+const CostComparisonPanel = lazy(() => import('./components/CostComparisonPanel.js').then((m) => ({ default: pickLazyExport<typeof m.CostComparisonPanel>(m, 'CostComparisonPanel') })));
+const OperationsPanel = lazy(() => import('./components/OperationsPanel.js').then((m) => ({ default: pickLazyExport<typeof m.OperationsPanel>(m, 'OperationsPanel') })));
 
 interface ReflectionSuggestion {
   sessionId: string;
@@ -516,7 +525,9 @@ export function App() {
       />
       {showOperations && (
         <div className="operations-popover-shell" ref={operationsPopoverRef}>
-          <OperationsPanel send={send} onClose={() => setShowOperations(false)} />
+          <Suspense fallback={null}>
+            <OperationsPanel send={send} onClose={() => setShowOperations(false)} />
+          </Suspense>
         </div>
       )}
       {isMobileViewport ? (
@@ -619,10 +630,20 @@ export function App() {
       <Toasts />
       <AchievementToasts />
       <SentOverlay />
-      {showShortcuts && <ShortcutsHelp onClose={() => setShowShortcuts(false)} />}
-      {showAchievements && <AchievementsPanel onClose={toggleAchievementsPanel} send={send} />}
+      {showShortcuts && (
+        <Suspense fallback={null}>
+          <ShortcutsHelp onClose={() => setShowShortcuts(false)} />
+        </Suspense>
+      )}
+      {showAchievements && (
+        <Suspense fallback={null}>
+          <AchievementsPanel onClose={toggleAchievementsPanel} send={send} />
+        </Suspense>
+      )}
       {showProjectSidebarManager && (
-        <ProjectSidebarManager onClose={() => setShowProjectSidebarManager(false)} />
+        <Suspense fallback={null}>
+          <ProjectSidebarManager onClose={() => setShowProjectSidebarManager(false)} />
+        </Suspense>
       )}
       {showSnooze && selectedAgent && (
         <SnoozeDialog
@@ -678,39 +699,59 @@ export function App() {
         />
       )}
       {showQuickLaunch && (
-        <QuickLaunch send={send} onClose={() => setShowQuickLaunch(false)} />
+        <Suspense fallback={null}>
+          <QuickLaunch send={send} onClose={() => setShowQuickLaunch(false)} />
+        </Suspense>
       )}
-      {showSchedules && <SchedulesDialog onClose={() => setShowSchedules(false)} />}
-      {showCostComparison && <CostComparisonPanel onClose={() => setShowCostComparison(false)} />}
+      {showSchedules && (
+        <Suspense fallback={null}>
+          <SchedulesDialog onClose={() => setShowSchedules(false)} />
+        </Suspense>
+      )}
+      {showCostComparison && (
+        <Suspense fallback={null}>
+          <CostComparisonPanel onClose={() => setShowCostComparison(false)} />
+        </Suspense>
+      )}
       {showSettings && (
-        <SettingsDialog
-          onClose={() => { setShowSettings(false); setSettingsFocus(undefined); }}
-          focusField={settingsFocus}
-        />
+        <Suspense fallback={null}>
+          <SettingsDialog
+            onClose={() => { setShowSettings(false); setSettingsFocus(undefined); }}
+            focusField={settingsFocus}
+          />
+        </Suspense>
       )}
-      {ossShowView && <OssProductivityView onClose={closeOssView} />}
+      {ossShowView && (
+        <Suspense fallback={null}>
+          <OssProductivityView onClose={closeOssView} />
+        </Suspense>
+      )}
       {showWorkspace && selectedProject && (
-        <ContributionWorkspace
-          send={send}
-          projectId={selectedProject}
-          onClose={() => { setShowWorkspace(false); clearWorkspaceView(); }}
-        />
+        <Suspense fallback={null}>
+          <ContributionWorkspace
+            send={send}
+            projectId={selectedProject}
+            onClose={() => { setShowWorkspace(false); clearWorkspaceView(); }}
+          />
+        </Suspense>
       )}
       <OnboardingTour />
       {showLaunch && (
-        <LaunchTaskDialog
-          send={send}
-          onClose={handleCloseLaunch}
-          defaultCwd={relaunchTask?.cwd}
-          defaultPrompt={relaunchTask?.prompt}
-          defaultCriteria={relaunchTask?.criteria}
-          defaultAgentType={relaunchTask?.agentType}
-          relaunchPlaybookId={relaunchTask?.playbookId}
-          relaunchParameterValues={relaunchTask?.playbookParameterValues}
-          projectContext={launchProjectContext ?? undefined}
-          projectCwd={launchProjectCwd ?? undefined}
-          initialTab={launchInitialTab ?? undefined}
-        />
+        <Suspense fallback={null}>
+          <LaunchTaskDialog
+            send={send}
+            onClose={handleCloseLaunch}
+            defaultCwd={relaunchTask?.cwd}
+            defaultPrompt={relaunchTask?.prompt}
+            defaultCriteria={relaunchTask?.criteria}
+            defaultAgentType={relaunchTask?.agentType}
+            relaunchPlaybookId={relaunchTask?.playbookId}
+            relaunchParameterValues={relaunchTask?.playbookParameterValues}
+            projectContext={launchProjectContext ?? undefined}
+            projectCwd={launchProjectCwd ?? undefined}
+            initialTab={launchInitialTab ?? undefined}
+          />
+        </Suspense>
       )}
     </div>
   );

@@ -4,18 +4,26 @@ import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TaskStatus } from '../../core/types.js';
 import { track, trackClick } from '../telemetry.js';
-import { TerminalPanel } from './TerminalPanel.js';
-import { GitHubPanel } from './GitHubPanel.js';
-import { ActivityPanel, type DiffClickTarget } from './ActivityPanel.js';
-import { DiffPane } from './DiffPane.js';
+import type { DiffClickTarget } from './ActivityPanel.js';
 import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
-import { EffectiveHookSettingsModal } from './EffectiveHookSettingsModal.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
 import { computeTerminalVisible } from './detail-panel-visibility.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 
-const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
+type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
+
+function pickLazyExport<T>(module: unknown, exportName: string): T {
+  const lazyModule = module as LazyModule;
+  return (lazyModule[exportName] ?? lazyModule.default?.[exportName]) as T;
+}
+
+const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: pickLazyExport<typeof m.VoiceInputButton>(m, 'VoiceInputButton') })));
+const TerminalPanel = lazy(() => import('./TerminalPanel.js').then((m) => ({ default: pickLazyExport<typeof m.TerminalPanel>(m, 'TerminalPanel') })));
+const GitHubPanel = lazy(() => import('./GitHubPanel.js').then((m) => ({ default: pickLazyExport<typeof m.GitHubPanel>(m, 'GitHubPanel') })));
+const ActivityPanel = lazy(() => import('./ActivityPanel.js').then((m) => ({ default: pickLazyExport<typeof m.ActivityPanel>(m, 'ActivityPanel') })));
+const DiffPane = lazy(() => import('./DiffPane.js').then((m) => ({ default: pickLazyExport<typeof m.DiffPane>(m, 'DiffPane') })));
+const EffectiveHookSettingsModal = lazy(() => import('./EffectiveHookSettingsModal.js').then((m) => ({ default: pickLazyExport<typeof m.EffectiveHookSettingsModal>(m, 'EffectiveHookSettingsModal') })));
 const NARROW_DETAIL_BREAKPOINT_PX = 1200;
 
 /**
@@ -678,15 +686,19 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
                   )}
                 </div>
                 {leftPane === 'github' && ghCount > 0 ? (
-                  <GitHubPanel prs={gh?.prs ?? []} issues={gh?.issues ?? []} />
+                  <Suspense fallback={null}>
+                    <GitHubPanel prs={gh?.prs ?? []} issues={gh?.issues ?? []} />
+                  </Suspense>
                 ) : (
-                  <ActivityPanel
-                    events={agent.events}
-                    anomalyExplanation={agent.anomaly?.explanation}
-                    onOpenDiff={handleOpenDiff}
-                    activityMeta={agent.activityMeta}
-                    taskId={agent.taskId}
-                  />
+                  <Suspense fallback={null}>
+                    <ActivityPanel
+                      events={agent.events}
+                      anomalyExplanation={agent.anomaly?.explanation}
+                      onOpenDiff={handleOpenDiff}
+                      activityMeta={agent.activityMeta}
+                      taskId={agent.taskId}
+                    />
+                  </Suspense>
                 )}
               </div>
 
@@ -718,20 +730,24 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
                     className="right-pane-slot right-pane-slot-terminal"
                     style={{ display: rightPane === 'terminal' ? 'flex' : 'none' }}
                   >
-                    <TerminalPanel tmuxName={agent.agentId} visible={terminalVisible} />
+                    <Suspense fallback={null}>
+                      <TerminalPanel tmuxName={agent.agentId} visible={terminalVisible} />
+                    </Suspense>
                   </div>
                   {activeDiff && (
                     <div
                       className="right-pane-slot right-pane-slot-diff"
                       style={{ display: rightPane === 'diff' ? 'flex' : 'none' }}
                     >
-                      <DiffPane
-                        agentId={activeDiff.agentId}
-                        toolUseId={activeDiff.toolUseId}
-                        filePath={activeDiff.filePath}
-                        openedAt={activeDiff.openedAt}
-                        onClose={handleCloseDiff}
-                      />
+                      <Suspense fallback={null}>
+                        <DiffPane
+                          agentId={activeDiff.agentId}
+                          toolUseId={activeDiff.toolUseId}
+                          filePath={activeDiff.filePath}
+                          openedAt={activeDiff.openedAt}
+                          onClose={handleCloseDiff}
+                        />
+                      </Suspense>
                     </div>
                   )}
                 </div>
@@ -822,13 +838,15 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
           />
         )}
         {showHookSettings && agent && (
-          <EffectiveHookSettingsModal
-            sessionId={agent.agentId}
-            onClose={() => {
-              setShowHookSettings(false);
-              hookSettingsTriggerRef.current?.focus();
-            }}
-          />
+          <Suspense fallback={null}>
+            <EffectiveHookSettingsModal
+              sessionId={agent.agentId}
+              onClose={() => {
+                setShowHookSettings(false);
+                hookSettingsTriggerRef.current?.focus();
+              }}
+            />
+          </Suspense>
         )}
       </div>
     </div>
