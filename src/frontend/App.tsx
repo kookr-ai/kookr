@@ -26,7 +26,7 @@ import type { SettingsFocusField } from './components/SettingsDialog.js';
 import { SweepButton } from './components/SweepButton.js';
 import { OnboardingTour } from './components/OnboardingTour.js';
 import { maybeOpenForFirstRun } from './store/onboarding-store.js';
-import './styles.css';
+import './critical.css';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -120,6 +120,10 @@ export function App() {
     closeOssView,
     toggleOssView,
   } = useKookrStore();
+
+  useEffect(() => {
+    void import('./styles.css');
+  }, []);
 
   // Open launch dialog when relaunchTask is set
   useEffect(() => {
