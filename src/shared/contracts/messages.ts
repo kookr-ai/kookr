@@ -82,6 +82,11 @@ export type SnapshotMessage = {
   type: 'snapshot';
   agents: AgentState[];
   serverCwd: string;
+  /**
+   * Remote-session control-plane revision. Omitted for local-only snapshots;
+   * populated only by the opt-in remote node path.
+   */
+  serverRevision?: number;
   build?: BuildInfo;
   serverStartedAt?: string;
   sttEnabled?: boolean;

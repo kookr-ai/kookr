@@ -179,6 +179,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   } = coreStores;
   const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
 
+  // Phase 0a remote-session audit scaffold. This path is intentionally inert
+  // unless the operator opts into remote collaboration with KOOKR_RELAY_URL.
+  if (process.env.KOOKR_RELAY_URL) {
+    const { createRemoteAuditScaffold } = await import('../remote/audit.js');
+    createRemoteAuditScaffold({ relayUrl: process.env.KOOKR_RELAY_URL });
+  }
+
   const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
     terminalBackend,
     taskStore,

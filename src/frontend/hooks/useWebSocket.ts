@@ -6,6 +6,14 @@ import { isSystemResourceStatus } from '../resource-status.js';
 
 const RECONNECT_DELAY_MS = 2000;
 
+export function parseServerMessageForClient(data: string): unknown | null {
+  try {
+    return JSON.parse(data) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -63,8 +71,10 @@ export function useWebSocket() {
     };
 
     ws.onmessage = (event) => {
+      const parsed = parseServerMessageForClient(event.data);
+      if (!parsed || typeof parsed !== 'object' || !('type' in parsed)) return;
       try {
-        const msg = JSON.parse(event.data);
+        const msg = parsed as Record<string, any>;
         switch (msg.type) {
           case 'snapshot':
             handleSnapshot(

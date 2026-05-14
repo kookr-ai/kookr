@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -55,6 +56,29 @@ describe('src/remote module-load purity', () => {
         },
       });
       expect(result.status, `${mod}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('still catches top-level writes from the probed module when loaded through tsx', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-remote-purity-negative-'));
+    try {
+      const sideEffectPath = join(dir, 'side-effect.txt');
+      const mod = join(dir, 'bad-remote-module.ts');
+      writeFileSync(mod, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(sideEffectPath)}, 'bad');\n`, 'utf8');
+
+      const result = spawnSync(process.execPath, ['--import', 'tsx', probe, mod], {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          KOOKR_RELAY_URL: '',
+        },
+      });
+
+      expect(result.status, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`).toBe(1);
+      expect(result.stderr).toContain('fs.writeFileSync');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
