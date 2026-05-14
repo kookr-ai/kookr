@@ -16,7 +16,7 @@ related: self-reflect, task-feedback-reflect, kookr-codex-claude-compatibility
 
 # Placement Picker
 
-Routes a new rule, skill, hook, KB entry, or context artifact to the correct surface among 12 placement options. The canonical body for the kookr ecosystem; pointer stubs in `<kookr>/CLAUDE.md`, `~/.claude/CLAUDE.md`, `self-reflect`, and `task-feedback-reflect` all defer to this skill.
+Routes a new rule, skill, hook, KB entry, or context artifact to the correct surface among 12 placement options. The canonical body for placement decisions in repos using the kookr-toolkit plugin; pointer stubs in `<repo>/CLAUDE.md`, `~/.claude/CLAUDE.md`, `self-reflect`, and `task-feedback-reflect` all defer to this skill.
 
 ## When to load this skill
 
@@ -120,12 +120,12 @@ The calibration question does NOT apply to (b) context or (e) domain knowledge �
 - Q3: yes.
 - **→ Plugin skill** (this is the `pre-pr-review` skill, already shipped at `plugin/skills/pre-pr-review/`).
 
-### 5. "Refuse to push if `.review-state/<branch>.json` marker is missing"
+### 5. "Refuse to push if a per-branch review marker file is missing"
 
 - Q1: (d) Deterministic guard — shell-detectable.
-- Q2: (s2) this repo's pushes. Other kookr-toolkit users' repos don't have this gate.
+- Q2: (s2) this repo's pushes. Other repos may not have this gate.
 - Q3: yes.
-- **→ Project hook** (this is `<kookr>/.hooks/pre-push`, lines 93–151).
+- **→ Project-scoped git pre-push hook**, wired via `git config core.hooksPath` to a checked-in directory and installed via the host repo's own install script. Path-specific examples live in the host repo's own docs, not in this plugin skill.
 
 ### 6. "WSL on Windows 11 with `llama-server` IQ3_XXS quants causes warmup hangs"
 
@@ -154,7 +154,7 @@ For team-wide (s3) reach without write access to kookr-toolkit, you need your ow
 
 ## Enforcement
 
-The `placement-gate` plugin hook (in `plugin/hooks/`) fires at PreToolUse time to warn on path-prefix violations (advisory by default; strict-mode via `<repo>/.kookr-placement-gate-strict` sentinel file). The existing `<kookr>/hooks/skill-placement-gate.sh` runs at push time as the tree-scanner backstop. Memory-frontmatter content is enforced separately by `reflect-memory-frontmatter-gate.sh`.
+The `placement-gate` plugin hook (in `plugin/hooks/`) fires at PreToolUse time to warn on path-prefix violations (advisory by default; strict-mode via `<repo>/.kookr-placement-gate-strict` sentinel file). For repos that ship their own tree-scanner gate (run from `<repo>/hooks/` at push time), that gate remains the catch-net for things the plugin hook misses (e.g. Codex `apply_patch` which emits no PreToolUse). Memory-frontmatter content is enforced separately by the sibling `reflect-memory-frontmatter-gate.sh` plugin hook.
 
 ## Related
 
