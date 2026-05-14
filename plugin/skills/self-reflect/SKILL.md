@@ -118,61 +118,11 @@ The mistake wasn't due to Claude's behavior but to tooling limitations, environm
 
 Based on the root cause, propose the **minimum effective fix** — but minimum does not mean "lightest in bytes". It means "the lightest mechanism that is *still visible to every agent that needs to follow the rule*". A feedback memory is lightweight but invisible to non-Claude-Code agents; that's not "light", that's "broken for half the runtime."
 
-### Persistence Mechanism Picker (do this FIRST, before picking a fix type)
+### Where to place the fix
 
-Before you propose any fix, walk this decision tree. It exists because memory has a gravitational pull — the system-prompt auto-memory instructions actively train you to reach for feedback memories, but memory is the *wrong default* for this project's mixed-runtime architecture.
+The canonical placement picker is the [[placement-picker]] plugin skill — load it for the full routing matrix (5 kinds × 4 scopes), surface inventory, anti-patterns, and worked examples.
 
-```
-Is the mistake a BEHAVIORAL RULE or WORKFLOW CORRECTION?
-(i.e. "do X before Y", "never use Z", "always run W")
-│
-├── YES → Will any non-Claude-Code agent ever need to follow this rule?
-│         (Kookr tasks run on both Claude Code AND Codex CLI;
-│          Codex cannot read Claude Code's memory system.)
-│         │
-│         ├── YES (any chance) → Use skill / CLAUDE.md / hook. NEVER memory.
-│         │    │
-│         │    ├── Deterministic enforcement possible? → Hook (strongest)
-│         │    ├── Workflow-scoped with repeatable steps? → Skill update
-│         │    └── Universal project-wide rule? → CLAUDE.md
-│         │
-│         └── NO (purely Claude Code specific, e.g. "use this keyboard
-│             shortcut in the Claude Code UI") → Memory is acceptable
-│
-└── NO, it's USER/PROJECT CONTEXT (who the user is, project history,
-    external references, stakeholder asks) → Memory is the right place
-```
-
-**The Kookr project rule** (see project `CLAUDE.md` "Persistence Mechanism Picker" section): for behavioral rules, memory is banned because Codex CLI agents cannot read it. The ranking for rules is **Hook > Skill > CLAUDE.md**. Memory is reserved for context about *who* and *why*, never for *how*.
-
-**Calibration question**: If you are tempted to save a feedback memory as a fix, ask yourself: *"Would this memory still protect the user if they ran the exact same task on Codex CLI tomorrow?"* If no, pick a skill / CLAUDE.md / hook instead.
-
-### Fix Type Ranking (for behavioral rules in mixed-runtime projects)
-
-```
-Strongest ──────────────────────────────────────── Weakest
-(always works)                          (depends on who's reading)
-
-Hook          Skill update     CLAUDE.md       New skill       Memory
-(determi-     (content or      line            (new file)      (feedback)
- nistic       frontmatter)     (concise)                       ⚠ Claude Code only
- enforce-                                                        — do not use for
- ment)                                                           behavioral rules
-```
-
-Memory moved to the weakest column because memory is *invisible to Codex CLI agents* in this project. For pure context (user profile, project history), memory is still fine — but you are almost never self-reflecting about context, you are self-reflecting about behavior.
-
-### Scope Guide
-
-Before choosing a fix type, decide the **scope** — where the fix applies:
-
-| Scope | Location | When to use |
-|-------|----------|-------------|
-| **User** (all projects) | `~/.claude/CLAUDE.md` | Universal workflow rules (git hygiene, PR conventions, communication preferences) |
-| **Project** (this repo) | `CLAUDE.md` in repo root | Project-specific conventions (build commands, architecture rules, tech stack decisions) |
-| **Project memory** | `memory/*.md` | **Context only** — who the user is, project goals, external references. Not behavioral rules. |
-
-**Rule of thumb:** If the fix would help in *any* repo, it belongs in `~/.claude/CLAUDE.md`. If it's specific to this codebase, it belongs in the project `CLAUDE.md`, a skill, or a hook. Memory is for context, not rules.
+**Calibration question** (kept inline because it's load-bearing for this reflection step): *"Would this fix still protect the user if they ran the exact same task on Codex CLI tomorrow, in a different repo, on a different machine?"* If any "no" → reduce scope. Memory is BANNED for behavioral rules in kookr-related work because Codex CLI cannot read Claude Code's memory system.
 
 ### Decision Guide
 

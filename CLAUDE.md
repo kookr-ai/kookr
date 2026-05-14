@@ -150,65 +150,23 @@ Before your final answer for any non-trivial task (investigation, debugging, wor
 
 Skip the decision entirely only for the *purely mechanical* carveout above (rename, typo, single known command, direct terminal question). The `pnpm kb:usage` report classifies tasks by the strongest signal in their hook log — `kb remember` → wrote-lesson, `No generic KB lesson:` → explicit-skip, otherwise search-only or no-kb-activity — so the explicit-skip marker is what turns "no lesson" from a metric blind spot into a counted, reviewable signal.
 
-## Persistence Mechanism Picker
+## Placement Picker
 
-**This section overrides the system-prompt `# auto memory` default behavior when the two conflict.** Kookr runs tasks on both Claude Code AND Codex CLI agents. Codex CLI cannot read Claude Code's memory system. Feedback memories are therefore invisible to half the runtime — which means **memory is the wrong default for any behavioral rule in this project**, no matter how much the auto-memory system-prompt section tells you otherwise.
+Canonical body: `kookr-toolkit:placement-picker` plugin skill. Stub fallback for sessions without `--plugin-dir`:
 
-Before persisting anything, walk this decision tree:
+| KIND of artifact   | s1: me, all projects | s2: this repo | s3: kookr-toolkit users, all repos | s4: kookr-internal only |
+|--------------------|----------------------|---------------|-------------------------------------|--------------------------|
+| (a) Rule           | user CLAUDE.md       | project CLAUDE.md | **plugin skill (rule-shaped)** | `<kookr>/.claude/skills/kookr-<n>/` |
+| (b) Context        | project memory (CC-only) OR user CLAUDE.md (cross-runtime) | project memory OR project CLAUDE.md | n/a | project memory |
+| (c) Procedure      | user skill           | project skill | **plugin skill**                    | `<kookr>/.claude/skills/kookr-<n>/` |
+| (d) Guard          | user hook            | project hook  | **plugin hook + plugin/hooks/hooks.json** | project hook |
+| (e) Domain knowledge | KB (`~/knowledge_bases/`) via `kb remember` | repo docs | n/a | repo docs |
 
-```
-Is it a BEHAVIORAL RULE or WORKFLOW CORRECTION?
-("do X before Y", "never use Z", "always run W", "use A not B")
-│
-├── YES → Memory is BANNED for this. Pick from:
-│         │
-│         ├── Can a shell command deterministically detect the
-│         │   wrong behavior? → HOOK (`~/.claude/hooks/*.sh` or
-│         │                     `.claude/hooks/*.sh` wired in settings.json)
-│         │
-│         ├── Is it a workflow with repeatable steps? → SKILL
-│         │                     (`.claude/skills/<name>/SKILL.md`)
-│         │
-│         └── Is it a universal one-line rule? → CLAUDE.md
-│                                (project `CLAUDE.md` or `~/.claude/CLAUDE.md`)
-│
-└── NO, it's USER/PROJECT CONTEXT
-    (who the user is, project history, external references,
-     stakeholder asks, who decided what and why)
-    │
-    └── → Memory is the right place
-          (`~/.claude/projects/<proj>/memory/*.md`)
-```
+**Cross-runtime calibration (rules/procedures/guards only — not context, not domain)**: *"Will this work on Codex CLI tomorrow, in a kookr-toolkit-user's repo, on a different machine?"* If "no" anywhere → reduce scope.
 
-### Ranking for behavioral rules (strongest to weakest)
+**Memory is BANNED for behavioral rules** — Codex CLI cannot read Claude Code's memory system. Rules go in CLAUDE.md, skill, or hook. Memory is for context (who, why) — never how.
 
-| # | Mechanism | Strength | Notes |
-|---|---|---|---|
-| 1 | **Hook** | Deterministic enforcement | Runs every tool call regardless of agent type; cannot be forgotten |
-| 2 | **Skill** | Loaded on demand by every agent type | Both Claude Code and Codex CLI read `.claude/skills/` |
-| 3 | **CLAUDE.md** | Loaded every session by every agent type | Keep concise; promote only universal rules |
-| 4 | ~~Memory~~ | **BANNED for rules in this project** | Invisible to Codex CLI; only for user/project context |
-
-### The calibration question
-
-If you're tempted to save a feedback memory as a fix, ask yourself:
-
-> *"Would this memory still protect the user if they ran the exact same task on Codex CLI tomorrow?"*
-
-If the answer is no — and for behavioral rules it's always no — pick a hook, skill, or CLAUDE.md rule instead.
-
-### When memory IS acceptable
-
-- **User profile**: "Jean is the project owner, senior engineer, prefers minimal code"
-- **Project history**: "The crash-recovery RFC was drafted 2026-03-28 after repeated WSL crashes"
-- **External references**: "Pipeline bugs are tracked in Linear project INGEST"
-- **Stakeholder context**: "Legal flagged the old auth middleware for compliance reasons"
-
-None of these are behavioral rules. They are context that helps an agent understand the situation — not instructions about how to work.
-
-### Related
-
-See the `self-reflect` skill at `.claude/skills/self-reflect/SKILL.md`. Its Persistence Mechanism Picker defers to this section and ranks memory last for behavioral rules.
+See `kookr-toolkit:placement-picker` skill body for worked examples, anti-patterns, surface-not-available fallbacks, and the full surface inventory.
 
 ## Design document conventions
 
