@@ -170,5 +170,11 @@ vendor/
 # never commit these.
 .review-state/
 
+# kookr-toolkit placement-gate strict-mode sentinel. Presence at the git
+# common-dir parent enables hard-block mode for the placement gate plugin
+# hook. Always local-only — committing this would force every clone /
+# worktree into strict mode silently (per rfc-unified-placement-picker §C).
+.kookr-placement-gate-strict
+
 # Graphify per-session artifact directory.
 graphify-out/
