@@ -19,6 +19,7 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "test:smoke": "pnpm build:frontend && node --import tsx scripts/check-remote-import-boundaries.ts && vitest run src/remote/__tests__/load-purity.test.ts src/server/session-bridge.test.ts && node --import tsx scripts/local-only-smoke.ts",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "build": "pnpm generate-build-info && pnpm build:dtach && tsc && pnpm build:frontend",
