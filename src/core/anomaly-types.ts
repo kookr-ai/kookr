@@ -1,0 +1,63 @@
+// Anomaly detection output
+export type AnomalyType =
+  | 'needs_input'
+  | 'permission_blocked'
+  | 'repeated_error'
+  | 'merge_conflict'
+  | 'stale_agent'
+  | 'hook_disconnected'
+  | 'hook_missing'
+  | 'tmux_unresponsive'
+  | 'api_error'
+  | 'budget_exceeded';
+
+export type AnomalySeverity = 'info' | 'warning' | 'critical';
+
+/**
+ * Confidence level for shadow-detection verdicts. Only used by shadow strategies -
+ * the real detector's anomalies are implicitly high-confidence.
+ */
+export type AnomalyConfidence = 'high' | 'medium' | 'low';
+
+export interface Anomaly {
+  agentId: string;
+  type: AnomalyType;
+  severity: AnomalySeverity;
+  explanation: string;
+  detectedAt: Date;
+  count?: number;
+  /** Discriminates needs_input sub-types (stop vs explicit ask_user_question). */
+  subType?: 'stop' | 'ask_user_question';
+  /** Shadow-only: strategy confidence for offline precision analysis. */
+  confidence?: AnomalyConfidence;
+}
+
+/** Serialized anomaly for persistence - detectedAt is ISO string, not Date. */
+export interface PersistedAnomaly {
+  agentId: string;
+  type: AnomalyType;
+  severity: AnomalySeverity;
+  explanation: string;
+  detectedAt: string;
+  count?: number;
+  subType?: 'stop' | 'ask_user_question';
+}
+
+/** Persisted snooze state - stored in the task file envelope. */
+export interface LegacyPersistedSnooze {
+  taskId: string;
+  anomaly: PersistedAnomaly;
+  expiresAt: number; // ms since epoch
+  reason?: string;
+}
+
+export interface PersistedSnooze {
+  taskId: string;
+  agentId?: string;
+  kind: 'finding' | 'task';
+  anomaly?: PersistedAnomaly;
+  expiresAt: number; // ms since epoch
+  createdAt: number; // ms since epoch
+  expiredPendingRestore?: boolean;
+  reason?: string;
+}
