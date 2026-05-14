@@ -34,6 +34,51 @@ test.describe('UI layout', () => {
     await expect(page.locator('.findings-header')).toContainText('Supervisor Findings');
   });
 
+  test('dashboard reserves findings and topbar space before async data arrives', async ({ page, request }) => {
+    const readLayout = async () => page.evaluate(() => {
+      const rect = (selector: string) => {
+        const element = document.querySelector(selector);
+        if (!element) return null;
+        const box = element.getBoundingClientRect();
+        return {
+          left: Math.round(box.left),
+          top: Math.round(box.top),
+          width: Math.round(box.width),
+          height: Math.round(box.height),
+        };
+      };
+
+      return {
+        findingsPanel: rect('.findings-panel'),
+        bottomSections: rect('.bottom-sections'),
+        scheduleSection: rect('.schedule-section'),
+        queueInfo: rect('.queue-info'),
+        topbarRight: rect('.topbar-right'),
+        topbarSpend: rect('.topbar-spend'),
+      };
+    });
+
+    const initial = await readLayout();
+    expect(initial.findingsPanel?.width).toBeGreaterThanOrEqual(340);
+    expect(initial.bottomSections?.height).toBeGreaterThanOrEqual(64);
+    expect(initial.scheduleSection?.height).toBeGreaterThanOrEqual(40);
+    expect(initial.queueInfo?.width).toBeGreaterThanOrEqual(132);
+    expect(initial.topbarRight?.width).toBeGreaterThanOrEqual(360);
+    expect(initial.topbarSpend?.width).toBeGreaterThan(0);
+
+    await launchViaUI(page, 'Stable dashboard chrome', '/test/layout');
+    const tmuxName = await getTmuxNameForPrompt(request, 'Stable dashboard chrome');
+    await injectSessionStart(request, tmuxName);
+    await injectStopEvent(request, tmuxName);
+    await expect(page.locator('.finding-card')).toBeVisible({ timeout: 3000 });
+
+    const populated = await readLayout();
+    expect(populated.findingsPanel).toEqual(initial.findingsPanel);
+    expect(populated.bottomSections?.top).toBe(initial.bottomSections?.top);
+    expect(populated.scheduleSection?.top).toBe(initial.scheduleSection?.top);
+    expect(populated.topbarRight?.width).toBe(initial.topbarRight?.width);
+  });
+
   test('detail panel shows empty state initially', async ({ page }) => {
     await expect(page.locator('.detail-empty')).toContainText('No agents running');
     await expect(page.locator('.detail-empty kbd')).toContainText('Alt+L');

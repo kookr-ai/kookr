@@ -62,34 +62,40 @@ function statusClass(schedule: ScheduleResponse): string {
 
 export function ScheduleSection({ schedules }: Props) {
   const [collapsed, toggle] = usePersistedCollapsed(SCHEDULE_SECTION_COLLAPSED_KEY, true);
-
-  if (schedules.length === 0) return null;
+  const hasSchedules = schedules.length > 0;
 
   return (
-    <div className="schedule-section">
-      <div className="section-header" onClick={toggle} aria-expanded={!collapsed}>
-        <span className="section-chevron">{collapsed ? '\u25B8' : '\u25BE'}</span>
-        <span className="schedule-label">Schedules ({schedules.length})</span>
-      </div>
-      {!collapsed && schedules.map((s) => (
-        <div key={s.id} className={`schedule-row${s.enabled ? '' : ' schedule-disabled'}`}>
-          <div className="schedule-row-top">
-            <span className="schedule-name" title={s.name}>{s.name}</span>
-            <span className="schedule-cron-desc">{s.cronDescription}</span>
-          </div>
-          <div className="schedule-row-bottom">
-            <span className={`schedule-last-run ${statusClass(s)}`}>
-              Last: {latestExecutionLabel(s)}
-            </span>
-            <span className="schedule-quota">
-              {quotaLabel(s)}
-            </span>
-            <span className="schedule-next-run">
-              Next: {nextRunLabel(s)}
-            </span>
-          </div>
+    <div
+      className={`schedule-section${hasSchedules ? '' : ' schedule-section-reserved'}`}
+      aria-hidden={hasSchedules ? undefined : true}
+    >
+      {hasSchedules && (
+        <>
+        <div className="section-header" onClick={toggle} aria-expanded={!collapsed}>
+          <span className="section-chevron">{collapsed ? '\u25B8' : '\u25BE'}</span>
+          <span className="schedule-label">Schedules ({schedules.length})</span>
         </div>
-      ))}
+        {!collapsed && schedules.map((s) => (
+          <div key={s.id} className={`schedule-row${s.enabled ? '' : ' schedule-disabled'}`}>
+            <div className="schedule-row-top">
+              <span className="schedule-name" title={s.name}>{s.name}</span>
+              <span className="schedule-cron-desc">{s.cronDescription}</span>
+            </div>
+            <div className="schedule-row-bottom">
+              <span className={`schedule-last-run ${statusClass(s)}`}>
+                Last: {latestExecutionLabel(s)}
+              </span>
+              <span className="schedule-quota">
+                {quotaLabel(s)}
+              </span>
+              <span className="schedule-next-run">
+                Next: {nextRunLabel(s)}
+              </span>
+            </div>
+          </div>
+        ))}
+        </>
+      )}
     </div>
   );
 }

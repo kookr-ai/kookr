@@ -255,16 +255,32 @@ kbd {
   margin-left: 2px;
 }
 
-.queue-info { display: flex; align-items: center; gap: 6px; }
+.queue-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 156px;
+}
+.queue-info-reserved {
+  visibility: hidden;
+  pointer-events: none;
+}
 .queue-dots { display: flex; gap: 4px; }
 .queue-dot { width: 8px; height: 8px; border-radius: 50%; }
 .queue-dot.current { background: var(--amber); box-shadow: 0 0 6px rgba(251,191,36,0.4); }
 .queue-dot.waiting { background: var(--text-muted); }
 .queue-text { font-size: 11px; color: var(--text-muted); }
 
-.topbar-right { display: flex; gap: 20px; align-items: center; }
-.topbar-spend-group:empty {
-  display: none;
+.topbar-right {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 360px;
+}
+.topbar-spend-group {
+  min-width: 64px;
+  justify-content: flex-end;
 }
 .metric-group { display: inline-flex; align-items: center; gap: 12px; }
 /* --- Health Dot (version badge) --- */
@@ -293,11 +309,16 @@ kbd {
 }
 
 .topbar-spend {
+  display: inline-block;
+  min-width: 58px;
+  text-align: right;
   color: var(--amber);
   font-weight: 600;
   font-size: 12px;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
+.topbar-spend-placeholder { visibility: hidden; }
 
 .btn-settings,
 .btn-icon {
@@ -352,8 +373,10 @@ kbd {
 
 /* --- Findings Panel (left) --- */
 .findings-panel {
-  flex: 0 1 clamp(340px, 28vw, 420px);
+  flex: 0 0 clamp(340px, 28vw, 420px);
+  width: clamp(340px, 28vw, 420px);
   min-width: 340px;
+  min-height: 0;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   display: flex;
@@ -373,6 +396,7 @@ kbd {
   align-items: center;
 }
 .findings-count { color: var(--amber); }
+.findings-count-empty { color: var(--text-muted); }
 
 .findings-scroll-area {
   flex: 1;
@@ -386,10 +410,15 @@ kbd {
 }
 
 .bottom-sections {
+  min-height: 76px;
   max-height: 30%;
   overflow-y: auto;
   overflow-x: hidden;
   flex-shrink: 0;
+}
+.bottom-sections-reserved {
+  border-top: 1px solid var(--border-dim);
+  pointer-events: none;
 }
 
 .findings-empty {
@@ -3339,10 +3368,13 @@ textarea::-webkit-resizer { background: transparent; }
 .schedule-section {
   border-top: 1px solid var(--border-dim);
   padding: 10px 8px;
+  min-height: 42px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex-shrink: 0;
 }
+.schedule-section-reserved { pointer-events: none; }
 .schedule-label {
   font-size: 11px;
   font-weight: 700;
@@ -6956,6 +6988,15 @@ a.project-drawer-stat-row-link:focus-visible {
     justify-content: space-between;
     gap: 8px;
     flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .topbar.compact .queue-info {
+    min-width: 92px;
+  }
+
+  .topbar.compact .topbar-spend-group {
+    min-width: 54px;
   }
 
   .topbar.compact .topbar-spend {
