@@ -862,6 +862,7 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
   const [snoozedCollapsed, toggleSnoozed] = usePersistedCollapsed(SNOOZED_SECTION_COLLAPSED_KEY, true);
   const [completedCollapsed, toggleCompleted] = usePersistedCollapsed(COMPLETED_SECTION_COLLAPSED_KEY, true);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const hasBottomSections = healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || completed.length > 0;
 
   // Single tick counter to refresh age badges across all cards (every 60s)
   const [, setAgeTick] = useState(0);
@@ -914,9 +915,9 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
     <div className="findings-panel kookr-tour-target-findings kookr-tour-target-layout" onClick={handlePanelClick}>
       <div className="findings-header">
         <span>Supervisor Findings</span>
-        {findings.length > 0 && (
-          <span className="findings-count">{findings.length} active</span>
-        )}
+        <span className={`findings-count${findings.length === 0 ? ' findings-count-empty' : ''}`}>
+          {findings.length} active
+        </span>
       </div>
       <div className="findings-scroll-area" ref={scrollAreaRef}>
         {findings.length === 0 && totalAgents === 0 && (
@@ -942,8 +943,12 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
           />
         ))}
       </div>
-      {(healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || completed.length > 0) && (
-        <div className="bottom-sections">
+      <div
+        className={`bottom-sections${hasBottomSections ? '' : ' bottom-sections-reserved'}`}
+        aria-hidden={hasBottomSections ? undefined : true}
+      >
+        {hasBottomSections && (
+          <>
           {healthy.length > 0 && (
             <div className="healthy-section">
               <div className="section-header" onClick={toggleHealthy} aria-expanded={!healthyCollapsed}>
@@ -1026,8 +1031,9 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
               ))}
             </div>
           )}
-        </div>
-      )}
+          </>
+        )}
+      </div>
       <ScheduleSection schedules={useKookrStore((s) => s.schedules)} />
     </div>
   );

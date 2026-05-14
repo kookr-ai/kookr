@@ -187,6 +187,14 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
   const operationsNeedsAttention =
     circuitBreakers.some((breaker) => breaker.state !== 'closed') ||
     Boolean(diagnosticReport?.findings.length);
+  const hasQueueInfo = totalFindings > 0;
+  const queueTitle = hasQueueInfo
+    ? currentIndex >= 0
+      ? `Triaging ${currentIndex + 1} of ${totalFindings} findings`
+      : `${totalFindings} finding${totalFindings !== 1 ? 's' : ''} waiting`
+    : undefined;
+  const queueDotCount = Math.max(totalFindings, 1);
+  const spendLabel = totalSpendUsd > 0 ? formatCost(totalSpendUsd) : '$0.00';
 
   return (
     <div className={`topbar kookr-tour-target-layout${compact ? ' compact' : ''}`}>
@@ -306,42 +314,41 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
             )}
           </div>
         )}
-        {totalFindings > 0 && (
-          <div
-            className="queue-info"
-            title={currentIndex >= 0
-              ? `Triaging ${currentIndex + 1} of ${totalFindings} findings`
-              : `${totalFindings} finding${totalFindings !== 1 ? 's' : ''} waiting`}
-          >
-            <div className="queue-dots">
-              {Array.from({ length: totalFindings }, (_, i) => (
-                <div
-                  key={i}
-                  className={`queue-dot ${i === currentIndex ? 'current' : 'waiting'}`}
-                />
-              ))}
-            </div>
-            {compact ? (
-              <span className="queue-text queue-text-compact">
-                {currentIndex >= 0 ? `${currentIndex + 1}/${totalFindings}` : `${totalFindings}`}
-              </span>
-            ) : (
-              <span className="queue-text">
-                {currentIndex >= 0
-                  ? `Triaging ${currentIndex + 1} of ${totalFindings} findings`
-                  : `${totalFindings} finding${totalFindings !== 1 ? 's' : ''} waiting`}
-              </span>
-            )}
+        <div
+          className={`queue-info${hasQueueInfo ? '' : ' queue-info-reserved'}`}
+          title={queueTitle}
+          aria-hidden={hasQueueInfo ? undefined : true}
+        >
+          <div className="queue-dots">
+            {Array.from({ length: queueDotCount }, (_, i) => (
+              <div
+                key={i}
+                className={`queue-dot ${hasQueueInfo && i === currentIndex ? 'current' : 'waiting'}`}
+              />
+            ))}
           </div>
-        )}
+          {compact ? (
+            <span className="queue-text queue-text-compact">
+              {currentIndex >= 0 ? `${currentIndex + 1}/${totalFindings}` : `${totalFindings}`}
+            </span>
+          ) : (
+            <span className="queue-text">
+              {currentIndex >= 0
+                ? `Triaging ${currentIndex + 1} of ${totalFindings} findings`
+                : `${totalFindings} finding${totalFindings !== 1 ? 's' : ''} waiting`}
+            </span>
+          )}
+        </div>
       </div>
       <div className="topbar-right">
         <div className="metric-group topbar-spend-group">
-          {totalSpendUsd > 0 && (
-            <span className="topbar-spend" title={`Lifetime total across ${agents.length} task${agents.length !== 1 ? 's' : ''}`}>
-              {formatCost(totalSpendUsd)}
-            </span>
-          )}
+          <span
+            className={`topbar-spend${totalSpendUsd > 0 ? '' : ' topbar-spend-placeholder'}`}
+            title={totalSpendUsd > 0 ? `Lifetime total across ${agents.length} task${agents.length !== 1 ? 's' : ''}` : undefined}
+            aria-hidden={totalSpendUsd > 0 ? undefined : true}
+          >
+            {spendLabel}
+          </span>
         </div>
         <div className="metric-group">
           <DndPill />
