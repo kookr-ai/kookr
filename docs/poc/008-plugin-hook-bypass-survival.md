@@ -104,9 +104,40 @@ Concrete impact on the original motivation: across 859 Codex CLI sessions in May
 
 - `plugin/hooks/README.md` — updated "Bypass-mode coverage" section to reflect the asymmetry.
 
-## Follow-up — codex fork extension
+## Follow-up — codex fork extension (in progress)
 
-To close the Codex gap, the kookr fork needs a patch that registers `cli_plugin_dirs` as plugin-hook sources (in addition to the current skill-root registration). The change site is around `codex-rs/core/src/session/mod.rs:3418` and the `plugins_manager.plugins_for_config(...)` path. Out of scope for PR #348; logged as a known gap.
+### Phase 1 (landed): wiring patch
+
+Commit [`b3f847e304`](https://github.com/jeanibarz/codex/commit/b3f847e304) (`feat/claude-compat`) adds `include_cli_plugin_hook_sources` in `codex-rs/core/src/skills.rs` and a call site in `session/mod.rs:3425`. CLI-injected plugins get a synthetic marketplace name (`cli`) for well-formed PluginId. Mirrors `include_cli_plugin_skill_roots`. Unit test `include_cli_plugin_hook_sources_registers_hooks_json_from_cli_plugin_dir` passes.
+
+### Phase 2 (landed, partial): `rebuild_preserving_session_layers` fix
+
+Commit [`10a9efd48b`](https://github.com/jeanibarz/codex/commit/10a9efd48b) (`feat/claude-compat`) adds `cli_plugin_dirs: self.cli_plugin_dirs.clone()` to the `ConfigOverrides` block in `Config::rebuild_preserving_session_layers` (codex-rs/core/src/config/mod.rs:1229-1241).
+
+Empirical motivation: post-phase-1, the probe was STILL silent. A two-pass debug-eprintln instrumentation revealed that `load_config_with_layer_stack` is called 3 times per `codex exec --plugin-dir <dir>` invocation:
+- 1st call (from `exec/lib.rs:440` via `ConfigBuilder.build()`): `cli_plugin_dirs=[/tmp/...]` ✓
+- 2nd + 3rd calls (session-internal refreshes): `cli_plugin_dirs=[]` ✗
+
+The session-internal rebuilds construct fresh `ConfigOverrides` with `..Default::default()` — `cli_plugin_dirs` defaults to `vec![]` because it's a runtime-only override that doesn't come from any config TOML layer.
+
+### Remaining gap (known, not yet fixed)
+
+**Phase 2 closes one rebuild path but THREE others remain**. Each constructs `ConfigOverrides` from a previous Config without copying `cli_plugin_dirs` forward:
+
+| Site | File | Function |
+|---|---|---|
+| 1 | `codex-rs/core/src/agent/role.rs:264` | `reload_overrides` (role/agent system refresh) |
+| 2 | `codex-rs/app-server/src/request_processors/thread_processor.rs:1224` | thread-start ConfigOverrides builder |
+| 3 | `codex-rs/app-server/src/request_processors/turn_processor.rs:386` | turn-start ConfigOverrides builder |
+
+A `codex exec --plugin-dir <dir>` invocation triggers some of these refreshes during normal session lifecycle, so the partial fix is **not sufficient on its own** for the in-session Bash-matcher gate to fire reliably. Empirical verification of the partial fix showed the probe hook still silent after Phase 2 — at least one of the 3 remaining sites is on the hot path.
+
+### Phase 3 options (not yet landed)
+
+- **Whack-a-mole** — add `cli_plugin_dirs: <prev_config>.cli_plugin_dirs.clone()` to each of the 3 remaining sites. Low risk but fragile against future Config-rebuild sites.
+- **Architectural** — thread `cli_plugin_dirs` through `ConfigManager` (`codex-rs/app-server/src/config_manager.rs:28`) as persistent state, injected into every `ConfigOverrides` passed to `load_with_cli_overrides`. Single point of truth; survives all rebuild paths. Larger refactor.
+
+Until Phase 3 lands, **the in-session plugin-hook gate from PR #348 covers Claude Code Kookr tasks reliably and Codex CLI Kookr tasks NOT reliably**. The push-time tree-scanner gate at `<repo>/hooks/skill-placement-gate.sh` remains the cross-runtime catch-net.
 
 ## Limitations of this PoC
 
