@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
-import { CodexCliAdapter } from './codex-cli-adapter.js';
+import { CodexCliAdapter, CODEX_PROMPT_ARGV_THRESHOLD_BYTES } from './codex-cli-adapter.js';
 import { TaskStore } from '../core/tasks.js';
 import { resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import type { AgentEvent } from '../core/types.js';
@@ -72,6 +72,8 @@ describe('CodexCliAdapter', () => {
   });
 
   test('launch delivers a large initial prompt through stdin instead of argv', async () => {
+    // Use a prompt comfortably above CODEX_PROMPT_ARGV_THRESHOLD_BYTES (100 KiB)
+    // so the adapter takes the terminal-write fallback path.
     const largePrompt = 'x'.repeat(200_000);
     const task = taskStore.createTask(largePrompt, '/cwd');
     const sessionId = await adapter.launch(task.id, largePrompt, '/cwd');
@@ -82,6 +84,36 @@ describe('CodexCliAdapter', () => {
     expect(written.length).toBe(largePrompt.length + 1);
     expect(written.startsWith(largePrompt)).toBe(true);
     expect(written.endsWith('\r')).toBe(true);
+  });
+
+  test('launch delivers a small initial prompt through argv (no TUI race)', async () => {
+    // Regression for the codex empty-prompt bug: PR #337 unconditionally moved
+    // prompt delivery to post-spawn terminal write, which races the Codex TUI's
+    // input-field initialization. Small prompts go back through argv (no race)
+    // while large prompts retain the terminal-write fallback (no E2BIG).
+    const smallPrompt = 'Fix the typo in README.md';
+    const task = taskStore.createTask(smallPrompt, '/cwd');
+    const sessionId = await adapter.launch(task.id, smallPrompt, '/cwd');
+
+    const spec = backend.sessions.get(sessionId)!.spec;
+    // The prompt must be the LAST argv arg (so Codex parses it as the user
+    // message, not as a value for the preceding flag).
+    expect(spec.args[spec.args.length - 1]).toBe(smallPrompt);
+    // No terminal write should happen for small prompts.
+    expect(backend.getWrittenText(sessionId)).toBe('');
+  });
+
+  test('launch switches to terminal-write at exactly the threshold + 1 byte', async () => {
+    // Boundary test: a prompt one byte over the threshold takes the terminal-
+    // write path; one byte under stays on argv. This pins the cutoff so a
+    // future refactor that drifts the threshold has to update the test.
+    const justOver = 'a'.repeat(CODEX_PROMPT_ARGV_THRESHOLD_BYTES + 1);
+    const task = taskStore.createTask(justOver, '/cwd');
+    const sessionId = await adapter.launch(task.id, justOver, '/cwd');
+
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).not.toContain(justOver);
+    expect(backend.getWrittenText(sessionId)).toContain(justOver);
   });
 
   test('launch uses --full-auto and NOT the dangerous bypass flag by default', async () => {
@@ -136,11 +168,15 @@ describe('CodexCliAdapter', () => {
       const sessionId = await checkpointAdapter.launch(task.id, 'original prompt', cwd);
 
       const spec = backend.sessions.get(sessionId)!.spec;
-      const prompt = backend.getWrittenText(sessionId);
-      expect(spec.args).not.toContain('original prompt');
-      expect(prompt).toContain('CHECKPOINT.json is not present');
-      expect(prompt).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
-      expect(prompt).toContain('original prompt');
+      // Small prompts now travel through argv (not terminal-write) to avoid
+      // the Codex TUI startup race. The full prompt with checkpoint prefix
+      // is the LAST argv arg.
+      const promptArg = spec.args[spec.args.length - 1];
+      expect(promptArg).toContain('CHECKPOINT.json is not present');
+      expect(promptArg).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
+      expect(promptArg).toContain('original prompt');
+      // Nothing should be written to the terminal for small prompts.
+      expect(backend.getWrittenText(sessionId)).toBe('');
       // Guard the integration seam: confirm the env var actually reaches the
       // spawned codex process. A regression that dropped `launchContext.env`
       // would leave the prompt-text assertion green while the agent runs
@@ -612,8 +648,10 @@ describe('CodexCliAdapter', () => {
       const idx = spec.args.indexOf('--plugin-dir');
       expect(idx).toBeGreaterThanOrEqual(0);
       expect(spec.args[idx + 1]).toBe(validPluginDir);
-      expect(spec.args).not.toContain('my-prompt');
-      expect(backend.getWrittenText(sessionId)).toBe('my-prompt\r');
+      // Small prompts now travel through argv (last position). Nothing should
+      // be written to the terminal.
+      expect(spec.args[spec.args.length - 1]).toBe('my-prompt');
+      expect(backend.getWrittenText(sessionId)).toBe('');
     });
 
     test('skips injection when binary does NOT advertise --plugin-dir (stock codex)', async () => {
@@ -671,8 +709,9 @@ describe('CodexCliAdapter', () => {
       // still appear before --plugin-dir, which must come before the prompt.
       expect(spec.args).toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.args).not.toContain('--full-auto');
-      expect(spec.args).not.toContain('my-prompt');
-      expect(backend.getWrittenText(sessionId)).toBe('my-prompt\r');
+      // Small prompts now travel through argv (last position).
+      expect(spec.args[spec.args.length - 1]).toBe('my-prompt');
+      expect(backend.getWrittenText(sessionId)).toBe('');
     });
 
     test('parent SessionStart is frozen against later distinct Codex session ids', async () => {

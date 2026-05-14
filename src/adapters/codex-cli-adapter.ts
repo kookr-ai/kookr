@@ -34,6 +34,16 @@ import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-pat
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
 
+/**
+ * Byte threshold below which the initial prompt travels through argv (no TUI
+ * race) and above which it falls back to post-spawn terminal write (avoiding
+ * E2BIG / ARG_MAX). 100 KiB leaves ~3 MB of headroom under the Linux ARG_MAX
+ * (3.2 MB on the WSL2 dev host) once env + other flags are accounted for.
+ *
+ * Exported so tests can deliberately straddle the boundary.
+ */
+export const CODEX_PROMPT_ARGV_THRESHOLD_BYTES = 100 * 1024;
+
 interface CodexHookSettings {
   hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>>;
   permissions?: {
@@ -264,8 +274,25 @@ export class CodexCliAdapter implements AgentAdapter {
 
     // V8: argv-based launch through the backend. No shell features needed;
     // env goes in SessionSpec.env, flags become argv. The initial prompt is
-    // delivered through the terminal after spawn so large prompts cannot hit
-    // ARG_MAX or leak into parent-session hook command scanners.
+    // delivered EITHER as a trailing argv arg (small prompts) OR via terminal
+    // write after spawn (large prompts only).
+    //
+    // The previous implementation (PR #337) unconditionally used terminal-
+    // write to avoid E2BIG on huge prompts (e.g. multi-MB Lighthouse JSON).
+    // That introduced a race: the Codex TUI drops bytes written before its
+    // input field is fully initialized (banner render + workspace-trust check
+    // + MCP server startup per PoC 003 §Gap 10). Net effect: users had to
+    // manually re-paste the prompt for every kookr-launched codex task.
+    //
+    // The conditional below restores the argv path for prompts under the
+    // threshold (no race, no manual re-paste) while preserving the terminal-
+    // write fallback for genuine oversize cases. The 100 KiB threshold is
+    // conservative — ARG_MAX is 3.2 MB on Linux, but env + other flags also
+    // count, so leaving ~3 MB of headroom is safe.
+    const promptByteLength = Buffer.byteLength(promptWithCheckpoint, 'utf8');
+    const deliverPromptViaArgv =
+      promptByteLength <= CODEX_PROMPT_ARGV_THRESHOLD_BYTES;
+
     const args = [
       '-c', 'features.codex_hooks=true',
       permissionFlagStr,
@@ -291,6 +318,10 @@ export class CodexCliAdapter implements AgentAdapter {
         );
       }
     }
+    if (deliverPromptViaArgv) {
+      args.push(promptWithCheckpoint);
+    }
+
     await this.backend.createSession({
       id: tmuxName,
       command: this.agentBin,
@@ -299,7 +330,10 @@ export class CodexCliAdapter implements AgentAdapter {
       cwd,
       size: { cols: 200, rows: 50 },
     });
-    await deliverInitialPromptToSession(this.backend, tmuxName, promptWithCheckpoint);
+
+    if (!deliverPromptViaArgv) {
+      await deliverInitialPromptToSession(this.backend, tmuxName, promptWithCheckpoint);
+    }
 
     this.taskStore.addSession(taskId, {
       tmuxSession: tmuxName,
