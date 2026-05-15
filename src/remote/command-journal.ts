@@ -13,7 +13,7 @@ import type {
   SessionId,
 } from './ids.js';
 
-export type RemoteCommandAction = 'presetReply' | 'permissionApprove' | 'skip' | 'snooze' | 'mark-done';
+export type RemoteCommandAction = 'presetReply' | 'permissionApprove' | 'skip' | 'snooze' | 'mark-done' | 'launch';
 export type CommandOutcome =
   | 'accepted'
   | 'rejected'

@@ -500,6 +500,22 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     interactionLog,
   };
 
+  let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
+  if (process.env.KOOKR_RELAY_URL?.trim()) {
+    const { createRemoteLaunchBrokerFromEnv, remoteLaunchFeatureEnabled } = await import('../remote/launch-broker.js');
+    if (remoteLaunchFeatureEnabled()) {
+      remoteLaunchBroker = createRemoteLaunchBrokerFromEnv({
+        launchTask: (opts) => launchTask(launchServiceDeps, opts),
+        getActiveLaunchCount: ({ projectId, agentType }) => taskStore.listTasks().filter((task) => (
+          (task.status === 'open' || task.status === 'pending' || task.status === 'inProgress')
+          && task.projectId === projectId
+          && task.agentType === agentType
+        )).length,
+      });
+      console.log('[remote] launch broker enabled');
+    }
+  }
+
   const ralphLoopService = new RalphLoopService({
     taskStore,
     monitor,
@@ -739,6 +755,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
               },
             },
           });
+        case 'launch': {
+          if (!remoteLaunchBroker) {
+            return await commandJournal!.appendPreAuditReject(command, 'launch feature disabled');
+          }
+          const launchCommand = {
+            ...command,
+            grantsChecked: ['launch' as const],
+          } as Parameters<typeof remoteLaunchBroker.handle>[0];
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: launchCommand,
+            isOwnerLocal,
+            handler: remoteLaunchBroker,
+          });
+        }
       }
     });
   }
@@ -1160,6 +1191,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     projectConfigStore,
     projectSidebarStore,
     circuitBreakerRegistry,
+    remoteLaunchBroker,
     app,
     broadcastToAll,
     close,

@@ -65,7 +65,7 @@ export interface LaunchOpts {
   /** Explicit project ID (e.g., github.com/owner/repo) — skips CWD-based inference. */
   projectId?: string;
   /** Where the launch came from — for server-side log provenance. Default: 'api'. */
-  launchSource?: 'cli' | 'ui' | 'api' | 'remote-chat-telegram';
+  launchSource?: 'cli' | 'ui' | 'api' | 'remote-chat-telegram' | 'remote-relay';
   /** External services the launch should check and surface as launch health. */
   dependencies?: LaunchDependency[];
   /**
