@@ -10,16 +10,19 @@ export type {
   ActivityDisclosure,
   ActivityItem,
   AgentMessage,
+  PasteContentKind,
   SystemNotice,
   ToolCategory,
   ToolGroup,
   ToolGroupEntry,
   UserMessage,
+  UserPasteBurst,
 } from './contracts/activity-summary.js';
 export {
   buildActivityDisclosure,
   categorizeTool,
   compactToolSummary,
+  pasteBurstLabel,
   summarizeActivity,
 } from './contracts/activity-summary.js';
 export type { BuildInfo } from './contracts/build-info.js';

@@ -4,9 +4,13 @@ import {
   summarizeActivity,
   compactToolSummary,
   categorizeTool,
+  classifyPasteContent,
+  pasteBurstLabel,
   toolLabel,
+  PASTE_BURST_MIN_LINES,
   type ActivityItem,
   type ToolGroup,
+  type UserPasteBurst,
 } from './activity-summary.js';
 import type { AgentActivityMeta, AgentEvent } from './types.js';
 
@@ -439,6 +443,198 @@ describe('summarizeActivity', () => {
     expect(items).toHaveLength(1);
     const group = items[0] as ToolGroup;
     expect(group.totalCalls).toBe(2); // Only tool_use events counted
+  });
+});
+
+// ── paste-burst coalescing (issue #357) ──────────────────────────────
+
+describe('summarizeActivity — paste-burst coalescing (issue #357)', () => {
+  test('collapses a burst of pasted single-line prompts into one item', () => {
+    const lines = Array.from({ length: 43 }, (_, i) => `{"event": ${i}}`);
+    const items = summarizeActivity(lines.map(userPrompt));
+
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe('user_paste_burst');
+    const burst = items[0] as UserPasteBurst;
+    expect(burst.lineCount).toBe(43);
+    expect(burst.lines).toEqual(lines); // raw lines retained verbatim
+    expect(burst.contentKind).toBe('JSON');
+  });
+
+  test('exactly PASTE_BURST_MIN_LINES single-line prompts coalesce', () => {
+    const lines = Array.from({ length: PASTE_BURST_MIN_LINES }, (_, i) => `line ${i}`);
+    const items = summarizeActivity(lines.map(userPrompt));
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe('user_paste_burst');
+  });
+
+  test('one prompt below the threshold stays as separate user messages', () => {
+    const lines = Array.from({ length: PASTE_BURST_MIN_LINES - 1 }, (_, i) => `line ${i}`);
+    const items = summarizeActivity(lines.map(userPrompt));
+    expect(items).toHaveLength(PASTE_BURST_MIN_LINES - 1);
+    expect(items.every((i) => i.type === 'user_message')).toBe(true);
+  });
+
+  // Literal counts pin the boundary independently of PASTE_BURST_MIN_LINES, so
+  // an off-by-one in the constant and the `>=` comparison cannot drift together
+  // unnoticed.
+  test('a literal pair of adjacent single-line prompts is not coalesced', () => {
+    const items = summarizeActivity([userPrompt('alpha'), userPrompt('beta')]);
+    expect(items).toEqual([
+      { type: 'user_message', text: 'alpha' },
+      { type: 'user_message', text: 'beta' },
+    ]);
+  });
+
+  test('a literal run of three adjacent single-line prompts coalesces', () => {
+    const items = summarizeActivity([userPrompt('alpha'), userPrompt('beta'), userPrompt('gamma')]);
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe('user_paste_burst');
+    expect((items[0] as UserPasteBurst).lineCount).toBe(3);
+  });
+
+  test('a single user prompt is an ordinary user_message, not a burst', () => {
+    const items = summarizeActivity([userPrompt('just one message')]);
+    expect(items).toEqual([{ type: 'user_message', text: 'just one message' }]);
+  });
+
+  test('does NOT merge normal separate messages with agent turns between them', () => {
+    // Three deliberate prompts, each followed by an agent reply — the agent
+    // activity ends every run, so no burst can form.
+    const items = summarizeActivity([
+      userPrompt('add a feature'),
+      stop('feature added'),
+      userPrompt('now add tests'),
+      stop('tests added'),
+      userPrompt('now fix the lint'),
+      stop('lint fixed'),
+    ]);
+    expect(items.filter((i) => i.type === 'user_paste_burst')).toHaveLength(0);
+    expect(items.filter((i) => i.type === 'user_message')).toHaveLength(3);
+    expect(items.map((i) => i.type)).toEqual([
+      'user_message', 'agent_message',
+      'user_message', 'agent_message',
+      'user_message', 'agent_message',
+    ]);
+  });
+
+  test('a deliberate multiline prompt stays one user_message and is never a burst', () => {
+    const multiline = 'Please do the following:\n- step one\n- step two\n- step three';
+    const items = summarizeActivity([userPrompt(multiline)]);
+    expect(items).toEqual([{ type: 'user_message', text: multiline }]);
+  });
+
+  test('a multiline prompt ends a preceding burst instead of joining it', () => {
+    const burstLines = ['log line 1', 'log line 2', 'log line 3'];
+    const multiline = 'a real follow-up\nspanning two lines';
+    const items = summarizeActivity([
+      ...burstLines.map(userPrompt),
+      userPrompt(multiline),
+    ]);
+    expect(items).toHaveLength(2);
+    expect(items[0].type).toBe('user_paste_burst');
+    expect((items[0] as UserPasteBurst).lineCount).toBe(3);
+    expect(items[1]).toEqual({ type: 'user_message', text: multiline });
+  });
+
+  test('intervening tool activity splits a paste so neither half reaches the threshold', () => {
+    const items = summarizeActivity([
+      userPrompt('a'),
+      userPrompt('b'),
+      toolUse('Read', { file_path: '/x.ts' }),
+      userPrompt('c'),
+      userPrompt('d'),
+    ]);
+    expect(items.filter((i) => i.type === 'user_paste_burst')).toHaveLength(0);
+    expect(items.map((i) => i.type)).toEqual([
+      'user_message', 'user_message', 'tool_group', 'user_message', 'user_message',
+    ]);
+  });
+
+  test('a bare low-value event between prompts ends the run', () => {
+    // A capped monitor window can surface a tool_result without its preceding
+    // tool_use; it must still split a paste run rather than silently merge two
+    // distinct message runs across it.
+    const items = summarizeActivity([
+      userPrompt('a'),
+      userPrompt('b'),
+      toolResult('Read'),
+      userPrompt('c'),
+      userPrompt('d'),
+    ]);
+    expect(items.filter((i) => i.type === 'user_paste_burst')).toHaveLength(0);
+    expect(items.filter((i) => i.type === 'user_message')).toHaveLength(4);
+  });
+
+  test('a burst keeps chronological order ahead of the agent response', () => {
+    const items = summarizeActivity([
+      ...['x1', 'x2', 'x3', 'x4'].map(userPrompt),
+      stop('handled the pasted content'),
+    ]);
+    expect(items.map((i) => i.type)).toEqual(['user_paste_burst', 'agent_message']);
+  });
+
+  test('two bursts separated by an agent turn each coalesce independently', () => {
+    const items = summarizeActivity([
+      ...['p1', 'p2', 'p3'].map(userPrompt),
+      stop('first reply'),
+      ...['q1', 'q2', 'q3'].map(userPrompt),
+    ]);
+    expect(items.map((i) => i.type)).toEqual([
+      'user_paste_burst', 'agent_message', 'user_paste_burst',
+    ]);
+  });
+});
+
+describe('classifyPasteContent (issue #357)', () => {
+  test('detects a pretty-printed JSON blob', () => {
+    expect(classifyPasteContent(['{', '  "a": 1,', '  "b": 2', '}'])).toBe('JSON');
+  });
+
+  test('detects per-line JSON (NDJSON)', () => {
+    expect(classifyPasteContent(['{"a":1}', '{"a":2}', '{"a":3}'])).toBe('JSON');
+  });
+
+  test('detects log lines by timestamp/level shape', () => {
+    expect(classifyPasteContent([
+      '2026-05-15T15:01:50Z INFO server started',
+      '2026-05-15T15:01:51Z ERROR connection refused',
+      '2026-05-15T15:01:52Z WARN retrying',
+    ])).toBe('log');
+  });
+
+  test('falls back to text for ordinary prose', () => {
+    expect(classifyPasteContent(['hello there', 'this is fine', 'nothing special here'])).toBe('text');
+  });
+
+  test('empty content classifies as text', () => {
+    expect(classifyPasteContent(['', '   ', ''])).toBe('text');
+  });
+});
+
+describe('pasteBurstLabel (issue #357)', () => {
+  function burst(overrides: Partial<UserPasteBurst>): UserPasteBurst {
+    return { type: 'user_paste_burst', lineCount: 1, lines: [], contentKind: 'text', ...overrides };
+  }
+
+  test('labels JSON content', () => {
+    expect(pasteBurstLabel(burst({ lineCount: 43, contentKind: 'JSON' })))
+      .toBe('Pasted 43 lines of JSON content');
+  });
+
+  test('labels log content', () => {
+    expect(pasteBurstLabel(burst({ lineCount: 12, contentKind: 'log' })))
+      .toBe('Pasted 12 lines of log content');
+  });
+
+  test('omits the content kind for plain text', () => {
+    expect(pasteBurstLabel(burst({ lineCount: 5, contentKind: 'text' })))
+      .toBe('Pasted 5 lines');
+  });
+
+  test('uses the singular noun for a one-line burst', () => {
+    expect(pasteBurstLabel(burst({ lineCount: 1, contentKind: 'JSON' })))
+      .toBe('Pasted 1 line of JSON content');
   });
 });
 

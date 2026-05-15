@@ -380,3 +380,41 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
     }
   });
 });
+
+describe('HookIngestion — diagnostic_only projection of duplicates (issue #357)', () => {
+  it('projects the second (duplicate) arrival as diagnostic_only and never dispatches it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-ingest-dedup-'));
+    try {
+      const ledger = new ActivityLedger(dir);
+      const adapter = makeStubAdapter();
+      const ingestion = new HookIngestion({ adapter, activityLedger: ledger });
+
+      // One pasted line, delivered by both transports (HTTP fast path, then
+      // the durable file watcher) — the classic dual-delivery duplicate.
+      const raw = JSON.stringify({
+        session_id: 'x',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: '{"pasted": "line"}',
+      });
+      const first = ingestion.ingestFromHttp('kookr-1', raw);
+      ingestion.injectHookEvent('kookr-1', raw); // file-source duplicate
+
+      expect(first.dispatched).toBe(true);
+      // The duplicate is dropped before the adapter — so it never reaches the
+      // monitor window and therefore never the activity panel.
+      expect(adapter.calls).toHaveLength(1);
+
+      await ledger.flush();
+      const rows = await ledger.readAll('kookr-1');
+      // The ledger keeps both arrivals for diagnostics/export, but the
+      // duplicate is projected `diagnostic_only` so it is not user-facing
+      // activity — and it was never dispatched, so it cannot reach the panel.
+      expect(rows.map((r) => r.projection).sort()).toEqual([
+        'diagnostic_only',
+        'parent_activity',
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
