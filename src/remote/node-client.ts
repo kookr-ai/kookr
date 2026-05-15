@@ -148,6 +148,7 @@ function isRemoteCommandEnvelope(value: unknown): value is CommandEnvelope {
       || msg.action === 'skip'
       || msg.action === 'snooze'
       || msg.action === 'mark-done'
+      || msg.action === 'launch'
     );
 }
 

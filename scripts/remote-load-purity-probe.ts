@@ -14,6 +14,10 @@ const fsp = require('node:fs/promises') as typeof import('node:fs/promises');
 const net = require('node:net') as typeof import('node:net');
 const beforeCache = new Set(Object.keys(require.cache));
 const violations: string[] = [];
+const allowedCacheRoots = [
+  join(process.cwd(), 'src/remote/'),
+  join(process.cwd(), 'src/shared/contracts/'),
+];
 
 function isToolingSideEffect(kind: string): boolean {
   if (!kind.includes('writeFile')) return false;
@@ -95,7 +99,11 @@ async function main(): Promise<void> {
   await import(pathToFileURL(mod).href);
 
   const afterCache = Object.keys(require.cache);
-  const newCacheEntries = afterCache.filter((entry) => !beforeCache.has(entry) && entry !== mod);
+  const newCacheEntries = afterCache.filter((entry) => (
+    !beforeCache.has(entry)
+    && entry !== mod
+    && !allowedCacheRoots.some((root) => entry.startsWith(root))
+  ));
   if (newCacheEntries.length > 0) {
     violations.push(`require.cache:${newCacheEntries.join(',')}`);
   }

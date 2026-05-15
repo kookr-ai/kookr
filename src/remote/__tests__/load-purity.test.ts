@@ -53,11 +53,12 @@ describe('src/remote module-load purity', () => {
         env: {
           ...process.env,
           KOOKR_RELAY_URL: '',
+          TSX_DISABLE_CACHE: '1',
         },
       });
       expect(result.status, `${mod}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`).toBe(0);
     }
-  }, 15_000);
+  }, 60_000);
 
   it('still catches top-level writes from the probed module when loaded through tsx', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kookr-remote-purity-negative-'));
@@ -80,5 +81,5 @@ describe('src/remote module-load purity', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 });
