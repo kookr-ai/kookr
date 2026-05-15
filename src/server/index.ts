@@ -516,6 +516,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     hookIngestion,
     onPermissionBlocked: (taskId, promptText) => {
       onPermissionBlockedHolder?.(taskId, promptText);
+      const task = remoteNodeClient && process.env.KOOKR_PUSH_DISABLED !== 'true'
+        ? taskStore.getTask(taskId)
+        : undefined;
+      if (!task) return;
+      void import('../remote/push.js')
+        .then(({ makePermissionBlockedPushPayload, publishPushAlertDelta }) => {
+          publishPushAlertDelta(remoteNodeClient, makePermissionBlockedPushPayload({
+            nodeDisplayName: process.env.KOOKR_RELAY_DISPLAY_NAME,
+            task,
+            alertId: `permission-${taskId}-${Date.now()}`,
+          }));
+        })
+        .catch((err) => {
+          console.warn('[remote-push] failed to publish permission alert:', err);
+        });
     },
   });
 
