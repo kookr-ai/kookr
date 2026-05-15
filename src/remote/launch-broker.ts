@@ -8,6 +8,7 @@ import {
 } from './launch-allowlist.js';
 import type { CommandEnvelope } from './command-journal.js';
 import type { RemoteCommandHandler, ValidationResult } from './command-pipeline.js';
+import type { KnownGrant } from './policy-sync.js';
 
 export type RemoteLaunchErrorCode =
   | 'error.invalidRequest'
@@ -19,15 +20,6 @@ export type RemoteLaunchErrorCode =
 export type RemoteLaunchBrokerResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: RemoteLaunchErrorCode; message: string };
-
-export type ShareGrant =
-  | 'view'
-  | 'comment'
-  | 'terminalInput'
-  | 'launch'
-  | 'stop'
-  | 'permissionApprove'
-  | 'admin';
 
 function launchError(
   error: RemoteLaunchErrorCode,
@@ -76,7 +68,7 @@ export interface RemoteLaunchBrokerDeps {
 
 export interface RemoteLaunchCommand extends CommandEnvelope {
   action: 'launch';
-  grantsChecked: ShareGrant[];
+  grantsChecked: KnownGrant[];
   payload: RemoteLaunchRequest;
 }
 

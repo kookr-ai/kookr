@@ -21,9 +21,6 @@ export async function executeWithPipeline<Req extends CommandEnvelope, Res>(
   if (request.action !== handler.action) {
     return await journal.appendPreAuditReject(request, `handler mismatch for action ${request.action}`) as CommandResult<Res>;
   }
-  if (!opts.isOwnerLocal({ actorId: request.actorId })) {
-    return await journal.appendPreAuditReject(request, 'owner identity required') as CommandResult<Res>;
-  }
   if (journal.hasTombstone(request.grantId)) {
     return await journal.appendPreAuditReject(request, 'grant revoked') as CommandResult<Res>;
   }

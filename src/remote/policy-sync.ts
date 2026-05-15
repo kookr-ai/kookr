@@ -1,6 +1,14 @@
 import type { GrantId, NodeId, PolicyVersion } from './ids.js';
 
-export type ShareGrant = 'view' | 'write' | 'admin';
+export type KnownGrant =
+  | 'view'
+  | 'comment'
+  | 'terminalInput'
+  | 'launch'
+  | 'stop'
+  | 'permissionApprove'
+  | 'admin';
+export type ShareGrant = KnownGrant | (string & {});
 
 export type ShareSubject =
   | { kind: 'node'; nodeId: NodeId }

@@ -1,5 +1,6 @@
 import type { GrantId } from './ids.js';
 import type { RemotePolicyCache } from './policy-cache.js';
+import { isKnownGrant } from './grants.js';
 import type { ShareGrant, ShareSubject } from './policy-sync.js';
 
 export type GrantDecision =
@@ -26,6 +27,7 @@ export function evaluateGrant(
   action: ShareGrant,
   now: Date = new Date(),
 ): GrantDecision {
+  if (!isKnownGrant(action)) return { allowed: false, reason: 'wrong-action' };
   const snapshot = cache.snapshot();
   for (const grantId of snapshot.revokedGrantIds) {
     if (snapshot.grants.some((grant) => grant.grantId === grantId)) {
@@ -44,7 +46,7 @@ export function evaluateGrant(
       sawExpired = true;
       continue;
     }
-    if (!grant.grants.includes(action)) {
+    if (!grant.grants.some((grantAction) => grantAction === action || grantAction === 'admin')) {
       sawWrongAction = true;
       continue;
     }
@@ -53,4 +55,25 @@ export function evaluateGrant(
   if (sawExpired) return { allowed: false, reason: 'expired' };
   if (sawWrongAction) return { allowed: false, reason: 'wrong-action' };
   return { allowed: false, reason: sawSubject ? 'wrong-action' : 'missing' };
+}
+
+export function evaluateGrantById(
+  cache: RemotePolicyCache,
+  grantId: GrantId,
+  subject: ShareSubject,
+  action: ShareGrant,
+  now: Date = new Date(),
+): GrantDecision {
+  if (cache.hasTombstone(grantId)) return { allowed: false, reason: 'revoked' };
+  if (!isKnownGrant(action)) return { allowed: false, reason: 'wrong-action' };
+  const grant = cache.get(grantId);
+  if (!grant) return { allowed: false, reason: 'missing' };
+  if (!subjectMatches(grant.subject, subject)) return { allowed: false, reason: 'wrong-subject' };
+  if (grant.expiresAt && Date.parse(grant.expiresAt) <= now.getTime()) {
+    return { allowed: false, reason: 'expired' };
+  }
+  if (!grant.grants.some((grantAction) => grantAction === action || grantAction === 'admin')) {
+    return { allowed: false, reason: 'wrong-action' };
+  }
+  return { allowed: true, grantId };
 }
