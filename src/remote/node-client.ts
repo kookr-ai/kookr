@@ -3,6 +3,7 @@ import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 import type { RelayHello, RemoteFeature } from './handshake.js';
+import type { CommandEnvelope, CommandResult } from './command-journal.js';
 import type { RemoteControlEvent } from './control-events.js';
 import type { NodeEpoch, NodeId } from './ids.js';
 import type { TerminalStreamEvent } from './stream-events.js';
@@ -37,6 +38,7 @@ export interface RemoteNodeClientOptions {
   reconnectMaxMs?: number;
   logger?: Pick<typeof console, 'log' | 'warn' | 'error'>;
   wsImporter?: () => Promise<typeof import('ws')>;
+  onCommand?: (command: CommandEnvelope) => Promise<CommandResult>;
 }
 
 export interface RemoteNodeClient {
@@ -44,6 +46,7 @@ export interface RemoteNodeClient {
   start(): void;
   stop(): Promise<void>;
   publish(event: RemoteControlEvent | TerminalStreamEvent): boolean;
+  setCommandHandler(handler: ((command: CommandEnvelope) => Promise<CommandResult>) | null): void;
 }
 
 interface NodeIdentity {
@@ -125,6 +128,33 @@ function toNodeWebSocketUrl(relayUrl: string): string {
   return url.toString();
 }
 
+function isRemoteCommandEnvelope(value: unknown): value is CommandEnvelope {
+  const msg = value as Partial<CommandEnvelope> & { type?: unknown };
+  return typeof value === 'object'
+    && value !== null
+    && msg.type === 'remote.command'
+    && typeof msg.commandId === 'string'
+    && typeof msg.actorId === 'string'
+    && typeof msg.clientId === 'string'
+    && typeof msg.nodeId === 'string'
+    && typeof msg.nodeEpoch === 'string'
+    && typeof msg.sessionId === 'string'
+    && typeof msg.sessionEpoch === 'string'
+    && typeof msg.grantId === 'string'
+    && typeof msg.idempotencyKey === 'string'
+    && (
+      msg.action === 'presetReply'
+      || msg.action === 'permissionApprove'
+      || msg.action === 'skip'
+      || msg.action === 'snooze'
+      || msg.action === 'mark-done'
+    );
+}
+
+function makeRemoteCommandResultMessage(result: CommandResult): { type: 'remote.command.result' } & CommandResult {
+  return { type: 'remote.command.result', ...result };
+}
+
 export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Promise<RemoteNodeClient> {
   const {
     isRelayHello,
@@ -149,6 +179,7 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
   let connectPromise: Promise<void> | null = null;
   let stopped = false;
   let reconnectAttempt = 0;
+  let commandHandler = opts.onCommand ?? null;
   const reconnectBaseMs = opts.reconnectBaseMs ?? 1_000;
   const reconnectMaxMs = opts.reconnectMaxMs ?? 30_000;
 
@@ -230,6 +261,32 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
         status.relayConnected = true;
         status.connectionState = 'connected';
         logger.log(`[remote-node] connected nodeId=${status.nodeId} protocol=${parsed.acceptedVersion}`);
+        return;
+      }
+      if (isRemoteCommandEnvelope(parsed)) {
+        if (parsed.nodeId !== status.nodeId || parsed.nodeEpoch !== status.nodeEpoch) return;
+        void (async () => {
+          const result: CommandResult = commandHandler
+            ? await commandHandler(parsed)
+            : {
+                commandId: parsed.commandId,
+                action: parsed.action,
+                outcome: 'rejected',
+                reason: 'remote command handler unavailable',
+              };
+          if (next.readyState === next.OPEN) {
+            next.send(JSON.stringify(makeRemoteCommandResultMessage(result)));
+          }
+        })().catch((err) => {
+          if (next.readyState === next.OPEN) {
+            next.send(JSON.stringify(makeRemoteCommandResultMessage({
+              commandId: parsed.commandId,
+              action: parsed.action,
+              outcome: 'rejected',
+              reason: err instanceof Error ? err.message : String(err),
+            })));
+          }
+        });
       }
     });
 
@@ -271,6 +328,9 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
       if (!ws || ws.readyState !== ws.OPEN || !status.relayConnected) return false;
       ws.send(JSON.stringify(event));
       return true;
+    },
+    setCommandHandler(handler): void {
+      commandHandler = handler;
     },
   };
 }

@@ -50,6 +50,8 @@ import { createRealtimeServices } from './bootstrap/create-realtime-services.js'
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import type { RemoteNodeClient } from '../remote/node-client.js';
+import type { CommandJournal } from '../remote/command-journal.js';
+import { isOwnerLocal } from './auth.js';
 import type { SessionStreamPublisher } from '../remote/session-stream-publisher.js';
 
 // --- Exported types ---
@@ -185,8 +187,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // unless the operator opts into remote collaboration with KOOKR_RELAY_URL.
   let remoteNodeClient: RemoteNodeClient | null = null;
   let sessionStreamPublisher: SessionStreamPublisher | null = null;
+  let commandJournal: CommandJournal | null = null;
   if (process.env.KOOKR_RELAY_URL) {
     const { createRemoteAuditScaffold } = await import('../remote/audit.js');
+    const { CommandJournal } = await import('../remote/command-journal.js');
     const { createRemoteNodeClient } = await import('../remote/node-client.js');
     createRemoteAuditScaffold({ relayUrl: process.env.KOOKR_RELAY_URL });
     remoteNodeClient = await createRemoteNodeClient({
@@ -196,6 +200,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       softwareVersion: buildInfo.version,
       displayName: process.env.KOOKR_RELAY_DISPLAY_NAME,
       publicBaseUrl: process.env.KOOKR_PUBLIC_BASE_URL,
+    });
+    commandJournal = await CommandJournal.open({
+      kookrDir,
+      nodeId: remoteNodeClient.status.nodeId,
+      nodeEpoch: remoteNodeClient.status.nodeEpoch,
     });
   }
 
@@ -549,6 +558,190 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const terminalDeps: TerminalInputDeps = {
     monitor, abortPendingSuggestion, broadcastToAll, serverCwd,
   };
+
+  if (remoteNodeClient && commandJournal) {
+    const { executeWithPipeline } = await import('../remote/command-pipeline.js');
+    const { RemotePermissionBroker } = await import('../remote/permission-broker.js');
+    const { isPresetReplyId, sendPresetReply } = await import('../remote/preset-reply.js');
+    const permissionBroker = new RemotePermissionBroker({
+      adapter,
+      monitor,
+      queue,
+      interactionLog,
+      onRespond: abortPendingSuggestion,
+      isOwnerLocal,
+    });
+    remoteNodeClient.setCommandHandler(async (command) => {
+      const authorize = () => {
+        if (command.grantId !== `owner-local:${command.nodeId}`) {
+          return { ok: false as const, reason: 'invalid grant' };
+        }
+        const task = taskStore.findTaskBySession(command.sessionId);
+        if (!task) return { ok: false as const, reason: 'unknown session' };
+        const session = task.sessions.find((candidate) => candidate.tmuxSession === command.sessionId);
+        const liveSession = session && session.lastStatus !== 'completed' && session.lastStatus !== 'aborted';
+        if (!liveSession) return { ok: false as const, reason: 'session is not live' };
+        if (command.action === 'mark-done') {
+          const taskId = (command.payload as { taskId?: unknown } | undefined)?.taskId;
+          if (taskId !== task.id) return { ok: false as const, reason: 'task/session mismatch' };
+        }
+        return { ok: true as const };
+      };
+      const baseValidate = () => {
+        if (command.baseRevision !== undefined && command.baseRevision < 0) {
+          return { ok: false as const, reason: 'stale baseRevision' };
+        }
+        return { ok: true as const };
+      };
+      switch (command.action) {
+        case 'presetReply':
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'presetReply',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                const presetId = (command.payload as { presetId?: unknown } | undefined)?.presetId;
+                return isPresetReplyId(presetId)
+                  ? { ok: true as const }
+                  : { ok: false as const, reason: 'invalid presetId' };
+              },
+              execute: async () => {
+                const presetId = (command.payload as { presetId: Parameters<typeof sendPresetReply>[2] }).presetId;
+                const result = await sendPresetReply(adapter, command.sessionId, presetId);
+                monitor.markInputReceived(command.sessionId);
+                queue.respondAndAdvance(command.sessionId);
+                abortPendingSuggestion(command.sessionId, 'used');
+                await interactionLog.append({
+                  type: 'user_input',
+                  agentId: command.sessionId,
+                  content: result.text,
+                  timestamp: new Date().toISOString(),
+                });
+                return result;
+              },
+            },
+          });
+        case 'permissionApprove':
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'permissionApprove',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                const keystroke = (command.payload as { keystroke?: unknown } | undefined)?.keystroke;
+                return keystroke === undefined || typeof keystroke === 'string'
+                  ? { ok: true as const }
+                  : { ok: false as const, reason: 'invalid keystroke' };
+              },
+              execute: async () => await permissionBroker.approve(
+                command.sessionId,
+                (command.payload as { keystroke?: string } | undefined)?.keystroke ?? '1',
+                command.actorId,
+              ),
+            },
+          });
+        case 'skip':
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'skip',
+              authorize,
+              validate: baseValidate,
+              execute: async () => {
+                const anomaly = queue.getAnomaly(command.sessionId);
+                const anomalyType = anomaly?.type ?? 'needs_input';
+                queue.skip(command.sessionId);
+                await interactionLog.append({
+                  type: 'finding_skipped',
+                  agentId: command.sessionId,
+                  anomalyType,
+                  timestamp: new Date().toISOString(),
+                });
+                return { skipped: true };
+              },
+            },
+          });
+        case 'snooze':
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'snooze',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                const durationMs = (command.payload as { durationMs?: unknown } | undefined)?.durationMs;
+                return typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0
+                  ? { ok: true as const }
+                  : { ok: false as const, reason: 'invalid durationMs' };
+              },
+              execute: async () => {
+                const anomaly = queue.getAnomaly(command.sessionId);
+                const durationMs = (command.payload as { durationMs: number }).durationMs;
+                const snooze = queue.snooze(command.sessionId, durationMs, 'remote', anomaly ?? undefined);
+                if (!snooze) throw new Error('nothing to snooze');
+                await interactionLog.append({
+                  type: 'finding_snoozed',
+                  agentId: command.sessionId,
+                  durationMs,
+                  anomalyType: anomaly?.type,
+                  timestamp: new Date().toISOString(),
+                });
+                return { snoozedUntil: snooze.expiresAt };
+              },
+            },
+          });
+        case 'mark-done':
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'mark-done',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                const taskId = (command.payload as { taskId?: unknown } | undefined)?.taskId;
+                return typeof taskId === 'string' && taskStore.getTask(taskId)
+                  ? { ok: true as const }
+                  : { ok: false as const, reason: 'unknown taskId' };
+              },
+              execute: async () => {
+                const taskId = (command.payload as { taskId: string }).taskId;
+                await completeTask(taskId, {
+                  adapter,
+                  monitor,
+                  taskStore,
+                  interactionLog,
+                  hookWatcher,
+                  watchdog,
+                  shadowRegistry,
+                  tokenTracker,
+                  suppressionTracker,
+                  checkpointCycler,
+                  queue,
+                });
+                return { taskId };
+              },
+            },
+          });
+      }
+    });
+  }
 
   const startupRecoverySummary = await runStartupRecoveryPhase({
     taskStore,

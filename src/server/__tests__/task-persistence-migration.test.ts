@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { InteractionLogWriter, readInteractionLog } from '../../core/interaction-log.js';
 import { loadTasks, saveTasks } from '../../core/task-persistence.js';
 import { TaskStore } from '../../core/tasks.js';
+import { CommandJournal } from '../../remote/command-journal.js';
+import { asActorId, asClientId, asCommandId, asGrantId, asIdempotencyKey, asNodeEpoch, asNodeId, asSessionEpoch, asSessionId } from '../../remote/ids.js';
 
 interface MainCompatibleTaskFile {
   version?: number;
@@ -172,5 +174,57 @@ describe('Phase 0a on-disk migration compatibility', () => {
       version: 2,
       tasks: expect.any(Array),
     });
+  });
+
+  it('round-trips Phase 4a -> Phase 3 -> Phase 4a -> Phase 3 with audit.jsonl as a sidecar', async () => {
+    const auditDir = tempDir;
+    writeFileSync(tasksPath, JSON.stringify({
+      version: 2,
+      lifetimeSpendUsd: 0,
+      tasks: [{
+        id: 'phase-cycle-task',
+        prompt: 'cycle task',
+        cwd: '/repo',
+        status: 'open',
+        sessions: [],
+        agentType: 'claude-code',
+        createdAt: '2026-05-14T00:00:00.000Z',
+        updatedAt: '2026-05-14T00:00:00.000Z',
+      }],
+    }, null, 2));
+
+    const phase4a = await CommandJournal.open({
+      kookrDir: auditDir,
+      nodeId: asNodeId('node-1'),
+      nodeEpoch: asNodeEpoch('1'),
+    });
+    await phase4a.appendIntent({
+      commandId: asCommandId('cmd-cycle'),
+      actorId: asActorId('local-owner'),
+      clientId: asClientId('client-1'),
+      nodeId: asNodeId('node-1'),
+      nodeEpoch: asNodeEpoch('1'),
+      sessionId: asSessionId('session-1'),
+      sessionEpoch: asSessionEpoch('1'),
+      grantId: asGrantId('grant-1'),
+      idempotencyKey: asIdempotencyKey('idem-1'),
+      action: 'presetReply',
+    });
+
+    const phase3Loaded = await loadTasks(tasksPath);
+    await saveTasks(phase3Loaded.tasks, tasksPath, phase3Loaded.lifetimeSpendUsd);
+    expect(readMainCompatibleTasks(tasksPath).tasks).toHaveLength(1);
+
+    const phase4aAgain = await CommandJournal.open({
+      kookrDir: auditDir,
+      nodeId: asNodeId('node-1'),
+      nodeEpoch: asNodeEpoch('1'),
+    });
+    expect(phase4aAgain.outcome(asCommandId('cmd-cycle')).outcome).toBe('unknown-intent-only');
+
+    const phase3Again = await loadTasks(tasksPath);
+    await saveTasks(phase3Again.tasks, tasksPath, phase3Again.lifetimeSpendUsd);
+    expect(readMainCompatibleTasks(tasksPath).tasks).toHaveLength(1);
+    expect(readFileSync(join(tempDir, 'audit.jsonl'), 'utf8')).toContain('cmd-cycle');
   });
 });
