@@ -116,11 +116,26 @@ vi.mock('../terminal-send.js', () => ({ registerTerminalSend: vi.fn() }));
 vi.mock('../telemetry.js', () => ({ track: vi.fn() }));
 
 import { TerminalPanel } from './TerminalPanel.js';
+import { buildPasteFrame } from '../terminal-paste.js';
 
 function changeInputValue(input: HTMLInputElement, value: string) {
   const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
   valueSetter?.call(input, value);
   input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+/**
+ * Dispatch a browser `paste` on `target`. jsdom does not implement
+ * `ClipboardEvent`, so we fire a plain `Event` and attach a minimal
+ * `clipboardData` shape — exactly what `handlePasteCapture` reads.
+ */
+function dispatchPaste(target: Element, text: string): Event {
+  const evt = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(evt, 'clipboardData', {
+    value: { getData: (type: string) => (type === 'text' || type === 'text/plain' ? text : '') },
+  });
+  target.dispatchEvent(evt);
+  return evt;
 }
 
 function openSearchViaShortcut(terminal: { keyHandler: ((event: KeyboardEvent) => boolean) | null }) {
@@ -238,6 +253,49 @@ describe('TerminalPanel', () => {
     });
 
     expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 80, rows: 24 }));
+  });
+
+  // kookr #356 — a multiline paste must be intercepted before xterm streams
+  // it to the PTY, where every newline would otherwise submit a prompt.
+  test('routes a multiline paste through one structured paste frame', () => {
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const ws = mocks.webSocketInstances[0];
+    ws.send.mockClear();
+    const xtermContainer = container.querySelector('.terminal-xterm');
+    expect(xtermContainer).not.toBeNull();
+
+    let evt: Event;
+    act(() => {
+      evt = dispatchPaste(xtermContainer!, 'line1\nline2\nline3');
+    });
+
+    // The default raw paste is cancelled so xterm never sees the newlines.
+    expect(evt!.defaultPrevented).toBe(true);
+    // Exactly one frame — not one per line.
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    expect(ws.send).toHaveBeenCalledWith(buildPasteFrame('line1\nline2\nline3'));
+  });
+
+  test('leaves a single-line paste on xterm\'s raw byte-transparent path', () => {
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const ws = mocks.webSocketInstances[0];
+    ws.send.mockClear();
+    const xtermContainer = container.querySelector('.terminal-xterm');
+
+    let evt: Event;
+    act(() => {
+      evt = dispatchPaste(xtermContainer!, 'echo hello');
+    });
+
+    // Not intercepted — xterm handles it, no structured frame is sent.
+    expect(evt!.defaultPrevented).toBe(false);
+    expect(ws.send).not.toHaveBeenCalled();
   });
 
   test('opens terminal search with Ctrl+F and searches as the query changes', () => {
