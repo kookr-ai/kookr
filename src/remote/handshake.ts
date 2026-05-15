@@ -5,7 +5,8 @@ export const REMOTE_PROTOCOL_VERSION = 1;
 export type RemoteFeature =
   | 'control.snapshot'
   | 'control.state-delta'
-  | 'policy-sync';
+  | 'policy-sync'
+  | 'terminal-stream';
 
 export const PHASE1_SUPPORTED_FEATURES: readonly RemoteFeature[] = [
   'control.snapshot',

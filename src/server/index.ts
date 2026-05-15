@@ -50,6 +50,7 @@ import { createRealtimeServices } from './bootstrap/create-realtime-services.js'
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import type { RemoteNodeClient } from '../remote/node-client.js';
+import type { SessionStreamPublisher } from '../remote/session-stream-publisher.js';
 
 // --- Exported types ---
 
@@ -183,6 +184,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Phase 0a remote-session audit scaffold. This path is intentionally inert
   // unless the operator opts into remote collaboration with KOOKR_RELAY_URL.
   let remoteNodeClient: RemoteNodeClient | null = null;
+  let sessionStreamPublisher: SessionStreamPublisher | null = null;
   if (process.env.KOOKR_RELAY_URL) {
     const { createRemoteAuditScaffold } = await import('../remote/audit.js');
     const { createRemoteNodeClient } = await import('../remote/node-client.js');
@@ -359,6 +361,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   }
   if (reconcileResult.orphans.length > 0) {
     console.warn(`Orphan sessions (not in tasks): ${reconcileResult.orphans.join(', ')}`);
+  }
+
+  if (remoteNodeClient) {
+    const { createSessionStreamPublisher } = await import('../remote/session-stream-publisher.js');
+    sessionStreamPublisher = createSessionStreamPublisher({
+      terminalBackend,
+      remoteNodeClient,
+    });
+    await sessionStreamPublisher.start();
   }
 
   // Hook watcher created here but resumed-session replay is deferred to after crash recovery,
@@ -791,6 +802,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     // Stop diagnostic runner
     diagnosticRunner.dispose();
+    sessionStreamPublisher?.stop();
     await remoteNodeClient?.stop();
 
     // Stop hook watchers and trackers
