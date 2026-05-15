@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist"
+  },
+  "include": ["relay/**/*.ts", "src/remote/**/*.ts"],
+  "exclude": ["node_modules", "dist", "relay/**/*.test.ts", "src/**/*.test.ts"]
+}

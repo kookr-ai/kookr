@@ -49,6 +49,7 @@ import { createOssServices, createOssSourceWatchers } from './bootstrap/create-o
 import { createRealtimeServices } from './bootstrap/create-realtime-services.js';
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
+import type { RemoteNodeClient } from '../remote/node-client.js';
 
 // --- Exported types ---
 
@@ -181,9 +182,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Phase 0a remote-session audit scaffold. This path is intentionally inert
   // unless the operator opts into remote collaboration with KOOKR_RELAY_URL.
+  let remoteNodeClient: RemoteNodeClient | null = null;
   if (process.env.KOOKR_RELAY_URL) {
     const { createRemoteAuditScaffold } = await import('../remote/audit.js');
+    const { createRemoteNodeClient } = await import('../remote/node-client.js');
     createRemoteAuditScaffold({ relayUrl: process.env.KOOKR_RELAY_URL });
+    remoteNodeClient = await createRemoteNodeClient({
+      relayUrl: process.env.KOOKR_RELAY_URL,
+      token: process.env.KOOKR_RELAY_TOKEN ?? '',
+      kookrDir,
+      softwareVersion: buildInfo.version,
+      displayName: process.env.KOOKR_RELAY_DISPLAY_NAME,
+      publicBaseUrl: process.env.KOOKR_PUBLIC_BASE_URL,
+    });
   }
 
   const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
@@ -737,6 +748,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Start background services that should wait for the server to be listening.
   backgroundServices.startAfterListen();
+  remoteNodeClient?.start();
 
   // --- Close ---
 
@@ -764,6 +776,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     // Stop diagnostic runner
     diagnosticRunner.dispose();
+    await remoteNodeClient?.stop();
 
     // Stop hook watchers and trackers
     hookWatcher.stopAll();
