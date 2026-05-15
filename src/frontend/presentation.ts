@@ -1,4 +1,4 @@
-import type { AgentEvent, TokenUsage, AgentType } from '../shared/protocol.js';
+import type { AgentEvent, TokenUsage, AgentType, TurnState } from '../shared/protocol.js';
 
 /**
  * A small palette of muted background/text color pairs for project badges.
@@ -112,6 +112,49 @@ export function healthyStatusLabel(events: AgentEvent[], startedAt?: string): st
     return 'done';
   }
   return formatDuration(startedAt);
+}
+
+/**
+ * Human-readable label for an agent's current turn state. Empty string when
+ * the turn state is absent or indeterminate so callers can skip rendering.
+ * See issue #358 — `completed_turn` must read as an idle, finished turn rather
+ * than an actively-running or hung session.
+ */
+export function turnStateLabel(turnState: TurnState | undefined): string {
+  switch (turnState) {
+    case 'running':
+      return 'Running';
+    case 'waiting_for_input':
+      return 'Waiting for your input';
+    case 'completed_turn':
+      return 'Turn complete — waiting for follow-up';
+    case 'blocked':
+      return 'Blocked';
+    case 'unknown':
+    case undefined:
+      return '';
+  }
+}
+
+/**
+ * CSS class suffix for the turn-state line — applied as
+ * `.finding-turn-state.turn-state--{suffix}`. Returns '' when there is
+ * nothing to render.
+ */
+export function turnStateClass(turnState: TurnState | undefined): string {
+  switch (turnState) {
+    case 'running':
+      return 'running';
+    case 'waiting_for_input':
+      return 'waiting';
+    case 'completed_turn':
+      return 'complete';
+    case 'blocked':
+      return 'blocked';
+    case 'unknown':
+    case undefined:
+      return '';
+  }
 }
 
 /**

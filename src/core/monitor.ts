@@ -1,10 +1,11 @@
-import type { AgentActivityMeta, AgentEvent, Anomaly, AnomalyType, TokenUsage, WorktreeHealth } from './types.js';
+import type { AgentActivityMeta, AgentEvent, Anomaly, AnomalyType, TokenUsage, TurnState, WorktreeHealth } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import { isTerminalStatus, type TaskLaunchHealthSummary, type TaskStore } from './tasks.js';
 import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
 import { detectAnomalies, evaluateAnomalies } from './anomaly-detector.js';
+import { deriveTurnState } from './turn-state.js';
 import { projectDisplayLabel } from './project-identity.js';
 import { normalizeTerminalWorktreeHealth } from './worktree-health.js';
 import {
@@ -20,6 +21,13 @@ export interface AgentState {
   agentId: string;
   events: AgentEvent[];
   anomaly: Anomaly | null;
+  /**
+   * Current turn state of the live agent, derived from its event window.
+   * Distinct from `taskStatus` (persisted lifecycle): an interactive task can
+   * remain `inProgress` while its turn state is `completed_turn`. Absent for
+   * synthetic pending/terminal entries that have no live event window.
+   */
+  turnState?: TurnState;
   snoozedUntil?: number; // ms since epoch — set when agent is snoozed in the attention queue
   suppressed?: boolean; // true when auto-suppressed due to repeated liveness snoozes
   taskId?: string;
@@ -460,6 +468,23 @@ export class Monitor {
   }
 
   /**
+   * Derive the agent's current turn state for the snapshot.
+   *
+   * A parent agent that emitted `Stop` while a background subagent is still
+   * running has not really finished its turn — work is ongoing — so report
+   * `running` instead of `completed_turn`. This mirrors the needs_input
+   * suppression in {@link suppressIfSubagentsRunning} so the turn-state badge
+   * and the anomaly state stay consistent.
+   */
+  private deriveTurnStateForSnapshot(agentId: string, events: AgentEvent[]): TurnState {
+    const turnState = deriveTurnState(events);
+    if (turnState === 'completed_turn' && this.evictStaleSubagents(agentId, Date.now()) > 0) {
+      return 'running';
+    }
+    return turnState;
+  }
+
+  /**
    * Get current state snapshot for all known agents.
    * Enriches each agent with task metadata when a linked task exists.
    *
@@ -511,7 +536,12 @@ export class Monitor {
       }
 
       const anomaly = this.getCurrentAnomaly(agentId);
-      const state: AgentState = { agentId, events, anomaly };
+      const state: AgentState = {
+        agentId,
+        events,
+        anomaly,
+        turnState: this.deriveTurnStateForSnapshot(agentId, events),
+      };
 
       // Mark snoozed agents so the frontend can filter them from findings
       const snoozedUntil = this.attentionQueue.getSnoozedUntil(agentId);

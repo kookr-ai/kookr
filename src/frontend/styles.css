@@ -474,6 +474,8 @@ kbd {
 .finding-card.permission { border-left-color: var(--red); }
 .finding-card.error { border-left-color: var(--red); }
 .finding-card.input { border-left-color: var(--blue); }
+/* A completed turn is idle, not hung — calmer green accent vs an alert color. */
+.finding-card.turn-complete { border-left-color: var(--green); }
 
 /* --- Finding Groups (duplicate anomaly grouping) --- */
 .finding-group {
@@ -587,6 +589,34 @@ kbd {
 .finding-severity.permission { background: rgba(248,113,113,0.1); color: var(--red); }
 .finding-severity.error { background: rgba(248,113,113,0.1); color: var(--red); }
 .finding-severity.input { background: rgba(96,165,250,0.1); color: var(--blue); }
+.finding-severity.turn-complete { background: rgba(52,211,153,0.12); color: var(--green); }
+
+/* Current-turn state line — distinguishes an idle completed turn from active
+   tool execution at a glance. See issue #358. */
+.finding-turn-state {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+}
+.finding-turn-state::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.finding-turn-state.turn-state--running { color: var(--green); }
+.finding-turn-state.turn-state--complete { color: var(--green); }
+.finding-turn-state.turn-state--waiting { color: var(--blue); }
+.finding-turn-state.turn-state--blocked { color: var(--red); }
+/* `running` pulses to read as live work; an idle completed turn stays static. */
+@keyframes turn-state-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.finding-turn-state.turn-state--running::before { animation: turn-state-pulse 2s ease-in-out infinite; }
 
 .finding-task {
   font-size: 12px; font-weight: 600; color: var(--text-bright); margin-bottom: 4px; cursor: default;
@@ -1140,6 +1170,7 @@ kbd {
 .detail-badge.permission { background: rgba(248,113,113,0.1); color: var(--red); }
 .detail-badge.error { background: rgba(248,113,113,0.1); color: var(--red); }
 .detail-badge.input { background: rgba(96,165,250,0.1); color: var(--blue); }
+.detail-badge.turn-complete { background: rgba(52,211,153,0.12); color: var(--green); }
 
 .detail-header-right {
   display: flex;

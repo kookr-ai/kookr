@@ -36,6 +36,7 @@ export type {
 export type {
   AgentStatus,
   TaskStatus,
+  TurnState,
 } from './task-status.js';
 export type {
   TokenUsage,

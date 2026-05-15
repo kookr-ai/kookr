@@ -48,11 +48,11 @@ test.describe('WebSocket real-time updates', () => {
     await expect(page.locator('.healthy-row')).toBeVisible();
     await expect(page.locator('.finding-card')).not.toBeVisible();
 
-    // Now agent stops — becomes a finding
+    // Now agent stops — becomes a completed-turn finding
     await injectStopEvent(request, tmuxName);
 
     await expect(page.locator('.finding-card')).toBeVisible({ timeout: 3000 });
-    await expect(page.locator('.finding-severity')).toContainText('Needs Input');
+    await expect(page.locator('.finding-severity')).toContainText('Turn Complete');
   });
 
   test('real-time update when anomaly clears after input', async ({ page, request }) => {
@@ -122,7 +122,7 @@ test.describe('Anomaly detection', () => {
 
     await expect(page.locator('.finding-card')).toBeVisible();
     await page.locator('.finding-card').click();
-    await expect(page.locator('.detail-badge')).toContainText('NEEDS INPUT');
+    await expect(page.locator('.detail-badge')).toContainText('TURN COMPLETE');
     await expect(page.locator('.finding-explanation')).toContainText('What should I do next?');
   });
 
@@ -169,10 +169,10 @@ test.describe('Anomaly detection', () => {
     const tmuxName = await getLatestTmuxName(request);
     await injectSessionStart(request, tmuxName);
 
-    // First: needs_input
+    // First: a completed-turn finding from a Stop event
     await injectStopEvent(request, tmuxName);
     await expect(page.locator('.finding-card')).toHaveCount(1);
-    await expect(page.locator('.finding-card .finding-severity')).toContainText('Needs Input');
+    await expect(page.locator('.finding-card .finding-severity')).toContainText('Turn Complete');
 
     // Then: permission_blocked (higher severity replaces)
     await injectPermissionEvent(request, tmuxName);

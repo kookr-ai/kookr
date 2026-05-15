@@ -142,9 +142,9 @@ test.describe('Edge cases & resilience', () => {
     const tmuxName = await getLatestTmuxName(request);
     await injectSessionStart(request, tmuxName);
 
-    // Start with needs_input
+    // Start with a completed turn (Stop event)
     await injectStopEvent(request, tmuxName);
-    await expect(page.locator('.finding-severity')).toContainText('Needs Input');
+    await expect(page.locator('.finding-severity')).toContainText('Turn Complete');
 
     // Transition to permission
     await injectPermissionEvent(request, tmuxName);
