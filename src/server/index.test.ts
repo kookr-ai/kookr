@@ -6,6 +6,7 @@ import { WebSocket } from 'ws';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { createKookrServerInternal } from './index.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
+import { createRelayServer } from '../../relay/server.js';
 
 function getActualPort(server: KookrServerInternal): number {
   const addr = server.httpServer.address();
@@ -88,6 +89,83 @@ describe('createKookrServer', () => {
   });
 
   describe('HTTP API', () => {
+    test('connects remote node client only when relay env is configured and stops it on close', async () => {
+      await server.close();
+      serverClosed = true;
+
+      const relay = createRelayServer();
+      await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
+      const registration = relay.registerNode({ displayName: 'integration' });
+      const remoteKookrDir = join(tempDir, 'remote-kookr');
+      mkdirSync(remoteKookrDir, { recursive: true });
+      writeFileSync(join(remoteKookrDir, 'node-id'), `${registration.nodeId}\n`);
+
+      const previousRelayUrl = process.env.KOOKR_RELAY_URL;
+      const previousRelayToken = process.env.KOOKR_RELAY_TOKEN;
+      process.env.KOOKR_RELAY_URL = relay.url();
+      process.env.KOOKR_RELAY_TOKEN = registration.nodeToken;
+
+      let remoteServer: KookrServerInternal | null = null;
+      try {
+        remoteServer = await createKookrServerInternal({
+          port: 0,
+          host: '127.0.0.1',
+          kookrDir: remoteKookrDir,
+          tasksFile: join(remoteKookrDir, 'tasks.json'),
+          hooksDir: join(remoteKookrDir, 'hooks'),
+          settingsDir: join(remoteKookrDir, 'settings'),
+          serverCwd: '/test/cwd',
+          frontendDir: join(tempDir, 'frontend'),
+          saveIntervalMs: 600_000,
+          livenessIntervalMs: 600_000,
+          terminalBackend: new FakeTerminalBackend(),
+          claudeDir: join(tempDir, 'claude'),
+        });
+
+        await new Promise<void>((resolve, reject) => {
+          const started = Date.now();
+          const timer = setInterval(() => {
+            if (relay.nodeStatuses().some((node) => node.nodeId === registration.nodeId && node.connected)) {
+              clearInterval(timer);
+              resolve();
+            } else if (Date.now() - started > 2_000) {
+              clearInterval(timer);
+              reject(new Error('timed out waiting for remote node connection'));
+            }
+          }, 10);
+        });
+
+        await remoteServer.close();
+        remoteServer = null;
+
+        await new Promise<void>((resolve, reject) => {
+          const started = Date.now();
+          const timer = setInterval(() => {
+            if (relay.nodeStatuses().some((node) => node.nodeId === registration.nodeId && !node.connected)) {
+              clearInterval(timer);
+              resolve();
+            } else if (Date.now() - started > 2_000) {
+              clearInterval(timer);
+              reject(new Error('timed out waiting for remote node disconnect'));
+            }
+          }, 10);
+        });
+      } finally {
+        if (previousRelayUrl === undefined) {
+          delete process.env.KOOKR_RELAY_URL;
+        } else {
+          process.env.KOOKR_RELAY_URL = previousRelayUrl;
+        }
+        if (previousRelayToken === undefined) {
+          delete process.env.KOOKR_RELAY_TOKEN;
+        } else {
+          process.env.KOOKR_RELAY_TOKEN = previousRelayToken;
+        }
+        await remoteServer?.close();
+        await relay.close();
+      }
+    });
+
     test('GET /api/health returns status ok', async () => {
       const res = await fetch(`${baseUrl}/api/health`);
       expect(res.status).toBe(200);
