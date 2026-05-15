@@ -6,6 +6,10 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { isNodeHello, makeRelayHello, REMOTE_PROTOCOL_VERSION, type NodeHello } from '../src/remote/handshake.js';
 import { isRemoteControlEvent, type RemoteControlEvent } from '../src/remote/control-events.js';
 import { asNodeId, type NodeId } from '../src/remote/ids.js';
+import { isPushAlertDeltaPayload, makeRedactedPushPayload } from '../src/remote/push.js';
+import { createPushFanout, type PushDeliveryOutcome, type PushFanout, type PushSender } from './src/push/fanout.js';
+import { createPushSubscriptionStore, isPushSubscription, type PushSubscriptionStore, type StoredPushSubscription } from './src/push/subscriptions.js';
+import { createVapidKeyStore, type VapidKeyStore } from './src/push/vapid.js';
 
 interface NodeRegistration {
   nodeId: NodeId;
@@ -31,9 +35,13 @@ export interface RelayNodeStatus {
 
 export interface RelayServerOptions {
   adminToken?: string;
+  clientToken?: string;
   ownerId?: string;
   allowInsecureAdmin?: boolean;
   allowInsecureClients?: boolean;
+  pushDisabled?: boolean;
+  pushSender?: PushSender;
+  pushSubject?: string;
 }
 
 export interface RelayServerHandle {
@@ -41,6 +49,9 @@ export interface RelayServerHandle {
   url(): string;
   registerNode(opts?: { displayName?: string; ownerId?: string }): { nodeId: NodeId; nodeToken: string };
   nodeStatuses(): RelayNodeStatus[];
+  pushSubscriptions(): StoredPushSubscription[];
+  rotateVapidKeys(): { publicKey: string; version: number; invalidated: number };
+  sendTestPush(deviceId: string): Promise<PushDeliveryOutcome>;
   close(): Promise<void>;
 }
 
@@ -83,6 +94,11 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.end(JSON.stringify(payload));
 }
 
+function sendHtml(res: ServerResponse, status: number, html: string): void {
+  res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(html);
+}
+
 function bearer(req: IncomingMessage): string | null {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) return null;
@@ -94,8 +110,9 @@ function isAuthorizedAdmin(req: IncomingMessage, adminToken: string | undefined)
   return bearer(req) === adminToken;
 }
 
-function isAuthorizedClient(req: IncomingMessage, opts: RelayServerOptions): boolean {
+function isAuthorizedClient(req: IncomingMessage, opts: RelayServerOptions, url?: URL): boolean {
   if (opts.allowInsecureClients) return true;
+  if (opts.clientToken && url?.searchParams.get('clientToken') === opts.clientToken) return true;
   return isAuthorizedAdmin(req, opts.adminToken);
 }
 
@@ -105,6 +122,16 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const nodeSockets = new Map<NodeId, WebSocket>();
   const nodeHello = new Map<NodeId, NodeHello>();
   const subscribers = new Map<NodeId, Set<WebSocket>>();
+  const replay = new Map<NodeId, RemoteControlEvent[]>();
+  const vapidKeys: VapidKeyStore = createVapidKeyStore();
+  const pushSubscriptions: PushSubscriptionStore = createPushSubscriptionStore();
+  const pushFanout: PushFanout = createPushFanout({
+    subscriptions: pushSubscriptions,
+    vapidKeys,
+    disabled: opts.pushDisabled ?? process.env.KOOKR_PUSH_DISABLED === 'true',
+    sender: opts.pushSender,
+    subject: opts.pushSubject,
+  });
   const ownerId = opts.ownerId ?? 'local-owner';
 
   const registerNode = (regOpts: { displayName?: string; ownerId?: string } = {}) => {
@@ -143,6 +170,96 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
         sendJson(res, 200, { status: 'ok', dbReachable: true, tlsExpiresAt: null, version: 'dev' });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/relay/dashboard') {
+        sendHtml(res, 200, relayDashboardHtml());
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/relay/dashboard/state') {
+        if (!isAuthorizedClient(req, opts, url)) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const nodeId = url.searchParams.get('nodeId');
+        if (!nodeId || !registrations.has(asNodeId(nodeId))) {
+          sendJson(res, 404, { error: 'node not found' });
+          return;
+        }
+        sendJson(res, 200, { nodeId, events: replay.get(asNodeId(nodeId)) ?? [] });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/relay/push/vapid-public-key') {
+        const current = vapidKeys.current();
+        sendJson(res, 200, { publicKey: current.publicKey, version: current.version, rotatedAt: current.rotatedAt });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/relay/push/subscriptions') {
+        if (!isAuthorizedClient(req, opts, url)) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const body = await readJson(req) as { deviceId?: unknown; nodeId?: unknown; subscription?: unknown; vapidKeyVersion?: unknown };
+        if (typeof body.deviceId !== 'string' || body.deviceId.length === 0) {
+          sendJson(res, 400, { error: 'deviceId is required' });
+          return;
+        }
+        if (typeof body.nodeId !== 'string' || !registrations.has(asNodeId(body.nodeId))) {
+          sendJson(res, 400, { error: 'known nodeId is required' });
+          return;
+        }
+        if (!isPushSubscription(body.subscription)) {
+          sendJson(res, 400, { error: 'valid push subscription is required' });
+          return;
+        }
+        const current = vapidKeys.current();
+        if (body.vapidKeyVersion !== undefined && body.vapidKeyVersion !== current.version) {
+          sendJson(res, 409, { error: 'vapid key version mismatch', currentVersion: current.version });
+          return;
+        }
+        const stored = pushSubscriptions.upsert({
+          deviceId: body.deviceId,
+          nodeId: asNodeId(body.nodeId),
+          subscription: body.subscription,
+          vapidKeyVersion: current.version,
+        });
+        sendJson(res, 201, {
+          deviceId: stored.deviceId,
+          nodeId: stored.nodeId,
+          vapidKeyVersion: stored.vapidKeyVersion,
+        });
+        return;
+      }
+      if (req.method === 'DELETE' && url.pathname.startsWith('/relay/push/subscriptions/')) {
+        if (!isAuthorizedClient(req, opts, url)) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const deviceId = decodeURIComponent(url.pathname.slice('/relay/push/subscriptions/'.length));
+        sendJson(res, 200, { removed: pushSubscriptions.remove(deviceId) });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/relay/admin/push/vapid/rotate') {
+        if (!opts.allowInsecureAdmin && !isAuthorizedAdmin(req, opts.adminToken)) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const rotated = vapidKeys.rotate();
+        const invalidated = pushSubscriptions.invalidateVersion(rotated.version);
+        sendJson(res, 200, { publicKey: rotated.publicKey, version: rotated.version, rotatedAt: rotated.rotatedAt, invalidated });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/relay/admin/push/test') {
+        if (!opts.allowInsecureAdmin && !isAuthorizedAdmin(req, opts.adminToken)) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const body = await readJson(req) as { deviceId?: unknown };
+        if (typeof body.deviceId !== 'string' || body.deviceId.length === 0) {
+          sendJson(res, 400, { error: 'deviceId is required' });
+          return;
+        }
+        sendJson(res, 200, await sendTestPush(body.deviceId));
         return;
       }
       if (req.method === 'GET' && url.pathname === '/relay/admin/nodes') {
@@ -191,7 +308,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       return;
     }
     if (url.pathname === '/relay/client') {
-      if (!isAuthorizedClient(req, opts)) {
+      if (!isAuthorizedClient(req, opts, url)) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
@@ -276,6 +393,14 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   });
 
   function routeControlEvent(event: RemoteControlEvent): void {
+    const events = replay.get(event.nodeId) ?? [];
+    events.push(event);
+    replay.set(event.nodeId, events.slice(-100));
+
+    if (isPushAlertDeltaPayload(event.payload)) {
+      void pushFanout.sendToNode(event.nodeId, event.payload.payload);
+    }
+
     const subscribed = subscribers.get(event.nodeId);
     if (!subscribed) return;
     const encoded = JSON.stringify(event);
@@ -291,6 +416,9 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       subscribers.set(subscribedNodeId, set);
     }
     set.add(ws);
+    for (const event of replay.get(subscribedNodeId) ?? []) {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
+    }
     ws.on('message', (data) => {
       let parsed: unknown;
       try {
@@ -327,6 +455,16 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     },
     registerNode,
     nodeStatuses,
+    pushSubscriptions: () => pushSubscriptions.list(),
+    rotateVapidKeys(): { publicKey: string; version: number; invalidated: number } {
+      const rotated = vapidKeys.rotate();
+      return {
+        publicKey: rotated.publicKey,
+        version: rotated.version,
+        invalidated: pushSubscriptions.invalidateVersion(rotated.version),
+      };
+    },
+    sendTestPush,
     async close(): Promise<void> {
       for (const ws of [...nodeSockets.values()]) ws.close(1001, 'relay closing');
       for (const set of subscribers.values()) {
@@ -337,11 +475,112 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
+
+  async function sendTestPush(deviceId: string): Promise<PushDeliveryOutcome> {
+    return await pushFanout.sendToDevice(deviceId, makeRedactedPushPayload({
+      nodeDisplayName: 'Kookr',
+      taskId: 'test-alert',
+      taskLabel: 'Test push',
+      alertKind: 'blocked',
+      alertId: `test-${Date.now()}`,
+    }));
+  }
+}
+
+function relayDashboardHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kookr Relay</title>
+  <style>
+    body { margin: 0; font: 14px system-ui, sans-serif; background: #101416; color: #e7ecef; }
+    main { max-width: 840px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .task { border: 1px solid #2b373d; border-radius: 6px; padding: 12px; margin: 10px 0; background: #151c20; }
+    .muted { color: #aeb9bf; }
+    .alert { color: #ffd166; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Kookr Relay</h1>
+  <div id="status" class="muted">Connecting...</div>
+  <section id="tasks"></section>
+</main>
+<script>
+const params = new URLSearchParams(location.search);
+const nodeId = params.get('nodeId') || '';
+const clientToken = params.get('clientToken') || '';
+const statusEl = document.getElementById('status');
+const tasksEl = document.getElementById('tasks');
+const tasks = new Map();
+const alerts = new Map();
+function render() {
+  tasksEl.textContent = '';
+  for (const task of tasks.values()) {
+    const el = document.createElement('article');
+    el.className = 'task';
+    const title = task.taskShortLabel || task.taskId || 'Task';
+    el.innerHTML = '<strong></strong><div class="muted"></div>';
+    el.querySelector('strong').textContent = title;
+    el.querySelector('.muted').textContent = [task.status || 'unknown', task.updatedAt || ''].filter(Boolean).join(' · ');
+    tasksEl.appendChild(el);
+  }
+  for (const alert of alerts.values()) {
+    const el = document.createElement('article');
+    el.className = 'task alert';
+    el.textContent = (alert.alertKind || 'alert') + ' · ' + (alert.taskShortLabel || alert.agentId || alert.alertId || 'Task');
+    tasksEl.appendChild(el);
+  }
+}
+function ingest(event) {
+  const payload = event && event.payload;
+  if (!payload || typeof payload !== 'object') return;
+  if (payload.type === 'push.alert' && payload.payload) {
+    alerts.set(payload.payload.alertId || String(alerts.size), payload.payload);
+  }
+  const items = Array.isArray(payload.tasks) ? payload.tasks : Array.isArray(payload.taskProjections) ? payload.taskProjections : [];
+  for (const task of items) {
+    if (task && typeof task.taskId === 'string') tasks.set(task.taskId, task);
+  }
+  render();
+}
+async function boot() {
+  if (!nodeId) {
+    statusEl.textContent = 'Missing nodeId';
+    return;
+  }
+  try {
+    const stateUrl = new URL('/relay/dashboard/state', location.href);
+    stateUrl.searchParams.set('nodeId', nodeId);
+    if (clientToken) stateUrl.searchParams.set('clientToken', clientToken);
+    const state = await fetch(stateUrl, { credentials: 'include' });
+    if (state.ok) {
+      const body = await state.json();
+      for (const event of body.events || []) ingest(event);
+    }
+  } catch {}
+  const wsUrl = new URL('/relay/client', location.href);
+  wsUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  wsUrl.searchParams.set('nodeId', nodeId);
+  if (clientToken) wsUrl.searchParams.set('clientToken', clientToken);
+  const ws = new WebSocket(wsUrl);
+  ws.onopen = () => { statusEl.textContent = 'Live'; };
+  ws.onclose = () => { statusEl.textContent = 'Disconnected'; };
+  ws.onmessage = (msg) => { try { ingest(JSON.parse(msg.data)); } catch {} };
+}
+boot();
+</script>
+</body>
+</html>`;
 }
 
 if (process.argv[1]?.endsWith('/relay/server.ts') || process.argv[1]?.endsWith('/relay/server.js')) {
   const port = Number.parseInt(process.env.PORT ?? '8080', 10);
   const adminToken = process.env.KOOKR_RELAY_ADMIN_TOKEN;
+  const clientToken = process.env.KOOKR_RELAY_CLIENT_TOKEN;
   const allowInsecureAdmin = process.env.KOOKR_RELAY_INSECURE_DEV === '1';
   if (!adminToken && !allowInsecureAdmin) {
     console.error('[relay] KOOKR_RELAY_ADMIN_TOKEN is required. Set KOOKR_RELAY_INSECURE_DEV=1 only for local development.');
@@ -349,6 +588,7 @@ if (process.argv[1]?.endsWith('/relay/server.ts') || process.argv[1]?.endsWith('
   }
   const relay = createRelayServer({
     adminToken,
+    clientToken,
     allowInsecureAdmin,
     allowInsecureClients: allowInsecureAdmin,
   });

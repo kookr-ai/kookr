@@ -18,7 +18,10 @@ describe('remote replay projections', () => {
 
     expect(projectTaskForRemoteReplay(task)).toEqual({
       taskId: task.id,
+      taskShortLabel: 'Replay me',
       status: 'inProgress',
+      agentType: 'claude-code',
+      createdAt: task.createdAt.toISOString(),
       updatedAt: '2026-05-14T00:00:00.000Z',
       sessionIds: ['kookr-session'],
     });
@@ -35,7 +38,9 @@ describe('remote replay projections', () => {
 
     expect(projectAlertForRemoteReplay(alert)).not.toHaveProperty('serverRevision');
     expect(projectAlertForRemoteReplay(alert, 3)).toMatchObject({
+      alertId: 'kookr-session:3',
       agentId: 'kookr-session',
+      alertKind: 'blocked',
       summary: 'Needs attention',
       severity: 'critical',
       serverRevision: 3,
