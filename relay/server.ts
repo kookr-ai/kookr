@@ -9,8 +9,8 @@ import { isNodeHello, makeRelayHello, REMOTE_PROTOCOL_VERSION, type NodeHello } 
 import type { CommandOutcome, CommandResult, RemoteCommandAction } from '../src/remote/command-journal.js';
 import { isRemoteControlEvent, type RemoteControlEvent } from '../src/remote/control-events.js';
 import { asGrantId, asNodeId, asSeq, asSessionEpoch, asSessionId, type GrantId, type NodeEpoch, type NodeId, type Seq, type SessionEpoch, type SessionId } from '../src/remote/ids.js';
-import type { PolicyGrantRecord, PolicyRevokeMessage, ShareGrant, ShareSubject } from '../src/remote/policy-sync.js';
-import { grantForRemoteCommandAction, isKnownGrant, type KnownGrant } from '../src/remote/grants.js';
+import type { KnownGrant, PolicyGrantRecord, PolicyRevokeMessage, ShareGrant, ShareSubject } from '../src/remote/policy-sync.js';
+import { grantForRemoteCommandAction, isKnownGrant } from '../src/remote/grants.js';
 import { isTerminalStreamEvent, type TerminalReplayGapEvent, type TerminalStreamEvent } from '../src/remote/stream-events.js';
 import { isPushAlertDeltaPayload, makeRedactedPushPayload } from '../src/remote/push.js';
 import { InvitationStore, type InvitationRecord } from './src/invitations/store.js';
