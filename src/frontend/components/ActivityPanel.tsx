@@ -7,7 +7,7 @@ import type {
   ToolGroup,
   ToolGroupEntry,
 } from '../../shared/protocol.js';
-import { buildActivityDisclosure, summarizeActivity, compactToolSummary } from '../../shared/protocol.js';
+import { buildActivityDisclosure, summarizeActivity, compactToolSummary, pasteBurstLabel } from '../../shared/protocol.js';
 import { renderMarkdown } from '../markdown.js';
 
 /**
@@ -165,6 +165,26 @@ function ActivityItemView({
             <span className="act-msg-label act-label-agent">Agent</span>
           </div>
           <div className="act-msg-text">{renderMarkdown(item.text)}</div>
+        </div>
+      );
+
+    case 'user_paste_burst':
+      // A multiline paste submitted each line as its own prompt. Collapse the
+      // run into one "You" item with the raw lines tucked behind a disclosure
+      // so the panel does not look like dozens of interventions. See #357.
+      return (
+        <div className="act-msg act-msg-user act-msg-paste-burst">
+          <div className="act-msg-header">
+            <span className="act-msg-label act-label-user">You</span>
+          </div>
+          <details className="act-paste-burst">
+            <summary className="act-paste-burst-summary">
+              <span className="act-paste-burst-icon" aria-hidden="true">{'📋'}</span>
+              {pasteBurstLabel(item)}
+            </summary>
+            {/* tabIndex makes the overflowing scroll region keyboard-reachable. */}
+            <pre className="act-paste-burst-lines" tabIndex={0}>{item.lines.join('\n')}</pre>
+          </details>
         </div>
       );
 

@@ -48,7 +48,35 @@ export interface SystemNotice {
   timestamp?: string;
 }
 
-export type ActivityItem = UserMessage | AgentMessage | ToolGroup | SystemNotice;
+/** Best-effort classification of the content in a coalesced paste burst,
+ *  used only to phrase the summary label. */
+export type PasteContentKind = 'JSON' | 'log' | 'text';
+
+/**
+ * A run of adjacent single-line `user_prompt` events coalesced into one item.
+ * An accidental multiline terminal paste submits each line as its own prompt;
+ * rather than rendering dozens of "You" messages, the summarizer collapses the
+ * run into a single inspectable item. The raw `lines` are retained verbatim so
+ * the activity panel can offer an expandable detail view and diagnostic/export
+ * paths keep full fidelity. See issue #357.
+ */
+export interface UserPasteBurst {
+  type: 'user_paste_burst';
+  /** Number of coalesced single-line prompts. */
+  lineCount: number;
+  /** The raw pasted lines, in submission order. */
+  lines: string[];
+  /** Content classification used to phrase the summary label. */
+  contentKind: PasteContentKind;
+  timestamp?: string;
+}
+
+export type ActivityItem =
+  | UserMessage
+  | AgentMessage
+  | ToolGroup
+  | SystemNotice
+  | UserPasteBurst;
 
 // ── Tool categorization ──────────────────────────────────────────────
 
@@ -108,16 +136,102 @@ export function toolLabel(toolName: string, toolInput?: unknown): string {
   return toolName;
 }
 
+// ── Paste-burst coalescing (issue #357) ──────────────────────────────
+
+/**
+ * Minimum number of adjacent single-line `user_prompt` events before the
+ * summarizer treats the run as an accidental multiline paste rather than a
+ * sequence of deliberate separate messages. Three is low enough to catch
+ * small pastes yet high enough that ordinary back-to-back messages — which
+ * almost always have agent activity between them — are never merged.
+ */
+export const PASTE_BURST_MIN_LINES = 3;
+
+/** A prompt is "line-shaped" when it carries no interior newline — exactly
+ *  what one physical line of a multiline paste looks like. A deliberate
+ *  multiline message is not line-shaped and never joins a burst. */
+function isSingleLinePrompt(prompt: string): boolean {
+  return !prompt.trim().includes('\n');
+}
+
+const JSON_LINE_RE = /^\s*[[{]|^\s*"[^"]*"\s*:/;
+const LOG_LINE_RE =
+  /\b(?:ERROR|WARN|WARNING|INFO|DEBUG|TRACE|FATAL)\b|^\s*\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+
+/**
+ * Classify the content of a paste burst so the panel can label it
+ * ("Pasted 43 lines of JSON content"). Best-effort and presentational only —
+ * never load-bearing.
+ */
+export function classifyPasteContent(lines: string[]): PasteContentKind {
+  const joined = lines.join('\n').trim();
+  if (joined) {
+    try {
+      const parsed: unknown = JSON.parse(joined);
+      if (parsed !== null && typeof parsed === 'object') return 'JSON';
+    } catch {
+      // Not one JSON blob — fall through to per-line heuristics.
+    }
+  }
+  const meaningful = lines.map((l) => l.trim()).filter((l) => l.length > 0);
+  if (meaningful.length === 0) return 'text';
+  let jsonish = 0;
+  let logish = 0;
+  for (const line of meaningful) {
+    if (JSON_LINE_RE.test(line)) jsonish += 1;
+    if (LOG_LINE_RE.test(line)) logish += 1;
+  }
+  if (jsonish / meaningful.length >= 0.6) return 'JSON';
+  if (logish / meaningful.length >= 0.4) return 'log';
+  return 'text';
+}
+
+/** One-line summary label for a coalesced paste burst, e.g.
+ *  "Pasted 43 lines of JSON content". */
+export function pasteBurstLabel(burst: UserPasteBurst): string {
+  const lineWord = burst.lineCount === 1 ? 'line' : 'lines';
+  const kind = burst.contentKind === 'text' ? '' : ` of ${burst.contentKind} content`;
+  return `Pasted ${burst.lineCount} ${lineWord}${kind}`;
+}
+
 // ── Summarization ────────────────────────────────────────────────────
 
 /**
  * Convert a stream of AgentEvents into a conversation-first activity summary.
  * Consecutive tool events are collapsed into a single ToolGroup.
  * User/agent messages and system notices get their own items.
+ *
+ * Adjacent single-line `user_prompt` events are buffered and, when a run is
+ * long enough to be an accidental multiline paste, collapsed into one
+ * {@link UserPasteBurst} item. See issue #357.
  */
 export function summarizeActivity(events: AgentEvent[]): ActivityItem[] {
   const items: ActivityItem[] = [];
   let pendingTools: Array<{ toolName: string; toolInput?: unknown; toolUseId?: string; isError: boolean }> = [];
+  // Adjacent single-line user prompts buffer here: a run long enough to be an
+  // accidental multiline paste collapses into one UserPasteBurst. Any other
+  // event flushes the buffer (see the loop guard below). See issue #357.
+  let pendingUserPrompts: string[] = [];
+
+  /** Emit buffered user prompts — one UserPasteBurst when the run is long
+   *  enough to be a paste, otherwise one user_message per prompt so genuinely
+   *  separate messages stay distinct. */
+  function flushUserPrompts() {
+    if (pendingUserPrompts.length === 0) return;
+    if (pendingUserPrompts.length >= PASTE_BURST_MIN_LINES) {
+      items.push({
+        type: 'user_paste_burst',
+        lineCount: pendingUserPrompts.length,
+        lines: [...pendingUserPrompts],
+        contentKind: classifyPasteContent(pendingUserPrompts),
+      });
+    } else {
+      for (const text of pendingUserPrompts) {
+        items.push({ type: 'user_message', text });
+      }
+    }
+    pendingUserPrompts = [];
+  }
 
   function flushTools() {
     if (pendingTools.length === 0) return;
@@ -192,10 +306,26 @@ export function summarizeActivity(events: AgentEvent[]): ActivityItem[] {
   }
 
   for (const event of events) {
+    // Any event other than a user prompt ends a paste run, so flush the
+    // buffer before handling it — this also catches a bare tool_result or
+    // subagent event that a capped monitor window may surface without its
+    // preceding tool_use. The user_prompt branch decides for itself: a
+    // multiline prompt flushes, a single-line one buffers.
+    if (event.type !== 'user_prompt') {
+      flushUserPrompts();
+    }
     switch (event.type) {
       case 'user_prompt': {
         flushTools();
-        items.push({ type: 'user_message', text: event.prompt });
+        if (isSingleLinePrompt(event.prompt)) {
+          // Defer — a long enough run of these is a paste burst.
+          pendingUserPrompts.push(event.prompt);
+        } else {
+          // A multiline prompt is a deliberate message; it also ends any
+          // run of single-line prompts that preceded it.
+          flushUserPrompts();
+          items.push({ type: 'user_message', text: event.prompt });
+        }
         break;
       }
 
@@ -301,7 +431,8 @@ export function summarizeActivity(events: AgentEvent[]): ActivityItem[] {
     }
   }
 
-  // Flush any remaining tool events
+  // Flush any remaining buffered prompts / tool events.
+  flushUserPrompts();
   flushTools();
 
   return items;
