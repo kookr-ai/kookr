@@ -23,7 +23,7 @@ import {
   type SessionRuntimeIdentity,
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
-import { buildAgentLaunchContext, deliverInitialPromptToSession } from './agent-launch-context.js';
+import { buildAgentLaunchContext } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
 import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
@@ -146,6 +146,8 @@ export class CodexCliAdapter implements AgentAdapter {
   private pluginDir?: string;
   private pluginDirSupportProbe?: Promise<boolean>;
   private warnedAboutMissingPluginDirSupport = false;
+  private promptFileSupportProbe?: Promise<boolean>;
+  private warnedAboutMissingPromptFileSupport = false;
   private probeExec?: ProbeExecRunner;
 
   constructor(
@@ -198,6 +200,24 @@ export class CodexCliAdapter implements AgentAdapter {
       );
     }
     return this.pluginDirSupportProbe;
+  }
+
+  /**
+   * Memoized capability probe: does this codex binary advertise `--prompt-file`
+   * in its `--help` output? When true, the initial prompt is delivered as a
+   * file artifact (race-free, no ARG_MAX limit). When false (stock codex, or a
+   * kookr-fork built before the flag landed), the caller falls back to a
+   * positional argv prompt — also race-free, but bounded by ARG_MAX.
+   */
+  private probePromptFileSupport(): Promise<boolean> {
+    if (this.promptFileSupportProbe === undefined) {
+      this.promptFileSupportProbe = probeBinaryFlagSupport(
+        this.agentBin,
+        '--prompt-file',
+        { exec: this.probeExec },
+      );
+    }
+    return this.promptFileSupportProbe;
   }
 
   async launch(taskId: string, prompt: string, cwd: string, resume?: import('./agent-adapter.js').ResumeContext, opts?: AdapterLaunchOptions): Promise<string> {
@@ -262,15 +282,42 @@ export class CodexCliAdapter implements AgentAdapter {
       ? '--dangerously-bypass-approvals-and-sandbox'
       : '--full-auto';
 
+    // Deliver the initial prompt. Preferred path: write it to a launch-artifact
+    // file (like the --settings JSON) and pass --prompt-file. Codex folds the
+    // file content into its positional-prompt path at startup — submitted
+    // internally with no terminal-input race — and only a short path travels
+    // in argv (no ARG_MAX / E2BIG, see #319). The file shares the settings
+    // file's lifecycle; it is not separately cleaned up.
+    //
+    // Fallback: a codex binary that does not advertise --prompt-file (stock
+    // codex, or a kookr-fork built before the flag landed) gets the prompt as
+    // a trailing positional argv entry instead — also race-free, but bounded
+    // by ARG_MAX. The capability probe runs once per adapter instance.
+    const promptFileSupported = await this.probePromptFileSupport();
+    const promptPath = `${this.settingsDir}/${tmuxName}.prompt.txt`;
+    if (promptFileSupported) {
+      if (this.writeFile) {
+        await this.writeFile(promptPath, promptWithCheckpoint);
+      }
+    } else if (!this.warnedAboutMissingPromptFileSupport) {
+      this.warnedAboutMissingPromptFileSupport = true;
+      console.warn(
+        `[codex-cli-adapter] codex binary "${this.agentBin}" does not advertise --prompt-file; ` +
+        `delivering the initial prompt via positional argv instead. Large prompts (>~100 KiB) ` +
+        `may hit ARG_MAX. Run \`pnpm codex:rebuild\` from kookr to install the kookr-fork.`,
+      );
+    }
+
     // V8: argv-based launch through the backend. No shell features needed;
-    // env goes in SessionSpec.env, flags become argv. The initial prompt is
-    // delivered through the terminal after spawn so large prompts cannot hit
-    // ARG_MAX or leak into parent-session hook command scanners.
+    // env goes in SessionSpec.env, flags become argv.
     const args = [
       '-c', 'features.codex_hooks=true',
       permissionFlagStr,
       '--settings', settingsPath,
     ];
+    if (promptFileSupported) {
+      args.push('--prompt-file', promptPath);
+    }
     // Inject --plugin-dir <path> when (a) the kookr-toolkit tree resolves
     // and (b) the configured codex binary actually supports the flag. The
     // capability probe runs once per adapter instance, lazily, so cold start
@@ -291,6 +338,11 @@ export class CodexCliAdapter implements AgentAdapter {
         );
       }
     }
+    if (!promptFileSupported) {
+      // Positional argv fallback for binaries without --prompt-file. Must be
+      // the last argv entry (codex treats a trailing bare arg as the prompt).
+      args.push(promptWithCheckpoint);
+    }
     await this.backend.createSession({
       id: tmuxName,
       command: this.agentBin,
@@ -299,7 +351,6 @@ export class CodexCliAdapter implements AgentAdapter {
       cwd,
       size: { cols: 200, rows: 50 },
     });
-    await deliverInitialPromptToSession(this.backend, tmuxName, promptWithCheckpoint);
 
     this.taskStore.addSession(taskId, {
       tmuxSession: tmuxName,
