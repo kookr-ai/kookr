@@ -36,18 +36,52 @@ vi.mock('./git-info.js', async (importOriginal) => {
   };
 });
 
+/** Probe stub: a kookr-fork codex advertising both --plugin-dir and --prompt-file. */
+const forkProbeExec: import('./probe-agent-binary.js').ProbeExecRunner = async (_file, args) => {
+  if (args.includes('--help')) {
+    return {
+      stdout: 'Usage: codex [OPTIONS] [PROMPT]\n      --plugin-dir <DIR>\n      --prompt-file <PATH>\n',
+      stderr: '',
+    };
+  }
+  return { stdout: 'codex 0.125.0\n', stderr: '' };
+};
+
+/** Probe stub: a stock upstream codex advertising neither fork flag. */
+const stockProbeExec: import('./probe-agent-binary.js').ProbeExecRunner = async (_file, args) => {
+  if (args.includes('--help')) {
+    return { stdout: 'Usage: codex [OPTIONS] [PROMPT]\n      --add-dir <DIR>\n', stderr: '' };
+  }
+  return { stdout: 'codex 0.125.0\n', stderr: '' };
+};
+
 describe('CodexCliAdapter', () => {
   let backend: FakeTerminalBackend;
   let taskStore: TaskStore;
   let adapter: CodexCliAdapter;
+  let writtenFiles: Map<string, string>;
 
   beforeEach(() => {
     backend = new FakeTerminalBackend();
     taskStore = new TaskStore();
+    writtenFiles = new Map();
     adapter = new CodexCliAdapter(backend, taskStore, {
       trustWorkspace: false,
+      probeExec: forkProbeExec,
+      writeFile: async (path, content) => {
+        writtenFiles.set(path, content);
+      },
     });
   });
+
+  /** Initial prompt as delivered to codex via the --prompt-file launch artifact. */
+  function deliveredPrompt(spec: { args: string[] }): string {
+    const idx = spec.args.indexOf('--prompt-file');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    const content = writtenFiles.get(spec.args[idx + 1]);
+    expect(content, 'prompt file should have been written').toBeDefined();
+    return content!;
+  }
 
   test('agentType is codex-cli', () => {
     expect(adapter.agentType).toBe('codex-cli');
@@ -69,19 +103,46 @@ describe('CodexCliAdapter', () => {
     expect(spec.args).toEqual(expect.arrayContaining(['-c', 'features.codex_hooks=true']));
     expect(spec.args).toContain('--full-auto');
     expect(spec.args).toContain('--settings');
+    expect(spec.args).toContain('--prompt-file');
   });
 
-  test('launch delivers a large initial prompt through stdin instead of argv', async () => {
+  test('launch delivers the initial prompt via --prompt-file, never argv', async () => {
+    // 200 KiB exceeds Linux ARG_MAX headroom — proves the prompt is never an
+    // argv entry regardless of size, and is delivered as a file artifact.
     const largePrompt = 'x'.repeat(200_000);
     const task = taskStore.createTask(largePrompt, '/cwd');
     const sessionId = await adapter.launch(task.id, largePrompt, '/cwd');
 
     const spec = backend.sessions.get(sessionId)!.spec;
+    // The prompt itself never travels in argv (no ARG_MAX / E2BIG — see #319).
     expect(spec.args.some((arg) => arg.includes(largePrompt))).toBe(false);
-    const written = backend.getWrittenText(sessionId);
-    expect(written.length).toBe(largePrompt.length + 1);
-    expect(written.startsWith(largePrompt)).toBe(true);
-    expect(written.endsWith('\r')).toBe(true);
+    // It is delivered as a launch-artifact file referenced by --prompt-file.
+    const idx = spec.args.indexOf('--prompt-file');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(spec.args[idx + 1]).toMatch(/\.prompt\.txt$/);
+    expect(deliveredPrompt(spec)).toBe(largePrompt);
+    // No terminal write of the prompt — that path raced the TUI startup.
+    expect(backend.getWrittenText(sessionId)).not.toContain(largePrompt);
+  });
+
+  test('falls back to a positional argv prompt when the binary lacks --prompt-file', async () => {
+    // Stock codex (or a kookr-fork built before --prompt-file landed) does not
+    // advertise the flag; the prompt is delivered as a trailing positional arg
+    // — still race-free (argv, not a terminal write), just bounded by ARG_MAX.
+    const stockAdapter = new CodexCliAdapter(backend, taskStore, {
+      trustWorkspace: false,
+      probeExec: stockProbeExec,
+      writeFile: async (path, content) => {
+        writtenFiles.set(path, content);
+      },
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await stockAdapter.launch(task.id, 'Fix bug', '/cwd');
+
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).not.toContain('--prompt-file');
+    // Prompt delivered as the trailing positional argv entry.
+    expect(spec.args[spec.args.length - 1]).toBe('Fix bug');
   });
 
   test('launch uses --full-auto and NOT the dangerous bypass flag by default', async () => {
@@ -96,6 +157,7 @@ describe('CodexCliAdapter', () => {
     const bypassAdapter = new CodexCliAdapter(backend, taskStore, {
       trustWorkspace: false,
       bypassAllPermissions: true,
+      probeExec: forkProbeExec,
     });
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await bypassAdapter.launch(task.id, 'Fix bug', '/cwd');
@@ -131,12 +193,16 @@ describe('CodexCliAdapter', () => {
       const checkpointAdapter = new CodexCliAdapter(backend, taskStore, {
         trustWorkspace: false,
         kookrDataDir,
+        probeExec: forkProbeExec,
+        writeFile: async (path, content) => {
+          writtenFiles.set(path, content);
+        },
       });
       const task = taskStore.createTask('Fix bug', cwd);
       const sessionId = await checkpointAdapter.launch(task.id, 'original prompt', cwd);
 
       const spec = backend.sessions.get(sessionId)!.spec;
-      const prompt = backend.getWrittenText(sessionId);
+      const prompt = deliveredPrompt(spec);
       expect(spec.args).not.toContain('original prompt');
       expect(prompt).toContain('CHECKPOINT.json is not present');
       expect(prompt).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
@@ -251,6 +317,7 @@ describe('CodexCliAdapter', () => {
       settingsDir,
       hooksDir,
       codexConfigPath: configPath,
+      probeExec: forkProbeExec,
       writeFile: (path, content) => writeFile(path, content, 'utf-8'),
     });
     const task = taskStore.createTask('Fix bug', '/tmp/project');
@@ -505,6 +572,7 @@ describe('CodexCliAdapter', () => {
     const customAdapter = new CodexCliAdapter(backend, taskStore, {
       trustWorkspace: false,
       agentBin: '/usr/local/bin/codex-custom',
+      probeExec: forkProbeExec,
     });
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await customAdapter.launch(task.id, 'Fix bug', '/cwd');
@@ -517,6 +585,7 @@ describe('CodexCliAdapter', () => {
     const adapterWithPort = new CodexCliAdapter(backend, taskStore, {
       trustWorkspace: false,
       serverPort: 4801,
+      probeExec: forkProbeExec,
     });
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapterWithPort.launch(task.id, 'Fix bug', '/cwd');
@@ -565,11 +634,12 @@ describe('CodexCliAdapter', () => {
     let backend: FakeTerminalBackend;
     let taskStore: TaskStore;
 
-    // Probe stub that simulates kookr-fork codex (advertises --plugin-dir).
+    // Probe stub that simulates kookr-fork codex (advertises --plugin-dir
+    // and --prompt-file — both are kookr-fork capabilities).
     const probeSupported: import('./probe-agent-binary.js').ProbeExecRunner = async (_file, args) => {
       if (args.includes('--help')) {
         return {
-          stdout: 'Usage: codex [OPTIONS]\n      --plugin-dir <DIR>\n          Additional plugin directories\n',
+          stdout: 'Usage: codex [OPTIONS]\n      --plugin-dir <DIR>\n      --prompt-file <PATH>\n',
           stderr: '',
         };
       }
@@ -613,7 +683,7 @@ describe('CodexCliAdapter', () => {
       expect(idx).toBeGreaterThanOrEqual(0);
       expect(spec.args[idx + 1]).toBe(validPluginDir);
       expect(spec.args).not.toContain('my-prompt');
-      expect(backend.getWrittenText(sessionId)).toBe('my-prompt\r');
+      expect(spec.args).toContain('--prompt-file');
     });
 
     test('skips injection when binary does NOT advertise --plugin-dir (stock codex)', async () => {
@@ -667,16 +737,15 @@ describe('CodexCliAdapter', () => {
       const idx = spec.args.indexOf('--plugin-dir');
       expect(idx).toBeGreaterThanOrEqual(0);
       expect(spec.args[idx + 1]).toBe(validPluginDir);
-      // Bypass replaces --full-auto with the dangerous variant; both must
-      // still appear before --plugin-dir, which must come before the prompt.
+      // Bypass replaces --full-auto with the dangerous variant.
       expect(spec.args).toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.args).not.toContain('--full-auto');
       expect(spec.args).not.toContain('my-prompt');
-      expect(backend.getWrittenText(sessionId)).toBe('my-prompt\r');
+      expect(spec.args).toContain('--prompt-file');
     });
 
     test('parent SessionStart is frozen against later distinct Codex session ids', async () => {
-      const a = new CodexCliAdapter(backend, taskStore, { trustWorkspace: false });
+      const a = new CodexCliAdapter(backend, taskStore, { trustWorkspace: false, probeExec: forkProbeExec });
       const task = taskStore.createTask('reviewer-bug', '/cwd');
       const sessionId = await a.launch(task.id, 'do work', '/cwd');
 
@@ -738,13 +807,13 @@ describe('CodexCliAdapter', () => {
       expect(session.claudeSessionId).toBe('codex-parent');
     });
 
-    test('probe runs only once per adapter (memoized across launches)', async () => {
+    test('probes run only once per adapter (memoized across launches)', async () => {
       let helpCalls = 0;
       const counting: import('./probe-agent-binary.js').ProbeExecRunner = async (_file, args) => {
         if (args.includes('--help')) {
           helpCalls += 1;
           return {
-            stdout: 'Usage: codex [OPTIONS]\n      --plugin-dir <DIR>\n',
+            stdout: 'Usage: codex [OPTIONS]\n      --plugin-dir <DIR>\n      --prompt-file <PATH>\n',
             stderr: '',
           };
         }
@@ -758,10 +827,13 @@ describe('CodexCliAdapter', () => {
       const t1 = taskStore.createTask('t1', '/cwd');
       const t2 = taskStore.createTask('t2', '/cwd');
       await a.launch(t1.id, 't1', '/cwd');
+      const afterFirstLaunch = helpCalls;
       await a.launch(t2.id, 't2', '/cwd');
-      // Probe must be cached after the first launch — second launch should
-      // reuse the result without re-spawning `codex --help`.
-      expect(helpCalls).toBe(1);
+      // Two capability probes (--plugin-dir, --prompt-file) each spawn
+      // `codex --help` exactly once; both results are memoized, so the
+      // second launch re-spawns nothing.
+      expect(afterFirstLaunch).toBe(2);
+      expect(helpCalls).toBe(afterFirstLaunch);
     });
   });
 });
