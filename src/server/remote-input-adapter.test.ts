@@ -16,7 +16,7 @@ import {
   asSessionEpoch,
   asSessionId,
 } from '../remote/ids.js';
-import { createRemoteInputAdapter, type SubmitMessageCommand } from './remote-input-adapter.js';
+import { createRemoteInputAdapter, isSubmitMessageRequest, type SubmitMessageCommand } from './remote-input-adapter.js';
 
 function command(overrides: Partial<SubmitMessageCommand> = {}): SubmitMessageCommand {
   const base = {
@@ -121,5 +121,18 @@ describe('remote input adapter', () => {
     await expect(adapter.submit(command())).rejects.toThrow('error.staleTerminalView');
 
     expect(backend.getWrittenText('s1')).toBe('');
+  });
+
+  it('accepts Phase 6 speech provenance metadata on submitted messages', () => {
+    expect(isSubmitMessageRequest({
+      ...command().payload,
+      commandMetadata: {
+        provenance: 'stt-draft',
+        sttCapabilityId: 'local-node-stt',
+        sourceDeviceId: 'local-node',
+        sttModel: 'whisper-large-v3',
+        edited: true,
+      },
+    })).toBe(true);
   });
 });

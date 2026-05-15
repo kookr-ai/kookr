@@ -79,6 +79,8 @@ export interface KookrConfig {
   terminalBackend: TerminalBackend;
   /** Optional STT service WebSocket URL (e.g. ws://localhost:8003). Enables speech-to-text when set. */
   sttUrl?: string;
+  /** Optional TTS service HTTP URL (e.g. http://localhost:8004). Advertised as a Phase 6 speech capability when set. */
+  ttsUrl?: string;
   /** Use FakeTerminalBridge instead of a real session attach. For E2E tests and demo mode. */
   useFakeTerminalBridge?: boolean;
   /** Path or command name for the Claude Code binary. Defaults to 'claude'. */
@@ -151,7 +153,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const {
     port, host, kookrDir, tasksFile, hooksDir, settingsDir,
     serverCwd, frontendDir, saveIntervalMs, livenessIntervalMs,
-    terminalBackend, sttUrl, useFakeTerminalBridge, agentBin, codexBin, bypassAllPermissions,
+    terminalBackend, sttUrl, ttsUrl, useFakeTerminalBridge, agentBin, codexBin, bypassAllPermissions,
     claudeDir, preflightOnFatal, preflightLogger,
     ossSourceWatcherFs, ossSourceWatcherDebounceMs,
     lifecycleSignal,
@@ -481,7 +483,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Metadata-only refresh (e.g. git info captured) — broadcast snapshot without injecting events
   adapter.onRefreshNeeded(() => {
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, ttsUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
     broadcastProjectSummaries();
   });
 
@@ -509,7 +511,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         if (current && !current.name) {
           taskStore.renameTask(taskId, name);
           console.log(`[task-naming] Named task ${taskId}: "${name}"`);
-          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
+          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, ttsUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
         }
       })
       .catch((err) => {
@@ -1104,7 +1106,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const wsConnectionDeps: WsConnectionDeps = {
     taskStore, queue, monitor, adapter, adapterRegistry,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
-    serverCwd, sttUrl, abortPendingSuggestion,
+    serverCwd, sttUrl, ttsUrl, abortPendingSuggestion,
     lifecycleExtras: { hookWatcher, watchdog, shadowRegistry, tokenTracker },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
     broadcastProjectSummaries,

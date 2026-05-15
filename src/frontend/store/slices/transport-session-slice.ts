@@ -1,6 +1,7 @@
 import type { AgentState, TransportSessionSlice, StoreSet } from '../store-types.js';
 import { SEVERITY_ORDER } from '../store-types.js';
 import { mergeActivityAgent } from '../activity-history.js';
+import { firstReadyKookrSTTEndpoint } from '../../../shared/contracts/speech.js';
 
 function isTerminalTaskStatus(status: AgentState['taskStatus']): boolean {
   return status === 'completed' || status === 'cancelled' || status === 'terminated';
@@ -74,14 +75,17 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
     playbooksLastFetchedAt: 0,
     playbooksLastFetchedCwd: '',
     sttUrl: '',
+    speechCapabilities: null,
     activeSTTInputId: null,
     totalSpendUsd: 0,
     maxActiveTasks: 0,
 
-    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks) => {
+    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities) => {
       set((prev) => {
         const previousById = new Map(prev.agents.map((agent) => [agent.agentId, agent]));
         const mergedAgents = agents.map((agent) => mergeActivityAgent(previousById.get(agent.agentId), agent));
+        const descriptorSttUrl = firstReadyKookrSTTEndpoint(speechCapabilities);
+        const nextSttUrl = sttEnabled && sttUrl ? sttUrl : descriptorSttUrl;
         return {
           agents: mergedAgents,
           ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.agents, mergedAgents),
@@ -91,7 +95,8 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
           ...(defaultAgentType !== undefined ? { defaultAgentType } : {}),
           ...(build !== undefined ? { buildInfo: build } : {}),
           ...(serverStartedAt !== undefined ? { serverStartedAt } : {}),
-          ...(sttEnabled && sttUrl ? { sttUrl } : {}),
+          ...(nextSttUrl ? { sttUrl: nextSttUrl } : {}),
+          ...(speechCapabilities !== undefined ? { speechCapabilities } : {}),
           ...(totalSpendUsd !== undefined ? { totalSpendUsd } : {}),
           ...(achievements !== undefined ? { achievements } : {}),
           ...(workspaceEnabled !== undefined ? { workspaceEnabled } : {}),

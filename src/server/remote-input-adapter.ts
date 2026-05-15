@@ -29,6 +29,8 @@ export interface SubmitMessageRequest {
   commandMetadata?: {
     provenance?: 'typed' | 'stt-draft' | 'paste';
     sttCapabilityId?: string;
+    sourceDeviceId?: string;
+    sttModel?: string;
     edited?: boolean;
   };
 }
@@ -91,6 +93,8 @@ export function isSubmitMessageRequest(value: unknown): value is SubmitMessageRe
           || req.commandMetadata.provenance === 'paste'
         )
         && (req.commandMetadata.sttCapabilityId === undefined || typeof req.commandMetadata.sttCapabilityId === 'string')
+        && (req.commandMetadata.sourceDeviceId === undefined || typeof req.commandMetadata.sourceDeviceId === 'string')
+        && (req.commandMetadata.sttModel === undefined || typeof req.commandMetadata.sttModel === 'string')
         && (req.commandMetadata.edited === undefined || typeof req.commandMetadata.edited === 'boolean')
       )
     );
