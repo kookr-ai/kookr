@@ -3,6 +3,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { initTelemetry, track } from '../telemetry.js';
 import type { ClientMessage } from '../../shared/protocol.js';
 import { isSystemResourceStatus } from '../resource-status.js';
+import type { TransportSessionSlice } from '../store/store-types.js';
 
 const RECONNECT_DELAY_MS = 2000;
 
@@ -12,6 +13,28 @@ export function parseServerMessageForClient(data: string): unknown | null {
   } catch {
     return null;
   }
+}
+
+export function dispatchSnapshotMessageForClient(
+  msg: Record<string, any>,
+  handleSnapshot: TransportSessionSlice['handleSnapshot'],
+): void {
+  handleSnapshot(
+    msg.agents,
+    msg.serverCwd,
+    msg.build,
+    msg.serverStartedAt,
+    msg.sttEnabled,
+    msg.sttUrl,
+    msg.totalSpendUsd,
+    msg.achievements,
+    msg.availableAgentTypes,
+    msg.defaultAgentType,
+    msg.workspaceEnabled,
+    msg.sweepRunning,
+    msg.maxActiveTasks,
+    msg.speechCapabilities,
+  );
 }
 
 export function useWebSocket() {
@@ -77,21 +100,7 @@ export function useWebSocket() {
         const msg = parsed as Record<string, any>;
         switch (msg.type) {
           case 'snapshot':
-            handleSnapshot(
-              msg.agents,
-              msg.serverCwd,
-              msg.build,
-              msg.serverStartedAt,
-              msg.sttEnabled,
-              msg.sttUrl,
-              msg.totalSpendUsd,
-              msg.achievements,
-              msg.availableAgentTypes,
-              msg.defaultAgentType,
-              msg.workspaceEnabled,
-              msg.sweepRunning,
-              msg.maxActiveTasks,
-            );
+            dispatchSnapshotMessageForClient(msg, handleSnapshot);
             // Counters / streak ride alongside achievements but live on the
             // achievements slice — write them directly via setState.
             if (msg.achievementCounters || msg.achievementStreak) {
