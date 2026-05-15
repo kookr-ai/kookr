@@ -1,11 +1,14 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { join } from 'node:path';
 
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { isNodeHello, makeRelayHello, REMOTE_PROTOCOL_VERSION, type NodeHello } from '../src/remote/handshake.js';
 import { isRemoteControlEvent, type RemoteControlEvent } from '../src/remote/control-events.js';
-import { asNodeId, type NodeId } from '../src/remote/ids.js';
+import { asNodeId, asSeq, asSessionEpoch, asSessionId, type NodeEpoch, type NodeId, type Seq, type SessionEpoch, type SessionId } from '../src/remote/ids.js';
+import { isTerminalStreamEvent, type TerminalReplayGapEvent, type TerminalStreamEvent } from '../src/remote/stream-events.js';
 import { isPushAlertDeltaPayload, makeRedactedPushPayload } from '../src/remote/push.js';
 import { createPushFanout, type PushDeliveryOutcome, type PushFanout, type PushSender } from './src/push/fanout.js';
 import { createPushSubscriptionStore, isPushSubscription, type PushSubscriptionStore, type StoredPushSubscription } from './src/push/subscriptions.js';
@@ -18,6 +21,14 @@ interface NodeRegistration {
   tokenHash: string;
   createdAt: string;
   lastSeen?: string;
+}
+
+interface RelayClientSubscription {
+  ws: WebSocket;
+  terminal?: {
+    sessionId: SessionId;
+    sessionEpoch: SessionEpoch;
+  };
 }
 
 export interface RelayNodeStatus {
@@ -42,6 +53,8 @@ export interface RelayServerOptions {
   pushDisabled?: boolean;
   pushSender?: PushSender;
   pushSubject?: string;
+  streamBackpressureBytes?: number;
+  terminalReplayMaxEvents?: number;
 }
 
 export interface RelayServerHandle {
@@ -50,6 +63,7 @@ export interface RelayServerHandle {
   registerNode(opts?: { displayName?: string; ownerId?: string }): { nodeId: NodeId; nodeToken: string };
   nodeStatuses(): RelayNodeStatus[];
   pushSubscriptions(): StoredPushSubscription[];
+  streamMetrics(): { clientDropped: { backpressure: number } };
   rotateVapidKeys(): { publicKey: string; version: number; invalidated: number };
   sendTestPush(deviceId: string): Promise<PushDeliveryOutcome>;
   close(): Promise<void>;
@@ -99,6 +113,11 @@ function sendHtml(res: ServerResponse, status: number, html: string): void {
   res.end(html);
 }
 
+function sendText(res: ServerResponse, status: number, contentType: string, text: string): void {
+  res.writeHead(status, { 'content-type': contentType });
+  res.end(text);
+}
+
 function bearer(req: IncomingMessage): string | null {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) return null;
@@ -116,13 +135,42 @@ function isAuthorizedClient(req: IncomingMessage, opts: RelayServerOptions, url?
   return isAuthorizedAdmin(req, opts.adminToken);
 }
 
+function streamKey(nodeEpoch: NodeEpoch, sessionId: SessionId, sessionEpoch: SessionEpoch): string {
+  return `${nodeEpoch}:${sessionId}:${sessionEpoch}`;
+}
+
+function parseSeq(value: string | null): Seq | null {
+  if (value === null || value.trim() === '') return null;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) return null;
+  return asSeq(parsed);
+}
+
+function parseTerminalSubscription(url: URL): RelayClientSubscription['terminal'] | undefined {
+  const sessionId = url.searchParams.get('terminalSessionId');
+  const sessionEpoch = url.searchParams.get('terminalSessionEpoch');
+  if (!sessionId || !sessionEpoch) return undefined;
+  return {
+    sessionId: asSessionId(sessionId),
+    sessionEpoch: asSessionEpoch(sessionEpoch),
+  };
+}
+
+function supportsTerminalStream(hello: NodeHello | undefined): boolean {
+  return hello?.supportedFeatures.includes('terminal-stream') ?? false;
+}
+
 export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHandle {
   const registrations = new Map<NodeId, NodeRegistration>();
   const tokenIndex = new Map<string, NodeRegistration>();
   const nodeSockets = new Map<NodeId, WebSocket>();
   const nodeHello = new Map<NodeId, NodeHello>();
-  const subscribers = new Map<NodeId, Set<WebSocket>>();
+  const subscribers = new Map<NodeId, Set<RelayClientSubscription>>();
   const replay = new Map<NodeId, RemoteControlEvent[]>();
+  const terminalReplay = new Map<NodeId, Map<string, TerminalStreamEvent[]>>();
+  const streamMetrics = { clientDropped: { backpressure: 0 } };
+  const streamBackpressureBytes = opts.streamBackpressureBytes ?? 1_000_000;
+  const terminalReplayMaxEvents = opts.terminalReplayMaxEvents ?? 512;
   const vapidKeys: VapidKeyStore = createVapidKeyStore();
   const pushSubscriptions: PushSubscriptionStore = createPushSubscriptionStore();
   const pushFanout: PushFanout = createPushFanout({
@@ -176,6 +224,24 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         sendHtml(res, 200, relayDashboardHtml());
         return;
       }
+      if (req.method === 'GET' && url.pathname === '/relay/assets/xterm.js') {
+        sendText(
+          res,
+          200,
+          'text/javascript; charset=utf-8',
+          await readFile(join(process.cwd(), 'node_modules/@xterm/xterm/lib/xterm.js'), 'utf8'),
+        );
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/relay/assets/xterm.css') {
+        sendText(
+          res,
+          200,
+          'text/css; charset=utf-8',
+          await readFile(join(process.cwd(), 'node_modules/@xterm/xterm/css/xterm.css'), 'utf8'),
+        );
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/relay/dashboard/state') {
         if (!isAuthorizedClient(req, opts, url)) {
           sendJson(res, 401, { error: 'unauthorized' });
@@ -186,7 +252,22 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 404, { error: 'node not found' });
           return;
         }
-        sendJson(res, 200, { nodeId, events: replay.get(asNodeId(nodeId)) ?? [] });
+        const encrypted = Boolean((req.socket as typeof req.socket & { encrypted?: boolean }).encrypted);
+        const relayHostFingerprint = createHash('sha256')
+          .update(`${req.headers.host ?? 'unknown'}:${encrypted ? 'tls' : 'plain'}`)
+          .digest('hex')
+          .slice(0, 16);
+        const terminal = parseTerminalSubscription(url);
+        const afterSeq = parseSeq(url.searchParams.get('afterSeq')) ?? asSeq(0);
+        const terminalEvents = terminal
+          ? collectTerminalReplayEvents(asNodeId(nodeId), terminal.sessionId, terminal.sessionEpoch, afterSeq)
+          : [];
+        sendJson(res, 200, {
+          nodeId,
+          relayHostFingerprint,
+          events: replay.get(asNodeId(nodeId)) ?? [],
+          terminalEvents,
+        });
         return;
       }
       if (req.method === 'GET' && url.pathname === '/relay/push/vapid-public-key') {
@@ -382,6 +463,18 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       ) {
         registration.lastSeen = new Date().toISOString();
         routeControlEvent(parsed);
+        return;
+      }
+
+      if (
+        isTerminalStreamEvent(parsed)
+        && parsed.nodeId === registration.nodeId
+        && parsed.nodeEpoch === nodeHello.get(registration.nodeId)?.nodeEpoch
+        && nodeSockets.get(registration.nodeId) === ws
+        && supportsTerminalStream(nodeHello.get(registration.nodeId))
+      ) {
+        registration.lastSeen = new Date().toISOString();
+        routeTerminalStreamEvent(parsed);
       }
     });
     ws.on('close', () => {
@@ -404,20 +497,136 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const subscribed = subscribers.get(event.nodeId);
     if (!subscribed) return;
     const encoded = JSON.stringify(event);
-    for (const ws of subscribed) {
-      if (ws.readyState === ws.OPEN) ws.send(encoded);
+    for (const sub of subscribed) {
+      if (sub.ws.readyState === sub.ws.OPEN) sub.ws.send(encoded);
+    }
+  }
+
+  function appendTerminalReplay(event: TerminalStreamEvent): void {
+    if (event.kind === 'terminal.replay-gap') return;
+    let bySession = terminalReplay.get(event.nodeId);
+    if (!bySession) {
+      bySession = new Map();
+      terminalReplay.set(event.nodeId, bySession);
+    }
+    const key = streamKey(event.nodeEpoch, event.sessionId, event.sessionEpoch);
+    const events = bySession.get(key) ?? [];
+    events.push(event);
+    bySession.set(key, events.slice(-terminalReplayMaxEvents));
+  }
+
+  function makeTerminalGapEvent(opts: {
+    nodeId: NodeId;
+    nodeEpoch: NodeEpoch;
+    sessionId: SessionId;
+    sessionEpoch: SessionEpoch;
+    fromSeq: Seq;
+    toSeq: Seq;
+    reason: TerminalReplayGapEvent['payload']['reason'];
+  }): TerminalReplayGapEvent {
+    return {
+      nodeId: opts.nodeId,
+      nodeEpoch: opts.nodeEpoch,
+      sessionId: opts.sessionId,
+      sessionEpoch: opts.sessionEpoch,
+      seq: opts.toSeq,
+      ts: new Date().toISOString(),
+      kind: 'terminal.replay-gap',
+      payload: {
+        fromSeq: opts.fromSeq,
+        toSeq: opts.toSeq,
+        reason: opts.reason,
+      },
+    };
+  }
+
+  function collectTerminalReplayEvents(
+    nodeId: NodeId,
+    sessionId: SessionId,
+    sessionEpoch: SessionEpoch,
+    afterSeq: Seq,
+  ): TerminalStreamEvent[] {
+    const hello = nodeHello.get(nodeId);
+    if (!hello) return [];
+    const events = terminalReplay.get(nodeId)?.get(streamKey(hello.nodeEpoch, sessionId, sessionEpoch)) ?? [];
+    const selected = events.filter((event) => event.seq > afterSeq);
+    const oldest = events[0]?.seq;
+    const out: TerminalStreamEvent[] = [];
+    if (hello && oldest !== undefined && afterSeq < asSeq(Number(oldest) - 1)) {
+      out.push(makeTerminalGapEvent({
+        nodeId,
+        nodeEpoch: hello.nodeEpoch,
+        sessionId,
+        sessionEpoch,
+        fromSeq: asSeq(Number(afterSeq) + 1),
+        toSeq: asSeq(Number(oldest) - 1),
+        reason: 'replay-buffer-miss',
+      }));
+    }
+    out.push(...selected);
+    return out;
+  }
+
+  function replayTerminalEvents(
+    ws: WebSocket,
+    nodeId: NodeId,
+    sessionId: SessionId,
+    sessionEpoch: SessionEpoch,
+    afterSeq: Seq,
+  ): void {
+    for (const event of collectTerminalReplayEvents(nodeId, sessionId, sessionEpoch, afterSeq)) {
+      safeSendStream(ws, event);
+    }
+  }
+
+  function safeSendStream(ws: WebSocket, event: TerminalStreamEvent): void {
+    if (ws.readyState !== ws.OPEN) return;
+    if (ws.bufferedAmount > streamBackpressureBytes) {
+      streamMetrics.clientDropped.backpressure += 1;
+      ws.close(1013, 'terminal stream backpressure');
+      return;
+    }
+    ws.send(JSON.stringify(event));
+  }
+
+  function routeTerminalStreamEvent(event: TerminalStreamEvent): void {
+    appendTerminalReplay(event);
+    const subscribed = subscribers.get(event.nodeId);
+    if (!subscribed) return;
+    for (const sub of subscribed) {
+      if (
+        sub.terminal?.sessionId === event.sessionId
+        && sub.terminal.sessionEpoch === event.sessionEpoch
+      ) {
+        safeSendStream(sub.ws, event);
+      }
     }
   }
 
   clientWss.on('connection', (ws: WebSocket, _req: IncomingMessage, subscribedNodeId: NodeId) => {
+    const url = new URL(_req.url ?? '/', 'http://127.0.0.1');
+    const terminal = parseTerminalSubscription(url);
+    const subscription: RelayClientSubscription = { ws, ...(terminal ? { terminal } : {}) };
     let set = subscribers.get(subscribedNodeId);
     if (!set) {
       set = new Set();
       subscribers.set(subscribedNodeId, set);
     }
-    set.add(ws);
+    set.add(subscription);
     for (const event of replay.get(subscribedNodeId) ?? []) {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
+    }
+    const requestedSessionId = url.searchParams.get('terminalSessionId');
+    const requestedSessionEpoch = url.searchParams.get('terminalSessionEpoch');
+    const requestedAfterSeq = parseSeq(url.searchParams.get('afterSeq'));
+    if (requestedSessionId && requestedSessionEpoch && requestedAfterSeq !== null) {
+      replayTerminalEvents(
+        ws,
+        subscribedNodeId,
+        asSessionId(requestedSessionId),
+        asSessionEpoch(requestedSessionEpoch),
+        requestedAfterSeq,
+      );
     }
     ws.on('message', (data) => {
       let parsed: unknown;
@@ -428,6 +637,27 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         return;
       }
       const command = parsed as { type?: unknown; nodeId?: unknown; payload?: unknown };
+      if (command.type === 'terminal.replay.request') {
+        const payload = command.payload as { sessionId?: unknown; sessionEpoch?: unknown; afterSeq?: unknown };
+        const afterSeq = typeof payload?.afterSeq === 'number' && Number.isInteger(payload.afterSeq)
+          ? payload.afterSeq
+          : null;
+        if (
+          typeof payload?.sessionId === 'string'
+          && typeof payload.sessionEpoch === 'string'
+          && afterSeq !== null
+          && afterSeq >= 0
+        ) {
+          replayTerminalEvents(
+            ws,
+            subscribedNodeId,
+            asSessionId(payload.sessionId),
+            asSessionEpoch(payload.sessionEpoch),
+            asSeq(afterSeq),
+          );
+        }
+        return;
+      }
       if (command.type !== 'remote.command') return;
       if (typeof command.nodeId === 'string' && command.nodeId !== subscribedNodeId) {
         ws.close(1008, 'command node mismatch');
@@ -439,7 +669,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       }
     });
     ws.on('close', () => {
-      set.delete(ws);
+      set.delete(subscription);
       if (set.size === 0) subscribers.delete(subscribedNodeId);
     });
   });
@@ -456,6 +686,9 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     registerNode,
     nodeStatuses,
     pushSubscriptions: () => pushSubscriptions.list(),
+    streamMetrics: () => ({
+      clientDropped: { ...streamMetrics.clientDropped },
+    }),
     rotateVapidKeys(): { publicKey: string; version: number; invalidated: number } {
       const rotated = vapidKeys.rotate();
       return {
@@ -468,7 +701,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     async close(): Promise<void> {
       for (const ws of [...nodeSockets.values()]) ws.close(1001, 'relay closing');
       for (const set of subscribers.values()) {
-        for (const ws of set) ws.close(1001, 'relay closing');
+        for (const sub of set) sub.ws.close(1001, 'relay closing');
       }
       nodeWss.close();
       clientWss.close();
@@ -494,6 +727,7 @@ function relayDashboardHtml(): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Kookr Relay</title>
+  <link rel="stylesheet" href="/relay/assets/xterm.css">
   <style>
     body { margin: 0; font: 14px system-ui, sans-serif; background: #101416; color: #e7ecef; }
     main { max-width: 840px; margin: 0 auto; padding: 16px; }
@@ -501,22 +735,79 @@ function relayDashboardHtml(): string {
     .task { border: 1px solid #2b373d; border-radius: 6px; padding: 12px; margin: 10px 0; background: #151c20; }
     .muted { color: #aeb9bf; }
     .alert { color: #ffd166; }
+    .terminal { border: 1px solid #2b373d; border-radius: 6px; margin: 10px 0; background: #06080a; min-height: 220px; max-height: 420px; overflow: hidden; }
+    .consent { border: 1px solid #7c5f16; border-radius: 6px; padding: 12px; margin: 10px 0; background: #211b0d; }
+    button { background: #1f6feb; color: white; border: 0; border-radius: 4px; padding: 8px 10px; }
   </style>
 </head>
 <body>
 <main>
   <h1>Kookr Relay</h1>
   <div id="status" class="muted">Connecting...</div>
+  <section id="consent" class="consent" hidden>
+    <strong>Terminal sharing exposes session bytes to this relay.</strong>
+    <p class="muted">The relay host can observe terminal bytes for shared sessions. Continue only if you trust this relay.</p>
+    <button id="consent-accept" type="button">Allow terminal viewing on this relay</button>
+  </section>
+  <section id="terminal-region" role="region" aria-label="Remote terminal output" hidden>
+    <div id="terminal" class="terminal"></div>
+  </section>
   <section id="tasks"></section>
 </main>
+<script src="/relay/assets/xterm.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
 const nodeId = params.get('nodeId') || '';
 const clientToken = params.get('clientToken') || '';
+const terminalSessionId = params.get('terminalSessionId') || '';
+const terminalSessionEpoch = params.get('terminalSessionEpoch') || '';
+const afterSeq = params.get('afterSeq') || '';
+const terminalRequested = terminalSessionId.length > 0 && terminalSessionEpoch.length > 0;
 const statusEl = document.getElementById('status');
 const tasksEl = document.getElementById('tasks');
+const terminalEl = document.getElementById('terminal');
+const terminalRegionEl = document.getElementById('terminal-region');
+const consentEl = document.getElementById('consent');
+const consentAccept = document.getElementById('consent-accept');
 const tasks = new Map();
 const alerts = new Map();
+const pendingTerminalEvents = [];
+let terminal = null;
+let relayHostFingerprint = location.origin;
+let terminalConsent = false;
+function consentKey() { return 'kookr-relay-terminal-consent:' + nodeId + ':' + relayHostFingerprint; }
+function refreshConsent() {
+  if (!terminalRequested) {
+    consentEl.hidden = true;
+    terminalRegionEl.hidden = true;
+    return;
+  }
+  terminalConsent = localStorage.getItem(consentKey()) === 'accepted';
+  consentEl.hidden = terminalConsent;
+  terminalRegionEl.hidden = !terminalConsent;
+  if (terminalConsent && !terminal) {
+    terminal = new Terminal({
+      cursorBlink: false,
+      disableStdin: true,
+      screenReaderMode: true,
+      fontSize: 12,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      scrollback: 10000,
+      theme: {
+        background: '#06080a',
+        foreground: '#d8dee9',
+        cursor: '#d8dee9',
+      },
+    });
+    terminal.open(terminalEl);
+    terminal.textarea?.setAttribute('aria-label', 'Remote terminal output');
+  }
+}
+consentAccept.onclick = () => {
+  localStorage.setItem(consentKey(), 'accepted');
+  refreshConsent();
+  for (const event of pendingTerminalEvents.splice(0)) ingestTerminal(event);
+};
 function render() {
   tasksEl.textContent = '';
   for (const task of tasks.values()) {
@@ -535,7 +826,34 @@ function render() {
     tasksEl.appendChild(el);
   }
 }
+function writeTerminalPayload(payload) {
+  if (!terminalConsent) {
+    consentEl.hidden = false;
+    return;
+  }
+  refreshConsent();
+  terminal?.write(payload);
+}
+function ingestTerminal(event) {
+  if (!event || typeof event !== 'object') return;
+  if (!terminalConsent) {
+    pendingTerminalEvents.push(event);
+    consentEl.hidden = false;
+    return;
+  }
+  if (event.kind === 'terminal.bytes' && event.payload && event.payload.encoding === 'base64') {
+    const raw = atob(event.payload.data || '');
+    const bytes = Uint8Array.from(raw, (ch) => ch.charCodeAt(0));
+    writeTerminalPayload(bytes);
+  } else if (event.kind === 'terminal.replay-gap' && event.payload) {
+    writeTerminalPayload('\\r\\n\\x1b[33m[stream gap: missing seq ' + event.payload.fromSeq + '-' + event.payload.toSeq + ']\\x1b[0m\\r\\n');
+  }
+}
 function ingest(event) {
+  if (event && typeof event === 'object' && String(event.kind || '').startsWith('terminal.')) {
+    ingestTerminal(event);
+    return;
+  }
   const payload = event && event.payload;
   if (!payload || typeof payload !== 'object') return;
   if (payload.type === 'push.alert' && payload.payload) {
@@ -556,16 +874,24 @@ async function boot() {
     const stateUrl = new URL('/relay/dashboard/state', location.href);
     stateUrl.searchParams.set('nodeId', nodeId);
     if (clientToken) stateUrl.searchParams.set('clientToken', clientToken);
+    if (terminalSessionId) stateUrl.searchParams.set('terminalSessionId', terminalSessionId);
+    if (terminalSessionEpoch) stateUrl.searchParams.set('terminalSessionEpoch', terminalSessionEpoch);
     const state = await fetch(stateUrl, { credentials: 'include' });
     if (state.ok) {
       const body = await state.json();
+      relayHostFingerprint = body.relayHostFingerprint || relayHostFingerprint;
+      refreshConsent();
       for (const event of body.events || []) ingest(event);
+      for (const event of body.terminalEvents || []) ingest(event);
     }
-  } catch {}
+  } catch { refreshConsent(); }
   const wsUrl = new URL('/relay/client', location.href);
   wsUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   wsUrl.searchParams.set('nodeId', nodeId);
   if (clientToken) wsUrl.searchParams.set('clientToken', clientToken);
+  if (terminalSessionId) wsUrl.searchParams.set('terminalSessionId', terminalSessionId);
+  if (terminalSessionEpoch) wsUrl.searchParams.set('terminalSessionEpoch', terminalSessionEpoch);
+  if (afterSeq) wsUrl.searchParams.set('afterSeq', afterSeq);
   const ws = new WebSocket(wsUrl);
   ws.onopen = () => { statusEl.textContent = 'Live'; };
   ws.onclose = () => { statusEl.textContent = 'Disconnected'; };

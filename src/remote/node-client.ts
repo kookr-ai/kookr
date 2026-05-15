@@ -5,6 +5,7 @@ import { basename, dirname, join } from 'node:path';
 import type { RelayHello, RemoteFeature } from './handshake.js';
 import type { RemoteControlEvent } from './control-events.js';
 import type { NodeEpoch, NodeId } from './ids.js';
+import type { TerminalStreamEvent } from './stream-events.js';
 
 import type { WebSocket } from 'ws';
 
@@ -42,7 +43,7 @@ export interface RemoteNodeClient {
   readonly status: RemoteNodeStatus;
   start(): void;
   stop(): Promise<void>;
-  publish(event: RemoteControlEvent): boolean;
+  publish(event: RemoteControlEvent | TerminalStreamEvent): boolean;
 }
 
 interface NodeIdentity {
@@ -125,7 +126,12 @@ function toNodeWebSocketUrl(relayUrl: string): string {
 }
 
 export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Promise<RemoteNodeClient> {
-  const { isRelayHello, makeNodeHello, REMOTE_PROTOCOL_VERSION } = await import('./handshake.js');
+  const {
+    isRelayHello,
+    makeNodeHello,
+    PHASE1_SUPPORTED_FEATURES,
+    REMOTE_PROTOCOL_VERSION,
+  } = await import('./handshake.js');
   const logger = opts.logger ?? console;
   const identity = await loadNodeIdentity(opts.kookrDir, logger);
   const status: RemoteNodeStatus = {
@@ -191,6 +197,9 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
         nodeId: status.nodeId,
         nodeEpoch: status.nodeEpoch,
         softwareVersion: opts.softwareVersion,
+        supportedFeatures: process.env.KOOKR_RELAY_TRUSTED === 'true'
+          ? [...PHASE1_SUPPORTED_FEATURES, 'terminal-stream']
+          : PHASE1_SUPPORTED_FEATURES,
         displayName: opts.displayName,
         publicBaseUrl: opts.publicBaseUrl,
       });
