@@ -53,6 +53,9 @@ import type { RemoteNodeClient } from '../remote/node-client.js';
 import type { CommandJournal } from '../remote/command-journal.js';
 import { isOwnerLocal } from './auth.js';
 import type { SessionStreamPublisher } from '../remote/session-stream-publisher.js';
+import type { ControllerLeaseManager } from '../remote/controller-lease.js';
+import type { SessionEpoch, SessionId } from '../remote/ids.js';
+import type { RemoteInputAdapter } from './remote-input-adapter.js';
 
 // --- Exported types ---
 
@@ -188,10 +191,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   let remoteNodeClient: RemoteNodeClient | null = null;
   let sessionStreamPublisher: SessionStreamPublisher | null = null;
   let commandJournal: CommandJournal | null = null;
+  let controllerLeaseManager: ControllerLeaseManager | null = null;
+  let remoteInputAdapter: RemoteInputAdapter | null = null;
   if (process.env.KOOKR_RELAY_URL) {
     const { createRemoteAuditScaffold } = await import('../remote/audit.js');
     const { CommandJournal } = await import('../remote/command-journal.js');
     const { createRemoteNodeClient } = await import('../remote/node-client.js');
+    const { ControllerLeaseManager } = await import('../remote/controller-lease.js');
+    const { remoteTerminalInputFeatureEnabled } = await import('../remote/handshake.js');
+    const { asServerRevision } = await import('../remote/ids.js');
     createRemoteAuditScaffold({ relayUrl: process.env.KOOKR_RELAY_URL });
     remoteNodeClient = await createRemoteNodeClient({
       relayUrl: process.env.KOOKR_RELAY_URL,
@@ -206,6 +214,34 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       nodeId: remoteNodeClient.status.nodeId,
       nodeEpoch: remoteNodeClient.status.nodeEpoch,
     });
+    let leaseRevision = 0;
+    controllerLeaseManager = new ControllerLeaseManager({
+      nodeId: remoteNodeClient.status.nodeId,
+      nodeEpoch: remoteNodeClient.status.nodeEpoch,
+      nextServerRevision: () => asServerRevision(++leaseRevision),
+      publish: (event) => {
+        remoteNodeClient?.publish(event);
+      },
+    });
+    remoteNodeClient.setConnectionObserver((state) => {
+      if (state === 'disconnected') controllerLeaseManager?.handleRelayDisconnect();
+      else controllerLeaseManager?.handleRelayReconnect();
+    });
+    if (remoteTerminalInputFeatureEnabled()) {
+      const { createRemoteInputAdapter } = await import('./remote-input-adapter.js');
+      remoteInputAdapter = await createRemoteInputAdapter({
+        terminalBackend,
+        leaseManager: controllerLeaseManager,
+        getCurrentSeq: (sessionId, sessionEpoch) => {
+          const cursor = sessionStreamPublisher?.currentCursor(sessionId);
+          if (!cursor || cursor.sessionEpoch !== sessionEpoch) return null;
+          return cursor.lastSeq;
+        },
+      });
+      console.log('[remote] terminal input adapter enabled');
+    } else {
+      console.log('[remote] terminal input adapter disabled');
+    }
   }
 
   const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
@@ -574,6 +610,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const terminalDeps: TerminalInputDeps = {
     monitor, abortPendingSuggestion, broadcastToAll, serverCwd,
   };
+  const recordLocalTerminalActivity = (sessionId: string): void => {
+    if (!controllerLeaseManager) return;
+    controllerLeaseManager.acquireLocal({
+      sessionId: sessionId as SessionId,
+      sessionEpoch: sessionStreamPublisher?.currentCursor(sessionId)?.sessionEpoch ?? ('1' as SessionEpoch),
+    });
+  };
 
   if (remoteNodeClient && commandJournal) {
     const { executeWithPipeline } = await import('../remote/command-pipeline.js');
@@ -768,6 +811,134 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             request: launchCommand,
             isOwnerLocal,
             handler: remoteLaunchBroker,
+          });
+        }
+        case 'leaseAcquire': {
+          if (!remoteInputAdapter || !controllerLeaseManager) {
+            return await commandJournal!.appendPreAuditReject(command, 'terminal input feature disabled');
+          }
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'leaseAcquire',
+              authorize,
+              validate: baseValidate,
+              execute: async () => {
+                const requestedLeaseId = (command.payload as { leaseId?: unknown } | undefined)?.leaseId;
+                const acquired = controllerLeaseManager!.acquireRemote({
+                  sessionId: command.sessionId,
+                  sessionEpoch: command.sessionEpoch,
+                  actorId: command.actorId,
+                  clientId: command.clientId,
+                  ...(typeof requestedLeaseId === 'string'
+                    ? { leaseId: requestedLeaseId as NonNullable<typeof command.leaseId> }
+                    : {}),
+                });
+                if (!acquired.ok) throw new Error(acquired.reason);
+                return { leaseId: acquired.lease.leaseId };
+              },
+            },
+          });
+        }
+        case 'leaseHeartbeat': {
+          if (!remoteInputAdapter || !controllerLeaseManager) {
+            return await commandJournal!.appendPreAuditReject(command, 'terminal input feature disabled');
+          }
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'leaseHeartbeat',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                return typeof command.leaseId === 'string'
+                  ? { ok: true as const }
+                  : { ok: false as const, reason: 'missing leaseId' };
+              },
+              execute: async () => {
+                const missed = (command.payload as { missed?: unknown } | undefined)?.missed === true;
+                const result = missed
+                  ? controllerLeaseManager!.recordHeartbeatMiss({
+                    sessionId: command.sessionId,
+                    leaseId: command.leaseId!,
+                    actorId: command.actorId,
+                    clientId: command.clientId,
+                  })
+                  : controllerLeaseManager!.recordHeartbeatAck({
+                    sessionId: command.sessionId,
+                    leaseId: command.leaseId!,
+                    actorId: command.actorId,
+                    clientId: command.clientId,
+                  });
+                if (!result.ok) throw new Error(result.reason);
+                return {
+                  leaseId: result.lease.leaseId,
+                  state: result.lease.state,
+                  heartbeatMisses: result.lease.heartbeatMisses,
+                };
+              },
+            },
+          });
+        }
+        case 'leaseOverride': {
+          if (!remoteInputAdapter || !controllerLeaseManager) {
+            return await commandJournal!.appendPreAuditReject(command, 'terminal input feature disabled');
+          }
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'leaseOverride',
+              authorize,
+              validate: baseValidate,
+              execute: async () => {
+                controllerLeaseManager!.revoke(command.sessionId, 'owner-override');
+                return { revoked: true };
+              },
+            },
+          });
+        }
+        case 'submitMessage': {
+          if (!remoteInputAdapter) {
+            return await commandJournal!.appendPreAuditReject(command, 'terminal input feature disabled');
+          }
+          const { isSubmitMessageCommand } = await import('./remote-input-adapter.js');
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'submitMessage',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                if (!isSubmitMessageCommand(command)) {
+                  return { ok: false as const, reason: 'invalid submit message' };
+                }
+                return { ok: true as const };
+              },
+              execute: async () => {
+                if (!isSubmitMessageCommand(command)) throw new Error('invalid submit message');
+                const result = await remoteInputAdapter!.submit(command);
+                monitor.markInputReceived(command.sessionId);
+                queue.respondAndAdvance(command.sessionId);
+                abortPendingSuggestion(command.sessionId, 'used');
+                await interactionLog.append({
+                  type: 'user_input',
+                  agentId: command.sessionId,
+                  content: command.payload.text,
+                  timestamp: new Date().toISOString(),
+                });
+                return result;
+              },
+            },
           });
         }
       }
@@ -993,6 +1164,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     terminalDeps,
     useFakeTerminalBridge,
+    onLocalTerminalActivity: recordLocalTerminalActivity,
     onDashboardConnection: (ws) => handleWsConnection(ws, clients, wsConnectionDeps),
   });
 
@@ -1027,6 +1199,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Stop diagnostic runner
     diagnosticRunner.dispose();
     sessionStreamPublisher?.stop();
+    remoteNodeClient?.setConnectionObserver(null);
+    controllerLeaseManager?.dispose();
     await remoteNodeClient?.stop();
 
     // Stop hook watchers and trackers
@@ -1192,6 +1366,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     projectSidebarStore,
     circuitBreakerRegistry,
     remoteLaunchBroker,
+    controllerLeaseManager,
+    remoteInputAdapter,
     app,
     broadcastToAll,
     close,

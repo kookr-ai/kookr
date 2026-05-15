@@ -7,13 +7,25 @@ import type {
   CommandId,
   GrantId,
   IdempotencyKey,
+  LeaseId,
   NodeEpoch,
   NodeId,
+  Seq,
   SessionEpoch,
   SessionId,
 } from './ids.js';
 
-export type RemoteCommandAction = 'presetReply' | 'permissionApprove' | 'skip' | 'snooze' | 'mark-done' | 'launch';
+export type RemoteCommandAction =
+  | 'presetReply'
+  | 'permissionApprove'
+  | 'skip'
+  | 'snooze'
+  | 'mark-done'
+  | 'launch'
+  | 'leaseAcquire'
+  | 'leaseHeartbeat'
+  | 'leaseOverride'
+  | 'submitMessage';
 export type CommandOutcome =
   | 'accepted'
   | 'rejected'
@@ -37,6 +49,8 @@ export interface CommandEnvelope extends IdempotencyTuple {
   clientId: ClientId;
   action: RemoteCommandAction;
   baseRevision?: number;
+  leaseId?: LeaseId;
+  lastSeenSeq?: Seq;
   payload?: unknown;
 }
 

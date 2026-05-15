@@ -19,6 +19,7 @@ export interface HttpAndWebSocketsDeps {
   terminalBackend: TerminalBackend;
   terminalDeps: TerminalInputDeps;
   useFakeTerminalBridge?: boolean;
+  onLocalTerminalActivity?: (sessionId: string) => void;
   onDashboardConnection: (ws: WebSocket) => void;
 }
 
@@ -78,8 +79,14 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
         sessionName,
         ws,
         deps.terminalBackend,
-        (id) => handleTerminalInput(deps.terminalDeps, id),
-        (id) => handleTerminalKeystroke(deps.terminalDeps, id),
+        (id) => {
+          deps.onLocalTerminalActivity?.(id);
+          handleTerminalInput(deps.terminalDeps, id);
+        },
+        (id) => {
+          deps.onLocalTerminalActivity?.(id);
+          handleTerminalKeystroke(deps.terminalDeps, id);
+        },
       );
       activeBridges.set(ws, sb);
       sb.start().catch((err) => {

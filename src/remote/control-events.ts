@@ -1,6 +1,6 @@
-import type { NodeEpoch, NodeId, ServerRevision } from './ids.js';
+import type { ActorId, ClientId, LeaseId, NodeEpoch, NodeId, ServerRevision, SessionEpoch, SessionId } from './ids.js';
 
-export type RemoteControlEventKind = 'snapshot' | 'state.delta';
+export type RemoteControlEventKind = 'snapshot' | 'state.delta' | 'lease.changed';
 
 export interface RemoteControlEventBase<K extends RemoteControlEventKind, P> {
   nodeId: NodeId;
@@ -13,10 +13,40 @@ export interface RemoteControlEventBase<K extends RemoteControlEventKind, P> {
 
 export type RemoteSnapshotEvent<P = unknown> = RemoteControlEventBase<'snapshot', P>;
 export type RemoteStateDeltaEvent<P = unknown> = RemoteControlEventBase<'state.delta', P>;
+export type ClientVisibleLeaseState =
+  | 'none'
+  | 'acquiring'
+  | 'held-local'
+  | 'held-remote'
+  | 'held-uncertain'
+  | 'held-presumed-lost'
+  | 'revoked';
+
+export type LeaseRevocationReason =
+  | 'owner-override'
+  | 'heartbeat-timeout'
+  | 'node-disconnect'
+  | 'policy-revoke'
+  | 'session-epoch-bump'
+  | 'released';
+
+export interface LeaseChangedPayload {
+  sessionId: SessionId;
+  sessionEpoch: SessionEpoch;
+  leaseId?: LeaseId;
+  previousState: ClientVisibleLeaseState;
+  newState: ClientVisibleLeaseState;
+  actorId?: ActorId;
+  clientId?: ClientId;
+  reason?: LeaseRevocationReason;
+}
+
+export type LeaseChangedEvent = RemoteControlEventBase<'lease.changed', LeaseChangedPayload>;
 
 export type RemoteControlEvent<P = unknown> =
   | RemoteSnapshotEvent<P>
-  | RemoteStateDeltaEvent<P>;
+  | RemoteStateDeltaEvent<P>
+  | LeaseChangedEvent;
 
 export function isRemoteControlEvent(value: unknown): value is RemoteControlEvent {
   const msg = value as Partial<RemoteControlEvent>;
@@ -26,6 +56,6 @@ export function isRemoteControlEvent(value: unknown): value is RemoteControlEven
     && typeof msg.nodeEpoch === 'string'
     && typeof msg.serverRevision === 'number'
     && typeof msg.ts === 'string'
-    && (msg.kind === 'snapshot' || msg.kind === 'state.delta')
+    && (msg.kind === 'snapshot' || msg.kind === 'state.delta' || msg.kind === 'lease.changed')
     && 'payload' in msg;
 }

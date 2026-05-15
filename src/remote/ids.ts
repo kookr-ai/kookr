@@ -16,6 +16,7 @@ export type LeaseId = BrandedString<'LeaseId'>;
 export type PermissionRequestId = BrandedString<'PermissionRequestId'>;
 export type ActorId = BrandedString<'ActorId'>;
 export type ClientId = BrandedString<'ClientId'>;
+export type InputContextId = BrandedString<'InputContextId'>;
 
 export function asNodeId(value: string): NodeId {
   return value as NodeId;
