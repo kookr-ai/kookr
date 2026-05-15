@@ -6,6 +6,7 @@ import type { RelayHello, RemoteFeature } from './handshake.js';
 import type { CommandEnvelope, CommandResult } from './command-journal.js';
 import type { RemoteControlEvent } from './control-events.js';
 import type { NodeEpoch, NodeId } from './ids.js';
+import type { PolicySyncProtocolMessage } from './policy-sync.js';
 import type { TerminalStreamEvent } from './stream-events.js';
 
 import type { WebSocket } from 'ws';
@@ -39,6 +40,7 @@ export interface RemoteNodeClientOptions {
   logger?: Pick<typeof console, 'log' | 'warn' | 'error'>;
   wsImporter?: () => Promise<typeof import('ws')>;
   onCommand?: (command: CommandEnvelope) => Promise<CommandResult>;
+  onPolicyMessage?: (message: PolicySyncProtocolMessage) => Promise<void> | void;
 }
 
 export interface RemoteNodeClient {
@@ -159,6 +161,21 @@ function isRemoteCommandEnvelope(value: unknown): value is CommandEnvelope {
 
 function makeRemoteCommandResultMessage(result: CommandResult): { type: 'remote.command.result' } & CommandResult {
   return { type: 'remote.command.result', ...result };
+}
+
+function isPolicySyncProtocolMessage(value: unknown): value is PolicySyncProtocolMessage {
+  const msg = value as Partial<PolicySyncProtocolMessage>;
+  if (typeof value !== 'object' || value === null || typeof msg.type !== 'string') return false;
+  if (
+    msg.type !== 'policy.sync'
+    && msg.type !== 'policy.delta'
+    && msg.type !== 'policy.delta.ack'
+    && msg.type !== 'policy.revoke'
+  ) {
+    return false;
+  }
+  return typeof msg.nodeId === 'string'
+    && typeof msg.policyVersion === 'number';
 }
 
 export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Promise<RemoteNodeClient> {
@@ -303,6 +320,12 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
               reason: err instanceof Error ? err.message : String(err),
             })));
           }
+        });
+      }
+      if (isPolicySyncProtocolMessage(parsed)) {
+        if (parsed.nodeId !== status.nodeId) return;
+        void Promise.resolve(opts.onPolicyMessage?.(parsed)).catch((err) => {
+          logger.warn(`[remote-node] policy message handler failed: ${err instanceof Error ? err.message : String(err)}`);
         });
       }
     });

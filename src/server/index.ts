@@ -54,7 +54,9 @@ import type { CommandJournal } from '../remote/command-journal.js';
 import { isOwnerLocal } from './auth.js';
 import type { SessionStreamPublisher } from '../remote/session-stream-publisher.js';
 import type { ControllerLeaseManager } from '../remote/controller-lease.js';
-import type { SessionEpoch, SessionId } from '../remote/ids.js';
+import type { NodeId, SessionEpoch, SessionId } from '../remote/ids.js';
+import type { RemotePolicyCache } from '../remote/policy-cache.js';
+import type { ShareSubject } from '../remote/policy-sync.js';
 import type { RemoteInputAdapter } from './remote-input-adapter.js';
 
 // --- Exported types ---
@@ -195,6 +197,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   let commandJournal: CommandJournal | null = null;
   let controllerLeaseManager: ControllerLeaseManager | null = null;
   let remoteInputAdapter: RemoteInputAdapter | null = null;
+  let remotePolicyCache: RemotePolicyCache | null = null;
   if (process.env.KOOKR_RELAY_URL) {
     const { createRemoteAuditScaffold } = await import('../remote/audit.js');
     const { CommandJournal } = await import('../remote/command-journal.js');
@@ -202,7 +205,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     const { ControllerLeaseManager } = await import('../remote/controller-lease.js');
     const { remoteTerminalInputFeatureEnabled } = await import('../remote/handshake.js');
     const { asServerRevision } = await import('../remote/ids.js');
+    const { RemotePolicyCache } = await import('../remote/policy-cache.js');
     createRemoteAuditScaffold({ relayUrl: process.env.KOOKR_RELAY_URL });
+    remotePolicyCache = new RemotePolicyCache();
     remoteNodeClient = await createRemoteNodeClient({
       relayUrl: process.env.KOOKR_RELAY_URL,
       token: process.env.KOOKR_RELAY_TOKEN ?? '',
@@ -210,6 +215,40 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       softwareVersion: buildInfo.version,
       displayName: process.env.KOOKR_RELAY_DISPLAY_NAME,
       publicBaseUrl: process.env.KOOKR_PUBLIC_BASE_URL,
+      onPolicyMessage: async (message) => {
+        if (!remotePolicyCache) return;
+        if (message.type === 'policy.sync') {
+          remotePolicyCache.applySync({
+            policyVersion: message.policyVersion,
+            grants: message.grants,
+            revokedGrantIds: message.revokedGrantIds,
+          });
+          for (const grantId of message.revokedGrantIds) {
+            await commandJournal?.revokeGrant(grantId, message.policyVersion);
+          }
+          return;
+        }
+        if (message.type === 'policy.delta') {
+          for (const grant of message.upserts) remotePolicyCache.upsert(grant);
+          for (const grantId of message.revokes) {
+            const grant = remotePolicyCache.get(grantId);
+            if (grant?.subject.kind === 'session') {
+              controllerLeaseManager?.revoke(grant.subject.sessionId as SessionId, 'policy-revoke');
+            }
+            remotePolicyCache.revoke(grantId, message.policyVersion);
+            await commandJournal?.revokeGrant(grantId, message.policyVersion);
+          }
+          return;
+        }
+        if (message.type === 'policy.revoke') {
+          const grant = remotePolicyCache.get(message.grantId);
+          if (grant?.subject.kind === 'session') {
+            controllerLeaseManager?.revoke(grant.subject.sessionId as SessionId, 'policy-revoke');
+          }
+          remotePolicyCache.revoke(message.grantId, message.policyVersion);
+          await commandJournal?.revokeGrant(message.grantId, message.policyVersion);
+        }
+      },
     });
     commandJournal = await CommandJournal.open({
       kookrDir,
@@ -624,6 +663,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     const { executeWithPipeline } = await import('../remote/command-pipeline.js');
     const { RemotePermissionBroker } = await import('../remote/permission-broker.js');
     const { isPresetReplyId, sendPresetReply } = await import('../remote/preset-reply.js');
+    const { grantForRemoteCommandAction } = await import('../remote/grants.js');
+    const { evaluateGrantById } = await import('../remote/share-policy.js');
+    const subjectForCommand = (command: { action: string; nodeId: string; sessionId: string }): ShareSubject => (
+      command.action === 'launch'
+        ? { kind: 'node', nodeId: command.nodeId as NodeId }
+        : { kind: 'session', nodeId: command.nodeId as NodeId, sessionId: command.sessionId }
+    );
     const permissionBroker = new RemotePermissionBroker({
       adapter,
       monitor,
@@ -634,8 +680,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     });
     remoteNodeClient.setCommandHandler(async (command) => {
       const authorize = () => {
-        if (command.grantId !== `owner-local:${command.nodeId}`) {
-          return { ok: false as const, reason: 'invalid grant' };
+        if (command.grantId === `owner-local:${command.nodeId}`) {
+          if (!isOwnerLocal({ actorId: command.actorId })) {
+            return { ok: false as const, reason: 'owner identity required' };
+          }
+        } else {
+          const requiredGrant = grantForRemoteCommandAction(command.action);
+          if (!remotePolicyCache || !requiredGrant) return { ok: false as const, reason: 'invalid grant' };
+          const decision = evaluateGrantById(remotePolicyCache, command.grantId, subjectForCommand(command), requiredGrant);
+          if (!decision.allowed) {
+            return { ok: false as const, reason: `grant ${decision.reason}` };
+          }
         }
         const task = taskStore.findTaskBySession(command.sessionId);
         if (!task) return { ok: false as const, reason: 'unknown session' };

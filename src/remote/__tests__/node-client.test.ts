@@ -105,4 +105,58 @@ describe('RemoteNodeClient', () => {
     expect(client.status.relayConnected).toBe(false);
     expect(constructed).toBe(0);
   });
+
+  it('delivers policy revoke messages to the policy handler', async () => {
+    const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-node-client-policy-'));
+    const policyMessages: unknown[] = [];
+    wss = new WebSocketServer({ port: 0, host: '127.0.0.1', path: '/relay/node' });
+    wss.on('connection', (ws) => {
+      ws.once('message', (data) => {
+        const hello = JSON.parse(data.toString()) as NodeHello;
+        ws.send(JSON.stringify(makeRelayHello({
+          outcome: 'accepted',
+          acceptedVersion: 1,
+          enabledFeatures: hello.supportedFeatures,
+        })));
+        ws.send(JSON.stringify({
+          type: 'policy.revoke',
+          nodeId: hello.nodeId,
+          grantId: 'grant-1',
+          policyVersion: 2,
+        }));
+      });
+    });
+    const port = await listen(wss);
+
+    client = await createRemoteNodeClient({
+      relayUrl: `http://127.0.0.1:${port}`,
+      token: 'token',
+      kookrDir,
+      softwareVersion: 'test',
+      reconnectBaseMs: 10_000,
+      onPolicyMessage: (message) => {
+        policyMessages.push(message);
+      },
+    });
+    client.start();
+
+    await new Promise<void>((resolve, reject) => {
+      const started = Date.now();
+      const timer = setInterval(() => {
+        if (policyMessages.length > 0) {
+          clearInterval(timer);
+          resolve();
+        } else if (Date.now() - started > 2_000) {
+          clearInterval(timer);
+          reject(new Error('timed out waiting for policy message'));
+        }
+      }, 10);
+    });
+
+    expect(policyMessages).toContainEqual(expect.objectContaining({
+      type: 'policy.revoke',
+      grantId: 'grant-1',
+      policyVersion: 2,
+    }));
+  });
 });
