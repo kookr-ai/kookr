@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WebSocket } from 'ws';
@@ -47,6 +47,21 @@ function waitForMalformedAlert(ws: WebSocket, label: string): Promise<MalformedA
     }, 2000);
 
     ws.on('message', onMsg);
+  });
+}
+
+async function waitForCondition(predicate: () => boolean): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (predicate()) {
+        clearInterval(timer);
+        resolve();
+      } else if (Date.now() - started > 2_000) {
+        clearInterval(timer);
+        reject(new Error('timed out waiting for condition'));
+      }
+    }, 10);
   });
 }
 
@@ -151,6 +166,99 @@ describe('createKookrServer', () => {
           }, 10);
         });
       } finally {
+        if (previousRelayUrl === undefined) {
+          delete process.env.KOOKR_RELAY_URL;
+        } else {
+          process.env.KOOKR_RELAY_URL = previousRelayUrl;
+        }
+        if (previousRelayToken === undefined) {
+          delete process.env.KOOKR_RELAY_TOKEN;
+        } else {
+          process.env.KOOKR_RELAY_TOKEN = previousRelayToken;
+        }
+        await remoteServer?.close();
+        await relay.close();
+      }
+    });
+
+    test('executes a relay presetReply through the real server command handler', async () => {
+      await server.close();
+      serverClosed = true;
+
+      const relay = createRelayServer({ allowInsecureClients: true });
+      await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
+      const registration = relay.registerNode({ displayName: 'integration' });
+      const remoteKookrDir = join(tempDir, 'remote-command-kookr');
+      mkdirSync(remoteKookrDir, { recursive: true });
+      writeFileSync(join(remoteKookrDir, 'node-id'), `${registration.nodeId}\n`);
+
+      const previousRelayUrl = process.env.KOOKR_RELAY_URL;
+      const previousRelayToken = process.env.KOOKR_RELAY_TOKEN;
+      process.env.KOOKR_RELAY_URL = relay.url();
+      process.env.KOOKR_RELAY_TOKEN = registration.nodeToken;
+
+      let remoteServer: KookrServerInternal | null = null;
+      const remoteBackend = new FakeTerminalBackend();
+      let clientWs: WebSocket | null = null;
+      try {
+        remoteServer = await createKookrServerInternal({
+          port: 0,
+          host: '127.0.0.1',
+          kookrDir: remoteKookrDir,
+          tasksFile: join(remoteKookrDir, 'tasks.json'),
+          hooksDir: join(remoteKookrDir, 'hooks'),
+          settingsDir: join(remoteKookrDir, 'settings'),
+          serverCwd: '/test/cwd',
+          frontendDir: join(tempDir, 'frontend'),
+          saveIntervalMs: 600_000,
+          livenessIntervalMs: 600_000,
+          terminalBackend: remoteBackend,
+          claudeDir: join(tempDir, 'claude'),
+        });
+
+        await waitForCondition(() => relay.nodeStatuses().some((node) => node.nodeId === registration.nodeId && node.connected));
+
+        await remoteBackend.createSession('remote-session', 'bash');
+        const task = remoteServer.taskStore.createTask('remote command task', '/repo');
+        remoteServer.taskStore.addSession(task.id, {
+          tmuxSession: 'remote-session',
+          agentType: 'claude-code',
+          cwd: '/repo',
+          createdAt: new Date('2026-05-15T19:00:00.000Z'),
+        });
+        remoteServer.monitor.registerAgent('remote-session');
+
+        const clientUrl = new URL('/relay/client', relay.url());
+        clientUrl.protocol = 'ws:';
+        clientUrl.searchParams.set('nodeId', registration.nodeId);
+        clientWs = new WebSocket(clientUrl);
+        const messages: unknown[] = [];
+        clientWs.on('message', (data) => messages.push(JSON.parse(data.toString()) as unknown));
+        await new Promise<void>((resolve) => clientWs!.once('open', () => resolve()));
+        clientWs.send(JSON.stringify({
+          type: 'remote.command',
+          commandId: 'cmd-real-server',
+          actorId: 'spoofed-client-value',
+          clientId: 'client-1',
+          nodeId: registration.nodeId,
+          nodeEpoch: '1',
+          sessionId: 'remote-session',
+          sessionEpoch: '1',
+          grantId: 'spoofed-grant',
+          idempotencyKey: 'idem-1',
+          action: 'presetReply',
+          payload: { presetId: 'continue' },
+        }));
+
+        await waitForCondition(() => messages.some((msg) => (msg as { commandId?: string; outcome?: string }).commandId === 'cmd-real-server'));
+        expect(remoteBackend.sessions.get('remote-session')?.keysReceived).toContain('continue');
+        expect(readFileSync(join(remoteKookrDir, 'audit.jsonl'), 'utf8')).toContain('"commandId":"cmd-real-server"');
+        expect(relay.metadataAuditRows().filter((row) => row.commandId === 'cmd-real-server')).toEqual([
+          expect.objectContaining({ outcome: 'forwarded' }),
+          expect.objectContaining({ outcome: 'accepted' }),
+        ]);
+      } finally {
+        clientWs?.close();
         if (previousRelayUrl === undefined) {
           delete process.env.KOOKR_RELAY_URL;
         } else {

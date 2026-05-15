@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { isNodeHello, makeRelayHello, REMOTE_PROTOCOL_VERSION, type NodeHello } from '../src/remote/handshake.js';
+import type { CommandOutcome, CommandResult, RemoteCommandAction } from '../src/remote/command-journal.js';
 import { isRemoteControlEvent, type RemoteControlEvent } from '../src/remote/control-events.js';
 import { asNodeId, asSeq, asSessionEpoch, asSessionId, type NodeEpoch, type NodeId, type Seq, type SessionEpoch, type SessionId } from '../src/remote/ids.js';
 import { isTerminalStreamEvent, type TerminalReplayGapEvent, type TerminalStreamEvent } from '../src/remote/stream-events.js';
@@ -29,6 +30,16 @@ interface RelayClientSubscription {
     sessionId: SessionId;
     sessionEpoch: SessionEpoch;
   };
+}
+
+export interface RelayMetadataAuditRow {
+  type: 'relay.metadata-audit';
+  commandId: string;
+  nodeId: NodeId;
+  action?: RemoteCommandAction;
+  outcome: CommandOutcome | 'forwarded';
+  timestamp: string;
+  reason?: string;
 }
 
 export interface RelayNodeStatus {
@@ -66,6 +77,7 @@ export interface RelayServerHandle {
   streamMetrics(): { clientDropped: { backpressure: number } };
   rotateVapidKeys(): { publicKey: string; version: number; invalidated: number };
   sendTestPush(deviceId: string): Promise<PushDeliveryOutcome>;
+  metadataAuditRows(): RelayMetadataAuditRow[];
   close(): Promise<void>;
 }
 
@@ -156,6 +168,16 @@ function parseTerminalSubscription(url: URL): RelayClientSubscription['terminal'
   };
 }
 
+function isRemoteCommandResultMessage(value: unknown): value is { type: 'remote.command.result' } & CommandResult {
+  const msg = value as Partial<CommandResult> & { type?: unknown };
+  return typeof value === 'object'
+    && value !== null
+    && msg.type === 'remote.command.result'
+    && typeof msg.commandId === 'string'
+    && typeof msg.action === 'string'
+    && typeof msg.outcome === 'string';
+}
+
 function supportsTerminalStream(hello: NodeHello | undefined): boolean {
   return hello?.supportedFeatures.includes('terminal-stream') ?? false;
 }
@@ -168,6 +190,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const subscribers = new Map<NodeId, Set<RelayClientSubscription>>();
   const replay = new Map<NodeId, RemoteControlEvent[]>();
   const terminalReplay = new Map<NodeId, Map<string, TerminalStreamEvent[]>>();
+  const metadataAudit: RelayMetadataAuditRow[] = [];
   const streamMetrics = { clientDropped: { backpressure: 0 } };
   const streamBackpressureBytes = opts.streamBackpressureBytes ?? 1_000_000;
   const terminalReplayMaxEvents = opts.terminalReplayMaxEvents ?? 512;
@@ -475,6 +498,15 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       ) {
         registration.lastSeen = new Date().toISOString();
         routeTerminalStreamEvent(parsed);
+        return;
+      }
+
+      if (
+        isRemoteCommandResultMessage(parsed)
+        && nodeSockets.get(registration.nodeId) === ws
+      ) {
+        registration.lastSeen = new Date().toISOString();
+        routeCommandResult(registration.nodeId, parsed);
       }
     });
     ws.on('close', () => {
@@ -603,6 +635,28 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     }
   }
 
+  function appendMetadataAudit(row: RelayMetadataAuditRow): void {
+    metadataAudit.push(row);
+  }
+
+  function routeCommandResult(nodeId: NodeId, result: CommandResult): void {
+    appendMetadataAudit({
+      type: 'relay.metadata-audit',
+      commandId: result.commandId,
+      nodeId,
+      action: result.action,
+      outcome: result.outcome,
+      timestamp: new Date().toISOString(),
+      ...(result.reason ? { reason: result.reason } : {}),
+    });
+    const subscribed = subscribers.get(nodeId);
+    if (!subscribed) return;
+    const encoded = JSON.stringify({ type: 'remote.command.result', ...result });
+    for (const sub of subscribed) {
+      if (sub.ws.readyState === sub.ws.OPEN) sub.ws.send(encoded);
+    }
+  }
+
   clientWss.on('connection', (ws: WebSocket, _req: IncomingMessage, subscribedNodeId: NodeId) => {
     const url = new URL(_req.url ?? '/', 'http://127.0.0.1');
     const terminal = parseTerminalSubscription(url);
@@ -663,9 +717,45 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         ws.close(1008, 'command node mismatch');
         return;
       }
+      const commandId = typeof (command as { commandId?: unknown }).commandId === 'string'
+        ? (command as { commandId: string }).commandId
+        : `invalid-${Date.now()}`;
+      const action = (command as { action?: unknown }).action;
+      appendMetadataAudit({
+        type: 'relay.metadata-audit',
+        commandId,
+        nodeId: subscribedNodeId,
+        ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
+        outcome: 'forwarded',
+        timestamp: new Date().toISOString(),
+      });
       const target = nodeSockets.get(subscribedNodeId);
       if (target?.readyState === WebSocket.OPEN) {
-        target.send(JSON.stringify({ ...command, nodeId: subscribedNodeId }));
+        const registration = registrations.get(subscribedNodeId);
+        target.send(JSON.stringify({
+          ...command,
+          nodeId: subscribedNodeId,
+          actorId: registration?.ownerId ?? ownerId,
+          grantId: `owner-local:${subscribedNodeId}`,
+        }));
+      } else {
+        const result = {
+          type: 'remote.command.result',
+          commandId,
+          action: typeof action === 'string' ? action : 'presetReply',
+          outcome: 'node-offline',
+          reason: 'node offline',
+        };
+        appendMetadataAudit({
+          type: 'relay.metadata-audit',
+          commandId,
+          nodeId: subscribedNodeId,
+          ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
+          outcome: 'node-offline',
+          timestamp: new Date().toISOString(),
+          reason: 'node offline',
+        });
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
       }
     });
     ws.on('close', () => {
@@ -698,6 +788,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       };
     },
     sendTestPush,
+    metadataAuditRows: () => [...metadataAudit],
     async close(): Promise<void> {
       for (const ws of [...nodeSockets.values()]) ws.close(1001, 'relay closing');
       for (const set of subscribers.values()) {

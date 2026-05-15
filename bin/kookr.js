@@ -10,6 +10,11 @@ if (process.argv[2] === 'push') {
   process.exit(0);
 }
 
+if (process.argv[2] === 'command' && process.argv[3] === 'outcome') {
+  await runCommandOutcomeCommand(process.argv.slice(4));
+  process.exit(0);
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const entry = join(here, '..', 'dist', 'server', 'start.js');
 
@@ -17,6 +22,18 @@ if (!existsSync(entry)) {
   console.error('[kookr] Build output not found at ' + entry);
   console.error('[kookr] Run `pnpm build` (or `npm run build`) first.');
   process.exit(1);
+}
+
+async function runCommandOutcomeCommand(argv) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const entry = join(here, '..', 'dist', 'cli', 'kookr-command-outcome.js');
+  if (!existsSync(entry)) {
+    console.error('[kookr] Build output not found at ' + entry);
+    console.error('[kookr] Run `pnpm build:server` (or `npm run build`) first.');
+    process.exit(1);
+  }
+  const mod = await import(entry);
+  process.exitCode = await mod.runCommandOutcomeCli(argv);
 }
 
 await import(entry);
