@@ -43,6 +43,7 @@ export type { QuotaStatus, QuotaWindow } from './contracts/quota.js';
 export type { QuickAction } from './contracts/quick-action.js';
 export type { ScheduleResponse, ScheduleListResponse, ScheduleStatusSnapshot } from './contracts/schedule.js';
 export type { TaskCompletionFeedback } from './contracts/task.js';
+export type { TurnState } from './contracts/task-status.js';
 export type { TelemetryEvent, TelemetryEventType } from './contracts/telemetry.js';
 export type { TokenUsage } from './contracts/usage.js';
 export type {

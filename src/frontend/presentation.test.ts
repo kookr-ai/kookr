@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, healthyDotClass, healthyStatusLabel, projectLabel, projectColor } from './presentation.js';
+import { agentProviderPresentation, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, turnStateLabel, turnStateClass } from './presentation.js';
 import type { AgentEvent } from '../shared/protocol.js';
 
 describe('healthyDotClass', () => {
@@ -179,5 +179,39 @@ describe('agentProviderPresentation', () => {
       provider: 'OpenAI',
     });
     expect(agentProviderPresentation('codex-cli').iconPath).toMatch(/^M.+Z$/);
+  });
+});
+
+describe('turnStateLabel (issue #358)', () => {
+  test('completed_turn reads as an idle, finished turn awaiting follow-up', () => {
+    expect(turnStateLabel('completed_turn')).toBe('Turn complete — waiting for follow-up');
+  });
+
+  test('running keeps active work distinct from an idle turn', () => {
+    expect(turnStateLabel('running')).toBe('Running');
+  });
+
+  test('waiting_for_input and blocked have their own copy', () => {
+    expect(turnStateLabel('waiting_for_input')).toBe('Waiting for your input');
+    expect(turnStateLabel('blocked')).toBe('Blocked');
+  });
+
+  test('unknown and undefined render nothing', () => {
+    expect(turnStateLabel('unknown')).toBe('');
+    expect(turnStateLabel(undefined)).toBe('');
+  });
+});
+
+describe('turnStateClass', () => {
+  test('maps each turn state to a CSS suffix', () => {
+    expect(turnStateClass('running')).toBe('running');
+    expect(turnStateClass('waiting_for_input')).toBe('waiting');
+    expect(turnStateClass('completed_turn')).toBe('complete');
+    expect(turnStateClass('blocked')).toBe('blocked');
+  });
+
+  test('unknown and undefined yield no class', () => {
+    expect(turnStateClass('unknown')).toBe('');
+    expect(turnStateClass(undefined)).toBe('');
   });
 });

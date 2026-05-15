@@ -543,13 +543,19 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
     armShortcuts();
   }
 
+  // A `needs_input` finding derived from a normal Stop is a completed turn,
+  // not an explicit question — keep the detail badge consistent with the
+  // finding card's "Turn Complete" presentation. See issue #358.
+  const isCompletedTurn = agent.anomaly?.type === 'needs_input'
+    && agent.turnState === 'completed_turn';
   const badgeClass = agent.anomaly
     ? agent.anomaly.type === 'permission_blocked' ? 'permission'
       : agent.anomaly.type === 'repeated_error' ? 'error'
+      : isCompletedTurn ? 'turn-complete'
       : 'input'
     : '';
   const badgeLabel = agent.anomaly
-    ? agent.anomaly.type.replace('_', ' ').toUpperCase()
+    ? isCompletedTurn ? 'TURN COMPLETE' : agent.anomaly.type.replace('_', ' ').toUpperCase()
     : 'RUNNING';
   const agentProvider = agent.agentType ? agentProviderPresentation(agent.agentType) : null;
 
@@ -802,9 +808,11 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
             placeholder={
               isDirectReply
                 ? `Message ${agent.taskName ?? agent.agentId}...`
-                : agent.anomaly?.type === 'needs_input'
-                  ? `${agent.taskName ?? agent.agentId} is waiting — send a hint...`
-                  : `Send a hint to ${agent.taskName ?? agent.agentId}...`
+                : agent.turnState === 'completed_turn'
+                  ? `Turn complete — send a follow-up to ${agent.taskName ?? agent.agentId}...`
+                  : agent.anomaly?.type === 'needs_input'
+                    ? `${agent.taskName ?? agent.agentId} is waiting — send a hint...`
+                    : `Send a hint to ${agent.taskName ?? agent.agentId}...`
             }
             value={input}
             onChange={handleInputChange}

@@ -153,9 +153,9 @@ test.describe('Supervisor flow — auto-advance', () => {
     // Sent overlay appears
     await expect(page.locator('.sent-overlay')).toBeVisible();
 
-    // Selection should auto-advance to the next finding (needs_input)
-    // The detail panel should now show the next agent's anomaly
-    await expect(page.locator('.detail-badge')).toContainText('NEEDS INPUT');
+    // Selection should auto-advance to the next finding (the completed-turn
+    // Stop finding). The detail panel should now show the next agent.
+    await expect(page.locator('.detail-badge')).toContainText('TURN COMPLETE');
   });
 
   test('skipping a finding auto-advances to the next finding', async ({ page, request }) => {
