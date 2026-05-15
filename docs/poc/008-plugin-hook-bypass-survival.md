@@ -12,6 +12,8 @@ The placement-gate hook from PR #348 is most needed in autonomous (bypass-mode) 
 
 ## Result summary
 
+> **Status update (2026-05-15):** the Codex CLI `NO` rows below were the state *before* the fork fix. The gap is now **closed** — the kookr Codex fork loads `--plugin-dir`-bundled hooks as of commit `73d041358b` (`feat/claude-compat`). See the Follow-up section. The table is retained as the historical probe record (probed 2026-05-14).
+
 | Runtime | Mode | Plugin hook fired? |
 |---|---|---|
 | **Claude Code** 2.1.141 | bypass (`--dangerously-skip-permissions --setting-sources ''`) | **YES** |
@@ -104,7 +106,7 @@ Concrete impact on the original motivation: across 859 Codex CLI sessions in May
 
 - `plugin/hooks/README.md` — updated "Bypass-mode coverage" section to reflect the asymmetry.
 
-## Follow-up — codex fork extension (in progress)
+## Follow-up — codex fork extension (landed)
 
 ### Phase 1 (landed): wiring patch
 
@@ -120,24 +122,33 @@ Empirical motivation: post-phase-1, the probe was STILL silent. A two-pass debug
 
 The session-internal rebuilds construct fresh `ConfigOverrides` with `..Default::default()` — `cli_plugin_dirs` defaults to `vec![]` because it's a runtime-only override that doesn't come from any config TOML layer.
 
-### Remaining gap (known, not yet fixed)
+### Phase 3 (landed): app-thread apply-overrides fix
 
-**Phase 2 closes one rebuild path but THREE others remain**. Each constructs `ConfigOverrides` from a previous Config without copying `cli_plugin_dirs` forward:
+Commit [`73d041358b`](https://github.com/jeanibarz/codex/commit/73d041358b) (`feat/claude-compat`) preserves `cli_plugin_dirs` (and `bypass_hook_trust`) in the app-thread apply-overrides helper in `codex-rs/app-server/src/request_processors/thread_processor.rs`:
 
-| Site | File | Function |
-|---|---|---|
-| 1 | `codex-rs/core/src/agent/role.rs:264` | `reload_overrides` (role/agent system refresh) |
-| 2 | `codex-rs/app-server/src/request_processors/thread_processor.rs:1224` | thread-start ConfigOverrides builder |
-| 3 | `codex-rs/app-server/src/request_processors/turn_processor.rs:386` | turn-start ConfigOverrides builder |
+```rust
+if overrides.bypass_hook_trust.is_none() { overrides.bypass_hook_trust = Some(self.config.bypass_hook_trust); }
+if overrides.cli_plugin_dirs.is_empty()  { overrides.cli_plugin_dirs  = self.config.cli_plugin_dirs.clone(); }
+```
 
-A `codex exec --plugin-dir <dir>` invocation triggers some of these refreshes during normal session lifecycle, so the partial fix is **not sufficient on its own** for the in-session Bash-matcher gate to fire reliably. Empirical verification of the partial fix showed the probe hook still silent after Phase 2 — at least one of the 3 remaining sites is on the hot path.
+This was the rebuild site on the `codex exec --plugin-dir` hot path. Phase 2's `rebuild_preserving_session_layers` fix and this app-thread fix together close it.
 
-### Phase 3 options (not yet landed)
+**Verified.** A new end-to-end integration test `exec_plugin_dir_hooks_fire_for_shell_command` (`codex-rs/exec/tests/suite/hooks.rs`) launches `codex exec --plugin-dir <plugin>` against a mock model that issues a shell command, and asserts the plugin's `PreToolUse` hook both fires (writes its log) and blocks the command. It passes. A live installed-binary smoke (`codex-cli 0.125.0-alpha.3+kookr.73d041358`) confirmed the same: a plugin hook blocked `touch`; the marker file was not created.
 
-- **Whack-a-mole** — add `cli_plugin_dirs: <prev_config>.cli_plugin_dirs.clone()` to each of the 3 remaining sites. Low risk but fragile against future Config-rebuild sites.
-- **Architectural** — thread `cli_plugin_dirs` through `ConfigManager` (`codex-rs/app-server/src/config_manager.rs:28`) as persistent state, injected into every `ConfigOverrides` passed to `load_with_cli_overrides`. Single point of truth; survives all rebuild paths. Larger refactor.
+### Residual (cold paths, not yet patched)
 
-Until Phase 3 lands, **the in-session plugin-hook gate from PR #348 covers Claude Code Kookr tasks reliably and Codex CLI Kookr tasks NOT reliably**. The push-time tree-scanner gate at `<repo>/hooks/skill-placement-gate.sh` remains the cross-runtime catch-net.
+Two other `ConfigOverrides` sites still construct with `..Default::default()` and drop `cli_plugin_dirs`:
+
+| Site | File | Function | When it runs |
+|---|---|---|---|
+| 1 | `codex-rs/core/src/agent/role.rs:264` | `reload_overrides` | role/agent reload (e.g. `spawn_agent` subagents) |
+| 2 | `codex-rs/app-server/src/request_processors/turn_processor.rs:386` | turn-start overrides | per-turn permission-profile change |
+
+Neither is on the `codex exec --plugin-dir` hot path, which is why the integration test and live smoke pass. They matter only for subagent role reloads and app-server per-turn permission changes. Tracked as residual — not blocking the in-session gate for ordinary Codex Kookr tasks.
+
+### Net result
+
+**The in-session plugin-hook gate from PR #348 now fires on both Claude Code and Codex CLI** for ordinary `codex exec` Kookr tasks. The push-time tree-scanner gate at `<repo>/hooks/skill-placement-gate.sh` remains the cross-runtime catch-net and also covers the two residual cold-path cases above.
 
 ## Limitations of this PoC
 
