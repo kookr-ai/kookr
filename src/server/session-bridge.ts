@@ -24,9 +24,20 @@ import {
  *
  * WebSocket protocol (wire-compatible with the v7 TerminalBridge):
  *   Browser → Server: binary frames (preferred) OR raw text (fallback) OR
- *                     JSON text `{"type":"resize","cols":N,"rows":M}`
+ *                     JSON text control frames:
+ *                       `{"type":"resize","cols":N,"rows":M}`
+ *                       `{"type":"paste","text":"..."}`  (see kookr #356)
  *   Server → Browser: binary frames carrying raw child PTY output.
  */
+
+/**
+ * Bracketed-paste markers (xterm DECSET 2004). Wrapping pasted text in these
+ * lets an agent TUI distinguish a paste from typed input, so newlines inside
+ * the paste are buffered as literal characters instead of submitting a prompt
+ * each. Exported for the paste-path tests.
+ */
+export const BRACKETED_PASTE_START = '\x1b[200~';
+export const BRACKETED_PASTE_END = '\x1b[201~';
 
 export class SessionBridge {
   private unsubscribeData: (() => void) | null = null;
@@ -104,8 +115,9 @@ export class SessionBridge {
         return;
       }
 
-      // Text frames: resize control or keystroke. Resize is JSON so it
-      // can't collide with keystrokes.
+      // Text frames: control JSON (resize, paste) or raw keystroke text.
+      // Control frames are JSON with a `type` field so they can't collide
+      // with ordinary keystrokes.
       const text = data.toString();
       if (text.startsWith('{') && text.includes('"type"')) {
         try {
@@ -121,8 +133,17 @@ export class SessionBridge {
             }
             return;
           }
+          if (parsed.type === 'paste') {
+            // A `paste` frame is always a control frame, never stdin — drop
+            // it silently when `text` is missing rather than leaking the
+            // raw JSON to the PTY.
+            if (typeof parsed.text === 'string') {
+              this.forwardPaste(parsed.text);
+            }
+            return;
+          }
         } catch {
-          // Not resize JSON — fall through as keystroke text.
+          // Not a control frame — fall through as keystroke text.
         }
       }
       const bytes = new TextEncoder().encode(text);
@@ -176,6 +197,40 @@ export class SessionBridge {
     this.backend.resize(this.sessionId, cols, rows).catch((err: unknown) => {
       this.handleBackendRejection(err, 'resize');
     });
+  }
+
+  /**
+   * Forward a browser paste as one bracketed-paste write.
+   *
+   * The frontend routes multiline / large pastes here (TerminalPanel,
+   * kookr #356) instead of letting xterm.js stream raw bytes: streamed raw,
+   * every newline in the paste makes the agent TUI submit a prompt, so one
+   * pasted JSON blob becomes dozens of prompts.
+   *
+   * Wrapping the text in DECSET-2004 markers tells the agent TUI "this is one
+   * paste" — newlines land as literal characters in its input buffer and the
+   * user submits once. The markers are honored by the *child PTY*, which
+   * enabled bracketed-paste mode itself; they do not depend on this server
+   * (or a late-connecting browser's xterm, whose replay buffer may have
+   * wrapped past the child's original DECSET) still tracking that mode.
+   *
+   * A paste is deliberately not a submit: `onAnyKeystroke` fires (the activity
+   * is real) but `onInput` does not — the user still presses Enter separately.
+   * Running `notifyInput`'s CR/LF scan over the wrapped bytes would misfire
+   * `onInput` for every newline in the blob.
+   */
+  private forwardPaste(text: string): void {
+    if (this.closed) return;
+    // Strip embedded paste markers so pasted content cannot break out of the
+    // bracketed-paste envelope (the classic bracketed-paste injection).
+    const sanitized = text
+      .replaceAll(BRACKETED_PASTE_START, '')
+      .replaceAll(BRACKETED_PASTE_END, '');
+    const bytes = new TextEncoder().encode(
+      BRACKETED_PASTE_START + sanitized + BRACKETED_PASTE_END,
+    );
+    this.safeForwardWrite(bytes);
+    this.onAnyKeystroke?.(this.sessionId);
   }
 
   private handleBackendRejection(err: unknown, op: 'write' | 'resize'): void {

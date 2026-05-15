@@ -6,6 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useKookrStore } from '../store/useStore.js';
 import { registerTerminalSend } from '../terminal-send.js';
+import { isMultilinePaste, buildPasteFrame } from '../terminal-paste.js';
 import { track } from '../telemetry.js';
 
 interface Props {
@@ -199,6 +200,25 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
     }
     container.addEventListener('contextmenu', handleContextMenu);
 
+    // Paste interception — capture phase, before xterm.js.
+    //
+    // xterm streams a pasted blob to the PTY as raw bytes, newlines included.
+    // Agent TUIs (Codex, Claude Code) treat each newline as an Enter submit,
+    // so one paste of JSON / logs / a stack trace becomes dozens of prompts
+    // (kookr #356). Intercept the browser paste here: multiline content goes
+    // through a structured `paste` WS frame the server delivers as one atomic
+    // bracketed paste. Single-line pastes are byte-identical to typing and are
+    // left on xterm's raw path untouched. Raw multiline paste stays available
+    // through the explicit "Paste raw" context-menu action.
+    function handlePasteCapture(e: ClipboardEvent) {
+      const pasted = e.clipboardData?.getData('text') ?? '';
+      if (!pasted || !isMultilinePaste(pasted)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      sendSafePaste(pasted);
+    }
+    container.addEventListener('paste', handlePasteCapture, { capture: true });
+
     // Wheel override — capture phase, before xterm.js.
     // Without this, xterm.js converts wheel to application-cursor-key bytes
     // (ESC O A / ESC O B) whenever the child has enabled DECSET ?1 or is in
@@ -229,6 +249,7 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
       container.removeEventListener('focusout', handleTermBlur);
       container.removeEventListener('wheel', handleWheelOverride, { capture: true });
       container.removeEventListener('contextmenu', handleContextMenu);
+      container.removeEventListener('paste', handlePasteCapture, { capture: true });
       resizeObserver.disconnect();
       searchResultDisposable.dispose();
       terminal.dispose();
@@ -260,6 +281,31 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
     };
   }, [menu]);
 
+  /** Send a frame on the live terminal WebSocket, if one is open. */
+  function sendOverWs(payload: string | Uint8Array) {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) ws.send(payload);
+  }
+
+  /**
+   * Route a paste through the server's bracketed-paste path (kookr #356):
+   * one structured WS frame the SessionBridge turns into a single atomic
+   * paste, instead of raw bytes whose newlines each submit a prompt.
+   */
+  function sendSafePaste(text: string) {
+    sendOverWs(buildPasteFrame(text));
+  }
+
+  /**
+   * Escape hatch: forward a paste verbatim as raw PTY bytes. Newlines act as
+   * Enter submissions — intended for shell-style workflows where that is what
+   * the user wants. Sent as a binary frame so the payload can never be
+   * misread as a JSON control frame.
+   */
+  function sendRawPaste(text: string) {
+    sendOverWs(new TextEncoder().encode(text));
+  }
+
   async function handleCopy() {
     const sel = terminalRef.current?.getSelection();
     if (sel) {
@@ -268,12 +314,30 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
     setMenu(null);
   }
 
-  async function handlePaste() {
+  /**
+   * Read the clipboard and hand the text to `route`. Shared by the two
+   * context-menu paste actions so their clipboard-permission handling and
+   * menu dismissal cannot drift apart.
+   */
+  async function pasteFromClipboard(route: (text: string) => void) {
     try {
       const text = await navigator.clipboard.readText();
-      if (text) terminalRef.current?.paste(text);
+      if (text) route(text);
     } catch { /* clipboard denied */ }
     setMenu(null);
+  }
+
+  function handlePaste() {
+    // Multiline → safe path; a single-line paste is byte-identical to typing,
+    // so xterm's raw path is fine and stays untouched.
+    void pasteFromClipboard((text) => {
+      if (isMultilinePaste(text)) sendSafePaste(text);
+      else terminalRef.current?.paste(text);
+    });
+  }
+
+  function handlePasteRaw() {
+    void pasteFromClipboard(sendRawPaste);
   }
 
   // Connect/reconnect WebSocket when tmuxName changes
@@ -507,6 +571,13 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
           </button>
           <button type="button" onClick={handlePaste}>
             Paste
+          </button>
+          <button
+            type="button"
+            onClick={handlePasteRaw}
+            title="Paste raw bytes — newlines submit as Enter (shell workflows)"
+          >
+            Paste raw
           </button>
         </div>
       )}
