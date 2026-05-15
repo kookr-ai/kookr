@@ -6,12 +6,27 @@ export type RemoteFeature =
   | 'control.snapshot'
   | 'control.state-delta'
   | 'policy-sync'
-  | 'terminal-stream';
+  | 'terminal-stream'
+  | 'terminal-input'
+  | 'launch'
+  | 'preset-reply'
+  | 'permission-approve'
+  | 'push-alerts';
 
 export const PHASE1_SUPPORTED_FEATURES: readonly RemoteFeature[] = [
   'control.snapshot',
   'control.state-delta',
   'policy-sync',
+];
+
+export const REMOTE_FEATURES: readonly RemoteFeature[] = [
+  ...PHASE1_SUPPORTED_FEATURES,
+  'terminal-stream',
+  'terminal-input',
+  'launch',
+  'preset-reply',
+  'permission-approve',
+  'push-alerts',
 ];
 
 export type RelayHelloOutcome = 'accepted' | 'downgraded' | 'refused';
@@ -61,6 +76,24 @@ export function makeNodeHello(opts: {
     ...(opts.displayName ? { displayName: opts.displayName } : {}),
     ...(opts.publicBaseUrl ? { publicBaseUrl: opts.publicBaseUrl } : {}),
   };
+}
+
+export function parseTerminalInputKillSwitch(raw: string | undefined): {
+  disabled: boolean;
+} {
+  let disabled = false;
+  for (const token of (raw ?? '').split(',')) {
+    const feature = token.trim();
+    if (feature === 'terminal-input') disabled = true;
+  }
+  return { disabled };
+}
+
+export function remoteTerminalInputFeatureEnabled(
+  env: Partial<Record<'KOOKR_RELAY_URL' | 'KOOKR_RELAY_FEATURES' | 'KOOKR_RELAY_TRUSTED', string | undefined>> = process.env,
+): boolean {
+  if (!env.KOOKR_RELAY_URL?.trim()) return false;
+  return env.KOOKR_RELAY_TRUSTED === 'true' && !parseTerminalInputKillSwitch(env.KOOKR_RELAY_FEATURES).disabled;
 }
 
 export function makeRelayHello(opts: {

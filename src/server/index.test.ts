@@ -8,6 +8,8 @@ import { createKookrServerInternal } from './index.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 import { createRelayServer } from '../../relay/server.js';
 
+const RELAY_TRUSTED_ENV = 'KOOKR_RELAY_' + 'TRUSTED';
+
 function getActualPort(server: KookrServerInternal): number {
   const addr = server.httpServer.address();
   if (addr && typeof addr === 'object') return addr.port;
@@ -269,6 +271,283 @@ describe('createKookrServer', () => {
         } else {
           process.env.KOOKR_RELAY_TOKEN = previousRelayToken;
         }
+        await remoteServer?.close();
+        await relay.close();
+      }
+    });
+
+    test('executes relay submitMessage through the lease-checked remote input adapter', async () => {
+      await server.close();
+      serverClosed = true;
+
+      const relay = createRelayServer({ allowInsecureClients: true });
+      await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
+      const registration = relay.registerNode({ displayName: 'integration' });
+      const remoteKookrDir = join(tempDir, 'remote-input-kookr');
+      mkdirSync(remoteKookrDir, { recursive: true });
+      writeFileSync(join(remoteKookrDir, 'node-id'), `${registration.nodeId}\n`);
+
+      const previousRelayUrl = process.env.KOOKR_RELAY_URL;
+      const previousRelayToken = process.env.KOOKR_RELAY_TOKEN;
+      const previousRelayTrusted = process.env[RELAY_TRUSTED_ENV];
+      const previousRelayFeatures = process.env.KOOKR_RELAY_FEATURES;
+      process.env.KOOKR_RELAY_URL = relay.url();
+      process.env.KOOKR_RELAY_TOKEN = registration.nodeToken;
+      process.env[RELAY_TRUSTED_ENV] = 'true';
+      delete process.env.KOOKR_RELAY_FEATURES;
+
+      let remoteServer: KookrServerInternal | null = null;
+      const remoteBackend = new FakeTerminalBackend();
+      let clientWs: WebSocket | null = null;
+      let imposterWs: WebSocket | null = null;
+      try {
+        remoteServer = await createKookrServerInternal({
+          port: 0,
+          host: '127.0.0.1',
+          kookrDir: remoteKookrDir,
+          tasksFile: join(remoteKookrDir, 'tasks.json'),
+          hooksDir: join(remoteKookrDir, 'hooks'),
+          settingsDir: join(remoteKookrDir, 'settings'),
+          serverCwd: '/test/cwd',
+          frontendDir: join(tempDir, 'frontend'),
+          saveIntervalMs: 600_000,
+          livenessIntervalMs: 600_000,
+          terminalBackend: remoteBackend,
+          claudeDir: join(tempDir, 'claude'),
+        });
+
+        await waitForCondition(() => relay.nodeStatuses().some((node) => node.nodeId === registration.nodeId && node.connected));
+
+        await remoteBackend.createSession('remote-session', 'bash');
+        const task = remoteServer.taskStore.createTask('remote input task', '/repo');
+        remoteServer.taskStore.addSession(task.id, {
+          tmuxSession: 'remote-session',
+          agentType: 'claude-code',
+          cwd: '/repo',
+          createdAt: new Date('2026-05-15T19:00:00.000Z'),
+        });
+        remoteServer.monitor.registerAgent('remote-session');
+
+        const clientUrl = new URL('/relay/client', relay.url());
+        clientUrl.protocol = 'ws:';
+        clientUrl.searchParams.set('nodeId', registration.nodeId);
+        clientWs = new WebSocket(clientUrl);
+        const messages: unknown[] = [];
+        clientWs.on('message', (data) => messages.push(JSON.parse(data.toString()) as unknown));
+        await new Promise<void>((resolve) => clientWs!.once('open', () => resolve()));
+        clientWs.send(JSON.stringify({
+          type: 'remote.command',
+          commandId: 'cmd-lease-acquire',
+          actorId: 'spoofed-client-value',
+          clientId: 'spoofed-client-id',
+          nodeId: registration.nodeId,
+          nodeEpoch: '1',
+          sessionId: 'remote-session',
+          sessionEpoch: '1',
+          grantId: 'spoofed-grant',
+          idempotencyKey: 'idem-lease-1',
+          action: 'leaseAcquire',
+          baseRevision: 1,
+          payload: { leaseId: 'lease-1' },
+        }));
+        await waitForCondition(() => messages.some((msg) => (
+          (msg as { commandId?: string; outcome?: string }).commandId === 'cmd-lease-acquire'
+          && (msg as { outcome?: string }).outcome === 'accepted'
+        )));
+
+        clientWs.send(JSON.stringify({
+          type: 'remote.command',
+          commandId: 'cmd-submit-message',
+          actorId: 'spoofed-client-value',
+          clientId: 'spoofed-client-id',
+          nodeId: registration.nodeId,
+          nodeEpoch: '1',
+          sessionId: 'remote-session',
+          sessionEpoch: '1',
+          grantId: 'spoofed-grant',
+          idempotencyKey: 'idem-submit-1',
+          action: 'submitMessage',
+          leaseId: 'lease-1',
+          baseRevision: 1,
+          lastSeenSeq: 0,
+          payload: {
+            type: 'submit-message',
+            sessionId: 'remote-session',
+            sessionEpoch: '1',
+            leaseId: 'lease-1',
+            commandId: 'cmd-submit-message',
+            idempotencyKey: 'idem-submit-1',
+            text: 'hello remote',
+            appendNewline: true,
+            baseRevision: 1,
+            lastSeenSeq: 0,
+            maxAgeMs: 10_000,
+          },
+        }));
+
+        await waitForCondition(() => messages.some((msg) => (msg as { commandId?: string; outcome?: string }).commandId === 'cmd-submit-message'));
+        expect(remoteBackend.getWrittenText('remote-session')).toBe('hello remote\r');
+        expect(messages).toContainEqual(expect.objectContaining({
+          commandId: 'cmd-submit-message',
+          action: 'submitMessage',
+          outcome: 'accepted',
+        }));
+
+        imposterWs = new WebSocket(clientUrl);
+        const imposterMessages: unknown[] = [];
+        imposterWs.on('message', (data) => imposterMessages.push(JSON.parse(data.toString()) as unknown));
+        await new Promise<void>((resolve) => imposterWs!.once('open', () => resolve()));
+        imposterWs.send(JSON.stringify({
+          type: 'remote.command',
+          commandId: 'cmd-spoof-submit',
+          actorId: 'spoofed-client-value',
+          clientId: 'client-1',
+          nodeId: registration.nodeId,
+          nodeEpoch: '1',
+          sessionId: 'remote-session',
+          sessionEpoch: '1',
+          grantId: 'spoofed-grant',
+          idempotencyKey: 'idem-spoof-submit',
+          action: 'submitMessage',
+          leaseId: 'lease-1',
+          baseRevision: 1,
+          lastSeenSeq: 0,
+          payload: {
+            type: 'submit-message',
+            sessionId: 'remote-session',
+            sessionEpoch: '1',
+            leaseId: 'lease-1',
+            commandId: 'cmd-spoof-submit',
+            idempotencyKey: 'idem-spoof-submit',
+            text: 'stolen lease',
+            appendNewline: true,
+            baseRevision: 1,
+            lastSeenSeq: 0,
+            maxAgeMs: 10_000,
+          },
+        }));
+        await waitForCondition(() => imposterMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-spoof-submit'));
+        expect(imposterMessages).toContainEqual(expect.objectContaining({
+          commandId: 'cmd-spoof-submit',
+          action: 'submitMessage',
+          outcome: 'rejected',
+          reason: 'error.leaseMismatch',
+        }));
+        expect(remoteBackend.getWrittenText('remote-session')).toBe('hello remote\r');
+      } finally {
+        clientWs?.close();
+        imposterWs?.close();
+        if (previousRelayUrl === undefined) delete process.env.KOOKR_RELAY_URL;
+        else process.env.KOOKR_RELAY_URL = previousRelayUrl;
+        if (previousRelayToken === undefined) delete process.env.KOOKR_RELAY_TOKEN;
+        else process.env.KOOKR_RELAY_TOKEN = previousRelayToken;
+        if (previousRelayTrusted === undefined) delete process.env[RELAY_TRUSTED_ENV];
+        else process.env[RELAY_TRUSTED_ENV] = previousRelayTrusted;
+        if (previousRelayFeatures === undefined) delete process.env.KOOKR_RELAY_FEATURES;
+        else process.env.KOOKR_RELAY_FEATURES = previousRelayFeatures;
+        await remoteServer?.close();
+        await relay.close();
+      }
+    });
+
+    test('KOOKR_RELAY_FEATURES=terminal-input disables the remote input adapter only', async () => {
+      await server.close();
+      serverClosed = true;
+
+      const relay = createRelayServer({ allowInsecureClients: true });
+      await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
+      const registration = relay.registerNode({ displayName: 'integration' });
+      const remoteKookrDir = join(tempDir, 'remote-input-disabled-kookr');
+      mkdirSync(remoteKookrDir, { recursive: true });
+      writeFileSync(join(remoteKookrDir, 'node-id'), `${registration.nodeId}\n`);
+
+      const previousRelayUrl = process.env.KOOKR_RELAY_URL;
+      const previousRelayToken = process.env.KOOKR_RELAY_TOKEN;
+      const previousRelayTrusted = process.env[RELAY_TRUSTED_ENV];
+      const previousRelayFeatures = process.env.KOOKR_RELAY_FEATURES;
+      process.env.KOOKR_RELAY_URL = relay.url();
+      process.env.KOOKR_RELAY_TOKEN = registration.nodeToken;
+      process.env[RELAY_TRUSTED_ENV] = 'true';
+      process.env.KOOKR_RELAY_FEATURES = 'terminal-input';
+
+      let remoteServer: KookrServerInternal | null = null;
+      const remoteBackend = new FakeTerminalBackend();
+      let clientWs: WebSocket | null = null;
+      try {
+        remoteServer = await createKookrServerInternal({
+          port: 0,
+          host: '127.0.0.1',
+          kookrDir: remoteKookrDir,
+          tasksFile: join(remoteKookrDir, 'tasks.json'),
+          hooksDir: join(remoteKookrDir, 'hooks'),
+          settingsDir: join(remoteKookrDir, 'settings'),
+          serverCwd: '/test/cwd',
+          frontendDir: join(tempDir, 'frontend'),
+          saveIntervalMs: 600_000,
+          livenessIntervalMs: 600_000,
+          terminalBackend: remoteBackend,
+          claudeDir: join(tempDir, 'claude'),
+        });
+
+        expect(remoteServer.controllerLeaseManager).toBeDefined();
+        expect(remoteServer.remoteInputAdapter).toBeNull();
+        await remoteBackend.createSession('remote-session', 'bash');
+
+        const clientUrl = new URL('/relay/client', relay.url());
+        clientUrl.protocol = 'ws:';
+        clientUrl.searchParams.set('nodeId', registration.nodeId);
+        clientWs = new WebSocket(clientUrl);
+        const messages: unknown[] = [];
+        clientWs.on('message', (data) => messages.push(JSON.parse(data.toString()) as unknown));
+        await new Promise<void>((resolve) => clientWs!.once('open', () => resolve()));
+        clientWs.send(JSON.stringify({
+          type: 'remote.command',
+          commandId: 'cmd-disabled-submit',
+          actorId: 'spoofed-client-value',
+          clientId: 'spoofed-client-id',
+          nodeId: registration.nodeId,
+          nodeEpoch: '1',
+          sessionId: 'remote-session',
+          sessionEpoch: '1',
+          grantId: 'spoofed-grant',
+          idempotencyKey: 'idem-disabled-submit',
+          action: 'submitMessage',
+          leaseId: 'lease-disabled',
+          baseRevision: 1,
+          lastSeenSeq: 0,
+          payload: {
+            type: 'submit-message',
+            sessionId: 'remote-session',
+            sessionEpoch: '1',
+            leaseId: 'lease-disabled',
+            commandId: 'cmd-disabled-submit',
+            idempotencyKey: 'idem-disabled-submit',
+            text: 'must not write',
+            appendNewline: true,
+            baseRevision: 1,
+            lastSeenSeq: 0,
+            maxAgeMs: 10_000,
+          },
+        }));
+
+        await waitForCondition(() => messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-disabled-submit'));
+        expect(messages).toContainEqual(expect.objectContaining({
+          commandId: 'cmd-disabled-submit',
+          action: 'submitMessage',
+          outcome: 'rejected-pre-audit',
+          reason: 'terminal input feature disabled',
+        }));
+        expect(remoteBackend.getWrittenText('remote-session')).toBe('');
+      } finally {
+        clientWs?.close();
+        if (previousRelayUrl === undefined) delete process.env.KOOKR_RELAY_URL;
+        else process.env.KOOKR_RELAY_URL = previousRelayUrl;
+        if (previousRelayToken === undefined) delete process.env.KOOKR_RELAY_TOKEN;
+        else process.env.KOOKR_RELAY_TOKEN = previousRelayToken;
+        if (previousRelayTrusted === undefined) delete process.env[RELAY_TRUSTED_ENV];
+        else process.env[RELAY_TRUSTED_ENV] = previousRelayTrusted;
+        if (previousRelayFeatures === undefined) delete process.env.KOOKR_RELAY_FEATURES;
+        else process.env.KOOKR_RELAY_FEATURES = previousRelayFeatures;
         await remoteServer?.close();
         await relay.close();
       }

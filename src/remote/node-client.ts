@@ -47,6 +47,7 @@ export interface RemoteNodeClient {
   stop(): Promise<void>;
   publish(event: RemoteControlEvent | TerminalStreamEvent): boolean;
   setCommandHandler(handler: ((command: CommandEnvelope) => Promise<CommandResult>) | null): void;
+  setConnectionObserver(handler: ((state: 'connected' | 'disconnected') => void) | null): void;
 }
 
 interface NodeIdentity {
@@ -149,6 +150,10 @@ function isRemoteCommandEnvelope(value: unknown): value is CommandEnvelope {
       || msg.action === 'snooze'
       || msg.action === 'mark-done'
       || msg.action === 'launch'
+      || msg.action === 'leaseAcquire'
+      || msg.action === 'leaseHeartbeat'
+      || msg.action === 'leaseOverride'
+      || msg.action === 'submitMessage'
     );
 }
 
@@ -160,6 +165,7 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
   const {
     isRelayHello,
     makeNodeHello,
+    parseTerminalInputKillSwitch,
     PHASE1_SUPPORTED_FEATURES,
     REMOTE_PROTOCOL_VERSION,
   } = await import('./handshake.js');
@@ -181,6 +187,7 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
   let stopped = false;
   let reconnectAttempt = 0;
   let commandHandler = opts.onCommand ?? null;
+  let connectionObserver: ((state: 'connected' | 'disconnected') => void) | null = null;
   const reconnectBaseMs = opts.reconnectBaseMs ?? 1_000;
   const reconnectMaxMs = opts.reconnectMaxMs ?? 30_000;
 
@@ -196,6 +203,7 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
     clearReconnect();
     status.relayConnected = false;
     status.connectionState = 'backing-off';
+    connectionObserver?.('disconnected');
     const delay = Math.min(reconnectMaxMs, reconnectBaseMs * (2 ** reconnectAttempt));
     reconnectAttempt += 1;
     logger.warn(`[remote-node] relay disconnected (${reason}); reconnecting in ${delay}ms`);
@@ -225,13 +233,20 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
     ws = next;
 
     next.on('open', () => {
+      const terminalInputKillSwitch = parseTerminalInputKillSwitch(process.env.KOOKR_RELAY_FEATURES);
+      const disabled = new Set<RemoteFeature>(terminalInputKillSwitch.disabled ? ['terminal-input'] : []);
+      const trustedFeatures: RemoteFeature[] = process.env.KOOKR_RELAY_TRUSTED === 'true'
+        ? ['terminal-stream', 'terminal-input']
+        : [];
+      const supportedFeatures = [...PHASE1_SUPPORTED_FEATURES, ...trustedFeatures]
+        .filter((feature) => !disabled.has(feature));
+      status.features.disabled = [...disabled];
+      logger.log(`[remote-node] features enabled=${supportedFeatures.join(',')} disabled=${[...disabled].join(',') || 'none'}`);
       const hello = makeNodeHello({
         nodeId: status.nodeId,
         nodeEpoch: status.nodeEpoch,
         softwareVersion: opts.softwareVersion,
-        supportedFeatures: process.env.KOOKR_RELAY_TRUSTED === 'true'
-          ? [...PHASE1_SUPPORTED_FEATURES, 'terminal-stream']
-          : PHASE1_SUPPORTED_FEATURES,
+        supportedFeatures,
         displayName: opts.displayName,
         publicBaseUrl: opts.publicBaseUrl,
       });
@@ -261,6 +276,7 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
         reconnectAttempt = 0;
         status.relayConnected = true;
         status.connectionState = 'connected';
+        connectionObserver?.('connected');
         logger.log(`[remote-node] connected nodeId=${status.nodeId} protocol=${parsed.acceptedVersion}`);
         return;
       }
@@ -314,6 +330,7 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
       stopped = true;
       status.connectionState = 'stopped';
       status.relayConnected = false;
+      connectionObserver?.('disconnected');
       clearReconnect();
       await connectPromise;
       const current = ws;
@@ -332,6 +349,9 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
     },
     setCommandHandler(handler): void {
       commandHandler = handler;
+    },
+    setConnectionObserver(handler): void {
+      connectionObserver = handler;
     },
   };
 }

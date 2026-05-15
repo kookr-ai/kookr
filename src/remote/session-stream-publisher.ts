@@ -25,6 +25,7 @@ export interface SessionStreamPublisher {
   start(): Promise<void>;
   stop(): void;
   syncSessions(): Promise<void>;
+  currentCursor(sessionId: string): { sessionEpoch: SessionEpoch; lastSeq: number } | null;
   readonly trusted: boolean;
 }
 
@@ -127,6 +128,14 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
       const alive = new Set(await opts.terminalBackend.listSessions());
       unsubscribeMissing(alive);
       for (const id of alive) subscribe(id);
+    },
+    currentCursor(sessionId: string): { sessionEpoch: SessionEpoch; lastSeq: number } | null {
+      const state = states.get(sessionId);
+      if (!state) return null;
+      return {
+        sessionEpoch: state.sessionEpoch,
+        lastSeq: Math.max(0, state.nextSeq - 1),
+      };
     },
   };
 

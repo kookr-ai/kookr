@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { makeNodeHello, makeRelayHello, REMOTE_PROTOCOL_VERSION } from '../handshake.js';
+import {
+  makeNodeHello,
+  makeRelayHello,
+  parseTerminalInputKillSwitch,
+  remoteTerminalInputFeatureEnabled,
+  REMOTE_PROTOCOL_VERSION,
+} from '../handshake.js';
 import { asNodeEpoch, asNodeId } from '../ids.js';
 
 describe('remote handshake protocol', () => {
@@ -38,5 +44,25 @@ describe('remote handshake protocol', () => {
       enabledFeatures: ['control.snapshot'],
       disabledFeatures: ['control.state-delta'],
     });
+  });
+
+  it('parses KOOKR_RELAY_FEATURES as a terminal-input kill switch without changing legacy tokens', () => {
+    expect(parseTerminalInputKillSwitch('terminal-input,terminal,launch')).toEqual({
+      disabled: true,
+    });
+    expect(remoteTerminalInputFeatureEnabled({
+      KOOKR_RELAY_URL: 'wss://relay.example.test',
+      KOOKR_RELAY_TRUSTED: 'true',
+      KOOKR_RELAY_FEATURES: 'terminal-input',
+    })).toBe(false);
+    expect(remoteTerminalInputFeatureEnabled({
+      KOOKR_RELAY_URL: 'wss://relay.example.test',
+      KOOKR_RELAY_TRUSTED: 'true',
+      KOOKR_RELAY_FEATURES: 'launch',
+    })).toBe(true);
+    expect(remoteTerminalInputFeatureEnabled({
+      KOOKR_RELAY_URL: 'wss://relay.example.test',
+      KOOKR_RELAY_FEATURES: '',
+    })).toBe(false);
   });
 });

@@ -659,6 +659,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
 
   clientWss.on('connection', (ws: WebSocket, _req: IncomingMessage, subscribedNodeId: NodeId) => {
     const url = new URL(_req.url ?? '/', 'http://127.0.0.1');
+    const relayClientId = `relay-client-${randomUUID()}`;
     const terminal = parseTerminalSubscription(url);
     const subscription: RelayClientSubscription = { ws, ...(terminal ? { terminal } : {}) };
     let set = subscribers.get(subscribedNodeId);
@@ -736,6 +737,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           ...command,
           nodeId: subscribedNodeId,
           actorId: registration?.ownerId ?? ownerId,
+          clientId: relayClientId,
           grantId: `owner-local:${subscribedNodeId}`,
         }));
       } else {
