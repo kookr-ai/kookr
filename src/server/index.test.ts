@@ -491,6 +491,7 @@ describe('createKookrServer', () => {
 
         expect(remoteServer.controllerLeaseManager).toBeDefined();
         expect(remoteServer.remoteInputAdapter).toBeNull();
+        await waitForCondition(() => relay.nodeStatuses().some((node) => node.nodeId === registration.nodeId && node.connected));
         await remoteBackend.createSession('remote-session', 'bash');
 
         const clientUrl = new URL('/relay/client', relay.url());
