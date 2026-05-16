@@ -22,13 +22,41 @@ State directory:
 
 ## AI Suggestions
 
-Set an Anthropic API key to enable AI task naming and response suggestions:
+AI task naming, response suggestions, and remote-chat rephrase run through a
+configurable LLM provider. Set any one provider key to enable them:
 
 ```bash
-ANTHROPIC_API_KEY=...
+GROQ_API_KEY=gsk_...
+GEMINI_API_KEY=...
+ANTHROPIC_API_KEY=sk-ant-...
+KOOKR_OPENROUTER_API_KEY=sk-or-...   # or OPENROUTER_API_KEY
 ```
 
-Without this key, Kookr still works. It falls back to truncated prompt names and omits AI suggestions.
+By default (`KOOKR_LLM_PROVIDER` unset, i.e. `auto`), Kookr chains every
+configured provider for fallback in the order `GROQ > GEMINI > ANTHROPIC >
+OPENROUTER`. To pin a single provider instead:
+
+```bash
+KOOKR_LLM_PROVIDER=openrouter        # openrouter | groq | gemini | anthropic | auto
+KOOKR_LLM_MODEL=deepseek/deepseek-v4-flash
+KOOKR_LLM_BASE_URL=https://openrouter.ai/api/v1
+```
+
+**OpenRouter** is an OpenAI-compatible paid provider; Kookr defaults it to
+`deepseek/deepseek-v4-flash`. `KOOKR_OPENROUTER_API_KEY` is preferred over
+`OPENROUTER_API_KEY` so a separate OpenRouter credit limit can be scoped to
+Kookr. `KOOKR_LLM_MODEL` and `KOOKR_LLM_BASE_URL` apply to the OpenRouter
+provider. See [Environment Variables](reference/environment-variables.md#llm-provider)
+for the full list.
+
+Without any provider key, Kookr still works. It falls back to truncated prompt
+names and omits AI suggestions.
+
+> These LLM provider settings are independent of the local speech-to-text and
+> text-to-speech models. Voice transcription and synthesis are configured
+> separately under [Speech IO](reference/environment-variables.md#speech-io)
+> (`KOOKR_STT*`, `KOOKR_TTS*`, `WHISPER_*`) and are not affected by
+> `KOOKR_LLM_PROVIDER`.
 
 ## Agent Binaries
 

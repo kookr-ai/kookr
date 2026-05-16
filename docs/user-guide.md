@@ -33,7 +33,7 @@ When a finding appears:
 3. Send a reply or hint.
 4. Kookr advances to the next queued finding.
 
-Quick actions and AI suggestions may appear when Kookr can infer likely responses. AI suggestions require `ANTHROPIC_API_KEY`.
+Quick actions and AI suggestions may appear when Kookr can infer likely responses. AI suggestions require an LLM provider key — see [Configuration](configuration.md#ai-suggestions).
 
 ## Finding Types
 

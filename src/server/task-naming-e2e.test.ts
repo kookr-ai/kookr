@@ -7,7 +7,13 @@ import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { createKookrServerInternal } from './index.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 
-const hasApiKey = !!(process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY || process.env.ANTHROPIC_API_KEY);
+const hasApiKey = !!(
+  process.env.GROQ_API_KEY ||
+  process.env.GEMINI_API_KEY ||
+  process.env.ANTHROPIC_API_KEY ||
+  process.env.KOOKR_OPENROUTER_API_KEY ||
+  process.env.OPENROUTER_API_KEY
+);
 
 function getActualPort(server: KookrServerInternal): number {
   const addr = server.httpServer.address();

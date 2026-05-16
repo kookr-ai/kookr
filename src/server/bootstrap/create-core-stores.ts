@@ -155,7 +155,9 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
   if (rawLlmClient) {
     console.log(`[llm] Provider: ${rawLlmClient.provider} (${rawLlmClient.model})`);
   } else {
-    console.log('[llm] AI features disabled (set GROQ_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY)');
+    console.log(
+      '[llm] AI features disabled (set GROQ_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, or KOOKR_OPENROUTER_API_KEY)',
+    );
   }
 
   return {
