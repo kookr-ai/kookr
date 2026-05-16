@@ -1,4 +1,4 @@
-import type { PlaybookParameter } from '../../core/playbook.js';
+import type { PlaybookParameter } from '../../shared/contracts/playbook.js';
 
 interface MergeParamDefaultsOptions {
   /** Relaunch should preserve the original launch values, including resolved defaults. */

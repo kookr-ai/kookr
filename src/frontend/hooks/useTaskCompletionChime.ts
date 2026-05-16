@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { TaskStatus } from '../../core/types.js';
+import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import { useKookrStore } from '../store/useStore.js';
 import { maybePlayChime } from '../audio/sound.js';

@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import type { PlaybookParameter } from '../../core/playbook.js';
+import type { PlaybookParameter } from '../../shared/contracts/playbook.js';
 import { mergeParamDefaults } from './playbook-params.js';
 
 describe('mergeParamDefaults', () => {

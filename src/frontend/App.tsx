@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import type { ProjectSummary } from '../core/project-summary.js';
+import type { ProjectSummary } from '../shared/protocol.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
 import { useWebSocket } from './hooks/useWebSocket.js';

@@ -1,4 +1,4 @@
-import type { ContributionAttempt, AttemptState } from '../core/oss-attempt-store.js';
+import type { ContributionAttempt, AttemptState } from '../shared/contracts/oss-attempts.js';
 
 export type TrendWindow = '7d' | '30d' | '90d' | 'all';
 

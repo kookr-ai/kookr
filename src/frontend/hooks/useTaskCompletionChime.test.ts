@@ -13,7 +13,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { __resetDndForTests, enableDnd, disableDnd } from '../hooks/useDnd.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound.js';
 import { __resetAudioAlertLogForTests, getAudioAlertSnapshot } from '../audio/audio-alert-log.js';
-import type { TaskStatus } from '../../core/types.js';
+import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import type { AgentState } from '../../shared/protocol.js';
 
 function mkAgent(agentId: string, taskStatus?: TaskStatus): AgentState {

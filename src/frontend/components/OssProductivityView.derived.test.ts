@@ -20,7 +20,7 @@ import type {
   ContributionAttempt,
   LinkedIssueState,
   StateObservation,
-} from '../../core/oss-attempt-store.js';
+} from '../../shared/contracts/oss-attempts.js';
 
 function mkObs(state: ContributionAttempt['state'], at: string): StateObservation {
   return { state, at, source: 'refresh_poll', note: null, url: null };

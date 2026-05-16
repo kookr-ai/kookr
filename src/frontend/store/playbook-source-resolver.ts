@@ -1,5 +1,5 @@
-import type { PlaybookParameterOption } from '../../core/playbook.js';
-import type { ProjectSummary } from '../../core/project-summary.js';
+import type { PlaybookParameterOption } from '../../shared/contracts/playbook.js';
+import type { ProjectSummary } from '../../shared/protocol.js';
 
 /**
  * Resolve a dynamic parameter source to a list of options.
