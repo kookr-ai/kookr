@@ -60,12 +60,16 @@ function mkService(deps: {
 
 describe('RalphLoopService', () => {
   test('task routes delegate Ralph lifecycle ownership to the service', () => {
-    const source = readFileSync(new URL('./routes/task-routes.ts', import.meta.url), 'utf8');
-    expect(source).toContain('ralphLoopService');
-    expect(source).not.toContain('new RalphLoopService');
-    expect(source).not.toContain('claimRalphLoopOwner');
-    expect(source).not.toContain('ralphStopFingerprint');
-    expect(source).not.toContain('handlingStopFingerprint');
+    const taskRoutesSource = readFileSync(new URL('./routes/task-routes.ts', import.meta.url), 'utf8');
+    const routeComposerSource = readFileSync(new URL('./routes.ts', import.meta.url), 'utf8');
+    const ralphRoutesSource = readFileSync(new URL('./ralph/routes.ts', import.meta.url), 'utf8');
+    expect(routeComposerSource).toContain('registerRalphRoutes(app, deps)');
+    expect(taskRoutesSource).not.toContain('registerRalphRoutes');
+    expect(ralphRoutesSource).toContain('ralphLoopService');
+    expect(ralphRoutesSource).not.toContain('new RalphLoopService');
+    expect(ralphRoutesSource).not.toContain('claimRalphLoopOwner');
+    expect(ralphRoutesSource).not.toContain('ralphStopFingerprint');
+    expect(ralphRoutesSource).not.toContain('handlingStopFingerprint');
   });
 
   test('event pipeline delegates Ralph Stop continuation ownership to the service', () => {

@@ -14,7 +14,7 @@ import {
   unlinkVerdictFile,
 } from '../core/ralph-iteration-verdict.js';
 import { renderIterationPrompt } from '../core/ralph-iteration-template.js';
-import { isStopFromMainTaskSession, ralphStopFingerprint } from './ralph-stop.js';
+import { isStopFromMainTaskSession, ralphStopFingerprint } from './ralph/stop-events.js';
 import type { Monitor } from '../core/monitor.js';
 import {
   claimRalphLoopOwner,

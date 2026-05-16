@@ -11,6 +11,7 @@ import { registerSettingsRoutes } from './routes/settings-routes.js';
 import { registerTaskRoutes } from './routes/task-routes.js';
 import { registerOssAttemptRoutes } from './routes/oss-attempts-routes.js';
 import { registerShareRoutes } from './routes/share-routes.js';
+import { registerRalphRoutes } from './ralph/routes.js';
 import type { RouteDeps } from './routes/shared.js';
 
 export type { RouteDeps } from './routes/shared.js';
@@ -21,6 +22,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerDiagnosticsRoutes(app, deps);
   registerSettingsRoutes(app, deps);
   registerTaskRoutes(app, deps);
+  registerRalphRoutes(app, deps);
   registerProjectRoutes(app, deps);
   registerOssAttemptRoutes(app, deps);
   registerScheduleRoutes(app, deps);

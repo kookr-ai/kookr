@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { Task } from '../../core/tasks.js';
-import { createRalphStopProcessor } from './ralph-stop-processor.js';
+import { createRalphStopProcessor } from './stop-events.js';
 
 function ralphTask(status: 'running' | 'completed'): Task {
   return {

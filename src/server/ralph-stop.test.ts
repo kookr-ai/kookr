@@ -1,14 +1,44 @@
 import { describe, expect, test } from 'vitest';
-import { isStopFromMainTaskSession, ralphStopFingerprint } from './ralph-stop.js';
+import { isStopFromMainTaskSession, ralphStopFingerprint } from './ralph/stop-events.js';
 import { TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
 
 describe('isStopFromMainTaskSession', () => {
-  test('accepts Stop from the Ralph owner terminal session after late runtime metadata arrives', () => {
+  test('accepts Stop from the Ralph owner terminal session before runtime metadata arrives', () => {
     // Regression for the iteration-stall bug. Before the fix, a Ralph loop
     // attached at task launch time saw an empty session.claudeSessionId; the
     // old three-ref Stop gate rejected the agent's Stop before the runtime id
     // was backfilled. The gate now keys on the terminal session owner only.
+    const store = new TaskStore();
+    const task = store.createTask('Looped', '/cwd');
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-loop',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+    task.ralphLoop = {
+      prompt: 'iterate',
+      iterationCap: 5,
+      currentIteration: 0,
+      status: 'running',
+      lastIterationStartedAt: 0,
+      cumulativeIterations: 0,
+      ownerSessionId: 'kookr-loop',
+    };
+
+    const stopEvent: AgentEvent = {
+      type: 'stop',
+      sessionId: 'runtime-late',
+      transcriptPath: '/late.jsonl',
+      turnId: 'turn-1',
+      lastMessage: 'done',
+    };
+
+    expect(isStopFromMainTaskSession(task, 'kookr-loop', stopEvent)).toBe(true);
+  });
+
+  test('continues accepting Stop from the Ralph owner after runtime metadata arrives', () => {
     const store = new TaskStore();
     const task = store.createTask('Looped', '/cwd');
     store.addSession(task.id, {
@@ -57,6 +87,8 @@ describe('isStopFromMainTaskSession', () => {
       agentType: 'claude-code',
       cwd: '/cwd',
       createdAt: new Date(),
+      claudeSessionId: 'runtime-late',
+      transcriptPath: '/late.jsonl',
     });
     task.ralphLoop = {
       prompt: 'iterate',
