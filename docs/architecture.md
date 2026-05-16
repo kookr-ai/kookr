@@ -403,6 +403,7 @@ kookr/
 │   │   ├── anthropic-client.ts            # Anthropic SDK implementation
 │   │   ├── google-client.ts               # Google Gemini implementation
 │   │   ├── groq-client.ts                 # Groq implementation
+│   │   ├── openrouter-client.ts           # OpenRouter (OpenAI-compatible) implementation
 │   │   ├── circuit-breaker.ts             # Generic circuit-breaker primitive
 │   │   ├── circuit-breaker-llm-client.ts  # LLM client wrapped in a breaker
 │   │   # GitHub awareness (F7 / ADR-012)

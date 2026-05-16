@@ -71,6 +71,32 @@ not user configuration knobs.
 | `KOOKR_CONTEXT_ADVISORY_ENABLED` | unset | `1` to enable | Enables context-window hook advisories. |
 | `KOOKR_CONTEXT_ADVISORY_DISABLED` | unset | `1` to disable | Kill switch for context-window hook advisories. Takes precedence over enablement. |
 
+## LLM Provider
+
+These variables select and configure the LLM provider behind Kookr's AI
+features (task naming, response suggestions, and Telegram remote-chat
+rephrase). They are **independent of the local speech STT/TTS models** in the
+"Speech IO" section below — `KOOKR_LLM_PROVIDER` never affects voice
+transcription or synthesis.
+
+Provider API keys (`GROQ_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`,
+`OPENROUTER_API_KEY`) use vendor-native names and are not `KOOKR_`-prefixed.
+With no provider key set, AI features stay disabled and Kookr falls back to
+truncated prompt names.
+
+| Variable | Default | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `KOOKR_LLM_PROVIDER` | `auto` | `openrouter`, `groq`, `gemini`, `anthropic`, `auto` | Selects the LLM provider. `auto` chains every configured provider for fallback in order `GROQ > GEMINI > ANTHROPIC > OPENROUTER`. An explicit value uses only that provider. An unrecognized value warns and falls back to `auto`. |
+| `GROQ_API_KEY` | unset | Groq API key | Enables the Groq provider (Llama 4 Scout, free tier). |
+| `GEMINI_API_KEY` | unset | Google AI API key | Enables the Gemini provider (Gemini 3 Flash, free tier). |
+| `ANTHROPIC_API_KEY` | unset | Anthropic API key | Enables the Anthropic provider (Claude Haiku). |
+| `KOOKR_OPENROUTER_API_KEY` | unset | OpenRouter API key | Enables the OpenRouter provider. Preferred over `OPENROUTER_API_KEY` so a separate OpenRouter credit limit can be scoped to Kookr. |
+| `OPENROUTER_API_KEY` | unset | OpenRouter API key | Fallback OpenRouter key for simple single-key setups. Used only when `KOOKR_OPENROUTER_API_KEY` is unset. |
+| `KOOKR_LLM_MODEL` | `deepseek/deepseek-v4-flash` | OpenRouter model id | Overrides the OpenRouter model. Applies to the OpenRouter provider only; Groq/Gemini/Anthropic keep their built-in defaults. |
+| `KOOKR_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL | Overrides the OpenRouter chat-completions base URL (e.g. for a proxy). OpenRouter provider only. |
+| `KOOKR_LLM_HTTP_REFERER` | unset | URL | Optional `HTTP-Referer` app-attribution header sent on OpenRouter requests. |
+| `KOOKR_LLM_APP_TITLE` | `Kookr` | String | Optional `X-Title` app-attribution header sent on OpenRouter requests. |
+
 ## Remote Chat Trigger
 
 Remote chat is off by default. Set the Telegram token, allowed user IDs, and
@@ -90,6 +116,10 @@ set.
 | `KOOKR_STT_WHISPER_URL` | unset | HTTP URL of the local faster-whisper-server (e.g. `http://127.0.0.1:8010`) | Enables Telegram audio transcription for voice, uploaded audio, video notes, and audio documents. When unset, audio messages are dropped with the `dropped_audio_disabled` audit kind and the user is told audio is unsupported. The server must expose the OpenAI-compatible `POST /v1/audio/transcriptions` endpoint and is reached over plain HTTP — bind it to localhost only. |
 
 ## Speech IO
+
+Speech-to-text and text-to-speech are a separate concern from the "LLM
+Provider" section above: they configure local voice models and are unaffected
+by `KOOKR_LLM_PROVIDER` or any LLM provider key.
 
 Bundled STT and TTS run via Docker Compose. The default STT config targets an NVIDIA GPU with the NVIDIA Container Toolkit; switch to the CPU-fallback values below (and remove the GPU device reservation in `stt/docker-compose.yml`) to run on CPU.
 
