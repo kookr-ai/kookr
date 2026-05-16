@@ -10,6 +10,7 @@ import { registerScheduleRoutes } from './routes/schedule-routes.js';
 import { registerSettingsRoutes } from './routes/settings-routes.js';
 import { registerTaskRoutes } from './routes/task-routes.js';
 import { registerOssAttemptRoutes } from './routes/oss-attempts-routes.js';
+import { registerShareRoutes } from './routes/share-routes.js';
 import type { RouteDeps } from './routes/shared.js';
 
 export type { RouteDeps } from './routes/shared.js';
@@ -24,6 +25,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerOssAttemptRoutes(app, deps);
   registerScheduleRoutes(app, deps);
   registerDeployRoutes(app, deps);
+  registerShareRoutes(app, deps);
 
   // Cache headers for frontend assets:
   // - /assets/* have content hashes in filenames → cache forever
