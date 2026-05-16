@@ -1,10 +1,11 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRelayServer, type RelayServerHandle } from '../../relay/server.js';
 import { createRelayConnectionManager, type RelayRuntimeHandle } from './relay-connection-manager.js';
+import { relayConnectionCredentialsPath } from './relay-connection-store.js';
 import type { RemoteNodeStatus } from '../remote/node-client.js';
 
 let relay: RelayServerHandle | null = null;
@@ -100,14 +101,19 @@ describe('RelayConnectionManager', () => {
   it('forgets stored credentials and returns to local-only mode', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-forget-'));
     const { relayUrl, nodeId, nodeToken } = await startRelay();
+    let starts = 0;
     const manager = createRelayConnectionManager({
       kookrDir: dir,
       env: {},
-      startRuntime: async () => fakeRuntime(() => undefined),
+      startRuntime: async () => {
+        starts += 1;
+        return fakeRuntime(() => undefined);
+      },
     });
 
     await manager.connect({ relayUrl, nodeId, relayToken: nodeToken });
     const status = await manager.forget();
+    const restartStatus = await manager.startConfigured();
 
     expect(status).toMatchObject({
       configured: false,
@@ -115,6 +121,102 @@ describe('RelayConnectionManager', () => {
       connectionState: 'localOnly',
       relayConnected: false,
     });
+    expect(restartStatus).toMatchObject({
+      configured: false,
+      source: 'none',
+      connectionState: 'localOnly',
+      relayConnected: false,
+    });
+    expect(starts).toBe(1);
+  });
+
+  it('pairs with a custom relay using an admin token and persists only the node credential', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-pair-'));
+    relay = createRelayServer({ adminToken: 'admin-secret' });
+    await new Promise<void>((resolve) => relay!.httpServer.listen(0, '127.0.0.1', () => resolve()));
+    const startedWith: string[] = [];
+    const manager = createRelayConnectionManager({
+      kookrDir: dir,
+      env: {},
+      startRuntime: async (credentials) => {
+        startedWith.push(credentials.relayToken);
+        return fakeRuntime(() => undefined);
+      },
+    });
+
+    const status = await manager.pair({
+      relayUrl: relay.url(),
+      relayAdminToken: 'admin-secret',
+      displayName: 'Pairing desk',
+    });
+
+    expect(startedWith).toHaveLength(1);
+    expect(status).toMatchObject({
+      configured: true,
+      source: 'stored',
+      relayUrl: relay.url(),
+      displayName: 'Pairing desk',
+      connectionState: 'connected',
+      relayConnected: true,
+    });
+    const storedText = await readFile(relayConnectionCredentialsPath(dir), 'utf8');
+    expect(storedText).toContain(startedWith[0]!);
+    expect(storedText).not.toContain('admin-secret');
+  });
+
+  it('rejects anonymous pairing and reports redacted auth failures', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-pair-auth-'));
+    const { relayUrl } = await startRelay();
+    let starts = 0;
+    const manager = createRelayConnectionManager({
+      kookrDir: dir,
+      env: {},
+      startRuntime: async () => {
+        starts += 1;
+        return fakeRuntime(() => undefined);
+      },
+    });
+
+    await expect(manager.pair({ relayUrl, relayAdminToken: '' })).rejects.toMatchObject({
+      code: 'relay-admin-token-required',
+    });
+    await expect(manager.pair({ relayUrl, relayAdminToken: 'wrong-admin-token' })).rejects.toMatchObject({
+      code: 'relay-pairing-auth-failed',
+      status: 401,
+    });
+    expect(starts).toBe(0);
+  });
+
+  it('rotates the stored node token and invalidates the old token at the relay', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-rotate-'));
+    relay = createRelayServer({ adminToken: 'admin-secret' });
+    await new Promise<void>((resolve) => relay!.httpServer.listen(0, '127.0.0.1', () => resolve()));
+    const startTokens: string[] = [];
+    const manager = createRelayConnectionManager({
+      kookrDir: dir,
+      env: {},
+      startRuntime: async (credentials) => {
+        startTokens.push(credentials.relayToken);
+        return fakeRuntime(() => undefined);
+      },
+    });
+
+    await manager.pair({ relayUrl: relay.url(), relayAdminToken: 'admin-secret' });
+    const oldToken = startTokens[0]!;
+    const rotated = await manager.rotate({ relayAdminToken: 'admin-secret' });
+    const newToken = startTokens[1]!;
+
+    expect(rotated).toMatchObject({ source: 'stored', connectionState: 'connected' });
+    expect(newToken).toBeTruthy();
+    expect(newToken).not.toBe(oldToken);
+    await expect(fetch(new URL('/relay/node/status', relay.url()), {
+      headers: { authorization: `Bearer ${oldToken}` },
+    })).resolves.toMatchObject({ status: 401 });
+    await expect(fetch(new URL('/relay/node/status', relay.url()), {
+      headers: { authorization: `Bearer ${newToken}` },
+    })).resolves.toMatchObject({ status: 200 });
+    await expect(readFile(relayConnectionCredentialsPath(dir), 'utf8')).resolves.toContain(newToken);
+    await expect(readFile(relayConnectionCredentialsPath(dir), 'utf8')).resolves.not.toContain(oldToken);
   });
 
   it('rejects a valid token paired with the wrong nodeId before starting runtime', async () => {

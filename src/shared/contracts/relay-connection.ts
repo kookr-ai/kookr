@@ -37,6 +37,17 @@ export interface RelayConnectionConnectRequest {
   publicBaseUrl?: string;
 }
 
+export interface RelayConnectionPairRequest {
+  relayUrl: string;
+  relayAdminToken: string;
+  displayName?: string;
+  publicBaseUrl?: string;
+}
+
+export interface RelayConnectionRotateRequest {
+  relayAdminToken: string;
+}
+
 export interface RelayConnectionStatusResponse {
   status: RelayConnectionStatus;
 }

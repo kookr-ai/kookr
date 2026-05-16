@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -28,6 +28,9 @@ describe('relay connection credential store', () => {
       displayName: 'Desk',
     });
     await expect(readFile(relayConnectionCredentialsPath(dir), 'utf8')).resolves.toContain('secret-token');
+    if (process.platform !== 'win32') {
+      await expect(stat(relayConnectionCredentialsPath(dir)).then((s) => s.mode & 0o777)).resolves.toBe(0o600);
+    }
 
     await deleteStoredRelayConnectionCredentials(dir);
     await expect(loadStoredRelayConnectionCredentials(dir)).resolves.toBeNull();
