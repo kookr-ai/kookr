@@ -37,7 +37,7 @@ export class GoogleLlmClient implements LlmClient {
       config.responseJsonSchema = req.responseFormat.jsonSchema.schema;
     }
 
-    const timeoutMs = req.timeoutMs ?? 5000;
+    const timeoutMs = req.timeoutMs ?? 10_000;
 
     const apiCall = this.client.models.generateContent({
       model: this.model,

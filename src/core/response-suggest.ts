@@ -11,7 +11,9 @@
 import type { LlmClient } from './llm-client.js';
 import { logResponseSuggestions } from './training-data-logger.js';
 
-const TIMEOUT_MS = 5000;
+// Budget for a single LLM call. OpenRouter floors this up internally, since
+// DeepSeek V4 Flash is slower than the free-tier providers this is tuned for.
+const TIMEOUT_MS = 10_000;
 const MAX_TOKENS = 300;
 const MAX_SUGGESTIONS = 5;
 

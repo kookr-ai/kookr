@@ -96,6 +96,7 @@ truncated prompt names.
 | `KOOKR_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL | Overrides the OpenRouter chat-completions base URL (e.g. for a proxy). OpenRouter provider only. |
 | `KOOKR_LLM_HTTP_REFERER` | unset | URL | Optional `HTTP-Referer` app-attribution header sent on OpenRouter requests. |
 | `KOOKR_LLM_APP_TITLE` | `Kookr` | String | Optional `X-Title` app-attribution header sent on OpenRouter requests. |
+| `KOOKR_LLM_TIMEOUT_MS` | `20000` | Positive integer milliseconds | Explicit OpenRouter request timeout, used verbatim. OpenRouter provider only. When unset (or non-numeric/non-positive), a caller timeout below `20000` is floored up to it. Groq/Gemini/Anthropic use a fixed ~10s budget. |
 
 ## Remote Chat Trigger
 

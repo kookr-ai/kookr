@@ -1,7 +1,9 @@
 import type { LlmClient } from './llm-client.js';
 import { logTaskNaming } from './training-data-logger.js';
 
-const TIMEOUT_MS = 5000;
+// Budget for a single LLM call. OpenRouter floors this up internally, since
+// DeepSeek V4 Flash is slower than the free-tier providers this is tuned for.
+const TIMEOUT_MS = 10_000;
 const MAX_NAME_LENGTH = 80;
 const MAX_NAME_WORDS = 12;
 

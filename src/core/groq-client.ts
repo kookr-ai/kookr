@@ -42,7 +42,7 @@ export class GroqLlmClient implements LlmClient {
         },
       } : {}),
     }, {
-      timeout: req.timeoutMs ?? 5000,
+      timeout: req.timeoutMs ?? 10_000,
       signal: req.signal ?? undefined,
     });
 
