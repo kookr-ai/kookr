@@ -1,9 +1,30 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { TaskStore } from '../core/tasks.js';
-import { buildAgentLaunchContext } from './agent-launch-context.js';
+import { FakeTerminalBackend } from './fake-terminal-backend.js';
+import {
+  buildAgentLaunchContext,
+  deliverInitialPromptToSession,
+  resolveBracketedPasteSubmit,
+  PROMPT_BRACKETED_PASTE_ENV,
+  DEFAULT_PROMPT_SUBMIT_DELAY_MS,
+  INITIAL_PROMPT_CHUNK_BYTES,
+} from './agent-launch-context.js';
+
+const decoder = new TextDecoder();
+
+function concatPayloads(payloads: Uint8Array[]): Uint8Array {
+  const total = payloads.reduce((acc, p) => acc + p.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of payloads) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
+}
 
 describe('agent-launch-context', () => {
   const tempDirs: string[] = [];
@@ -124,4 +145,145 @@ describe('agent-launch-context', () => {
     tempDirs.push(dir);
     return dir;
   }
+});
+
+describe('deliverInitialPromptToSession', () => {
+  test('without bracketed paste, delivers prompt and Enter in one writeSequence (legacy path)', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s1', 'claude');
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const writeSpy = vi.spyOn(backend, 'write');
+
+    // The function picks the delivery path purely from `options.bracketedPaste`
+    // (omitted here) — it never reads the env var; only the adapter does, via
+    // resolveBracketedPasteSubmit.
+    await deliverInitialPromptToSession(backend, 's1', 'do the thing');
+
+    expect(writeSeqSpy).toHaveBeenCalledTimes(1);
+    expect(writeSpy).not.toHaveBeenCalled();
+    // No bracketed-paste markers; body + CR delivered together.
+    expect(backend.getWrittenText('s1')).toBe('do the thing\r');
+  });
+
+  test('bracketed-paste mode wraps the body and submits Enter after the closing marker', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s2', 'claude');
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const writeSpy = vi.spyOn(backend, 'write');
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    await deliverInitialPromptToSession(backend, 's2', 'submit me', {
+      bracketedPaste: true,
+      submitDelayMs: 120,
+      sleep,
+    });
+
+    // The body is wrapped in ANSI bracketed-paste markers and delivered as
+    // one block; the Enter is a separate write after the closing marker, so
+    // a UI that supports bracketed paste parses it as a keystroke.
+    expect(writeSeqSpy).toHaveBeenCalledTimes(1);
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(120);
+
+    const block = decoder.decode(concatPayloads(writeSeqSpy.mock.calls[0][1]));
+    expect(block).toBe('\x1b[200~submit me\x1b[201~');
+    // The separate write delivers exactly the Enter (CR, 0x0d) byte.
+    expect(Array.from(writeSpy.mock.calls[0][1])).toEqual([0x0d]);
+
+    // Ordering: paste block -> delay -> Enter.
+    expect(writeSeqSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      sleep.mock.invocationCallOrder[0],
+    );
+    expect(sleep.mock.invocationCallOrder[0]).toBeLessThan(
+      writeSpy.mock.invocationCallOrder[0],
+    );
+
+    // End-to-end the session receives the wrapped prompt then the CR.
+    expect(backend.getWrittenText('s2')).toBe('\x1b[200~submit me\x1b[201~\r');
+  });
+
+  test('bracketed-paste mode chunks a large prompt between the markers', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s3', 'claude');
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const large = 'x'.repeat(200_000);
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    await deliverInitialPromptToSession(backend, 's3', large, {
+      bracketedPaste: true,
+      submitDelayMs: 0,
+      sleep,
+    });
+
+    expect(sleep).toHaveBeenCalledWith(0);
+    // Inspect the writeSequence payloads directly: the opening marker first,
+    // the closing marker last, and the body split into multiple
+    // INITIAL_PROMPT_CHUNK_BYTES chunks in between.
+    const payloads = writeSeqSpy.mock.calls[0][1];
+    expect(decoder.decode(payloads[0])).toBe('\x1b[200~');
+    expect(decoder.decode(payloads[payloads.length - 1])).toBe('\x1b[201~');
+    const bodyChunks = payloads.slice(1, -1);
+    expect(bodyChunks.length).toBeGreaterThan(1);
+    expect(bodyChunks.every((c) => c.length <= INITIAL_PROMPT_CHUNK_BYTES)).toBe(true);
+    expect(backend.getWrittenText('s3')).toBe(`\x1b[200~${large}\x1b[201~\r`);
+  });
+
+  test('bracketed-paste mode strips paste markers embedded in the prompt body', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s4', 'claude');
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    // A prompt that itself contains bracketed-paste markers must not be able
+    // to prematurely close the synthetic paste — the markers are stripped.
+    const hostile = 'before\x1b[201~after\x1b[200~end';
+    await deliverInitialPromptToSession(backend, 's4', hostile, {
+      bracketedPaste: true,
+      submitDelayMs: 0,
+      sleep,
+    });
+
+    expect(backend.getWrittenText('s4')).toBe('\x1b[200~beforeafterend\x1b[201~\r');
+  });
+
+  test('bracketed-paste mode uses the default submit delay when none is given', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s5', 'claude');
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    await deliverInitialPromptToSession(backend, 's5', 'hi', {
+      bracketedPaste: true,
+      sleep,
+    });
+
+    expect(sleep).toHaveBeenCalledWith(DEFAULT_PROMPT_SUBMIT_DELAY_MS);
+    expect(backend.getWrittenText('s5')).toBe('\x1b[200~hi\x1b[201~\r');
+  });
+});
+
+describe('resolveBracketedPasteSubmit', () => {
+  test('explicit boolean wins over the env var', () => {
+    expect(resolveBracketedPasteSubmit(false, { [PROMPT_BRACKETED_PASTE_ENV]: '1' })).toBe(false);
+    expect(resolveBracketedPasteSubmit(true, { [PROMPT_BRACKETED_PASTE_ENV]: '0' })).toBe(true);
+  });
+
+  test('falls back to the env var, recognising every documented token', () => {
+    for (const off of ['0', 'false', 'no', 'off']) {
+      expect(resolveBracketedPasteSubmit(undefined, { [PROMPT_BRACKETED_PASTE_ENV]: off })).toBe(false);
+    }
+    for (const on of ['1', 'true', 'yes', 'on']) {
+      expect(resolveBracketedPasteSubmit(undefined, { [PROMPT_BRACKETED_PASTE_ENV]: on })).toBe(true);
+    }
+  });
+
+  test('normalises case and surrounding whitespace in the env value', () => {
+    expect(resolveBracketedPasteSubmit(undefined, { [PROMPT_BRACKETED_PASTE_ENV]: '  FALSE  ' })).toBe(false);
+    expect(resolveBracketedPasteSubmit(undefined, { [PROMPT_BRACKETED_PASTE_ENV]: 'On' })).toBe(true);
+  });
+
+  test('defaults to enabled when there is no explicit value or env var', () => {
+    expect(resolveBracketedPasteSubmit(undefined, {})).toBe(true);
+    // An unrecognised env value falls through to the default rather than
+    // silently disabling the fix.
+    expect(resolveBracketedPasteSubmit(undefined, { [PROMPT_BRACKETED_PASTE_ENV]: 'garbage' })).toBe(true);
+  });
 });

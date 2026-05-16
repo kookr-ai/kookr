@@ -7,6 +7,60 @@ import type { SessionId, TerminalBackend } from './terminal-backend.js';
 const promptEncoder = new TextEncoder();
 export const INITIAL_PROMPT_CHUNK_BYTES = 16 * 1024;
 
+/**
+ * ANSI bracketed-paste delimiters. A terminal UI that supports bracketed
+ * paste treats every byte between `ESC[200~` and `ESC[201~` as literal
+ * pasted content (newlines do not submit, control chars are not commands),
+ * and treats input after `ESC[201~` as ordinary keystrokes. Kookr wraps the
+ * initial prompt body in these markers so the submitting Enter that follows
+ * the closing marker is an unambiguous keypress — see
+ * {@link deliverInitialPromptToSession}.
+ */
+const PASTE_START_TEXT = '\x1b[200~';
+const PASTE_END_TEXT = '\x1b[201~';
+const PASTE_START = promptEncoder.encode(PASTE_START_TEXT);
+const PASTE_END = promptEncoder.encode(PASTE_END_TEXT);
+
+/**
+ * Default cushion (ms) between the bracketed prompt block and the
+ * submitting Enter. Bracketed paste makes the Enter unambiguous on its own;
+ * this small gap just keeps the Enter in its own write/`read()` so a UI
+ * that finalises the paste lazily still sees a clean keystroke.
+ */
+export const DEFAULT_PROMPT_SUBMIT_DELAY_MS = 150;
+
+/** Env var that disables bracketed-paste prompt submission when set falsey. */
+export const PROMPT_BRACKETED_PASTE_ENV = 'KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE';
+
+/**
+ * Resolve whether the initial prompt should be submitted via bracketed
+ * paste, from (in precedence order) an explicit caller value, the
+ * {@link PROMPT_BRACKETED_PASTE_ENV} env var, then the default `true`.
+ *
+ * Claude Code's UI coalesces a fast prompt+Enter burst into a single paste
+ * and treats the trailing carriage return as a literal newline, leaving the
+ * task prompt unsubmitted in the input box. Bracketed paste fixes that, so
+ * it is on by default. The env var (`0`/`false`/`no`/`off`) is an opt-out;
+ * the test suite uses it to keep the legacy single-write delivery path.
+ */
+export function resolveBracketedPasteSubmit(
+  explicit?: boolean,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (typeof explicit === 'boolean') return explicit;
+  const raw = env[PROMPT_BRACKETED_PASTE_ENV];
+  if (raw !== undefined) {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+      return false;
+    }
+    if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+      return true;
+    }
+  }
+  return true;
+}
+
 export interface AgentLaunchContext {
   env: Record<string, string>;
   permissionAllowlist: string[];
@@ -73,18 +127,90 @@ export async function buildAgentLaunchContext(
   return { env, permissionAllowlist };
 }
 
+export interface DeliverInitialPromptOptions {
+  /**
+   * When true, wrap the prompt body in ANSI bracketed-paste markers and
+   * deliver the submitting Enter as a separate write after the closing
+   * marker. Required for Claude Code, whose UI otherwise coalesces a fast
+   * prompt+Enter burst into one paste and treats the carriage return as a
+   * literal newline. When false/absent the body and Enter go out together
+   * in one `writeSequence` (legacy path; Codex CLI). Default false.
+   */
+  bracketedPaste?: boolean;
+  /**
+   * Bracketed-paste mode only: cushion (ms) between the wrapped prompt
+   * block and the submitting Enter. Defaults to
+   * {@link DEFAULT_PROMPT_SUBMIT_DELAY_MS}.
+   */
+  submitDelayMs?: number;
+  /**
+   * Sleep implementation. Defaults to a real `setTimeout`-backed wait;
+   * tests inject a stub to assert ordering without spending real time.
+   */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+function realSleep(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((res) => setTimeout(res, ms)) : Promise.resolve();
+}
+
+/** Split a prompt byte string into ARG_MAX-safe terminal-write chunks. */
+function chunkPromptBytes(promptBytes: Uint8Array): Uint8Array[] {
+  const chunks: Uint8Array[] = [];
+  for (let offset = 0; offset < promptBytes.length; offset += INITIAL_PROMPT_CHUNK_BYTES) {
+    chunks.push(promptBytes.subarray(offset, offset + INITIAL_PROMPT_CHUNK_BYTES));
+  }
+  return chunks;
+}
+
+/**
+ * Deliver the initial prompt to a freshly-spawned agent session over the
+ * terminal, then submit it with an Enter keystroke.
+ *
+ * With `bracketedPaste: true` the prompt body is wrapped in ANSI
+ * bracketed-paste markers (`ESC[200~` … `ESC[201~`) and the submitting
+ * Enter is written separately after the closing marker. A terminal UI that
+ * supports bracketed paste therefore treats the body as pasted content and
+ * the trailing Enter as an unambiguous keystroke — independent of how the
+ * input bursts are chunked or how fast the agent boots. This is required
+ * for Claude Code; Codex CLI uses the legacy path below.
+ *
+ * Without `bracketedPaste` the body and Enter are delivered together in one
+ * `writeSequence` (one mutex acquisition).
+ *
+ * Splitting the Enter into its own write is safe here: callers invoke this
+ * immediately after `createSession`, before the session is registered with
+ * the task store, so no concurrent writer can interleave.
+ */
 export async function deliverInitialPromptToSession(
   backend: TerminalBackend,
   sessionId: SessionId,
   prompt: string,
+  options?: DeliverInitialPromptOptions,
 ): Promise<void> {
-  const promptBytes = promptEncoder.encode(prompt);
-  const payloads: Uint8Array[] = [];
-  for (let offset = 0; offset < promptBytes.length; offset += INITIAL_PROMPT_CHUNK_BYTES) {
-    payloads.push(promptBytes.subarray(offset, offset + INITIAL_PROMPT_CHUNK_BYTES));
+  if (!options?.bracketedPaste) {
+    // Legacy path: prompt chunks + Enter under one mutex acquisition. The
+    // delivery path is chosen solely by `options.bracketedPaste`; the
+    // `submitDelayMs` / `sleep` options do not apply here.
+    const chunks = chunkPromptBytes(promptEncoder.encode(prompt));
+    await backend.writeSequence(sessionId, [...chunks, ENTER_BYTES]);
+    return;
   }
-  payloads.push(ENTER_BYTES);
-  await backend.writeSequence(sessionId, payloads);
+
+  // Bracketed-paste path. Strip any bracketed-paste markers already present
+  // in the prompt before wrapping, so agent-authored content cannot
+  // prematurely close the synthetic paste and turn trailing bytes into
+  // terminal commands — the standard bracketed-paste injection guard
+  // (terminal multiplexers strip these from clipboard content too).
+  const safeBody = prompt.replaceAll(PASTE_START_TEXT, '').replaceAll(PASTE_END_TEXT, '');
+  const chunks = chunkPromptBytes(promptEncoder.encode(safeBody));
+  const submitDelayMs = options.submitDelayMs ?? DEFAULT_PROMPT_SUBMIT_DELAY_MS;
+  const sleep = options.sleep ?? realSleep;
+  // Deliver the body wrapped in paste markers, then send Enter as its own
+  // write so it is parsed as a keystroke, not paste content.
+  await backend.writeSequence(sessionId, [PASTE_START, ...chunks, PASTE_END]);
+  await sleep(submitDelayMs);
+  await backend.write(sessionId, ENTER_BYTES);
 }
 
 async function resolveGitCommonDir(cwd: string): Promise<string | null> {
