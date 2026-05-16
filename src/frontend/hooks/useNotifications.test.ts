@@ -9,7 +9,7 @@ import { __resetDndForTests, disableDnd } from './useDnd.js';
 import { useNotifications } from './useNotifications.js';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState } from '../../shared/protocol.js';
-import type { Anomaly } from '../../core/types.js';
+import type { Anomaly } from '../../shared/contracts/anomalies.js';
 
 const DETECTED_AT = new Date('2026-05-14T12:00:00.000Z');
 

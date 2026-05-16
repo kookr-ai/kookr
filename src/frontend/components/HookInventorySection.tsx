@@ -1,5 +1,5 @@
 import React from 'react';
-import { HOOK_EVENTS, LOAD_BEARING_HOOKS, HOOK_DESCRIPTIONS } from '../../core/hook-spec.js';
+import { HOOK_EVENTS, LOAD_BEARING_HOOKS, HOOK_DESCRIPTIONS } from '../../shared/contracts/hook-spec.js';
 
 /**
  * Read-only list of hooks Kookr injects into every agent it launches.

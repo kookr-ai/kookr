@@ -8,7 +8,7 @@ import { LaunchTaskDialog } from './LaunchTaskDialog.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { LAUNCH_TASK_DIALOG_DRAFT_KEY } from '../store/launch-task-dialog-draft.js';
 import type { ClientMessage } from '../../shared/protocol.js';
-import type { ProjectSummary } from '../../core/project-summary.js';
+import type { ProjectSummary } from '../../shared/protocol.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();

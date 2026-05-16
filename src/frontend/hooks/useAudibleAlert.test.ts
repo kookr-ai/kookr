@@ -17,7 +17,7 @@ import { __resetSoundPreferenceForTests } from '../audio/sound.js';
 import { __resetDndForTests, disableDnd } from './useDnd.js';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, AnomalySeverity, AnomalyType } from '../../shared/protocol.js';
-import type { Anomaly } from '../../core/types.js';
+import type { Anomaly } from '../../shared/contracts/anomalies.js';
 
 // Default detectedAt for tests that do not care about the timestamp's exact
 // value — tests that exercise dedup or flicker pin their own dates explicitly.

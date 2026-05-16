@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { Playbook } from '../../shared/protocol.js';
-import type { PlaybookParameterOption } from '../../core/playbook.js';
+import type { PlaybookParameterOption } from '../../shared/contracts/playbook.js';
 import { useKookrStore } from '../store/useStore.js';
 import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/playbook-source-resolver.js';
 import { FilterableSelect } from './FilterableSelect.js';

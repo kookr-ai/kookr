@@ -27,6 +27,7 @@ export interface BurnedOutTarget {
   lastStallReason: string;
   lastStallBlockers: string[];
   burned: boolean;
+  permanent?: boolean;
   lastAttemptedIteration: number;
 }
 
