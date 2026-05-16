@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { isStopFromMainTaskSession, ralphStopFingerprint } from './ralph-stop.js';
-import { TaskStore } from '../core/tasks.js';
-import type { AgentEvent } from '../core/types.js';
+import { isStopFromMainTaskSession, ralphStopFingerprint } from './stop-event-ownership.js';
+import { TaskStore } from '../../core/tasks.js';
+import type { AgentEvent } from '../../core/types.js';
 
 describe('isStopFromMainTaskSession', () => {
-  test('accepts Stop from the Ralph owner terminal session after late runtime metadata arrives', () => {
+  test('accepts Stop from the Ralph owner terminal session before runtime metadata arrives', () => {
     // Regression for the iteration-stall bug. Before the fix, a Ralph loop
     // attached at task launch time saw an empty session.claudeSessionId; the
     // old three-ref Stop gate rejected the agent's Stop before the runtime id
@@ -26,11 +26,6 @@ describe('isStopFromMainTaskSession', () => {
       cumulativeIterations: 0,
       ownerSessionId: 'kookr-loop',
     };
-
-    store.updateSession(task.id, 'kookr-loop', {
-      claudeSessionId: 'runtime-late',
-      transcriptPath: '/late.jsonl',
-    });
 
     const stopEvent: AgentEvent = {
       type: 'stop',
@@ -67,6 +62,10 @@ describe('isStopFromMainTaskSession', () => {
       cumulativeIterations: 0,
       ownerSessionId: 'kookr-owner',
     };
+    store.updateSession(task.id, 'kookr-stale', {
+      claudeSessionId: 'runtime-late',
+      transcriptPath: '/late.jsonl',
+    });
 
     const stopEvent: AgentEvent = {
       type: 'stop',

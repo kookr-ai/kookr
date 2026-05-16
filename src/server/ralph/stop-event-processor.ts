@@ -34,8 +34,6 @@ export function createRalphStopProcessor({
 }: RalphStopProcessorDeps): RalphStopProcessor {
   return {
     process(stopTask, tmuxName, event) {
-      // Ralph iteration cycle: runtime Stop handling belongs to the same
-      // ownership service used by route attach/resume catch-up.
       if (stopTask?.ralphLoop?.status === 'completed') {
         ralphStopHandler.finalizeCompletedLoopStop(stopTask, tmuxName, event)
           .then((changed) => {

@@ -59,8 +59,8 @@ function mkService(deps: {
 }
 
 describe('RalphLoopService', () => {
-  test('task routes delegate Ralph lifecycle ownership to the service', () => {
-    const source = readFileSync(new URL('./routes/task-routes.ts', import.meta.url), 'utf8');
+  test('Ralph routes delegate lifecycle ownership to the service', () => {
+    const source = readFileSync(new URL('./ralph/routes.ts', import.meta.url), 'utf8');
     expect(source).toContain('ralphLoopService');
     expect(source).not.toContain('new RalphLoopService');
     expect(source).not.toContain('claimRalphLoopOwner');
