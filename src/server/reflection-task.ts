@@ -1,5 +1,5 @@
 import { dirname, basename } from 'node:path';
-import { compactToolSummary, summarizeActivity } from '../core/activity-summary.js';
+import { compactToolSummary, pasteBurstLabel, summarizeActivity } from '../core/activity-summary.js';
 import type { Monitor } from '../core/monitor.js';
 import type { ReflectionReport } from '../core/friction-analyzer.js';
 import { getReflectionRecommendation } from '../core/reflection-recommendation.js';
@@ -138,6 +138,8 @@ function summarizeTask(task: Task, monitor: Monitor): string {
       switch (item.type) {
         case 'user_message':
           return `user: ${truncate(item.text, 72)}`;
+        case 'user_paste_burst':
+          return `user: [${pasteBurstLabel(item)}]`;
         case 'agent_message':
           return `agent: ${truncate(item.text, 72)}`;
         case 'tool_group':

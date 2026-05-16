@@ -158,6 +158,7 @@ async function main(): Promise<void> {
     livenessIntervalMs: 5000,
     terminalBackend,
     sttUrl,
+    ttsUrl,
     agentBin: AGENT_BIN,
     codexBin: CODEX_BIN,
     bypassAllPermissions: BYPASS_ALL_PERMISSIONS,

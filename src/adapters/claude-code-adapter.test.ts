@@ -62,6 +62,48 @@ describe('ClaudeCodeAdapter', () => {
     expect(written.endsWith('\r')).toBe(true);
   });
 
+  test('launch submits the initial prompt as a bracketed paste with a separate Enter', async () => {
+    // Claude Code's UI folds a carriage return that arrives inside a paste
+    // burst into a literal newline, leaving the prompt unsubmitted in the
+    // input box. The adapter wraps the body in ANSI bracketed-paste markers
+    // so the trailing Enter is parsed as an unambiguous keystroke. See
+    // deliverInitialPromptToSession.
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+    });
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const writeSpy = vi.spyOn(backend, 'write');
+
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await bracketAdapter.launch(task.id, 'Fix bug', '/cwd');
+
+    // Body wrapped in ESC[200~ … ESC[201~; Enter is a separate write
+    // carrying exactly the CR (0x0d) byte — never bundled with the body.
+    expect(backend.getWrittenText(sessionId)).toBe('\x1b[200~Fix bug\x1b[201~\r');
+    expect(writeSeqSpy).toHaveBeenCalledTimes(1);
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(Array.from(writeSpy.mock.calls[0][1])).toEqual([0x0d]);
+    expect(writeSeqSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      writeSpy.mock.invocationCallOrder[0],
+    );
+  });
+
+  test('launch defaults to bracketed-paste submission when no env override is set', async () => {
+    // Production default: with no explicit option and the env var unset,
+    // the adapter opts into bracketed paste. (The unit suite otherwise sets
+    // KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE=0 — see vitest.config.ts — so this
+    // test clears it to exercise the real default.)
+    vi.stubEnv('KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE', undefined);
+    try {
+      const defaultAdapter = new ClaudeCodeAdapter(backend, taskStore);
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await defaultAdapter.launch(task.id, 'Fix bug', '/cwd');
+      expect(backend.getWrittenText(sessionId)).toBe('\x1b[200~Fix bug\x1b[201~\r');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   test('launch does NOT include --dangerously-skip-permissions or --setting-sources by default', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');

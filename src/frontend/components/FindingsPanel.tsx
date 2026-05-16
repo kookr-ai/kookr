@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { track, trackClick } from '../telemetry.js';
-import { agentProviderPresentation, formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch, worktreeHealthLabel, worktreeHealthTitle } from '../presentation.js';
+import { agentProviderPresentation, formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch, worktreeHealthLabel, worktreeHealthTitle, turnStateLabel, turnStateClass } from '../presentation.js';
 import { Tooltip } from './Tooltip.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -113,7 +113,9 @@ function severityClass(agent: AgentState): string {
   switch (agent.anomaly.type) {
     case 'permission_blocked': return 'permission';
     case 'repeated_error': return 'error';
-    case 'needs_input': return 'input';
+    // A normal completed turn is idle, not hung — tone it down vs an explicit
+    // mid-turn AskUserQuestion, which still reads as `input`. See issue #358.
+    case 'needs_input': return agent.turnState === 'completed_turn' ? 'turn-complete' : 'input';
   }
 }
 
@@ -122,7 +124,9 @@ function severityLabel(agent: AgentState): string {
   switch (agent.anomaly.type) {
     case 'permission_blocked': return 'Permission';
     case 'repeated_error': return 'Repeated Error';
-    case 'needs_input': return 'Needs Input';
+    // `completed_turn` => the agent finished a turn and is idle; `Needs Input`
+    // is reserved for an explicit mid-turn question. See issue #358.
+    case 'needs_input': return agent.turnState === 'completed_turn' ? 'Turn Complete' : 'Needs Input';
   }
 }
 
@@ -343,6 +347,14 @@ function FindingCard({ agent, selected, send }: {
             ) : null}
           </div>
         )}
+        {turnStateLabel(agent.turnState) && (
+          <div
+            className={`finding-turn-state turn-state--${turnStateClass(agent.turnState)}`}
+            data-testid="finding-turn-state"
+          >
+            {turnStateLabel(agent.turnState)}
+          </div>
+        )}
         {agent.anomaly && (
           <div className="finding-explanation">{agent.anomaly.explanation}</div>
         )}
@@ -524,7 +536,12 @@ function FindingGroup({ type, agents, selectedAgentId, send }: {
 }) {
   const [expanded, setExpanded] = useState(false);
   const { setRespondAllAgentIds, selectAgent } = useKookrStore();
-  const cls = agents[0] ? severityClass(agents[0]) : '';
+  // A `needs_input` group can mix completed turns and explicit AskUserQuestion
+  // waits. The header should only read as a completed turn when every member
+  // is one — otherwise pick a non-completed member so it stays "Needs Input".
+  // See issue #358.
+  const headerAgent = agents.find((a) => a.turnState !== 'completed_turn') ?? agents[0];
+  const cls = headerAgent ? severityClass(headerAgent) : '';
 
   function handleRespondAll(e: React.MouseEvent) {
     e.stopPropagation();
@@ -555,7 +572,7 @@ function FindingGroup({ type, agents, selectedAgentId, send }: {
         onClick={() => setExpanded(!expanded)}
       >
         <span className="finding-group-toggle">{expanded ? '▾' : '▸'}</span>
-        <span className={`finding-severity ${cls}`}>{severityLabel(agents[0])}</span>
+        <span className={`finding-severity ${cls}`}>{severityLabel(headerAgent)}</span>
         <span className="finding-group-label">
           {agents.length} agents {groupLabel(type)}
         </span>

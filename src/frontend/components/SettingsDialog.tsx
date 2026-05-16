@@ -5,6 +5,10 @@ import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useKookrStore } from '../store/useStore.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { HookInventorySection } from './HookInventorySection.js';
+import type {
+  RelayConnectionStatus,
+  RelayConnectionStatusResponse,
+} from '../../shared/contracts/relay-connection.js';
 
 interface ServerSettings {
   githubPollingEnabled: boolean;
@@ -18,7 +22,7 @@ interface ServerSettings {
 }
 
 /** Settings field to scroll-and-focus on open. */
-export type SettingsFocusField = 'maxActiveTasks';
+export type SettingsFocusField = 'maxActiveTasks' | 'relayConnection';
 
 interface Props {
   onClose: () => void;
@@ -30,15 +34,260 @@ interface Props {
   focusField?: SettingsFocusField;
 }
 
-type SettingsTab = 'general' | 'hooks';
+type SettingsTab = 'general' | 'sharing' | 'hooks';
 
-const SETTINGS_TABS: readonly SettingsTab[] = ['general', 'hooks'];
+const SETTINGS_TABS: readonly SettingsTab[] = ['general', 'sharing', 'hooks'];
 
 // Which tab hosts each focusable field. Extend this when SettingsFocusField
 // gains a new value — the Record type makes the requirement exhaustive.
 const FOCUS_FIELD_TAB: Record<SettingsFocusField, SettingsTab> = {
   maxActiveTasks: 'general',
+  relayConnection: 'sharing',
 };
+
+const SHARE_CSRF_HEADER = 'x-kookr-csrf';
+
+function relayStateLabel(status: RelayConnectionStatus | null): string {
+  switch (status?.connectionState) {
+    case 'connected':
+      return 'Connected';
+    case 'connecting':
+      return 'Connecting';
+    case 'backingOff':
+      return 'Reconnecting';
+    case 'authFailed':
+      return 'Authentication failed';
+    case 'error':
+      return 'Connection error';
+    case 'stopped':
+      return 'Disconnected';
+    case 'configured':
+      return 'Configured';
+    case 'localOnly':
+    default:
+      return 'Local-only';
+  }
+}
+
+function relaySourceLabel(status: RelayConnectionStatus | null): string | null {
+  switch (status?.source) {
+    case 'env':
+      return 'Environment';
+    case 'stored':
+      return 'Saved in Settings';
+    case 'none':
+    default:
+      return null;
+  }
+}
+
+function RelayConnectionSection() {
+  const [status, setStatus] = useState<RelayConnectionStatus | null>(null);
+  const [relayUrl, setRelayUrl] = useState('');
+  const [nodeId, setNodeId] = useState('');
+  const [relayToken, setRelayToken] = useState('');
+  const [relayAdminToken, setRelayAdminToken] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [csrfToken, setCsrfToken] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadStatus = useCallback(async () => {
+    const res = await fetch('/api/relay-connection');
+    if (!res.ok) throw new Error(`relay-status-${res.status}`);
+    const body = await res.json() as RelayConnectionStatusResponse;
+    setStatus(body.status);
+    if (body.status.relayUrl) setRelayUrl(body.status.relayUrl);
+    if (body.status.nodeId) setNodeId(body.status.nodeId);
+    if (body.status.displayName) setDisplayName(body.status.displayName);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function boot() {
+      try {
+        const tokenRes = await fetch('/api/share/csrf-token');
+        if (!tokenRes.ok) throw new Error(`csrf-${tokenRes.status}`);
+        const tokenBody = await tokenRes.json() as { csrfToken?: unknown };
+        if (!cancelled && typeof tokenBody.csrfToken === 'string') setCsrfToken(tokenBody.csrfToken);
+        await loadStatus();
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Relay status unavailable');
+      }
+    }
+    void boot();
+    const timer = window.setInterval(() => {
+      // Status polling is best-effort; keep the last visible state instead of
+      // replacing an otherwise usable form with a transient refresh error.
+      void loadStatus().catch(() => undefined);
+    }, 2_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [loadStatus]);
+
+  async function mutate(path: string, init: RequestInit): Promise<void> {
+    if (!csrfToken) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(path, {
+        ...init,
+        headers: {
+          'content-type': 'application/json',
+          [SHARE_CSRF_HEADER]: csrfToken,
+          ...(init.headers ?? {}),
+        },
+      });
+      const body = await res.json() as RelayConnectionStatusResponse | { error?: string };
+      if (!res.ok || !('status' in body)) throw new Error('error' in body && body.error ? body.error : `HTTP ${res.status}`);
+      setStatus(body.status);
+      if (body.status.relayUrl) setRelayUrl(body.status.relayUrl);
+      if (body.status.nodeId) setNodeId(body.status.nodeId);
+      if (body.status.displayName) setDisplayName(body.status.displayName);
+      setRelayToken('');
+      setRelayAdminToken('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Relay update failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const envManaged = status?.source === 'env';
+  const canConnect = Boolean(relayUrl.trim() && nodeId.trim() && relayToken.trim() && csrfToken && !busy);
+  const canPair = Boolean(relayUrl.trim() && relayAdminToken.trim() && csrfToken && !busy);
+  const canRotate = Boolean(status?.source === 'stored' && relayAdminToken.trim() && csrfToken && !busy);
+  const sourceLabel = relaySourceLabel(status);
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-title">Relay Connection</div>
+      <div className="relay-status-strip">
+        <div>
+          <span className="settings-label">{relayStateLabel(status)}</span>
+          <span className="settings-desc">
+            {status?.relayUrl ?? 'No relay configured'}
+            {sourceLabel ? ` · ${sourceLabel}` : ''}
+          </span>
+        </div>
+        <span className={`relay-status-dot ${status?.relayConnected ? 'connected' : ''}`} aria-hidden="true" />
+      </div>
+      {status?.lastError && <div className="settings-error">{status.lastError.message}</div>}
+      {error && <div className="settings-error">{error}</div>}
+
+      <label className="settings-field">
+        <span className="settings-label">Relay URL</span>
+        <input
+          value={relayUrl}
+          onChange={(event) => setRelayUrl(event.target.value)}
+          placeholder="https://relay.example"
+          disabled={envManaged || busy}
+        />
+      </label>
+      <label className="settings-field">
+        <span className="settings-label">Node ID</span>
+        <input
+          value={nodeId}
+          onChange={(event) => setNodeId(event.target.value)}
+          placeholder="kookr-node-..."
+          disabled={envManaged || busy}
+        />
+      </label>
+      <label className="settings-field">
+        <span className="settings-label">Node token</span>
+        <input
+          type="password"
+          value={relayToken}
+          onChange={(event) => setRelayToken(event.target.value)}
+          placeholder={envManaged ? 'Managed by environment' : 'Paste an issued node token'}
+          disabled={envManaged || busy}
+        />
+      </label>
+      <label className="settings-field">
+        <span className="settings-label">Relay admin token</span>
+        <input
+          type="password"
+          value={relayAdminToken}
+          onChange={(event) => setRelayAdminToken(event.target.value)}
+          placeholder={envManaged ? 'Managed by environment' : 'Required for pairing or rotation'}
+          disabled={envManaged || busy}
+        />
+      </label>
+      <label className="settings-field">
+        <span className="settings-label">Display name</span>
+        <input
+          value={displayName}
+          onChange={(event) => setDisplayName(event.target.value)}
+          placeholder="This Kookr node"
+          disabled={envManaged || busy}
+        />
+      </label>
+
+      <div className="settings-action-row">
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={() => mutate('/api/relay-connection/connect', {
+            method: 'POST',
+            body: JSON.stringify({
+              relayUrl,
+              nodeId,
+              relayToken,
+              ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+            }),
+          })}
+          disabled={!canConnect || envManaged}
+        >
+          Connect
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => mutate('/api/relay-connection/pair', {
+            method: 'POST',
+            body: JSON.stringify({
+              relayUrl,
+              relayAdminToken,
+              ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+            }),
+          })}
+          disabled={!canPair || envManaged}
+        >
+          Pair
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => mutate('/api/relay-connection/rotate', {
+            method: 'POST',
+            body: JSON.stringify({ relayAdminToken }),
+          })}
+          disabled={!canRotate || envManaged}
+        >
+          Rotate token
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => mutate('/api/relay-connection/disconnect', { method: 'POST', body: '{}' })}
+          disabled={busy || !status?.configured}
+        >
+          Disconnect
+        </button>
+        <button
+          type="button"
+          className="btn-secondary danger"
+          onClick={() => mutate('/api/relay-connection/credentials', { method: 'DELETE', body: '{}' })}
+          disabled={busy || !status?.configured || envManaged}
+        >
+          Forget
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function SettingsDialog({ onClose, focusField }: Props) {
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
@@ -53,6 +302,7 @@ export function SettingsDialog({ onClose, focusField }: Props) {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tabRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,
+    sharing: null,
     hooks: null,
   });
   const maxActiveTasksInputRef = useRef<HTMLInputElement>(null);
@@ -167,7 +417,7 @@ export function SettingsDialog({ onClose, focusField }: Props) {
         <div className="dialog-tabs settings-dialog-tabs" role="tablist" aria-label="Settings sections">
           {SETTINGS_TABS.map((tab) => {
             const isActive = activeTab === tab;
-            const label = tab === 'general' ? 'General' : 'Hooks';
+            const label = tab === 'general' ? 'General' : tab === 'sharing' ? 'Sharing' : 'Hooks';
             return (
               <button
                 key={tab}
@@ -400,6 +650,12 @@ export function SettingsDialog({ onClose, focusField }: Props) {
           {activeTab === 'hooks' && (
             <div role="tabpanel" id="settings-panel-hooks" aria-labelledby="settings-tab-hooks">
               <HookInventorySection />
+            </div>
+          )}
+
+          {activeTab === 'sharing' && (
+            <div role="tabpanel" id="settings-panel-sharing" aria-labelledby="settings-tab-sharing">
+              <RelayConnectionSection />
             </div>
           )}
         </div>

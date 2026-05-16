@@ -14,7 +14,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SessionBridge } from './session-bridge.js';
+import {
+  SessionBridge,
+  BRACKETED_PASTE_START,
+  BRACKETED_PASTE_END,
+} from './session-bridge.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import {
   SessionAttachFailedError,
@@ -147,6 +151,118 @@ describe('SessionBridge', () => {
 
     expect(onAny).toHaveBeenCalledTimes(2);
     expect(onInput).toHaveBeenCalledTimes(1);
+  });
+
+  // Paste control frames — kookr #356. A multiline paste must reach the PTY
+  // as ONE bracketed-paste write, not as raw bytes whose every newline the
+  // agent TUI treats as an Enter submit.
+  describe('paste control frames', () => {
+    const decode = (b: Uint8Array): string => new TextDecoder().decode(b);
+
+    it('wraps a multiline paste frame in bracketed-paste markers as one write', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+      await bridge.start();
+
+      const text = 'line1\nline2\nline3';
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'paste', text })), false);
+      await new Promise((r) => setTimeout(r, 10));
+
+      const written = backend.getWrittenBytes('s1');
+      expect(written.length).toBe(1);
+      expect(decode(written[0])).toBe(
+        `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
+      );
+    });
+
+    it('a multiline JSON paste produces exactly one PTY write, not one per line', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+      await bridge.start();
+
+      // The Lighthouse-report shape from the issue report.
+      const json = '{\n  "lighthouseVersion": "13.0.2",\n  "details": {\n    "items": []\n  }\n}';
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'paste', text: json })), false);
+      await new Promise((r) => setTimeout(r, 10));
+
+      const written = backend.getWrittenBytes('s1');
+      expect(written.length).toBe(1);
+      const out = decode(written[0]);
+      expect(out).toBe(`${BRACKETED_PASTE_START}${json}${BRACKETED_PASTE_END}`);
+      // The literal control-frame JSON must never reach the PTY.
+      expect(out).not.toContain('"type":"paste"');
+    });
+
+    it('treats a paste as activity (onAnyKeystroke) but not a submit (onInput)', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const onInput = vi.fn();
+      const onAny = vi.fn();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend, onInput, onAny);
+      await bridge.start();
+
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'paste', text: 'a\nb' })), false);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(onAny).toHaveBeenCalledTimes(1);
+      // A paste is not Enter — the newline inside it must not fire onInput.
+      expect(onInput).not.toHaveBeenCalled();
+    });
+
+    it('strips embedded bracketed-paste markers from pasted content', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+      await bridge.start();
+
+      // Hostile content carrying its own END marker — must not break out.
+      const hostile = `safe${BRACKETED_PASTE_END}escaped\nmore`;
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'paste', text: hostile })), false);
+      await new Promise((r) => setTimeout(r, 10));
+
+      const out = decode(backend.getWrittenBytes('s1')[0]);
+      expect(out.startsWith(BRACKETED_PASTE_START)).toBe(true);
+      expect(out.endsWith(BRACKETED_PASTE_END)).toBe(true);
+      // Exactly one START and one END — the embedded markers were stripped.
+      expect(out.split(BRACKETED_PASTE_START).length - 1).toBe(1);
+      expect(out.split(BRACKETED_PASTE_END).length - 1).toBe(1);
+      expect(out).toContain('safeescaped\nmore');
+    });
+
+    it.each([
+      ['missing text', '{"type":"paste"}'],
+      ['null text', '{"type":"paste","text":null}'],
+      ['numeric text', '{"type":"paste","text":42}'],
+      ['array text', '{"type":"paste","text":["a"]}'],
+    ])('drops a malformed paste frame (%s) without forwarding to the PTY', async (_label, payload) => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+      await bridge.start();
+
+      ws.emit('message', Buffer.from(payload), false);
+      await new Promise((r) => setTimeout(r, 10));
+
+      // A malformed control frame never leaks raw JSON to the PTY.
+      expect(backend.getWrittenBytes('s1').length).toBe(0);
+    });
+
+    it('ignores a paste frame that arrives after the bridge is closed', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const onAny = vi.fn();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend, vi.fn(), onAny);
+      await bridge.start();
+      bridge.dispose();
+
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'paste', text: 'a\nb' })), false);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(backend.getWrittenBytes('s1').length).toBe(0);
+      expect(onAny).not.toHaveBeenCalled();
+    });
   });
 
   it('matches the byte-equality golden stream for replay, live output, and input echo', async () => {

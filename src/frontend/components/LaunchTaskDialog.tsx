@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
 import { buildAgentSelectionOptions, type ClientMessage, type AgentType, type AgentSelection } from '../../shared/protocol.js';
-import type { ProjectSummary } from '../../core/project-summary.js';
+import type { ProjectSummary } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { track } from '../telemetry.js';
 import { RecentPaths } from '../store/recent-paths.js';
@@ -12,7 +12,7 @@ import {
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
-import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../../core/worktree-protection.js';
+import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../../shared/contracts/worktree-protection.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { cleanupResultMessage } from './workspace-slice.js';
-import type { CleanupResultSummary } from '../../../core/workspace-types.js';
+import type { CleanupResultSummary } from '../../../shared/contracts/workspace.js';
 
 describe('cleanupResultMessage', () => {
   const cases: Array<{ result: CleanupResultSummary; expectedSeverity: 'info' | 'error'; expectedSubstring: string }> = [

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createSnapshotMessage, getProjectSummaries, getSnapshotAgentsForClient, getSnapshotAgentsRaw } from './get-snapshot.js';
+import { buildLocalSpeechCapabilities, createSnapshotMessage, getProjectSummaries, getSnapshotAgentsForClient, getSnapshotAgentsRaw } from './get-snapshot.js';
 import type { AgentEvent } from '../../core/types.js';
 
 // Matches the self-diagnostic's SNAPSHOT_SIZE_WARNING threshold in
@@ -20,6 +20,8 @@ describe('snapshot use cases', () => {
       serverStartedAt: '2026-04-04T10:00:00.000Z',
       totalSpendUsd: 12.5,
       sttUrl: 'ws://localhost:8003',
+      ttsUrl: 'http://localhost:8004',
+      now: () => new Date('2026-05-15T22:00:00.000Z'),
       achievements: { first: '2026-04-04T10:00:00.000Z' },
       availableAgentTypes: [{ type: 'claude-code', label: 'Claude Code' }] as any,
       defaultAgentType: 'claude-code',
@@ -30,10 +32,29 @@ describe('snapshot use cases', () => {
       serverCwd: '/repo',
       sttEnabled: true,
       sttUrl: 'ws://localhost:8003',
+      ttsEnabled: true,
+      ttsUrl: 'http://localhost:8004',
       totalSpendUsd: 12.5,
       defaultAgentType: 'claude-code',
     }));
+    expect(msg.speechCapabilities?.capabilitiesByDevice['local-node']).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'stt',
+        protocol: 'kookr-stt-ws',
+        endpointUrl: 'ws://localhost:8003',
+        readiness: 'ready',
+      }),
+      expect.objectContaining({
+        kind: 'tts',
+        endpointUrl: 'http://localhost:8004',
+        readiness: 'ready',
+      }),
+    ]));
     expect(msg.agents).toHaveLength(1);
+  });
+
+  it('builds no speech capability descriptors when STT/TTS are disabled', () => {
+    expect(buildLocalSpeechCapabilities({})).toBeUndefined();
   });
 
   it('includes activity metadata when provider is wired', () => {

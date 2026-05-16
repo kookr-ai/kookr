@@ -2,7 +2,7 @@
 name: self-reflect
 description: Reflect on a mistake or unnecessary user correction — root-cause why it happened, then propose and implement structural fixes (skills, hooks, CLAUDE.md, memory, scripts). Use after the user corrects behavior, repeats guidance, or points out an avoidable error.
 keywords: reflect, mistake, feedback, correction, self-improve, root-cause, meta, why, should have, remember, told you, wrong approach, improve
-related: token-efficiency, testing-patterns, pre-pr-review
+related: placement-picker, token-efficiency, testing-patterns, pre-pr-review
 ---
 
 # Self-Reflection Workflow
@@ -118,32 +118,11 @@ The mistake wasn't due to Claude's behavior but to tooling limitations, environm
 
 Based on the root cause, propose the **minimum effective fix** — but minimum does not mean "lightest in bytes". It means "the lightest mechanism that is *still visible to every agent that needs to follow the rule*". A feedback memory is lightweight but invisible to non-Claude-Code agents; that's not "light", that's "broken for half the runtime."
 
-### Persistence Mechanism Picker (do this FIRST, before picking a fix type)
+### Placement Picker (do this FIRST, before picking a fix type)
 
-Before you propose any fix, walk this decision tree. It exists because memory has a gravitational pull — the system-prompt auto-memory instructions actively train you to reach for feedback memories, but memory is the *wrong default* for this project's mixed-runtime architecture.
+Load `placement-picker` and use its routing matrix before proposing any fix. This keeps one canonical body for memory-vs-skill-vs-hook-vs-CLAUDE.md decisions.
 
-```
-Is the mistake a BEHAVIORAL RULE or WORKFLOW CORRECTION?
-(i.e. "do X before Y", "never use Z", "always run W")
-│
-├── YES → Will any non-Claude-Code agent ever need to follow this rule?
-│         (Kookr tasks run on both Claude Code AND Codex CLI;
-│          Codex cannot read Claude Code's memory system.)
-│         │
-│         ├── YES (any chance) → Use skill / CLAUDE.md / hook. NEVER memory.
-│         │    │
-│         │    ├── Deterministic enforcement possible? → Hook (strongest)
-│         │    ├── Workflow-scoped with repeatable steps? → Skill update
-│         │    └── Universal project-wide rule? → CLAUDE.md
-│         │
-│         └── NO (purely Claude Code specific, e.g. "use this keyboard
-│             shortcut in the Claude Code UI") → Memory is acceptable
-│
-└── NO, it's USER/PROJECT CONTEXT (who the user is, project history,
-    external references, stakeholder asks) → Memory is the right place
-```
-
-**The Kookr project rule** (see project `CLAUDE.md` "Persistence Mechanism Picker" section): for behavioral rules, memory is banned because Codex CLI agents cannot read it. The ranking for rules is **Hook > Skill > CLAUDE.md**. Memory is reserved for context about *who* and *why*, never for *how*.
+For behavioral rules and workflow corrections, memory is banned in mixed-runtime Kookr work because Codex CLI cannot read Claude Code memory. Use a hook, skill, or CLAUDE.md.
 
 **Calibration question**: If you are tempted to save a feedback memory as a fix, ask yourself: *"Would this memory still protect the user if they ran the exact same task on Codex CLI tomorrow?"* If no, pick a skill / CLAUDE.md / hook instead.
 

@@ -1,5 +1,5 @@
 import type { AgentState } from '../shared/protocol.js';
-import type { TaskStatus } from '../core/types.js';
+import type { TaskStatus } from '../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { isActiveFinding } from './store/finding-helpers.js';
 

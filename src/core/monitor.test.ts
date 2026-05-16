@@ -25,6 +25,10 @@ function makeSubagentStop(sessionId: string, agentId = 'subagent-1'): AgentEvent
   return { type: 'subagent_stop', sessionId, agentId, agentType: 'test-agent', lastMessage: 'subagent done' };
 }
 
+function makeSubagentStart(sessionId: string, agentId = 'subagent-1'): AgentEvent {
+  return { type: 'subagent_start', sessionId, agentId, agentType: 'test-agent' };
+}
+
 describe('Monitor', () => {
   let taskStore: TaskStore;
   let queue: AttentionQueue;
@@ -430,6 +434,65 @@ describe('Monitor', () => {
     expect(a!.cwd).toBeUndefined();
     expect(a!.agentType).toBeUndefined();
     expect(a!.startedAt).toBeUndefined();
+  });
+
+  describe('turn state in snapshot (issue #358)', () => {
+    function linkInteractiveTask(agentType: 'codex-cli' | 'claude-code', tmuxSession: string) {
+      const task = taskStore.createTask(`Interactive ${agentType} task`, '/repo');
+      // addSession transitions the task to 'inProgress'; the interactive
+      // terminal process then stays alive for follow-ups.
+      taskStore.addSession(task.id, {
+        tmuxSession,
+        agentType,
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+      return task;
+    }
+
+    test('Codex Stop with the terminal still alive => turnState completed_turn, task stays inProgress', () => {
+      const task = linkInteractiveTask('codex-cli', 'kookr-1bb16ec4');
+      monitor.processEvents('kookr-1bb16ec4', [
+        makeToolUse('s1', 'Bash'),
+        makeToolResult('s1', 'Bash'),
+        makeStop('s1', 'Yes. In a clean headless Chromium run...'),
+      ]);
+
+      const agent = monitor.getSnapshot().find((s) => s.agentId === 'kookr-1bb16ec4');
+      expect(agent).toBeDefined();
+      expect(agent!.turnState).toBe('completed_turn');
+      // Lifecycle is unchanged: the task remains open for follow-up.
+      expect(agent!.taskStatus).toBe('inProgress');
+      expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+    });
+
+    test('Claude Stop with the terminal still alive => turnState completed_turn, task stays inProgress', () => {
+      linkInteractiveTask('claude-code', 'kookr-claude-1');
+      monitor.processEvents('kookr-claude-1', [
+        makeToolUse('s1', 'Edit'),
+        makeStop('s1', 'All changes applied.'),
+      ]);
+
+      const agent = monitor.getSnapshot().find((s) => s.agentId === 'kookr-claude-1');
+      expect(agent!.turnState).toBe('completed_turn');
+      expect(agent!.taskStatus).toBe('inProgress');
+    });
+
+    test('Stop while a background subagent is still running => turnState running, not completed_turn', () => {
+      monitor.processEvents('agent-1', [
+        makeSubagentStart('s1', 'bg-1'),
+        makeStop('s1', 'parent turn ended while subagent runs'),
+      ]);
+      const agent = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+      // The parent emitted Stop but real work is ongoing — do not show it as a
+      // finished turn. Mirrors the needs_input subagent suppression.
+      expect(agent!.turnState).toBe('running');
+
+      // Once the subagent finishes, the turn reads as completed.
+      monitor.processEvents('agent-1', [makeSubagentStop('s1', 'bg-1')]);
+      const after = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+      expect(after!.turnState).toBe('completed_turn');
+    });
   });
 
   test('processEvents after unregisterAgent does NOT resurrect agent', () => {

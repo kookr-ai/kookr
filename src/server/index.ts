@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 import { loadTasks, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
@@ -18,6 +19,11 @@ import { formatGitHubAlert } from '../core/github-alerts.js';
 import { wireEventPipeline } from './event-pipeline.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
+import { createRelayShareClient } from './relay-share-client.js';
+import type { RemoteShareDeps } from './routes/shared.js';
+import { TaskShareService } from './task-share-service.js';
+import { createRelayConnectionManager, type RelayRuntimeHandle } from './relay-connection-manager.js';
+import type { RelayConnectionCredentials } from './relay-connection-store.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
@@ -27,10 +33,6 @@ import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
 import { DiagnosticRunner } from './diagnostic-runner.js';
 import { getDetectionStats } from '../core/detection-stats.js';
-import { WorktreeLeaseService } from '../core/worktree-lease-service.js';
-import { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
-import { WorkspaceAttemptRepository } from '../core/workspace-attempt-repository.js';
-import { getProjectId } from '../core/project-identity.js';
 import {
   promotePendingStartupTasks,
   runStartupRecoveryPhase,
@@ -43,12 +45,23 @@ import { createSystemResourceSampler } from './system-resource-sampler.js';
 import { createResourceStatusService } from './resource-status-service.js';
 import { type OssSourceWatcherFs } from './oss-source-watcher.js';
 import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
+import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
 import { createAgentRuntime } from './bootstrap/create-agent-runtime.js';
 import { createCoreStores } from './bootstrap/create-core-stores.js';
 import { createOssServices, createOssSourceWatchers } from './bootstrap/create-oss-services.js';
 import { createRealtimeServices } from './bootstrap/create-realtime-services.js';
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
+import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
+import type { RemoteNodeClient } from '../remote/node-client.js';
+import type { CommandJournal } from '../remote/command-journal.js';
+import { isOwnerLocal } from './auth.js';
+import type { SessionStreamPublisher } from '../remote/session-stream-publisher.js';
+import type { ControllerLeaseManager } from '../remote/controller-lease.js';
+import type { NodeId, ServerRevision, SessionEpoch, SessionId } from '../remote/ids.js';
+import type { RemotePolicyCache } from '../remote/policy-cache.js';
+import type { ShareSubject } from '../remote/policy-sync.js';
+import type { RemoteInputAdapter } from './remote-input-adapter.js';
 
 // --- Exported types ---
 
@@ -72,6 +85,8 @@ export interface KookrConfig {
   terminalBackend: TerminalBackend;
   /** Optional STT service WebSocket URL (e.g. ws://localhost:8003). Enables speech-to-text when set. */
   sttUrl?: string;
+  /** Optional TTS service HTTP URL (e.g. http://localhost:8004). Advertised as a Phase 6 speech capability when set. */
+  ttsUrl?: string;
   /** Use FakeTerminalBridge instead of a real session attach. For E2E tests and demo mode. */
   useFakeTerminalBridge?: boolean;
   /** Path or command name for the Claude Code binary. Defaults to 'claude'. */
@@ -144,7 +159,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const {
     port, host, kookrDir, tasksFile, hooksDir, settingsDir,
     serverCwd, frontendDir, saveIntervalMs, livenessIntervalMs,
-    terminalBackend, sttUrl, useFakeTerminalBridge, agentBin, codexBin, bypassAllPermissions,
+    terminalBackend, sttUrl, ttsUrl, useFakeTerminalBridge, agentBin, codexBin, bypassAllPermissions,
     claudeDir, preflightOnFatal, preflightLogger,
     ossSourceWatcherFs, ossSourceWatcherDebounceMs,
     lifecycleSignal,
@@ -178,6 +193,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     llmClient,
   } = coreStores;
   const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
+
+  // Remote collaboration runtime. This remains inert until env credentials or
+  // stored Phase B relay credentials are present.
+  let remoteNodeClient: RemoteNodeClient | null = null;
+  let sessionStreamPublisher: SessionStreamPublisher | null = null;
+  let commandJournal: CommandJournal | null = null;
+  let controllerLeaseManager: ControllerLeaseManager | null = null;
+  let remoteInputAdapter: RemoteInputAdapter | null = null;
+  let remotePolicyCache: RemotePolicyCache | null = null;
+  let taskShareService: TaskShareService | null = null;
+  let remoteShareRevision = 0;
+  const nextRemoteShareRevision = (): ServerRevision => {
+    remoteShareRevision += 1;
+    return remoteShareRevision as ServerRevision;
+  };
 
   const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
     terminalBackend,
@@ -381,6 +411,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     console.warn(`Orphan sessions (not in tasks): ${reconcileResult.orphans.join(', ')}`);
   }
 
+  if (remoteNodeClient) {
+    const { createSessionStreamPublisher } = await import('../remote/session-stream-publisher.js');
+    sessionStreamPublisher = createSessionStreamPublisher({
+      terminalBackend,
+      remoteNodeClient,
+    });
+    await sessionStreamPublisher.start();
+  }
+
   // Hook watcher created here but resumed-session replay is deferred to after crash recovery,
   // so relaunched sessions have their new tmux names before snooze restore + hook replay.
   // HookIngestion serializes file-source and http-source delivery through a
@@ -445,7 +484,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Metadata-only refresh (e.g. git info captured) — broadcast snapshot without injecting events
   adapter.onRefreshNeeded(() => {
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, ttsUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
     broadcastProjectSummaries();
   });
 
@@ -473,7 +512,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         if (current && !current.name) {
           taskStore.renameTask(taskId, name);
           console.log(`[task-naming] Named task ${taskId}: "${name}"`);
-          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
+          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, ttsUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
         }
       })
       .catch((err) => {
@@ -500,6 +539,22 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     roundRobinCursor,
     interactionLog,
   };
+
+  let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
+  if (process.env.KOOKR_RELAY_URL?.trim()) {
+    const { createRemoteLaunchBrokerFromEnv, remoteLaunchFeatureEnabled } = await import('../remote/launch-broker.js');
+    if (remoteLaunchFeatureEnabled()) {
+      remoteLaunchBroker = createRemoteLaunchBrokerFromEnv({
+        launchTask: (opts) => launchTask(launchServiceDeps, opts),
+        getActiveLaunchCount: ({ projectId, agentType }) => taskStore.listTasks().filter((task) => (
+          (task.status === 'open' || task.status === 'pending' || task.status === 'inProgress')
+          && task.projectId === projectId
+          && task.agentType === agentType
+        )).length,
+      });
+      console.log('[remote] launch broker enabled');
+    }
+  }
 
   const ralphLoopService = new RalphLoopService({
     taskStore,
@@ -537,6 +592,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     hookIngestion,
     onPermissionBlocked: (taskId, promptText) => {
       onPermissionBlockedHolder?.(taskId, promptText);
+      const task = remoteNodeClient && process.env.KOOKR_PUSH_DISABLED !== 'true'
+        ? taskStore.getTask(taskId)
+        : undefined;
+      if (!task) return;
+      void import('../remote/push.js')
+        .then(({ makePermissionBlockedPushPayload, publishPushAlertDelta }) => {
+          publishPushAlertDelta(remoteNodeClient, makePermissionBlockedPushPayload({
+            nodeDisplayName: process.env.KOOKR_RELAY_DISPLAY_NAME,
+            task,
+            alertId: `permission-${taskId}-${Date.now()}`,
+          }));
+        })
+        .catch((err) => {
+          console.warn('[remote-push] failed to publish permission alert:', err);
+        });
     },
   });
 
@@ -544,6 +614,360 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const terminalDeps: TerminalInputDeps = {
     monitor, abortPendingSuggestion, broadcastToAll, serverCwd,
   };
+  const recordLocalTerminalActivity = (sessionId: string): void => {
+    if (!controllerLeaseManager) return;
+    controllerLeaseManager.acquireLocal({
+      sessionId: sessionId as SessionId,
+      sessionEpoch: sessionStreamPublisher?.currentCursor(sessionId)?.sessionEpoch ?? ('1' as SessionEpoch),
+    });
+  };
+
+  const configureRemoteCommandHandler = async (): Promise<void> => {
+    const startupRemoteNodeClient = remoteNodeClient as RemoteNodeClient | null;
+    const startupCommandJournal = commandJournal as CommandJournal | null;
+    if (!startupRemoteNodeClient || !startupCommandJournal) return;
+    const { executeWithPipeline } = await import('../remote/command-pipeline.js');
+    const { RemotePermissionBroker } = await import('../remote/permission-broker.js');
+    const { isPresetReplyId, sendPresetReply } = await import('../remote/preset-reply.js');
+    const { grantForRemoteCommandAction } = await import('../remote/grants.js');
+    const { evaluateGrantById } = await import('../remote/share-policy.js');
+    const subjectForCommand = (command: { action: string; nodeId: string; sessionId: string }): ShareSubject => (
+      command.action === 'launch'
+        ? { kind: 'node', nodeId: command.nodeId as NodeId }
+        : { kind: 'session', nodeId: command.nodeId as NodeId, sessionId: command.sessionId }
+    );
+    const permissionBroker = new RemotePermissionBroker({
+      adapter,
+      monitor,
+      queue,
+      interactionLog,
+      onRespond: abortPendingSuggestion,
+      isOwnerLocal,
+    });
+    startupRemoteNodeClient.setCommandHandler(async (command) => {
+      const authorize = () => {
+        if (command.grantId === `owner-local:${command.nodeId}`) {
+          if (!isOwnerLocal({ actorId: command.actorId })) {
+            return { ok: false as const, reason: 'owner identity required' };
+          }
+        } else {
+          const requiredGrant = grantForRemoteCommandAction(command.action);
+          if (!remotePolicyCache || !requiredGrant) return { ok: false as const, reason: 'invalid grant' };
+          const decision = evaluateGrantById(remotePolicyCache, command.grantId, subjectForCommand(command), requiredGrant);
+          if (!decision.allowed) {
+            return { ok: false as const, reason: `grant ${decision.reason}` };
+          }
+        }
+        const task = taskStore.findTaskBySession(command.sessionId);
+        if (!task) return { ok: false as const, reason: 'unknown session' };
+        const session = task.sessions.find((candidate) => candidate.tmuxSession === command.sessionId);
+        const liveSession = session && session.lastStatus !== 'completed' && session.lastStatus !== 'aborted';
+        if (!liveSession) return { ok: false as const, reason: 'session is not live' };
+        if (command.action === 'mark-done') {
+          const taskId = (command.payload as { taskId?: unknown } | undefined)?.taskId;
+          if (taskId !== task.id) return { ok: false as const, reason: 'task/session mismatch' };
+        }
+        return { ok: true as const };
+      };
+      const baseValidate = () => {
+        if (command.baseRevision !== undefined && command.baseRevision < 0) {
+          return { ok: false as const, reason: 'stale baseRevision' };
+        }
+        return { ok: true as const };
+      };
+      switch (command.action) {
+        case 'presetReply':
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'presetReply',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                const presetId = (command.payload as { presetId?: unknown } | undefined)?.presetId;
+                return isPresetReplyId(presetId)
+                  ? { ok: true as const }
+                  : { ok: false as const, reason: 'invalid presetId' };
+              },
+              execute: async () => {
+                const presetId = (command.payload as { presetId: Parameters<typeof sendPresetReply>[2] }).presetId;
+                const result = await sendPresetReply(adapter, command.sessionId, presetId);
+                monitor.markInputReceived(command.sessionId);
+                queue.respondAndAdvance(command.sessionId);
+                abortPendingSuggestion(command.sessionId, 'used');
+                await interactionLog.append({
+                  type: 'user_input',
+                  agentId: command.sessionId,
+                  content: result.text,
+                  timestamp: new Date().toISOString(),
+                });
+                return result;
+              },
+            },
+          });
+        case 'permissionApprove':
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'permissionApprove',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                const keystroke = (command.payload as { keystroke?: unknown } | undefined)?.keystroke;
+                return keystroke === undefined || typeof keystroke === 'string'
+                  ? { ok: true as const }
+                  : { ok: false as const, reason: 'invalid keystroke' };
+              },
+              execute: async () => await permissionBroker.approve(
+                command.sessionId,
+                (command.payload as { keystroke?: string } | undefined)?.keystroke ?? '1',
+                command.actorId,
+              ),
+            },
+          });
+        case 'skip':
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'skip',
+              authorize,
+              validate: baseValidate,
+              execute: async () => {
+                const anomaly = queue.getAnomaly(command.sessionId);
+                const anomalyType = anomaly?.type ?? 'needs_input';
+                queue.skip(command.sessionId);
+                await interactionLog.append({
+                  type: 'finding_skipped',
+                  agentId: command.sessionId,
+                  anomalyType,
+                  timestamp: new Date().toISOString(),
+                });
+                return { skipped: true };
+              },
+            },
+          });
+        case 'snooze':
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'snooze',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                const durationMs = (command.payload as { durationMs?: unknown } | undefined)?.durationMs;
+                return typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0
+                  ? { ok: true as const }
+                  : { ok: false as const, reason: 'invalid durationMs' };
+              },
+              execute: async () => {
+                const anomaly = queue.getAnomaly(command.sessionId);
+                const durationMs = (command.payload as { durationMs: number }).durationMs;
+                const snooze = queue.snooze(command.sessionId, durationMs, 'remote', anomaly ?? undefined);
+                if (!snooze) throw new Error('nothing to snooze');
+                await interactionLog.append({
+                  type: 'finding_snoozed',
+                  agentId: command.sessionId,
+                  durationMs,
+                  anomalyType: anomaly?.type,
+                  timestamp: new Date().toISOString(),
+                });
+                return { snoozedUntil: snooze.expiresAt };
+              },
+            },
+          });
+        case 'mark-done':
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'mark-done',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                const taskId = (command.payload as { taskId?: unknown } | undefined)?.taskId;
+                return typeof taskId === 'string' && taskStore.getTask(taskId)
+                  ? { ok: true as const }
+                  : { ok: false as const, reason: 'unknown taskId' };
+              },
+              execute: async () => {
+                const taskId = (command.payload as { taskId: string }).taskId;
+                await completeTask(taskId, {
+                  adapter,
+                  monitor,
+                  taskStore,
+                  interactionLog,
+                  hookWatcher,
+                  watchdog,
+                  shadowRegistry,
+                  tokenTracker,
+                  suppressionTracker,
+                  checkpointCycler,
+                  queue,
+                });
+                return { taskId };
+              },
+            },
+          });
+        case 'launch': {
+          if (!remoteLaunchBroker) {
+            return await commandJournal!.appendPreAuditReject(command, 'launch feature disabled');
+          }
+          const launchCommand = {
+            ...command,
+            grantsChecked: ['launch' as const],
+          } as Parameters<typeof remoteLaunchBroker.handle>[0];
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: launchCommand,
+            isOwnerLocal,
+            handler: remoteLaunchBroker,
+          });
+        }
+        case 'leaseAcquire': {
+          if (!remoteInputAdapter || !controllerLeaseManager) {
+            return await commandJournal!.appendPreAuditReject(command, 'terminal input feature disabled');
+          }
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'leaseAcquire',
+              authorize,
+              validate: baseValidate,
+              execute: async () => {
+                const requestedLeaseId = (command.payload as { leaseId?: unknown } | undefined)?.leaseId;
+                const acquired = controllerLeaseManager!.acquireRemote({
+                  sessionId: command.sessionId,
+                  sessionEpoch: command.sessionEpoch,
+                  actorId: command.actorId,
+                  clientId: command.clientId,
+                  ...(typeof requestedLeaseId === 'string'
+                    ? { leaseId: requestedLeaseId as NonNullable<typeof command.leaseId> }
+                    : {}),
+                });
+                if (!acquired.ok) throw new Error(acquired.reason);
+                return { leaseId: acquired.lease.leaseId };
+              },
+            },
+          });
+        }
+        case 'leaseHeartbeat': {
+          if (!remoteInputAdapter || !controllerLeaseManager) {
+            return await commandJournal!.appendPreAuditReject(command, 'terminal input feature disabled');
+          }
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'leaseHeartbeat',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                return typeof command.leaseId === 'string'
+                  ? { ok: true as const }
+                  : { ok: false as const, reason: 'missing leaseId' };
+              },
+              execute: async () => {
+                const missed = (command.payload as { missed?: unknown } | undefined)?.missed === true;
+                const result = missed
+                  ? controllerLeaseManager!.recordHeartbeatMiss({
+                    sessionId: command.sessionId,
+                    leaseId: command.leaseId!,
+                    actorId: command.actorId,
+                    clientId: command.clientId,
+                  })
+                  : controllerLeaseManager!.recordHeartbeatAck({
+                    sessionId: command.sessionId,
+                    leaseId: command.leaseId!,
+                    actorId: command.actorId,
+                    clientId: command.clientId,
+                  });
+                if (!result.ok) throw new Error(result.reason);
+                return {
+                  leaseId: result.lease.leaseId,
+                  state: result.lease.state,
+                  heartbeatMisses: result.lease.heartbeatMisses,
+                };
+              },
+            },
+          });
+        }
+        case 'leaseOverride': {
+          if (!remoteInputAdapter || !controllerLeaseManager) {
+            return await commandJournal!.appendPreAuditReject(command, 'terminal input feature disabled');
+          }
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'leaseOverride',
+              authorize,
+              validate: baseValidate,
+              execute: async () => {
+                controllerLeaseManager!.revoke(command.sessionId, 'owner-override');
+                return { revoked: true };
+              },
+            },
+          });
+        }
+        case 'submitMessage': {
+          if (!remoteInputAdapter) {
+            return await commandJournal!.appendPreAuditReject(command, 'terminal input feature disabled');
+          }
+          const { isSubmitMessageCommand } = await import('./remote-input-adapter.js');
+          return await executeWithPipeline({
+            journal: commandJournal!,
+            request: command,
+            isOwnerLocal,
+            handler: {
+              action: 'submitMessage',
+              authorize,
+              validate: () => {
+                const valid = baseValidate();
+                if (!valid.ok) return valid;
+                if (!isSubmitMessageCommand(command)) {
+                  return { ok: false as const, reason: 'invalid submit message' };
+                }
+                return { ok: true as const };
+              },
+              execute: async () => {
+                if (!isSubmitMessageCommand(command)) throw new Error('invalid submit message');
+                const result = await remoteInputAdapter!.submit(command);
+                monitor.markInputReceived(command.sessionId);
+                queue.respondAndAdvance(command.sessionId);
+                abortPendingSuggestion(command.sessionId, 'used');
+                await interactionLog.append({
+                  type: 'user_input',
+                  agentId: command.sessionId,
+                  content: command.payload.text,
+                  timestamp: new Date().toISOString(),
+                });
+                return result;
+              },
+            },
+          });
+        }
+      }
+    });
+  };
+  await configureRemoteCommandHandler();
 
   const startupRecoverySummary = await runStartupRecoveryPhase({
     taskStore,
@@ -606,11 +1030,165 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   diagnosticRunner.start();
 
+  const remoteShare: RemoteShareDeps = {
+    csrfToken: randomBytes(16).toString('hex'),
+    client: null,
+  };
+
+  const stopRemoteRuntime = async (): Promise<void> => {
+    sessionStreamPublisher?.stop();
+    sessionStreamPublisher = null;
+    remoteNodeClient?.setConnectionObserver(null);
+    controllerLeaseManager?.dispose();
+    controllerLeaseManager = null;
+    remoteInputAdapter = null;
+    commandJournal = null;
+    await remoteNodeClient?.stop();
+    remoteNodeClient = null;
+    remotePolicyCache = null;
+    taskShareService = null;
+    remoteShare.client = null;
+    delete remoteShare.service;
+  };
+
+  const startRemoteRuntime = async (credentials: RelayConnectionCredentials): Promise<RelayRuntimeHandle> => {
+    await stopRemoteRuntime();
+    const { createRemoteAuditScaffold } = await import('../remote/audit.js');
+    const { CommandJournal } = await import('../remote/command-journal.js');
+    const { createRemoteNodeClient } = await import('../remote/node-client.js');
+    const { ControllerLeaseManager } = await import('../remote/controller-lease.js');
+    const { remoteTerminalInputFeatureEnabled } = await import('../remote/handshake.js');
+    const { asServerRevision } = await import('../remote/ids.js');
+    const { RemotePolicyCache } = await import('../remote/policy-cache.js');
+
+    createRemoteAuditScaffold({ relayUrl: credentials.relayUrl });
+    remotePolicyCache = new RemotePolicyCache();
+    const nodeClient = await createRemoteNodeClient({
+      relayUrl: credentials.relayUrl,
+      token: credentials.relayToken,
+      kookrDir,
+      softwareVersion: buildInfo.version,
+      ...(credentials.displayName ? { displayName: credentials.displayName } : {}),
+      ...(credentials.publicBaseUrl ? { publicBaseUrl: credentials.publicBaseUrl } : {}),
+      onPolicyMessage: async (message) => {
+        if (!remotePolicyCache) return;
+        if (message.type === 'policy.sync') {
+          remotePolicyCache.applySync({
+            policyVersion: message.policyVersion,
+            grants: message.grants,
+            revokedGrantIds: message.revokedGrantIds,
+          });
+          for (const grantId of message.revokedGrantIds) {
+            await commandJournal?.revokeGrant(grantId, message.policyVersion);
+          }
+          taskShareService?.publishActiveTaskProjections();
+          return;
+        }
+        if (message.type === 'policy.delta') {
+          for (const grant of message.upserts) remotePolicyCache.upsert(grant);
+          for (const grantId of message.revokes) {
+            const grant = remotePolicyCache.get(grantId);
+            if (grant?.subject.kind === 'session') {
+              controllerLeaseManager?.revoke(grant.subject.sessionId as SessionId, 'policy-revoke');
+            }
+            remotePolicyCache.revoke(grantId, message.policyVersion);
+            await commandJournal?.revokeGrant(grantId, message.policyVersion);
+          }
+          taskShareService?.publishActiveTaskProjections();
+          return;
+        }
+        if (message.type === 'policy.revoke') {
+          const grant = remotePolicyCache.get(message.grantId);
+          if (grant?.subject.kind === 'session') {
+            controllerLeaseManager?.revoke(grant.subject.sessionId as SessionId, 'policy-revoke');
+          }
+          remotePolicyCache.revoke(message.grantId, message.policyVersion);
+          await commandJournal?.revokeGrant(message.grantId, message.policyVersion);
+          taskShareService?.publishActiveTaskProjections();
+        }
+      },
+    });
+    remoteNodeClient = nodeClient;
+    commandJournal = await CommandJournal.open({
+      kookrDir,
+      nodeId: nodeClient.status.nodeId,
+      nodeEpoch: nodeClient.status.nodeEpoch,
+    });
+    let leaseRevision = 0;
+    controllerLeaseManager = new ControllerLeaseManager({
+      nodeId: nodeClient.status.nodeId,
+      nodeEpoch: nodeClient.status.nodeEpoch,
+      nextServerRevision: () => asServerRevision(++leaseRevision),
+      publish: (event) => {
+        remoteNodeClient?.publish(event);
+      },
+    });
+    nodeClient.setConnectionObserver((state) => {
+      if (state === 'disconnected') controllerLeaseManager?.handleRelayDisconnect();
+      else controllerLeaseManager?.handleRelayReconnect();
+    });
+    if (remoteTerminalInputFeatureEnabled({ ...process.env, KOOKR_RELAY_URL: credentials.relayUrl })) {
+      const { createRemoteInputAdapter } = await import('./remote-input-adapter.js');
+      remoteInputAdapter = await createRemoteInputAdapter({
+        terminalBackend,
+        leaseManager: controllerLeaseManager,
+        getCurrentSeq: (sessionId, sessionEpoch) => {
+          const cursor = sessionStreamPublisher?.currentCursor(sessionId);
+          if (!cursor || cursor.sessionEpoch !== sessionEpoch) return null;
+          return cursor.lastSeq;
+        },
+      });
+      console.log('[remote] terminal input adapter enabled');
+    } else {
+      console.log('[remote] terminal input adapter disabled');
+    }
+
+    const relayShareClient = createRelayShareClient({
+      relayUrl: credentials.relayUrl,
+      relayToken: credentials.relayToken,
+    });
+    taskShareService = new TaskShareService({
+      client: relayShareClient,
+      taskStore,
+      queue,
+      remotePolicyCache,
+      getNodeIdentity: () => ({
+        nodeId: nodeClient.status.nodeId,
+        nodeEpoch: nodeClient.status.nodeEpoch,
+      }),
+      nextServerRevision: nextRemoteShareRevision,
+      publish: (event) => nodeClient.publish(event),
+    });
+    remoteShare.client = relayShareClient;
+    remoteShare.service = taskShareService;
+
+    const { createSessionStreamPublisher } = await import('../remote/session-stream-publisher.js');
+    sessionStreamPublisher = createSessionStreamPublisher({
+      terminalBackend,
+      remoteNodeClient: nodeClient,
+    });
+    await sessionStreamPublisher.start();
+    await configureRemoteCommandHandler();
+
+    return {
+      nodeStatus: nodeClient.status,
+      start: () => nodeClient.start(),
+      stop: stopRemoteRuntime,
+    };
+  };
+
+  const relayConnection = createRelayConnectionManager({
+    kookrDir,
+    startRuntime: startRemoteRuntime,
+  });
+  await relayConnection.startConfigured();
+
   const app = createRoutes({
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
     interactionLog,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, frontendDir, broadcastToAll,
+    remoteShare, relayConnection,
     shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
@@ -676,16 +1254,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
 
-  // --- Contribution Workspace services (Phase 1a) ---
-  const leaseService = new WorktreeLeaseService();
-  const serverProjectId = await getProjectId(serverCwd);
-  const policyResolver = new RepoPolicyResolver({ serverProjectId });
-  const attemptRepository = new WorkspaceAttemptRepository(join(kookrDir, 'workspace-attempts.json'));
-  // Backfill leases from existing task/session state
-  const leaseReconciliation = leaseService.reconcileFromTaskStore(taskStore);
-  if (leaseReconciliation.backfilled > 0 || leaseReconciliation.released > 0) {
-    console.log(`[workspace] Lease reconciliation: backfilled=${leaseReconciliation.backfilled} released=${leaseReconciliation.released}`);
-  }
+  const {
+    leaseService,
+    serverProjectId,
+    policyResolver,
+    attemptRepository,
+  } = await createContributionWorkspaceServices({ kookrDir, serverCwd, taskStore });
 
   const takePredeleteSnapshot = async (): Promise<void> => {
     // Fail loud, not silent. rfc-task-loss-prevention D3 keeps the snapshot
@@ -718,7 +1292,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const wsConnectionDeps: WsConnectionDeps = {
     taskStore, queue, monitor, adapter, adapterRegistry,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
-    serverCwd, sttUrl, abortPendingSuggestion,
+    serverCwd, sttUrl, ttsUrl, abortPendingSuggestion,
     lifecycleExtras: { hookWatcher, watchdog, shadowRegistry, tokenTracker },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
     broadcastProjectSummaries,
@@ -778,11 +1352,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     terminalDeps,
     useFakeTerminalBridge,
+    onLocalTerminalActivity: recordLocalTerminalActivity,
     onDashboardConnection: (ws) => handleWsConnection(ws, clients, wsConnectionDeps),
   });
 
   // Start background services that should wait for the server to be listening.
   backgroundServices.startAfterListen();
+
+  const remoteChatTrigger = await startRemoteChatTrigger({
+    host,
+    port,
+    kookrDir,
+    launchTask: (opts) => launchTask(launchServiceDeps, opts),
+    llmClient,
+    lifecycleSignal,
+  });
+  const telegramHandle = remoteChatTrigger.handle;
+  onPermissionBlockedHolder = remoteChatTrigger.onPermissionBlocked;
 
   // --- Close ---
 
@@ -810,6 +1396,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     // Stop diagnostic runner
     diagnosticRunner.dispose();
+    await stopRemoteRuntime();
 
     // Stop hook watchers and trackers
     hookWatcher.stopAll();
@@ -853,94 +1440,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     });
   }
 
-  // --- Telegram remote-chat trigger (opt-in; off by default) ---
-  // See docs/rfc/rfc-remote-chat-trigger.md. Enabled when KOOKR_TELEGRAM_BOT_TOKEN
-  // is set; the panic switch KOOKR_REMOTE_CHAT_DISABLED=1 short-circuits everything.
-  let telegramHandle: { stop(): Promise<void> } | null = null;
-  if (process.env.KOOKR_REMOTE_CHAT_DISABLED === '1') {
-    console.log('[telegram] disabled via KOOKR_REMOTE_CHAT_DISABLED');
-  } else if (process.env.KOOKR_TELEGRAM_BOT_TOKEN) {
-    try {
-      const { startTelegramTrigger, probeWhisperReachability } = await import('../integrations/telegram/index.js');
-      const allowedUserIds = new Set(
-        (process.env.KOOKR_TELEGRAM_ALLOWED_USERS ?? '')
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .map(Number)
-          .filter((n) => !isNaN(n)),
-      );
-      const allowedProjects = (process.env.KOOKR_REMOTE_CHAT_PROJECTS ?? '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((cwd) => ({ name: cwd.split('/').pop() ?? cwd, cwd }));
-
-      if (allowedUserIds.size === 0) {
-        console.warn(
-          '[telegram] KOOKR_TELEGRAM_BOT_TOKEN set but KOOKR_TELEGRAM_ALLOWED_USERS empty — refusing to start ' +
-          '(an unauthenticated bot would be a backdoor).',
-        );
-      } else if (allowedProjects.length === 0) {
-        console.warn(
-          '[telegram] KOOKR_TELEGRAM_BOT_TOKEN set but KOOKR_REMOTE_CHAT_PROJECTS empty — refusing to start ' +
-          '(no projects to spawn against).',
-        );
-      } else {
-        const dashboardBaseUrl = `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`;
-        const handle = await startTelegramTrigger({
-          token: process.env.KOOKR_TELEGRAM_BOT_TOKEN,
-          allowedUserIds,
-          allowedProjects,
-          dataDir: kookrDir,
-          dryRun: process.env.KOOKR_REMOTE_CHAT_DRY_RUN === '1',
-          allowCodexRemoteSpawn: process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX === '1',
-          dashboardBaseUrl,
-          launchTask: (opts) => launchTask(launchServiceDeps, opts),
-          llmClient,
-          // Telegram audio transcription via the local faster-whisper-server.
-          // Unset → audio messages are dropped with `dropped_audio_disabled`.
-          // See issues #574 and #585.
-          whisperUrl: process.env.KOOKR_STT_WHISPER_URL,
-          // Cascade server shutdown into the warmup so STT teardown does not
-          // race the in-flight whisper request. See issue #188.
-          lifecycleSignal,
-        });
-        telegramHandle = handle;
-        // Install the late-bound R16 callback now that the integration is up.
-        onPermissionBlockedHolder = handle.onPermissionBlocked;
-        console.log(
-          `[telegram] active — allowedUsers=${allowedUserIds.size} projects=${allowedProjects.length} ` +
-          `dryRun=${process.env.KOOKR_REMOTE_CHAT_DRY_RUN === '1'} ` +
-          `codex=${process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX === '1' ? 'enabled' : 'disabled'} ` +
-          `audio=${process.env.KOOKR_STT_WHISPER_URL ? 'enabled' : 'disabled'}`,
-        );
-        // Issue #576: surface whisper misconfig at startup so operators see it
-        // in the server log instead of inferring it from per-message timeouts.
-        // Probe is fire-and-forget and informational only — never gates startup,
-        // never re-runs. Per-message error path (#574/#577) remains the runtime
-        // fallback for any whisper container that restarts after this point.
-        if (process.env.KOOKR_STT_WHISPER_URL) {
-          const whisperUrl = process.env.KOOKR_STT_WHISPER_URL;
-          void probeWhisperReachability(whisperUrl).then((probe) => {
-            if (probe.ok) {
-              const suffix = probe.modelCount !== null ? ` (${probe.modelCount} models)` : '';
-              console.log(`[telegram] voice probe: 200 OK${suffix}`);
-            } else {
-              console.warn(
-                `[telegram] voice probe FAILED: ${probe.reason} at ${whisperUrl}/v1/models — ` +
-                'voice transcription will fail per-message',
-              );
-            }
-          });
-        }
-      }
-    } catch (err) {
-      // Integration startup failure must NOT crash the server. Log and continue.
-      console.error('[telegram] Failed to start integration:', err instanceof Error ? err.message : err);
-    }
-  }
-
   // Non-blocking startup refresh of the OSS attempts view.
   // Fire-and-forget: failures surface in the UI via lastRefreshAt + error banner.
   ossRefresher
@@ -973,6 +1472,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     projectConfigStore,
     projectSidebarStore,
     circuitBreakerRegistry,
+    remoteLaunchBroker,
+    controllerLeaseManager,
+    remoteInputAdapter,
     app,
     broadcastToAll,
     close,

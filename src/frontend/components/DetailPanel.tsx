@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
-import type { TaskStatus } from '../../core/types.js';
+import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { track, trackClick } from '../telemetry.js';
 import type { DiffClickTarget } from './ActivityPanel.js';
 import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle } from '../presentation.js';
@@ -10,6 +10,7 @@ import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
 import { computeTerminalVisible } from './detail-panel-visibility.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
+import { TaskShareModal } from './TaskShareModal.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -221,6 +222,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
   const hookSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const [permissionButtonsDisabled, setPermissionButtonsDisabled] = useState(false);
   const [isNarrowViewport, setIsNarrowViewport] = useState(() =>
@@ -543,13 +545,19 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
     armShortcuts();
   }
 
+  // A `needs_input` finding derived from a normal Stop is a completed turn,
+  // not an explicit question — keep the detail badge consistent with the
+  // finding card's "Turn Complete" presentation. See issue #358.
+  const isCompletedTurn = agent.anomaly?.type === 'needs_input'
+    && agent.turnState === 'completed_turn';
   const badgeClass = agent.anomaly
     ? agent.anomaly.type === 'permission_blocked' ? 'permission'
       : agent.anomaly.type === 'repeated_error' ? 'error'
+      : isCompletedTurn ? 'turn-complete'
       : 'input'
     : '';
   const badgeLabel = agent.anomaly
-    ? agent.anomaly.type.replace('_', ' ').toUpperCase()
+    ? isCompletedTurn ? 'TURN COMPLETE' : agent.anomaly.type.replace('_', ' ').toUpperCase()
     : 'RUNNING';
   const agentProvider = agent.agentType ? agentProviderPresentation(agent.agentType) : null;
 
@@ -564,6 +572,16 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
         </div>
         <div className="detail-header-right">
           <TaskIdCopyButton taskId={agent.taskId} />
+          {agent.taskId && (
+            <button
+              type="button"
+              data-testid="task-share-button"
+              className="action-btn action-btn--neutral"
+              onClick={() => setShowShareModal(true)}
+            >
+              Share
+            </button>
+          )}
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
             <span className={`detail-header-warning worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
               {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
@@ -603,6 +621,14 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
           )}
         </div>
       </div>
+      {agent.taskId && (
+        <TaskShareModal
+          taskId={agent.taskId}
+          taskLabel={agent.taskName ?? agent.agentId}
+          open={showShareModal}
+          onClose={() => setShowShareModal(false)}
+        />
+      )}
 
       {/* Side-by-side split (wide) + tab fallback (narrow) */}
       {(() => {
@@ -802,9 +828,11 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
             placeholder={
               isDirectReply
                 ? `Message ${agent.taskName ?? agent.agentId}...`
-                : agent.anomaly?.type === 'needs_input'
-                  ? `${agent.taskName ?? agent.agentId} is waiting — send a hint...`
-                  : `Send a hint to ${agent.taskName ?? agent.agentId}...`
+                : agent.turnState === 'completed_turn'
+                  ? `Turn complete — send a follow-up to ${agent.taskName ?? agent.agentId}...`
+                  : agent.anomaly?.type === 'needs_input'
+                    ? `${agent.taskName ?? agent.agentId} is waiting — send a hint...`
+                    : `Send a hint to ${agent.taskName ?? agent.agentId}...`
             }
             value={input}
             onChange={handleInputChange}

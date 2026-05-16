@@ -81,6 +81,42 @@ describe('WebSocket MessageRouter', () => {
     }
   });
 
+  test('client connects - snapshot includes Phase 6 speech capability descriptors', () => {
+    const routerWithSpeech = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+      sttUrl: 'ws://localhost:8003',
+      ttsUrl: 'http://localhost:8004',
+      launchTask: async () => {
+        throw new Error('not used');
+      },
+      ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
+    });
+
+    routerWithSpeech.handleConnect();
+
+    const msg = sentMessages.at(-1);
+    expect(msg?.type).toBe('snapshot');
+    if (msg?.type === 'snapshot') {
+      expect(msg.sttEnabled).toBe(true);
+      expect(msg.sttUrl).toBe('ws://localhost:8003');
+      expect(msg.ttsEnabled).toBe(true);
+      expect(msg.ttsUrl).toBe('http://localhost:8004');
+      expect(msg.speechCapabilities?.capabilitiesByDevice['local-node']).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'stt',
+          endpointUrl: 'ws://localhost:8003',
+          protocol: 'kookr-stt-ws',
+        }),
+        expect.objectContaining({
+          kind: 'tts',
+          endpointUrl: 'http://localhost:8004',
+        }),
+      ]));
+    }
+  });
+
   test('client connects - snapshot includes activity metadata when provider is wired', () => {
     monitor.processEvents('agent-1', [
       { type: 'tool_use', sessionId: 's1', toolName: 'Read', toolInput: {} },

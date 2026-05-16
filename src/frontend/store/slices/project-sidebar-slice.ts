@@ -1,20 +1,12 @@
 import {
+  applyProjectSidebarCommand,
   deriveProjectSidebarState,
-  forgetProjectFromSidebar,
-  hideProjectInPrefs,
-  loadProjectSidebarCatalog,
-  loadProjectSidebarPrefs,
-  moveVisibleProjectInPrefs,
-  pinProjectToTop,
-  prefsFromProjectSidebarState,
-  reorderVisibleProjectInPrefs,
-  resetProjectSidebarPrefs,
-  saveProjectSidebarCatalog,
-  saveProjectSidebarPrefs,
-  showProjectInPrefs,
+  loadProjectSidebarSnapshot,
+  projectSidebarSnapshotFromState,
+  reconcileProjectSidebarSnapshot,
+  saveProjectSidebarSnapshot,
   toProjectSidebarState,
-  unpinProjectInPrefs,
-  updateProjectSidebarCatalog,
+  type ProjectSidebarSnapshot,
 } from '../project-sidebar-prefs.js';
 import type { ProjectSidebarState } from '../../../shared/project-sidebar.js';
 import { parseOwnerRepoSlug } from '../../../shared/repo-slug.js';
@@ -26,14 +18,16 @@ import type {
 } from '../store-types.js';
 import { isActiveFinding, isHealthyRunning } from '../finding-helpers.js';
 
-function persistProjectSidebarState(
-  nextPrefs: ProjectSidebarSlice['projectSidebarPrefs'],
-  nextCatalog: ProjectSidebarSlice['projectSidebarCatalog'],
-  options: { savePrefs?: boolean; saveCatalog?: boolean } = {},
-): string | null {
-  const prefsError = options.savePrefs === false ? null : saveProjectSidebarPrefs(nextPrefs);
-  const catalogError = options.saveCatalog === false ? null : saveProjectSidebarCatalog(nextCatalog);
-  return prefsError?.message ?? catalogError?.message ?? null;
+function sidebarSnapshotFromStore(state: Pick<ProjectSidebarSlice, 'projectSidebarPrefs' | 'projectSidebarCatalog'>): ProjectSidebarSnapshot {
+  return {
+    prefs: state.projectSidebarPrefs,
+    catalog: state.projectSidebarCatalog,
+  };
+}
+
+function persistProjectSidebarSnapshot(snapshot: ProjectSidebarSnapshot): string | null {
+  const error = saveProjectSidebarSnapshot(snapshot);
+  return error?.message ?? null;
 }
 
 function isServerStateEmpty(state: ProjectSidebarState): boolean {
@@ -56,14 +50,13 @@ function isProjectSidebarState(value: unknown): value is ProjectSidebarState {
 }
 
 function saveProjectSidebarToServer(
-  prefs: ProjectSidebarSlice['projectSidebarPrefs'],
-  catalog: ProjectSidebarSlice['projectSidebarCatalog'],
+  snapshot: ProjectSidebarSnapshot,
   set: StoreSet,
 ): void {
   void fetch('/api/projects/sidebar', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(toProjectSidebarState(prefs, catalog)),
+    body: JSON.stringify(toProjectSidebarState(snapshot)),
   }).then((res) => {
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}`);
@@ -75,9 +68,12 @@ function saveProjectSidebarToServer(
 }
 
 export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): ProjectSidebarSlice {
-  const initialSidebarPrefs = loadProjectSidebarPrefs();
-  const initialSidebarCatalog = loadProjectSidebarCatalog();
-  const initialSidebarDerived = deriveProjectSidebarState([], initialSidebarPrefs, initialSidebarCatalog);
+  const initialSidebarSnapshot = loadProjectSidebarSnapshot();
+  const initialSidebarDerived = deriveProjectSidebarState(
+    [],
+    initialSidebarSnapshot.prefs,
+    initialSidebarSnapshot.catalog,
+  );
 
   return {
     selectedProject: typeof localStorage !== 'undefined' ? localStorage.getItem('kookr-selected-project') : null,
@@ -85,8 +81,8 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
     projectSummaries: [],
     visibleProjectSummaries: initialSidebarDerived.visibleProjects,
     projectSidebarRows: initialSidebarDerived.managerRows,
-    projectSidebarPrefs: initialSidebarPrefs,
-    projectSidebarCatalog: initialSidebarCatalog,
+    projectSidebarPrefs: initialSidebarSnapshot.prefs,
+    projectSidebarCatalog: initialSidebarSnapshot.catalog,
     projectSidebarError: null,
     projectSidebarServerHydrated: false,
     projectSummariesHydrated: false,
@@ -159,18 +155,18 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
         }
 
         const prev = get();
-        const localState = toProjectSidebarState(prev.projectSidebarPrefs, prev.projectSidebarCatalog);
+        const localSnapshot = sidebarSnapshotFromStore(prev);
+        const localState = toProjectSidebarState(localSnapshot);
         const nextState = isServerStateEmpty(data) && !isServerStateEmpty(localState)
           ? localState
           : data;
-        const nextPrefs = prefsFromProjectSidebarState(nextState);
-        const nextCatalog = nextState.catalog;
-        const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, nextCatalog);
-        const persistError = persistProjectSidebarState(nextPrefs, nextCatalog);
+        const nextSnapshot = projectSidebarSnapshotFromState(nextState);
+        const derived = deriveProjectSidebarState(prev.projectSummaries, nextSnapshot.prefs, nextSnapshot.catalog);
+        const persistError = persistProjectSidebarSnapshot(nextSnapshot);
 
         set({
-          projectSidebarPrefs: nextPrefs,
-          projectSidebarCatalog: nextCatalog,
+          projectSidebarPrefs: nextSnapshot.prefs,
+          projectSidebarCatalog: nextSnapshot.catalog,
           visibleProjectSummaries: derived.visibleProjects,
           projectSidebarRows: derived.managerRows,
           projectSidebarServerHydrated: true,
@@ -179,7 +175,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
         });
 
         if (nextState === localState) {
-          saveProjectSidebarToServer(nextPrefs, nextCatalog, set);
+          saveProjectSidebarToServer(nextSnapshot, set);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -189,20 +185,21 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
 
     handleProjectSummaries: (projects) => {
       const prev = get();
-      const nextCatalog = updateProjectSidebarCatalog(prev.projectSidebarCatalog, projects);
-      const derived = deriveProjectSidebarState(projects, prev.projectSidebarPrefs, nextCatalog);
-      const error = nextCatalog === prev.projectSidebarCatalog
+      const prevSnapshot = sidebarSnapshotFromStore(prev);
+      const nextSnapshot = reconcileProjectSidebarSnapshot(prevSnapshot, projects);
+      const derived = deriveProjectSidebarState(projects, nextSnapshot.prefs, nextSnapshot.catalog);
+      const error = nextSnapshot.catalog === prev.projectSidebarCatalog
         ? null
-        : persistProjectSidebarState(prev.projectSidebarPrefs, nextCatalog, { savePrefs: false });
-      if (prev.projectSidebarServerHydrated && nextCatalog !== prev.projectSidebarCatalog) {
-        saveProjectSidebarToServer(prev.projectSidebarPrefs, nextCatalog, set);
+        : persistProjectSidebarSnapshot(nextSnapshot);
+      if (prev.projectSidebarServerHydrated && nextSnapshot.catalog !== prev.projectSidebarCatalog) {
+        saveProjectSidebarToServer(nextSnapshot, set);
       }
 
       set({
         projectSummaries: projects,
         visibleProjectSummaries: derived.visibleProjects,
         projectSidebarRows: derived.managerRows,
-        projectSidebarCatalog: nextCatalog,
+        projectSidebarCatalog: nextSnapshot.catalog,
         projectSidebarError: error,
         projectSummariesHydrated: true,
         ...(derived.hasRecoveryShell ? { projectSidebarVisible: true } : {}),
@@ -211,15 +208,15 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
 
     pinProjectToTop: (project) => {
       const prev = get();
-      const nextPrefs = pinProjectToTop(prev.projectSidebarPrefs, project, prev.projectSummaries, prev.projectSidebarCatalog);
-      const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
-      const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      const nextSnapshot = applyProjectSidebarCommand(sidebarSnapshotFromStore(prev), { type: 'pin', project }, prev.projectSummaries);
+      const derived = deriveProjectSidebarState(prev.projectSummaries, nextSnapshot.prefs, nextSnapshot.catalog);
+      const error = persistProjectSidebarSnapshot(nextSnapshot);
       if (prev.projectSidebarServerHydrated) {
-        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+        saveProjectSidebarToServer(nextSnapshot, set);
       }
 
       set({
-        projectSidebarPrefs: nextPrefs,
+        projectSidebarPrefs: nextSnapshot.prefs,
         visibleProjectSummaries: derived.visibleProjects,
         projectSidebarRows: derived.managerRows,
         projectSidebarError: error,
@@ -229,15 +226,15 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
 
     unpinSidebarProject: (project) => {
       const prev = get();
-      const nextPrefs = unpinProjectInPrefs(prev.projectSidebarPrefs, project, prev.projectSummaries, prev.projectSidebarCatalog);
-      const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
-      const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      const nextSnapshot = applyProjectSidebarCommand(sidebarSnapshotFromStore(prev), { type: 'unpin', project }, prev.projectSummaries);
+      const derived = deriveProjectSidebarState(prev.projectSummaries, nextSnapshot.prefs, nextSnapshot.catalog);
+      const error = persistProjectSidebarSnapshot(nextSnapshot);
       if (prev.projectSidebarServerHydrated) {
-        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+        saveProjectSidebarToServer(nextSnapshot, set);
       }
 
       set({
-        projectSidebarPrefs: nextPrefs,
+        projectSidebarPrefs: nextSnapshot.prefs,
         visibleProjectSummaries: derived.visibleProjects,
         projectSidebarRows: derived.managerRows,
         projectSidebarError: error,
@@ -247,12 +244,12 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
 
     hideSidebarProject: (project) => {
       const prev = get();
-      const nextPrefs = hideProjectInPrefs(prev.projectSidebarPrefs, project, prev.projectSummaries, prev.projectSidebarCatalog);
-      const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
+      const nextSnapshot = applyProjectSidebarCommand(sidebarSnapshotFromStore(prev), { type: 'hide', project }, prev.projectSummaries);
+      const derived = deriveProjectSidebarState(prev.projectSummaries, nextSnapshot.prefs, nextSnapshot.catalog);
       const hidingSelected = prev.selectedProject === project;
-      const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      const error = persistProjectSidebarSnapshot(nextSnapshot);
       if (prev.projectSidebarServerHydrated) {
-        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+        saveProjectSidebarToServer(nextSnapshot, set);
       }
 
       if (hidingSelected && typeof localStorage !== 'undefined') {
@@ -260,7 +257,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       }
 
       set({
-        projectSidebarPrefs: nextPrefs,
+        projectSidebarPrefs: nextSnapshot.prefs,
         visibleProjectSummaries: derived.visibleProjects,
         projectSidebarRows: derived.managerRows,
         projectSidebarError: error,
@@ -271,15 +268,15 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
 
     showSidebarProject: (project) => {
       const prev = get();
-      const nextPrefs = showProjectInPrefs(prev.projectSidebarPrefs, project, prev.projectSummaries, prev.projectSidebarCatalog);
-      const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
-      const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      const nextSnapshot = applyProjectSidebarCommand(sidebarSnapshotFromStore(prev), { type: 'show', project }, prev.projectSummaries);
+      const derived = deriveProjectSidebarState(prev.projectSummaries, nextSnapshot.prefs, nextSnapshot.catalog);
+      const error = persistProjectSidebarSnapshot(nextSnapshot);
       if (prev.projectSidebarServerHydrated) {
-        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+        saveProjectSidebarToServer(nextSnapshot, set);
       }
 
       set({
-        projectSidebarPrefs: nextPrefs,
+        projectSidebarPrefs: nextSnapshot.prefs,
         visibleProjectSummaries: derived.visibleProjects,
         projectSidebarRows: derived.managerRows,
         projectSidebarError: error,
@@ -289,15 +286,15 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
 
     moveSidebarProject: (project, direction) => {
       const prev = get();
-      const nextPrefs = moveVisibleProjectInPrefs(prev.projectSidebarPrefs, project, direction, prev.projectSummaries, prev.projectSidebarCatalog);
-      const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
-      const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      const nextSnapshot = applyProjectSidebarCommand(sidebarSnapshotFromStore(prev), { type: 'move', project, direction }, prev.projectSummaries);
+      const derived = deriveProjectSidebarState(prev.projectSummaries, nextSnapshot.prefs, nextSnapshot.catalog);
+      const error = persistProjectSidebarSnapshot(nextSnapshot);
       if (prev.projectSidebarServerHydrated) {
-        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+        saveProjectSidebarToServer(nextSnapshot, set);
       }
 
       set({
-        projectSidebarPrefs: nextPrefs,
+        projectSidebarPrefs: nextSnapshot.prefs,
         visibleProjectSummaries: derived.visibleProjects,
         projectSidebarRows: derived.managerRows,
         projectSidebarError: error,
@@ -306,23 +303,19 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
 
     reorderSidebarProject: (project, targetPinned, targetProject, position) => {
       const prev = get();
-      const nextPrefs = reorderVisibleProjectInPrefs(
-        prev.projectSidebarPrefs,
-        project,
-        targetPinned,
-        targetProject,
-        position,
+      const nextSnapshot = applyProjectSidebarCommand(
+        sidebarSnapshotFromStore(prev),
+        { type: 'reorder', project, targetPinned, targetProject, position },
         prev.projectSummaries,
-        prev.projectSidebarCatalog,
       );
-      const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
-      const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      const derived = deriveProjectSidebarState(prev.projectSummaries, nextSnapshot.prefs, nextSnapshot.catalog);
+      const error = persistProjectSidebarSnapshot(nextSnapshot);
       if (prev.projectSidebarServerHydrated) {
-        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+        saveProjectSidebarToServer(nextSnapshot, set);
       }
 
       set({
-        projectSidebarPrefs: nextPrefs,
+        projectSidebarPrefs: nextSnapshot.prefs,
         visibleProjectSummaries: derived.visibleProjects,
         projectSidebarRows: derived.managerRows,
         projectSidebarError: error,
@@ -332,11 +325,11 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
 
     resetProjectSidebar: () => {
       const prev = get();
-      const nextPrefs = resetProjectSidebarPrefs();
-      const derived = deriveProjectSidebarState(prev.projectSummaries, nextPrefs, prev.projectSidebarCatalog);
-      const error = persistProjectSidebarState(nextPrefs, prev.projectSidebarCatalog, { saveCatalog: false });
+      const nextSnapshot = applyProjectSidebarCommand(sidebarSnapshotFromStore(prev), { type: 'reset' }, prev.projectSummaries);
+      const derived = deriveProjectSidebarState(prev.projectSummaries, nextSnapshot.prefs, nextSnapshot.catalog);
+      const error = persistProjectSidebarSnapshot(nextSnapshot);
       if (prev.projectSidebarServerHydrated) {
-        saveProjectSidebarToServer(nextPrefs, prev.projectSidebarCatalog, set);
+        saveProjectSidebarToServer(nextSnapshot, set);
       }
 
       if (typeof localStorage !== 'undefined') {
@@ -345,7 +338,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
 
       set({
         selectedProject: null,
-        projectSidebarPrefs: nextPrefs,
+        projectSidebarPrefs: nextSnapshot.prefs,
         visibleProjectSummaries: derived.visibleProjects,
         projectSidebarRows: derived.managerRows,
         projectSidebarError: error,
@@ -463,10 +456,10 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
         // discovery, limits, notes), it will be re-added automatically.
         const projectId = `github.com/${slug}`;
         const prev = get();
-        const forgotten = forgetProjectFromSidebar(
-          prev.projectSidebarPrefs,
-          prev.projectSidebarCatalog,
-          projectId,
+        const forgotten = applyProjectSidebarCommand(
+          sidebarSnapshotFromStore(prev),
+          { type: 'forget', project: projectId },
+          prev.projectSummaries,
         );
         const remainingSummaries = prev.projectSummaries.filter(
           (p) => p.project !== projectId,
@@ -477,9 +470,9 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
           forgotten.catalog,
         );
         const hidingSelected = prev.selectedProject === projectId;
-        const persistError = persistProjectSidebarState(forgotten.prefs, forgotten.catalog);
+        const persistError = persistProjectSidebarSnapshot(forgotten);
         if (prev.projectSidebarServerHydrated) {
-          saveProjectSidebarToServer(forgotten.prefs, forgotten.catalog, set);
+          saveProjectSidebarToServer(forgotten, set);
         }
         if (hidingSelected && typeof localStorage !== 'undefined') {
           localStorage.removeItem('kookr-selected-project');

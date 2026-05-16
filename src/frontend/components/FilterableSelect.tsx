@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import type { PlaybookParameterOption } from '../../core/playbook.js';
+import type { PlaybookParameterOption } from '../../shared/contracts/playbook.js';
 
 interface Props {
   options: PlaybookParameterOption[];

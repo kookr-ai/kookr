@@ -32,6 +32,11 @@ async function flush() {
   await act(async () => { await Promise.resolve(); });
 }
 
+function changeInput(input: HTMLInputElement, value: string): void {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 function renderDialog(container: HTMLElement, onClose = vi.fn()): Root {
   const root = createRoot(container);
   act(() => {
@@ -70,11 +75,13 @@ describe('SettingsDialog tabs', () => {
     await flush();
 
     const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
-    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['General', 'Hooks']);
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['General', 'Sharing', 'Hooks']);
 
     const generalTab = tabs[0];
-    const hooksTab = tabs[1];
+    const sharingTab = tabs[1];
+    const hooksTab = tabs[2];
     expect(generalTab?.getAttribute('aria-selected')).toBe('true');
+    expect(sharingTab?.getAttribute('aria-selected')).toBe('false');
     expect(hooksTab?.getAttribute('aria-selected')).toBe('false');
 
     expect(container.textContent).toContain('Enable polling');
@@ -112,6 +119,16 @@ describe('SettingsDialog tabs', () => {
     });
     await flush();
 
+    const sharingTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Sharing');
+    expect(sharingTab?.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(sharingTab);
+
+    await act(async () => {
+      sharingTab!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
+    await flush();
+
     const hooksTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
       .find((tab) => tab.textContent?.trim() === 'Hooks');
     expect(hooksTab?.getAttribute('aria-selected')).toBe('true');
@@ -120,6 +137,14 @@ describe('SettingsDialog tabs', () => {
 
     await act(async () => {
       hooksTab!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    });
+    await flush();
+
+    expect(sharingTab?.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(sharingTab);
+
+    await act(async () => {
+      sharingTab!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
     });
     await flush();
 
@@ -175,6 +200,233 @@ describe('SettingsDialog tabs', () => {
     expect(putCall).toBeDefined();
     expect(JSON.parse(String(putCall![1]!.body))).toMatchObject({
       defaultAgentType: 'round-robin',
+    });
+  });
+
+  test('connects relay credentials from the Sharing tab with the share CSRF token', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === '/api/settings') {
+        return { ok: true, json: async () => DEFAULT_SETTINGS } as Response;
+      }
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-relay' }) } as Response;
+      }
+      if (url === '/api/relay-connection' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: false,
+              source: 'none',
+              connectionState: 'localOnly',
+              relayConnected: false,
+            },
+          }),
+        } as Response;
+      }
+      if (url === '/api/relay-connection/connect' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: true,
+              source: 'stored',
+              relayUrl: 'http://relay.test',
+              nodeId: 'kookr-node-test',
+              connectionState: 'connected',
+              relayConnected: true,
+            },
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    await flush();
+
+    const sharingTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Sharing');
+    await act(async () => {
+      sharingTab!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('.settings-field input'));
+    await act(async () => {
+      changeInput(inputs[0]!, 'http://relay.test');
+      changeInput(inputs[1]!, 'kookr-node-test');
+      changeInput(inputs[2]!, 'node-token-secret');
+    });
+    await flush();
+
+    const connect = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Connect');
+    expect(connect?.disabled).toBe(false);
+    await act(async () => {
+      connect!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const connectCall = fetchMock.mock.calls.find(([url, init]) =>
+      url === '/api/relay-connection/connect' && init?.method === 'POST'
+    );
+    expect(connectCall).toBeDefined();
+    expect(connectCall![1]!.headers).toMatchObject({ 'x-kookr-csrf': 'csrf-relay' });
+    expect(JSON.parse(String(connectCall![1]!.body))).toEqual({
+      relayUrl: 'http://relay.test',
+      nodeId: 'kookr-node-test',
+      relayToken: 'node-token-secret',
+    });
+  });
+
+  test('pairs a custom relay with an admin token without sending a node token', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === '/api/settings') {
+        return { ok: true, json: async () => DEFAULT_SETTINGS } as Response;
+      }
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-relay' }) } as Response;
+      }
+      if (url === '/api/relay-connection' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: false,
+              source: 'none',
+              connectionState: 'localOnly',
+              relayConnected: false,
+            },
+          }),
+        } as Response;
+      }
+      if (url === '/api/relay-connection/pair' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: true,
+              source: 'stored',
+              relayUrl: 'http://relay.test',
+              nodeId: 'kookr-node-paired',
+              displayName: 'Desk',
+              connectionState: 'connected',
+              relayConnected: true,
+            },
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    await flush();
+
+    const sharingTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Sharing');
+    await act(async () => {
+      sharingTab!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('.settings-field input'));
+    await act(async () => {
+      changeInput(inputs[0]!, 'http://relay.test');
+      changeInput(inputs[3]!, 'admin-token-secret');
+      changeInput(inputs[4]!, 'Desk');
+    });
+    await flush();
+
+    const pair = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Pair');
+    expect(pair?.disabled).toBe(false);
+    await act(async () => {
+      pair!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const pairCall = fetchMock.mock.calls.find(([url, init]) =>
+      url === '/api/relay-connection/pair' && init?.method === 'POST'
+    );
+    expect(pairCall).toBeDefined();
+    expect(pairCall![1]!.headers).toMatchObject({ 'x-kookr-csrf': 'csrf-relay' });
+    expect(JSON.parse(String(pairCall![1]!.body))).toEqual({
+      relayUrl: 'http://relay.test',
+      relayAdminToken: 'admin-token-secret',
+      displayName: 'Desk',
+    });
+  });
+
+  test('rotates a saved relay node token with a fresh admin token', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === '/api/settings') {
+        return { ok: true, json: async () => DEFAULT_SETTINGS } as Response;
+      }
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-relay' }) } as Response;
+      }
+      if (url === '/api/relay-connection' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: true,
+              source: 'stored',
+              relayUrl: 'http://relay.test',
+              nodeId: 'kookr-node-paired',
+              connectionState: 'connected',
+              relayConnected: true,
+            },
+          }),
+        } as Response;
+      }
+      if (url === '/api/relay-connection/rotate' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: true,
+              source: 'stored',
+              relayUrl: 'http://relay.test',
+              nodeId: 'kookr-node-paired',
+              connectionState: 'connected',
+              relayConnected: true,
+            },
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    await flush();
+
+    const sharingTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Sharing');
+    await act(async () => {
+      sharingTab!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('.settings-field input'));
+    await act(async () => {
+      changeInput(inputs[3]!, 'admin-token-secret');
+    });
+    await flush();
+
+    const rotate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Rotate token');
+    expect(rotate?.disabled).toBe(false);
+    await act(async () => {
+      rotate!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const rotateCall = fetchMock.mock.calls.find(([url, init]) =>
+      url === '/api/relay-connection/rotate' && init?.method === 'POST'
+    );
+    expect(rotateCall).toBeDefined();
+    expect(rotateCall![1]!.headers).toMatchObject({ 'x-kookr-csrf': 'csrf-relay' });
+    expect(JSON.parse(String(rotateCall![1]!.body))).toEqual({
+      relayAdminToken: 'admin-token-secret',
     });
   });
 });

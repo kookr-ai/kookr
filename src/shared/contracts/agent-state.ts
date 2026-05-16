@@ -4,7 +4,7 @@ import type { AgentActivityMeta } from './hook-events.js';
 import type { Anomaly } from './anomalies.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { RalphLoopState, TaskCompletionFeedback, TaskLaunchHealthSummary } from './task.js';
-import type { TaskStatus } from './task-status.js';
+import type { TaskStatus, TurnState } from './task-status.js';
 import type { TokenUsage } from './usage.js';
 import type { WorktreeHealth } from './session.js';
 
@@ -12,6 +12,13 @@ export interface AgentState {
   agentId: string;
   events: AgentEvent[];
   anomaly: Anomaly | null;
+  /**
+   * Current turn state of the live agent, derived from its event window.
+   * Distinct from `taskStatus` (persisted lifecycle): an interactive task can
+   * remain `inProgress` while its turn state is `completed_turn`. Absent for
+   * synthetic pending/terminal entries that have no live event window.
+   */
+  turnState?: TurnState;
   snoozedUntil?: number;
   suppressed?: boolean;
   taskId?: string;

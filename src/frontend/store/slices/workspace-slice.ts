@@ -3,7 +3,7 @@ import type {
   StoreGet,
   StoreSet,
 } from '../store-types.js';
-import type { CleanupResultSummary } from '../../../core/workspace-types.js';
+import type { CleanupResultSummary } from '../../../shared/contracts/workspace.js';
 
 export function cleanupResultMessage(result: CleanupResultSummary): { summary: string; severity: 'info' | 'error' } {
   const recoverySuffix = result.recoveryRef ? ` Recovery stash: ${result.recoveryRef}.` : '';

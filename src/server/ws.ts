@@ -52,6 +52,7 @@ export interface MessageRouterDeps {
     tokenTracker?: { unregister(transcriptPath: string): void };
   };
   sttUrl?: string;
+  ttsUrl?: string;
   agentLifecycleDeps?: import('./agent-lifecycle.js').AgentLifecycleDeps;
   broadcastToAll?: (msg: ServerMessage) => void;
   launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
@@ -206,6 +207,7 @@ export class MessageRouter {
       availableAgentTypes: this.deps.availableAgentTypes,
       defaultAgentType: this.deps.getDefaultAgentType?.() ?? this.deps.defaultAgentType,
       sttUrl: this.deps.sttUrl,
+      ttsUrl: this.deps.ttsUrl,
       workspaceEnabled: this.deps.workspaceEnabled,
       sweepRunning: isSweepInProgress(),
       activityMetaProvider: this.deps.activityMetaProvider,

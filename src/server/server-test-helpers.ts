@@ -16,6 +16,9 @@ import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import type { HookFileWatcher } from './hook-watcher.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { ServerMessage } from '../shared/protocol.js';
+import type { RemoteLaunchBroker } from '../remote/launch-broker.js';
+import type { ControllerLeaseManager } from '../remote/controller-lease.js';
+import type { RemoteInputAdapter } from './remote-input-adapter.js';
 
 /** Full server surface for tests and local helpers. */
 export interface KookrServerInternal {
@@ -36,5 +39,8 @@ export interface KookrServerInternal {
   projectConfigStore: ProjectConfigStore;
   projectSidebarStore: ProjectSidebarStore;
   circuitBreakerRegistry: CircuitBreakerRegistry;
+  remoteLaunchBroker?: RemoteLaunchBroker;
+  controllerLeaseManager?: ControllerLeaseManager | null;
+  remoteInputAdapter?: RemoteInputAdapter | null;
   app: Hono;
 }

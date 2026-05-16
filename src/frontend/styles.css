@@ -474,6 +474,8 @@ kbd {
 .finding-card.permission { border-left-color: var(--red); }
 .finding-card.error { border-left-color: var(--red); }
 .finding-card.input { border-left-color: var(--blue); }
+/* A completed turn is idle, not hung — calmer green accent vs an alert color. */
+.finding-card.turn-complete { border-left-color: var(--green); }
 
 /* --- Finding Groups (duplicate anomaly grouping) --- */
 .finding-group {
@@ -587,6 +589,34 @@ kbd {
 .finding-severity.permission { background: rgba(248,113,113,0.1); color: var(--red); }
 .finding-severity.error { background: rgba(248,113,113,0.1); color: var(--red); }
 .finding-severity.input { background: rgba(96,165,250,0.1); color: var(--blue); }
+.finding-severity.turn-complete { background: rgba(52,211,153,0.12); color: var(--green); }
+
+/* Current-turn state line — distinguishes an idle completed turn from active
+   tool execution at a glance. See issue #358. */
+.finding-turn-state {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+}
+.finding-turn-state::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.finding-turn-state.turn-state--running { color: var(--green); }
+.finding-turn-state.turn-state--complete { color: var(--green); }
+.finding-turn-state.turn-state--waiting { color: var(--blue); }
+.finding-turn-state.turn-state--blocked { color: var(--red); }
+/* `running` pulses to read as live work; an idle completed turn stays static. */
+@keyframes turn-state-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.finding-turn-state.turn-state--running::before { animation: turn-state-pulse 2s ease-in-out infinite; }
 
 .finding-task {
   font-size: 12px; font-weight: 600; color: var(--text-bright); margin-bottom: 4px; cursor: default;
@@ -1140,6 +1170,7 @@ kbd {
 .detail-badge.permission { background: rgba(248,113,113,0.1); color: var(--red); }
 .detail-badge.error { background: rgba(248,113,113,0.1); color: var(--red); }
 .detail-badge.input { background: rgba(96,165,250,0.1); color: var(--blue); }
+.detail-badge.turn-complete { background: rgba(52,211,153,0.12); color: var(--green); }
 
 .detail-header-right {
   display: flex;
@@ -2442,6 +2473,108 @@ textarea::-webkit-resizer { background: transparent; }
   margin: 16px -24px -24px;
   padding: 12px 24px 24px;
   background: linear-gradient(180deg, rgba(21, 24, 32, 0), rgba(21, 24, 32, 0.96) 32%);
+}
+
+.task-share-dialog {
+  width: min(520px, calc(100vw - 32px));
+}
+
+.task-share-subject,
+.task-share-row,
+.task-share-state {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  padding: 10px 12px;
+}
+
+.task-share-subject,
+.task-share-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.task-share-subject strong,
+.task-share-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-share-state {
+  margin-top: 10px;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.task-share-link {
+  margin-top: 12px;
+}
+
+.task-share-ticket {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.task-share-ticket label,
+.task-share-link {
+  display: grid;
+  gap: 6px;
+}
+
+.task-share-ticket input,
+.task-share-link input {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.task-share-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.task-share-disabled {
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  border-radius: 6px;
+  background: rgba(251, 191, 36, 0.08);
+  padding: 12px;
+  margin-top: 12px;
+}
+
+.task-share-disabled p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+}
+
+.task-share-muted {
+  color: var(--text-muted);
+}
+
+.task-share-error {
+  color: var(--red);
+  margin-top: 10px;
+}
+
+@media (max-width: 560px) {
+  .task-share-subject,
+  .task-share-row,
+  .task-share-ticket,
+  .task-share-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .task-share-ticket {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* --- Combo Input (dropdown autocomplete) --- */
@@ -3922,6 +4055,40 @@ textarea::-webkit-resizer { background: transparent; }
 .act-msg-full .act-msg-full-text {
   max-height: none;
   padding-top: 8px;
+  border-top: 1px solid rgba(65, 181, 168, 0.18);
+}
+
+/* Coalesced paste burst (issue #357) */
+.act-paste-burst {
+  margin-top: 4px;
+}
+.act-paste-burst-summary {
+  cursor: pointer;
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.act-paste-burst[open] .act-paste-burst-summary {
+  margin-bottom: 8px;
+}
+.act-paste-burst-icon {
+  flex-shrink: 0;
+}
+.act-paste-burst-lines {
+  margin: 0;
+  padding: 8px;
+  max-height: 18rem;
+  overflow: auto;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre;
+  background: var(--bg-card);
+  border-radius: 4px;
   border-top: 1px solid rgba(65, 181, 168, 0.18);
 }
 
@@ -5959,6 +6126,72 @@ button.project-drawer-link:focus-visible {
 .settings-unit {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 10px 0;
+}
+
+.settings-field input {
+  min-height: 34px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text-bright);
+  font-size: 13px;
+  padding: 7px 9px;
+}
+
+.settings-field input:focus {
+  outline: none;
+  border-color: var(--teal);
+}
+
+.settings-field input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.settings-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.relay-status-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.relay-status-strip > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.relay-status-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.relay-status-dot.connected {
+  background: var(--teal);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
 }
 
 /* --- Project Drawer Actions --- */

@@ -8,6 +8,7 @@ import type { AvailableAgentType, AgentSelection } from '../../core/agent-types.
 import type { ProjectSummary, ProjectRepoHealth } from '../../core/project-summary.js';
 import type { GitHubReference } from '../../core/github-types.js';
 import type { SnapshotMessage } from '../../shared/contracts/messages.js';
+import type { CollaborationCapabilities, SpeechCapability } from '../../shared/contracts/speech.js';
 import { projectEventForClient } from '../event-projection.js';
 import type { AgentActivityMeta } from '../../core/types.js';
 import { buildGithubTaskOverlay } from './github-task-overlay.js';
@@ -22,9 +23,14 @@ export interface SnapshotQueryDeps {
 
 export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   serverCwd: string;
+  /** Optional remote-session revision. Local-only callers leave this unset. */
+  serverRevision?: number;
   buildInfo?: BuildInfo;
   serverStartedAt?: string;
   sttUrl?: string;
+  ttsUrl?: string;
+  speechCapabilities?: CollaborationCapabilities;
+  now?: () => Date;
   totalSpendUsd?: number;
   achievements?: Record<string, string>;
   achievementCounters?: {
@@ -42,6 +48,59 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   sweepRunning?: boolean;
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
   getMaxActiveTasks?: () => number;
+}
+
+const LOCAL_NODE_DEVICE_ID = 'local-node';
+const LOCAL_NODE_DEVICE_SESSION_ID = 'local-node-ui';
+const CAPABILITY_TTL_MS = 5 * 60 * 1000;
+
+export function buildLocalSpeechCapabilities(deps: {
+  sttUrl?: string;
+  ttsUrl?: string;
+  now?: () => Date;
+}): CollaborationCapabilities | undefined {
+  if (!deps.sttUrl && !deps.ttsUrl) return undefined;
+  const now = deps.now?.() ?? new Date();
+  const advertisedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + CAPABILITY_TTL_MS).toISOString();
+  const capabilities: SpeechCapability[] = [];
+
+  if (deps.sttUrl) {
+    capabilities.push({
+      kind: 'stt',
+      deviceId: LOCAL_NODE_DEVICE_ID,
+      deviceSessionId: LOCAL_NODE_DEVICE_SESSION_ID,
+      capabilityId: 'local-node-stt',
+      displayName: 'Kookr local speech-to-text',
+      locality: 'node-local',
+      scope: 'local-node-ui-only',
+      protocol: 'kookr-stt-ws',
+      endpointUrl: deps.sttUrl,
+      advertisedAt,
+      expiresAt,
+      readiness: 'ready',
+      privacy: 'local-only',
+    });
+  }
+
+  if (deps.ttsUrl) {
+    capabilities.push({
+      kind: 'tts',
+      deviceId: LOCAL_NODE_DEVICE_ID,
+      deviceSessionId: LOCAL_NODE_DEVICE_SESSION_ID,
+      capabilityId: 'local-node-tts',
+      displayName: 'Kookr local text-to-speech',
+      locality: 'node-local',
+      scope: 'local-node-ui-only',
+      endpointUrl: deps.ttsUrl,
+      advertisedAt,
+      expiresAt,
+      readiness: 'ready',
+      privacy: 'local-only',
+    });
+  }
+
+  return { capabilitiesByDevice: { [LOCAL_NODE_DEVICE_ID]: capabilities } };
 }
 
 export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
@@ -99,13 +158,21 @@ export function getSnapshotAgentsRaw(deps: SnapshotQueryDeps): AgentState[] {
 }
 
 export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessage {
+  const speechCapabilities = deps.speechCapabilities ?? buildLocalSpeechCapabilities({
+    sttUrl: deps.sttUrl,
+    ttsUrl: deps.ttsUrl,
+    now: deps.now,
+  });
   return {
     type: 'snapshot',
     agents: getSnapshotAgentsForClient(deps),
     serverCwd: deps.serverCwd,
+    ...(deps.serverRevision !== undefined ? { serverRevision: deps.serverRevision } : {}),
     ...(deps.buildInfo ? { build: deps.buildInfo } : {}),
     ...(deps.serverStartedAt ? { serverStartedAt: deps.serverStartedAt } : {}),
     ...(deps.sttUrl ? { sttEnabled: true, sttUrl: deps.sttUrl } : {}),
+    ...(deps.ttsUrl ? { ttsEnabled: true, ttsUrl: deps.ttsUrl } : {}),
+    ...(speechCapabilities ? { speechCapabilities } : {}),
     ...(deps.totalSpendUsd !== undefined ? { totalSpendUsd: deps.totalSpendUsd } : {}),
     ...(deps.achievements ? { achievements: deps.achievements } : {}),
     ...(deps.achievementCounters ? { achievementCounters: deps.achievementCounters } : {}),

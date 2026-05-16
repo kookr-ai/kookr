@@ -7,7 +7,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import type { ClientMessage, Playbook } from '../../shared/protocol.js';
-import type { ProjectSummary } from '../../core/project-summary.js';
+import type { ProjectSummary } from '../../shared/protocol.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();

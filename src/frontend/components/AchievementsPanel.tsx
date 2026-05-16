@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
-import { ACHIEVEMENT_CATALOG } from '../../core/achievement-catalog.js';
-import type { AchievementDefinition } from '../../core/achievement-catalog.js';
+import { ACHIEVEMENT_CATALOG } from '../../shared/contracts/achievement-catalog.js';
+import type { AchievementDefinition } from '../../shared/contracts/achievement-catalog.js';
 import type { ClientMessage } from '../../shared/protocol.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 

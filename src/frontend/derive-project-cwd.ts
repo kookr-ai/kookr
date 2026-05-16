@@ -1,6 +1,6 @@
-import type { AgentState } from '../core/monitor.js';
-import type { ProjectSummary } from '../core/project-summary.js';
-import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../core/worktree-protection.js';
+import type { AgentState } from '../shared/protocol.js';
+import type { ProjectSummary } from '../shared/protocol.js';
+import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../shared/contracts/worktree-protection.js';
 
 /**
  * Derive a local cwd for a project by picking the most recent agent matching

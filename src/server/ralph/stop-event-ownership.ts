@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import type { AgentEvent } from '../core/types.js';
-import type { Task } from '../core/tasks.js';
+import type { Task } from '../../core/tasks.js';
+import type { AgentEvent } from '../../core/types.js';
 
 function isStopEvent(event: AgentEvent): event is Extract<AgentEvent, { type: 'stop' | 'stop_failure' }> {
   return event.type === 'stop' || event.type === 'stop_failure';

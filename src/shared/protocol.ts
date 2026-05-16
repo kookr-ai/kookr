@@ -18,16 +18,19 @@ export type {
   ActivityDisclosure,
   ActivityItem,
   AgentMessage,
+  PasteContentKind,
   SystemNotice,
   ToolCategory,
   ToolGroup,
   ToolGroupEntry,
   UserMessage,
+  UserPasteBurst,
 } from './contracts/activity-summary.js';
 export {
   buildActivityDisclosure,
   categorizeTool,
   compactToolSummary,
+  pasteBurstLabel,
   summarizeActivity,
 } from './contracts/activity-summary.js';
 export type { BuildInfo } from './contracts/build-info.js';
@@ -47,7 +50,14 @@ export type { ProjectSummary, TaskSummary } from './contracts/project-summary.js
 export type { QuotaStatus, QuotaWindow } from './contracts/quota.js';
 export type { QuickAction } from './contracts/quick-action.js';
 export type { ScheduleResponse, ScheduleListResponse, ScheduleStatusSnapshot } from './contracts/schedule.js';
+export type {
+  CollaborationCapabilities,
+  SpeechCapability,
+  STTCapability,
+  TTSCapability,
+} from './contracts/speech.js';
 export type { TaskCompletionFeedback } from './contracts/task.js';
+export type { TurnState } from './contracts/task-status.js';
 export type { TelemetryEvent, TelemetryEventType } from './contracts/telemetry.js';
 export type { TokenUsage } from './contracts/usage.js';
 export type {

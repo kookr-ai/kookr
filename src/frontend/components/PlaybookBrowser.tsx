@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { buildAgentSelectionOptions, type Playbook, type ClientMessage, type AgentSelection } from '../../shared/protocol.js';
-import type { PlaybookParameterOption, PlaybookScope } from '../../core/playbook.js';
-import type { ProjectSummary } from '../../core/project-summary.js';
+import type { PlaybookParameterOption, PlaybookScope } from '../../shared/contracts/playbook.js';
+import type { ProjectSummary } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { projectLabel, projectColor } from '../presentation.js';
 import { PlaybookUsageTracker } from '../store/playbook-usage.js';

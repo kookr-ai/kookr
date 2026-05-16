@@ -11,7 +11,7 @@ import type {
   AttemptState,
   StateObservation,
   LinkedIssueState,
-} from '../core/oss-attempt-store.js';
+} from '../shared/contracts/oss-attempts.js';
 
 function mkObs(state: AttemptState, at: string): StateObservation {
   return { state, at, source: 'posttool_hook', note: null, url: null };

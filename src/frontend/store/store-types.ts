@@ -21,6 +21,7 @@ import type {
   WorkspaceView,
   CleanupResultSummary,
   SystemResourceStatus,
+  CollaborationCapabilities,
 } from '../../shared/protocol.js';
 import type {
   ProjectSidebarCatalogEntry,
@@ -102,6 +103,7 @@ export interface TransportSessionSlice {
   playbooksLastFetchedAt: number;
   playbooksLastFetchedCwd: string;
   sttUrl: string;
+  speechCapabilities: CollaborationCapabilities | null;
   activeSTTInputId: string | null;
   totalSpendUsd: number;
   /**
@@ -126,6 +128,7 @@ export interface TransportSessionSlice {
     workspaceEnabled?: boolean,
     sweepRunning?: boolean,
     maxActiveTasks?: number,
+    speechCapabilities?: CollaborationCapabilities,
   ) => void;
   handleUpdate: (agentId: string, state: AgentState) => void;
   handlePlaybooks: (playbooks: Playbook[], cwd: string) => void;

@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import type { ProjectSummary } from '../../core/project-summary.js';
+import type { ProjectSummary } from '../../shared/protocol.js';
 import { resolveParameterSource, mergeSourceAndStaticOptions } from './playbook-source-resolver.js';
 
 function makeSummary(project: string, displayName: string): ProjectSummary {

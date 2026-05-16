@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { deriveLaunchProjectCwd, deriveProjectCwd } from './derive-project-cwd.js';
-import type { AgentState } from '../core/monitor.js';
-import type { ProjectSummary } from '../core/project-summary.js';
+import type { AgentState } from '../shared/protocol.js';
+import type { ProjectSummary } from '../shared/protocol.js';
 
 function agent(over: Partial<AgentState>): AgentState {
   return {

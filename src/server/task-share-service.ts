@@ -1,0 +1,163 @@
+import type { AttentionQueue } from '../core/attention-queue.js';
+import type { TaskStore } from '../core/tasks.js';
+import type { RemoteControlEvent } from '../remote/control-events.js';
+import type { NodeEpoch, NodeId, ServerRevision } from '../remote/ids.js';
+import type { ShareSubject } from '../remote/policy-sync.js';
+import type { RemotePolicyCache } from '../remote/policy-cache.js';
+import type {
+  RemoteTaskProjectionEnvelopeV1,
+  TaskShareTicket,
+  TaskShareOwnerState,
+  TaskShareSummary,
+} from '../remote/share-contract.js';
+import type { RelayShareClient } from './relay-share-client.js';
+import { projectTaskForRemoteShare } from './share-projection.js';
+
+type PublishRemoteEvent = (event: RemoteControlEvent<RemoteTaskProjectionEnvelopeV1>) => boolean;
+
+export interface TaskShareServiceOptions {
+  client: RelayShareClient;
+  taskStore: TaskStore;
+  queue?: AttentionQueue;
+  remotePolicyCache?: RemotePolicyCache | null;
+  getNodeIdentity: () => { nodeId: NodeId; nodeEpoch: NodeEpoch } | null;
+  nextServerRevision: () => ServerRevision;
+  publish: PublishRemoteEvent;
+}
+
+export class TaskShareService {
+  private readonly client: RelayShareClient;
+  private readonly taskStore: TaskStore;
+  private readonly queue?: AttentionQueue;
+  private readonly remotePolicyCache?: RemotePolicyCache | null;
+  private readonly getNodeIdentity: TaskShareServiceOptions['getNodeIdentity'];
+  private readonly nextServerRevision: TaskShareServiceOptions['nextServerRevision'];
+  private readonly publish: PublishRemoteEvent;
+  private readonly shares = new Map<string, TaskShareSummary>();
+  private readonly pendingRevokeInvitationIds = new Set<string>();
+
+  constructor(opts: TaskShareServiceOptions) {
+    this.client = opts.client;
+    this.taskStore = opts.taskStore;
+    this.queue = opts.queue;
+    this.remotePolicyCache = opts.remotePolicyCache;
+    this.getNodeIdentity = opts.getNodeIdentity;
+    this.nextServerRevision = opts.nextServerRevision;
+    this.publish = opts.publish;
+  }
+
+  async createTaskShare(input: { taskId: string; ttlMs: number }): Promise<{ share: TaskShareSummary; joinUrl: string; shareTicket?: TaskShareTicket }> {
+    const created = await this.client.createTaskShare(input);
+    this.remember(created.share);
+    this.publishProjectionForShare(created.share);
+    return created;
+  }
+
+  async listTaskShares(): Promise<TaskShareSummary[]> {
+    const relayShares = await this.client.listTaskShares();
+    for (const share of relayShares) this.remember(share);
+    return [...this.shares.values()].map((share) => this.withLocalState(share));
+  }
+
+  async revokeTaskShare(invitationId: string): Promise<{ share: TaskShareSummary; alreadyRevoked: boolean }> {
+    const existing = this.shares.get(invitationId);
+    const localRevokedAt = new Date().toISOString();
+    this.pendingRevokeInvitationIds.add(invitationId);
+    if (existing) {
+      this.shares.set(invitationId, {
+        ...existing,
+        state: 'revokePending',
+        revokedAt: existing.revokedAt ?? localRevokedAt,
+        revokePendingAt: localRevokedAt,
+      });
+    }
+
+    try {
+      const revoked = await this.client.revokeTaskShare(invitationId);
+      this.pendingRevokeInvitationIds.delete(invitationId);
+      this.remember({ ...revoked.share, state: 'revoked', revokePendingAt: undefined });
+      return revoked;
+    } catch (err) {
+      if (existing) {
+        this.shares.set(invitationId, {
+          ...existing,
+          state: 'revokePending',
+          revokedAt: existing.revokedAt ?? localRevokedAt,
+          revokePendingAt: localRevokedAt,
+        });
+      }
+      throw err;
+    }
+  }
+
+  publishActiveTaskProjections(): void {
+    for (const share of this.shares.values()) {
+      this.publishProjectionForShare(share);
+    }
+  }
+
+  private remember(share: TaskShareSummary): void {
+    const local = this.shares.get(share.invitationId);
+    this.shares.set(share.invitationId, this.withLocalState({
+      ...local,
+      ...share,
+      revokePendingAt: this.pendingRevokeInvitationIds.has(share.invitationId)
+        ? local?.revokePendingAt ?? new Date().toISOString()
+        : share.revokePendingAt,
+    }));
+  }
+
+  private withLocalState(share: TaskShareSummary): TaskShareSummary {
+    if (this.pendingRevokeInvitationIds.has(share.invitationId)) {
+      return { ...share, state: 'revokePending' };
+    }
+    return { ...share, state: computeOwnerState(share) };
+  }
+
+  private publishProjectionForShare(share: TaskShareSummary): boolean {
+    const effective = this.withLocalState(share);
+    if (effective.state === 'revoked' || effective.state === 'expired' || effective.state === 'revokePending') {
+      return false;
+    }
+    const identity = this.getNodeIdentity();
+    if (!identity) return false;
+    const task = this.taskStore.getTask(effective.taskId);
+    if (!task) return false;
+    if (!this.grantAllowsProjection(identity.nodeId, effective.taskId)) return false;
+
+    const projection = projectTaskForRemoteShare(task, { nodeId: identity.nodeId, queue: this.queue });
+    return this.publish({
+      nodeId: identity.nodeId,
+      nodeEpoch: identity.nodeEpoch,
+      serverRevision: this.nextServerRevision(),
+      ts: new Date().toISOString(),
+      kind: 'snapshot',
+      payload: {
+        type: 'remote.taskProjection.v1',
+        invitationId: effective.invitationId,
+        projection,
+      },
+    });
+  }
+
+  private grantAllowsProjection(nodeId: NodeId, taskId: string): boolean {
+    if (!this.remotePolicyCache) return true;
+    const subject: ShareSubject = { kind: 'task', nodeId, taskId };
+    const snapshot = this.remotePolicyCache.snapshot();
+    return snapshot.grants.some((grant) => (
+      grant.subject.kind === 'task'
+      && grant.subject.nodeId === subject.nodeId
+      && grant.subject.taskId === subject.taskId
+      && grant.grants.includes('view')
+      && !this.remotePolicyCache?.hasTombstone(grant.grantId)
+      && (!grant.expiresAt || Date.parse(grant.expiresAt) > Date.now())
+    ));
+  }
+}
+
+function computeOwnerState(share: TaskShareSummary): TaskShareOwnerState {
+  if (share.revokedAt) return 'revoked';
+  if (Date.parse(share.expiresAt) <= Date.now()) return 'expired';
+  if (share.connectedViewerCount > 0) return 'viewerConnected';
+  return 'waiting';
+}

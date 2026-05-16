@@ -42,6 +42,7 @@ export interface WsConnectionDeps {
   serverStartedAt: string;
   serverCwd: string;
   sttUrl?: string;
+  ttsUrl?: string;
   abortPendingSuggestion: (agentId: string, outcome?: 'used' | 'cleared') => void;
   lifecycleExtras: {
     hookWatcher: { stop(tmuxName: string): void };
@@ -98,7 +99,7 @@ export function handleWsConnection(
   const {
     taskStore, queue, monitor, adapter,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
-    serverCwd, sttUrl, abortPendingSuggestion,
+    serverCwd, sttUrl, ttsUrl, abortPendingSuggestion,
     lifecycleExtras, agentLifecycleDeps, broadcastToAll,
     broadcastProjectSummaries, launchTask,
     githubStateStore, ledgerAnalytics, projectConfigStore,
@@ -117,7 +118,7 @@ export function handleWsConnection(
     },
     serverCwd, interactionLog, buildInfo, serverStartedAt,
     onRespond: abortPendingSuggestion, telemetryLog,
-    lifecycleExtras, sttUrl,
+    lifecycleExtras, sttUrl, ttsUrl,
     agentLifecycleDeps, broadcastToAll, launchTask,
     circuitBreakerRegistry: deps.circuitBreakerRegistry,
     getMaxActiveTasks: deps.getMaxActiveTasks,
@@ -250,6 +251,7 @@ export function handleWsConnection(
             monitor,
             serverCwd,
             sttUrl,
+            ttsUrl,
             activityMetaProvider: deps.activityMetaProvider,
             getMaxActiveTasks: deps.getMaxActiveTasks,
           }));
@@ -323,6 +325,7 @@ export function handleWsConnection(
         monitor,
         serverCwd,
         sttUrl,
+        ttsUrl,
         activityMetaProvider: deps.activityMetaProvider,
         getMaxActiveTasks: deps.getMaxActiveTasks,
       }));

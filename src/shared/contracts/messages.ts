@@ -12,6 +12,7 @@ import type { ProjectConfig } from './project-config.js';
 import type { QuickAction } from './quick-action.js';
 import type { QuotaStatus } from './quota.js';
 import type { ScheduleResponse, ScheduleStatusSnapshot } from './schedule.js';
+import type { CollaborationCapabilities } from './speech.js';
 import type { TaskCompletionFeedback } from './task.js';
 import type { TelemetryEvent } from './telemetry.js';
 import type {
@@ -82,10 +83,23 @@ export type SnapshotMessage = {
   type: 'snapshot';
   agents: AgentState[];
   serverCwd: string;
+  /**
+   * Remote-session control-plane revision. Omitted for local-only snapshots;
+   * populated only by the opt-in remote node path.
+   */
+  serverRevision?: number;
   build?: BuildInfo;
   serverStartedAt?: string;
+  /** @deprecated Phase 6 keeps this legacy field while clients migrate to speechCapabilities. */
   sttEnabled?: boolean;
+  /** @deprecated Phase 6 keeps this legacy field while clients migrate to speechCapabilities. */
   sttUrl?: string;
+  /** @deprecated Existing TTS URL field is additive only; prefer speechCapabilities. */
+  ttsEnabled?: boolean;
+  /** @deprecated Existing TTS URL field is additive only; prefer speechCapabilities. */
+  ttsUrl?: string;
+  /** Additive Phase 6 speech/device capability descriptors. */
+  speechCapabilities?: CollaborationCapabilities;
   totalSpendUsd?: number;
   achievements?: Record<string, string>;
   /**
