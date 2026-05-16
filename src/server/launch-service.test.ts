@@ -656,6 +656,7 @@ describe('launchTask', () => {
     expect(result.task.prompt).toContain('Do NOT commit in this checkout');
     expect(result.task.prompt).toContain('every Kookr task must make tracked-file changes in a fresh git worktree of its own');
     expect(result.task.prompt).toContain(`git worktree add ../${repoDir.split('/').pop()}-<short-name> -b <feature-branch> HEAD`);
+    expect(result.task.prompt).toContain('ask the user whether to push the branch and open a PR');
     expect(result.task.prompt).toContain('Implement the bug fix and update tests.');
   });
 
@@ -695,6 +696,7 @@ describe('launchTask', () => {
     expect(result.task.prompt).toContain('Do NOT commit in this worktree or in the main checkout');
     expect(result.task.prompt).toContain('every Kookr task must make tracked-file changes in a fresh git worktree of its own');
     expect(result.task.prompt).toContain(`git worktree add ../${repoDir.split('/').pop()}-<short-name> -b <feature-branch> HEAD`);
+    expect(result.task.prompt).toContain('ask the user whether to push the branch and open a PR');
     expect(result.task.prompt).toContain('Implement the bug fix and update tests.');
   });
 
