@@ -76,6 +76,19 @@ function joinUrlUsesFragment(url: string | null): boolean {
   }
 }
 
+function shareCreateErrorMessage(errorCode: string | undefined): string {
+  switch (errorCode) {
+    case 'hosted-relay-maintenance':
+      return 'Hosted relay is in maintenance mode. Local Kookr remains available.';
+    case 'hosted-relay-emergency-disabled':
+      return 'Hosted relay sharing is temporarily disabled. Local Kookr remains available.';
+    case 'rate-limit-exceeded':
+      return 'Share creation is temporarily rate-limited.';
+    default:
+      return 'Share link was not created.';
+  }
+}
+
 export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
   const [status, setStatus] = useState<ShareModalStatus>('idle');
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
@@ -220,7 +233,10 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
         },
         body: JSON.stringify({ taskId, ttlMs: DEFAULT_TTL_MS }),
       });
-      if (!res.ok) throw new Error(`create-${res.status}`);
+      if (!res.ok) {
+        const failed = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(shareCreateErrorMessage(failed.error));
+      }
       const body = await res.json() as CreateTaskShareApiResponse;
       setGeneratedJoinUrl({
         taskId: body.share.taskId,
@@ -230,8 +246,8 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
       });
       setShares((prev) => [body.share, ...prev.filter((share) => share.invitationId !== body.share.invitationId)]);
       setStatus('ready');
-    } catch {
-      setError('Share link was not created.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Share link was not created.');
     } finally {
       setBusy(false);
     }

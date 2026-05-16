@@ -1,4 +1,6 @@
-export type RelayConnectionSource = 'none' | 'env' | 'stored';
+import type { HostedRelayPairRequest, HostedRelayStatus } from './hosted-relay.js';
+
+export type RelayConnectionSource = 'none' | 'env' | 'stored' | 'hosted';
 
 export type RelayConnectionState =
   | 'localOnly'
@@ -27,6 +29,7 @@ export interface RelayConnectionStatus {
   nodeMode?: 'active' | 'degraded';
   lastConnectedAt?: string;
   lastError?: RelayConnectionErrorView;
+  hostedRelay: HostedRelayStatus;
 }
 
 export interface RelayConnectionConnectRequest {
@@ -43,6 +46,8 @@ export interface RelayConnectionPairRequest {
   displayName?: string;
   publicBaseUrl?: string;
 }
+
+export type RelayConnectionHostedPairRequest = HostedRelayPairRequest;
 
 export interface RelayConnectionRotateRequest {
   relayAdminToken: string;

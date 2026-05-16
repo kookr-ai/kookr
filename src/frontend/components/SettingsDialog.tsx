@@ -75,10 +75,21 @@ function relaySourceLabel(status: RelayConnectionStatus | null): string | null {
       return 'Environment';
     case 'stored':
       return 'Saved in Settings';
+    case 'hosted':
+      return 'Hosted relay';
     case 'none':
     default:
       return null;
   }
+}
+
+function hostedRelayBadge(status: RelayConnectionStatus | null): string {
+  const hosted = status?.hostedRelay;
+  if (!hosted?.defaultEnabled) return 'Not enabled';
+  if (!hosted.operationalGatesMet) return 'Setup incomplete';
+  if (hosted.mode === 'maintenance') return 'Maintenance';
+  if (hosted.mode === 'emergencyDisabled') return 'Temporarily disabled';
+  return 'Ready';
 }
 
 function RelayConnectionSection() {
@@ -87,6 +98,7 @@ function RelayConnectionSection() {
   const [nodeId, setNodeId] = useState('');
   const [relayToken, setRelayToken] = useState('');
   const [relayAdminToken, setRelayAdminToken] = useState('');
+  const [accountToken, setAccountToken] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -148,6 +160,7 @@ function RelayConnectionSection() {
       if (body.status.displayName) setDisplayName(body.status.displayName);
       setRelayToken('');
       setRelayAdminToken('');
+      setAccountToken('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Relay update failed');
     } finally {
@@ -156,8 +169,11 @@ function RelayConnectionSection() {
   }
 
   const envManaged = status?.source === 'env';
+  const hostedReady = status?.hostedRelay?.configured && status.hostedRelay.mode === 'available';
+  const hostedBlocked = status?.hostedRelay?.defaultEnabled && !hostedReady;
   const canConnect = Boolean(relayUrl.trim() && nodeId.trim() && relayToken.trim() && csrfToken && !busy);
   const canPair = Boolean(relayUrl.trim() && relayAdminToken.trim() && csrfToken && !busy);
+  const canPairHosted = Boolean(hostedReady && accountToken.trim() && csrfToken && !busy);
   const canRotate = Boolean(status?.source === 'stored' && relayAdminToken.trim() && csrfToken && !busy);
   const sourceLabel = relaySourceLabel(status);
 
@@ -176,6 +192,51 @@ function RelayConnectionSection() {
       </div>
       {status?.lastError && <div className="settings-error">{status.lastError.message}</div>}
       {error && <div className="settings-error">{error}</div>}
+
+      {status?.hostedRelay?.defaultEnabled && (
+        <div className="relay-status-strip">
+          <div>
+            <span className="settings-label">Hosted relay · {hostedRelayBadge(status)}</span>
+            <span className="settings-desc">{status.hostedRelay.relayUrl} · {status.hostedRelay.message}</span>
+          </div>
+          <span className={`relay-status-dot ${hostedReady ? 'connected' : ''}`} aria-hidden="true" />
+        </div>
+      )}
+      {hostedReady && !envManaged && (
+        <>
+          <label className="settings-field">
+            <span className="settings-label">Account token</span>
+            <input
+              type="password"
+              value={accountToken}
+              onChange={(event) => setAccountToken(event.target.value)}
+              placeholder="Hosted relay account token"
+              disabled={busy}
+            />
+          </label>
+          <div className="settings-action-row">
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => mutate('/api/relay-connection/hosted/pair', {
+                method: 'POST',
+                body: JSON.stringify({
+                  accountToken,
+                  ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+                }),
+              })}
+              disabled={!canPairHosted}
+            >
+              Pair hosted relay
+            </button>
+          </div>
+        </>
+      )}
+      {hostedBlocked && (
+        <div className="settings-warning" role="status">
+          Hosted sharing is not accepting new pairings or shares. Local Kookr remains available.
+        </div>
+      )}
 
       <label className="settings-field">
         <span className="settings-label">Relay URL</span>

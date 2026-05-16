@@ -5,6 +5,21 @@ import { join } from 'node:path';
 
 import { WebSocket, WebSocketServer } from 'ws';
 
+import {
+  DEFAULT_HOSTED_RELAY_URL,
+  createHostedRelayGateStatus,
+  hostedRelayStatusMessage,
+  parseHostedRelayFlag,
+  parseHostedRelayMode,
+  parseHostedRelayPositiveInt,
+  type HostedRelayAlert,
+  type HostedRelayGateStatus,
+  type HostedRelayMetricSnapshot,
+  type HostedRelayMetricsResponse,
+  type HostedRelayMode,
+  type HostedRelayNodeCredentialResponse,
+  type HostedRelayStatus,
+} from '../src/shared/contracts/hosted-relay.js';
 import { isNodeHello, makeRelayHello, REMOTE_PROTOCOL_VERSION, type NodeHello } from '../src/remote/handshake.js';
 import type { CommandOutcome, CommandResult, RemoteCommandAction } from '../src/remote/command-journal.js';
 import { isRemoteControlEvent, type RemoteControlEvent } from '../src/remote/control-events.js';
@@ -30,6 +45,7 @@ interface NodeRegistration {
   nodeId: NodeId;
   ownerId: string;
   displayName: string;
+  deviceId?: string;
   tokenHash: string;
   createdAt: string;
   lastSeen?: string;
@@ -93,15 +109,33 @@ export interface RelayNodeStatus {
 
 export interface RelayServerOptions {
   adminToken?: string;
+  accountToken?: string;
+  accountId?: string;
   clientToken?: string;
   ownerId?: string;
   allowInsecureAdmin?: boolean;
   allowInsecureClients?: boolean;
+  hostedRelay?: Partial<HostedRelayRuntimeOptions>;
   pushDisabled?: boolean;
   pushSender?: PushSender;
   pushSubject?: string;
   streamBackpressureBytes?: number;
   terminalReplayMaxEvents?: number;
+}
+
+interface HostedRelayRuntimeOptions {
+  enabled: boolean;
+  operationalGatesMet: boolean;
+  mode: HostedRelayMode;
+  relayUrl: string;
+  deploymentOwner: string;
+  environment: string;
+  tlsExpiresAt: string | null;
+  dataRetentionDays: number;
+  shareCreateLimitPerMinute: number;
+  accountPairLimitPerMinute: number;
+  maxHeartbeatAgeMsAlert: number;
+  maxHttp5xxAlert: number;
 }
 
 export interface RelayServerHandle {
@@ -311,6 +345,106 @@ const NODE_SHARE_MAX_TTL_MS = 24 * 60 * 60 * 1000;
 const NODE_SHARE_DEFAULT_TTL_MS = 10 * 60 * 1000;
 const SHARE_TICKET_SOURCE_MAX_FAILED_ATTEMPTS = 10;
 const SHARE_TICKET_SOURCE_LOCKOUT_MS = 15 * 60 * 1000;
+function normalizeHostedRelayOptions(opts: RelayServerOptions): HostedRelayRuntimeOptions {
+  const hosted = opts.hostedRelay ?? {};
+  const relayUrl = hosted.relayUrl
+    ?? process.env.KOOKR_HOSTED_RELAY_URL
+    ?? process.env.KOOKR_RELAY_PUBLIC_ORIGIN
+    ?? DEFAULT_HOSTED_RELAY_URL;
+  const mode = hosted.mode ?? parseHostedRelayMode(process.env.KOOKR_RELAY_MODE ?? process.env.KOOKR_HOSTED_RELAY_MODE);
+  return {
+    enabled: hosted.enabled ?? parseHostedRelayFlag(process.env.KOOKR_HOSTED_RELAY_ENABLED),
+    operationalGatesMet: hosted.operationalGatesMet ?? parseHostedRelayFlag(process.env.KOOKR_HOSTED_RELAY_OPS_GATES_MET),
+    mode,
+    relayUrl,
+    deploymentOwner: hosted.deploymentOwner ?? process.env.KOOKR_HOSTED_RELAY_OWNER ?? '',
+    environment: hosted.environment ?? process.env.KOOKR_HOSTED_RELAY_ENVIRONMENT ?? '',
+    tlsExpiresAt: hosted.tlsExpiresAt ?? process.env.KOOKR_HOSTED_RELAY_TLS_EXPIRES_AT ?? null,
+    dataRetentionDays: parseHostedRelayPositiveInt(
+      hosted.dataRetentionDays ?? process.env.KOOKR_HOSTED_RELAY_RETENTION_DAYS,
+      30,
+    ),
+    shareCreateLimitPerMinute: parseHostedRelayPositiveInt(
+      hosted.shareCreateLimitPerMinute ?? process.env.KOOKR_RELAY_SHARE_CREATE_LIMIT_PER_MINUTE,
+      20,
+    ),
+    accountPairLimitPerMinute: parseHostedRelayPositiveInt(
+      hosted.accountPairLimitPerMinute ?? process.env.KOOKR_RELAY_ACCOUNT_PAIR_LIMIT_PER_MINUTE,
+      10,
+    ),
+    maxHeartbeatAgeMsAlert: parseHostedRelayPositiveInt(
+      hosted.maxHeartbeatAgeMsAlert ?? process.env.KOOKR_RELAY_HEARTBEAT_ALERT_MS,
+      60_000,
+    ),
+    maxHttp5xxAlert: parseHostedRelayPositiveInt(
+      hosted.maxHttp5xxAlert ?? process.env.KOOKR_RELAY_5XX_ALERT_THRESHOLD,
+      1,
+    ),
+  };
+}
+
+function hostedRelayStatus(
+  hosted: HostedRelayRuntimeOptions,
+  accountTokenConfigured: boolean,
+): HostedRelayStatus {
+  const gates: HostedRelayGateStatus = {
+    ...createHostedRelayGateStatus(hosted.operationalGatesMet),
+    accountDeviceAuth: hosted.operationalGatesMet && accountTokenConfigured,
+    nodePairingAuth: hosted.operationalGatesMet && accountTokenConfigured,
+  };
+  const operationalGatesMet = Object.values(gates).every(Boolean);
+  const mode = hosted.enabled && operationalGatesMet ? hosted.mode : 'notConfigured';
+  return {
+    configured: hosted.enabled && operationalGatesMet,
+    relayUrl: hosted.relayUrl,
+    defaultEnabled: hosted.enabled,
+    operationalGatesMet,
+    mode,
+    message: hostedRelayStatusMessage({ defaultEnabled: hosted.enabled, operationalGatesMet, mode }),
+    checkedAt: new Date().toISOString(),
+    gates,
+    ...(hosted.deploymentOwner ? { deploymentOwner: hosted.deploymentOwner } : {}),
+    ...(hosted.environment ? { environment: hosted.environment } : {}),
+    tlsExpiresAt: hosted.tlsExpiresAt,
+    dataRetentionDays: hosted.dataRetentionDays,
+  };
+}
+
+function createWindowLimiter(windowMs: number) {
+  const windows = new Map<string, { startedAt: number; count: number }>();
+  return (key: string, limit: number): boolean => {
+    const now = Date.now();
+    const current = windows.get(key);
+    if (!current || now - current.startedAt >= windowMs) {
+      windows.set(key, { startedAt: now, count: 1 });
+      return true;
+    }
+    if (current.count >= limit) return false;
+    current.count += 1;
+    return true;
+  };
+}
+
+function emptyMetrics(): HostedRelayMetricSnapshot {
+  return {
+    ticketsCreated: 0,
+    ticketsAccepted: 0,
+    ticketsRevoked: 0,
+    ticketsExpired: 0,
+    acceptFailuresByReason: {},
+    rateLimitHits: 0,
+    activeNodeSockets: 0,
+    activeClientSockets: 0,
+    maxNodeHeartbeatAgeMs: null,
+    lastRevokePropagationLatencyMs: null,
+    policySyncFailures: 0,
+    http5xxCount: 0,
+  };
+}
+
+function countReason(metrics: HostedRelayMetricSnapshot, reason: string): void {
+  metrics.acceptFailuresByReason[reason] = (metrics.acceptFailuresByReason[reason] ?? 0) + 1;
+}
 
 /**
  * A Phase A0 node task share: a task-subject invitation whose only grant is
@@ -465,6 +599,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const terminalReplay = new Map<NodeId, Map<string, TerminalStreamEvent[]>>();
   const metadataAudit: RelayMetadataAuditRow[] = [];
   const ticketSourceFailures = new Map<string, { count: number; lockedUntil?: number }>();
+  const hosted = normalizeHostedRelayOptions(opts);
+  const accountToken = opts.accountToken ?? process.env.KOOKR_RELAY_ACCOUNT_TOKEN;
+  const accountId = opts.accountId ?? process.env.KOOKR_RELAY_ACCOUNT_ID ?? opts.ownerId ?? 'hosted-owner';
+  const accountPairLimiter = createWindowLimiter(60_000);
+  const shareCreateLimiter = createWindowLimiter(60_000);
+  const relayMetrics = emptyMetrics();
   const invitations = new InvitationStore();
   const streamMetrics = { clientDropped: { backpressure: 0 } };
   const streamBackpressureBytes = opts.streamBackpressureBytes ?? 1_000_000;
@@ -480,19 +620,44 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   });
   const ownerId = opts.ownerId ?? 'local-owner';
 
-  const registerNode = (regOpts: { displayName?: string; ownerId?: string } = {}) => {
+  const registerNode = (regOpts: { displayName?: string; ownerId?: string; deviceId?: string } = {}) => {
     const nodeId = asNodeId(`kookr-node-${randomUUID()}`);
     const nodeToken = issueNodeToken();
     const registration: NodeRegistration = {
       nodeId,
       ownerId: regOpts.ownerId ?? ownerId,
       displayName: regOpts.displayName ?? nodeId,
+      ...(regOpts.deviceId ? { deviceId: regOpts.deviceId } : {}),
       tokenHash: tokenHash(nodeToken),
       createdAt: new Date().toISOString(),
     };
     registrations.set(nodeId, registration);
     tokenIndex.set(registration.tokenHash, registration);
     return { nodeId, nodeToken };
+  };
+
+  const currentHostedStatus = (): HostedRelayStatus => hostedRelayStatus(hosted, Boolean(accountToken));
+
+  const hostedBlocksNewShares = (): string | null => {
+    if (!hosted.enabled) return null;
+    const status = currentHostedStatus();
+    if (!status.configured) return 'hosted-relay-unavailable';
+    if (status.mode === 'maintenance') return 'hosted-relay-maintenance';
+    if (status.mode === 'emergencyDisabled') return 'hosted-relay-emergency-disabled';
+    return null;
+  };
+
+  const hostedBlocksAccountPairing = (): string | null => {
+    const status = currentHostedStatus();
+    if (!status.configured) return 'hosted-relay-unavailable';
+    if (status.mode === 'maintenance') return 'hosted-relay-maintenance';
+    if (status.mode === 'emergencyDisabled') return 'hosted-relay-emergency-disabled';
+    return null;
+  };
+
+  const authenticateAccount = (req: IncomingMessage): string | null => {
+    if (!accountToken) return null;
+    return bearer(req) === accountToken ? accountId : null;
   };
 
   const rotateNodeToken = (nodeId: NodeId): { nodeId: NodeId; nodeToken: string } | null => {
@@ -528,13 +693,23 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
 
   const acceptInvitation = (token: string, acceptedBy?: string) => {
     const accepted = invitations.accept(token, acceptedBy);
-    if (accepted.ok) sendPolicyDelta(accepted.accepted.invitation.nodeId, accepted.accepted.policyGrant);
+    if (accepted.ok) {
+      relayMetrics.ticketsAccepted += 1;
+      sendPolicyDelta(accepted.accepted.invitation.nodeId, accepted.accepted.policyGrant);
+    } else {
+      countReason(relayMetrics, accepted.reason);
+    }
     return accepted;
   };
 
   const acceptShareTicket = (shareId: string, password: string, acceptedBy?: string) => {
     const accepted = invitations.acceptTicket(shareId, password, acceptedBy);
-    if (accepted.ok) sendPolicyDelta(accepted.accepted.invitation.nodeId, accepted.accepted.policyGrant);
+    if (accepted.ok) {
+      relayMetrics.ticketsAccepted += 1;
+      sendPolicyDelta(accepted.accepted.invitation.nodeId, accepted.accepted.policyGrant);
+    } else {
+      countReason(relayMetrics, accepted.reason);
+    }
     return accepted;
   };
 
@@ -558,10 +733,13 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   };
 
   const revokeInvitation = (invitationId: string) => {
+    const startedAt = Date.now();
     const revoked = invitations.revoke(invitationId);
     if (revoked.ok) {
+      if (!revoked.alreadyRevoked) relayMetrics.ticketsRevoked += 1;
       closeRevokedSubscribers(revoked.invitation);
       sendPolicyRevoke(revoked.invitation);
+      relayMetrics.lastRevokePropagationLatencyMs = Date.now() - startedAt;
     }
     return revoked;
   };
@@ -569,13 +747,17 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const sendPolicyDelta = (nodeId: NodeId, grant: PolicyGrantRecord): void => {
     const ws = nodeSockets.get(nodeId);
     if (!ws || ws.readyState !== ws.OPEN) return;
-    ws.send(JSON.stringify({
-      type: 'policy.delta',
-      nodeId,
-      policyVersion: grant.policyVersion,
-      upserts: [grant],
-      revokes: [],
-    }));
+    try {
+      ws.send(JSON.stringify({
+        type: 'policy.delta',
+        nodeId,
+        policyVersion: grant.policyVersion,
+        upserts: [grant],
+        revokes: [],
+      }));
+    } catch {
+      relayMetrics.policySyncFailures += 1;
+    }
   };
 
   const sendPolicySync = (nodeId: NodeId, ws: WebSocket): void => {
@@ -598,7 +780,11 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       grantId: invitation.grantId,
       policyVersion: invitation.policyVersion,
     };
-    ws.send(JSON.stringify(msg));
+    try {
+      ws.send(JSON.stringify(msg));
+    } catch {
+      relayMetrics.policySyncFailures += 1;
+    }
   };
 
   const closeRevokedSubscribers = (invitation: InvitationRecord): void => {
@@ -638,11 +824,70 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     };
   });
 
+  const metricsSnapshot = (): HostedRelayMetricSnapshot => {
+    const now = Date.now();
+    const heartbeatAges = [...registrations.values()]
+      .map((registration) => registration.lastSeen ? now - Date.parse(registration.lastSeen) : null)
+      .filter((age): age is number => typeof age === 'number' && Number.isFinite(age));
+    return {
+      ...relayMetrics,
+      ticketsExpired: invitations.list().filter((invitation) => (
+        !invitation.revokedAt && Date.parse(invitation.expiresAt) <= now
+      )).length,
+      activeNodeSockets: nodeSockets.size,
+      activeClientSockets: [...subscribers.values()].reduce((total, set) => total + set.size, 0),
+      maxNodeHeartbeatAgeMs: heartbeatAges.length > 0 ? Math.max(...heartbeatAges) : null,
+    };
+  };
+
+  const relayAlerts = (metrics: HostedRelayMetricSnapshot): HostedRelayAlert[] => {
+    const alerts: HostedRelayAlert[] = [];
+    if (currentHostedStatus().mode === 'maintenance') {
+      alerts.push({ code: 'maintenance-mode', severity: 'warning', message: 'Hosted relay is in maintenance mode.' });
+    }
+    if (currentHostedStatus().mode === 'emergencyDisabled') {
+      alerts.push({ code: 'emergency-disabled', severity: 'critical', message: 'Hosted relay sharing is emergency-disabled.' });
+    }
+    if (metrics.rateLimitHits > 0) {
+      alerts.push({ code: 'rate-limit-hits', severity: 'warning', message: 'Relay rate limits have blocked recent requests.' });
+    }
+    if (metrics.maxNodeHeartbeatAgeMs !== null && metrics.maxNodeHeartbeatAgeMs > hosted.maxHeartbeatAgeMsAlert) {
+      alerts.push({ code: 'heartbeat-age', severity: 'warning', message: 'At least one node heartbeat is stale.' });
+    }
+    if (metrics.policySyncFailures > 0) {
+      alerts.push({ code: 'policy-sync-failures', severity: 'critical', message: 'Policy sync messages have failed.' });
+    }
+    if (metrics.http5xxCount >= hosted.maxHttp5xxAlert) {
+      alerts.push({ code: 'http-5xx-rate', severity: 'critical', message: 'Relay 5xx responses crossed the alert threshold.' });
+    }
+    return alerts;
+  };
+
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
-        sendJson(res, 200, { status: 'ok', dbReachable: true, tlsExpiresAt: null, version: 'dev' });
+        sendJson(res, 200, {
+          status: currentHostedStatus().mode === 'emergencyDisabled' ? 'degraded' : 'ok',
+          dbReachable: true,
+          tlsExpiresAt: hosted.tlsExpiresAt,
+          version: 'dev',
+          hostedRelay: currentHostedStatus(),
+        });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/relay/ops/status') {
+        sendJson(res, 200, currentHostedStatus());
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/relay/admin/metrics') {
+        if (!opts.allowInsecureAdmin && !isAuthorizedAdmin(req, opts.adminToken)) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const metrics = metricsSnapshot();
+        const response: HostedRelayMetricsResponse = { metrics, alerts: relayAlerts(metrics) };
+        sendJson(res, 200, response);
         return;
       }
       if (req.method === 'GET' && url.pathname === '/relay/dashboard') {
@@ -807,6 +1052,55 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         sendJson(res, 201, issued);
         return;
       }
+      if (req.method === 'POST' && url.pathname === '/relay/account/nodes') {
+        const account = authenticateAccount(req);
+        if (!account) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const modeBlock = hostedBlocksAccountPairing();
+        if (modeBlock) {
+          relayMetrics.http5xxCount += 1;
+          sendJson(res, 503, { error: modeBlock });
+          return;
+        }
+        if (!accountPairLimiter(`account:${account}`, hosted.accountPairLimitPerMinute)) {
+          relayMetrics.rateLimitHits += 1;
+          sendJson(res, 429, { error: 'rate-limit-exceeded' });
+          return;
+        }
+        const body = await readJson(req) as { displayName?: unknown; deviceId?: unknown };
+        const issued = registerNode({
+          displayName: typeof body.displayName === 'string' ? body.displayName : undefined,
+          deviceId: typeof body.deviceId === 'string' ? body.deviceId : undefined,
+          ownerId: account,
+        });
+        const response: HostedRelayNodeCredentialResponse = issued;
+        sendJson(res, 201, response);
+        return;
+      }
+      if (req.method === 'POST' && url.pathname.startsWith('/relay/account/nodes/') && url.pathname.endsWith('/token/rotate')) {
+        const account = authenticateAccount(req);
+        if (!account) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const nodeId = asNodeId(decodeURIComponent(
+          url.pathname.slice('/relay/account/nodes/'.length, -'/token/rotate'.length),
+        ));
+        const registration = registrations.get(nodeId);
+        if (!registration || registration.ownerId !== account) {
+          sendJson(res, 404, { error: 'node not found' });
+          return;
+        }
+        const rotated = rotateNodeToken(nodeId);
+        if (!rotated) {
+          sendJson(res, 404, { error: 'node not found' });
+          return;
+        }
+        sendJson(res, 200, rotated);
+        return;
+      }
       if (req.method === 'POST' && url.pathname.startsWith('/relay/admin/nodes/') && url.pathname.endsWith('/token/rotate')) {
         if (!opts.allowInsecureAdmin && !isAuthorizedAdmin(req, opts.adminToken)) {
           sendJson(res, 401, { error: 'unauthorized' });
@@ -836,6 +1130,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 401, { error: 'unauthorized' });
           return;
         }
+        const modeBlock = hostedBlocksNewShares();
+        if (modeBlock) {
+          relayMetrics.http5xxCount += 1;
+          sendJson(res, 503, { error: modeBlock });
+          return;
+        }
         const body = await readJson(req) as { nodeId?: unknown; subject?: unknown; grants?: unknown; ttlMs?: unknown };
         if (typeof body.nodeId !== 'string' || !registrations.has(asNodeId(body.nodeId))) {
           sendJson(res, 400, { error: 'known nodeId is required' });
@@ -856,6 +1156,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           grants,
           ttlMs: typeof body.ttlMs === 'number' && Number.isFinite(body.ttlMs) ? body.ttlMs : undefined,
         });
+        relayMetrics.ticketsCreated += 1;
         sendJson(res, 201, {
           invitation: created.invitation,
           token: created.token,
@@ -893,6 +1194,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           return;
         }
         if (sourceLocked(sourceKey)) {
+          relayMetrics.rateLimitHits += 1;
           sendJson(res, 409, { error: 'ticket-unavailable' });
           return;
         }
@@ -965,6 +1267,17 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 401, { error: 'unauthorized' });
           return;
         }
+        const modeBlock = hostedBlocksNewShares();
+        if (modeBlock) {
+          relayMetrics.http5xxCount += 1;
+          sendJson(res, 503, { error: modeBlock });
+          return;
+        }
+        if (!shareCreateLimiter(`node:${registration.nodeId}`, hosted.shareCreateLimitPerMinute)) {
+          relayMetrics.rateLimitHits += 1;
+          sendJson(res, 429, { error: 'rate-limit-exceeded' });
+          return;
+        }
         const parsed = parseNodeTaskShareBody(
           await readJson(req) as { subject?: unknown; grants?: unknown; ttlMs?: unknown },
         );
@@ -979,6 +1292,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           shareTicket: true,
           ttlMs: parsed.ttlMs ?? NODE_SHARE_DEFAULT_TTL_MS,
         });
+        relayMetrics.ticketsCreated += 1;
         sendJson(res, 201, {
           invitation: toNodeInvitationViewWithPresence(created.invitation),
           token: created.token,

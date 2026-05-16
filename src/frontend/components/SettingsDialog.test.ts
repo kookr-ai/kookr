@@ -332,6 +332,179 @@ describe('SettingsDialog tabs', () => {
     });
   });
 
+  test('pairs the hosted relay when the operational gate is ready', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === '/api/settings') {
+        return { ok: true, json: async () => DEFAULT_SETTINGS } as Response;
+      }
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-relay' }) } as Response;
+      }
+      if (url === '/api/relay-connection' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: false,
+              source: 'none',
+              connectionState: 'localOnly',
+              relayConnected: false,
+              hostedRelay: {
+                configured: true,
+                relayUrl: 'https://share.kookr.dev',
+                defaultEnabled: true,
+                operationalGatesMet: true,
+                mode: 'available',
+                message: 'Hosted relay is ready.',
+                checkedAt: '2026-05-16T00:00:00.000Z',
+                gates: {
+                  deploymentOwner: true,
+                  environment: true,
+                  tlsDomain: true,
+                  accountDeviceAuth: true,
+                  nodePairingAuth: true,
+                  dataRetention: true,
+                  rateLimitAbuse: true,
+                  emergencyMaintenance: true,
+                  metricsAlerts: true,
+                },
+              },
+            },
+          }),
+        } as Response;
+      }
+      if (url === '/api/relay-connection/hosted/pair' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: true,
+              source: 'hosted',
+              relayUrl: 'https://share.kookr.dev',
+              nodeId: 'kookr-node-hosted',
+              connectionState: 'connected',
+              relayConnected: true,
+              hostedRelay: {
+                configured: true,
+                relayUrl: 'https://share.kookr.dev',
+                defaultEnabled: true,
+                operationalGatesMet: true,
+                mode: 'available',
+                message: 'Hosted relay is ready.',
+                checkedAt: '2026-05-16T00:00:00.000Z',
+                gates: {
+                  deploymentOwner: true,
+                  environment: true,
+                  tlsDomain: true,
+                  accountDeviceAuth: true,
+                  nodePairingAuth: true,
+                  dataRetention: true,
+                  rateLimitAbuse: true,
+                  emergencyMaintenance: true,
+                  metricsAlerts: true,
+                },
+              },
+            },
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    await flush();
+
+    const sharingTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Sharing');
+    await act(async () => {
+      sharingTab!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain('Hosted relay · Ready');
+    const accountInput = Array.from(container.querySelectorAll<HTMLInputElement>('.settings-field input'))
+      .find((input) => input.placeholder === 'Hosted relay account token');
+    expect(accountInput).toBeDefined();
+    await act(async () => {
+      changeInput(accountInput!, 'account-token-secret');
+    });
+    await flush();
+
+    const pairHosted = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Pair hosted relay');
+    expect(pairHosted?.disabled).toBe(false);
+    await act(async () => {
+      pairHosted!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const pairCall = fetchMock.mock.calls.find(([url, init]) =>
+      url === '/api/relay-connection/hosted/pair' && init?.method === 'POST'
+    );
+    expect(pairCall).toBeDefined();
+    expect(pairCall![1]!.headers).toMatchObject({ 'x-kookr-csrf': 'csrf-relay' });
+    expect(JSON.parse(String(pairCall![1]!.body))).toEqual({
+      accountToken: 'account-token-secret',
+    });
+  });
+
+  test('shows hosted relay maintenance without hiding local settings', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === '/api/settings') {
+        return { ok: true, json: async () => DEFAULT_SETTINGS } as Response;
+      }
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-relay' }) } as Response;
+      }
+      if (url === '/api/relay-connection' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: false,
+              source: 'none',
+              connectionState: 'localOnly',
+              relayConnected: false,
+              hostedRelay: {
+                configured: true,
+                relayUrl: 'https://share.kookr.dev',
+                defaultEnabled: true,
+                operationalGatesMet: true,
+                mode: 'maintenance',
+                message: 'Hosted relay is in maintenance mode.',
+                checkedAt: '2026-05-16T00:00:00.000Z',
+                gates: {
+                  deploymentOwner: true,
+                  environment: true,
+                  tlsDomain: true,
+                  accountDeviceAuth: true,
+                  nodePairingAuth: true,
+                  dataRetention: true,
+                  rateLimitAbuse: true,
+                  emergencyMaintenance: true,
+                  metricsAlerts: true,
+                },
+              },
+            },
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    await flush();
+
+    const sharingTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Sharing');
+    await act(async () => {
+      sharingTab!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain('Hosted relay · Maintenance');
+    expect(container.textContent).toContain('Local Kookr remains available');
+    expect(container.textContent).toContain('Relay URL');
+  });
+
   test('rotates a saved relay node token with a fresh admin token', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url, init) => {
