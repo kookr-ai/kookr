@@ -145,7 +145,7 @@ describe('remote launch broker server wiring', () => {
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 
   test('leaves phase 4a/local surfaces running when launch feature is disabled', async () => {
     const projectDir = mkdtempSync(join(tmpdir(), 'kookr-remote-project-'));

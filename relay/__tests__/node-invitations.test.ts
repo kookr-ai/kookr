@@ -33,8 +33,7 @@ async function connectMember(relay: RelayServerHandle, nodeId: string, memberTok
   const wsUrl = new URL('/relay/client', relay.url());
   wsUrl.protocol = 'ws:';
   wsUrl.searchParams.set('nodeId', nodeId);
-  wsUrl.searchParams.set('memberToken', memberToken);
-  const ws = new WebSocket(wsUrl);
+  const ws = new WebSocket(wsUrl, { headers: { cookie: `kookr_relay_member_token=${memberToken}` } });
   sockets.push(ws);
   await once(ws, 'open');
   return ws;

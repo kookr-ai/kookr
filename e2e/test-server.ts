@@ -10,6 +10,7 @@ import type { KookrServerInternal } from '../src/server/server-test-helpers.js';
 import { FakeTerminalBackend } from '../src/adapters/fake-terminal-backend.js';
 import { FakeTerminalBridge } from '../src/server/fake-terminal-bridge.js';
 import type { Playbook } from '../src/core/playbook.js';
+import { createRelayServer, type RelayServerHandle } from '../relay/server.js';
 
 /** Playbook override — when set, listPlaybooks returns these instead of reading from disk. */
 let playbookOverrides: Map<string, Playbook[]> | null = null;
@@ -20,6 +21,7 @@ const tempDir = mkdtempSync(join(tmpdir(), 'kookr-e2e-'));
 const claudeDir = join(tempDir, 'claude');
 const terminal = new FakeTerminalBackend();
 const injectedSessionIds = new Map<string, string>();
+let relayHandle: RelayServerHandle | null = null;
 
 function stableInjectedSessionId(tmuxName: string): string {
   return `e2e-${tmuxName.replace(/[^A-Za-z0-9_-]/g, '_')}`;
@@ -40,6 +42,15 @@ function normalizeInjectedEvent(tmuxName: string, event: Record<string, unknown>
 
 async function main() {
   mkdirSync(claudeDir, { recursive: true });
+
+  if (process.env.E2E_WITH_RELAY === '1') {
+    relayHandle = createRelayServer({ adminToken: 'admin-secret' });
+    await new Promise<void>((resolve) => relayHandle!.httpServer.listen(0, '127.0.0.1', () => resolve()));
+    const { nodeId, nodeToken } = relayHandle.registerNode({ displayName: 'E2E node' });
+    writeFileSync(join(tempDir, 'node-id'), `${nodeId}\n`);
+    process.env.KOOKR_RELAY_URL = relayHandle.url();
+    process.env.KOOKR_RELAY_TOKEN = nodeToken;
+  }
 
   const server = await createKookrServerInternal({
     port: PORT,
@@ -470,6 +481,10 @@ async function main() {
 
   async function cleanup() {
     await server.close();
+    if (relayHandle) {
+      await relayHandle.close();
+      relayHandle = null;
+    }
     rmSync(tempDir, { recursive: true, force: true });
     process.exit(0);
   }

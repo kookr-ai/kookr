@@ -10,6 +10,7 @@ import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
 import { computeTerminalVisible } from './detail-panel-visibility.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
+import { TaskShareModal } from './TaskShareModal.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -221,6 +222,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
   const hookSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const [permissionButtonsDisabled, setPermissionButtonsDisabled] = useState(false);
   const [isNarrowViewport, setIsNarrowViewport] = useState(() =>
@@ -570,6 +572,16 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
         </div>
         <div className="detail-header-right">
           <TaskIdCopyButton taskId={agent.taskId} />
+          {agent.taskId && (
+            <button
+              type="button"
+              data-testid="task-share-button"
+              className="action-btn action-btn--neutral"
+              onClick={() => setShowShareModal(true)}
+            >
+              Share
+            </button>
+          )}
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
             <span className={`detail-header-warning worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
               {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
@@ -609,6 +621,14 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
           )}
         </div>
       </div>
+      {agent.taskId && (
+        <TaskShareModal
+          taskId={agent.taskId}
+          taskLabel={agent.taskName ?? agent.agentId}
+          open={showShareModal}
+          onClose={() => setShowShareModal(false)}
+        />
+      )}
 
       {/* Side-by-side split (wide) + tab fallback (narrow) */}
       {(() => {

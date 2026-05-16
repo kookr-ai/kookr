@@ -2475,6 +2475,89 @@ textarea::-webkit-resizer { background: transparent; }
   background: linear-gradient(180deg, rgba(21, 24, 32, 0), rgba(21, 24, 32, 0.96) 32%);
 }
 
+.task-share-dialog {
+  width: min(520px, calc(100vw - 32px));
+}
+
+.task-share-subject,
+.task-share-row,
+.task-share-state {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  padding: 10px 12px;
+}
+
+.task-share-subject,
+.task-share-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.task-share-subject strong,
+.task-share-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-share-state {
+  margin-top: 10px;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.task-share-link {
+  margin-top: 12px;
+}
+
+.task-share-link input {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.task-share-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.task-share-disabled {
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  border-radius: 6px;
+  background: rgba(251, 191, 36, 0.08);
+  padding: 12px;
+  margin-top: 12px;
+}
+
+.task-share-disabled p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+}
+
+.task-share-muted {
+  color: var(--text-muted);
+}
+
+.task-share-error {
+  color: var(--red);
+  margin-top: 10px;
+}
+
+@media (max-width: 560px) {
+  .task-share-subject,
+  .task-share-row,
+  .task-share-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 /* --- Combo Input (dropdown autocomplete) --- */
 .combo-input {
   position: relative;
