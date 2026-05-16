@@ -25,7 +25,11 @@ import {
   type SessionRuntimeIdentity,
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
-import { buildAgentLaunchContext, deliverInitialPromptToSession } from './agent-launch-context.js';
+import {
+  buildAgentLaunchContext,
+  deliverInitialPromptToSession,
+  resolveBracketedPasteSubmit,
+} from './agent-launch-context.js';
 import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
@@ -87,6 +91,17 @@ export interface ClaudeCodeAdapterOptions {
    * agent maps without touching `~/.claude/agents` or the cwd.
    */
   loadFileBasedAgents?: (cwd: string) => Record<string, InlineAgentDef>;
+  /**
+   * Whether to submit the initial prompt via bracketed paste — the prompt
+   * body wrapped in ANSI bracketed-paste markers, followed by a separate
+   * Enter. Claude Code's UI otherwise coalesces a fast prompt+Enter burst
+   * into one paste and treats the trailing carriage return as a literal
+   * newline, leaving the task prompt unsubmitted in the input box.
+   * Resolution: this option > `KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE` env >
+   * `true`. Tests set the env var falsey for the legacy delivery path. See
+   * `resolveBracketedPasteSubmit`.
+   */
+  promptBracketedPaste?: boolean;
 }
 
 /** Env var that overrides the default Claude Code binary path. */
@@ -119,6 +134,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private pluginDir?: string;
   private probeExec?: ProbeExecRunner;
   private loadAgents: (cwd: string) => Record<string, InlineAgentDef>;
+  private promptBracketedPaste: boolean;
 
   constructor(
     private backend: TerminalBackend,
@@ -136,6 +152,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     this.pluginDir = resolvePluginDir(options?.pluginDir);
     this.probeExec = options?.probeExec;
     this.loadAgents = options?.loadFileBasedAgents ?? ((cwd) => loadFileBasedAgents(cwd));
+    this.promptBracketedPaste = resolveBracketedPasteSubmit(options?.promptBracketedPaste);
   }
 
   async preflight(): Promise<PreflightResult> {
@@ -239,7 +256,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       size: { cols: 200, rows: 50 },
     });
     if (!useResume) {
-      await deliverInitialPromptToSession(this.backend, tmuxName, prompt);
+      // Submit the prompt via bracketed paste so Claude Code's UI parses the
+      // trailing Enter as a keystroke, not paste content. See
+      // deliverInitialPromptToSession.
+      await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+        bracketedPaste: this.promptBracketedPaste,
+      });
     }
 
     // Register session with task store
