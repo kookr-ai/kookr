@@ -1,7 +1,13 @@
 import { realpathSync } from 'node:fs';
 import { resolve as pathResolve } from 'node:path';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
-import { type AgentType, DEFAULT_AGENT_TYPE } from '../core/agent-types.js';
+import {
+  type AgentType,
+  type AgentSelection,
+  DEFAULT_AGENT_TYPE,
+  ROUND_ROBIN_AGENT_TYPE,
+  resolveRoundRobinAgent,
+} from '../core/agent-types.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { LaunchDependency } from '../core/playbook.js';
 import {
@@ -41,8 +47,21 @@ export interface LaunchServiceDeps {
   lifecycleDeps: AgentLifecycleDeps;
   /** Live getter for max concurrent tasks. Falls back to static default if not provided. */
   getMaxActiveTasks?: () => number;
-  /** Live getter for the configured default agent type. Falls back to the registry default if not provided. */
-  getDefaultAgentType?: () => AgentType;
+  /**
+   * Live getter for the configured default agent selection. Falls back to the
+   * registry default if not provided. May return the `round-robin` sentinel,
+   * which {@link roundRobinCursor} resolves to a concrete agent.
+   */
+  getDefaultAgentType?: () => AgentSelection;
+  /**
+   * Round-robin rotation cursor. `peek()` reads the rotation index for the
+   * next launch *without* advancing; `advance()` moves the cursor forward and
+   * persists it. The launch service peeks when resolving the `round-robin`
+   * sentinel and advances only once a task record is actually committed, so a
+   * deduplicated or rejected launch never consumes a rotation slot and skews
+   * the alternation.
+   */
+  roundRobinCursor?: { peek: () => number; advance: () => void };
   interactionLog?: DeferredInteractionLogWriter;
   dependencyPreflightRunner?: DependencyPreflightRunner;
 }
@@ -58,8 +77,12 @@ export interface LaunchOpts {
   playbookId?: string;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
-  /** Agent type to launch. Defaults to the registry default. */
-  agentType?: AgentType;
+  /**
+   * Agent to launch. Defaults to the configured default agent. May be the
+   * `round-robin` sentinel, which is resolved to a concrete agent here; the
+   * created task record always stores a concrete {@link AgentType}.
+   */
+  agentType?: AgentSelection;
   /** When true, always create a new task instead of returning an existing active duplicate. */
   disableDedup?: boolean;
   /** Explicit project ID (e.g., github.com/owner/repo) — skips CWD-based inference. */
@@ -155,11 +178,25 @@ export async function launchTask(
 ): Promise<LaunchResult> {
   const { taskStore, adapterRegistry, lifecycleDeps } = deps;
   const maxActive = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
-  const agentType =
+  // Resolve the agent for this launch. An explicit per-launch request wins
+  // over the configured default; either may be the `round-robin` sentinel,
+  // which is resolved to a concrete agent *here* — before dedup and task
+  // creation — so the task record always stores a concrete agent type.
+  const requestedAgent: AgentSelection =
     opts.agentType ??
     deps.getDefaultAgentType?.() ??
     adapterRegistry.getDefaultType() ??
     DEFAULT_AGENT_TYPE;
+  const isRoundRobin = requestedAgent === ROUND_ROBIN_AGENT_TYPE;
+  // `peek` (not advance): the rotation cursor must only move once a task is
+  // actually committed, so a deduplicated or rejected launch does not consume
+  // a rotation slot. The matching `advance()` calls fire after `createTask`.
+  const agentType: AgentType = isRoundRobin
+    ? resolveRoundRobinAgent(
+        deps.roundRobinCursor?.peek() ?? 0,
+        adapterRegistry.getTypes(),
+      )
+    : requestedAgent;
 
   // R19 trust-boundary check (rfc-remote-chat-trigger §4): Telegram-spawned
   // Codex is opt-in because its permission model is more permissive than
@@ -220,6 +257,9 @@ export async function launchTask(
 
   if (taskStore.getActiveCount() >= maxActive) {
     taskStore.pendTask(task.id);
+    // The task record is committed (queued for promotion), so the round-robin
+    // launch consumed its slot — advance the rotation.
+    if (isRoundRobin) deps.roundRobinCursor?.advance();
     return { task, queued: true };
   }
 
@@ -238,10 +278,14 @@ export async function launchTask(
   try {
     await adapterRegistry.get(agentType).launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts);
   } catch (err) {
-    // Clean up the task record so dedup doesn't block future retries
+    // Clean up the task record so dedup doesn't block future retries. The
+    // round-robin cursor was not advanced yet, so a failed launch leaves the
+    // rotation untouched.
     taskStore.deleteTask(task.id);
     throw err;
   }
+  // The launch succeeded — advance the rotation now that the task is live.
+  if (isRoundRobin) deps.roundRobinCursor?.advance();
   const source = opts.launchSource ?? 'api';
   console.log(`[launch] source=${source} agent=${agentType} taskId=${task.id} cwd=${opts.cwd}`);
   await registerNewAgent(task, lifecycleDeps);

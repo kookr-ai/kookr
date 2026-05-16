@@ -12,7 +12,9 @@ import type { ClientMessage } from './messages.js';
  * `[key: string]: unknown` shape and use `looseObject` so extra fields survive.
  */
 
-const agentType = z.enum(['claude-code', 'codex-cli']);
+// Launch-time selections may carry the `round-robin` sentinel, which the
+// server resolves to a concrete agent. Persisted task/session shapes never do.
+const agentSelection = z.enum(['claude-code', 'codex-cli', 'round-robin']);
 const playbookScope = z.enum(['project', 'user', 'plugin']);
 const launchDependency = z.enum(['kb']);
 const anomalyType = z.enum([
@@ -80,7 +82,7 @@ const launchPlaybookMessage = z.object({
   taskTargetCwd: z.string().optional(),
   projectId: z.string().optional(),
   parameterValues: z.record(z.string(), z.string()),
-  agentType: agentType.optional(),
+  agentType: agentSelection.optional(),
   scope: playbookScope.optional(),
 }).superRefine((value, ctx) => {
   const hasLegacy = value.cwd !== undefined;
@@ -124,7 +126,7 @@ const ClientMessageSchemaImpl = z.union([
     prompt: z.string(),
     cwd: z.string(),
     criteria: z.string().optional(),
-    agentType: agentType.optional(),
+    agentType: agentSelection.optional(),
     dependencies: z.array(launchDependency).optional(),
   }),
   z.object({
@@ -154,7 +156,7 @@ const ClientMessageSchemaImpl = z.union([
     type: z.literal('relaunch'),
     taskId: z.string(),
     prompt: z.string(),
-    agentType: agentType.optional(),
+    agentType: agentSelection.optional(),
     dependencies: z.array(launchDependency).optional(),
   }),
   z.object({ type: z.literal('cancelTask'), taskId: z.string() }),

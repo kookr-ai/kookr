@@ -28,7 +28,7 @@ import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from '.
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
-import type { KookrSettings } from '../core/settings-store.js';
+import { saveSettings, type KookrSettings } from '../core/settings-store.js';
 import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
 import { DiagnosticRunner } from './diagnostic-runner.js';
@@ -242,6 +242,44 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   }
 
   const getDefaultAgentType = () => currentSettings.defaultAgentType;
+  /**
+   * Serialized writer for `settings.json`. Each scheduled write serializes the
+   * *live* `currentSettings` when its turn in the chain comes, so the last
+   * write always reflects the freshest state: a per-launch round-robin cursor
+   * bump and an operator settings PUT cannot clobber each other's fields, and
+   * concurrent cursor bumps cannot land their `rename()`s out of order. A
+   * failed write is swallowed so it never stalls the chain.
+   */
+  let settingsWriteChain: Promise<void> = Promise.resolve();
+  const persistSettings = (): Promise<void> => {
+    settingsWriteChain = settingsWriteChain
+      .catch(() => {})
+      .then(() => saveSettings(settingsFile, currentSettings));
+    return settingsWriteChain;
+  };
+  /**
+   * Round-robin rotation cursor. `peek` reads the index for the next launch;
+   * `advance` moves the cursor forward and persists it. `launchTask` advances
+   * only once a task record is committed, so deduplicated or failed launches
+   * never consume a rotation slot. The persist is fire-and-forget — a lost
+   * write costs at most a rotation step after a crash, and the next launch
+   * rewrites the cursor regardless.
+   */
+  const roundRobinCursor = {
+    peek: (): number => currentSettings.roundRobinIndex,
+    advance: (): void => {
+      currentSettings = {
+        ...currentSettings,
+        roundRobinIndex: currentSettings.roundRobinIndex + 1,
+      };
+      void persistSettings().catch((err) => {
+        console.warn(
+          '[round-robin] failed to persist rotation cursor:',
+          err instanceof Error ? err.message : err,
+        );
+      });
+    },
+  };
   const realtime = await createRealtimeServices({
     kookrDir,
     taskStore,
@@ -498,6 +536,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     lifecycleDeps,
     getMaxActiveTasks,
     getDefaultAgentType,
+    roundRobinCursor,
     interactionLog,
   };
 
@@ -1169,20 +1208,34 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,
       update: async (newSettings: KookrSettings) => {
         const prev = currentSettings;
+        // `roundRobinIndex` is server-managed — advanced per launch by the
+        // round-robin cursor, never edited by an operator. A settings PUT
+        // carries whatever cursor the client last read, which may be stale;
+        // force the live value so a save never rolls the rotation back.
+        const merged: KookrSettings = {
+          ...newSettings,
+          roundRobinIndex: currentSettings.roundRobinIndex,
+        };
         // Persist to disk FIRST. If saveSettings (inside applySettingsSideEffects)
         // throws, the in-memory `currentSettings` must not advance — otherwise
         // getMaxActiveTasks and other live getters would diverge from what's
         // on disk and the next snapshot would lie until the next restart.
         const warnings = await applySettingsSideEffects({
           prevSettings: prev,
-          newSettings,
+          newSettings: merged,
           settingsFile,
           githubScanner,
           watchdog,
           monitor,
         });
-        currentSettings = newSettings;
+        currentSettings = { ...newSettings, roundRobinIndex: currentSettings.roundRobinIndex };
         settingsLoadedFromDefaults = false;
+        // applySettingsSideEffects wrote `merged` to disk, but a launch may
+        // have advanced the cursor during the await above — that snapshot's
+        // `roundRobinIndex` is then stale. Re-persist the live settings
+        // through the serialized writer so the on-disk cursor converges on
+        // the freshest value.
+        await persistSettings();
         if (prev.autoWatchOssSources !== newSettings.autoWatchOssSources) {
           if (newSettings.autoWatchOssSources) {
             ossRegistryWatcher.start();

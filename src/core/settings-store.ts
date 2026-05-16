@@ -1,5 +1,5 @@
 import { readFile, writeFile, rename } from 'node:fs/promises';
-import { DEFAULT_AGENT_TYPE, normalizeAgentType, type AgentType } from './agent-types.js';
+import { DEFAULT_AGENT_TYPE, normalizeAgentSelection, type AgentSelection } from './agent-types.js';
 
 export interface KookrSettings {
   githubPollingEnabled: boolean;
@@ -8,7 +8,18 @@ export interface KookrSettings {
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
-  defaultAgentType: AgentType;
+  /**
+   * Pre-selected agent for new tasks when no explicit agent is supplied. May
+   * be the `round-robin` sentinel — the launch service resolves that to a
+   * concrete agent per launch (see {@link roundRobinIndex}).
+   */
+  defaultAgentType: AgentSelection;
+  /**
+   * Rotation cursor for the `round-robin` default agent. Holds the index of
+   * the *next* launch in the rotation; advanced and persisted on every
+   * round-robin launch so the alternation survives a server restart.
+   */
+  roundRobinIndex: number;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -19,6 +30,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   repeatedErrorThreshold: 3,
   maxActiveTasks: 10,
   defaultAgentType: DEFAULT_AGENT_TYPE,
+  roundRobinIndex: 0,
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -62,8 +74,17 @@ export function validateSettings(raw: Record<string, unknown>): KookrSettings {
 
   const defaultAgentType =
     typeof raw.defaultAgentType === 'string'
-      ? normalizeAgentType(raw.defaultAgentType)
+      ? normalizeAgentSelection(raw.defaultAgentType)
       : DEFAULT_SETTINGS.defaultAgentType;
+
+  let roundRobinIndex = DEFAULT_SETTINGS.roundRobinIndex;
+  if (
+    typeof raw.roundRobinIndex === 'number' &&
+    Number.isInteger(raw.roundRobinIndex) &&
+    raw.roundRobinIndex >= 0
+  ) {
+    roundRobinIndex = raw.roundRobinIndex;
+  }
 
   return {
     githubPollingEnabled: enabled,
@@ -73,6 +94,7 @@ export function validateSettings(raw: Record<string, unknown>): KookrSettings {
     repeatedErrorThreshold: errorThreshold,
     maxActiveTasks: maxTasks,
     defaultAgentType,
+    roundRobinIndex,
   };
 }
 
@@ -101,9 +123,19 @@ export async function loadSettings(filePath: string): Promise<SettingsLoadResult
   }
 }
 
-/** Save settings to a JSON file. Uses write-to-temp + rename for crash safety. */
+/** Monotonic counter feeding {@link saveSettings} unique temp filenames. */
+let saveSeq = 0;
+
+/**
+ * Save settings to a JSON file. Uses write-to-temp + rename for crash safety.
+ *
+ * The temp filename is unique per call (pid + sequence) rather than a fixed
+ * `.tmp` suffix: round-robin launches persist the rotation cursor through this
+ * function, so a per-launch write can race a concurrent settings-PUT write —
+ * a shared temp path would let them corrupt each other's partial JSON.
+ */
 export async function saveSettings(filePath: string, settings: KookrSettings): Promise<void> {
-  const tmpPath = filePath + '.tmp';
+  const tmpPath = `${filePath}.${process.pid}.${++saveSeq}.tmp`;
   await writeFile(tmpPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
   await rename(tmpPath, filePath);
 }

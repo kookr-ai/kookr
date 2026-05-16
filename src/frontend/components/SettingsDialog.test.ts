@@ -5,7 +5,7 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { SettingsDialog } from './SettingsDialog.js';
-import type { AgentType } from '../../shared/protocol.js';
+import type { AgentSelection } from '../../shared/protocol.js';
 
 interface MockSettings {
   githubPollingEnabled: boolean;
@@ -14,7 +14,7 @@ interface MockSettings {
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
-  defaultAgentType: AgentType;
+  defaultAgentType: AgentSelection;
 }
 
 const DEFAULT_SETTINGS: MockSettings = {
@@ -177,6 +177,30 @@ describe('SettingsDialog tabs', () => {
       defaultAgentType: 'codex-cli',
     });
     expect(localStorage.getItem('kookr:defaultAgentType')).toBeNull();
+  });
+
+  test('offers and persists the round-robin default agent', async () => {
+    await flush();
+
+    const select = container.querySelector<HTMLSelectElement>('.settings-agent-select select');
+    expect(select).not.toBeNull();
+    const optionValues = Array.from(select!.options).map((o) => o.value);
+    expect(optionValues).toContain('round-robin');
+
+    await act(async () => {
+      select!.value = 'round-robin';
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    const fetchMock = vi.mocked(fetch);
+    const putCall = fetchMock.mock.calls.find(([url, init]) =>
+      url === '/api/settings' && init && init.method === 'PUT'
+    );
+    expect(putCall).toBeDefined();
+    expect(JSON.parse(String(putCall![1]!.body))).toMatchObject({
+      defaultAgentType: 'round-robin',
+    });
   });
 
   test('connects relay credentials from the Sharing tab with the share CSRF token', async () => {

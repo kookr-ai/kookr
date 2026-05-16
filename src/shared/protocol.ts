@@ -2,8 +2,16 @@
 // Both sides import from here; neither imports directly from the other.
 
 export type { AgentState } from './contracts/agent-state.js';
-export type { AgentType, AvailableAgentType } from './contracts/agent-types.js';
-export { AVAILABLE_AGENT_TYPES } from './contracts/agent-types.js';
+export type {
+  AgentType,
+  AgentSelection,
+  AvailableAgentType,
+  AvailableAgentSelection,
+} from './contracts/agent-types.js';
+export {
+  AVAILABLE_AGENT_TYPES,
+  buildAgentSelectionOptions,
+} from './contracts/agent-types.js';
 export type { AgentEvent } from './contracts/agent-events.js';
 export type { AnomalySeverity, AnomalyType } from './contracts/anomalies.js';
 export type {

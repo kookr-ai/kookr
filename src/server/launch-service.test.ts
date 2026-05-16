@@ -869,3 +869,117 @@ describe('R19 trust boundary (rfc-remote-chat-trigger §4)', () => {
     expect(deps.adapterRegistry.get('codex-cli').launch).toHaveBeenCalledOnce();
   });
 });
+
+describe('launchTask round-robin', () => {
+  let store: TaskStore;
+  let deps: LaunchServiceDeps;
+  let cursor: number;
+
+  beforeEach(() => {
+    store = new TaskStore();
+    cursor = 0;
+    // Mirrors index.ts: peek reads the index, advance moves it forward.
+    deps = {
+      ...makeDeps(store),
+      roundRobinCursor: { peek: () => cursor, advance: () => { cursor += 1; } },
+    };
+  });
+
+  it('alternates agents across launches when the default is round-robin', async () => {
+    const roundRobinDeps = { ...deps, getDefaultAgentType: () => 'round-robin' as const };
+    const first = await launchTask(roundRobinDeps, { prompt: 'task one', cwd: '/tmp' });
+    const second = await launchTask(roundRobinDeps, { prompt: 'task two', cwd: '/tmp' });
+    const third = await launchTask(roundRobinDeps, { prompt: 'task three', cwd: '/tmp' });
+    expect(first.task.agentType).toBe('claude-code');
+    expect(second.task.agentType).toBe('codex-cli');
+    expect(third.task.agentType).toBe('claude-code');
+    // One advance per committed task, and the choice reaches the adapter.
+    expect(cursor).toBe(3);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledTimes(2);
+    expect(deps.adapterRegistry.get('codex-cli').launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves an explicit round-robin launch request to a concrete agent', async () => {
+    const result = await launchTask(deps, {
+      prompt: 'explicit round robin',
+      cwd: '/tmp',
+      agentType: 'round-robin',
+    });
+    // The created task always records a concrete agent — never the sentinel.
+    expect(result.task.agentType).toBe('claude-code');
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    expect(cursor).toBe(1);
+  });
+
+  it('lets an explicit concrete request override a round-robin default', async () => {
+    const roundRobinDeps = { ...deps, getDefaultAgentType: () => 'round-robin' as const };
+    const result = await launchTask(roundRobinDeps, {
+      prompt: 'pinned to codex',
+      cwd: '/tmp',
+      agentType: 'codex-cli',
+    });
+    expect(result.task.agentType).toBe('codex-cli');
+    // A concrete request must not consume a rotation slot.
+    expect(cursor).toBe(0);
+  });
+
+  it('does not advance the cursor when a round-robin launch deduplicates', async () => {
+    // An active task already exists for this prompt on the agent the cursor
+    // would pick (claude-code at index 0).
+    const existing = store.createTask({ prompt: 'dup prompt', cwd: '/tmp' });
+    store.startTask(existing.id);
+
+    const result = await launchTask(deps, {
+      prompt: 'dup prompt',
+      cwd: '/tmp',
+      agentType: 'round-robin',
+    });
+
+    expect(result.duplicate).toBe(true);
+    expect(result.task.id).toBe(existing.id);
+    // Deduplicated launch created no task, so the rotation must not move.
+    expect(cursor).toBe(0);
+  });
+
+  it('does not advance the cursor when a round-robin launch fails to start', async () => {
+    deps.adapterRegistry.get('claude-code').launch = vi
+      .fn()
+      .mockRejectedValue(new Error('adapter boom'));
+
+    await expect(
+      launchTask(deps, { prompt: 'failing launch', cwd: '/tmp', agentType: 'round-robin' }),
+    ).rejects.toThrow('adapter boom');
+
+    // A failed launch deletes the task record; the rotation must not move.
+    expect(cursor).toBe(0);
+  });
+
+  it('collapses round-robin to the only registered agent', async () => {
+    // Only codex-cli is registered — e.g. the Claude binary is absent. The
+    // rotation must degrade to the single available agent, not route to a
+    // missing one.
+    const soloStore = new TaskStore();
+    const registry = new AdapterRegistry();
+    registry.register({
+      agentType: 'codex-cli',
+      launch: vi.fn().mockResolvedValue('tmux-codex'),
+      sendInput: vi.fn(),
+      sendKeystroke: vi.fn(),
+      stop: vi.fn(),
+      captureDisplay: vi.fn(),
+      onEvent: vi.fn(),
+      onRefreshNeeded: vi.fn(),
+      injectHookEvent: vi.fn(),
+    } as any);
+    const soloDeps: LaunchServiceDeps = {
+      ...makeDeps(soloStore),
+      adapterRegistry: registry,
+      roundRobinCursor: { peek: () => 0, advance: () => {} },
+      getDefaultAgentType: () => 'round-robin',
+    };
+
+    const result = await launchTask(soloDeps, { prompt: 'solo', cwd: '/tmp' });
+    expect(result.task.agentType).toBe('codex-cli');
+    expect(registry.get('codex-cli').launch).toHaveBeenCalledOnce();
+  });
+});

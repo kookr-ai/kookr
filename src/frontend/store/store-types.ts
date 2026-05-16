@@ -15,6 +15,7 @@ import type {
   ScheduleResponse,
   ScheduleStatusSnapshot,
   AgentType,
+  AgentSelection,
   CleanupCandidateDetail,
   CleanupDiagnosticLaunch,
   WorkspaceView,
@@ -94,7 +95,7 @@ export interface TransportSessionSlice {
   terminalOutput: Record<string, string>;
   serverCwd: string;
   availableAgentTypes: AvailableAgentType[];
-  defaultAgentType: AgentType;
+  defaultAgentType: AgentSelection;
   buildInfo: BuildInfo | null;
   serverStartedAt: string | null;
   playbooks: Playbook[];
@@ -123,7 +124,7 @@ export interface TransportSessionSlice {
     totalSpendUsd?: number,
     achievements?: Record<string, string>,
     availableAgentTypes?: AvailableAgentType[],
-    defaultAgentType?: AgentType,
+    defaultAgentType?: AgentSelection,
     workspaceEnabled?: boolean,
     sweepRunning?: boolean,
     maxActiveTasks?: number,

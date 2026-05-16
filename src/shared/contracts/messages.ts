@@ -1,5 +1,5 @@
 import type { AgentState } from './agent-state.js';
-import type { AgentType, AvailableAgentType } from './agent-types.js';
+import type { AgentSelection, AvailableAgentType } from './agent-types.js';
 import type { AnomalySeverity, AnomalyType } from './anomalies.js';
 import type { BuildInfo } from './build-info.js';
 import type { CircuitBreakerSnapshot } from './circuit-breaker.js';
@@ -118,7 +118,8 @@ export type SnapshotMessage = {
   /** Streak counter for Iron Streak (consecutive days with a user-resolved anomaly). */
   achievementStreak?: { lastActiveDate: string | null; currentStreak: number };
   availableAgentTypes?: AvailableAgentType[];
-  defaultAgentType?: AgentType;
+  /** Configured default agent; may be the `round-robin` selection. */
+  defaultAgentType?: AgentSelection;
   /** Server capability: contribution workspace is available. */
   workspaceEnabled?: boolean;
   /** True if a cross-project sweep is currently in progress on this server. */
@@ -136,7 +137,7 @@ type LaunchPlaybookBaseMessage = {
   type: 'launchPlaybook';
   playbookPath: string;
   parameterValues: Record<string, string>;
-  agentType?: AgentType;
+  agentType?: AgentSelection;
   scope?: PlaybookScope;
 };
 
@@ -225,11 +226,11 @@ export type ClientMessage =
   | { type: 'skipAll'; agentIds: string[] }
   | { type: 'snooze'; agentId: string; taskId?: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }
   | { type: 'cancelSnooze'; agentId: string; taskId?: string }
-  | { type: 'launch'; prompt: string; cwd: string; criteria?: string; agentType?: AgentType; dependencies?: LaunchDependency[] }
+  | { type: 'launch'; prompt: string; cwd: string; criteria?: string; agentType?: AgentSelection; dependencies?: LaunchDependency[] }
   | { type: 'completeTask'; taskId: string; feedback?: TaskCompletionFeedback }
   | { type: 'setTaskFeedback'; taskId: string; feedback: TaskCompletionFeedback }
   | { type: 'requestTaskReflect'; taskId: string; direction: 'up' | 'down' }
-  | { type: 'relaunch'; taskId: string; prompt: string; agentType?: AgentType; dependencies?: LaunchDependency[] }
+  | { type: 'relaunch'; taskId: string; prompt: string; agentType?: AgentSelection; dependencies?: LaunchDependency[] }
   | { type: 'cancelTask'; taskId: string }
   | { type: 'reopenTask'; taskId: string }
   | { type: 'deleteTask'; taskId: string }

@@ -4,7 +4,7 @@ import { computeProjectSummaries } from '../../core/project-summary.js';
 import type { LedgerAnalytics } from '../../core/ledger-analytics.js';
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
 import type { PrLessonsStateHolder } from '../../core/pr-lessons-discovery.js';
-import type { AvailableAgentType, AgentType } from '../../core/agent-types.js';
+import type { AvailableAgentType, AgentSelection } from '../../core/agent-types.js';
 import type { ProjectSummary, ProjectRepoHealth } from '../../core/project-summary.js';
 import type { GitHubReference } from '../../core/github-types.js';
 import type { SnapshotMessage } from '../../shared/contracts/messages.js';
@@ -43,7 +43,7 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   };
   achievementStreak?: { lastActiveDate: string | null; currentStreak: number };
   availableAgentTypes?: AvailableAgentType[];
-  defaultAgentType?: AgentType;
+  defaultAgentType?: AgentSelection;
   workspaceEnabled?: boolean;
   sweepRunning?: boolean;
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */

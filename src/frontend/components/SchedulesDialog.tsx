@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { AgentType, AvailableAgentType, Playbook, ScheduleResponse } from '../../shared/protocol.js';
-import { AVAILABLE_AGENT_TYPES } from '../../shared/protocol.js';
+import type { AgentSelection, Playbook, ScheduleResponse } from '../../shared/protocol.js';
+import { buildAgentSelectionOptions } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookSelector } from './PlaybookSelector.js';
@@ -72,7 +72,7 @@ export function SchedulesDialog({ onClose }: Props) {
     defaultAgentType,
     handleSchedules,
   } = useKookrStore();
-  const agentOptions = availableAgentTypes.length > 0 ? availableAgentTypes : AVAILABLE_AGENT_TYPES;
+  const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const [showCreate, setShowCreate] = useState(schedules.length === 0);
   const [cwd, setCwd] = useState(serverCwd);
   const [name, setName] = useState('');
@@ -82,7 +82,7 @@ export function SchedulesDialog({ onClose }: Props) {
   const [playbooksLoading, setPlaybooksLoading] = useState(false);
   const [playbookId, setPlaybookId] = useState('');
   const [parameterValues, setParameterValues] = useState<Record<string, string>>({});
-  const [agentType, setAgentType] = useState<AgentType>(() =>
+  const [agentType, setAgentType] = useState<AgentSelection>(() =>
     defaultAgentType ?? 'claude-code'
   );
   const [enabled, setEnabled] = useState(true);
@@ -327,7 +327,7 @@ export function SchedulesDialog({ onClose }: Props) {
             <AgentTypeSelector
               value={agentType}
               onChange={setAgentType}
-              options={agentOptions as AvailableAgentType[]}
+              options={agentOptions}
             />
 
             <label className="schedule-enable-checkbox">

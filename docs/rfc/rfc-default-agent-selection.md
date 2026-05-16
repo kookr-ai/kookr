@@ -152,3 +152,70 @@ Rejected as the primary mechanism. An environment override may be useful later f
 - Boundary review: the default belongs in server settings, not only frontend state, because the most important caller is `kookr-spawn` / child-task creation.
 - Design-minimalist review: no new endpoint is needed; reuse `/api/settings` and the existing `AgentTypeSelector`.
 - Failure-mode review: remote-chat Codex guardrails must remain explicit even when the global default is Codex CLI.
+
+---
+
+## Extension: Round-Robin Default Agent
+
+### Status
+
+**Accepted** (2026-05-16) — extends the accepted RFC above.
+
+### Problem
+
+Users on both a Claude plan and a Codex plan want to spread launches across
+both rather than pinning every task to one agent. The original design only
+allows a single concrete default.
+
+### Requirements
+
+- The Default agent control SHALL offer a third option, **Round robin**,
+  alongside Claude Code and Codex CLI.
+- Round robin SHALL be selectable both as the Settings default and as a
+  per-launch choice in every launch surface (Quick Launch, Manual Launch,
+  Playbook launch, Schedule creation).
+- A launch that resolves to round robin SHALL alternate between Claude Code
+  and Codex CLI; a persisted task or session SHALL always record a concrete
+  agent type.
+- The rotation SHALL survive a server restart.
+- Round robin SHALL be offered only when at least two agents are available;
+  with one agent it degrades to that agent.
+
+### Design
+
+**Selection vs. agent type.** `AgentType` stays the concrete pair
+(`claude-code | codex-cli`). A new `AgentSelection = AgentType | 'round-robin'`
+type carries the *selectable* value — settings default, launch request, and
+schedule definition. The `round-robin` sentinel never reaches a task record:
+`launchTask` resolves it to a concrete `AgentType` before dedup and task
+creation.
+
+**Resolution.** `resolveRoundRobinAgent(cursor, availableTypes)` filters the
+canonical order `['claude-code', 'codex-cli']` to registered adapters and
+indexes it by the rotation cursor. `launchTask` resolves
+`opts.agentType ?? getDefaultAgentType()`; if that is `round-robin`, it calls
+`advanceRoundRobinCursor()` (returns the index for this launch, then advances).
+
+**Cursor persistence.** `KookrSettings.roundRobinIndex` holds the next
+rotation index. Each round-robin launch advances it in memory synchronously
+(so concurrent launches get distinct indices) and persists it fire-and-forget.
+The `/api/settings` update path preserves this server-managed cursor so an
+operator settings save never rolls the rotation back. `saveSettings` writes
+through a unique temp filename so a per-launch cursor write cannot corrupt a
+concurrent settings-PUT write.
+
+**Wire contract.** The `launch` / `relaunch` / `launchPlaybook` client
+messages and the snapshot `defaultAgentType` widen to `AgentSelection`. The
+adapter-driven `availableAgentTypes` list stays concrete; the frontend appends
+the Round robin option client-side via `buildAgentSelectionOptions` when two
+or more agents are available.
+
+### Edge Cases
+
+- A round-robin schedule resolves a fresh concrete agent on each run, so a
+  recurring schedule also alternates.
+- Ralph loops resolve round robin once at loop start; the loop task records a
+  concrete agent and subsequent iterations stay on it.
+- Remote-chat Codex guardrails are unchanged: the R19 check runs on the
+  resolved concrete agent, so a round-robin launch landing on Codex via
+  Telegram still requires `KOOKR_REMOTE_CHAT_ALLOW_CODEX=1`.

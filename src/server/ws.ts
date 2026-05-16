@@ -16,7 +16,7 @@ import {
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
 import type { CircuitBreakerRegistry } from '../core/circuit-breaker.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
-import type { AgentType, AvailableAgentType } from '../core/agent-types.js';
+import type { AgentSelection, AvailableAgentType } from '../core/agent-types.js';
 import type { ScheduleService } from './schedule-service.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
@@ -61,8 +61,8 @@ export interface MessageRouterDeps {
   getMaxActiveTasks?: () => number;
   suppressionTracker?: SnoozeSuppressionTracker;
   availableAgentTypes?: AvailableAgentType[];
-  defaultAgentType?: AgentType;
-  getDefaultAgentType?: () => AgentType;
+  defaultAgentType?: AgentSelection;
+  getDefaultAgentType?: () => AgentSelection;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;

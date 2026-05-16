@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { parsePlaybook, interpolateParameters } from '../../core/playbook-parser.js';
 import { userPlaybooksDir, pluginPlaybooksDir } from '../../core/playbook-discovery.js';
 import { getProjectId, projectDisplayName, projectIdFromRepoSpecifier } from '../../core/project-identity.js';
-import type { AgentType } from '../../core/agent-types.js';
+import type { AgentSelection } from '../../core/agent-types.js';
 import type { PlaybookParameter, PlaybookScope } from '../../core/playbook.js';
 import { canonicalizeCwd, type LaunchOpts } from '../launch-service.js';
 import { normalizePromptFileReferences } from '../prompt-file-paths.js';
@@ -29,7 +29,7 @@ export interface PreparePlaybookLaunchInput {
   projectId?: string;
   playbookPath: string;
   parameterValues: Record<string, string>;
-  agentType?: AgentType;
+  agentType?: AgentSelection;
   /** Where to read the playbook file from. Defaults to 'project' for back-compat. */
   scope?: PlaybookScope;
 }

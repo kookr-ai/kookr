@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { open, readFile, mkdir, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { AgentType } from './agent-types.js';
-import { DEFAULT_AGENT_TYPE } from './agent-types.js';
+import type { AgentSelection } from './agent-types.js';
+import { DEFAULT_AGENT_TYPE, normalizeAgentSelection } from './agent-types.js';
 import { isValidCron, nextRun, describeCron } from './cron.js';
 
 export interface SchedulePlaybook {
@@ -70,7 +70,8 @@ export interface Schedule {
   exhaustedAt?: string;
   playbook: SchedulePlaybook;
   cwd: string;
-  agentType: AgentType;
+  /** Agent for each scheduled run; `round-robin` alternates per run. */
+  agentType: AgentSelection;
   /** Legacy dispatch fields kept for migration compatibility. */
   lastRunAt?: string;
   lastRunTaskId?: string;
@@ -112,7 +113,7 @@ export interface CreateScheduleInput {
   maxTriggers?: number;
   playbook: SchedulePlaybook;
   cwd: string;
-  agentType?: AgentType;
+  agentType?: AgentSelection;
   enabled?: boolean;
 }
 
@@ -122,7 +123,7 @@ export interface UpdateScheduleDefinitionInput {
   maxTriggers?: number | null;
   playbook?: SchedulePlaybook;
   cwd?: string;
-  agentType?: AgentType;
+  agentType?: AgentSelection;
 }
 
 export class ScheduleValidationError extends Error {
@@ -341,7 +342,7 @@ function normalizeSchedule(raw: unknown): Schedule | null {
       parameters: { ...(candidate.playbook.parameters ?? {}) },
     },
     cwd: String(candidate.cwd),
-    agentType: candidate.agentType ?? DEFAULT_AGENT_TYPE,
+    agentType: normalizeAgentSelection(candidate.agentType),
     createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
     updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : new Date().toISOString(),
     ...(typeof candidate.lastRunAt === 'string' ? { lastRunAt: candidate.lastRunAt } : {}),

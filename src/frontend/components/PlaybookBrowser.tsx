@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { AVAILABLE_AGENT_TYPES, type Playbook, type ClientMessage, type AgentType } from '../../shared/protocol.js';
+import { buildAgentSelectionOptions, type Playbook, type ClientMessage, type AgentSelection } from '../../shared/protocol.js';
 import type { PlaybookParameterOption, PlaybookScope } from '../../shared/contracts/playbook.js';
 import type { ProjectSummary } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
@@ -248,9 +248,7 @@ export function PlaybookBrowser({
   onRequestEditCwd,
 }: Props) {
   const { playbooks, playbooksLoading, availableAgentTypes, defaultAgentType, projectSummaries } = useKookrStore();
-  const agentOptions = availableAgentTypes.length > 0
-    ? availableAgentTypes
-    : AVAILABLE_AGENT_TYPES;
+  const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const [selected, setSelected] = useState<Playbook | null>(null);
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
   const [resolvedOptions, setResolvedOptions] = useState<Record<string, PlaybookParameterOption[]>>({});
@@ -270,7 +268,7 @@ export function PlaybookBrowser({
     if (conflict !== null) setConflict(null);
   }, [paramValues]);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => usageTracker.getPinned());
-  const [agentType, setAgentType] = useState<AgentType>(() =>
+  const [agentType, setAgentType] = useState<AgentSelection>(() =>
     defaultAgentType || 'claude-code'
   );
   const [showOtherAuthorWarning, setShowOtherAuthorWarning] = useState(false);

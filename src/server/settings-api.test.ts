@@ -52,6 +52,7 @@ describe('Settings API', () => {
       repeatedErrorThreshold: 3,
       maxActiveTasks: 10,
       defaultAgentType: 'claude-code',
+      roundRobinIndex: 0,
       loadedFromDefaults: true,
     });
   });
@@ -147,6 +148,40 @@ describe('Settings API', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.defaultAgentType).toBe('claude-code');
+  });
+
+  test('PUT /api/settings accepts the round-robin defaultAgentType', async () => {
+    const res = await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultAgentType: 'round-robin' }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.defaultAgentType).toBe('round-robin');
+
+    const fileContent = JSON.parse(readFileSync(join(tempDir, 'settings.json'), 'utf-8'));
+    expect(fileContent.defaultAgentType).toBe('round-robin');
+  });
+
+  test('PUT /api/settings does not let the client roll back the server-managed round-robin cursor', async () => {
+    // roundRobinIndex is server-managed; a PUT carrying a stale/forged value
+    // must not overwrite the live cursor. No launches have run on this test
+    // server, so the cursor stays at its default of 0.
+    const res = await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roundRobinIndex: 999 }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.roundRobinIndex).toBe(0);
+
+    const getRes = await fetch(`${baseUrl}/api/settings`);
+    expect((await getRes.json()).roundRobinIndex).toBe(0);
+
+    const fileContent = JSON.parse(readFileSync(join(tempDir, 'settings.json'), 'utf-8'));
+    expect(fileContent.roundRobinIndex).toBe(0);
   });
 
   test('disabling polling stops the GitHub scanner', async () => {

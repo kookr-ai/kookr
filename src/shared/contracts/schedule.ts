@@ -1,4 +1,4 @@
-import type { AgentType } from './agent-types.js';
+import type { AgentSelection } from './agent-types.js';
 
 export interface SchedulePlaybook {
   path: string;
@@ -65,7 +65,8 @@ export interface Schedule {
   exhaustedAt?: string;
   playbook: SchedulePlaybook;
   cwd: string;
-  agentType: AgentType;
+  /** Agent for each scheduled run; `round-robin` alternates per run. */
+  agentType: AgentSelection;
   lastRunAt?: string;
   lastRunTaskId?: string;
   lastRunStatus?: 'completed' | 'cancelled' | 'failed';

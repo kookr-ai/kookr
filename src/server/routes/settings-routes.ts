@@ -32,7 +32,10 @@ export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
         activityMetaProvider: deps.hookIngestion,
         getMaxActiveTasks: deps.getMaxActiveTasks,
       }));
-      return c.json({ ...validated, warnings });
+      // Return what the server actually committed, not `validated`: the update
+      // path overrides server-managed fields (e.g. roundRobinIndex) that the
+      // client's body cannot authoritatively set.
+      return c.json({ ...deps.settings.get(), warnings });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
