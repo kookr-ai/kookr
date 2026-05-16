@@ -70,6 +70,12 @@ export interface RelayMetadataAuditRow {
   reason?: string;
 }
 
+interface PendingCommandRecipient {
+  nodeId: NodeId;
+  commandId: string;
+  subscription: RelayClientSubscription;
+}
+
 export interface RelayNodeStatus {
   nodeId: NodeId;
   ownerId: string;
@@ -151,9 +157,10 @@ function readJson(req: IncomingMessage): Promise<unknown> {
 // token that lands in a URL fragment can never leak to a third party via a
 // cross-origin navigation or sub-resource request. RFC: Phase A0.
 const RELAY_SECURITY_HEADERS = { 'referrer-policy': 'no-referrer' } as const;
+const RELAY_MEMBER_COOKIE = 'kookr_relay_member_token';
 
-function sendJson(res: ServerResponse, status: number, payload: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json', ...RELAY_SECURITY_HEADERS });
+function sendJson(res: ServerResponse, status: number, payload: unknown, headers: Record<string, string> = {}): void {
+  res.writeHead(status, { 'content-type': 'application/json', ...RELAY_SECURITY_HEADERS, ...headers });
   res.end(JSON.stringify(payload));
 }
 
@@ -171,6 +178,33 @@ function bearer(req: IncomingMessage): string | null {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) return null;
   return header.slice('Bearer '.length).trim();
+}
+
+function cookieValue(req: IncomingMessage, name: string): string | null {
+  const cookie = req.headers.cookie;
+  if (!cookie) return null;
+  for (const part of cookie.split(';')) {
+    const [rawKey, ...rawValue] = part.trim().split('=');
+    if (rawKey !== name) continue;
+    const value = rawValue.join('=');
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  }
+  return null;
+}
+
+function memberCookie(token: string, req: IncomingMessage): string {
+  const encrypted = Boolean((req.socket as typeof req.socket & { encrypted?: boolean }).encrypted);
+  return [
+    `${RELAY_MEMBER_COOKIE}=${encodeURIComponent(token)}`,
+    'Path=/relay',
+    'HttpOnly',
+    'SameSite=Lax',
+    encrypted ? 'Secure' : '',
+  ].filter(Boolean).join('; ');
 }
 
 function isAuthorizedAdmin(req: IncomingMessage, adminToken: string | undefined): boolean {
@@ -198,7 +232,7 @@ function authenticateClient(
   if (opts.allowInsecureClients) return ownerClientAuth(ownerId, nodeId);
   if (opts.clientToken && url?.searchParams.get('clientToken') === opts.clientToken) return ownerClientAuth(ownerId, nodeId);
   if (isAuthorizedAdmin(req, opts.adminToken)) return ownerClientAuth(ownerId, nodeId);
-  const memberToken = url?.searchParams.get('memberToken') ?? bearer(req);
+  const memberToken = bearer(req) ?? cookieValue(req, RELAY_MEMBER_COOKIE);
   if (memberToken) {
     const invitation = invitations.authenticateMember(memberToken);
     if (invitation && invitation.nodeId === nodeId) {
@@ -388,6 +422,10 @@ function authAllows(auth: RelayClientAuth, grant: KnownGrant | null): boolean {
   return auth.grants.some((candidate) => candidate === grant && isKnownGrant(candidate));
 }
 
+function authAllowsTerminalStream(auth: RelayClientAuth): boolean {
+  return authAllows(auth, 'terminalInput');
+}
+
 function isRemoteCommandResultMessage(value: unknown): value is { type: 'remote.command.result' } & CommandResult {
   const msg = value as Partial<CommandResult> & { type?: unknown };
   return typeof value === 'object'
@@ -408,6 +446,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const nodeSockets = new Map<NodeId, WebSocket>();
   const nodeHello = new Map<NodeId, NodeHello>();
   const subscribers = new Map<NodeId, Set<RelayClientSubscription>>();
+  const commandRecipients = new Map<string, PendingCommandRecipient>();
   const presence = new Map<NodeId, Map<string, PresenceMember>>();
   const replay = new Map<NodeId, RemoteControlEvent[]>();
   const terminalReplay = new Map<NodeId, Map<string, TerminalStreamEvent[]>>();
@@ -556,6 +595,10 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         sendHtml(res, 200, relayDashboardHtml());
         return;
       }
+      if (req.method === 'GET' && url.pathname === '/relay/join') {
+        sendHtml(res, 200, relayJoinHtml());
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/relay/assets/xterm.js') {
         sendText(
           res,
@@ -598,6 +641,10 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           .digest('hex')
           .slice(0, 16);
         const terminal = parseTerminalSubscription(url);
+        if (terminal && !authAllowsTerminalStream(auth)) {
+          sendJson(res, 403, { error: 'terminal grant required' });
+          return;
+        }
         const afterSeq = parseSeq(url.searchParams.get('afterSeq')) ?? asSeq(0);
         const terminalEvents = terminal
           ? collectTerminalReplayEvents(asNodeId(nodeId), terminal.sessionId, terminal.sessionEpoch, afterSeq)
@@ -742,7 +789,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         sendJson(res, 201, {
           invitation: created.invitation,
           token: created.token,
-          acceptUrl: `/relay/dashboard?inviteToken=${encodeURIComponent(created.token)}`,
+          acceptUrl: `/relay/join#inviteToken=${encodeURIComponent(created.token)}`,
         });
         return;
       }
@@ -758,10 +805,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, accepted.reason === 'not-found' ? 404 : 409, { error: accepted.reason });
           return;
         }
-        sendJson(res, 200, {
-          invitation: accepted.accepted.invitation,
-          memberToken: accepted.accepted.memberToken,
-        });
+        sendJson(
+          res,
+          200,
+          { nodeId: accepted.accepted.invitation.nodeId },
+          { 'set-cookie': memberCookie(accepted.accepted.memberToken, req) },
+        );
         return;
       }
       if (req.method === 'POST' && url.pathname.startsWith('/relay/admin/invitations/') && url.pathname.endsWith('/revoke')) {
@@ -897,6 +946,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         socket.destroy();
         return;
       }
+      const terminal = parseTerminalSubscription(url);
+      if (terminal && !authAllowsTerminalStream(auth)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       clientWss.handleUpgrade(req, socket, head, (ws) => {
         clientWss.emit('connection', ws, req, asNodeId(nodeId), auth);
       });
@@ -1027,6 +1082,18 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     return false;
   }
 
+  function commandRecipientKey(nodeId: NodeId, commandId: string): string {
+    return `${nodeId}\0${commandId}`;
+  }
+
+  function rememberCommandRecipient(nodeId: NodeId, commandId: string, subscription: RelayClientSubscription): void {
+    commandRecipients.set(commandRecipientKey(nodeId, commandId), { nodeId, commandId, subscription });
+  }
+
+  function forgetCommandRecipient(nodeId: NodeId, commandId: string): void {
+    commandRecipients.delete(commandRecipientKey(nodeId, commandId));
+  }
+
   function projectionAuthStillAuthorized(
     nodeId: NodeId,
     auth: RelayClientAuth,
@@ -1065,16 +1132,18 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   }
 
   function canSendEventToAuth(nodeId: NodeId, auth: RelayClientAuth, event: RemoteControlEvent): boolean {
+    if (auth.kind === 'owner') return true;
     const projection = remoteTaskProjectionEnvelopeFromEvent(event);
     if (projection) return projectionAuthStillAuthorized(nodeId, auth, projection);
-    return !isRemoteTaskProjectionPayload(event.payload);
+    return false;
   }
 
   function canSendEventToSubscriber(nodeId: NodeId, sub: RelayClientSubscription, event: RemoteControlEvent): boolean {
     if (!subscriptionStillAuthorized(nodeId, sub)) return false;
+    if (sub.auth.kind === 'owner') return true;
     const projection = remoteTaskProjectionEnvelopeFromEvent(event);
     if (projection) return projectionSubscriptionStillAuthorized(nodeId, sub, projection);
-    return !isRemoteTaskProjectionPayload(event.payload);
+    return false;
   }
 
   function recordPresence(nodeId: NodeId, clientId: string, auth: RelayClientAuth): void {
@@ -1209,6 +1278,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (!subscribed) return;
     for (const sub of [...subscribed]) {
       if (!subscriptionStillAuthorized(event.nodeId, sub)) continue;
+      if (!authAllowsTerminalStream(sub.auth)) continue;
       if (
         sub.terminal?.sessionId === event.sessionId
         && sub.terminal.sessionEpoch === event.sessionEpoch
@@ -1235,8 +1305,16 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const subscribed = subscribers.get(nodeId);
     if (!subscribed) return;
     const encoded = JSON.stringify({ type: 'remote.command.result', ...result });
+    const recipient = commandRecipients.get(commandRecipientKey(nodeId, result.commandId));
+    if (recipient) {
+      forgetCommandRecipient(nodeId, result.commandId);
+      const sub = recipient.subscription;
+      if (subscriptionStillAuthorized(nodeId, sub) && sub.ws.readyState === sub.ws.OPEN) sub.ws.send(encoded);
+      return;
+    }
     for (const sub of [...subscribed]) {
       if (!subscriptionStillAuthorized(nodeId, sub)) continue;
+      if (sub.auth.kind !== 'owner') continue;
       if (sub.ws.readyState === sub.ws.OPEN) sub.ws.send(encoded);
     }
   }
@@ -1279,6 +1357,10 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       }
       const command = parsed as { type?: unknown; nodeId?: unknown; payload?: unknown };
       if (command.type === 'terminal.replay.request') {
+        if (!authAllowsTerminalStream(auth)) {
+          ws.close(1008, 'terminal grant required');
+          return;
+        }
         const payload = command.payload as { sessionId?: unknown; sessionEpoch?: unknown; afterSeq?: unknown };
         const afterSeq = typeof payload?.afterSeq === 'number' && Number.isInteger(payload.afterSeq)
           ? payload.afterSeq
@@ -1340,6 +1422,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       const target = nodeSockets.get(subscribedNodeId);
       if (target?.readyState === WebSocket.OPEN) {
         const registration = registrations.get(subscribedNodeId);
+        rememberCommandRecipient(subscribedNodeId, commandId, subscription);
         target.send(JSON.stringify({
           ...command,
           nodeId: subscribedNodeId,
@@ -1370,6 +1453,9 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     ws.on('close', () => {
       set.delete(subscription);
       if (set.size === 0) subscribers.delete(subscribedNodeId);
+      for (const [key, recipient] of commandRecipients) {
+        if (recipient.subscription === subscription) commandRecipients.delete(key);
+      }
       removePresence(subscribedNodeId, relayClientId);
     });
   });
@@ -1483,9 +1569,11 @@ function relayDashboardHtml(): string {
 <script src="/relay/assets/xterm.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
+const fragmentParams = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : '');
+if (location.hash) history.replaceState(null, '', location.pathname + location.search);
 let nodeId = params.get('nodeId') || '';
 const clientToken = params.get('clientToken') || '';
-const inviteToken = params.get('inviteToken') || params.get('token') || '';
+const inviteToken = fragmentParams.get('inviteToken') || '';
 const terminalSessionId = params.get('terminalSessionId') || '';
 const terminalSessionEpoch = params.get('terminalSessionEpoch') || '';
 const afterSeq = params.get('afterSeq') || '';
@@ -1511,7 +1599,6 @@ const pendingTerminalEvents = [];
 let terminal = null;
 let relayHostFingerprint = location.origin;
 let terminalConsent = false;
-let memberToken = localStorage.getItem('kookr-relay-member-token:' + location.host) || '';
 function consentKey() { return 'kookr-relay-terminal-consent:' + nodeId + ':' + relayHostFingerprint; }
 function refreshConsent() {
   if (!terminalRequested) {
@@ -1638,9 +1725,7 @@ async function acceptInviteIfPresent() {
     return;
   }
   const body = await res.json();
-  memberToken = body.memberToken || '';
-  if (memberToken) localStorage.setItem('kookr-relay-member-token:' + location.host, memberToken);
-  if (!nodeId && body.invitation?.nodeId) nodeId = body.invitation.nodeId;
+  if (!nodeId && typeof body.nodeId === 'string') nodeId = body.nodeId;
 }
 async function loadNodes() {
   try {
@@ -1708,7 +1793,7 @@ inviteCreateEl.onclick = async () => {
   });
   if (!res.ok) return;
   const body = await res.json();
-  inviteOutputEl.textContent = location.origin + '/relay/dashboard?inviteToken=' + encodeURIComponent(body.token);
+  inviteOutputEl.textContent = location.origin + '/relay/join#inviteToken=' + encodeURIComponent(body.token);
   await loadInvitations();
 };
 async function boot() {
@@ -1723,7 +1808,6 @@ async function boot() {
     const stateUrl = new URL('/relay/dashboard/state', location.href);
     stateUrl.searchParams.set('nodeId', nodeId);
     if (clientToken) stateUrl.searchParams.set('clientToken', clientToken);
-    if (memberToken) stateUrl.searchParams.set('memberToken', memberToken);
     if (terminalSessionId) stateUrl.searchParams.set('terminalSessionId', terminalSessionId);
     if (terminalSessionEpoch) stateUrl.searchParams.set('terminalSessionEpoch', terminalSessionEpoch);
     const state = await fetch(stateUrl, { credentials: 'include' });
@@ -1741,7 +1825,6 @@ async function boot() {
   wsUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   wsUrl.searchParams.set('nodeId', nodeId);
   if (clientToken) wsUrl.searchParams.set('clientToken', clientToken);
-  if (memberToken) wsUrl.searchParams.set('memberToken', memberToken);
   if (terminalSessionId) wsUrl.searchParams.set('terminalSessionId', terminalSessionId);
   if (terminalSessionEpoch) wsUrl.searchParams.set('terminalSessionEpoch', terminalSessionEpoch);
   if (afterSeq) wsUrl.searchParams.set('afterSeq', afterSeq);
@@ -1751,6 +1834,173 @@ async function boot() {
   ws.onmessage = (msg) => { try { ingest(JSON.parse(msg.data)); } catch {} };
 }
 boot();
+</script>
+</body>
+</html>`;
+}
+
+function relayJoinHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kookr shared task</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #0d1117; color: #e7ecef; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0d1117; }
+    main { width: min(720px, calc(100vw - 32px)); }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    .panel { border: 1px solid #2b373d; border-radius: 8px; background: #151c20; padding: 18px; }
+    .muted { color: #aeb9bf; }
+    .status { margin: 12px 0; min-height: 20px; color: #aeb9bf; }
+    label { display: grid; gap: 6px; margin: 14px 0; }
+    input { background: #0c1114; color: #e7ecef; border: 1px solid #2b373d; border-radius: 4px; padding: 9px 10px; }
+    button { background: #1f6feb; color: white; border: 0; border-radius: 4px; padding: 9px 12px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .task { border: 1px solid #2b373d; border-radius: 6px; padding: 14px; margin-top: 14px; background: #0f1519; }
+    .task strong { display: block; font-size: 18px; margin-bottom: 8px; }
+    .task dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 0; }
+    .task dt { color: #aeb9bf; }
+    .task dd { margin: 0; }
+    .error { color: #ff7b72; }
+  </style>
+</head>
+<body>
+<main>
+  <section class="panel">
+    <h1>Shared Kookr task</h1>
+    <p class="muted">View-only access as an unverified guest.</p>
+    <form id="join-form">
+      <label>
+        Display name
+        <input id="display-name" maxlength="40" autocomplete="name" value="Guest">
+      </label>
+      <button id="join-button" type="submit">Join</button>
+    </form>
+    <div id="status" class="status" role="status" aria-live="polite">Ready to join</div>
+    <section id="task" class="task" hidden aria-label="Shared task projection">
+      <strong id="task-label"></strong>
+      <dl>
+        <dt>Status</dt><dd id="task-status"></dd>
+        <dt>Finding</dt><dd id="task-finding"></dd>
+        <dt>Needs input</dt><dd id="task-needs-input"></dd>
+        <dt>Updated</dt><dd id="task-updated"></dd>
+      </dl>
+    </section>
+  </section>
+</main>
+<script>
+const fragmentParams = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : '');
+const inviteToken = fragmentParams.get('inviteToken') || '';
+if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+
+const statusEl = document.getElementById('status');
+const formEl = document.getElementById('join-form');
+const nameEl = document.getElementById('display-name');
+const joinButtonEl = document.getElementById('join-button');
+const taskEl = document.getElementById('task');
+const taskLabelEl = document.getElementById('task-label');
+const taskStatusEl = document.getElementById('task-status');
+const taskFindingEl = document.getElementById('task-finding');
+const taskNeedsInputEl = document.getElementById('task-needs-input');
+const taskUpdatedEl = document.getElementById('task-updated');
+const nodeKey = 'kookr-relay-join-node:' + location.host;
+let nodeId = sessionStorage.getItem(nodeKey) || '';
+let ws = null;
+
+function sanitizeDisplayName(value) {
+  return String(value || 'Guest')
+    .replace(/[\\u0000-\\u001f\\u007f-\\u009f\\u202a-\\u202e\\u2066-\\u2069]/g, '')
+    .trim()
+    .slice(0, 40) || 'Guest';
+}
+
+function setStatus(text, error) {
+  statusEl.textContent = text;
+  statusEl.className = error ? 'status error' : 'status';
+}
+
+function renderProjection(projection) {
+  if (!projection || projection.schemaVersion !== 'remote-task-projection.v1') return;
+  taskLabelEl.textContent = projection.taskLabel || projection.taskId || 'Task';
+  taskStatusEl.textContent = projection.status || 'unknown';
+  taskFindingEl.textContent = projection.hasFinding ? 'yes' : 'no';
+  taskNeedsInputEl.textContent = projection.needsInput ? 'yes' : 'no';
+  taskUpdatedEl.textContent = projection.updatedAt || '';
+  taskEl.hidden = false;
+}
+
+function ingest(event) {
+  const payload = event && event.payload;
+  if (payload && payload.type === 'remote.taskProjection.v1') {
+    renderProjection(payload.projection);
+    setStatus('Live view-only task projection');
+  }
+}
+
+async function loadState() {
+  if (!nodeId) return;
+  const stateUrl = new URL('/relay/dashboard/state', location.href);
+  stateUrl.searchParams.set('nodeId', nodeId);
+  const state = await fetch(stateUrl, { credentials: 'include' });
+  if (!state.ok) return;
+  const body = await state.json();
+  for (const event of body.events || []) ingest(event);
+}
+
+function connect() {
+  if (!nodeId) return;
+  if (ws) ws.close();
+  const wsUrl = new URL('/relay/client', location.href);
+  wsUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  wsUrl.searchParams.set('nodeId', nodeId);
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => setStatus('Connected. Waiting for task projection...');
+  ws.onclose = () => setStatus('Disconnected. Access may have been revoked or expired.', true);
+  ws.onmessage = (msg) => { try { ingest(JSON.parse(msg.data)); } catch {} };
+}
+
+async function acceptInvite() {
+  if (!inviteToken) {
+    if (nodeId) {
+      await loadState();
+      connect();
+      return;
+    }
+    setStatus('Missing invitation token.', true);
+    return;
+  }
+  joinButtonEl.disabled = true;
+  setStatus('Joining...');
+  const res = await fetch('/relay/invitations/accept', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ token: inviteToken, displayName: sanitizeDisplayName(nameEl.value) }),
+  });
+  if (!res.ok) {
+    setStatus('Invitation failed or expired.', true);
+    joinButtonEl.disabled = false;
+    return;
+  }
+  const body = await res.json();
+  nodeId = typeof body.nodeId === 'string' ? body.nodeId : '';
+  if (nodeId) sessionStorage.setItem(nodeKey, nodeId);
+  await loadState();
+  connect();
+  formEl.hidden = true;
+}
+
+formEl.addEventListener('submit', (event) => {
+  event.preventDefault();
+  void acceptInvite();
+});
+
+if (!inviteToken && nodeId) {
+  formEl.hidden = true;
+  void acceptInvite();
+}
 </script>
 </body>
 </html>`;

@@ -513,8 +513,9 @@ describe('createKookrServer', () => {
         const clientUrl = new URL('/relay/client', relay.url());
         clientUrl.protocol = 'ws:';
         clientUrl.searchParams.set('nodeId', registration.nodeId);
-        clientUrl.searchParams.set('memberToken', accepted.accepted.memberToken);
-        clientWs = new WebSocket(clientUrl);
+        clientWs = new WebSocket(clientUrl, {
+          headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+        });
         const messages: unknown[] = [];
         clientWs.on('message', (data) => messages.push(JSON.parse(data.toString()) as unknown));
         await new Promise<void>((resolve) => clientWs!.once('open', () => resolve()));
