@@ -13,6 +13,7 @@ import type { KnownGrant, PolicyGrantRecord, PolicyRevokeMessage, ShareGrant, Sh
 import { grantForRemoteCommandAction, isKnownGrant } from '../src/remote/grants.js';
 import { isTerminalStreamEvent, type TerminalReplayGapEvent, type TerminalStreamEvent } from '../src/remote/stream-events.js';
 import { isPushAlertDeltaPayload, makeRedactedPushPayload } from '../src/remote/push.js';
+import type { RelayNodeInvitationView, TaskShareGrant } from '../src/remote/share-contract.js';
 import { InvitationStore, type InvitationRecord } from './src/invitations/store.js';
 import { createPushFanout, type PushDeliveryOutcome, type PushFanout, type PushSender } from './src/push/fanout.js';
 import { createPushSubscriptionStore, isPushSubscription, type PushSubscriptionStore, type StoredPushSubscription } from './src/push/subscriptions.js';
@@ -141,18 +142,23 @@ function readJson(req: IncomingMessage): Promise<unknown> {
   });
 }
 
+// Every relay response withholds the Referer header so an invite/member
+// token that lands in a URL fragment can never leak to a third party via a
+// cross-origin navigation or sub-resource request. RFC: Phase A0.
+const RELAY_SECURITY_HEADERS = { 'referrer-policy': 'no-referrer' } as const;
+
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json' });
+  res.writeHead(status, { 'content-type': 'application/json', ...RELAY_SECURITY_HEADERS });
   res.end(JSON.stringify(payload));
 }
 
 function sendHtml(res: ServerResponse, status: number, html: string): void {
-  res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
+  res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', ...RELAY_SECURITY_HEADERS });
   res.end(html);
 }
 
 function sendText(res: ServerResponse, status: number, contentType: string, text: string): void {
-  res.writeHead(status, { 'content-type': contentType });
+  res.writeHead(status, { 'content-type': contentType, ...RELAY_SECURITY_HEADERS });
   res.end(text);
 }
 
@@ -250,6 +256,82 @@ function parseGrantList(value: unknown): ShareGrant[] | null {
   return [...new Set(value as string[])] as ShareGrant[];
 }
 
+// Bounds for node-scoped Phase A0 task shares. The upper bound prevents a
+// dashboard from minting an effectively permanent share; the lower bound
+// keeps a freshly created share usable long enough to actually be joined.
+// Keep in sync with `TASK_SHARE_{MIN,MAX}_TTL_MS` in
+// `src/server/relay-share-client.ts` (the boundary forbids sharing the value).
+const NODE_SHARE_MIN_TTL_MS = 60_000;
+const NODE_SHARE_MAX_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A Phase A0 node task share: a task-subject invitation whose only grant is
+ * `view`. The node-scoped endpoints operate on these exclusively, so an
+ * admin-created multi-grant or non-task invitation is never listed, revoked,
+ * or projected through them — its true capability would otherwise be
+ * misrepresented by {@link toNodeInvitationView}.
+ */
+function isA0TaskShare(
+  invitation: InvitationRecord,
+): invitation is InvitationRecord & { subject: Extract<ShareSubject, { kind: 'task' }> } {
+  return invitation.subject.kind === 'task'
+    && invitation.grants.length === 1
+    && invitation.grants[0] === 'view';
+}
+
+/**
+ * Project a Phase A0 task-share invitation down to the safe view returned by
+ * the node-scoped endpoints. Relay-internal secrets/hashes (`tokenHash`,
+ * `memberTokenHash`, `grantId`, `policyVersion`) are intentionally dropped.
+ * Callers pre-filter with {@link isA0TaskShare}, so the non-task branch of
+ * the `taskId` ternary is unreachable and only satisfies union narrowing.
+ */
+function toNodeInvitationView(invitation: InvitationRecord): RelayNodeInvitationView {
+  return {
+    invitationId: invitation.invitationId,
+    nodeId: invitation.nodeId,
+    taskId: invitation.subject.kind === 'task' ? invitation.subject.taskId : '',
+    grants: invitation.grants.filter((grant): grant is TaskShareGrant => grant === 'view'),
+    createdAt: invitation.createdAt,
+    expiresAt: invitation.expiresAt,
+    ...(invitation.revokedAt ? { revokedAt: invitation.revokedAt } : {}),
+    ...(invitation.acceptedAt ? { acceptedAt: invitation.acceptedAt } : {}),
+  };
+}
+
+/** Parse a node-scoped create-share request body. */
+function parseNodeTaskShareBody(
+  body: { subject?: unknown; grants?: unknown; ttlMs?: unknown },
+): { taskId: string; ttlMs?: number } | { error: string } {
+  const subject = body.subject as { kind?: unknown; taskId?: unknown } | undefined;
+  if (
+    typeof subject !== 'object'
+    || subject === null
+    || subject.kind !== 'task'
+    || typeof subject.taskId !== 'string'
+    || subject.taskId.length === 0
+  ) {
+    return { error: 'subject must be { kind: "task", taskId }' };
+  }
+  if (body.grants !== undefined) {
+    if (!Array.isArray(body.grants) || body.grants.length !== 1 || body.grants[0] !== 'view') {
+      return { error: 'Phase A0 node shares grant "view" only' };
+    }
+  }
+  if (body.ttlMs !== undefined && (
+    typeof body.ttlMs !== 'number'
+    || !Number.isFinite(body.ttlMs)
+    || body.ttlMs < NODE_SHARE_MIN_TTL_MS
+    || body.ttlMs > NODE_SHARE_MAX_TTL_MS
+  )) {
+    return { error: `ttlMs must be a number between ${NODE_SHARE_MIN_TTL_MS} and ${NODE_SHARE_MAX_TTL_MS}` };
+  }
+  return {
+    taskId: subject.taskId,
+    ...(body.ttlMs !== undefined ? { ttlMs: body.ttlMs as number } : {}),
+  };
+}
+
 function authAllows(auth: RelayClientAuth, grant: KnownGrant | null): boolean {
   if (auth.kind === 'owner' || auth.grants.includes('admin')) return true;
   if (auth.expiresAt && Date.parse(auth.expiresAt) <= Date.now()) return false;
@@ -314,6 +396,18 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const createInvitation = (input: { nodeId: NodeId; subject?: ShareSubject; grants: ShareGrant[]; ttlMs?: number }) => (
     invitations.create(input)
   );
+
+  /**
+   * Authenticate a node-scoped HTTP request by its node token. The node may
+   * only ever act on its own `nodeId`; the relay never trusts a `nodeId`
+   * supplied in the request body. Returns `null` for any unknown/missing
+   * token so the caller can answer 401 without leaking which tokens exist.
+   */
+  const authenticateNode = (req: IncomingMessage): NodeRegistration | null => {
+    const token = bearer(req);
+    if (!token) return null;
+    return tokenIndex.get(tokenHash(token)) ?? null;
+  };
 
   const acceptInvitation = (token: string, acceptedBy?: string) => {
     const accepted = invitations.accept(token, acceptedBy);
@@ -614,6 +708,68 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           return;
         }
         sendJson(res, 200, { invitation: revoked.invitation, alreadyRevoked: revoked.alreadyRevoked });
+        return;
+      }
+      // --- Node-scoped Phase A0 task-share endpoints ---------------------
+      // Authenticated by the node token (not the relay admin token) and
+      // scoped to the calling node's own `nodeId`. The local dashboard
+      // backend uses these so it never needs the relay admin credential.
+      if (req.method === 'POST' && url.pathname === '/relay/node/invitations') {
+        const registration = authenticateNode(req);
+        if (!registration) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const parsed = parseNodeTaskShareBody(
+          await readJson(req) as { subject?: unknown; grants?: unknown; ttlMs?: unknown },
+        );
+        if ('error' in parsed) {
+          sendJson(res, 400, { error: parsed.error });
+          return;
+        }
+        const created = createInvitation({
+          nodeId: registration.nodeId,
+          subject: { kind: 'task', nodeId: registration.nodeId, taskId: parsed.taskId },
+          grants: ['view'],
+          ...(parsed.ttlMs !== undefined ? { ttlMs: parsed.ttlMs } : {}),
+        });
+        sendJson(res, 201, {
+          invitation: toNodeInvitationView(created.invitation),
+          token: created.token,
+        });
+        return;
+      }
+      if (
+        req.method === 'POST'
+        && url.pathname.startsWith('/relay/node/invitations/')
+        && url.pathname.endsWith('/revoke')
+      ) {
+        const registration = authenticateNode(req);
+        if (!registration) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const invitationId = decodeURIComponent(
+          url.pathname.slice('/relay/node/invitations/'.length, -'/revoke'.length),
+        );
+        const existing = invitations.list().find((invitation) => invitation.invitationId === invitationId);
+        // A node may only revoke its own Phase A0 task shares. Mismatches —
+        // unknown id, another node's invitation, or a non-A0 invitation —
+        // answer 404 (not 403) so a node cannot probe for invitation IDs or
+        // act on invitations outside the A0 surface.
+        if (!existing || existing.nodeId !== registration.nodeId || !isA0TaskShare(existing)) {
+          sendJson(res, 404, { error: 'not-found' });
+          return;
+        }
+        const revoked = revokeInvitation(invitationId);
+        if (!revoked.ok) {
+          sendJson(res, 404, { error: revoked.reason });
+          return;
+        }
+        sendJson(res, 200, {
+          invitation: toNodeInvitationView(revoked.invitation),
+          alreadyRevoked: revoked.alreadyRevoked,
+        });
         return;
       }
       sendJson(res, 404, { error: 'not found' });

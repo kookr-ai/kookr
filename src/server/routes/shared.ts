@@ -33,6 +33,20 @@ import type { RalphCycler } from '../../core/ralph-cycler.js';
 import type { TokenTracker } from '../../core/token-tracker.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
 import type { WorktreeRegistry } from '../../adapters/git-worktree-registry.js';
+import type { RelayShareClient } from '../relay-share-client.js';
+
+/**
+ * Phase A0 easy connection sharing config. The server always provides it;
+ * `client` is `null` in local-only mode (no relay configured), which makes
+ * the share routes answer `409 relay-not-configured`. The `RouteDeps` field
+ * is still optional only so pre-existing callers/tests need not set it.
+ */
+export interface RemoteShareDeps {
+  /** Per-process CSRF nonce for share-mutation endpoints. */
+  csrfToken: string;
+  /** Relay client, or `null` when no relay is configured. */
+  client: RelayShareClient | null;
+}
 
 export interface RouteDeps {
   taskStore: TaskStore;
@@ -126,4 +140,6 @@ export interface RouteDeps {
    * Production defaults to os.homedir().
    */
   hookHomeDir?: string;
+  /** Phase A0 easy connection sharing config — see {@link RemoteShareDeps}. */
+  remoteShare?: RemoteShareDeps;
 }

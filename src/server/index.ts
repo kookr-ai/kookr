@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 import { loadTasks, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
@@ -18,6 +19,8 @@ import { formatGitHubAlert } from '../core/github-alerts.js';
 import { wireEventPipeline } from './event-pipeline.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
+import { createRelayShareClient } from './relay-share-client.js';
+import type { RemoteShareDeps } from './routes/shared.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
@@ -1061,11 +1064,25 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   diagnosticRunner.start();
 
+  // Phase A0 easy connection sharing: the share routes are always mounted,
+  // but they can only mint relay invitations when both KOOKR_RELAY_URL and
+  // KOOKR_RELAY_TOKEN are configured. The CSRF nonce is generated per
+  // process and handed to the dashboard via GET /api/share/csrf-token.
+  const relayUrlForShares = process.env.KOOKR_RELAY_URL?.trim();
+  const relayTokenForShares = process.env.KOOKR_RELAY_TOKEN?.trim();
+  const remoteShare: RemoteShareDeps = {
+    csrfToken: randomBytes(16).toString('hex'),
+    client: relayUrlForShares && relayTokenForShares
+      ? createRelayShareClient({ relayUrl: relayUrlForShares, relayToken: relayTokenForShares })
+      : null,
+  };
+
   const app = createRoutes({
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
     interactionLog,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, frontendDir, broadcastToAll,
+    remoteShare,
     shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
