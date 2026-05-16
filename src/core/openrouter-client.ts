@@ -9,6 +9,11 @@
  * Structured output is best-effort: OpenRouter accepts an OpenAI-style
  * `response_format`, but `strict` JSON schema is not honored by every
  * model/provider, so it is sent with `strict: false` like the Groq client.
+ *
+ * Timeout: OpenRouter routes through varied upstreams and DeepSeek V4 Flash
+ * tail latency runs to several seconds, so a short caller timeout tuned for
+ * fast free-tier providers is floored up to `DEFAULT_TIMEOUT_MS`. The
+ * `KOOKR_LLM_TIMEOUT_MS` env var (passed as `timeoutMs`) overrides it.
  */
 
 import type { LlmClient, LlmCompletionRequest } from './llm-types.js';
@@ -16,7 +21,12 @@ import type { LlmClient, LlmCompletionRequest } from './llm-types.js';
 const DEFAULT_MODEL = 'deepseek/deepseek-v4-flash';
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 const DEFAULT_APP_TITLE = 'Kookr';
-const DEFAULT_TIMEOUT_MS = 5000;
+/**
+ * OpenRouter request timeout floor. The free-tier providers respond in well
+ * under a second; DeepSeek V4 Flash via OpenRouter measures 1-4s warm and
+ * higher under load, so callers passing a 5-10s budget are floored up to this.
+ */
+const DEFAULT_TIMEOUT_MS = 20_000;
 
 export interface OpenRouterClientOptions {
   /** OpenRouter API key. Sent as `Authorization: Bearer <key>`; never logged. */
@@ -29,6 +39,13 @@ export interface OpenRouterClientOptions {
   httpReferer?: string;
   /** Optional `X-Title` app-attribution header. Defaults to `Kookr`. */
   appTitle?: string;
+  /**
+   * Request timeout override in milliseconds (from `KOOKR_LLM_TIMEOUT_MS`).
+   * When set, it is used verbatim. When unset, the per-request timeout is
+   * floored up to `DEFAULT_TIMEOUT_MS` so a short caller value tuned for the
+   * fast free-tier providers cannot abort OpenRouter prematurely.
+   */
+  timeoutMs?: number;
 }
 
 interface ChatCompletionResponse {
@@ -42,6 +59,7 @@ export class OpenRouterLlmClient implements LlmClient {
   private readonly endpoint: string;
   private readonly httpReferer?: string;
   private readonly appTitle: string;
+  private readonly timeoutMs?: number;
 
   constructor(options: OpenRouterClientOptions) {
     this.apiKey = options.apiKey;
@@ -50,6 +68,9 @@ export class OpenRouterLlmClient implements LlmClient {
     this.endpoint = `${baseUrl}/chat/completions`;
     this.httpReferer = options.httpReferer?.trim() || undefined;
     this.appTitle = options.appTitle?.trim() || DEFAULT_APP_TITLE;
+    this.timeoutMs = options.timeoutMs !== undefined && options.timeoutMs > 0
+      ? options.timeoutMs
+      : undefined;
   }
 
   async complete(req: LlmCompletionRequest): Promise<string | null> {
@@ -85,8 +106,12 @@ export class OpenRouterLlmClient implements LlmClient {
     }
 
     // Bound the request with a timeout, and also honor a caller-supplied signal.
+    // An explicit override (KOOKR_LLM_TIMEOUT_MS) wins; otherwise the caller's
+    // value is floored up to DEFAULT_TIMEOUT_MS, since callers tune timeouts
+    // for the fast free-tier providers and that budget aborts OpenRouter early.
     const controller = new AbortController();
-    const timeoutMs = req.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeoutMs = this.timeoutMs
+      ?? Math.max(req.timeoutMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const onAbort = (): void => controller.abort();
     if (req.signal) {

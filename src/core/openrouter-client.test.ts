@@ -223,17 +223,95 @@ describe('OpenRouterLlmClient', () => {
     await rejects;
   });
 
-  test('aborts the request when the timeout elapses', async () => {
+  test('aborts the request when an explicit timeoutMs override elapses', async () => {
+    vi.useFakeTimers();
+    try {
+      stubAbortAwareFetch();
+      // An explicit override (KOOKR_LLM_TIMEOUT_MS) is used verbatim, even
+      // below the default floor.
+      const client = new OpenRouterLlmClient({ apiKey: API_KEY, timeoutMs: 1000 });
+
+      const pending = client.complete(baseReq);
+      const settled = vi.fn();
+      void pending.then(settled, settled);
+
+      // Still pending just before the override elapses...
+      await vi.advanceTimersByTimeAsync(999);
+      expect(settled).not.toHaveBeenCalled();
+
+      // ...and aborted exactly when it does.
+      const rejects = expect(pending).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(1);
+      await rejects;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('floors a short caller timeout up to the OpenRouter default', async () => {
     vi.useFakeTimers();
     try {
       stubAbortAwareFetch();
       const client = new OpenRouterLlmClient({ apiKey: API_KEY });
 
-      // timeoutMs (1000) is well under DEFAULT_TIMEOUT_MS (5000): a rejection
-      // after advancing 1000ms proves the per-request timeout is honored.
+      // A 1s caller budget (tuned for the fast free-tier providers) must not
+      // abort OpenRouter — the client floors it up to DEFAULT_TIMEOUT_MS (20s).
       const pending = client.complete({ ...baseReq, timeoutMs: 1000 });
+      const settled = vi.fn();
+      void pending.then(settled, settled);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(settled).not.toHaveBeenCalled();
+
+      // The 20s floor still fires.
       const rejects = expect(pending).rejects.toThrow();
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await rejects;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('honors a caller timeout longer than the OpenRouter default floor', async () => {
+    vi.useFakeTimers();
+    try {
+      stubAbortAwareFetch();
+      const client = new OpenRouterLlmClient({ apiKey: API_KEY });
+
+      // A 30s caller budget is above the 20s floor, so it is used as-is —
+      // the floor must not clamp it down.
+      const pending = client.complete({ ...baseReq, timeoutMs: 30_000 });
+      const settled = vi.fn();
+      void pending.then(settled, settled);
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(settled).not.toHaveBeenCalled();
+
+      const rejects = expect(pending).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejects;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('ignores a non-positive timeoutMs option and applies the floor', async () => {
+    vi.useFakeTimers();
+    try {
+      stubAbortAwareFetch();
+      // A non-positive override is rejected by the constructor, so the 20s
+      // floor applies just as if no override were set.
+      const client = new OpenRouterLlmClient({ apiKey: API_KEY, timeoutMs: 0 });
+
+      const pending = client.complete({ ...baseReq, timeoutMs: 1000 });
+      const settled = vi.fn();
+      void pending.then(settled, settled);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(settled).not.toHaveBeenCalled();
+
+      const rejects = expect(pending).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(15_000);
       await rejects;
     } finally {
       vi.useRealTimers();

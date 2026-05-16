@@ -95,6 +95,10 @@ async function buildOpenRouter(): Promise<LlmClient | null> {
   // .env line, empty CI secret) does not shadow a working OPENROUTER_API_KEY.
   const key = process.env.KOOKR_OPENROUTER_API_KEY?.trim() || process.env.OPENROUTER_API_KEY?.trim();
   if (!key) return null;
+  // Optional timeout override; a non-numeric or non-positive value is ignored
+  // so the client falls back to its DEFAULT_TIMEOUT_MS floor.
+  const parsedTimeout = Number(process.env.KOOKR_LLM_TIMEOUT_MS?.trim());
+  const timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : undefined;
   const { OpenRouterLlmClient } = await import('./openrouter-client.js');
   return new OpenRouterLlmClient({
     apiKey: key,
@@ -102,6 +106,7 @@ async function buildOpenRouter(): Promise<LlmClient | null> {
     baseUrl: process.env.KOOKR_LLM_BASE_URL?.trim() || undefined,
     httpReferer: process.env.KOOKR_LLM_HTTP_REFERER?.trim() || undefined,
     appTitle: process.env.KOOKR_LLM_APP_TITLE?.trim() || undefined,
+    timeoutMs,
   });
 }
 

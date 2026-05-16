@@ -30,7 +30,7 @@ export class AnthropicLlmClient implements LlmClient {
       max_tokens: req.maxTokens,
       ...(req.system ? { system: req.system } : {}),
       messages: [{ role: 'user', content: req.userMessage }],
-    }, { timeout: req.timeoutMs ?? 5000, signal: req.signal });
+    }, { timeout: req.timeoutMs ?? 10_000, signal: req.signal });
 
     const block = response.content[0];
     return block?.type === 'text' ? block.text.trim() || null : null;

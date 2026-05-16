@@ -11,6 +11,7 @@ const created = vi.hoisted(() => ({
     baseUrl?: string;
     httpReferer?: string;
     appTitle?: string;
+    timeoutMs?: number;
   }>,
 }));
 
@@ -70,6 +71,7 @@ vi.mock('./openrouter-client.js', () => ({
       baseUrl?: string;
       httpReferer?: string;
       appTitle?: string;
+      timeoutMs?: number;
     }) {
       created.openrouter.push(options);
       this.model = options.model ?? 'openrouter-model';
@@ -92,6 +94,7 @@ const ENV_KEYS = [
   'KOOKR_LLM_BASE_URL',
   'KOOKR_LLM_HTTP_REFERER',
   'KOOKR_LLM_APP_TITLE',
+  'KOOKR_LLM_TIMEOUT_MS',
 ] as const;
 
 const originalEnv = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
@@ -231,6 +234,43 @@ describe('createLlmClient', () => {
       httpReferer: 'https://kookr.example',
       appTitle: 'Kookr Prod',
     });
+  });
+
+  test('forwards a valid KOOKR_LLM_TIMEOUT_MS to the OpenRouter client', async () => {
+    process.env.OPENROUTER_API_KEY = 'or-key';
+    process.env.KOOKR_LLM_TIMEOUT_MS = '30000';
+
+    await createLlmClient();
+
+    expect(created.openrouter[0]).toMatchObject({ timeoutMs: 30_000 });
+  });
+
+  test('trims surrounding whitespace from KOOKR_LLM_TIMEOUT_MS', async () => {
+    process.env.OPENROUTER_API_KEY = 'or-key';
+    process.env.KOOKR_LLM_TIMEOUT_MS = '  30000  ';
+
+    await createLlmClient();
+
+    expect(created.openrouter[0]).toMatchObject({ timeoutMs: 30_000 });
+  });
+
+  test('leaves timeoutMs unset when KOOKR_LLM_TIMEOUT_MS is not configured', async () => {
+    process.env.OPENROUTER_API_KEY = 'or-key';
+
+    await createLlmClient();
+
+    expect(created.openrouter[0].timeoutMs).toBeUndefined();
+  });
+
+  test('ignores a non-numeric or non-positive KOOKR_LLM_TIMEOUT_MS', async () => {
+    process.env.OPENROUTER_API_KEY = 'or-key';
+
+    for (const bad of ['not-a-number', '0', '-500', '  ']) {
+      created.openrouter = [];
+      process.env.KOOKR_LLM_TIMEOUT_MS = bad;
+      await createLlmClient();
+      expect(created.openrouter[0].timeoutMs).toBeUndefined();
+    }
   });
 
   test('explicit KOOKR_LLM_PROVIDER=openrouter ignores other configured providers', async () => {
