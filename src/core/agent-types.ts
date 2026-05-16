@@ -10,7 +10,6 @@ export {
   DEFAULT_AGENT_TYPE,
   ROUND_ROBIN_AGENT_TYPE,
   ROUND_ROBIN_OPTION,
-  ROUND_ROBIN_ORDER,
   normalizeAgentType,
   normalizeAgentSelection,
   resolveRoundRobinAgent,

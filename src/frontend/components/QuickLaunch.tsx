@@ -53,7 +53,7 @@ export function QuickLaunch({ send, onClose }: Props) {
   useEffect(() => {
     const selected = agents.find((agent) => agent.agentId === selectedAgentId);
     if (selected?.agentType) {
-      setAgentType(selected.agentType as AgentSelection);
+      setAgentType(selected.agentType);
       return;
     }
     setAgentType(defaultAgentType ?? 'claude-code');

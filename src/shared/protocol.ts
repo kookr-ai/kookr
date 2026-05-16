@@ -10,8 +10,6 @@ export type {
 } from './contracts/agent-types.js';
 export {
   AVAILABLE_AGENT_TYPES,
-  ROUND_ROBIN_AGENT_TYPE,
-  ROUND_ROBIN_OPTION,
   buildAgentSelectionOptions,
 } from './contracts/agent-types.js';
 export type { AgentEvent } from './contracts/agent-events.js';

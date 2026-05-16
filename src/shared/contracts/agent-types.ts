@@ -40,14 +40,6 @@ export const ROUND_ROBIN_OPTION: AvailableAgentSelection = {
   label: 'Round robin',
 };
 
-/**
- * Canonical rotation order for round-robin selection. The launch-time
- * resolver intersects this with the set of registered adapters, so a missing
- * Codex binary degrades gracefully to single-agent behaviour rather than
- * routing tasks to an absent agent.
- */
-export const ROUND_ROBIN_ORDER: readonly AgentType[] = ['claude-code', 'codex-cli'];
-
 export function normalizeAgentType(value: string | undefined | null): AgentType {
   switch (value) {
     case 'claude':
@@ -76,16 +68,18 @@ export function normalizeAgentSelection(value: string | undefined | null): Agent
 /**
  * Resolve a round-robin launch to a concrete agent. `cursor` is the rotation
  * index for *this* launch; `available` is the set of currently registered
- * adapter types. The canonical {@link ROUND_ROBIN_ORDER} is filtered to
- * `available` so the rotation only ever yields a launchable agent — and
- * collapses to a single agent (or {@link DEFAULT_AGENT_TYPE} when none are
- * registered) when fewer than two are present.
+ * adapter types. The canonical order ({@link AVAILABLE_AGENT_TYPES}) is
+ * filtered to `available` so the rotation only ever yields a launchable agent
+ * — and collapses to a single agent (or {@link DEFAULT_AGENT_TYPE} when none
+ * are registered) when fewer than two are present.
  */
 export function resolveRoundRobinAgent(
   cursor: number,
   available: readonly AgentType[],
 ): AgentType {
-  const rotation = ROUND_ROBIN_ORDER.filter((type) => available.includes(type));
+  const rotation = AVAILABLE_AGENT_TYPES
+    .map((entry) => entry.type)
+    .filter((type) => available.includes(type));
   if (rotation.length === 0) return DEFAULT_AGENT_TYPE;
   const safeCursor = Number.isInteger(cursor) && cursor >= 0 ? cursor : 0;
   const index = safeCursor % rotation.length;
