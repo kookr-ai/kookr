@@ -14,6 +14,7 @@
 import type {
   CreateNodeTaskShareRequest,
   CreateNodeTaskShareResponse,
+  ListNodeTaskSharesResponse,
   RelayNodeInvitationView,
   RevokeNodeTaskShareResponse,
   TaskShareSummary,
@@ -53,6 +54,8 @@ export interface RelayShareClient {
   }>;
   /** Revoke a previously created invitation owned by the configured node. */
   revokeTaskShare(invitationId: string): Promise<{ share: TaskShareSummary; alreadyRevoked: boolean }>;
+  /** List Phase A0 task shares owned by the configured node. */
+  listTaskShares(): Promise<TaskShareSummary[]>;
 }
 
 export interface RelayShareClientOptions {
@@ -65,11 +68,21 @@ export interface RelayShareClientOptions {
 }
 
 function toSummary(view: RelayNodeInvitationView): TaskShareSummary {
+  const connectedViewerCount = view.connectedViewerCount ?? 0;
+  const state = view.revokedAt
+    ? 'revoked'
+    : Date.parse(view.expiresAt) <= Date.now()
+      ? 'expired'
+      : connectedViewerCount > 0
+        ? 'viewerConnected'
+        : 'waiting';
   return {
     invitationId: view.invitationId,
     taskId: view.taskId,
     createdAt: view.createdAt,
     expiresAt: view.expiresAt,
+    state,
+    connectedViewerCount,
     ...(view.revokedAt ? { revokedAt: view.revokedAt } : {}),
     ...(view.acceptedAt ? { acceptedAt: view.acceptedAt } : {}),
   };
@@ -93,13 +106,13 @@ export function createRelayShareClient(opts: RelayShareClientOptions): RelayShar
   const base = opts.relayUrl;
   const authHeader = `Bearer ${opts.relayToken}`;
 
-  async function call(path: string, body: unknown): Promise<unknown> {
+  async function call(path: string, body: unknown, method = 'POST'): Promise<unknown> {
     let res: Response;
     try {
       res = await fetchImpl(new URL(path, base), {
-        method: 'POST',
+        method,
         headers: { 'content-type': 'application/json', authorization: authHeader },
-        body: JSON.stringify(body),
+        ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
       });
     } catch (err) {
       throw new RelayShareError(
@@ -158,6 +171,14 @@ export function createRelayShareClient(opts: RelayShareClientOptions): RelayShar
         throw new RelayShareError('relay-bad-response', 502, 'relay revoke response missing fields');
       }
       return { share: toSummary(parsed.invitation), alreadyRevoked: parsed.alreadyRevoked ?? false };
+    },
+
+    async listTaskShares(): Promise<TaskShareSummary[]> {
+      const parsed = await call('/relay/node/invitations', undefined, 'GET') as Partial<ListNodeTaskSharesResponse>;
+      if (!Array.isArray(parsed.invitations)) {
+        throw new RelayShareError('relay-bad-response', 502, 'relay list response missing invitations');
+      }
+      return parsed.invitations.map(toSummary);
     },
   };
 }

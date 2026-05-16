@@ -21,6 +21,7 @@ import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { createRelayShareClient } from './relay-share-client.js';
 import type { RemoteShareDeps } from './routes/shared.js';
+import { TaskShareService } from './task-share-service.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
@@ -55,7 +56,7 @@ import type { CommandJournal } from '../remote/command-journal.js';
 import { isOwnerLocal } from './auth.js';
 import type { SessionStreamPublisher } from '../remote/session-stream-publisher.js';
 import type { ControllerLeaseManager } from '../remote/controller-lease.js';
-import type { NodeId, SessionEpoch, SessionId } from '../remote/ids.js';
+import type { NodeId, ServerRevision, SessionEpoch, SessionId } from '../remote/ids.js';
 import type { RemotePolicyCache } from '../remote/policy-cache.js';
 import type { ShareSubject } from '../remote/policy-sync.js';
 import type { RemoteInputAdapter } from './remote-input-adapter.js';
@@ -199,6 +200,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   let controllerLeaseManager: ControllerLeaseManager | null = null;
   let remoteInputAdapter: RemoteInputAdapter | null = null;
   let remotePolicyCache: RemotePolicyCache | null = null;
+  let taskShareService: TaskShareService | null = null;
+  let remoteShareRevision = 0;
+  const nextRemoteShareRevision = (): ServerRevision => {
+    remoteShareRevision += 1;
+    return remoteShareRevision as ServerRevision;
+  };
   if (process.env.KOOKR_RELAY_URL) {
     const { createRemoteAuditScaffold } = await import('../remote/audit.js');
     const { CommandJournal } = await import('../remote/command-journal.js');
@@ -227,6 +234,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           for (const grantId of message.revokedGrantIds) {
             await commandJournal?.revokeGrant(grantId, message.policyVersion);
           }
+          taskShareService?.publishActiveTaskProjections();
           return;
         }
         if (message.type === 'policy.delta') {
@@ -239,6 +247,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             remotePolicyCache.revoke(grantId, message.policyVersion);
             await commandJournal?.revokeGrant(grantId, message.policyVersion);
           }
+          taskShareService?.publishActiveTaskProjections();
           return;
         }
         if (message.type === 'policy.revoke') {
@@ -248,6 +257,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           }
           remotePolicyCache.revoke(message.grantId, message.policyVersion);
           await commandJournal?.revokeGrant(message.grantId, message.policyVersion);
+          taskShareService?.publishActiveTaskProjections();
         }
       },
     });
@@ -1070,11 +1080,28 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // process and handed to the dashboard via GET /api/share/csrf-token.
   const relayUrlForShares = process.env.KOOKR_RELAY_URL?.trim();
   const relayTokenForShares = process.env.KOOKR_RELAY_TOKEN?.trim();
+  const relayShareClient = relayUrlForShares && relayTokenForShares
+    ? createRelayShareClient({ relayUrl: relayUrlForShares, relayToken: relayTokenForShares })
+    : null;
+  if (relayShareClient && remoteNodeClient) {
+    const nodeClient = remoteNodeClient;
+    taskShareService = new TaskShareService({
+      client: relayShareClient,
+      taskStore,
+      queue,
+      remotePolicyCache,
+      getNodeIdentity: () => ({
+        nodeId: nodeClient.status.nodeId,
+        nodeEpoch: nodeClient.status.nodeEpoch,
+      }),
+      nextServerRevision: nextRemoteShareRevision,
+      publish: (event) => nodeClient.publish(event),
+    });
+  }
   const remoteShare: RemoteShareDeps = {
     csrfToken: randomBytes(16).toString('hex'),
-    client: relayUrlForShares && relayTokenForShares
-      ? createRelayShareClient({ relayUrl: relayUrlForShares, relayToken: relayTokenForShares })
-      : null,
+    client: relayShareClient,
+    ...(taskShareService ? { service: taskShareService } : {}),
   };
 
   const app = createRoutes({

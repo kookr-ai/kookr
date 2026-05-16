@@ -14,6 +14,7 @@ import type { Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
 import type {
   CreateTaskShareApiResponse,
+  ListTaskSharesApiResponse,
   RevokeTaskShareApiResponse,
 } from '../../remote/share-contract.js';
 import {
@@ -87,6 +88,21 @@ export function registerShareRoutes(app: Hono, deps: RouteDeps): void {
     return c.json({ csrfToken: remoteShare.csrfToken });
   });
 
+  app.get('/api/share/task', async (c) => {
+    const remoteShare = deps.remoteShare;
+    if (!remoteShare?.client) return c.json({ error: 'relay-not-configured' }, 409);
+    try {
+      const shares = remoteShare.service
+        ? await remoteShare.service.listTaskShares()
+        : await remoteShare.client.listTaskShares();
+      const response: ListTaskSharesApiResponse = { shares };
+      return c.json(response);
+    } catch (err) {
+      if (err instanceof RelayShareError) return c.json({ error: err.code }, err.status);
+      return c.json({ error: 'share-list-failed' }, 502);
+    }
+  });
+
   app.post('/api/share/task', async (c) => {
     const remoteShare = deps.remoteShare;
     if (!remoteShare?.client) return c.json({ error: 'relay-not-configured' }, 409);
@@ -133,7 +149,7 @@ export function registerShareRoutes(app: Hono, deps: RouteDeps): void {
     }
 
     try {
-      const result = await remoteShare.client.createTaskShare({ taskId, ttlMs });
+      const result = await (remoteShare.service ?? remoteShare.client).createTaskShare({ taskId, ttlMs });
       const response: CreateTaskShareApiResponse = result;
       return c.json(response, 201);
     } catch (err) {
@@ -158,7 +174,7 @@ export function registerShareRoutes(app: Hono, deps: RouteDeps): void {
     if (!invitationId) return c.json({ error: 'invitationId is required' }, 400);
 
     try {
-      const result = await remoteShare.client.revokeTaskShare(invitationId);
+      const result = await (remoteShare.service ?? remoteShare.client).revokeTaskShare(invitationId);
       const response: RevokeTaskShareApiResponse = result;
       return c.json(response);
     } catch (err) {

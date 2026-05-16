@@ -13,7 +13,12 @@ import type { KnownGrant, PolicyGrantRecord, PolicyRevokeMessage, ShareGrant, Sh
 import { grantForRemoteCommandAction, isKnownGrant } from '../src/remote/grants.js';
 import { isTerminalStreamEvent, type TerminalReplayGapEvent, type TerminalStreamEvent } from '../src/remote/stream-events.js';
 import { isPushAlertDeltaPayload, makeRedactedPushPayload } from '../src/remote/push.js';
-import type { RelayNodeInvitationView, TaskShareGrant } from '../src/remote/share-contract.js';
+import type {
+  RemoteTaskProjectionEnvelopeV1,
+  RemoteTaskProjectionV1,
+  RelayNodeInvitationView,
+  TaskShareGrant,
+} from '../src/remote/share-contract.js';
 import { InvitationStore, type InvitationRecord } from './src/invitations/store.js';
 import { createPushFanout, type PushDeliveryOutcome, type PushFanout, type PushSender } from './src/push/fanout.js';
 import { createPushSubscriptionStore, isPushSubscription, type PushSubscriptionStore, type StoredPushSubscription } from './src/push/subscriptions.js';
@@ -286,7 +291,7 @@ function isA0TaskShare(
  * Callers pre-filter with {@link isA0TaskShare}, so the non-task branch of
  * the `taskId` ternary is unreachable and only satisfies union narrowing.
  */
-function toNodeInvitationView(invitation: InvitationRecord): RelayNodeInvitationView {
+function toNodeInvitationView(invitation: InvitationRecord, connectedViewerCount = 0): RelayNodeInvitationView {
   return {
     invitationId: invitation.invitationId,
     nodeId: invitation.nodeId,
@@ -294,6 +299,7 @@ function toNodeInvitationView(invitation: InvitationRecord): RelayNodeInvitation
     grants: invitation.grants.filter((grant): grant is TaskShareGrant => grant === 'view'),
     createdAt: invitation.createdAt,
     expiresAt: invitation.expiresAt,
+    connectedViewerCount,
     ...(invitation.revokedAt ? { revokedAt: invitation.revokedAt } : {}),
     ...(invitation.acceptedAt ? { acceptedAt: invitation.acceptedAt } : {}),
   };
@@ -330,6 +336,49 @@ function parseNodeTaskShareBody(
     taskId: subject.taskId,
     ...(body.ttlMs !== undefined ? { ttlMs: body.ttlMs as number } : {}),
   };
+}
+
+function isRemoteTaskProjection(value: unknown): value is RemoteTaskProjectionV1 {
+  const projection = value as Partial<RemoteTaskProjectionV1>;
+  return typeof value === 'object'
+    && value !== null
+    && projection.schemaVersion === 'remote-task-projection.v1'
+    && typeof projection.nodeId === 'string'
+    && typeof projection.taskId === 'string'
+    && typeof projection.taskLabel === 'string'
+    && projection.taskLabel.length <= 80
+    && (
+      projection.status === 'pending'
+      || projection.status === 'open'
+      || projection.status === 'inProgress'
+      || projection.status === 'needsInput'
+      || projection.status === 'completed'
+      || projection.status === 'failed'
+      || projection.status === 'cancelled'
+    )
+    && typeof projection.hasFinding === 'boolean'
+    && typeof projection.needsInput === 'boolean'
+    && typeof projection.updatedAt === 'string';
+}
+
+function remoteTaskProjectionEnvelopeFromEvent(event: RemoteControlEvent): RemoteTaskProjectionEnvelopeV1 | null {
+  const payload = event.payload as Partial<RemoteTaskProjectionEnvelopeV1>;
+  if (
+    typeof payload === 'object'
+    && payload !== null
+    && payload.type === 'remote.taskProjection.v1'
+    && typeof payload.invitationId === 'string'
+    && isRemoteTaskProjection(payload.projection)
+  ) {
+    return payload as RemoteTaskProjectionEnvelopeV1;
+  }
+  return null;
+}
+
+function isRemoteTaskProjectionPayload(value: unknown): boolean {
+  return typeof value === 'object'
+    && value !== null
+    && (value as { type?: unknown }).type === 'remote.taskProjection.v1';
 }
 
 function authAllows(auth: RelayClientAuth, grant: KnownGrant | null): boolean {
@@ -470,6 +519,16 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (set.size === 0) subscribers.delete(invitation.nodeId);
   };
 
+  const connectedViewerCount = (nodeId: NodeId, invitationId: string): number => (
+    [...(presence.get(nodeId)?.values() ?? [])]
+      .filter((member) => member.invitationId === invitationId && member.grants.includes('view'))
+      .length
+  );
+
+  const toNodeInvitationViewWithPresence = (invitation: InvitationRecord): RelayNodeInvitationView => (
+    toNodeInvitationView(invitation, connectedViewerCount(invitation.nodeId, invitation.invitationId))
+  );
+
   const nodeStatuses = (): RelayNodeStatus[] => [...registrations.values()].map((registration) => {
     const hello = nodeHello.get(registration.nodeId);
     return {
@@ -521,7 +580,15 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 404, { error: 'node not found' });
           return;
         }
-        if (!authenticateClient(req, opts, invitations, registrations.get(asNodeId(nodeId))?.ownerId ?? ownerId, asNodeId(nodeId), url)) {
+        const auth = authenticateClient(
+          req,
+          opts,
+          invitations,
+          registrations.get(asNodeId(nodeId))?.ownerId ?? ownerId,
+          asNodeId(nodeId),
+          url,
+        );
+        if (!auth) {
           sendJson(res, 401, { error: 'unauthorized' });
           return;
         }
@@ -538,7 +605,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         sendJson(res, 200, {
           nodeId,
           relayHostFingerprint,
-          events: replay.get(asNodeId(nodeId)) ?? [],
+          events: (replay.get(asNodeId(nodeId)) ?? [])
+            .filter((event) => canSendEventToAuth(asNodeId(nodeId), auth, event)),
           terminalEvents,
           members: [...(presence.get(asNodeId(nodeId))?.values() ?? [])],
         });
@@ -714,6 +782,19 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       // Authenticated by the node token (not the relay admin token) and
       // scoped to the calling node's own `nodeId`. The local dashboard
       // backend uses these so it never needs the relay admin credential.
+      if (req.method === 'GET' && url.pathname === '/relay/node/invitations') {
+        const registration = authenticateNode(req);
+        if (!registration) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        sendJson(res, 200, {
+          invitations: invitations.list()
+            .filter((invitation) => invitation.nodeId === registration.nodeId && isA0TaskShare(invitation))
+            .map(toNodeInvitationViewWithPresence),
+        });
+        return;
+      }
       if (req.method === 'POST' && url.pathname === '/relay/node/invitations') {
         const registration = authenticateNode(req);
         if (!registration) {
@@ -734,7 +815,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           ...(parsed.ttlMs !== undefined ? { ttlMs: parsed.ttlMs } : {}),
         });
         sendJson(res, 201, {
-          invitation: toNodeInvitationView(created.invitation),
+          invitation: toNodeInvitationViewWithPresence(created.invitation),
           token: created.token,
         });
         return;
@@ -767,7 +848,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           return;
         }
         sendJson(res, 200, {
-          invitation: toNodeInvitationView(revoked.invitation),
+          invitation: toNodeInvitationViewWithPresence(revoked.invitation),
           alreadyRevoked: revoked.alreadyRevoked,
         });
         return;
@@ -924,7 +1005,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (!subscribed) return;
     const encoded = JSON.stringify(event);
     for (const sub of [...subscribed]) {
-      if (!subscriptionStillAuthorized(event.nodeId, sub)) continue;
+      if (!canSendEventToSubscriber(event.nodeId, sub, event)) continue;
       if (sub.ws.readyState === sub.ws.OPEN) sub.ws.send(encoded);
     }
   }
@@ -944,6 +1025,56 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       if (byNode?.size === 0) presence.delete(nodeId);
     }
     return false;
+  }
+
+  function projectionAuthStillAuthorized(
+    nodeId: NodeId,
+    auth: RelayClientAuth,
+    envelope: RemoteTaskProjectionEnvelopeV1,
+  ): boolean {
+    if (auth.kind === 'owner') return true;
+    if (!auth.invitationId || auth.invitationId !== envelope.invitationId) return false;
+    const invitation = invitations.list().find((candidate) => candidate.invitationId === auth.invitationId);
+    if (!invitation || invitation.nodeId !== nodeId || invitation.grantId !== auth.grantId) return false;
+    if (invitation.revokedAt) return false;
+    if (Date.parse(invitation.expiresAt) <= Date.now()) return false;
+    if (!isA0TaskShare(invitation)) return false;
+    return invitation.subject.taskId === envelope.projection.taskId
+      && invitation.grants.includes('view')
+      && envelope.projection.nodeId === nodeId;
+  }
+
+  function projectionSubscriptionStillAuthorized(
+    nodeId: NodeId,
+    sub: RelayClientSubscription,
+    envelope: RemoteTaskProjectionEnvelopeV1,
+  ): boolean {
+    if (projectionAuthStillAuthorized(nodeId, sub.auth, envelope)) return true;
+    const invitation = sub.auth.invitationId
+      ? invitations.list().find((candidate) => candidate.invitationId === sub.auth.invitationId)
+      : null;
+    if (invitation?.revokedAt) {
+      sub.ws.close(4001, 'grant revoked');
+      return false;
+    }
+    if (invitation && Date.parse(invitation.expiresAt) <= Date.now()) {
+      sub.ws.close(4002, 'grant expired');
+      return false;
+    }
+    return false;
+  }
+
+  function canSendEventToAuth(nodeId: NodeId, auth: RelayClientAuth, event: RemoteControlEvent): boolean {
+    const projection = remoteTaskProjectionEnvelopeFromEvent(event);
+    if (projection) return projectionAuthStillAuthorized(nodeId, auth, projection);
+    return !isRemoteTaskProjectionPayload(event.payload);
+  }
+
+  function canSendEventToSubscriber(nodeId: NodeId, sub: RelayClientSubscription, event: RemoteControlEvent): boolean {
+    if (!subscriptionStillAuthorized(nodeId, sub)) return false;
+    const projection = remoteTaskProjectionEnvelopeFromEvent(event);
+    if (projection) return projectionSubscriptionStillAuthorized(nodeId, sub, projection);
+    return !isRemoteTaskProjectionPayload(event.payload);
   }
 
   function recordPresence(nodeId: NodeId, clientId: string, auth: RelayClientAuth): void {
@@ -1122,6 +1253,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     }
     set.add(subscription);
     for (const event of replay.get(subscribedNodeId) ?? []) {
+      if (!canSendEventToSubscriber(subscribedNodeId, subscription, event)) continue;
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
     }
     const requestedSessionId = url.searchParams.get('terminalSessionId');
@@ -1481,6 +1613,12 @@ function ingest(event) {
   if (!payload || typeof payload !== 'object') return;
   if (payload.type === 'push.alert' && payload.payload) {
     alerts.set(payload.payload.alertId || String(alerts.size), payload.payload);
+  }
+  if (payload.type === 'remote.taskProjection.v1' && payload.projection && typeof payload.projection.taskId === 'string') {
+    tasks.set(payload.projection.taskId, {
+      ...payload.projection,
+      taskShortLabel: payload.projection.taskLabel || payload.projection.taskId,
+    });
   }
   const items = Array.isArray(payload.tasks) ? payload.tasks : Array.isArray(payload.taskProjections) ? payload.taskProjections : [];
   for (const task of items) {

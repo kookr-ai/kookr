@@ -11,19 +11,30 @@ async function listen(relay: RelayServerHandle): Promise<void> {
   await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
 }
 
-async function waitFor(predicate: () => boolean): Promise<void> {
+async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const started = Date.now();
     const timer = setInterval(() => {
-      if (predicate()) {
+      void Promise.resolve(predicate()).then((matched) => {
+        if (!matched) {
+          if (Date.now() - started > 1_500) {
+            clearInterval(timer);
+            reject(new Error('timed out waiting for condition'));
+          }
+          return;
+        }
         clearInterval(timer);
         resolve();
-      } else if (Date.now() - started > 1_500) {
+      }).catch((err: unknown) => {
         clearInterval(timer);
-        reject(new Error('timed out waiting for condition'));
-      }
+        reject(err);
+      });
     }, 10);
   });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function connectNode(relay: RelayServerHandle, nodeId: string, token: string): Promise<{ ws: WebSocket; messages: unknown[] }> {
@@ -222,6 +233,150 @@ describe('relay invitations', () => {
     await expect(member.closed).resolves.toEqual([4002, 'grant expired']);
     expect(member.messages).not.toContainEqual(expect.objectContaining({
       payload: { tasks: [{ taskId: 'after-expiry' }] },
+    }));
+  });
+
+  it('filters A0 task projection snapshots by the accepted view grant before sending', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken);
+    sockets.push(nodeConn.ws);
+    const inviteA = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view'],
+    });
+    const inviteB = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-b' },
+      grants: ['view'],
+    });
+    const acceptedA = relay.acceptInvitation(inviteA.token, 'alice');
+    const acceptedB = relay.acceptInvitation(inviteB.token, 'bob');
+    if (!acceptedA.ok || !acceptedB.ok) throw new Error('expected accept');
+    const memberA = await connectMember(relay, node.nodeId, acceptedA.accepted.memberToken);
+    const memberB = await connectMember(relay, node.nodeId, acceptedB.accepted.memberToken);
+    sockets.push(memberA.ws, memberB.ws);
+
+    nodeConn.ws.send(JSON.stringify({
+      nodeId: node.nodeId,
+      nodeEpoch: asNodeEpoch('1'),
+      serverRevision: 1,
+      ts: new Date().toISOString(),
+      kind: 'snapshot',
+      payload: {
+        type: 'remote.taskProjection.v1',
+        invitationId: inviteA.invitation.invitationId,
+        projection: {
+          schemaVersion: 'remote-task-projection.v1',
+          nodeId: node.nodeId,
+          taskId: 'task-a',
+          taskLabel: 'Task A',
+          status: 'inProgress',
+          hasFinding: false,
+          needsInput: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    }));
+
+    await waitFor(() => memberA.messages.some((msg) => (
+      (msg as { payload?: { projection?: { taskId?: string } } }).payload?.projection?.taskId === 'task-a'
+    )));
+    await sleep(50);
+    expect(memberB.messages).not.toContainEqual(expect.objectContaining({
+      payload: expect.objectContaining({
+        projection: expect.objectContaining({ taskId: 'task-a' }),
+      }),
+    }));
+
+    nodeConn.ws.send(JSON.stringify({
+      nodeId: node.nodeId,
+      nodeEpoch: asNodeEpoch('1'),
+      serverRevision: 2,
+      ts: new Date().toISOString(),
+      kind: 'snapshot',
+      payload: {
+        type: 'remote.taskProjection.v1',
+        invitationId: inviteA.invitation.invitationId,
+        projection: {
+          schemaVersion: 'remote-task-projection.v1',
+          nodeId: node.nodeId,
+          taskId: 'malformed-task',
+          taskLabel: 'Malformed Task',
+          hasFinding: false,
+          needsInput: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    await sleep(50);
+    expect(memberA.messages).not.toContainEqual(expect.objectContaining({
+      payload: expect.objectContaining({
+        projection: expect.objectContaining({ taskId: 'malformed-task' }),
+      }),
+    }));
+  });
+
+  it('filters replayed dashboard state by the accepted view grant', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken);
+    sockets.push(nodeConn.ws);
+    const inviteA = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view'],
+    });
+    const inviteB = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-b' },
+      grants: ['view'],
+    });
+    const acceptedA = relay.acceptInvitation(inviteA.token, 'alice');
+    if (!acceptedA.ok) throw new Error('expected accept');
+
+    nodeConn.ws.send(JSON.stringify({
+      nodeId: node.nodeId,
+      nodeEpoch: asNodeEpoch('1'),
+      serverRevision: 1,
+      ts: new Date().toISOString(),
+      kind: 'snapshot',
+      payload: {
+        type: 'remote.taskProjection.v1',
+        invitationId: inviteB.invitation.invitationId,
+        projection: {
+          schemaVersion: 'remote-task-projection.v1',
+          nodeId: node.nodeId,
+          taskId: 'task-b',
+          taskLabel: 'Task B',
+          status: 'inProgress',
+          hasFinding: false,
+          needsInput: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    }));
+
+    const ownerStateUrl = new URL('/relay/dashboard/state', relay.url());
+    ownerStateUrl.searchParams.set('nodeId', node.nodeId);
+    await waitFor(async () => {
+      const ownerState = await fetch(ownerStateUrl, { headers: { authorization: 'Bearer admin' } });
+      const body = await ownerState.json() as { events: Array<{ payload?: { projection?: { taskId?: string } } }> };
+      return body.events.some((event) => event.payload?.projection?.taskId === 'task-b');
+    });
+    const stateUrl = new URL('/relay/dashboard/state', relay.url());
+    stateUrl.searchParams.set('nodeId', node.nodeId);
+    stateUrl.searchParams.set('memberToken', acceptedA.accepted.memberToken);
+    const res = await fetch(stateUrl);
+    expect(res.status).toBe(200);
+    const state = await res.json() as { events: Array<{ payload?: { projection?: { taskId?: string } } }> };
+    expect(state.events).not.toContainEqual(expect.objectContaining({
+      payload: expect.objectContaining({
+        projection: expect.objectContaining({ taskId: 'task-b' }),
+      }),
     }));
   });
 
