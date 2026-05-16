@@ -27,10 +27,6 @@ import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
 import { DiagnosticRunner } from './diagnostic-runner.js';
 import { getDetectionStats } from '../core/detection-stats.js';
-import { WorktreeLeaseService } from '../core/worktree-lease-service.js';
-import { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
-import { WorkspaceAttemptRepository } from '../core/workspace-attempt-repository.js';
-import { getProjectId } from '../core/project-identity.js';
 import {
   promotePendingStartupTasks,
   runStartupRecoveryPhase,
@@ -43,12 +39,14 @@ import { createSystemResourceSampler } from './system-resource-sampler.js';
 import { createResourceStatusService } from './resource-status-service.js';
 import { type OssSourceWatcherFs } from './oss-source-watcher.js';
 import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
+import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
 import { createAgentRuntime } from './bootstrap/create-agent-runtime.js';
 import { createCoreStores } from './bootstrap/create-core-stores.js';
 import { createOssServices, createOssSourceWatchers } from './bootstrap/create-oss-services.js';
 import { createRealtimeServices } from './bootstrap/create-realtime-services.js';
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
+import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import type { RemoteNodeClient } from '../remote/node-client.js';
 import type { CommandJournal } from '../remote/command-journal.js';
 import { isOwnerLocal } from './auth.js';
@@ -1119,16 +1117,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
 
-  // --- Contribution Workspace services (Phase 1a) ---
-  const leaseService = new WorktreeLeaseService();
-  const serverProjectId = await getProjectId(serverCwd);
-  const policyResolver = new RepoPolicyResolver({ serverProjectId });
-  const attemptRepository = new WorkspaceAttemptRepository(join(kookrDir, 'workspace-attempts.json'));
-  // Backfill leases from existing task/session state
-  const leaseReconciliation = leaseService.reconcileFromTaskStore(taskStore);
-  if (leaseReconciliation.backfilled > 0 || leaseReconciliation.released > 0) {
-    console.log(`[workspace] Lease reconciliation: backfilled=${leaseReconciliation.backfilled} released=${leaseReconciliation.released}`);
-  }
+  const {
+    leaseService,
+    serverProjectId,
+    policyResolver,
+    attemptRepository,
+  } = await createContributionWorkspaceServices({ kookrDir, serverCwd, taskStore });
 
   const takePredeleteSnapshot = async (): Promise<void> => {
     // Fail loud, not silent. rfc-task-loss-prevention D3 keeps the snapshot
@@ -1229,6 +1223,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   backgroundServices.startAfterListen();
   remoteNodeClient?.start();
 
+  const remoteChatTrigger = await startRemoteChatTrigger({
+    host,
+    port,
+    kookrDir,
+    launchTask: (opts) => launchTask(launchServiceDeps, opts),
+    llmClient,
+    lifecycleSignal,
+  });
+  const telegramHandle = remoteChatTrigger.handle;
+  onPermissionBlockedHolder = remoteChatTrigger.onPermissionBlocked;
+
   // --- Close ---
 
   let isClosed = false;
@@ -1300,94 +1305,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     return new Promise((resolve) => {
       httpServer.close(() => resolve());
     });
-  }
-
-  // --- Telegram remote-chat trigger (opt-in; off by default) ---
-  // See docs/rfc/rfc-remote-chat-trigger.md. Enabled when KOOKR_TELEGRAM_BOT_TOKEN
-  // is set; the panic switch KOOKR_REMOTE_CHAT_DISABLED=1 short-circuits everything.
-  let telegramHandle: { stop(): Promise<void> } | null = null;
-  if (process.env.KOOKR_REMOTE_CHAT_DISABLED === '1') {
-    console.log('[telegram] disabled via KOOKR_REMOTE_CHAT_DISABLED');
-  } else if (process.env.KOOKR_TELEGRAM_BOT_TOKEN) {
-    try {
-      const { startTelegramTrigger, probeWhisperReachability } = await import('../integrations/telegram/index.js');
-      const allowedUserIds = new Set(
-        (process.env.KOOKR_TELEGRAM_ALLOWED_USERS ?? '')
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .map(Number)
-          .filter((n) => !isNaN(n)),
-      );
-      const allowedProjects = (process.env.KOOKR_REMOTE_CHAT_PROJECTS ?? '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((cwd) => ({ name: cwd.split('/').pop() ?? cwd, cwd }));
-
-      if (allowedUserIds.size === 0) {
-        console.warn(
-          '[telegram] KOOKR_TELEGRAM_BOT_TOKEN set but KOOKR_TELEGRAM_ALLOWED_USERS empty — refusing to start ' +
-          '(an unauthenticated bot would be a backdoor).',
-        );
-      } else if (allowedProjects.length === 0) {
-        console.warn(
-          '[telegram] KOOKR_TELEGRAM_BOT_TOKEN set but KOOKR_REMOTE_CHAT_PROJECTS empty — refusing to start ' +
-          '(no projects to spawn against).',
-        );
-      } else {
-        const dashboardBaseUrl = `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`;
-        const handle = await startTelegramTrigger({
-          token: process.env.KOOKR_TELEGRAM_BOT_TOKEN,
-          allowedUserIds,
-          allowedProjects,
-          dataDir: kookrDir,
-          dryRun: process.env.KOOKR_REMOTE_CHAT_DRY_RUN === '1',
-          allowCodexRemoteSpawn: process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX === '1',
-          dashboardBaseUrl,
-          launchTask: (opts) => launchTask(launchServiceDeps, opts),
-          llmClient,
-          // Telegram audio transcription via the local faster-whisper-server.
-          // Unset → audio messages are dropped with `dropped_audio_disabled`.
-          // See issues #574 and #585.
-          whisperUrl: process.env.KOOKR_STT_WHISPER_URL,
-          // Cascade server shutdown into the warmup so STT teardown does not
-          // race the in-flight whisper request. See issue #188.
-          lifecycleSignal,
-        });
-        telegramHandle = handle;
-        // Install the late-bound R16 callback now that the integration is up.
-        onPermissionBlockedHolder = handle.onPermissionBlocked;
-        console.log(
-          `[telegram] active — allowedUsers=${allowedUserIds.size} projects=${allowedProjects.length} ` +
-          `dryRun=${process.env.KOOKR_REMOTE_CHAT_DRY_RUN === '1'} ` +
-          `codex=${process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX === '1' ? 'enabled' : 'disabled'} ` +
-          `audio=${process.env.KOOKR_STT_WHISPER_URL ? 'enabled' : 'disabled'}`,
-        );
-        // Issue #576: surface whisper misconfig at startup so operators see it
-        // in the server log instead of inferring it from per-message timeouts.
-        // Probe is fire-and-forget and informational only — never gates startup,
-        // never re-runs. Per-message error path (#574/#577) remains the runtime
-        // fallback for any whisper container that restarts after this point.
-        if (process.env.KOOKR_STT_WHISPER_URL) {
-          const whisperUrl = process.env.KOOKR_STT_WHISPER_URL;
-          void probeWhisperReachability(whisperUrl).then((probe) => {
-            if (probe.ok) {
-              const suffix = probe.modelCount !== null ? ` (${probe.modelCount} models)` : '';
-              console.log(`[telegram] voice probe: 200 OK${suffix}`);
-            } else {
-              console.warn(
-                `[telegram] voice probe FAILED: ${probe.reason} at ${whisperUrl}/v1/models — ` +
-                'voice transcription will fail per-message',
-              );
-            }
-          });
-        }
-      }
-    } catch (err) {
-      // Integration startup failure must NOT crash the server. Log and continue.
-      console.error('[telegram] Failed to start integration:', err instanceof Error ? err.message : err);
-    }
   }
 
   // Non-blocking startup refresh of the OSS attempts view.
