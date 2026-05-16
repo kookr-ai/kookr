@@ -1,10 +1,17 @@
+import { once } from 'node:events';
+
+import WebSocket from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRelayServer, type RelayServerHandle } from '../server.js';
 
 let openHandle: RelayServerHandle | null = null;
+const sockets: WebSocket[] = [];
 
 afterEach(async () => {
+  for (const ws of sockets.splice(0)) {
+    if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) ws.close();
+  }
   if (openHandle) {
     await openHandle.close();
     openHandle = null;
@@ -20,6 +27,17 @@ async function startRelay(): Promise<RelayServerHandle> {
 
 function nodeHeaders(token: string): Record<string, string> {
   return { 'content-type': 'application/json', authorization: `Bearer ${token}` };
+}
+
+async function connectMember(relay: RelayServerHandle, nodeId: string, memberToken: string): Promise<WebSocket> {
+  const wsUrl = new URL('/relay/client', relay.url());
+  wsUrl.protocol = 'ws:';
+  wsUrl.searchParams.set('nodeId', nodeId);
+  wsUrl.searchParams.set('memberToken', memberToken);
+  const ws = new WebSocket(wsUrl);
+  sockets.push(ws);
+  await once(ws, 'open');
+  return ws;
 }
 
 describe('relay node-scoped task-share endpoints', () => {
@@ -195,5 +213,43 @@ describe('relay node-scoped task-share endpoints', () => {
       { method: 'POST', headers: nodeHeaders(nodeToken) },
     );
     expect(revoke.status).toBe(404);
+  });
+
+  it('lists the calling node task shares with coarse connected state', async () => {
+    const relay = await startRelay();
+    const { nodeId, nodeToken } = relay.registerNode();
+    const created = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 'task-list' }, grants: ['view'] }),
+    });
+    const body = await created.json() as { invitation: { invitationId: string }; token: string };
+
+    const waiting = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      headers: { authorization: `Bearer ${nodeToken}` },
+    });
+    expect(waiting.status).toBe(200);
+    expect(await waiting.json()).toEqual({
+      invitations: [expect.objectContaining({
+        invitationId: body.invitation.invitationId,
+        taskId: 'task-list',
+        connectedViewerCount: 0,
+      })],
+    });
+
+    const accepted = relay.acceptInvitation(body.token, 'viewer');
+    if (!accepted.ok) throw new Error('expected accept');
+    await connectMember(relay, nodeId, accepted.accepted.memberToken);
+
+    const connected = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      headers: { authorization: `Bearer ${nodeToken}` },
+    });
+    expect(await connected.json()).toEqual({
+      invitations: [expect.objectContaining({
+        invitationId: body.invitation.invitationId,
+        connectedViewerCount: 1,
+        acceptedAt: expect.any(String),
+      })],
+    });
   });
 });

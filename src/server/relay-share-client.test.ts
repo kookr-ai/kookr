@@ -29,6 +29,8 @@ describe('createRelayShareClient', () => {
 
     expect(share.taskId).toBe('task-9');
     expect(typeof share.invitationId).toBe('string');
+    expect(share.state).toBe('waiting');
+    expect(share.connectedViewerCount).toBe(0);
     expect(share.revokedAt).toBeUndefined();
 
     const parsed = new URL(joinUrl);
@@ -53,6 +55,21 @@ describe('createRelayShareClient', () => {
     // A second revoke of the same share is a no-op, surfaced as alreadyRevoked.
     const second = await client.revokeTaskShare(share.invitationId);
     expect(second.alreadyRevoked).toBe(true);
+  });
+
+  it('lists node task shares with derived owner state', async () => {
+    const { nodeToken, relay } = await startRelay();
+    const client = createRelayShareClient({ relayUrl: relay.url(), relayToken: nodeToken });
+    const created = await client.createTaskShare({ taskId: 'task-list', ttlMs: 600_000 });
+
+    const shares = await client.listTaskShares();
+
+    expect(shares).toEqual([expect.objectContaining({
+      invitationId: created.share.invitationId,
+      taskId: 'task-list',
+      state: 'waiting',
+      connectedViewerCount: 0,
+    })]);
   });
 
   it('surfaces a relay-rejected token as a 502 RelayShareError', async () => {
@@ -106,6 +123,23 @@ describe('createRelayShareClient', () => {
     });
 
     await expect(client.revokeTaskShare('inv-1')).rejects.toMatchObject({
+      name: 'RelayShareError',
+      code: 'relay-bad-response',
+      status: 502,
+    });
+  });
+
+  it('surfaces a malformed relay list response as a 502 RelayShareError', async () => {
+    const client = createRelayShareClient({
+      relayUrl: 'http://relay.test',
+      relayToken: 'token',
+      fetchImpl: () => Promise.resolve(new Response('{}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })),
+    });
+
+    await expect(client.listTaskShares()).rejects.toMatchObject({
       name: 'RelayShareError',
       code: 'relay-bad-response',
       status: 502,

@@ -34,6 +34,7 @@ import type { TokenTracker } from '../../core/token-tracker.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
 import type { WorktreeRegistry } from '../../adapters/git-worktree-registry.js';
 import type { RelayShareClient } from '../relay-share-client.js';
+import type { TaskShareService } from '../task-share-service.js';
 
 /**
  * Phase A0 easy connection sharing config. The server always provides it;
@@ -46,6 +47,8 @@ export interface RemoteShareDeps {
   csrfToken: string;
   /** Relay client, or `null` when no relay is configured. */
   client: RelayShareClient | null;
+  /** Local owner of A0 projection publication/revoke overlay state. */
+  service?: TaskShareService;
 }
 
 export interface RouteDeps {

@@ -53,6 +53,7 @@ export interface RelayNodeInvitationView {
   expiresAt: string;
   revokedAt?: string;
   acceptedAt?: string;
+  connectedViewerCount?: number;
 }
 
 /**
@@ -71,6 +72,52 @@ export interface RevokeNodeTaskShareResponse {
   alreadyRevoked: boolean;
 }
 
+/** Relay → node list response for the node-scoped owner state read path. */
+export interface ListNodeTaskSharesResponse {
+  invitations: RelayNodeInvitationView[];
+}
+
+export type RemoteTaskProjectionStatus =
+  | 'pending'
+  | 'open'
+  | 'inProgress'
+  | 'needsInput'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+/**
+ * The only remote task view contract in Phase A0.
+ *
+ * The local node owns this projection. It intentionally contains no paths,
+ * raw prompts, transcripts, diffs, terminal bytes, command output, or
+ * environment data.
+ */
+export interface RemoteTaskProjectionV1 {
+  schemaVersion: 'remote-task-projection.v1';
+  nodeId: NodeId;
+  taskId: string;
+  /** Allowlisted characters only, max 80 chars. */
+  taskLabel: string;
+  status: RemoteTaskProjectionStatus;
+  hasFinding: boolean;
+  needsInput: boolean;
+  updatedAt: string;
+}
+
+export interface RemoteTaskProjectionEnvelopeV1 {
+  type: 'remote.taskProjection.v1';
+  invitationId: string;
+  projection: RemoteTaskProjectionV1;
+}
+
+export type TaskShareOwnerState =
+  | 'waiting'
+  | 'viewerConnected'
+  | 'revoked'
+  | 'expired'
+  | 'revokePending';
+
 /**
  * Owner-facing summary of a task share, returned by the dashboard backend.
  *
@@ -82,8 +129,11 @@ export interface TaskShareSummary {
   taskId: string;
   createdAt: string;
   expiresAt: string;
+  state: TaskShareOwnerState;
+  connectedViewerCount: number;
   revokedAt?: string;
   acceptedAt?: string;
+  revokePendingAt?: string;
 }
 
 /**
@@ -104,4 +154,9 @@ export interface RevokeTaskShareApiResponse {
   share: TaskShareSummary;
   /** `true` when the share was already revoked before this request (no-op). */
   alreadyRevoked: boolean;
+}
+
+/** `GET /api/share/task` response. */
+export interface ListTaskSharesApiResponse {
+  shares: TaskShareSummary[];
 }

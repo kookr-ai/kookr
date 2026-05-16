@@ -16,13 +16,36 @@ const ORIGIN = 'http://127.0.0.1';
 function fakeClient(overrides: Partial<RelayShareClient> = {}): RelayShareClient {
   return {
     createTaskShare: async ({ taskId, ttlMs }) => ({
-      share: { invitationId: `inv-${taskId}`, taskId, createdAt: 'c', expiresAt: `ttl:${ttlMs}` },
+      share: {
+        invitationId: `inv-${taskId}`,
+        taskId,
+        createdAt: 'c',
+        expiresAt: `ttl:${ttlMs}`,
+        state: 'waiting',
+        connectedViewerCount: 0,
+      },
       joinUrl: `http://relay.test/relay/join#inviteToken=tok-${taskId}`,
     }),
     revokeTaskShare: async (invitationId) => ({
-      share: { invitationId, taskId: 't', createdAt: 'c', expiresAt: 'e', revokedAt: 'r' },
+      share: {
+        invitationId,
+        taskId: 't',
+        createdAt: 'c',
+        expiresAt: 'e',
+        state: 'revoked',
+        connectedViewerCount: 0,
+        revokedAt: 'r',
+      },
       alreadyRevoked: false,
     }),
+    listTaskShares: async () => [{
+      invitationId: 'inv-listed',
+      taskId: 'listed',
+      createdAt: 'c',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      state: 'waiting',
+      connectedViewerCount: 0,
+    }],
     ...overrides,
   };
 }
@@ -104,6 +127,9 @@ describe('share routes — local-only mode', () => {
     const csrf = await app.request(`${ORIGIN}/api/share/csrf-token`);
     expect(csrf.status).toBe(409);
 
+    const list = await app.request(`${ORIGIN}/api/share/task`);
+    expect(list.status).toBe(409);
+
     const create = await post(app, '/api/share/task', { Origin: ORIGIN }, { taskId: 't' });
     expect(create.status).toBe(409);
     expect(await create.json()).toEqual({ error: 'relay-not-configured' });
@@ -158,6 +184,19 @@ describe('share routes — CSRF / Origin enforcement', () => {
 describe('share routes — create and revoke', () => {
   const remoteShare: RemoteShareDeps = { csrfToken: CSRF, client: fakeClient() };
   const okHeaders = { Origin: ORIGIN, [SHARE_CSRF_HEADER]: CSRF };
+
+  it('lists shares with coarse owner state', async () => {
+    const res = await mkApp(remoteShare).request(`${ORIGIN}/api/share/task`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      shares: [expect.objectContaining({
+        invitationId: 'inv-listed',
+        taskId: 'listed',
+        state: 'waiting',
+        connectedViewerCount: 0,
+      })],
+    });
+  });
 
   it('creates a share and returns a fragment-token join URL', async () => {
     const res = await post(mkApp(remoteShare), '/api/share/task', okHeaders, { taskId: 'task-5' });
@@ -221,7 +260,15 @@ describe('share routes — create and revoke', () => {
       csrfToken: CSRF,
       client: fakeClient({
         revokeTaskShare: async (invitationId) => ({
-          share: { invitationId, taskId: 't', createdAt: 'c', expiresAt: 'e', revokedAt: 'r' },
+          share: {
+            invitationId,
+            taskId: 't',
+            createdAt: 'c',
+            expiresAt: 'e',
+            state: 'revoked',
+            connectedViewerCount: 0,
+            revokedAt: 'r',
+          },
           alreadyRevoked: true,
         }),
       }),
