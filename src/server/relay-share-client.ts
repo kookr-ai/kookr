@@ -17,6 +17,7 @@ import type {
   ListNodeTaskSharesResponse,
   RelayNodeInvitationView,
   RevokeNodeTaskShareResponse,
+  TaskShareTicket,
   TaskShareSummary,
 } from '../remote/share-contract.js';
 
@@ -51,6 +52,7 @@ export interface RelayShareClient {
   createTaskShare(input: { taskId: string; ttlMs: number }): Promise<{
     share: TaskShareSummary;
     joinUrl: string;
+    shareTicket?: TaskShareTicket;
   }>;
   /** Revoke a previously created invitation owned by the configured node. */
   revokeTaskShare(invitationId: string): Promise<{ share: TaskShareSummary; alreadyRevoked: boolean }>;
@@ -85,6 +87,10 @@ function toSummary(view: RelayNodeInvitationView): TaskShareSummary {
     connectedViewerCount,
     ...(view.revokedAt ? { revokedAt: view.revokedAt } : {}),
     ...(view.acceptedAt ? { acceptedAt: view.acceptedAt } : {}),
+    ...(view.shareId ? { shareId: view.shareId } : {}),
+    ...(typeof view.failedAcceptCount === 'number' ? { failedAcceptCount: view.failedAcceptCount } : {}),
+    ...(view.lockedUntil ? { lockedUntil: view.lockedUntil } : {}),
+    ...(view.redactedShareLabel ? { redactedShareLabel: view.redactedShareLabel } : {}),
   };
 }
 
@@ -98,6 +104,16 @@ function buildJoinUrl(relayUrl: string, token: string): string {
   // Assigning via the search/query API would leak the token to relay access
   // logs; the fragment is client-only. base64url tokens need no extra encoding.
   url.hash = `inviteToken=${token}`;
+  return url.toString();
+}
+
+function buildShareTicketJoinUrl(relayUrl: string, shareId: string, password: string): string {
+  const url = new URL(`/relay/join/${encodeURIComponent(shareId)}`, relayUrl);
+  // Keep the password in the fragment for the same reason as invite tokens:
+  // the browser does not send fragments in HTTP requests or Referer headers.
+  const fragment = new URLSearchParams();
+  fragment.set('password', password);
+  url.hash = fragment.toString();
   return url.toString();
 }
 
@@ -146,7 +162,7 @@ export function createRelayShareClient(opts: RelayShareClientOptions): RelayShar
   }
 
   return {
-    async createTaskShare(input): Promise<{ share: TaskShareSummary; joinUrl: string }> {
+    async createTaskShare(input): Promise<{ share: TaskShareSummary; joinUrl: string; shareTicket?: TaskShareTicket }> {
       const requestBody: CreateNodeTaskShareRequest = {
         subject: { kind: 'task', taskId: input.taskId },
         grants: ['view'],
@@ -159,6 +175,14 @@ export function createRelayShareClient(opts: RelayShareClientOptions): RelayShar
       return {
         share: toSummary(parsed.invitation),
         joinUrl: buildJoinUrl(base, parsed.token),
+        ...(parsed.shareTicket ? {
+          shareTicket: {
+            shareId: parsed.shareTicket.shareId,
+            password: parsed.shareTicket.password,
+            redactedShareLabel: parsed.shareTicket.redactedShareLabel,
+            joinUrl: buildShareTicketJoinUrl(base, parsed.shareTicket.shareId, parsed.shareTicket.password),
+          },
+        } : {}),
       };
     },
 

@@ -3,6 +3,7 @@ import type {
   CreateTaskShareApiResponse,
   ListTaskSharesApiResponse,
   RevokeTaskShareApiResponse,
+  TaskShareTicket,
   TaskShareOwnerState,
   TaskShareSummary,
 } from '../../remote/share-contract.js';
@@ -31,6 +32,7 @@ interface GeneratedJoinUrl {
   taskId: string;
   invitationId: string;
   url: string;
+  ticket?: TaskShareTicket;
 }
 
 function stateLabel(state: TaskShareOwnerState): string {
@@ -67,7 +69,8 @@ function joinUrlUsesFragment(url: string | null): boolean {
   if (!url) return false;
   try {
     const parsed = new URL(url);
-    return parsed.search === '' && parsed.hash.startsWith('#inviteToken=');
+    return parsed.search === ''
+      && (parsed.hash.startsWith('#inviteToken=') || parsed.hash.startsWith('#password='));
   } catch {
     return false;
   }
@@ -92,7 +95,11 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
   const displayedShare = activeShare ?? currentShares[0] ?? null;
   const joinUrl = generatedJoinUrl?.taskId === taskId
     && generatedJoinUrl.invitationId === displayedShare?.invitationId
-    ? generatedJoinUrl.url
+    ? generatedJoinUrl.ticket?.joinUrl ?? generatedJoinUrl.url
+    : null;
+  const shareTicket = generatedJoinUrl?.taskId === taskId
+    && generatedJoinUrl.invitationId === displayedShare?.invitationId
+    ? generatedJoinUrl.ticket
     : null;
   const fragmentSafe = joinUrlUsesFragment(joinUrl);
 
@@ -219,6 +226,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
         taskId: body.share.taskId,
         invitationId: body.share.invitationId,
         url: body.joinUrl,
+        ...(body.shareTicket ? { ticket: body.shareTicket } : {}),
       });
       setShares((prev) => [body.share, ...prev.filter((share) => share.invitationId !== body.share.invitationId)]);
       setStatus('ready');
@@ -305,13 +313,27 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
             </div>
 
             {joinUrl && (
-              <label className="task-share-link">
-                <span>Share link</span>
-                <input readOnly value={joinUrl} onFocus={(event) => event.currentTarget.select()} />
-                <small className={fragmentSafe ? 'task-share-muted' : 'task-share-error'}>
-                  {fragmentSafe ? 'Invite token is in the URL fragment.' : 'Invite token URL is not fragment-only.'}
-                </small>
-              </label>
+              <>
+                {shareTicket && (
+                  <div className="task-share-ticket" aria-label="Share ID and password">
+                    <label>
+                      <span>Share ID</span>
+                      <input readOnly value={shareTicket.shareId} onFocus={(event) => event.currentTarget.select()} />
+                    </label>
+                    <label>
+                      <span>Password</span>
+                      <input readOnly value={shareTicket.password} onFocus={(event) => event.currentTarget.select()} />
+                    </label>
+                  </div>
+                )}
+                <label className="task-share-link">
+                  <span>Share link</span>
+                  <input readOnly value={joinUrl} onFocus={(event) => event.currentTarget.select()} />
+                  <small className={fragmentSafe ? 'task-share-muted' : 'task-share-error'}>
+                    {fragmentSafe ? 'Secret is in the URL fragment.' : 'Share URL is not fragment-only.'}
+                  </small>
+                </label>
+              </>
             )}
 
             <div className="task-share-actions">

@@ -42,8 +42,11 @@ test.describe('Easy connection sharing Phase B stored relay startup', () => {
     const linkInput = dialog.locator('.task-share-link input');
     await expect(linkInput).toBeVisible();
     const joinUrl = await linkInput.inputValue();
-    expect(joinUrl).toContain('/relay/join#inviteToken=');
-    expect(joinUrl).not.toContain('?inviteToken');
+    const parsed = new URL(joinUrl);
+    expect(parsed.pathname).toMatch(/^\/relay\/join\/\d{3}-\d{3}$/);
+    expect(parsed.search).toBe('');
+    expect(parsed.hash).toContain('password=');
+    expect(joinUrl).not.toContain('?password');
     await expect(dialog.getByRole('status')).toContainText('Waiting for viewer');
   });
 });

@@ -25,6 +25,12 @@ function fakeClient(overrides: Partial<RelayShareClient> = {}): RelayShareClient
         connectedViewerCount: 0,
       },
       joinUrl: `http://relay.test/relay/join#inviteToken=tok-${taskId}`,
+      shareTicket: {
+        shareId: '482-913',
+        password: 'cobalt-mint-7',
+        redactedShareLabel: '482-***',
+        joinUrl: 'http://relay.test/relay/join/482-913#password=cobalt-mint-7',
+      },
     }),
     revokeTaskShare: async (invitationId) => ({
       share: {
@@ -198,13 +204,20 @@ describe('share routes — create and revoke', () => {
     });
   });
 
-  it('creates a share and returns a fragment-token join URL', async () => {
+  it('creates a share and returns a fragment-token join URL plus share ticket', async () => {
     const res = await post(mkApp(remoteShare), '/api/share/task', okHeaders, { taskId: 'task-5' });
     expect(res.status).toBe(201);
-    const body = await res.json() as { share: { taskId: string }; joinUrl: string };
+    const body = await res.json() as { share: { taskId: string }; joinUrl: string; shareTicket: { shareId: string; password: string; joinUrl: string } };
     expect(body.share.taskId).toBe('task-5');
     expect(body.joinUrl).toContain('#inviteToken=');
     expect(body.joinUrl).not.toContain('?inviteToken');
+    expect(body.shareTicket).toEqual({
+      shareId: '482-913',
+      password: 'cobalt-mint-7',
+      redactedShareLabel: '482-***',
+      joinUrl: 'http://relay.test/relay/join/482-913#password=cobalt-mint-7',
+    });
+    expect(body.shareTicket.joinUrl).not.toContain('?password');
   });
 
   it('defaults the TTL when none is supplied', async () => {

@@ -29,12 +29,20 @@ async function createShareFromDashboard(page: Page): Promise<string> {
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('View-only access')).toBeVisible();
   await dialog.getByRole('button', { name: 'Create share link' }).click();
+  const shareIdInput = dialog.getByRole('textbox', { name: 'Share ID' });
+  const passwordInput = dialog.getByRole('textbox', { name: 'Password' });
+  await expect(shareIdInput).toBeVisible();
+  await expect(passwordInput).toBeVisible();
+  await expect(shareIdInput).toHaveValue(/^\d{3}-\d{3}$/);
+  await expect(passwordInput).not.toHaveValue('');
   const linkInput = dialog.locator('.task-share-link input');
   await expect(linkInput).toBeVisible();
   const joinUrl = await linkInput.inputValue();
-  expect(joinUrl).toContain('/relay/join#inviteToken=');
-  expect(new URL(joinUrl).search).toBe('');
-  expect(joinUrl).not.toContain('?inviteToken');
+  const parsed = new URL(joinUrl);
+  expect(parsed.pathname).toMatch(/^\/relay\/join\/\d{3}-\d{3}$/);
+  expect(parsed.search).toBe('');
+  expect(parsed.hash).toContain('password=');
+  expect(joinUrl).not.toContain('?password');
   await expect(dialog.getByRole('status')).toContainText('Waiting for viewer');
   return joinUrl;
 }
@@ -61,6 +69,8 @@ test.describe('Easy connection sharing Phase A0', () => {
     const joinResponse = await collaboratorPage.goto(joinUrl);
     expect(joinResponse?.headers()['referrer-policy']).toBe('no-referrer');
     await expect.poll(() => collaboratorPage.evaluate(() => location.hash)).toBe('');
+    await expect(collaboratorPage.getByLabel('Share ID')).toHaveValue(/^\d{3}-\d{3}$/);
+    await expect(collaboratorPage.getByLabel('Password')).not.toHaveValue('');
     await collaboratorPage.getByLabel('Display name').fill('Dogfood guest');
     await collaboratorPage.getByRole('button', { name: 'Join' }).click();
 
@@ -68,7 +78,7 @@ test.describe('Easy connection sharing Phase A0', () => {
     await expect(collaboratorPage.locator('#task-status')).toContainText(/open|inProgress|pending|needsInput/);
     await expect(collaboratorPage.locator('body')).not.toContainText('/private/customer-billing');
     await expect(collaboratorPage.locator('body')).not.toContainText('github_pat_should_not_leak');
-    expect(requestedUrls.some((url) => url.includes('inviteToken=') || url.includes('memberToken='))).toBe(false);
+    expect(requestedUrls.some((url) => url.includes('inviteToken=') || url.includes('password=') || url.includes('memberToken='))).toBe(false);
 
     const dialog = page.getByRole('dialog', { name: 'Share this task' });
     await expect(dialog.getByRole('status')).toContainText('Viewer connected', { timeout: 10_000 });

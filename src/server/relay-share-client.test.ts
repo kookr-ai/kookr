@@ -21,17 +21,19 @@ async function startRelay(): Promise<{ relay: RelayServerHandle; nodeToken: stri
 }
 
 describe('createRelayShareClient', () => {
-  it('creates a share and returns a fragment-token join URL', async () => {
+  it('creates a share and returns fragment-only legacy and share-ticket join URLs', async () => {
     const { relay, nodeToken } = await startRelay();
     const client = createRelayShareClient({ relayUrl: relay.url(), relayToken: nodeToken });
 
-    const { share, joinUrl } = await client.createTaskShare({ taskId: 'task-9', ttlMs: 600_000 });
+    const { share, joinUrl, shareTicket } = await client.createTaskShare({ taskId: 'task-9', ttlMs: 600_000 });
 
     expect(share.taskId).toBe('task-9');
     expect(typeof share.invitationId).toBe('string');
     expect(share.state).toBe('waiting');
     expect(share.connectedViewerCount).toBe(0);
     expect(share.revokedAt).toBeUndefined();
+    expect(share.shareId).toMatch(/^\d{3}-\d{3}$/);
+    expect(share.redactedShareLabel).toMatch(/^\d{3}-\*\*\*$/);
 
     const parsed = new URL(joinUrl);
     expect(parsed.pathname).toBe('/relay/join');
@@ -39,6 +41,17 @@ describe('createRelayShareClient', () => {
     expect(parsed.search).toBe('');
     expect(parsed.hash).toMatch(/^#inviteToken=kookr_inv_v1_/);
     expect(joinUrl).not.toContain('?inviteToken');
+
+    expect(shareTicket).toEqual(expect.objectContaining({
+      shareId: share.shareId,
+      password: expect.any(String),
+      redactedShareLabel: share.redactedShareLabel,
+    }));
+    const ticketUrl = new URL(shareTicket!.joinUrl);
+    expect(ticketUrl.pathname).toBe(`/relay/join/${share.shareId}`);
+    expect(ticketUrl.search).toBe('');
+    expect(ticketUrl.hash).toMatch(/^#password=/);
+    expect(shareTicket!.joinUrl).not.toContain('?password');
   });
 
   it('revokes a previously created share and reports alreadyRevoked', async () => {

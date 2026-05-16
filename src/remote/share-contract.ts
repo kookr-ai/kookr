@@ -1,5 +1,5 @@
 /**
- * Easy Connection Sharing — Phase A0 contracts.
+ * Easy Connection Sharing — share contracts.
  *
  * Type-only module. It is imported with `import type` from `src/server`
  * (the dashboard backend) so that local-only mode never loads remote
@@ -8,7 +8,7 @@
  * here — only structural contracts shared across the node, the relay, and
  * the dashboard backend.
  *
- * RFC: `docs/rfc/rfc-easy-connection-sharing.md` — Phase A0.
+ * RFC: `docs/rfc/rfc-easy-connection-sharing.md` — Phases A0-C.
  */
 
 import type { NodeId } from './ids.js';
@@ -54,6 +54,25 @@ export interface RelayNodeInvitationView {
   revokedAt?: string;
   acceptedAt?: string;
   connectedViewerCount?: number;
+  shareId?: string;
+  failedAcceptCount?: number;
+  lockedUntil?: string;
+  redactedShareLabel?: string;
+}
+
+/** One-time Phase C ticket secret returned only on creation. */
+export interface RelayShareTicketSecret {
+  shareId: string;
+  password: string;
+  redactedShareLabel: string;
+}
+
+/** Owner-facing Phase C ticket. The password is never returned by list/read paths. */
+export interface TaskShareTicket {
+  shareId: string;
+  password: string;
+  joinUrl: string;
+  redactedShareLabel: string;
 }
 
 /**
@@ -64,6 +83,7 @@ export interface RelayNodeInvitationView {
 export interface CreateNodeTaskShareResponse {
   invitation: RelayNodeInvitationView;
   token: string;
+  shareTicket?: RelayShareTicketSecret;
 }
 
 /** Relay → node revoke response. */
@@ -134,6 +154,10 @@ export interface TaskShareSummary {
   revokedAt?: string;
   acceptedAt?: string;
   revokePendingAt?: string;
+  shareId?: string;
+  failedAcceptCount?: number;
+  lockedUntil?: string;
+  redactedShareLabel?: string;
 }
 
 /**
@@ -146,7 +170,10 @@ export interface TaskShareSummary {
  */
 export interface CreateTaskShareApiResponse {
   share: TaskShareSummary;
+  /** Legacy fragment-token join path, preserved for existing A0 links. */
   joinUrl: string;
+  /** Phase C share ID/password ticket, returned only once at creation. */
+  shareTicket?: TaskShareTicket;
 }
 
 /** `POST /api/share/task/:invitationId/revoke` response. */

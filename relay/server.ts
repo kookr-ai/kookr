@@ -18,6 +18,7 @@ import type {
   RemoteTaskProjectionEnvelopeV1,
   RemoteTaskProjectionV1,
   RelayNodeInvitationView,
+  RelayShareTicketSecret,
   TaskShareGrant,
 } from '../src/remote/share-contract.js';
 import { InvitationStore, type InvitationRecord } from './src/invitations/store.js';
@@ -107,7 +108,7 @@ export interface RelayServerHandle {
   httpServer: Server;
   url(): string;
   registerNode(opts?: { displayName?: string; ownerId?: string }): { nodeId: NodeId; nodeToken: string };
-  createInvitation(opts: { nodeId: NodeId; subject?: ShareSubject; grants: ShareGrant[]; ttlMs?: number }): { invitation: InvitationRecord; token: string };
+  createInvitation(opts: { nodeId: NodeId; subject?: ShareSubject; grants: ShareGrant[]; ttlMs?: number; shareTicket?: boolean }): { invitation: InvitationRecord; token: string; shareTicket?: RelayShareTicketSecret };
   acceptInvitation(token: string, acceptedBy?: string): ReturnType<InvitationStore['accept']>;
   revokeInvitation(invitationId: string): ReturnType<InvitationStore['revoke']>;
   invitations(): InvitationRecord[];
@@ -122,6 +123,10 @@ export interface RelayServerHandle {
 
 function tokenHash(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+
+function remoteAddressKey(req: IncomingMessage): string {
+  return (req.socket.remoteAddress || 'unknown').slice(0, 160);
 }
 
 function issueNodeToken(): string {
@@ -303,6 +308,9 @@ function parseGrantList(value: unknown): ShareGrant[] | null {
 // `src/server/relay-share-client.ts` (the boundary forbids sharing the value).
 const NODE_SHARE_MIN_TTL_MS = 60_000;
 const NODE_SHARE_MAX_TTL_MS = 24 * 60 * 60 * 1000;
+const NODE_SHARE_DEFAULT_TTL_MS = 10 * 60 * 1000;
+const SHARE_TICKET_SOURCE_MAX_FAILED_ATTEMPTS = 10;
+const SHARE_TICKET_SOURCE_LOCKOUT_MS = 15 * 60 * 1000;
 
 /**
  * A Phase A0 node task share: a task-subject invitation whose only grant is
@@ -337,6 +345,10 @@ function toNodeInvitationView(invitation: InvitationRecord, connectedViewerCount
     connectedViewerCount,
     ...(invitation.revokedAt ? { revokedAt: invitation.revokedAt } : {}),
     ...(invitation.acceptedAt ? { acceptedAt: invitation.acceptedAt } : {}),
+    ...(invitation.shareId ? { shareId: invitation.shareId } : {}),
+    ...(typeof invitation.failedAcceptCount === 'number' ? { failedAcceptCount: invitation.failedAcceptCount } : {}),
+    ...(invitation.lockedUntil ? { lockedUntil: invitation.lockedUntil } : {}),
+    ...(invitation.redactedShareLabel ? { redactedShareLabel: invitation.redactedShareLabel } : {}),
   };
 }
 
@@ -452,6 +464,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const replay = new Map<NodeId, RemoteControlEvent[]>();
   const terminalReplay = new Map<NodeId, Map<string, TerminalStreamEvent[]>>();
   const metadataAudit: RelayMetadataAuditRow[] = [];
+  const ticketSourceFailures = new Map<string, { count: number; lockedUntil?: number }>();
   const invitations = new InvitationStore();
   const streamMetrics = { clientDropped: { backpressure: 0 } };
   const streamBackpressureBytes = opts.streamBackpressureBytes ?? 1_000_000;
@@ -497,7 +510,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     return { nodeId, nodeToken };
   };
 
-  const createInvitation = (input: { nodeId: NodeId; subject?: ShareSubject; grants: ShareGrant[]; ttlMs?: number }) => (
+  const createInvitation = (input: { nodeId: NodeId; subject?: ShareSubject; grants: ShareGrant[]; ttlMs?: number; shareTicket?: boolean }) => (
     invitations.create(input)
   );
 
@@ -517,6 +530,31 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const accepted = invitations.accept(token, acceptedBy);
     if (accepted.ok) sendPolicyDelta(accepted.accepted.invitation.nodeId, accepted.accepted.policyGrant);
     return accepted;
+  };
+
+  const acceptShareTicket = (shareId: string, password: string, acceptedBy?: string) => {
+    const accepted = invitations.acceptTicket(shareId, password, acceptedBy);
+    if (accepted.ok) sendPolicyDelta(accepted.accepted.invitation.nodeId, accepted.accepted.policyGrant);
+    return accepted;
+  };
+
+  const sourceLocked = (sourceKey: string): boolean => {
+    const record = ticketSourceFailures.get(sourceKey);
+    if (!record?.lockedUntil) return false;
+    if (record.lockedUntil > Date.now()) return true;
+    ticketSourceFailures.delete(sourceKey);
+    return false;
+  };
+
+  const recordTicketFailure = (sourceKey: string): void => {
+    const existing = ticketSourceFailures.get(sourceKey);
+    const count = (existing?.count ?? 0) + 1;
+    ticketSourceFailures.set(sourceKey, {
+      count,
+      ...(count >= SHARE_TICKET_SOURCE_MAX_FAILED_ATTEMPTS
+        ? { lockedUntil: Date.now() + SHARE_TICKET_SOURCE_LOCKOUT_MS }
+        : {}),
+    });
   };
 
   const revokeInvitation = (invitationId: string) => {
@@ -611,7 +649,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         sendHtml(res, 200, relayDashboardHtml());
         return;
       }
-      if (req.method === 'GET' && url.pathname === '/relay/join') {
+      if (req.method === 'GET' && (url.pathname === '/relay/join' || url.pathname.startsWith('/relay/join/'))) {
         sendHtml(res, 200, relayJoinHtml());
         return;
       }
@@ -845,6 +883,38 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         );
         return;
       }
+      if (req.method === 'POST' && url.pathname === '/relay/share-tickets/accept') {
+        const sourceKey = remoteAddressKey(req);
+        const body = await readJson(req) as { shareId?: unknown; password?: unknown; displayName?: unknown };
+        const shareId = typeof body.shareId === 'string' ? body.shareId : '';
+        const password = typeof body.password === 'string' ? body.password : '';
+        if (!shareId || !password) {
+          sendJson(res, 400, { error: 'shareId and password are required' });
+          return;
+        }
+        if (sourceLocked(sourceKey)) {
+          sendJson(res, 409, { error: 'ticket-unavailable' });
+          return;
+        }
+        const accepted = acceptShareTicket(
+          shareId,
+          password,
+          typeof body.displayName === 'string' ? body.displayName : undefined,
+        );
+        if (!accepted.ok) {
+          recordTicketFailure(sourceKey);
+          sendJson(res, 409, { error: 'ticket-unavailable' });
+          return;
+        }
+        ticketSourceFailures.delete(sourceKey);
+        sendJson(
+          res,
+          200,
+          { nodeId: accepted.accepted.invitation.nodeId },
+          { 'set-cookie': memberCookie(accepted.accepted.memberToken, req) },
+        );
+        return;
+      }
       if (req.method === 'POST' && url.pathname.startsWith('/relay/admin/invitations/') && url.pathname.endsWith('/revoke')) {
         if (!opts.allowInsecureAdmin && !isAuthorizedAdmin(req, opts.adminToken)) {
           sendJson(res, 401, { error: 'unauthorized' });
@@ -906,11 +976,13 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           nodeId: registration.nodeId,
           subject: { kind: 'task', nodeId: registration.nodeId, taskId: parsed.taskId },
           grants: ['view'],
-          ...(parsed.ttlMs !== undefined ? { ttlMs: parsed.ttlMs } : {}),
+          shareTicket: true,
+          ttlMs: parsed.ttlMs ?? NODE_SHARE_DEFAULT_TTL_MS,
         });
         sendJson(res, 201, {
           invitation: toNodeInvitationViewWithPresence(created.invitation),
           token: created.token,
+          ...(created.shareTicket ? { shareTicket: created.shareTicket } : {}),
         });
         return;
       }
@@ -1917,6 +1989,16 @@ function relayJoinHtml(): string {
     <h1>Shared Kookr task</h1>
     <p class="muted">View-only access as an unverified guest.</p>
     <form id="join-form">
+      <div id="ticket-fields">
+        <label>
+          Share ID
+          <input id="share-id" maxlength="12" autocomplete="one-time-code" inputmode="numeric">
+        </label>
+        <label>
+          Password
+          <input id="share-password" type="password" autocomplete="one-time-code">
+        </label>
+      </div>
       <label>
         Display name
         <input id="display-name" maxlength="40" autocomplete="name" value="Guest">
@@ -1938,10 +2020,26 @@ function relayJoinHtml(): string {
 <script>
 const fragmentParams = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : '');
 const inviteToken = fragmentParams.get('inviteToken') || '';
+const pathShareId = location.pathname.startsWith('/relay/join/')
+  ? decodeURIComponent(location.pathname.slice('/relay/join/'.length))
+  : '';
+let fragmentPassword = fragmentParams.get('password') || '';
+// Also accept /relay/join/482-913#cobalt-mint-7 for voice/manual entry
+// links while still scrubbing the fragment before any network work starts.
+if (!fragmentPassword && location.hash && !location.hash.includes('=')) {
+  try {
+    fragmentPassword = decodeURIComponent(location.hash.slice(1));
+  } catch {
+    fragmentPassword = '';
+  }
+}
 if (location.hash) history.replaceState(null, '', location.pathname + location.search);
 
 const statusEl = document.getElementById('status');
 const formEl = document.getElementById('join-form');
+const ticketFieldsEl = document.getElementById('ticket-fields');
+const shareIdEl = document.getElementById('share-id');
+const sharePasswordEl = document.getElementById('share-password');
 const nameEl = document.getElementById('display-name');
 const joinButtonEl = document.getElementById('join-button');
 const taskEl = document.getElementById('task');
@@ -1953,12 +2051,21 @@ const taskUpdatedEl = document.getElementById('task-updated');
 const nodeKey = 'kookr-relay-join-node:' + location.host;
 let nodeId = sessionStorage.getItem(nodeKey) || '';
 let ws = null;
+shareIdEl.value = pathShareId;
+sharePasswordEl.value = fragmentPassword;
+if (inviteToken) ticketFieldsEl.hidden = true;
 
 function sanitizeDisplayName(value) {
   return String(value || 'Guest')
     .replace(/[\\u0000-\\u001f\\u007f-\\u009f\\u202a-\\u202e\\u2066-\\u2069]/g, '')
     .trim()
     .slice(0, 40) || 'Guest';
+}
+
+function normalizeShareId(value) {
+  const digits = String(value || '').replace(/\\D/g, '');
+  if (digits.length !== 6) return '';
+  return digits.slice(0, 3) + '-' + digits.slice(3);
 }
 
 function setStatus(text, error) {
@@ -2007,25 +2114,29 @@ function connect() {
 }
 
 async function acceptInvite() {
-  if (!inviteToken) {
+  const shareId = normalizeShareId(shareIdEl.value);
+  const password = sharePasswordEl.value;
+  if (!inviteToken && (!shareId || !password)) {
     if (nodeId) {
       await loadState();
       connect();
       return;
     }
-    setStatus('Missing invitation token.', true);
+    setStatus('Enter the share ID and password.', true);
     return;
   }
   joinButtonEl.disabled = true;
   setStatus('Joining...');
-  const res = await fetch('/relay/invitations/accept', {
+  const res = await fetch(inviteToken ? '/relay/invitations/accept' : '/relay/share-tickets/accept', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ token: inviteToken, displayName: sanitizeDisplayName(nameEl.value) }),
+    body: JSON.stringify(inviteToken
+      ? { token: inviteToken, displayName: sanitizeDisplayName(nameEl.value) }
+      : { shareId, password, displayName: sanitizeDisplayName(nameEl.value) }),
   });
   if (!res.ok) {
-    setStatus('Invitation failed or expired.', true);
+    setStatus('Share failed or expired.', true);
     joinButtonEl.disabled = false;
     return;
   }
