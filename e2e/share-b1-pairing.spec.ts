@@ -87,8 +87,11 @@ test.describe('Easy connection sharing Phase B1 relay pairing', () => {
     const linkInput = dialog.locator('.task-share-link input');
     await expect(linkInput).toBeVisible();
     const joinUrl = await linkInput.inputValue();
-    expect(joinUrl).toContain('/relay/join#inviteToken=');
-    expect(joinUrl).not.toContain('?inviteToken');
+    const parsed = new URL(joinUrl);
+    expect(parsed.pathname).toMatch(/^\/relay\/join\/\d{3}-\d{3}$/);
+    expect(parsed.search).toBe('');
+    expect(parsed.hash).toContain('password=');
+    expect(joinUrl).not.toContain('?password');
     expect(joinUrl).not.toContain('admin-secret');
     expect(joinUrl).not.toContain(credentials.nodeToken);
     expect(joinUrl).not.toContain('kookr_tok_v1_');

@@ -160,13 +160,20 @@ describe('relay node-scoped task-share endpoints', () => {
 
     expect(res.status).toBe(201);
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
-    const body = await res.json() as { invitation: Record<string, unknown>; token: string };
+    const body = await res.json() as { invitation: Record<string, unknown>; token: string; shareTicket?: Record<string, unknown> };
     expect(body.token).toMatch(/^kookr_inv_v1_/);
+    expect(body.shareTicket).toMatchObject({
+      shareId: expect.stringMatching(/^\d{3}-\d{3}$/),
+      password: expect.any(String),
+      redactedShareLabel: expect.stringMatching(/^\d{3}-\*\*\*$/),
+    });
     expect(body.invitation.nodeId).toBe(nodeId);
     expect(body.invitation.taskId).toBe('task-42');
     expect(body.invitation.grants).toEqual(['view']);
+    expect(body.invitation.shareId).toBe(body.shareTicket?.shareId);
     expect(typeof body.invitation.invitationId).toBe('string');
     expect(typeof body.invitation.expiresAt).toBe('string');
+    expect(body.invitation).not.toHaveProperty('password');
     // The safe node view must not leak relay-internal secrets/hashes.
     expect(body.invitation).not.toHaveProperty('tokenHash');
     expect(body.invitation).not.toHaveProperty('memberTokenHash');
@@ -174,6 +181,82 @@ describe('relay node-scoped task-share endpoints', () => {
     expect(body.invitation).not.toHaveProperty('policyVersion');
     // The node endpoint never returns a query-string accept URL.
     expect(body).not.toHaveProperty('acceptUrl');
+  });
+
+  it('accepts a node-created share ticket without returning secrets in the response body', async () => {
+    const relay = await startRelay();
+    const { nodeId, nodeToken } = relay.registerNode();
+    const created = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 'task-ticket' }, grants: ['view'] }),
+    });
+    const body = await created.json() as { shareTicket: { shareId: string; password: string } };
+
+    const accepted = await fetch(new URL('/relay/share-tickets/accept', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shareId: body.shareTicket.shareId, password: body.shareTicket.password, displayName: 'viewer' }),
+    });
+
+    expect(accepted.status).toBe(200);
+    expect(accepted.headers.get('set-cookie')).toContain('kookr_relay_member_token=');
+    expect(await accepted.json()).toEqual({ nodeId });
+
+    const second = await fetch(new URL('/relay/share-tickets/accept', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shareId: body.shareTicket.shareId, password: body.shareTicket.password, displayName: 'viewer-2' }),
+    });
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual({ error: 'ticket-unavailable' });
+  });
+
+  it('locks bad share-ticket guesses without distinguishing unknown IDs from wrong passwords', async () => {
+    const relay = await startRelay();
+    const { nodeToken } = relay.registerNode();
+    const created = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 'task-lock' }, grants: ['view'] }),
+    });
+    const body = await created.json() as { invitation: { invitationId: string }; shareTicket: { shareId: string; password: string } };
+
+    const wrongPassword = async (shareId: string) => fetch(new URL('/relay/share-tickets/accept', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shareId, password: 'wrong-password', displayName: 'viewer' }),
+    });
+
+    const unknown = await wrongPassword('111-222');
+    expect(unknown.status).toBe(409);
+    expect(await unknown.json()).toEqual({ error: 'ticket-unavailable' });
+
+    for (let i = 0; i < 5; i += 1) {
+      const res = await wrongPassword(body.shareTicket.shareId);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'ticket-unavailable' });
+    }
+
+    const list = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      headers: { authorization: `Bearer ${nodeToken}` },
+    });
+    expect(await list.json()).toEqual({
+      invitations: [expect.objectContaining({
+        invitationId: body.invitation.invitationId,
+        failedAcceptCount: 5,
+        lockedUntil: expect.any(String),
+        redactedShareLabel: expect.stringMatching(/^\d{3}-\*\*\*$/),
+      })],
+    });
+
+    const correctAfterLock = await fetch(new URL('/relay/share-tickets/accept', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shareId: body.shareTicket.shareId, password: body.shareTicket.password }),
+    });
+    expect(correctAfterLock.status).toBe(409);
+    expect(await correctAfterLock.json()).toEqual({ error: 'ticket-unavailable' });
   });
 
   it('rejects requests with a missing or unknown node token', async () => {

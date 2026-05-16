@@ -2514,6 +2514,20 @@ textarea::-webkit-resizer { background: transparent; }
   margin-top: 12px;
 }
 
+.task-share-ticket {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.task-share-ticket label,
+.task-share-link {
+  display: grid;
+  gap: 6px;
+}
+
+.task-share-ticket input,
 .task-share-link input {
   width: 100%;
   font-family: var(--font-mono);
@@ -2552,9 +2566,14 @@ textarea::-webkit-resizer { background: transparent; }
 @media (max-width: 560px) {
   .task-share-subject,
   .task-share-row,
+  .task-share-ticket,
   .task-share-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .task-share-ticket {
+    grid-template-columns: 1fr;
   }
 }
 
