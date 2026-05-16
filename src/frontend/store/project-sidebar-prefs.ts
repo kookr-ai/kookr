@@ -8,8 +8,8 @@ import {
 
 export type { ProjectSidebarCatalogEntry, ProjectSidebarPrefs };
 
-export const PROJECT_SIDEBAR_PREFS_KEY = 'kookr:projectSidebarPrefs';
-export const PROJECT_SIDEBAR_CATALOG_KEY = 'kookr:projectSidebarCatalog';
+const PROJECT_SIDEBAR_PREFS_KEY = 'kookr:projectSidebarPrefs';
+const PROJECT_SIDEBAR_CATALOG_KEY = 'kookr:projectSidebarCatalog';
 
 interface ProjectSidebarPrefsV1 {
   version?: 1;
@@ -39,6 +39,21 @@ export interface ProjectSidebarDerivedState {
   managerRows: ProjectSidebarRow[];
   hasRecoveryShell: boolean;
 }
+
+export interface ProjectSidebarSnapshot {
+  prefs: ProjectSidebarPrefs;
+  catalog: Record<string, ProjectSidebarCatalogEntry>;
+}
+
+export type ProjectSidebarCommand =
+  | { type: 'pin'; project: string }
+  | { type: 'unpin'; project: string }
+  | { type: 'hide'; project: string }
+  | { type: 'show'; project: string }
+  | { type: 'move'; project: string; direction: 'up' | 'down' }
+  | { type: 'reorder'; project: string; targetPinned: boolean; targetProject: string | null; position: DropPosition }
+  | { type: 'reset' }
+  | { type: 'forget'; project: string };
 
 type ReadStorage = Pick<Storage, 'getItem'>;
 type WriteStorage = Pick<Storage, 'setItem'>;
@@ -135,7 +150,7 @@ function togglePinnedMembership(
   return orderMembership(orderedIds, nextSet);
 }
 
-export function loadProjectSidebarPrefs(storage: ReadStorage | null = getStorage()): ProjectSidebarPrefs {
+function loadProjectSidebarPrefs(storage: ReadStorage | null = getStorage()): ProjectSidebarPrefs {
   if (!storage) return { ...DEFAULT_PROJECT_SIDEBAR_PREFS };
   try {
     const raw = storage.getItem(PROJECT_SIDEBAR_PREFS_KEY);
@@ -147,7 +162,7 @@ export function loadProjectSidebarPrefs(storage: ReadStorage | null = getStorage
   }
 }
 
-export function saveProjectSidebarPrefs(
+function saveProjectSidebarPrefs(
   prefs: ProjectSidebarPrefs,
   storage: WriteStorage | null = getStorage(),
 ): Error | null {
@@ -170,7 +185,7 @@ function isValidCatalogEntry(value: unknown): value is ProjectSidebarCatalogEntr
     && typeof row.lastSeenAt === 'string';
 }
 
-export function loadProjectSidebarCatalog(
+function loadProjectSidebarCatalog(
   storage: ReadStorage | null = getStorage(),
 ): Record<string, ProjectSidebarCatalogEntry> {
   if (!storage) return {};
@@ -190,7 +205,7 @@ export function loadProjectSidebarCatalog(
   }
 }
 
-export function saveProjectSidebarCatalog(
+function saveProjectSidebarCatalog(
   catalog: Record<string, ProjectSidebarCatalogEntry>,
   storage: WriteStorage | null = getStorage(),
 ): Error | null {
@@ -203,27 +218,42 @@ export function saveProjectSidebarCatalog(
   }
 }
 
-export function toProjectSidebarState(
-  prefs: ProjectSidebarPrefs,
-  catalog: Record<string, ProjectSidebarCatalogEntry>,
-): ProjectSidebarState {
-  const normalized = normalizePrefs(prefs);
+export function loadProjectSidebarSnapshot(): ProjectSidebarSnapshot {
+  const storage = getStorage();
+  return {
+    prefs: loadProjectSidebarPrefs(storage),
+    catalog: loadProjectSidebarCatalog(storage),
+  };
+}
+
+export function saveProjectSidebarSnapshot(snapshot: ProjectSidebarSnapshot): Error | null {
+  const storage = getStorage();
+  const prefsError = saveProjectSidebarPrefs(snapshot.prefs, storage);
+  const catalogError = saveProjectSidebarCatalog(snapshot.catalog, storage);
+  return prefsError ?? catalogError;
+}
+
+export function toProjectSidebarState(snapshot: ProjectSidebarSnapshot): ProjectSidebarState {
+  const normalized = normalizePrefs(snapshot.prefs);
   return {
     version: 1,
     ordered: normalized.ordered,
     pinned: normalized.pinned,
     hidden: normalized.hidden,
-    catalog,
+    catalog: snapshot.catalog,
   };
 }
 
-export function prefsFromProjectSidebarState(state: ProjectSidebarState): ProjectSidebarPrefs {
-  return normalizePrefs({
-    version: 2,
-    ordered: state.ordered,
-    pinned: state.pinned,
-    hidden: state.hidden,
-  });
+export function projectSidebarSnapshotFromState(state: ProjectSidebarState): ProjectSidebarSnapshot {
+  return {
+    prefs: normalizePrefs({
+      version: 2,
+      ordered: state.ordered,
+      pinned: state.pinned,
+      hidden: state.hidden,
+    }),
+    catalog: state.catalog,
+  };
 }
 
 /**
@@ -232,7 +262,7 @@ export function prefsFromProjectSidebarState(state: ProjectSidebarState): Projec
  * sending it. If the next WS broadcast still includes the project (e.g. skill
  * discovery kept it alive), it will be re-added automatically.
  */
-export function forgetProjectFromSidebar(
+function forgetProjectFromSidebar(
   prefs: ProjectSidebarPrefs,
   catalog: Record<string, ProjectSidebarCatalogEntry>,
   project: string,
@@ -252,7 +282,7 @@ export function forgetProjectFromSidebar(
   return { prefs: nextPrefs, catalog: nextCatalog };
 }
 
-export function updateProjectSidebarCatalog(
+function updateProjectSidebarCatalog(
   catalog: Record<string, ProjectSidebarCatalogEntry>,
   projects: ProjectSummary[],
   now = new Date().toISOString(),
@@ -276,12 +306,14 @@ export function updateProjectSidebarCatalog(
   return changed ? next : catalog;
 }
 
-export function deriveAllProjectIds(
+export function reconcileProjectSidebarSnapshot(
+  snapshot: ProjectSidebarSnapshot,
   projects: ProjectSummary[],
-  prefs: ProjectSidebarPrefs,
-  catalog: Record<string, ProjectSidebarCatalogEntry>,
-): string[] {
-  return buildOrderedIds(projects, normalizePrefs(prefs), catalog);
+): ProjectSidebarSnapshot {
+  return {
+    prefs: snapshot.prefs,
+    catalog: updateProjectSidebarCatalog(snapshot.catalog, projects),
+  };
 }
 
 export function deriveProjectSidebarState(
@@ -325,7 +357,7 @@ export function deriveProjectSidebarState(
   };
 }
 
-export function pinProjectToTop(
+function pinProjectToTop(
   prefs: ProjectSidebarPrefs,
   project: string,
   projects: ProjectSummary[],
@@ -354,7 +386,7 @@ export function pinProjectToTop(
   };
 }
 
-export function unpinProjectInPrefs(
+function unpinProjectInPrefs(
   prefs: ProjectSidebarPrefs,
   project: string,
   projects: ProjectSummary[],
@@ -370,7 +402,7 @@ export function unpinProjectInPrefs(
   };
 }
 
-export function hideProjectInPrefs(
+function hideProjectInPrefs(
   prefs: ProjectSidebarPrefs,
   project: string,
   projects: ProjectSummary[],
@@ -386,7 +418,7 @@ export function hideProjectInPrefs(
   };
 }
 
-export function showProjectInPrefs(
+function showProjectInPrefs(
   prefs: ProjectSidebarPrefs,
   project: string,
   projects: ProjectSummary[],
@@ -402,7 +434,7 @@ export function showProjectInPrefs(
   };
 }
 
-export function moveVisibleProjectInPrefs(
+function moveVisibleProjectInPrefs(
   prefs: ProjectSidebarPrefs,
   project: string,
   direction: 'up' | 'down',
@@ -436,7 +468,7 @@ export function moveVisibleProjectInPrefs(
   };
 }
 
-export function reorderVisibleProjectInPrefs(
+function reorderVisibleProjectInPrefs(
   prefs: ProjectSidebarPrefs,
   project: string,
   targetPinned: boolean,
@@ -481,6 +513,60 @@ export function reorderVisibleProjectInPrefs(
   };
 }
 
-export function resetProjectSidebarPrefs(): ProjectSidebarPrefs {
+function resetProjectSidebarPrefs(): ProjectSidebarPrefs {
   return { ...DEFAULT_PROJECT_SIDEBAR_PREFS };
+}
+
+export function applyProjectSidebarCommand(
+  snapshot: ProjectSidebarSnapshot,
+  command: ProjectSidebarCommand,
+  projects: ProjectSummary[],
+): ProjectSidebarSnapshot {
+  switch (command.type) {
+    case 'pin':
+      return {
+        prefs: pinProjectToTop(snapshot.prefs, command.project, projects, snapshot.catalog),
+        catalog: snapshot.catalog,
+      };
+    case 'unpin':
+      return {
+        prefs: unpinProjectInPrefs(snapshot.prefs, command.project, projects, snapshot.catalog),
+        catalog: snapshot.catalog,
+      };
+    case 'hide':
+      return {
+        prefs: hideProjectInPrefs(snapshot.prefs, command.project, projects, snapshot.catalog),
+        catalog: snapshot.catalog,
+      };
+    case 'show':
+      return {
+        prefs: showProjectInPrefs(snapshot.prefs, command.project, projects, snapshot.catalog),
+        catalog: snapshot.catalog,
+      };
+    case 'move':
+      return {
+        prefs: moveVisibleProjectInPrefs(snapshot.prefs, command.project, command.direction, projects, snapshot.catalog),
+        catalog: snapshot.catalog,
+      };
+    case 'reorder':
+      return {
+        prefs: reorderVisibleProjectInPrefs(
+          snapshot.prefs,
+          command.project,
+          command.targetPinned,
+          command.targetProject,
+          command.position,
+          projects,
+          snapshot.catalog,
+        ),
+        catalog: snapshot.catalog,
+      };
+    case 'reset':
+      return {
+        prefs: resetProjectSidebarPrefs(),
+        catalog: snapshot.catalog,
+      };
+    case 'forget':
+      return forgetProjectFromSidebar(snapshot.prefs, snapshot.catalog, command.project);
+  }
 }
