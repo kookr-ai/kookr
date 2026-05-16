@@ -385,11 +385,19 @@ before the phase is declared shipped. Recommended canary windows:
 
 - Phase 0a: ≥ 5 days (highest local-only blast radius).
 - Phase 3: ≥ 5 days (`SessionBridge` refactor).
-- Phase 6: ≥ 5 days (STT/TTS migration).
+- Phase 6: waived for this single-user deployment (see note below).
 - Other phases: ≥ 2 days.
 
 A canary period that surfaces any local-only regression resets the
 clock and re-opens the phase for fixes.
+
+**Phase 6 canary — waived 2026-05-16.** Kookr here is a single-user
+deployment, so a 5-day window was disproportionate. After the Phase 6
+descriptor work shipped (#367, #402), the author exercised the local
+STT service once and confirmed it transcribed correctly; Phase 6 is
+declared shipped on that basis. Removal of the legacy `sttEnabled` /
+`sttUrl` fields is unaffected — it remains separately gated on the
+parallel-fields contract above.
 
 ### Code-path isolation
 
