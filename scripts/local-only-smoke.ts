@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -7,12 +6,21 @@ import WebSocket from 'ws';
 
 import { LocalDtachBackend } from '../src/adapters/local-dtach-backend.js';
 import { createKookrServerInternal } from '../src/server/index.js';
+import type { SnapshotMessage } from '../src/shared/contracts/messages.js';
+import { firstReadyKookrSTTEndpoint } from '../src/shared/contracts/speech.js';
 
 interface FileSnapshot {
   entries: Map<string, { type: 'file' | 'dir' | 'other'; size: number; mtimeMs: number }>;
 }
 
 const textDecoder = new TextDecoder();
+
+// Phase 6 (issue #333): the local-only smoke test exercises STT/TTS through
+// the legacy snapshot fields. These URLs are advertised in the snapshot only;
+// no STT/TTS server is reachable here, which is enough to assert the legacy
+// fields and the additive descriptors are emitted unchanged.
+const SMOKE_STT_URL = 'ws://127.0.0.1:8003';
+const SMOKE_TTS_URL = 'http://127.0.0.1:8004';
 
 async function getFreePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -193,6 +201,35 @@ async function waitForBytes(ws: WebSocket, predicate: (text: string) => boolean,
   });
 }
 
+/** Open a dashboard `/ws` connection and return its first snapshot message. */
+async function readDashboardSnapshot(port: number): Promise<SnapshotMessage> {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  try {
+    return await new Promise<SnapshotMessage>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('dashboard snapshot timeout')), 5_000);
+      ws.on('message', (data) => {
+        let parsed: SnapshotMessage;
+        try {
+          parsed = JSON.parse(data.toString()) as SnapshotMessage;
+        } catch (err) {
+          clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+          return;
+        }
+        if (parsed.type !== 'snapshot') return;
+        clearTimeout(timer);
+        resolve(parsed);
+      });
+      ws.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+  } finally {
+    ws.close();
+  }
+}
+
 async function main(): Promise<void> {
   const previousRelay = process.env.KOOKR_RELAY_URL;
   delete process.env.KOOKR_RELAY_URL;
@@ -260,6 +297,11 @@ async function main(): Promise<void> {
       useFakeTerminalBridge: false,
       agentBin,
       claudeDir: join(tempRoot, 'claude'),
+      // STT/TTS configured via the legacy URL fields so the snapshot
+      // advertises them (issue #333 acceptance gate 1). KOOKR_STT/KOOKR_TTS
+      // stay false above so no STT/TTS manager process is spawned.
+      sttUrl: SMOKE_STT_URL,
+      ttsUrl: SMOKE_TTS_URL,
       preflightOnFatal: (snapshot) => {
         throw new Error(`agent preflight failed: ${JSON.stringify(snapshot)}`);
       },
@@ -314,9 +356,41 @@ async function main(): Promise<void> {
       throw new Error('local terminal approval keystroke did not clear permission_blocked anomaly');
     }
 
-    await fetchJson(`${base}/api/health/stt`);
-    const ttsProbe = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'pipe' });
-    if (ttsProbe.status !== 0) throw new Error('TTS disabled-path probe failed');
+    // Phase 6 acceptance gate 1 (issue #333): the local STT/TTS paths must
+    // keep working through the legacy snapshot fields. A regression on the
+    // legacy fields blocks the phase.
+    const sttHealth = await fetchJson<{ status?: string }>(`${base}/api/health/stt`);
+    if (typeof sttHealth.status !== 'string') {
+      throw new Error(`STT health probe returned no status: ${JSON.stringify(sttHealth)}`);
+    }
+    const speechSnapshot = await readDashboardSnapshot(port);
+    if (speechSnapshot.sttEnabled !== true || speechSnapshot.sttUrl !== SMOKE_STT_URL) {
+      throw new Error(`legacy STT snapshot fields regressed: ${JSON.stringify({
+        sttEnabled: speechSnapshot.sttEnabled,
+        sttUrl: speechSnapshot.sttUrl,
+      })}`);
+    }
+    if (speechSnapshot.ttsEnabled !== true || speechSnapshot.ttsUrl !== SMOKE_TTS_URL) {
+      throw new Error(`legacy TTS snapshot fields regressed: ${JSON.stringify({
+        ttsEnabled: speechSnapshot.ttsEnabled,
+        ttsUrl: speechSnapshot.ttsUrl,
+      })}`);
+    }
+    // The additive Phase 6 descriptors must coexist with the legacy fields,
+    // for both STT and TTS, and advertise the same endpoints.
+    if (firstReadyKookrSTTEndpoint(speechSnapshot.speechCapabilities) !== SMOKE_STT_URL) {
+      throw new Error(`Phase 6 STT descriptor missing or wrong endpoint: ${JSON.stringify(speechSnapshot.speechCapabilities)}`);
+    }
+    const speechDescriptors = Object.values(
+      speechSnapshot.speechCapabilities?.capabilitiesByDevice ?? {},
+    ).flat();
+    const ttsDescriptor = speechDescriptors.find((capability) => capability.kind === 'tts');
+    if (!ttsDescriptor || ttsDescriptor.kind !== 'tts') {
+      throw new Error('Phase 6 TTS descriptor missing from local-only snapshot');
+    }
+    if (ttsDescriptor.endpointUrl !== SMOKE_TTS_URL) {
+      throw new Error(`Phase 6 TTS descriptor wrong endpoint: ${ttsDescriptor.endpointUrl}`);
+    }
 
     terminal.send(Buffer.from('complete\r'));
     await waitForBytes(terminal, (text) => text.includes('task complete'), 'completion echo');
