@@ -27,6 +27,28 @@ async function startRelay(): Promise<RelayServerHandle> {
   return relay;
 }
 
+async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      void Promise.resolve(predicate()).then((matched) => {
+        if (matched) {
+          clearInterval(timer);
+          resolve();
+          return;
+        }
+        if (Date.now() - started > 2_000) {
+          clearInterval(timer);
+          reject(new Error('timed out waiting for condition'));
+        }
+      }).catch((err: unknown) => {
+        clearInterval(timer);
+        reject(err);
+      });
+    }, 10);
+  });
+}
+
 function nodeHeaders(token: string): Record<string, string> {
   return { 'content-type': 'application/json', authorization: `Bearer ${token}` };
 }
@@ -602,5 +624,124 @@ describe('relay node-scoped task-share endpoints', () => {
         acceptedAt: expect.any(String),
       })],
     });
+  });
+
+  it('requires owner approval before member task shares gain mutating grants', async () => {
+    const relay = await startRelay();
+    const { nodeId, nodeToken } = relay.registerNode();
+    const nodeWs = await connectNode(relay, nodeId, nodeToken);
+    const nodeMessages: unknown[] = [];
+    nodeWs.on('message', (data) => nodeMessages.push(JSON.parse(data.toString()) as unknown));
+
+    const createdRes = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 'task-1' }, grants: ['view'] }),
+    });
+    expect(createdRes.status).toBe(201);
+    const created = await createdRes.json() as { token: string; invitation: { invitationId: string } };
+    const acceptRes = await fetch(new URL('/relay/invitations/accept', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: created.token, displayName: 'Alice\u202e<script>' }),
+    });
+    expect(acceptRes.status).toBe(200);
+    const cookie = acceptRes.headers.get('set-cookie') ?? '';
+    const member = await connectMember(relay, nodeId, decodeURIComponent(/kookr_relay_member_token=([^;]+)/.exec(cookie)?.[1] ?? ''));
+    const memberMessages: unknown[] = [];
+    member.on('message', (data) => memberMessages.push(JSON.parse(data.toString()) as unknown));
+
+    member.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-before-approval',
+      nodeId,
+      nodeEpoch: '1',
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      idempotencyKey: 'idem-before',
+      action: 'submitMessage',
+    }));
+    await waitFor(() => memberMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-before-approval'));
+    expect(memberMessages).toContainEqual(expect.objectContaining({
+      commandId: 'cmd-before-approval',
+      outcome: 'rejected-pre-audit',
+      reason: 'missing terminalInput grant',
+    }));
+    expect(nodeMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-before-approval')).toBe(false);
+
+    const requestRes = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({
+        nodeId,
+        grants: ['terminalInput'],
+        comment: 'Alice\u202e wants control\n<script>alert(1)</script>',
+      }),
+    });
+    expect(requestRes.status).toBe(201);
+    const requested = await requestRes.json() as { request: { requestId: string; comment?: string; requestedGrants: string[] } };
+    expect(requested.request.requestedGrants).toEqual(['terminalInput']);
+    expect(requested.request.comment).toBe('Alice wants control<script>alert(1)</script>');
+
+    const deniedRes = await fetch(new URL(`/relay/node/invitations/${created.invitation.invitationId}/grant-requests/${requested.request.requestId}/deny`, relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+    });
+    expect(deniedRes.status).toBe(200);
+    expect(await deniedRes.json()).toEqual(expect.objectContaining({
+      request: expect.objectContaining({ status: 'denied', resolution: 'denied' }),
+      invitation: expect.objectContaining({ grants: ['view'] }),
+    }));
+
+    const secondRequestRes = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ nodeId, grants: ['terminalInput'] }),
+    });
+    expect(secondRequestRes.status).toBe(201);
+    const second = await secondRequestRes.json() as { request: { requestId: string } };
+    const approvedRes = await fetch(new URL(`/relay/node/invitations/${created.invitation.invitationId}/grant-requests/${second.request.requestId}/approve`, relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+    });
+    expect(approvedRes.status).toBe(200);
+    expect(await approvedRes.json()).toEqual(expect.objectContaining({
+      request: expect.objectContaining({ status: 'approved', resolution: 'approved' }),
+      invitation: expect.objectContaining({ grants: ['view', 'terminalInput'] }),
+    }));
+    await waitFor(() => nodeMessages.some((msg) => (
+      (msg as { type?: string; upserts?: Array<{ grants?: string[] }> }).type === 'policy.delta'
+      && (msg as { upserts?: Array<{ grants?: string[] }> }).upserts?.some((grant) => grant.grants?.includes('terminalInput'))
+    )));
+
+    member.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-after-approval',
+      nodeId,
+      nodeEpoch: '1',
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      idempotencyKey: 'idem-after',
+      action: 'submitMessage',
+    }));
+    await waitFor(() => nodeMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-after-approval'));
+    expect(nodeMessages).toContainEqual(expect.objectContaining({
+      type: 'remote.command',
+      commandId: 'cmd-after-approval',
+      grantId: expect.stringMatching(/^grant-/),
+      actorId: expect.stringContaining('Alice'),
+    }));
+
+    const revoked = await fetch(new URL(`/relay/node/invitations/${created.invitation.invitationId}/revoke`, relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+    });
+    expect(revoked.status).toBe(200);
+    const revokedRequest = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ nodeId, grants: ['permissionApprove'] }),
+    });
+    expect(revokedRequest.status).toBe(401);
   });
 });

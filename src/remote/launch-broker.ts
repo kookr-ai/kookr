@@ -64,6 +64,7 @@ export interface RemoteLaunchBrokerDeps {
   getActiveLaunchCount?: (scope: { projectId: string; agentType: AgentType }) => number;
   idempotencyTtlMs?: number;
   idempotencyMaxEntries?: number;
+  allowCollaboratorGrants?: boolean;
 }
 
 export interface RemoteLaunchCommand extends CommandEnvelope {
@@ -133,7 +134,7 @@ export class RemoteLaunchBroker implements RemoteCommandHandler<RemoteLaunchComm
   }
 
   authorize(command: RemoteLaunchCommand): ValidationResult {
-    if (command.actorId !== this.deps.allowlist.ownerId) {
+    if (command.actorId !== this.deps.allowlist.ownerId && !this.deps.allowCollaboratorGrants) {
       return { ok: false, reason: 'remote launch is restricted to the node owner' };
     }
     if (!command.grantsChecked.includes('launch') && !command.grantsChecked.includes('admin')) {
@@ -161,7 +162,7 @@ export class RemoteLaunchBroker implements RemoteCommandHandler<RemoteLaunchComm
   }
 
   async handle(command: RemoteLaunchCommand): Promise<RemoteLaunchBrokerResult<RemoteLaunchResponse>> {
-    if (command.actorId !== this.deps.allowlist.ownerId) {
+    if (command.actorId !== this.deps.allowlist.ownerId && !this.deps.allowCollaboratorGrants) {
       return launchError('error.notOwner', 'remote launch is restricted to the node owner');
     }
     if (!command.grantsChecked.includes('launch') && !command.grantsChecked.includes('admin')) {

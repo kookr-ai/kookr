@@ -90,6 +90,19 @@ export class TaskShareService {
     }
   }
 
+  async approveGrantRequest(invitationId: string, requestId: string): Promise<{ share: TaskShareSummary; request: NonNullable<TaskShareSummary['grantRequests']>[number] }> {
+    const approved = await this.client.approveGrantRequest(invitationId, requestId);
+    this.remember(approved.share);
+    this.publishProjectionForShare(approved.share);
+    return approved;
+  }
+
+  async denyGrantRequest(invitationId: string, requestId: string): Promise<{ share: TaskShareSummary; request: NonNullable<TaskShareSummary['grantRequests']>[number] }> {
+    const denied = await this.client.denyGrantRequest(invitationId, requestId);
+    this.remember(denied.share);
+    return denied;
+  }
+
   publishActiveTaskProjections(): void {
     for (const share of this.shares.values()) {
       this.publishProjectionForShare(share);

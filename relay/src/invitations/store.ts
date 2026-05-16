@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import type { GrantId, NodeId, PolicyVersion } from '../../../src/remote/ids.js';
 import { asGrantId, asPolicyVersion } from '../../../src/remote/ids.js';
 import type { PolicyGrantRecord, ShareGrant, ShareSubject } from '../../../src/remote/policy-sync.js';
+import type { TaskShareGrantRequest, TaskShareMutableGrant } from '../../../src/remote/share-contract.js';
 
 export interface InvitationRecord {
   invitationId: string;
@@ -23,6 +24,7 @@ export interface InvitationRecord {
   failedAcceptCount?: number;
   lockedUntil?: string;
   redactedShareLabel?: string;
+  grantRequests?: TaskShareGrantRequest[];
   policyVersion: PolicyVersion;
 }
 
@@ -46,6 +48,10 @@ export type InvitationRevokeResult =
   | { ok: true; invitation: InvitationRecord; alreadyRevoked: boolean }
   | { ok: false; reason: 'not-found' };
 
+export type GrantRequestResult =
+  | { ok: true; invitation: InvitationRecord; request: TaskShareGrantRequest }
+  | { ok: false; reason: 'not-found' | 'expired' | 'revoked' | 'not-accepted' | 'empty-grants' | 'already-resolved' };
+
 export interface InvitationStoreOptions {
   now?: () => Date;
   tokenBytes?: number;
@@ -59,6 +65,7 @@ const SHARE_ID_DIGITS = 6;
 const SHARE_PASSWORD_BYTES = 7;
 export const SHARE_TICKET_MAX_FAILED_ATTEMPTS = 5;
 export const SHARE_TICKET_LOCKOUT_MS = 15 * 60 * 1000;
+const MAX_GRANT_REQUEST_COMMENT_LENGTH = 160;
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -94,6 +101,26 @@ function createPasswordVerifier(password: string): string {
   const salt = randomBytes(16).toString('base64url');
   const digest = createHash('sha256').update(`${salt}:${password}`).digest('base64url');
   return `sha256:${salt}:${digest}`;
+}
+
+function cloneInvitation(invitation: InvitationRecord): InvitationRecord {
+  return {
+    ...invitation,
+    grants: [...invitation.grants],
+    ...(invitation.grantRequests ? { grantRequests: invitation.grantRequests.map((request) => ({
+      ...request,
+      requestedGrants: [...request.requestedGrants],
+    })) } : {}),
+  };
+}
+
+function sanitizeGrantRequestComment(comment: string | undefined): string | undefined {
+  if (comment === undefined) return undefined;
+  const sanitized = comment
+    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '')
+    .trim()
+    .slice(0, MAX_GRANT_REQUEST_COMMENT_LENGTH);
+  return sanitized || undefined;
 }
 
 function verifyPassword(password: string, verifier: string): boolean {
@@ -160,7 +187,7 @@ export class InvitationStore {
     this.invitations.set(invitationId, invitation);
     this.invitationTokenIndex.set(invitation.tokenHash, invitationId);
     if (shareTicket) this.shareIdIndex.set(shareTicket.shareId, invitationId);
-    return { invitation: { ...invitation, grants: [...invitation.grants] }, token, ...(shareTicket ? { shareTicket } : {}) };
+    return { invitation: cloneInvitation(invitation), token, ...(shareTicket ? { shareTicket } : {}) };
   }
 
   accept(token: string, acceptedBy?: string): InvitationAcceptResult {
@@ -222,7 +249,7 @@ export class InvitationStore {
     return {
       ok: true,
       accepted: {
-        invitation: { ...accepted, grants: [...accepted.grants] },
+        invitation: cloneInvitation(accepted),
         memberToken,
         policyGrant,
       },
@@ -248,7 +275,70 @@ export class InvitationStore {
       invitation.revokedAt = this.now().toISOString();
       invitation.policyVersion = asPolicyVersion(this.policyVersion);
     }
-    return { ok: true, invitation: { ...invitation, grants: [...invitation.grants] }, alreadyRevoked };
+    return { ok: true, invitation: cloneInvitation(invitation), alreadyRevoked };
+  }
+
+  requestGrants(input: {
+    invitationId: string;
+    requestedGrants: TaskShareMutableGrant[];
+    requestedBy?: string;
+    comment?: string;
+  }): GrantRequestResult {
+    const invitation = this.invitations.get(input.invitationId);
+    if (!invitation) return { ok: false, reason: 'not-found' };
+    if (invitation.revokedAt) return { ok: false, reason: 'revoked' };
+    if (!invitation.acceptedAt) return { ok: false, reason: 'not-accepted' };
+    if (Date.parse(invitation.expiresAt) <= this.now().getTime()) return { ok: false, reason: 'expired' };
+    const requestedGrants = [...new Set(input.requestedGrants)].filter((grant) => !invitation.grants.includes(grant));
+    if (requestedGrants.length === 0) return { ok: false, reason: 'empty-grants' };
+    const request: TaskShareGrantRequest = {
+      requestId: `grant-req-${randomUUID()}`,
+      invitationId: input.invitationId,
+      requestedGrants,
+      status: 'pending',
+      requestedAt: this.now().toISOString(),
+      ...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
+      ...(sanitizeGrantRequestComment(input.comment) ? { comment: sanitizeGrantRequestComment(input.comment) } : {}),
+    };
+    const updated = {
+      ...invitation,
+      grantRequests: [...(invitation.grantRequests ?? []), request],
+    };
+    this.invitations.set(input.invitationId, updated);
+    return { ok: true, invitation: cloneInvitation(updated), request: { ...request, requestedGrants: [...request.requestedGrants] } };
+  }
+
+  resolveGrantRequest(input: {
+    invitationId: string;
+    requestId: string;
+    approve: boolean;
+  }): GrantRequestResult {
+    const invitation = this.invitations.get(input.invitationId);
+    if (!invitation) return { ok: false, reason: 'not-found' };
+    if (invitation.revokedAt) return { ok: false, reason: 'revoked' };
+    if (Date.parse(invitation.expiresAt) <= this.now().getTime()) return { ok: false, reason: 'expired' };
+    const requests = invitation.grantRequests ?? [];
+    const request = requests.find((candidate) => candidate.requestId === input.requestId);
+    if (!request) return { ok: false, reason: 'not-found' };
+    if (request.status !== 'pending') return { ok: false, reason: 'already-resolved' };
+    const resolvedRequest: TaskShareGrantRequest = {
+      ...request,
+      status: input.approve ? 'approved' : 'denied',
+      resolution: input.approve ? 'approved' : 'denied',
+      resolvedAt: this.now().toISOString(),
+    };
+    const nextGrants = input.approve
+      ? [...new Set([...invitation.grants, ...request.requestedGrants])]
+      : invitation.grants;
+    if (input.approve) this.policyVersion += 1;
+    const updated: InvitationRecord = {
+      ...invitation,
+      grants: nextGrants,
+      grantRequests: requests.map((candidate) => candidate.requestId === input.requestId ? resolvedRequest : candidate),
+      ...(input.approve ? { policyVersion: asPolicyVersion(this.policyVersion) } : {}),
+    };
+    this.invitations.set(input.invitationId, updated);
+    return { ok: true, invitation: cloneInvitation(updated), request: { ...resolvedRequest, requestedGrants: [...resolvedRequest.requestedGrants] } };
   }
 
   authenticateMember(token: string): InvitationRecord | null {
@@ -257,7 +347,7 @@ export class InvitationStore {
     const invitation = this.invitations.get(invitationId);
     if (!invitation || !invitation.acceptedAt || invitation.revokedAt) return null;
     if (Date.parse(invitation.expiresAt) <= this.now().getTime()) return null;
-    return { ...invitation, grants: [...invitation.grants] };
+    return cloneInvitation(invitation);
   }
 
   currentPolicyVersion(): PolicyVersion {
@@ -289,6 +379,6 @@ export class InvitationStore {
   }
 
   list(): InvitationRecord[] {
-    return [...this.invitations.values()].map((invitation) => ({ ...invitation, grants: [...invitation.grants] }));
+    return [...this.invitations.values()].map(cloneInvitation);
   }
 }
