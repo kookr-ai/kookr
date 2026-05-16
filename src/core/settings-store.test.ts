@@ -105,6 +105,28 @@ describe('validateSettings', () => {
     expect(validateSettings({ defaultAgentType: 'gemini-cli' })).toEqual(DEFAULT_SETTINGS);
     expect(validateSettings({ defaultAgentType: null })).toEqual(DEFAULT_SETTINGS);
   });
+
+  it('accepts the round-robin defaultAgentType', () => {
+    expect(validateSettings({ defaultAgentType: 'round-robin' })).toEqual({
+      ...DEFAULT_SETTINGS,
+      defaultAgentType: 'round-robin',
+    });
+  });
+
+  it('defaults roundRobinIndex to 0', () => {
+    expect(validateSettings({}).roundRobinIndex).toBe(0);
+  });
+
+  it('accepts a valid non-negative integer roundRobinIndex', () => {
+    expect(validateSettings({ roundRobinIndex: 7 }).roundRobinIndex).toBe(7);
+  });
+
+  it('falls back to 0 for negative, fractional, or non-number roundRobinIndex', () => {
+    expect(validateSettings({ roundRobinIndex: -3 }).roundRobinIndex).toBe(0);
+    expect(validateSettings({ roundRobinIndex: 2.5 }).roundRobinIndex).toBe(0);
+    expect(validateSettings({ roundRobinIndex: 'five' }).roundRobinIndex).toBe(0);
+    expect(validateSettings({ roundRobinIndex: NaN }).roundRobinIndex).toBe(0);
+  });
 });
 
 describe('loadSettings / saveSettings', () => {
@@ -150,6 +172,7 @@ describe('loadSettings / saveSettings', () => {
       repeatedErrorThreshold: 5,
       maxActiveTasks: 15,
       defaultAgentType: 'codex-cli' as const,
+      roundRobinIndex: 3,
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);

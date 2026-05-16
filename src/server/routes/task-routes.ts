@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { discoverPlaybooks } from '../../core/playbook-discovery.js';
-import { normalizeAgentType } from '../../core/agent-types.js';
+import { normalizeAgentSelection } from '../../core/agent-types.js';
 import { CodexRolloutScanner } from '../../adapters/codex-rollout-scanner.js';
 import { aggregate as aggregateCostComparison } from '../../core/cost-comparison-aggregator.js';
 import type { CostAgent, TimeWindow } from '../../shared/contracts/cost-comparison.js';
@@ -123,7 +123,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         cwd: body.cwd,
         criteria: body.criteria,
         parentTaskId: body.parentTaskId,
-        agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
+        agentType: body.agentType ? normalizeAgentSelection(body.agentType) : undefined,
         dependencies: parseLaunchDependencies(body.dependencies),
         launchSource,
       });
@@ -494,7 +494,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
         playbookPath: body.playbookPath,
         parameterValues: body.parameterValues,
-        agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
+        agentType: body.agentType ? normalizeAgentSelection(body.agentType) : undefined,
         launchSource,
         scope,
       });
@@ -627,7 +627,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
         playbookPath: body.playbookPath,
         parameterValues: body.parameterValues,
-        agentType: body.agentType ? normalizeAgentType(body.agentType) : undefined,
+        agentType: body.agentType ? normalizeAgentSelection(body.agentType) : undefined,
         launchSource,
         scope,
       });

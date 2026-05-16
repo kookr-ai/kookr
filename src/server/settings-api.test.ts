@@ -52,6 +52,7 @@ describe('Settings API', () => {
       repeatedErrorThreshold: 3,
       maxActiveTasks: 10,
       defaultAgentType: 'claude-code',
+      roundRobinIndex: 0,
       loadedFromDefaults: true,
     });
   });

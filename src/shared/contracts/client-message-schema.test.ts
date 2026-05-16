@@ -74,6 +74,36 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(result.success).toBe(false);
   });
 
+  test('accepts a launch message with the round-robin agent selection', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launch',
+      prompt: 'hi',
+      cwd: '/tmp',
+      agentType: 'round-robin',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts a relaunch message with the round-robin agent selection', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'relaunch',
+      taskId: 't1',
+      prompt: 'hi',
+      agentType: 'round-robin',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('rejects an unknown agentType on launch', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launch',
+      prompt: 'hi',
+      cwd: '/tmp',
+      agentType: 'gemini-cli',
+    });
+    expect(result.success).toBe(false);
+  });
+
   test('accepts legacy playbook launch with only cwd', () => {
     const result = ClientMessageSchema.safeParse({
       type: 'launchPlaybook',

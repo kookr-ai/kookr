@@ -22,7 +22,7 @@ import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from '.
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
-import type { KookrSettings } from '../core/settings-store.js';
+import { saveSettings, type KookrSettings } from '../core/settings-store.js';
 import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
 import { DiagnosticRunner } from './diagnostic-runner.js';
@@ -212,6 +212,25 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   }
 
   const getDefaultAgentType = () => currentSettings.defaultAgentType;
+  /**
+   * Advance the round-robin rotation cursor and return the index for *this*
+   * launch. The advance is applied to in-memory settings synchronously so
+   * concurrent launches receive distinct indices; the persist to disk is
+   * fire-and-forget so a slow write never blocks a launch (a lost write costs
+   * at most one rotation step after a crash). The settings PUT path preserves
+   * this server-managed cursor — see the `settings.update` wrapper below.
+   */
+  const advanceRoundRobinCursor = (): number => {
+    const cursor = currentSettings.roundRobinIndex;
+    currentSettings = { ...currentSettings, roundRobinIndex: cursor + 1 };
+    void saveSettings(settingsFile, currentSettings).catch((err) => {
+      console.warn(
+        '[round-robin] failed to persist rotation cursor:',
+        err instanceof Error ? err.message : err,
+      );
+    });
+    return cursor;
+  };
   const realtime = await createRealtimeServices({
     kookrDir,
     taskStore,
@@ -459,6 +478,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     lifecycleDeps,
     getMaxActiveTasks,
     getDefaultAgentType,
+    advanceRoundRobinCursor,
     interactionLog,
   };
 
@@ -591,19 +611,29 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,
       update: async (newSettings: KookrSettings) => {
         const prev = currentSettings;
+        // `roundRobinIndex` is server-managed — advanced per launch by
+        // `advanceRoundRobinCursor`, never edited by an operator. A settings
+        // PUT carries whatever cursor the client last read, which may be
+        // stale; force the live value so a save never rolls the rotation
+        // back. Re-read at each use so launches that advanced the cursor
+        // during the `await` below are not lost.
+        const merged: KookrSettings = {
+          ...newSettings,
+          roundRobinIndex: currentSettings.roundRobinIndex,
+        };
         // Persist to disk FIRST. If saveSettings (inside applySettingsSideEffects)
         // throws, the in-memory `currentSettings` must not advance — otherwise
         // getMaxActiveTasks and other live getters would diverge from what's
         // on disk and the next snapshot would lie until the next restart.
         const warnings = await applySettingsSideEffects({
           prevSettings: prev,
-          newSettings,
+          newSettings: merged,
           settingsFile,
           githubScanner,
           watchdog,
           monitor,
         });
-        currentSettings = newSettings;
+        currentSettings = { ...merged, roundRobinIndex: currentSettings.roundRobinIndex };
         settingsLoadedFromDefaults = false;
         if (prev.autoWatchOssSources !== newSettings.autoWatchOssSources) {
           if (newSettings.autoWatchOssSources) {

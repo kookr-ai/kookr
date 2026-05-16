@@ -869,3 +869,49 @@ describe('R19 trust boundary (rfc-remote-chat-trigger §4)', () => {
     expect(deps.adapterRegistry.get('codex-cli').launch).toHaveBeenCalledOnce();
   });
 });
+
+describe('launchTask round-robin', () => {
+  let store: TaskStore;
+  let deps: LaunchServiceDeps;
+  let cursor: number;
+
+  beforeEach(() => {
+    store = new TaskStore();
+    cursor = 0;
+    // Mirrors index.ts: returns the index for this launch, then advances.
+    deps = { ...makeDeps(store), advanceRoundRobinCursor: () => cursor++ };
+  });
+
+  it('alternates agents across launches when the default is round-robin', async () => {
+    const roundRobinDeps = { ...deps, getDefaultAgentType: () => 'round-robin' as const };
+    const first = await launchTask(roundRobinDeps, { prompt: 'task one', cwd: '/tmp' });
+    const second = await launchTask(roundRobinDeps, { prompt: 'task two', cwd: '/tmp' });
+    const third = await launchTask(roundRobinDeps, { prompt: 'task three', cwd: '/tmp' });
+    expect(first.task.agentType).toBe('claude-code');
+    expect(second.task.agentType).toBe('codex-cli');
+    expect(third.task.agentType).toBe('claude-code');
+  });
+
+  it('resolves an explicit round-robin launch request to a concrete agent', async () => {
+    const result = await launchTask(deps, {
+      prompt: 'explicit round robin',
+      cwd: '/tmp',
+      agentType: 'round-robin',
+    });
+    // The created task always records a concrete agent — never the sentinel.
+    expect(result.task.agentType).toBe('claude-code');
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('lets an explicit concrete request override a round-robin default', async () => {
+    const roundRobinDeps = { ...deps, getDefaultAgentType: () => 'round-robin' as const };
+    const result = await launchTask(roundRobinDeps, {
+      prompt: 'pinned to codex',
+      cwd: '/tmp',
+      agentType: 'codex-cli',
+    });
+    expect(result.task.agentType).toBe('codex-cli');
+    // A concrete request must not consume a rotation slot.
+    expect(cursor).toBe(0);
+  });
+});

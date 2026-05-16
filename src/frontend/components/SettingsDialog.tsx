@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { AVAILABLE_AGENT_TYPES, type AgentType } from '../../shared/protocol.js';
+import { buildAgentSelectionOptions, type AgentSelection } from '../../shared/protocol.js';
 import { useSoundPreference } from '../audio/sound.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useKookrStore } from '../store/useStore.js';
@@ -13,7 +13,7 @@ interface ServerSettings {
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
-  defaultAgentType: AgentType;
+  defaultAgentType: AgentSelection;
   loadedFromDefaults?: boolean;
 }
 
@@ -43,7 +43,7 @@ const FOCUS_FIELD_TAB: Record<SettingsFocusField, SettingsTab> = {
 export function SettingsDialog({ onClose, focusField }: Props) {
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
-  const agentOptions = availableAgentTypes.length > 0 ? availableAgentTypes : AVAILABLE_AGENT_TYPES;
+  const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const [settings, setSettings] = useState<ServerSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -133,7 +133,7 @@ export function SettingsDialog({ onClose, focusField }: Props) {
     }, 500);
   }
 
-  function handleDefaultAgentChange(agentType: AgentType) {
+  function handleDefaultAgentChange(agentType: AgentSelection) {
     if (!settings) return;
     const updated = { ...settings, defaultAgentType: agentType };
     setSettings(updated);
@@ -291,7 +291,8 @@ export function SettingsDialog({ onClose, focusField }: Props) {
                         <span className="settings-label">Default agent</span>
                         <span className="settings-desc">
                           Pre-selected agent for new tasks and child task launches when no explicit
-                          agent is supplied.
+                          agent is supplied. Round robin alternates between Claude Code and Codex CLI
+                          on each launch to spread usage across both plans.
                         </span>
                       </div>
                       <div className="settings-agent-select">

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
-import { AVAILABLE_AGENT_TYPES, type ClientMessage, type AgentType } from '../../shared/protocol.js';
+import { buildAgentSelectionOptions, type ClientMessage, type AgentSelection } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
@@ -16,12 +16,10 @@ interface Props {
 export function QuickLaunch({ send, onClose }: Props) {
   const [prompt, setPrompt] = useState('');
   const [cwd, setCwd] = useState('');
-  const [agentType, setAgentType] = useState<AgentType>('claude-code');
+  const [agentType, setAgentType] = useState<AgentSelection>('claude-code');
   const inputRef = useRef<HTMLInputElement>(null);
   const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType } = useKookrStore();
-  const agentOptions = availableAgentTypes.length > 0
-    ? availableAgentTypes
-    : AVAILABLE_AGENT_TYPES;
+  const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
 
   // Resolve CWD: selected agent's task CWD > most recent path > server CWD
   useEffect(() => {
@@ -55,7 +53,7 @@ export function QuickLaunch({ send, onClose }: Props) {
   useEffect(() => {
     const selected = agents.find((agent) => agent.agentId === selectedAgentId);
     if (selected?.agentType) {
-      setAgentType(selected.agentType as AgentType);
+      setAgentType(selected.agentType as AgentSelection);
       return;
     }
     setAgentType(defaultAgentType ?? 'claude-code');

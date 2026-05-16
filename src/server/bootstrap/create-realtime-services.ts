@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { WebSocket } from 'ws';
 
 import type { AdapterRegistry } from '../../adapters/agent-adapter.js';
-import { AVAILABLE_AGENT_TYPES, type AgentType } from '../../core/agent-types.js';
+import { AVAILABLE_AGENT_TYPES, type AgentSelection } from '../../core/agent-types.js';
 import { ACHIEVEMENT_BY_ID } from '../../core/achievement-catalog.js';
 import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { GitHubReference } from '../../core/github-types.js';
@@ -38,7 +38,7 @@ export interface RealtimeServicesDeps {
   getRegistryActiveProjects: () => string[];
   getRegistryActiveRepos: () => string[];
   ossAttemptStore: OssAttemptStore;
-  getDefaultAgentType: () => AgentType;
+  getDefaultAgentType: () => AgentSelection;
 }
 
 export interface RealtimeServices {

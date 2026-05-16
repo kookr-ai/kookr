@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
-import { AVAILABLE_AGENT_TYPES, type ClientMessage, type AgentType } from '../../shared/protocol.js';
+import { buildAgentSelectionOptions, type ClientMessage, type AgentType, type AgentSelection } from '../../shared/protocol.js';
 import type { ProjectSummary } from '../../core/project-summary.js';
 import { useKookrStore } from '../store/useStore.js';
 import { track } from '../telemetry.js';
@@ -49,9 +49,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const playbooks = useKookrStore((s) => s.playbooks);
   const playbooksLastFetchedAt = useKookrStore((s) => s.playbooksLastFetchedAt);
   const playbooksLastFetchedCwd = useKookrStore((s) => s.playbooksLastFetchedCwd);
-  const agentOptions = availableAgentTypes.length > 0
-    ? availableAgentTypes
-    : AVAILABLE_AGENT_TYPES;
+  const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   // Relaunch paths drive the form from props. In that mode we neither read
   // nor write the persisted draft — the relaunched task owns its own state.
   const isRelaunch = defaultPrompt != null || defaultCriteria != null || defaultCwd != null;
@@ -78,7 +76,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     : requestedInitialTab ?? (projectContext ? 'playbooks' : 'manual');
   const [tab, setTab] = useState<Tab>(initialTab);
   const [submitting, setSubmitting] = useState(false);
-  const [agentType, setAgentType] = useState<AgentType>(
+  const [agentType, setAgentType] = useState<AgentSelection>(
     () => defaultAgentType ?? serverDefaultAgentType ?? 'claude-code',
   );
   const [draftRestored, setDraftRestored] = useState(initialHadDraft);
