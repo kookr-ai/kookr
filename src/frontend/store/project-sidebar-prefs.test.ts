@@ -1,24 +1,16 @@
-import { beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { ProjectSummary } from '../../shared/protocol.js';
 import {
+  applyProjectSidebarCommand,
   deriveProjectSidebarState,
-  hideProjectInPrefs,
-  loadProjectSidebarCatalog,
-  loadProjectSidebarPrefs,
-  moveVisibleProjectInPrefs,
-  pinProjectToTop,
-  PROJECT_SIDEBAR_CATALOG_KEY,
-  PROJECT_SIDEBAR_PREFS_KEY,
-  reorderVisibleProjectInPrefs,
-  resetProjectSidebarPrefs,
-  saveProjectSidebarCatalog,
-  saveProjectSidebarPrefs,
-  showProjectInPrefs,
-  unpinProjectInPrefs,
-  updateProjectSidebarCatalog,
+  loadProjectSidebarSnapshot,
+  reconcileProjectSidebarSnapshot,
+  saveProjectSidebarSnapshot,
   type ProjectSidebarCatalogEntry,
   type ProjectSidebarPrefs,
 } from './project-sidebar-prefs.js';
+
+const PROJECT_SIDEBAR_PREFS_KEY = 'kookr:projectSidebarPrefs';
 
 function fakeStorage(data?: Map<string, string>) {
   const storage = data ?? new Map<string, string>();
@@ -50,10 +42,17 @@ describe('project-sidebar-prefs', () => {
 
   beforeEach(() => {
     storage = fakeStorage();
+    vi.stubGlobal('localStorage', storage.impl);
+    vi.useRealTimers();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   test('loads default prefs on empty storage', () => {
-    expect(loadProjectSidebarPrefs(storage.impl)).toEqual({
+    expect(loadProjectSidebarSnapshot().prefs).toEqual({
       version: 2,
       ordered: [],
       pinned: [],
@@ -68,7 +67,7 @@ describe('project-sidebar-prefs', () => {
       hidden: ['b'],
     }));
 
-    expect(loadProjectSidebarPrefs(storage.impl)).toEqual({
+    expect(loadProjectSidebarSnapshot().prefs).toEqual({
       version: 2,
       ordered: ['a', 'b'],
       pinned: [],
@@ -83,7 +82,7 @@ describe('project-sidebar-prefs', () => {
       hidden: ['b', 'b'],
     }));
 
-    expect(loadProjectSidebarPrefs(storage.impl)).toEqual({
+    expect(loadProjectSidebarSnapshot().prefs).toEqual({
       version: 2,
       ordered: ['a', 'b'],
       pinned: ['b', 'a'],
@@ -93,7 +92,7 @@ describe('project-sidebar-prefs', () => {
 
   test('handles corrupted prefs storage gracefully', () => {
     storage.map.set(PROJECT_SIDEBAR_PREFS_KEY, 'not-json');
-    expect(loadProjectSidebarPrefs(storage.impl)).toEqual({
+    expect(loadProjectSidebarSnapshot().prefs).toEqual({
       version: 2,
       ordered: [],
       pinned: [],
@@ -107,10 +106,8 @@ describe('project-sidebar-prefs', () => {
       a: { project: 'a', displayName: 'alpha', color: 1, lastSeenAt: '2026-04-02T10:00:00.000Z' },
     };
 
-    expect(saveProjectSidebarPrefs(prefs, storage.impl)).toBeNull();
-    expect(saveProjectSidebarCatalog(catalog, storage.impl)).toBeNull();
-    expect(loadProjectSidebarPrefs(storage.impl)).toEqual(prefs);
-    expect(loadProjectSidebarCatalog(storage.impl)).toEqual(catalog);
+    expect(saveProjectSidebarSnapshot({ prefs, catalog })).toBeNull();
+    expect(loadProjectSidebarSnapshot()).toEqual({ prefs, catalog });
   });
 
   test('derives visible projects with pinned rows first while preserving hidden entries for recovery', () => {
@@ -167,12 +164,15 @@ describe('project-sidebar-prefs', () => {
 
   test('pin to top unhides, pins, and moves project to first visible slot', () => {
     const projects = [summary('a', 'alpha', 1), summary('b', 'bravo', 2)];
-    const prefs = pinProjectToTop({
-      version: 2,
-      ordered: ['a', 'b'],
-      pinned: [],
-      hidden: ['b'],
-    }, 'b', projects, {});
+    const prefs = applyProjectSidebarCommand({
+      catalog: {},
+      prefs: {
+        version: 2,
+        ordered: ['a', 'b'],
+        pinned: [],
+        hidden: ['b'],
+      },
+    }, { type: 'pin', project: 'b' }, projects).prefs;
 
     expect(prefs).toEqual({
       version: 2,
@@ -184,12 +184,15 @@ describe('project-sidebar-prefs', () => {
 
   test('unpin keeps project visible and returns it to unpinned section', () => {
     const projects = [summary('a', 'alpha', 1), summary('b', 'bravo', 2), summary('c', 'charlie', 3)];
-    const prefs = unpinProjectInPrefs({
-      version: 2,
-      ordered: ['b', 'a', 'c'],
-      pinned: ['b'],
-      hidden: [],
-    }, 'b', projects, {});
+    const prefs = applyProjectSidebarCommand({
+      catalog: {},
+      prefs: {
+        version: 2,
+        ordered: ['b', 'a', 'c'],
+        pinned: ['b'],
+        hidden: [],
+      },
+    }, { type: 'unpin', project: 'b' }, projects).prefs;
 
     expect(deriveProjectSidebarState(projects, prefs, {}).visibleProjects.map((project) => project.project)).toEqual([
       'b',
@@ -205,12 +208,15 @@ describe('project-sidebar-prefs', () => {
       summary('b', 'bravo', 2),
       summary('c', 'charlie', 3),
     ];
-    const hidden = hideProjectInPrefs({
-      version: 2,
-      ordered: ['a', 'b', 'c'],
-      pinned: ['b'],
-      hidden: [],
-    }, 'b', projects, {});
+    const hidden = applyProjectSidebarCommand({
+      catalog: {},
+      prefs: {
+        version: 2,
+        ordered: ['a', 'b', 'c'],
+        pinned: ['b'],
+        hidden: [],
+      },
+    }, { type: 'hide', project: 'b' }, projects).prefs;
 
     expect(hidden).toEqual({
       version: 2,
@@ -219,7 +225,7 @@ describe('project-sidebar-prefs', () => {
       hidden: ['b'],
     });
 
-    const shown = showProjectInPrefs(hidden, 'b', projects, {});
+    const shown = applyProjectSidebarCommand({ prefs: hidden, catalog: {} }, { type: 'show', project: 'b' }, projects).prefs;
     expect(shown).toEqual({
       version: 2,
       ordered: ['a', 'b', 'c'],
@@ -235,19 +241,22 @@ describe('project-sidebar-prefs', () => {
       summary('c', 'charlie', 3),
       summary('d', 'delta', 4),
     ];
-    const moved = moveVisibleProjectInPrefs({
-      version: 2,
-      ordered: ['a', 'hidden-x', 'b', 'c', 'd'],
-      pinned: ['a', 'b'],
-      hidden: ['hidden-x'],
-    }, 'b', 'up', projects, {
-      'hidden-x': {
-        project: 'hidden-x',
-        displayName: 'hidden/x',
-        color: 1,
-        lastSeenAt: '2026-04-02T10:00:00.000Z',
+    const moved = applyProjectSidebarCommand({
+      prefs: {
+        version: 2,
+        ordered: ['a', 'hidden-x', 'b', 'c', 'd'],
+        pinned: ['a', 'b'],
+        hidden: ['hidden-x'],
       },
-    });
+      catalog: {
+        'hidden-x': {
+          project: 'hidden-x',
+          displayName: 'hidden/x',
+          color: 1,
+          lastSeenAt: '2026-04-02T10:00:00.000Z',
+        },
+      },
+    }, { type: 'move', project: 'b', direction: 'up' }, projects).prefs;
 
     expect(moved).toEqual({
       version: 2,
@@ -264,12 +273,15 @@ describe('project-sidebar-prefs', () => {
       summary('c', 'charlie', 3),
     ];
 
-    const next = reorderVisibleProjectInPrefs({
-      version: 2,
-      ordered: ['a', 'b', 'c'],
-      pinned: ['a'],
-      hidden: [],
-    }, 'c', true, 'a', 'before', projects, {});
+    const next = applyProjectSidebarCommand({
+      catalog: {},
+      prefs: {
+        version: 2,
+        ordered: ['a', 'b', 'c'],
+        pinned: ['a'],
+        hidden: [],
+      },
+    }, { type: 'reorder', project: 'c', targetPinned: true, targetProject: 'a', position: 'before' }, projects).prefs;
 
     expect(next).toEqual({
       version: 2,
@@ -286,12 +298,15 @@ describe('project-sidebar-prefs', () => {
       summary('c', 'charlie', 3),
     ];
 
-    const next = reorderVisibleProjectInPrefs({
-      version: 2,
-      ordered: ['a', 'b', 'c'],
-      pinned: ['a', 'b'],
-      hidden: [],
-    }, 'a', false, 'c', 'after', projects, {});
+    const next = applyProjectSidebarCommand({
+      catalog: {},
+      prefs: {
+        version: 2,
+        ordered: ['a', 'b', 'c'],
+        pinned: ['a', 'b'],
+        hidden: [],
+      },
+    }, { type: 'reorder', project: 'a', targetPinned: false, targetProject: 'c', position: 'after' }, projects).prefs;
 
     expect(next).toEqual({
       version: 2,
@@ -302,7 +317,13 @@ describe('project-sidebar-prefs', () => {
   });
 
   test('update catalog records latest project metadata', () => {
-    const updated = updateProjectSidebarCatalog({}, [summary('a', 'alpha', 1)], '2026-04-02T11:00:00.000Z');
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-02T11:00:00.000Z'));
+
+    const updated = reconcileProjectSidebarSnapshot({
+      prefs: { version: 2, ordered: [], pinned: [], hidden: [] },
+      catalog: {},
+    }, [summary('a', 'alpha', 1)]).catalog;
     expect(updated).toEqual({
       a: {
         project: 'a',
@@ -314,7 +335,10 @@ describe('project-sidebar-prefs', () => {
   });
 
   test('reset returns empty ordered, pinned, and hidden lists', () => {
-    expect(resetProjectSidebarPrefs()).toEqual({
+    expect(applyProjectSidebarCommand({
+      prefs: { version: 2, ordered: ['a'], pinned: ['a'], hidden: ['b'] },
+      catalog: {},
+    }, { type: 'reset' }, []).prefs).toEqual({
       version: 2,
       ordered: [],
       pinned: [],
