@@ -17,7 +17,7 @@ import { createCheckpointStopProcessor } from './event-processors/checkpoint-sto
 import { createGitHubEventProcessor } from './event-processors/github-event-processor.js';
 import { createPermissionBlockAlertProcessor } from './event-processors/permission-block-alert-processor.js';
 import { createPermissionQuickActionsProcessor } from './event-processors/permission-quick-actions-processor.js';
-import { createRalphStopProcessor } from './event-processors/ralph-stop-processor.js';
+import { createRalphStopProcessor } from './ralph/stop-event-processor.js';
 import { createResponseAssistProcessor } from './event-processors/response-assist-processor.js';
 import { createSessionActivityProcessor } from './event-processors/session-activity-processor.js';
 import { createStopTokenScanProcessor } from './event-processors/stop-token-scan-processor.js';
