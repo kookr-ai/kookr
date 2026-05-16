@@ -86,6 +86,7 @@ function RelayConnectionSection() {
   const [relayUrl, setRelayUrl] = useState('');
   const [nodeId, setNodeId] = useState('');
   const [relayToken, setRelayToken] = useState('');
+  const [relayAdminToken, setRelayAdminToken] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -146,6 +147,7 @@ function RelayConnectionSection() {
       if (body.status.nodeId) setNodeId(body.status.nodeId);
       if (body.status.displayName) setDisplayName(body.status.displayName);
       setRelayToken('');
+      setRelayAdminToken('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Relay update failed');
     } finally {
@@ -155,6 +157,8 @@ function RelayConnectionSection() {
 
   const envManaged = status?.source === 'env';
   const canConnect = Boolean(relayUrl.trim() && nodeId.trim() && relayToken.trim() && csrfToken && !busy);
+  const canPair = Boolean(relayUrl.trim() && relayAdminToken.trim() && csrfToken && !busy);
+  const canRotate = Boolean(status?.source === 'stored' && relayAdminToken.trim() && csrfToken && !busy);
   const sourceLabel = relaySourceLabel(status);
 
   return (
@@ -202,6 +206,16 @@ function RelayConnectionSection() {
         />
       </label>
       <label className="settings-field">
+        <span className="settings-label">Relay admin token</span>
+        <input
+          type="password"
+          value={relayAdminToken}
+          onChange={(event) => setRelayAdminToken(event.target.value)}
+          placeholder={envManaged ? 'Managed by environment' : 'Required for pairing or rotation'}
+          disabled={envManaged || busy}
+        />
+      </label>
+      <label className="settings-field">
         <span className="settings-label">Display name</span>
         <input
           value={displayName}
@@ -227,6 +241,32 @@ function RelayConnectionSection() {
           disabled={!canConnect || envManaged}
         >
           Connect
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => mutate('/api/relay-connection/pair', {
+            method: 'POST',
+            body: JSON.stringify({
+              relayUrl,
+              relayAdminToken,
+              ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+            }),
+          })}
+          disabled={!canPair || envManaged}
+        >
+          Pair
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => mutate('/api/relay-connection/rotate', {
+            method: 'POST',
+            body: JSON.stringify({ relayAdminToken }),
+          })}
+          disabled={!canRotate || envManaged}
+        >
+          Rotate token
         </button>
         <button
           type="button"

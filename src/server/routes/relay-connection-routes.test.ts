@@ -30,6 +30,22 @@ function manager(overrides: Partial<RelayConnectionManager> = {}): RelayConnecti
       connectionState: 'connected',
       relayConnected: true,
     })),
+    pair: vi.fn(async () => ({
+      configured: true,
+      source: 'stored',
+      relayUrl: 'http://relay.test',
+      nodeId: 'kookr-node-paired',
+      connectionState: 'connected',
+      relayConnected: true,
+    })),
+    rotate: vi.fn(async () => ({
+      configured: true,
+      source: 'stored',
+      relayUrl: 'http://relay.test',
+      nodeId: 'kookr-node-paired',
+      connectionState: 'connected',
+      relayConnected: true,
+    })),
     disconnect: vi.fn(async () => ({
       configured: true,
       source: 'stored',
@@ -124,5 +140,85 @@ describe('relay connection routes', () => {
       headers: { Origin: ORIGIN, [SHARE_CSRF_HEADER]: CSRF },
     });
     expect(forgotten.status).toBe(200);
+  });
+
+  it('protects relay pairing and token rotation with the same guard', async () => {
+    const relayConnection = manager();
+
+    const missingCsrf = await post(app(relayConnection), '/api/relay-connection/pair', { Origin: ORIGIN }, {
+      relayUrl: 'http://relay.test',
+      relayAdminToken: 'admin-secret',
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const badPairOrigin = await post(app(relayConnection), '/api/relay-connection/pair', {
+      Origin: 'http://evil.test',
+      [SHARE_CSRF_HEADER]: CSRF,
+    }, {
+      relayUrl: 'http://relay.test',
+      relayAdminToken: 'admin-secret',
+    });
+    expect(badPairOrigin.status).toBe(403);
+
+    const paired = await post(app(relayConnection), '/api/relay-connection/pair', {
+      Origin: ORIGIN,
+      [SHARE_CSRF_HEADER]: CSRF,
+    }, {
+      relayUrl: 'http://relay.test',
+      relayAdminToken: 'admin-secret',
+      displayName: 'Desk',
+    });
+    expect(paired.status).toBe(200);
+    expect(relayConnection.pair).toHaveBeenCalledWith({
+      relayUrl: 'http://relay.test',
+      relayAdminToken: 'admin-secret',
+      displayName: 'Desk',
+    });
+
+    const missingRotateCsrf = await post(app(relayConnection), '/api/relay-connection/rotate', { Origin: ORIGIN }, {
+      relayAdminToken: 'admin-secret',
+    });
+    expect(missingRotateCsrf.status).toBe(403);
+
+    const badRotateOrigin = await post(app(relayConnection), '/api/relay-connection/rotate', {
+      Origin: 'http://evil.test',
+      [SHARE_CSRF_HEADER]: CSRF,
+    }, {
+      relayAdminToken: 'admin-secret',
+    });
+    expect(badRotateOrigin.status).toBe(403);
+
+    const rotated = await post(app(relayConnection), '/api/relay-connection/rotate', {
+      Origin: ORIGIN,
+      [SHARE_CSRF_HEADER]: CSRF,
+    }, {
+      relayAdminToken: 'admin-secret',
+    });
+    expect(rotated.status).toBe(200);
+    expect(relayConnection.rotate).toHaveBeenCalledWith({ relayAdminToken: 'admin-secret' });
+  });
+
+  it('returns redacted pairing errors', async () => {
+    const relayConnection = manager({
+      pair: vi.fn(async () => {
+        const err = new Error('Relay rejected the pairing credential.') as Error & { code: string; status: 401 };
+        err.code = 'relay-pairing-auth-failed';
+        err.status = 401;
+        throw err;
+      }),
+    });
+
+    const res = await post(app(relayConnection), '/api/relay-connection/pair', {
+      Origin: ORIGIN,
+      [SHARE_CSRF_HEADER]: CSRF,
+    }, {
+      relayUrl: 'http://relay.test',
+      relayAdminToken: 'super-secret-admin-token',
+    });
+
+    expect(res.status).toBe(401);
+    const bodyText = await res.text();
+    expect(bodyText).toContain('relay-pairing-auth-failed');
+    expect(bodyText).not.toContain('super-secret-admin-token');
   });
 });

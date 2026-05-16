@@ -4,6 +4,8 @@ import WebSocket from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRelayServer, type RelayServerHandle } from '../server.js';
+import { makeNodeHello, type RelayHello } from '../../src/remote/handshake.js';
+import { asNodeEpoch } from '../../src/remote/ids.js';
 
 let openHandle: RelayServerHandle | null = null;
 const sockets: WebSocket[] = [];
@@ -39,6 +41,31 @@ async function connectMember(relay: RelayServerHandle, nodeId: string, memberTok
   return ws;
 }
 
+async function connectNode(relay: RelayServerHandle, nodeId: string, token: string): Promise<WebSocket> {
+  const wsUrl = new URL('/relay/node', relay.url());
+  wsUrl.protocol = 'ws:';
+  const ws = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${token}` } });
+  sockets.push(ws);
+  await once(ws, 'open');
+  ws.send(JSON.stringify(makeNodeHello({
+    nodeId: nodeId as ReturnType<typeof makeNodeHello>['nodeId'],
+    nodeEpoch: asNodeEpoch('1'),
+    softwareVersion: 'test',
+  })));
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('timed out waiting for relay hello')), 1_000);
+    ws.on('message', (data) => {
+      const msg = JSON.parse(data.toString()) as RelayHello;
+      if (msg.type === 'relay.hello') {
+        clearTimeout(timeout);
+        expect(msg.outcome).toBe('accepted');
+        resolve();
+      }
+    });
+  });
+  return ws;
+}
+
 describe('relay node-scoped task-share endpoints', () => {
   it('returns the node ID bound to a node token', async () => {
     const relay = await startRelay();
@@ -61,6 +88,64 @@ describe('relay node-scoped task-share endpoints', () => {
     });
 
     expect(res.status).toBe(401);
+  });
+
+  it('requires admin auth for pairing and rotates node tokens by invalidating the old token', async () => {
+    const relay = await startRelay();
+
+    const anonymousPair = await fetch(new URL('/relay/admin/nodes', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ displayName: 'Anonymous' }),
+    });
+    expect(anonymousPair.status).toBe(401);
+
+    const paired = await fetch(new URL('/relay/admin/nodes', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer admin-secret' },
+      body: JSON.stringify({ displayName: 'Desktop' }),
+    });
+    expect(paired.status).toBe(201);
+    const issued = await paired.json() as { nodeId: string; nodeToken: string };
+    expect(issued.nodeId).toMatch(/^kookr-node-/);
+    expect(issued.nodeToken).toMatch(/^kookr_tok_v1_/);
+
+    const rotated = await fetch(new URL(`/relay/admin/nodes/${issued.nodeId}/token/rotate`, relay.url()), {
+      method: 'POST',
+      headers: { authorization: 'Bearer admin-secret' },
+    });
+    expect(rotated.status).toBe(200);
+    const newCredential = await rotated.json() as { nodeId: string; nodeToken: string };
+    expect(newCredential.nodeId).toBe(issued.nodeId);
+    expect(newCredential.nodeToken).not.toBe(issued.nodeToken);
+
+    const oldTokenStatus = await fetch(new URL('/relay/node/status', relay.url()), {
+      headers: nodeHeaders(issued.nodeToken),
+    });
+    expect(oldTokenStatus.status).toBe(401);
+
+    const newTokenStatus = await fetch(new URL('/relay/node/status', relay.url()), {
+      headers: nodeHeaders(newCredential.nodeToken),
+    });
+    expect(newTokenStatus.status).toBe(200);
+    expect(await newTokenStatus.json()).toEqual({ nodeId: issued.nodeId, displayName: 'Desktop' });
+  });
+
+  it('closes an active node WebSocket authenticated with the old token after rotation', async () => {
+    const relay = await startRelay();
+    const { nodeId, nodeToken } = relay.registerNode({ displayName: 'Desktop' });
+    const ws = await connectNode(relay, nodeId, nodeToken);
+
+    const closeEvent = once(ws, 'close') as Promise<[number, Buffer]>;
+    const rotated = await fetch(new URL(`/relay/admin/nodes/${nodeId}/token/rotate`, relay.url()), {
+      method: 'POST',
+      headers: { authorization: 'Bearer admin-secret' },
+    });
+    expect(rotated.status).toBe(200);
+
+    const [code, reason] = await closeEvent;
+    expect(code).toBe(4003);
+    expect(reason.toString()).toBe('node token rotated');
   });
 
   it('creates a view-only task invitation authenticated by the node token', async () => {

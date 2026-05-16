@@ -482,6 +482,21 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     return { nodeId, nodeToken };
   };
 
+  const rotateNodeToken = (nodeId: NodeId): { nodeId: NodeId; nodeToken: string } | null => {
+    const registration = registrations.get(nodeId);
+    if (!registration) return null;
+    tokenIndex.delete(registration.tokenHash);
+    const nodeToken = issueNodeToken();
+    registration.tokenHash = tokenHash(nodeToken);
+    tokenIndex.set(registration.tokenHash, registration);
+    const activeSocket = nodeSockets.get(nodeId);
+    if (activeSocket) {
+      nodeSockets.delete(nodeId);
+      activeSocket.close(4003, 'node token rotated');
+    }
+    return { nodeId, nodeToken };
+  };
+
   const createInvitation = (input: { nodeId: NodeId; subject?: ShareSubject; grants: ShareGrant[]; ttlMs?: number }) => (
     invitations.create(input)
   );
@@ -752,6 +767,22 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           ownerId: typeof body.ownerId === 'string' ? body.ownerId : undefined,
         });
         sendJson(res, 201, issued);
+        return;
+      }
+      if (req.method === 'POST' && url.pathname.startsWith('/relay/admin/nodes/') && url.pathname.endsWith('/token/rotate')) {
+        if (!opts.allowInsecureAdmin && !isAuthorizedAdmin(req, opts.adminToken)) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const nodeId = asNodeId(decodeURIComponent(
+          url.pathname.slice('/relay/admin/nodes/'.length, -'/token/rotate'.length),
+        ));
+        const rotated = rotateNodeToken(nodeId);
+        if (!rotated) {
+          sendJson(res, 404, { error: 'node not found' });
+          return;
+        }
+        sendJson(res, 200, rotated);
         return;
       }
       if (req.method === 'GET' && url.pathname === '/relay/admin/invitations') {
