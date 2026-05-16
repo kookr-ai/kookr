@@ -6109,6 +6109,72 @@ button.project-drawer-link:focus-visible {
   color: var(--text-muted);
 }
 
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 10px 0;
+}
+
+.settings-field input {
+  min-height: 34px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text-bright);
+  font-size: 13px;
+  padding: 7px 9px;
+}
+
+.settings-field input:focus {
+  outline: none;
+  border-color: var(--teal);
+}
+
+.settings-field input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.settings-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.relay-status-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.relay-status-strip > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.relay-status-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.relay-status-dot.connected {
+  background: var(--teal);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+}
+
 /* --- Project Drawer Actions --- */
 .project-drawer-header-actions {
   display: grid;

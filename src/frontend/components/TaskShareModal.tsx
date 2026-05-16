@@ -282,9 +282,9 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
 
         {status === 'disabled' && (
           <div className="task-share-disabled" role="status">
-            <strong>Preconfigured relay required</strong>
+            <strong>Relay connection required</strong>
             <p>
-              Set <code>KOOKR_RELAY_URL</code> and <code>KOOKR_RELAY_TOKEN</code>, then restart Kookr to enable task sharing.
+              Connect an issued relay node token in Settings to enable task sharing.
             </p>
           </div>
         )}

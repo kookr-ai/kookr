@@ -40,6 +40,29 @@ async function connectMember(relay: RelayServerHandle, nodeId: string, memberTok
 }
 
 describe('relay node-scoped task-share endpoints', () => {
+  it('returns the node ID bound to a node token', async () => {
+    const relay = await startRelay();
+    const { nodeId, nodeToken } = relay.registerNode({ displayName: 'Desktop' });
+
+    const res = await fetch(new URL('/relay/node/status', relay.url()), {
+      headers: nodeHeaders(nodeToken),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ nodeId, displayName: 'Desktop' });
+  });
+
+  it('rejects node status reads without a valid node token', async () => {
+    const relay = await startRelay();
+    relay.registerNode();
+
+    const res = await fetch(new URL('/relay/node/status', relay.url()), {
+      headers: nodeHeaders('not-a-real-token'),
+    });
+
+    expect(res.status).toBe(401);
+  });
+
   it('creates a view-only task invitation authenticated by the node token', async () => {
     const relay = await startRelay();
     const { nodeId, nodeToken } = relay.registerNode();

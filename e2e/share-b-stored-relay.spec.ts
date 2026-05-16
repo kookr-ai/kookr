@@ -1,13 +1,16 @@
 import type { APIRequestContext, Page } from '@playwright/test';
-import { test, expect } from './fixtures.js';
+import { test, expect } from './relay-stored-fixtures.js';
 
 async function resetServer(request: APIRequestContext) {
   await request.post('/api/test/reset');
 }
 
-async function createTask(request: APIRequestContext) {
+async function createTask(request: APIRequestContext): Promise<void> {
   const res = await request.post('/api/tasks', {
-    data: { prompt: 'Local-only task', cwd: '/test/project' },
+    data: {
+      prompt: 'Stored relay credential task with private_marker',
+      cwd: '/private/stored-relay',
+    },
   });
   expect(res.status()).toBe(201);
 }
@@ -20,7 +23,7 @@ async function selectTask(page: Page) {
   await expect(shareButton).toBeVisible();
 }
 
-test.describe('Easy connection sharing local-only state', () => {
+test.describe('Easy connection sharing Phase B stored relay startup', () => {
   test.beforeEach(async ({ page, request }) => {
     await resetServer(request);
     await page.goto('/');
@@ -28,15 +31,19 @@ test.describe('Easy connection sharing local-only state', () => {
     await expect(page.locator('.health-dot-connected')).toBeVisible();
   });
 
-  test('share modal is disabled when no relay is preconfigured', async ({ page, request }) => {
+  test('owner can create an A0 share from stored credentials', async ({ page, request }) => {
     await createTask(request);
     await selectTask(page);
     await page.getByTestId('task-share-button').click();
 
     const dialog = page.getByRole('dialog', { name: 'Share this task' });
     await expect(dialog).toBeVisible();
-    await expect(dialog).toContainText('Relay connection required');
-    await expect(dialog).toContainText('Connect an issued relay node token in Settings');
-    await expect(dialog.getByRole('button', { name: 'Create share link' })).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Create share link' }).click();
+    const linkInput = dialog.locator('.task-share-link input');
+    await expect(linkInput).toBeVisible();
+    const joinUrl = await linkInput.inputValue();
+    expect(joinUrl).toContain('/relay/join#inviteToken=');
+    expect(joinUrl).not.toContain('?inviteToken');
+    await expect(dialog.getByRole('status')).toContainText('Waiting for viewer');
   });
 });
