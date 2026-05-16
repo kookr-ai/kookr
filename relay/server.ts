@@ -13,6 +13,7 @@ import type { KnownGrant, PolicyGrantRecord, PolicyRevokeMessage, ShareGrant, Sh
 import { grantForRemoteCommandAction, isKnownGrant } from '../src/remote/grants.js';
 import { isTerminalStreamEvent, type TerminalReplayGapEvent, type TerminalStreamEvent } from '../src/remote/stream-events.js';
 import { isPushAlertDeltaPayload, makeRedactedPushPayload } from '../src/remote/push.js';
+import type { RelayNodeCredentialStatusResponse } from '../src/shared/contracts/relay-connection.js';
 import type {
   RemoteTaskProjectionEnvelopeV1,
   RemoteTaskProjectionV1,
@@ -831,6 +832,19 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       // Authenticated by the node token (not the relay admin token) and
       // scoped to the calling node's own `nodeId`. The local dashboard
       // backend uses these so it never needs the relay admin credential.
+      if (req.method === 'GET' && url.pathname === '/relay/node/status') {
+        const registration = authenticateNode(req);
+        if (!registration) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const response: RelayNodeCredentialStatusResponse = {
+          nodeId: registration.nodeId,
+          displayName: registration.displayName,
+        };
+        sendJson(res, 200, response);
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/relay/node/invitations') {
         const registration = authenticateNode(req);
         if (!registration) {

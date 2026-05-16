@@ -22,6 +22,7 @@ const claudeDir = join(tempDir, 'claude');
 const terminal = new FakeTerminalBackend();
 const injectedSessionIds = new Map<string, string>();
 let relayHandle: RelayServerHandle | null = null;
+let runtimeRelayCredentials: { relayUrl: string; nodeId: string; nodeToken: string } | null = null;
 
 function stableInjectedSessionId(tmuxName: string): string {
   return `e2e-${tmuxName.replace(/[^A-Za-z0-9_-]/g, '_')}`;
@@ -47,9 +48,26 @@ async function main() {
     relayHandle = createRelayServer({ adminToken: 'admin-secret' });
     await new Promise<void>((resolve) => relayHandle!.httpServer.listen(0, '127.0.0.1', () => resolve()));
     const { nodeId, nodeToken } = relayHandle.registerNode({ displayName: 'E2E node' });
-    writeFileSync(join(tempDir, 'node-id'), `${nodeId}\n`);
-    process.env.KOOKR_RELAY_URL = relayHandle.url();
-    process.env.KOOKR_RELAY_TOKEN = nodeToken;
+    if (process.env.E2E_RELAY_CREDENTIAL_MODE === 'runtime') {
+      runtimeRelayCredentials = { relayUrl: relayHandle.url(), nodeId, nodeToken };
+      delete process.env.KOOKR_RELAY_URL;
+      delete process.env.KOOKR_RELAY_TOKEN;
+    } else if (process.env.E2E_RELAY_CREDENTIAL_MODE === 'stored') {
+      writeFileSync(join(tempDir, 'relay-connection.json'), JSON.stringify({
+        schemaVersion: 'relay-connection.v1',
+        relayUrl: relayHandle.url(),
+        nodeId,
+        relayToken: nodeToken,
+        displayName: 'E2E node',
+        updatedAt: new Date().toISOString(),
+      }, null, 2));
+      delete process.env.KOOKR_RELAY_URL;
+      delete process.env.KOOKR_RELAY_TOKEN;
+    } else {
+      process.env.KOOKR_RELAY_URL = relayHandle.url();
+      process.env.KOOKR_RELAY_TOKEN = nodeToken;
+      writeFileSync(join(tempDir, 'node-id'), `${nodeId}\n`);
+    }
   }
 
   const server = await createKookrServerInternal({
@@ -86,6 +104,11 @@ async function main() {
         && !TERMINAL_STATUSES.has(a.taskStatus ?? ''),
     ).length;
     return c.json({ ok: true, agentCount: snapshot.length, findingCount });
+  });
+
+  server.app.get('/api/test/relay-credentials', (c) => {
+    if (!runtimeRelayCredentials) return c.json({ error: 'relay credentials unavailable' }, 404);
+    return c.json(runtimeRelayCredentials);
   });
 
   // Get the interaction log path (for tests to read or verify)
