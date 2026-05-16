@@ -586,6 +586,107 @@ describe('createKookrServer', () => {
       }
     });
 
+    test('blocks member permission approval in bypass-all-permissions mode despite an approved grant', async () => {
+      await server.close();
+      serverClosed = true;
+
+      const relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+      await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
+      const registration = relay.registerNode({ displayName: 'integration' });
+      const remoteKookrDir = join(tempDir, 'remote-bypass-permission-kookr');
+      mkdirSync(remoteKookrDir, { recursive: true });
+      writeFileSync(join(remoteKookrDir, 'node-id'), `${registration.nodeId}\n`);
+
+      const previousRelayUrl = process.env.KOOKR_RELAY_URL;
+      const previousRelayToken = process.env.KOOKR_RELAY_TOKEN;
+      const previousRelayTrusted = process.env[RELAY_TRUSTED_ENV];
+      process.env.KOOKR_RELAY_URL = relay.url();
+      process.env.KOOKR_RELAY_TOKEN = registration.nodeToken;
+      process.env[RELAY_TRUSTED_ENV] = 'true';
+
+      let remoteServer: KookrServerInternal | null = null;
+      const remoteBackend = new FakeTerminalBackend();
+      let clientWs: WebSocket | null = null;
+      try {
+        remoteServer = await createKookrServerInternal({
+          port: 0,
+          host: '127.0.0.1',
+          kookrDir: remoteKookrDir,
+          tasksFile: join(remoteKookrDir, 'tasks.json'),
+          hooksDir: join(remoteKookrDir, 'hooks'),
+          settingsDir: join(remoteKookrDir, 'settings'),
+          serverCwd: '/test/cwd',
+          frontendDir: join(tempDir, 'frontend'),
+          saveIntervalMs: 600_000,
+          livenessIntervalMs: 600_000,
+          terminalBackend: remoteBackend,
+          claudeDir: join(tempDir, 'claude'),
+          bypassAllPermissions: true,
+        });
+
+        await waitForCondition(() => relay.nodeStatuses().some((node) => node.nodeId === registration.nodeId && node.connected));
+
+        await remoteBackend.createSession('permission-session', 'bash');
+        const task = remoteServer.taskStore.createTask('permission task', '/repo');
+        remoteServer.taskStore.addSession(task.id, {
+          tmuxSession: 'permission-session',
+          agentType: 'claude-code',
+          cwd: '/repo',
+          createdAt: new Date('2026-05-15T19:00:00.000Z'),
+        });
+        remoteServer.monitor.registerAgent('permission-session');
+
+        const invitation = relay.createInvitation({
+          nodeId: registration.nodeId,
+          subject: { kind: 'session', nodeId: registration.nodeId, sessionId: 'permission-session' },
+          grants: ['permissionApprove'],
+        });
+        const accepted = relay.acceptInvitation(invitation.token, 'alice');
+        expect(accepted.ok).toBe(true);
+        if (!accepted.ok) throw new Error('expected invitation accept');
+
+        const clientUrl = new URL('/relay/client', relay.url());
+        clientUrl.protocol = 'ws:';
+        clientUrl.searchParams.set('nodeId', registration.nodeId);
+        clientWs = new WebSocket(clientUrl, {
+          headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+        });
+        const messages: unknown[] = [];
+        clientWs.on('message', (data) => messages.push(JSON.parse(data.toString()) as unknown));
+        await new Promise<void>((resolve) => clientWs!.once('open', () => resolve()));
+        clientWs.send(JSON.stringify({
+          type: 'remote.command',
+          commandId: 'cmd-member-permission-approve',
+          nodeId: registration.nodeId,
+          nodeEpoch: '1',
+          sessionId: 'permission-session',
+          sessionEpoch: '1',
+          idempotencyKey: 'idem-member-permission',
+          action: 'permissionApprove',
+          baseRevision: 1,
+          payload: { keystroke: '1' },
+        }));
+
+        await waitForCondition(() => messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-member-permission-approve'));
+        expect(messages).toContainEqual(expect.objectContaining({
+          commandId: 'cmd-member-permission-approve',
+          action: 'permissionApprove',
+          outcome: 'rejected-pre-audit',
+          reason: 'unsafe local permission mode requires local owner confirmation',
+        }));
+      } finally {
+        clientWs?.close();
+        if (previousRelayUrl === undefined) delete process.env.KOOKR_RELAY_URL;
+        else process.env.KOOKR_RELAY_URL = previousRelayUrl;
+        if (previousRelayToken === undefined) delete process.env.KOOKR_RELAY_TOKEN;
+        else process.env.KOOKR_RELAY_TOKEN = previousRelayToken;
+        if (previousRelayTrusted === undefined) delete process.env[RELAY_TRUSTED_ENV];
+        else process.env[RELAY_TRUSTED_ENV] = previousRelayTrusted;
+        await remoteServer?.close();
+        await relay.close();
+      }
+    });
+
     test('KOOKR_RELAY_FEATURES=terminal-input disables the remote input adapter only', async () => {
       await server.close();
       serverClosed = true;

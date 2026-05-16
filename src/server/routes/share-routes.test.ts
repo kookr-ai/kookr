@@ -23,6 +23,8 @@ function fakeClient(overrides: Partial<RelayShareClient> = {}): RelayShareClient
         expiresAt: `ttl:${ttlMs}`,
         state: 'waiting',
         connectedViewerCount: 0,
+        grants: ['view'],
+        grantRequests: [],
       },
       joinUrl: `http://relay.test/relay/join#inviteToken=tok-${taskId}`,
       shareTicket: {
@@ -41,6 +43,8 @@ function fakeClient(overrides: Partial<RelayShareClient> = {}): RelayShareClient
         state: 'revoked',
         connectedViewerCount: 0,
         revokedAt: 'r',
+        grants: ['view'],
+        grantRequests: [],
       },
       alreadyRevoked: false,
     }),
@@ -51,7 +55,67 @@ function fakeClient(overrides: Partial<RelayShareClient> = {}): RelayShareClient
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       state: 'waiting',
       connectedViewerCount: 0,
+      grants: ['view'],
+      grantRequests: [],
     }],
+    approveGrantRequest: async (invitationId, requestId) => ({
+      share: {
+        invitationId,
+        taskId: 't',
+        createdAt: 'c',
+        expiresAt: 'e',
+        state: 'viewerConnected',
+        connectedViewerCount: 1,
+        grants: ['view', 'terminalInput'],
+        grantRequests: [{
+          requestId,
+          invitationId,
+          requestedGrants: ['terminalInput'],
+          status: 'approved',
+          requestedAt: 'r',
+          resolvedAt: 'a',
+          resolution: 'approved',
+        }],
+      },
+      request: {
+        requestId,
+        invitationId,
+        requestedGrants: ['terminalInput'],
+        status: 'approved',
+        requestedAt: 'r',
+        resolvedAt: 'a',
+        resolution: 'approved',
+      },
+    }),
+    denyGrantRequest: async (invitationId, requestId) => ({
+      share: {
+        invitationId,
+        taskId: 't',
+        createdAt: 'c',
+        expiresAt: 'e',
+        state: 'viewerConnected',
+        connectedViewerCount: 1,
+        grants: ['view'],
+        grantRequests: [{
+          requestId,
+          invitationId,
+          requestedGrants: ['terminalInput'],
+          status: 'denied',
+          requestedAt: 'r',
+          resolvedAt: 'd',
+          resolution: 'denied',
+        }],
+      },
+      request: {
+        requestId,
+        invitationId,
+        requestedGrants: ['terminalInput'],
+        status: 'denied',
+        requestedAt: 'r',
+        resolvedAt: 'd',
+        resolution: 'denied',
+      },
+    }),
     ...overrides,
   };
 }
@@ -281,6 +345,8 @@ describe('share routes — create and revoke', () => {
             state: 'revoked',
             connectedViewerCount: 0,
             revokedAt: 'r',
+            grants: ['view'],
+            grantRequests: [],
           },
           alreadyRevoked: true,
         }),
@@ -301,5 +367,76 @@ describe('share routes — create and revoke', () => {
     const res = await post(failing, '/api/share/task', okHeaders, { taskId: 't' });
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: 'relay-rejected-token' });
+  });
+
+  it('approves a pending grant request through the owner-confirmed route', async () => {
+    const res = await post(
+      mkApp(remoteShare),
+      '/api/share/task/inv-1/grant-requests/grant-req-1/approve',
+      okHeaders,
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      share: expect.objectContaining({
+        invitationId: 'inv-1',
+        grants: ['view', 'terminalInput'],
+      }),
+      request: expect.objectContaining({
+        requestId: 'grant-req-1',
+        status: 'approved',
+        resolution: 'approved',
+      }),
+    });
+  });
+
+  it('denies a pending grant request through the owner-confirmed route', async () => {
+    const res = await post(
+      mkApp(remoteShare),
+      '/api/share/task/inv-1/grant-requests/grant-req-1/deny',
+      okHeaders,
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      share: expect.objectContaining({
+        invitationId: 'inv-1',
+        grants: ['view'],
+      }),
+      request: expect.objectContaining({
+        requestId: 'grant-req-1',
+        status: 'denied',
+        resolution: 'denied',
+      }),
+    });
+  });
+
+  it('requires CSRF for grant request approval', async () => {
+    const res = await post(
+      mkApp(remoteShare),
+      '/api/share/task/inv-1/grant-requests/grant-req-1/approve',
+      { Origin: ORIGIN },
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'invalid-csrf-token' });
+  });
+
+  it('maps grant request relay failures to their HTTP status', async () => {
+    const failing = mkApp({
+      csrfToken: CSRF,
+      client: fakeClient({
+        approveGrantRequest: () => Promise.reject(new RelayShareError('already-resolved', 409)),
+      }),
+    });
+
+    const res = await post(
+      failing,
+      '/api/share/task/inv-1/grant-requests/grant-req-1/approve',
+      okHeaders,
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'already-resolved' });
   });
 });

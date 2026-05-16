@@ -2541,6 +2541,28 @@ textarea::-webkit-resizer { background: transparent; }
   margin-top: 16px;
 }
 
+.task-share-requests {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.task-share-request {
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  border-radius: 6px;
+  background: rgba(251, 191, 36, 0.08);
+  padding: 10px 12px;
+}
+
+.task-share-request p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+}
+
+.task-share-request .task-share-actions {
+  margin-top: 10px;
+}
+
 .task-share-disabled {
   border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
   border-radius: 6px;
@@ -2567,7 +2589,8 @@ textarea::-webkit-resizer { background: transparent; }
   .task-share-subject,
   .task-share-row,
   .task-share-ticket,
-  .task-share-actions {
+  .task-share-actions,
+  .task-share-request {
     align-items: stretch;
     flex-direction: column;
   }

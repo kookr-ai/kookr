@@ -15,6 +15,7 @@ import type { RouteDeps } from './shared.js';
 import type {
   CreateTaskShareApiResponse,
   ListTaskSharesApiResponse,
+  ResolveTaskShareGrantRequestApiResponse,
   RevokeTaskShareApiResponse,
 } from '../../remote/share-contract.js';
 import {
@@ -180,6 +181,37 @@ export function registerShareRoutes(app: Hono, deps: RouteDeps): void {
     } catch (err) {
       if (err instanceof RelayShareError) return c.json({ error: err.code }, err.status);
       return c.json({ error: 'share-revoke-failed' }, 502);
+    }
+  });
+
+  app.post('/api/share/task/:invitationId/grant-requests/:requestId/:decision', async (c) => {
+    const remoteShare = deps.remoteShare;
+    if (!remoteShare?.client) return c.json({ error: 'relay-not-configured' }, 409);
+
+    const guard = evaluateShareMutationGuard({
+      requestUrl: c.req.url,
+      origin: c.req.header('Origin'),
+      csrfHeader: c.req.header(SHARE_CSRF_HEADER),
+      expectedCsrfToken: remoteShare.csrfToken,
+    });
+    if (!guard.ok) return c.json({ error: guard.error }, guard.status);
+
+    const invitationId = c.req.param('invitationId');
+    const requestId = c.req.param('requestId');
+    const decision = c.req.param('decision');
+    if (!invitationId || !requestId) return c.json({ error: 'invitationId and requestId are required' }, 400);
+    if (decision !== 'approve' && decision !== 'deny') return c.json({ error: 'decision must be approve or deny' }, 400);
+
+    try {
+      const target = remoteShare.service ?? remoteShare.client;
+      const result = decision === 'approve'
+        ? await target.approveGrantRequest(invitationId, requestId)
+        : await target.denyGrantRequest(invitationId, requestId);
+      const response: ResolveTaskShareGrantRequestApiResponse = result;
+      return c.json(response);
+    } catch (err) {
+      if (err instanceof RelayShareError) return c.json({ error: err.code }, err.status);
+      return c.json({ error: 'grant-request-resolution-failed' }, 502);
     }
   });
 }

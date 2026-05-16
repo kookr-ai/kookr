@@ -35,6 +35,7 @@ import type {
   RelayNodeInvitationView,
   RelayShareTicketSecret,
   TaskShareGrant,
+  TaskShareMutableGrant,
 } from '../src/remote/share-contract.js';
 import { InvitationStore, type InvitationRecord } from './src/invitations/store.js';
 import { createPushFanout, type PushDeliveryOutcome, type PushFanout, type PushSender } from './src/push/fanout.js';
@@ -447,25 +448,35 @@ function countReason(metrics: HostedRelayMetricSnapshot, reason: string): void {
 }
 
 /**
- * A Phase A0 node task share: a task-subject invitation whose only grant is
- * `view`. The node-scoped endpoints operate on these exclusively, so an
- * admin-created multi-grant or non-task invitation is never listed, revoked,
- * or projected through them — its true capability would otherwise be
- * misrepresented by {@link toNodeInvitationView}.
+ * A node task share: a task-subject invitation whose initial grant is `view`.
+ * Phase E may add the explicit mutating grants below after owner approval.
+ * Admin-created non-task or unknown-grant invitations stay outside the
+ * node-scoped dashboard surface.
  */
-function isA0TaskShare(
+const TASK_SHARE_GRANTS: readonly TaskShareGrant[] = ['view', 'terminalInput', 'launch', 'stop', 'permissionApprove'];
+const MUTABLE_TASK_SHARE_GRANTS: readonly TaskShareMutableGrant[] = ['terminalInput', 'launch', 'stop', 'permissionApprove'];
+
+function isTaskShareGrant(value: ShareGrant): value is TaskShareGrant {
+  return (TASK_SHARE_GRANTS as readonly string[]).includes(value);
+}
+
+function isMutableTaskShareGrant(value: ShareGrant): value is TaskShareMutableGrant {
+  return (MUTABLE_TASK_SHARE_GRANTS as readonly string[]).includes(value);
+}
+
+function isNodeTaskShare(
   invitation: InvitationRecord,
 ): invitation is InvitationRecord & { subject: Extract<ShareSubject, { kind: 'task' }> } {
   return invitation.subject.kind === 'task'
-    && invitation.grants.length === 1
-    && invitation.grants[0] === 'view';
+    && invitation.grants.includes('view')
+    && invitation.grants.every(isTaskShareGrant);
 }
 
 /**
  * Project a Phase A0 task-share invitation down to the safe view returned by
  * the node-scoped endpoints. Relay-internal secrets/hashes (`tokenHash`,
  * `memberTokenHash`, `grantId`, `policyVersion`) are intentionally dropped.
- * Callers pre-filter with {@link isA0TaskShare}, so the non-task branch of
+ * Callers pre-filter with {@link isNodeTaskShare}, so the non-task branch of
  * the `taskId` ternary is unreachable and only satisfies union narrowing.
  */
 function toNodeInvitationView(invitation: InvitationRecord, connectedViewerCount = 0): RelayNodeInvitationView {
@@ -473,7 +484,7 @@ function toNodeInvitationView(invitation: InvitationRecord, connectedViewerCount
     invitationId: invitation.invitationId,
     nodeId: invitation.nodeId,
     taskId: invitation.subject.kind === 'task' ? invitation.subject.taskId : '',
-    grants: invitation.grants.filter((grant): grant is TaskShareGrant => grant === 'view'),
+    grants: invitation.grants.filter(isTaskShareGrant),
     createdAt: invitation.createdAt,
     expiresAt: invitation.expiresAt,
     connectedViewerCount,
@@ -483,6 +494,10 @@ function toNodeInvitationView(invitation: InvitationRecord, connectedViewerCount
     ...(typeof invitation.failedAcceptCount === 'number' ? { failedAcceptCount: invitation.failedAcceptCount } : {}),
     ...(invitation.lockedUntil ? { lockedUntil: invitation.lockedUntil } : {}),
     ...(invitation.redactedShareLabel ? { redactedShareLabel: invitation.redactedShareLabel } : {}),
+    grantRequests: (invitation.grantRequests ?? []).map((request) => ({
+      ...request,
+      requestedGrants: [...request.requestedGrants],
+    })),
   };
 }
 
@@ -517,6 +532,33 @@ function parseNodeTaskShareBody(
     taskId: subject.taskId,
     ...(body.ttlMs !== undefined ? { ttlMs: body.ttlMs as number } : {}),
   };
+}
+
+function parseGrantRequestBody(body: { grants?: unknown; comment?: unknown }): { grants: TaskShareMutableGrant[]; comment?: string } | { error: string } {
+  const grants = parseGrantList(body.grants);
+  if (!grants) return { error: 'non-empty grants array is required' };
+  const requestedGrants = [...new Set(grants)].filter(isMutableTaskShareGrant);
+  if (requestedGrants.length !== grants.length || requestedGrants.length === 0) {
+    return { error: 'request grants must be Phase E mutable task-share grants' };
+  }
+  if (body.comment !== undefined && typeof body.comment !== 'string') {
+    return { error: 'comment must be a string' };
+  }
+  return {
+    grants: requestedGrants,
+    ...(typeof body.comment === 'string' ? { comment: body.comment } : {}),
+  };
+}
+
+function grantRequestStatus(reason: string): 400 | 404 | 409 {
+  switch (reason) {
+    case 'not-found':
+      return 404;
+    case 'empty-grants':
+      return 400;
+    default:
+      return 409;
+  }
 }
 
 function isRemoteTaskProjection(value: unknown): value is RemoteTaskProjectionV1 {
@@ -562,15 +604,21 @@ function isRemoteTaskProjectionPayload(value: unknown): boolean {
     && (value as { type?: unknown }).type === 'remote.taskProjection.v1';
 }
 
-function authAllows(auth: RelayClientAuth, grant: KnownGrant | null): boolean {
+function authAllows(auth: RelayClientAuth, grant: KnownGrant | null, invitationStore?: InvitationStore): boolean {
   if (auth.kind === 'owner' || auth.grants.includes('admin')) return true;
   if (auth.expiresAt && Date.parse(auth.expiresAt) <= Date.now()) return false;
   if (!grant) return false;
-  return auth.grants.some((candidate) => candidate === grant && isKnownGrant(candidate));
+  let grants = auth.grants;
+  if (auth.invitationId && invitationStore) {
+    const invitation = invitationStore.list().find((candidate) => candidate.invitationId === auth.invitationId);
+    if (!invitation || invitation.revokedAt || Date.parse(invitation.expiresAt) <= Date.now()) return false;
+    grants = invitation.grants;
+  }
+  return grants.some((candidate) => candidate === grant && isKnownGrant(candidate));
 }
 
-function authAllowsTerminalStream(auth: RelayClientAuth): boolean {
-  return authAllows(auth, 'terminalInput');
+function authAllowsTerminalStream(auth: RelayClientAuth, invitationStore?: InvitationStore): boolean {
+  return authAllows(auth, 'terminalInput', invitationStore);
 }
 
 function isRemoteCommandResultMessage(value: unknown): value is { type: 'remote.command.result' } & CommandResult {
@@ -940,7 +988,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           .digest('hex')
           .slice(0, 16);
         const terminal = parseTerminalSubscription(url);
-        if (terminal && !authAllowsTerminalStream(auth)) {
+        if (terminal && !authAllowsTerminalStream(auth, invitations)) {
           sendJson(res, 403, { error: 'terminal grant required' });
           return;
         }
@@ -1217,6 +1265,41 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         );
         return;
       }
+      if (req.method === 'POST' && url.pathname === '/relay/member/grant-requests') {
+        const modeBlock = hostedBlocksNewShares();
+        if (modeBlock) {
+          relayMetrics.http5xxCount += 1;
+          sendJson(res, 503, { error: modeBlock });
+          return;
+        }
+        const body = await readJson(req) as { nodeId?: unknown; grants?: unknown; comment?: unknown };
+        if (typeof body.nodeId !== 'string') {
+          sendJson(res, 400, { error: 'nodeId is required' });
+          return;
+        }
+        const auth = authenticateClient(req, opts, invitations, ownerId, asNodeId(body.nodeId), url);
+        if (!auth || auth.kind !== 'member' || !auth.invitationId) {
+          sendJson(res, 401, { error: 'member-auth-required' });
+          return;
+        }
+        const parsed = parseGrantRequestBody(body);
+        if ('error' in parsed) {
+          sendJson(res, 400, { error: parsed.error });
+          return;
+        }
+        const requested = invitations.requestGrants({
+          invitationId: auth.invitationId,
+          requestedGrants: parsed.grants,
+          requestedBy: auth.actorId,
+          comment: parsed.comment,
+        });
+        if (!requested.ok) {
+          sendJson(res, grantRequestStatus(requested.reason), { error: requested.reason });
+          return;
+        }
+        sendJson(res, 201, { request: requested.request });
+        return;
+      }
       if (req.method === 'POST' && url.pathname.startsWith('/relay/admin/invitations/') && url.pathname.endsWith('/revoke')) {
         if (!opts.allowInsecureAdmin && !isAuthorizedAdmin(req, opts.adminToken)) {
           sendJson(res, 401, { error: 'unauthorized' });
@@ -1256,7 +1339,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         }
         sendJson(res, 200, {
           invitations: invitations.list()
-            .filter((invitation) => invitation.nodeId === registration.nodeId && isA0TaskShare(invitation))
+            .filter((invitation) => invitation.nodeId === registration.nodeId && isNodeTaskShare(invitation))
             .map(toNodeInvitationViewWithPresence),
         });
         return;
@@ -1318,7 +1401,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         // unknown id, another node's invitation, or a non-A0 invitation —
         // answer 404 (not 403) so a node cannot probe for invitation IDs or
         // act on invitations outside the A0 surface.
-        if (!existing || existing.nodeId !== registration.nodeId || !isA0TaskShare(existing)) {
+        if (!existing || existing.nodeId !== registration.nodeId || !isNodeTaskShare(existing)) {
           sendJson(res, 404, { error: 'not-found' });
           return;
         }
@@ -1330,6 +1413,63 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         sendJson(res, 200, {
           invitation: toNodeInvitationViewWithPresence(revoked.invitation),
           alreadyRevoked: revoked.alreadyRevoked,
+        });
+        return;
+      }
+      if (
+        req.method === 'POST'
+        && url.pathname.startsWith('/relay/node/invitations/')
+        && (
+          url.pathname.endsWith('/approve')
+          || url.pathname.endsWith('/deny')
+        )
+      ) {
+        const registration = authenticateNode(req);
+        if (!registration) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const parts = url.pathname.split('/').map(decodeURIComponent);
+        const invitationId = parts[4] ?? '';
+        const requestId = parts[6] ?? '';
+        const resolution = parts[7] ?? '';
+        if (parts[5] !== 'grant-requests' || !invitationId || !requestId || (resolution !== 'approve' && resolution !== 'deny')) {
+          sendJson(res, 404, { error: 'not-found' });
+          return;
+        }
+        const modeBlock = hostedBlocksNewShares();
+        if (modeBlock) {
+          relayMetrics.http5xxCount += 1;
+          sendJson(res, 503, { error: modeBlock });
+          return;
+        }
+        const existing = invitations.list().find((invitation) => invitation.invitationId === invitationId);
+        if (!existing || existing.nodeId !== registration.nodeId || !isNodeTaskShare(existing)) {
+          sendJson(res, 404, { error: 'not-found' });
+          return;
+        }
+        const resolved = invitations.resolveGrantRequest({
+          invitationId,
+          requestId,
+          approve: resolution === 'approve',
+        });
+        if (!resolved.ok) {
+          sendJson(res, grantRequestStatus(resolved.reason), { error: resolved.reason });
+          return;
+        }
+        if (resolution === 'approve' && resolved.invitation.acceptedAt) {
+          sendPolicyDelta(registration.nodeId, {
+            grantId: resolved.invitation.grantId,
+            subject: resolved.invitation.subject,
+            grants: [...resolved.invitation.grants],
+            policyVersion: resolved.invitation.policyVersion,
+            expiresAt: resolved.invitation.expiresAt,
+          });
+        }
+        broadcastPresence(registration.nodeId);
+        sendJson(res, 200, {
+          invitation: toNodeInvitationViewWithPresence(resolved.invitation),
+          request: resolved.request,
         });
         return;
       }
@@ -1378,7 +1518,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         return;
       }
       const terminal = parseTerminalSubscription(url);
-      if (terminal && !authAllowsTerminalStream(auth)) {
+      if (terminal && !authAllowsTerminalStream(auth, invitations)) {
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
         socket.destroy();
         return;
@@ -1536,7 +1676,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (!invitation || invitation.nodeId !== nodeId || invitation.grantId !== auth.grantId) return false;
     if (invitation.revokedAt) return false;
     if (Date.parse(invitation.expiresAt) <= Date.now()) return false;
-    if (!isA0TaskShare(invitation)) return false;
+    if (!isNodeTaskShare(invitation)) return false;
     return invitation.subject.taskId === envelope.projection.taskId
       && invitation.grants.includes('view')
       && envelope.projection.nodeId === nodeId;
@@ -1709,7 +1849,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (!subscribed) return;
     for (const sub of [...subscribed]) {
       if (!subscriptionStillAuthorized(event.nodeId, sub)) continue;
-      if (!authAllowsTerminalStream(sub.auth)) continue;
+      if (!authAllowsTerminalStream(sub.auth, invitations)) continue;
       if (
         sub.terminal?.sessionId === event.sessionId
         && sub.terminal.sessionEpoch === event.sessionEpoch
@@ -1788,7 +1928,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       }
       const command = parsed as { type?: unknown; nodeId?: unknown; payload?: unknown };
       if (command.type === 'terminal.replay.request') {
-        if (!authAllowsTerminalStream(auth)) {
+        if (!authAllowsTerminalStream(auth, invitations)) {
           ws.close(1008, 'terminal grant required');
           return;
         }
@@ -1830,7 +1970,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         timestamp: new Date().toISOString(),
       });
       const requiredGrant = grantForRemoteCommandAction(action);
-      if (!authAllows(auth, requiredGrant)) {
+      if (!authAllows(auth, requiredGrant, invitations)) {
         const result = {
           type: 'remote.command.result',
           commandId,
@@ -2295,6 +2435,7 @@ function relayJoinHtml(): string {
     .task dt { color: #aeb9bf; }
     .task dd { margin: 0; }
     .error { color: #ff7b72; }
+    .request { border: 1px solid #7c5f16; border-radius: 6px; padding: 12px; margin-top: 14px; background: #211b0d; }
   </style>
 </head>
 <body>
@@ -2329,6 +2470,10 @@ function relayJoinHtml(): string {
         <dt>Updated</dt><dd id="task-updated"></dd>
       </dl>
     </section>
+    <section id="grant-request" class="request" hidden aria-label="Collaborator grant request">
+      <p class="muted">Ask the owner before any remote control is enabled.</p>
+      <button id="request-control" type="button">Request terminal input</button>
+    </section>
   </section>
 </main>
 <script>
@@ -2362,6 +2507,8 @@ const taskStatusEl = document.getElementById('task-status');
 const taskFindingEl = document.getElementById('task-finding');
 const taskNeedsInputEl = document.getElementById('task-needs-input');
 const taskUpdatedEl = document.getElementById('task-updated');
+const grantRequestEl = document.getElementById('grant-request');
+const requestControlEl = document.getElementById('request-control');
 const nodeKey = 'kookr-relay-join-node:' + location.host;
 let nodeId = sessionStorage.getItem(nodeKey) || '';
 let ws = null;
@@ -2395,6 +2542,7 @@ function renderProjection(projection) {
   taskNeedsInputEl.textContent = projection.needsInput ? 'yes' : 'no';
   taskUpdatedEl.textContent = projection.updatedAt || '';
   taskEl.hidden = false;
+  grantRequestEl.hidden = false;
 }
 
 function ingest(event) {
@@ -2461,6 +2609,28 @@ async function acceptInvite() {
   connect();
   formEl.hidden = true;
 }
+
+requestControlEl.addEventListener('click', async () => {
+  if (!nodeId) return;
+  requestControlEl.disabled = true;
+  setStatus('Requesting owner approval...');
+  const res = await fetch('/relay/member/grant-requests', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      nodeId,
+      grants: ['terminalInput'],
+      comment: sanitizeDisplayName(nameEl.value) + ' requested terminal input',
+    }),
+  });
+  if (!res.ok) {
+    setStatus('Control request failed or expired.', true);
+    requestControlEl.disabled = false;
+    return;
+  }
+  setStatus('Waiting for owner approval.');
+});
 
 formEl.addEventListener('submit', (event) => {
   event.preventDefault();

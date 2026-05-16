@@ -8,17 +8,34 @@
  * here — only structural contracts shared across the node, the relay, and
  * the dashboard backend.
  *
- * RFC: `docs/rfc/rfc-easy-connection-sharing.md` — Phases A0-C.
+ * RFC: `docs/rfc/rfc-easy-connection-sharing.md` — Phases A0-E.
  */
 
 import type { NodeId } from './ids.js';
 
-/**
- * A0 grants exactly one capability: view-only. Mutating grants
- * (`comment`, `terminalInput`, ...) are explicitly out of scope until
- * Phase E.
- */
-export type TaskShareGrant = 'view';
+export type TaskShareGrant =
+  | 'view'
+  | 'terminalInput'
+  | 'launch'
+  | 'stop'
+  | 'permissionApprove';
+
+export type TaskShareCreateGrant = 'view';
+export type TaskShareMutableGrant = Exclude<TaskShareGrant, 'view'>;
+
+export type TaskShareGrantRequestStatus = 'pending' | 'approved' | 'denied';
+
+export interface TaskShareGrantRequest {
+  requestId: string;
+  invitationId: string;
+  requestedGrants: TaskShareMutableGrant[];
+  status: TaskShareGrantRequestStatus;
+  requestedAt: string;
+  requestedBy?: string;
+  comment?: string;
+  resolvedAt?: string;
+  resolution?: 'approved' | 'denied';
+}
 
 /** A0 shares one subject only: a single task on the current node. */
 export interface TaskShareSubject {
@@ -27,13 +44,13 @@ export interface TaskShareSubject {
 }
 
 /**
- * Node → relay request to create a view-only invitation for a task on the
- * calling node. The relay derives `nodeId` from the node token; it is never
- * trusted from the request body.
+ * Node → relay request to create the initial view-only invitation for a task
+ * on the calling node. Mutating grants are added only through owner-approved
+ * grant requests after a member joins.
  */
 export interface CreateNodeTaskShareRequest {
   subject: TaskShareSubject;
-  grants: [TaskShareGrant];
+  grants: [TaskShareCreateGrant];
   ttlMs?: number;
 }
 
@@ -58,6 +75,7 @@ export interface RelayNodeInvitationView {
   failedAcceptCount?: number;
   lockedUntil?: string;
   redactedShareLabel?: string;
+  grantRequests?: TaskShareGrantRequest[];
 }
 
 /** One-time Phase C ticket secret returned only on creation. */
@@ -158,6 +176,8 @@ export interface TaskShareSummary {
   failedAcceptCount?: number;
   lockedUntil?: string;
   redactedShareLabel?: string;
+  grants: TaskShareGrant[];
+  grantRequests: TaskShareGrantRequest[];
 }
 
 /**
@@ -186,4 +206,9 @@ export interface RevokeTaskShareApiResponse {
 /** `GET /api/share/task` response. */
 export interface ListTaskSharesApiResponse {
   shares: TaskShareSummary[];
+}
+
+export interface ResolveTaskShareGrantRequestApiResponse {
+  share: TaskShareSummary;
+  request: TaskShareGrantRequest;
 }

@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CreateTaskShareApiResponse,
   ListTaskSharesApiResponse,
+  ResolveTaskShareGrantRequestApiResponse,
+  TaskShareGrantRequest,
+  TaskShareMutableGrant,
   RevokeTaskShareApiResponse,
   TaskShareTicket,
   TaskShareOwnerState,
@@ -86,6 +89,19 @@ function shareCreateErrorMessage(errorCode: string | undefined): string {
       return 'Share creation is temporarily rate-limited.';
     default:
       return 'Share link was not created.';
+  }
+}
+
+function grantLabel(grant: TaskShareMutableGrant): string {
+  switch (grant) {
+    case 'terminalInput':
+      return 'Terminal input';
+    case 'launch':
+      return 'Launch';
+    case 'stop':
+      return 'Stop';
+    case 'permissionApprove':
+      return 'Permission approval';
   }
 }
 
@@ -276,6 +292,28 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
     }
   }
 
+  async function resolveGrantRequest(invitationId: string, requestId: string, decision: 'approve' | 'deny') {
+    if (!csrfToken || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/share/task/${encodeURIComponent(invitationId)}/grant-requests/${encodeURIComponent(requestId)}/${decision}`,
+        {
+          method: 'POST',
+          headers: { [SHARE_CSRF_HEADER]: csrfToken },
+        },
+      );
+      if (!res.ok) throw new Error(`grant-request-${decision}-${res.status}`);
+      const body = await res.json() as ResolveTaskShareGrantRequestApiResponse;
+      setShares((prev) => [body.share, ...prev.filter((share) => share.invitationId !== body.share.invitationId)]);
+    } catch {
+      setError(decision === 'approve' ? 'Grant request was not approved.' : 'Grant request was not denied.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!open) return null;
 
   return (
@@ -327,6 +365,46 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
             <div className="task-share-state" role="status" aria-live="polite">
               {displayedShare ? stateTitle(displayedShare) : 'No active share'}
             </div>
+
+            {displayedShare && displayedShare.grants.length > 1 && (
+              <div className="task-share-row" aria-label="Approved collaborator grants">
+                <span>Approved grants</span>
+                <strong>{displayedShare.grants.filter((grant) => grant !== 'view').map(grantLabel).join(', ')}</strong>
+              </div>
+            )}
+
+            {displayedShare?.grantRequests.some((request) => request.status === 'pending') && (
+              <div className="task-share-requests" aria-label="Collaborator grant requests">
+                {displayedShare.grantRequests
+                  .filter((request): request is TaskShareGrantRequest & { status: 'pending' } => request.status === 'pending')
+                  .map((request) => (
+                    <div className="task-share-request" key={request.requestId}>
+                      <div>
+                        <strong>{request.requestedGrants.map(grantLabel).join(', ')}</strong>
+                        {request.comment && <p>{request.comment}</p>}
+                      </div>
+                      <div className="task-share-actions">
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          disabled={busy || displayedShare.state === 'revoked' || displayedShare.state === 'expired'}
+                          onClick={() => resolveGrantRequest(displayedShare.invitationId, request.requestId, 'approve')}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          disabled={busy || displayedShare.state === 'revoked' || displayedShare.state === 'expired'}
+                          onClick={() => resolveGrantRequest(displayedShare.invitationId, request.requestId, 'deny')}
+                        >
+                          Deny
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
 
             {joinUrl && (
               <>

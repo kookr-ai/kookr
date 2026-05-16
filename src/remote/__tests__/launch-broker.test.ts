@@ -50,6 +50,7 @@ function broker(opts: {
   getActiveLaunchCount?: () => number;
   idempotencyTtlMs?: number;
   idempotencyMaxEntries?: number;
+  allowCollaboratorGrants?: boolean;
 } = {}): RemoteLaunchBroker {
   return new RemoteLaunchBroker({
     allowlist: {
@@ -66,6 +67,7 @@ function broker(opts: {
     getActiveLaunchCount: opts.getActiveLaunchCount,
     idempotencyTtlMs: opts.idempotencyTtlMs,
     idempotencyMaxEntries: opts.idempotencyMaxEntries,
+    allowCollaboratorGrants: opts.allowCollaboratorGrants,
   });
 }
 
@@ -106,6 +108,16 @@ describe('RemoteLaunchBroker', () => {
     const result = await broker().handle(command({ actorId: asActorId('collaborator-1') }));
 
     expect(result).toMatchObject({ ok: false, error: 'error.notOwner' });
+  });
+
+  it('allows non-owner launches only when the caller has already passed grant authorization', async () => {
+    const launchTask = vi.fn().mockResolvedValue({ task: { id: 'task-1' }, queued: false });
+    const result = await broker({ launchTask, allowCollaboratorGrants: true }).handle(command({
+      actorId: asActorId('collaborator-1'),
+    }));
+
+    expect(result).toMatchObject({ ok: true, value: { taskId: 'task-1' } });
+    expect(launchTask).toHaveBeenCalledTimes(1);
   });
 
   it('rejects project and agent combinations outside the allowlist', async () => {

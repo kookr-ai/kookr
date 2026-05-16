@@ -551,6 +551,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           && task.projectId === projectId
           && task.agentType === agentType
         )).length,
+        allowCollaboratorGrants: true,
       });
       console.log('[remote] launch broker enabled');
     }
@@ -631,18 +632,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     const { isPresetReplyId, sendPresetReply } = await import('../remote/preset-reply.js');
     const { grantForRemoteCommandAction } = await import('../remote/grants.js');
     const { evaluateGrantById } = await import('../remote/share-policy.js');
-    const subjectForCommand = (command: { action: string; nodeId: string; sessionId: string }): ShareSubject => (
-      command.action === 'launch'
-        ? { kind: 'node', nodeId: command.nodeId as NodeId }
-        : { kind: 'session', nodeId: command.nodeId as NodeId, sessionId: command.sessionId }
-    );
+    const subjectsForCommand = (command: { action: string; nodeId: string; sessionId: string }): ShareSubject[] => {
+      const nodeSubject: ShareSubject = { kind: 'node', nodeId: command.nodeId as NodeId };
+      const sessionSubject: ShareSubject = { kind: 'session', nodeId: command.nodeId as NodeId, sessionId: command.sessionId };
+      const task = taskStore.findTaskBySession(command.sessionId);
+      const taskSubject: ShareSubject | null = task
+        ? { kind: 'task', nodeId: command.nodeId as NodeId, taskId: task.id }
+        : null;
+      return command.action === 'launch'
+        ? [nodeSubject, ...(taskSubject ? [taskSubject] : [])]
+        : [sessionSubject, ...(taskSubject ? [taskSubject] : [])];
+    };
     const permissionBroker = new RemotePermissionBroker({
       adapter,
       monitor,
       queue,
       interactionLog,
       onRespond: abortPendingSuggestion,
-      isOwnerLocal,
     });
     startupRemoteNodeClient.setCommandHandler(async (command) => {
       const authorize = () => {
@@ -653,9 +659,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         } else {
           const requiredGrant = grantForRemoteCommandAction(command.action);
           if (!remotePolicyCache || !requiredGrant) return { ok: false as const, reason: 'invalid grant' };
-          const decision = evaluateGrantById(remotePolicyCache, command.grantId, subjectForCommand(command), requiredGrant);
+          const decisions = subjectsForCommand(command)
+            .map((subject) => evaluateGrantById(remotePolicyCache!, command.grantId, subject, requiredGrant));
+          const decision = decisions.find((candidate) => candidate.allowed) ?? decisions[0];
           if (!decision.allowed) {
             return { ok: false as const, reason: `grant ${decision.reason}` };
+          }
+          if (
+            config.bypassAllPermissions
+            && (command.action === 'permissionApprove' || command.action === 'launch')
+          ) {
+            return {
+              ok: false as const,
+              reason: 'unsafe local permission mode requires local owner confirmation',
+            };
           }
         }
         const task = taskStore.findTaskBySession(command.sessionId);

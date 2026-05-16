@@ -8,7 +8,7 @@
  * runtime code into local-only mode. See
  * `scripts/check-remote-import-boundaries.ts`.
  *
- * RFC: `docs/rfc/rfc-easy-connection-sharing.md` — Phase A0.
+ * RFC: `docs/rfc/rfc-easy-connection-sharing.md` — Phase A0-E.
  */
 
 import type {
@@ -17,6 +17,7 @@ import type {
   ListNodeTaskSharesResponse,
   RelayNodeInvitationView,
   RevokeNodeTaskShareResponse,
+  ResolveTaskShareGrantRequestApiResponse,
   TaskShareTicket,
   TaskShareSummary,
 } from '../remote/share-contract.js';
@@ -58,6 +59,10 @@ export interface RelayShareClient {
   revokeTaskShare(invitationId: string): Promise<{ share: TaskShareSummary; alreadyRevoked: boolean }>;
   /** List Phase A0 task shares owned by the configured node. */
   listTaskShares(): Promise<TaskShareSummary[]>;
+  /** Approve a pending collaborator request for mutating grants. */
+  approveGrantRequest(invitationId: string, requestId: string): Promise<ResolveTaskShareGrantRequestApiResponse>;
+  /** Deny a pending collaborator request for mutating grants. */
+  denyGrantRequest(invitationId: string, requestId: string): Promise<ResolveTaskShareGrantRequestApiResponse>;
 }
 
 export interface RelayShareClientOptions {
@@ -91,6 +96,11 @@ function toSummary(view: RelayNodeInvitationView): TaskShareSummary {
     ...(typeof view.failedAcceptCount === 'number' ? { failedAcceptCount: view.failedAcceptCount } : {}),
     ...(view.lockedUntil ? { lockedUntil: view.lockedUntil } : {}),
     ...(view.redactedShareLabel ? { redactedShareLabel: view.redactedShareLabel } : {}),
+    grants: [...view.grants],
+    grantRequests: (view.grantRequests ?? []).map((request) => ({
+      ...request,
+      requestedGrants: [...request.requestedGrants],
+    })),
   };
 }
 
@@ -208,6 +218,28 @@ export function createRelayShareClient(opts: RelayShareClientOptions): RelayShar
         throw new RelayShareError('relay-bad-response', 502, 'relay list response missing invitations');
       }
       return parsed.invitations.map(toSummary);
+    },
+
+    async approveGrantRequest(invitationId, requestId): Promise<ResolveTaskShareGrantRequestApiResponse> {
+      const parsed = await call(
+        `/relay/node/invitations/${encodeURIComponent(invitationId)}/grant-requests/${encodeURIComponent(requestId)}/approve`,
+        {},
+      ) as { invitation?: RelayNodeInvitationView; request?: ResolveTaskShareGrantRequestApiResponse['request'] };
+      if (!parsed.invitation || !parsed.request) {
+        throw new RelayShareError('relay-bad-response', 502, 'relay approve response missing fields');
+      }
+      return { share: toSummary(parsed.invitation), request: parsed.request };
+    },
+
+    async denyGrantRequest(invitationId, requestId): Promise<ResolveTaskShareGrantRequestApiResponse> {
+      const parsed = await call(
+        `/relay/node/invitations/${encodeURIComponent(invitationId)}/grant-requests/${encodeURIComponent(requestId)}/deny`,
+        {},
+      ) as { invitation?: RelayNodeInvitationView; request?: ResolveTaskShareGrantRequestApiResponse['request'] };
+      if (!parsed.invitation || !parsed.request) {
+        throw new RelayShareError('relay-bad-response', 502, 'relay deny response missing fields');
+      }
+      return { share: toSummary(parsed.invitation), request: parsed.request };
     },
   };
 }

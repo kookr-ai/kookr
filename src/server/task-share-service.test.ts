@@ -15,9 +15,21 @@ function share(overrides: Partial<TaskShareSummary> = {}): TaskShareSummary {
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
     state: 'waiting',
     connectedViewerCount: 0,
+    grants: ['view'],
+    grantRequests: [],
     ...overrides,
   };
 }
+
+const grantRequest = {
+  requestId: 'grant-req-1',
+  invitationId: 'inv-1',
+  requestedGrants: ['terminalInput' as const],
+  status: 'approved' as const,
+  requestedAt: new Date().toISOString(),
+  resolvedAt: new Date().toISOString(),
+  resolution: 'approved' as const,
+};
 
 describe('TaskShareService', () => {
   it('publishes a safe task projection for a created share', async () => {
@@ -29,6 +41,8 @@ describe('TaskShareService', () => {
       createTaskShare: async () => ({ share: createdShare, joinUrl: 'http://relay/join#inviteToken=tok' }),
       revokeTaskShare: async () => ({ share: { ...createdShare, state: 'revoked', revokedAt: new Date().toISOString() }, alreadyRevoked: false }),
       listTaskShares: async () => [createdShare],
+      approveGrantRequest: async () => ({ share: { ...createdShare, grants: ['view', 'terminalInput'] }, request: grantRequest }),
+      denyGrantRequest: async () => ({ share: createdShare, request: { ...grantRequest, status: 'denied', resolution: 'denied' } }),
     };
     const service = new TaskShareService({
       client,
@@ -72,6 +86,8 @@ describe('TaskShareService', () => {
         return { share: { ...existing, state: 'revoked', revokedAt: new Date().toISOString() }, alreadyRevoked: false };
       },
       listTaskShares: async () => [existing],
+      approveGrantRequest: async () => ({ share: { ...existing, grants: ['view', 'terminalInput'] }, request: grantRequest }),
+      denyGrantRequest: async () => ({ share: existing, request: { ...grantRequest, status: 'denied', resolution: 'denied' } }),
     };
     const service = new TaskShareService({
       client,
@@ -105,6 +121,8 @@ describe('TaskShareService', () => {
       createTaskShare: async () => ({ share: createdShare, joinUrl: 'http://relay/join#inviteToken=tok' }),
       revokeTaskShare: async () => ({ share: { ...createdShare, state: 'revoked', revokedAt: new Date().toISOString() }, alreadyRevoked: false }),
       listTaskShares: async () => [createdShare],
+      approveGrantRequest: async () => ({ share: { ...createdShare, grants: ['view', 'terminalInput'] }, request: grantRequest }),
+      denyGrantRequest: async () => ({ share: createdShare, request: { ...grantRequest, status: 'denied', resolution: 'denied' } }),
     };
     const service = new TaskShareService({
       client,
@@ -145,5 +163,86 @@ describe('TaskShareService', () => {
     });
     service.publishActiveTaskProjections();
     expect(events).toHaveLength(1);
+  });
+
+  it('remembers approved grants and publishes the task projection', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('task', '/tmp');
+    const baseShare = share({ taskId: task.id });
+    const approvedShare = share({
+      taskId: task.id,
+      grants: ['view', 'terminalInput'],
+      grantRequests: [grantRequest],
+    });
+    const events: unknown[] = [];
+    const client: RelayShareClient = {
+      createTaskShare: async () => ({ share: baseShare, joinUrl: 'http://relay/join#inviteToken=tok' }),
+      revokeTaskShare: async () => ({ share: { ...baseShare, state: 'revoked', revokedAt: new Date().toISOString() }, alreadyRevoked: false }),
+      listTaskShares: async () => [],
+      approveGrantRequest: async () => ({ share: approvedShare, request: grantRequest }),
+      denyGrantRequest: async () => ({ share: baseShare, request: { ...grantRequest, status: 'denied', resolution: 'denied' } }),
+    };
+    const service = new TaskShareService({
+      client,
+      taskStore,
+      getNodeIdentity: () => ({ nodeId: asNodeId('kookr-node-test'), nodeEpoch: asNodeEpoch('1') }),
+      nextServerRevision: () => asServerRevision(events.length + 1),
+      publish: (event) => {
+        events.push(event);
+        return true;
+      },
+    });
+
+    await service.approveGrantRequest('inv-1', 'grant-req-1');
+
+    expect(await service.listTaskShares()).toEqual([
+      expect.objectContaining({
+        invitationId: 'inv-1',
+        grants: ['view', 'terminalInput'],
+        grantRequests: [grantRequest],
+      }),
+    ]);
+    expect(events).toEqual([
+      expect.objectContaining({
+        kind: 'snapshot',
+        payload: expect.objectContaining({ invitationId: 'inv-1' }),
+      }),
+    ]);
+  });
+
+  it('remembers denied grants without publishing a new projection', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('task', '/tmp');
+    const deniedRequest = { ...grantRequest, status: 'denied' as const, resolution: 'denied' as const };
+    const deniedShare = share({ taskId: task.id, grantRequests: [deniedRequest] });
+    const events: unknown[] = [];
+    const client: RelayShareClient = {
+      createTaskShare: async () => ({ share: deniedShare, joinUrl: 'http://relay/join#inviteToken=tok' }),
+      revokeTaskShare: async () => ({ share: { ...deniedShare, state: 'revoked', revokedAt: new Date().toISOString() }, alreadyRevoked: false }),
+      listTaskShares: async () => [],
+      approveGrantRequest: async () => ({ share: { ...deniedShare, grants: ['view', 'terminalInput'] }, request: grantRequest }),
+      denyGrantRequest: async () => ({ share: deniedShare, request: deniedRequest }),
+    };
+    const service = new TaskShareService({
+      client,
+      taskStore,
+      getNodeIdentity: () => ({ nodeId: asNodeId('kookr-node-test'), nodeEpoch: asNodeEpoch('1') }),
+      nextServerRevision: () => asServerRevision(events.length + 1),
+      publish: (event) => {
+        events.push(event);
+        return true;
+      },
+    });
+
+    await service.denyGrantRequest('inv-1', 'grant-req-1');
+
+    expect(await service.listTaskShares()).toEqual([
+      expect.objectContaining({
+        invitationId: 'inv-1',
+        grants: ['view'],
+        grantRequests: [deniedRequest],
+      }),
+    ]);
+    expect(events).toHaveLength(0);
   });
 });
