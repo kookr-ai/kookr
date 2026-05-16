@@ -66,6 +66,7 @@ function buildGuidance(context: CheckoutContext, branchLabel: string, repoName: 
     `- Create one: \`git worktree add ../${repoName}-<short-name> -b <feature-branch> HEAD\``,
     `- Perform all tracked-file edits, commits, and pushes from that new worktree.`,
     `- If the task stays read-only, you may remain in the current checkout.`,
+    `- After committing, don't end your turn silently — unless the task already told you to deliver, ask the user whether to push the branch and open a PR.`,
   ].join('\n');
 }
 
