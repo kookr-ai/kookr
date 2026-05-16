@@ -131,6 +131,167 @@ describe('relay node-scoped task-share endpoints', () => {
     expect(await newTokenStatus.json()).toEqual({ nodeId: issued.nodeId, displayName: 'Desktop' });
   });
 
+  it('supports hosted account/device pairing without relay admin credentials', async () => {
+    const relay = createRelayServer({
+      accountToken: 'account-secret',
+      accountId: 'acct-1',
+      hostedRelay: {
+        enabled: true,
+        operationalGatesMet: true,
+        mode: 'available',
+      },
+    });
+    openHandle = relay;
+    await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
+
+    const anonymousPair = await fetch(new URL('/relay/account/nodes', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ displayName: 'Anonymous' }),
+    });
+    expect(anonymousPair.status).toBe(401);
+
+    const paired = await fetch(new URL('/relay/account/nodes', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer account-secret' },
+      body: JSON.stringify({ displayName: 'Hosted Desktop', deviceId: 'device-1' }),
+    });
+    expect(paired.status).toBe(201);
+    const issued = await paired.json() as { nodeId: string; nodeToken: string };
+    expect(issued.nodeId).toMatch(/^kookr-node-/);
+    expect(issued.nodeToken).toMatch(/^kookr_tok_v1_/);
+
+    const status = await fetch(new URL('/relay/node/status', relay.url()), {
+      headers: nodeHeaders(issued.nodeToken),
+    });
+    expect(status.status).toBe(200);
+    expect(await status.json()).toEqual({ nodeId: issued.nodeId, displayName: 'Hosted Desktop' });
+
+    const rotated = await fetch(new URL(`/relay/account/nodes/${issued.nodeId}/token/rotate`, relay.url()), {
+      method: 'POST',
+      headers: { authorization: 'Bearer account-secret' },
+    });
+    expect(rotated.status).toBe(200);
+    const newCredential = await rotated.json() as { nodeId: string; nodeToken: string };
+    expect(newCredential.nodeId).toBe(issued.nodeId);
+    expect(newCredential.nodeToken).not.toBe(issued.nodeToken);
+
+    const oldTokenStatus = await fetch(new URL('/relay/node/status', relay.url()), {
+      headers: nodeHeaders(issued.nodeToken),
+    });
+    expect(oldTokenStatus.status).toBe(401);
+
+    const newTokenStatus = await fetch(new URL('/relay/node/status', relay.url()), {
+      headers: nodeHeaders(newCredential.nodeToken),
+    });
+    expect(newTokenStatus.status).toBe(200);
+    expect(await newTokenStatus.json()).toEqual({ nodeId: issued.nodeId, displayName: 'Hosted Desktop' });
+  });
+
+  it('keeps hosted account pairing inert until the operational gate is enabled', async () => {
+    const relay = createRelayServer({ accountToken: 'account-secret' });
+    openHandle = relay;
+    await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
+
+    const paired = await fetch(new URL('/relay/account/nodes', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer account-secret' },
+      body: JSON.stringify({ displayName: 'Hosted Desktop' }),
+    });
+
+    expect(paired.status).toBe(503);
+    expect(await paired.json()).toEqual({ error: 'hosted-relay-unavailable' });
+  });
+
+  it('reports hosted ops status and metrics for tickets, rate limits, sockets, and 5xx modes', async () => {
+    const relay = createRelayServer({
+      adminToken: 'admin-secret',
+      accountToken: 'account-secret',
+      hostedRelay: {
+        enabled: true,
+        operationalGatesMet: true,
+        mode: 'available',
+        shareCreateLimitPerMinute: 1,
+        deploymentOwner: 'ops@example.com',
+        environment: 'production',
+        tlsExpiresAt: '2026-08-01T00:00:00.000Z',
+      },
+    });
+    openHandle = relay;
+    await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
+    const { nodeId, nodeToken } = relay.registerNode();
+    await connectNode(relay, nodeId, nodeToken);
+
+    const ops = await fetch(new URL('/relay/ops/status', relay.url()));
+    expect(ops.status).toBe(200);
+    expect(await ops.json()).toMatchObject({
+      configured: true,
+      mode: 'available',
+      deploymentOwner: 'ops@example.com',
+      environment: 'production',
+      tlsExpiresAt: '2026-08-01T00:00:00.000Z',
+    });
+
+    const created = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 'task-metrics' }, grants: ['view'] }),
+    });
+    expect(created.status).toBe(201);
+    const rateLimited = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 'task-rate' }, grants: ['view'] }),
+    });
+    expect(rateLimited.status).toBe(429);
+
+    const metrics = await fetch(new URL('/relay/admin/metrics', relay.url()), {
+      headers: { authorization: 'Bearer admin-secret' },
+    });
+    expect(metrics.status).toBe(200);
+    expect(await metrics.json()).toEqual({
+      metrics: expect.objectContaining({
+        ticketsCreated: 1,
+        rateLimitHits: 1,
+        activeNodeSockets: 1,
+        maxNodeHeartbeatAgeMs: expect.any(Number),
+        policySyncFailures: 0,
+        http5xxCount: 0,
+      }),
+      alerts: expect.arrayContaining([expect.objectContaining({ code: 'rate-limit-hits' })]),
+    });
+  });
+
+  it('emergency-disables new shares without rejecting local relay status reads', async () => {
+    const relay = createRelayServer({
+      accountToken: 'account-secret',
+      hostedRelay: {
+        enabled: true,
+        operationalGatesMet: true,
+        mode: 'emergencyDisabled',
+      },
+    });
+    openHandle = relay;
+    await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
+    const { nodeToken } = relay.registerNode();
+
+    const status = await fetch(new URL('/relay/node/status', relay.url()), {
+      headers: nodeHeaders(nodeToken),
+    });
+    expect(status.status).toBe(200);
+
+    const create = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 'task-disabled' }, grants: ['view'] }),
+    });
+    expect(create.status).toBe(503);
+    expect(await create.json()).toEqual({ error: 'hosted-relay-emergency-disabled' });
+
+    const ops = await fetch(new URL('/relay/ops/status', relay.url()));
+    expect(await ops.json()).toMatchObject({ mode: 'emergencyDisabled' });
+  });
+
   it('closes an active node WebSocket authenticated with the old token after rotation', async () => {
     const relay = await startRelay();
     const { nodeId, nodeToken } = relay.registerNode({ displayName: 'Desktop' });

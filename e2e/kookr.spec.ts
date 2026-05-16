@@ -91,6 +91,7 @@ async function injectToolUse(request: APIRequestContext, tmuxName: string, toolN
 async function launchViaUI(page: Page, prompt: string, cwd: string) {
   // Ensure WebSocket is connected before launching (CI can be slow to connect)
   await expect(page.locator('.health-dot-connected')).toBeVisible({ timeout: 5000 });
+  const expectedTaskCount = await currentTaskCount(page) + 1;
   await page.locator('.btn-launch').click();
   await page.locator('.dialog textarea').fill(prompt);
   const cwdInput = page.locator('.dialog input[type="text"]').first();
@@ -99,12 +100,19 @@ async function launchViaUI(page: Page, prompt: string, cwd: string) {
   await page.locator('.dialog .btn-primary').click();
   // Wait for dialog to close
   await expect(page.locator('.dialog')).not.toBeVisible();
+  await waitForAgentCount(page, expectedTaskCount);
 }
 
 /** Wait for the WebSocket snapshot to deliver agent state. */
 async function waitForAgentCount(page: Page, count: number) {
   // The status bar shows "N tasks"
   await expect(page.locator('.statusbar')).toContainText(`${count} task`, { timeout: 5000 });
+}
+
+async function currentTaskCount(page: Page): Promise<number> {
+  const status = await page.locator('.statusbar').textContent();
+  const match = status?.match(/(\d+)\s+tasks?/);
+  return match ? Number(match[1]) : 0;
 }
 
 // ---------------------------------------------------------------------------

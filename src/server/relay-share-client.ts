@@ -32,7 +32,7 @@ export const TASK_SHARE_MAX_TTL_MS = 24 * 60 * 60 * 1000;
 export const TASK_SHARE_DEFAULT_TTL_MS = 10 * 60 * 1000;
 
 /** HTTP status the dashboard backend surfaces for a failed relay call. */
-export type RelayShareErrorStatus = 400 | 404 | 502;
+export type RelayShareErrorStatus = 400 | 404 | 409 | 429 | 502 | 503;
 
 /** A relay call failed; `status` is the HTTP status to surface to the dashboard. */
 export class RelayShareError extends Error {
@@ -149,11 +149,16 @@ export function createRelayShareClient(opts: RelayShareClientOptions): RelayShar
       const code = res.status === 401
         ? 'relay-rejected-token'
         : typeof relayError === 'string' ? relayError : 'relay-error';
-      // Only a relay 400 (bad share request) or 404 (unknown invitation) is
-      // a fault the dashboard caller can act on. Anything else — notably a
-      // 401, which means the node token is misconfigured — is an operator
-      // problem and is surfaced as 502.
-      const status: RelayShareErrorStatus = res.status === 400 || res.status === 404
+      // Relay 4xx/503 product-policy responses are actionable in the local
+      // dashboard. A 401 means the node token is misconfigured, so surface it
+      // as an operator-side 502 without leaking the token.
+      const status: RelayShareErrorStatus = (
+        res.status === 400
+        || res.status === 404
+        || res.status === 409
+        || res.status === 429
+        || res.status === 503
+      )
         ? res.status
         : 502;
       throw new RelayShareError(code, status);

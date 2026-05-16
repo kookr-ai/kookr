@@ -13,6 +13,7 @@ import type { RemoteNodeStatus } from '../remote/node-client.js';
 import type {
   RelayConnectionConnectRequest,
   RelayConnectionErrorView,
+  RelayConnectionHostedPairRequest,
   RelayConnectionPairRequest,
   RelayConnectionRotateRequest,
   RelayNodeCredentialStatusResponse,
@@ -20,6 +21,8 @@ import type {
   RelayConnectionState,
   RelayConnectionStatus,
 } from '../shared/contracts/relay-connection.js';
+import type { HostedRelayNodeCredentialResponse, HostedRelayStatus } from '../shared/contracts/hosted-relay.js';
+import { hostedRelayStatusFromEnv } from './hosted-relay-config.js';
 
 export interface RelayRuntimeHandle {
   readonly nodeStatus: RemoteNodeStatus;
@@ -30,6 +33,7 @@ export interface RelayRuntimeHandle {
 export interface RelayConnectionManagerOptions {
   kookrDir: string;
   env?: NodeJS.ProcessEnv;
+  getHostedRelayStatus?: () => HostedRelayStatus;
   startRuntime: (credentials: RelayConnectionCredentials) => Promise<RelayRuntimeHandle>;
   onStatusChange?: (status: RelayConnectionStatus) => void;
 }
@@ -39,6 +43,7 @@ export interface RelayConnectionManager {
   startConfigured(): Promise<RelayConnectionStatus>;
   connect(input: RelayConnectionConnectRequest): Promise<RelayConnectionStatus>;
   pair(input: RelayConnectionPairRequest): Promise<RelayConnectionStatus>;
+  pairHosted(input: RelayConnectionHostedPairRequest): Promise<RelayConnectionStatus>;
   rotate(input: RelayConnectionRotateRequest): Promise<RelayConnectionStatus>;
   disconnect(): Promise<RelayConnectionStatus>;
   forget(): Promise<RelayConnectionStatus>;
@@ -177,6 +182,73 @@ async function requestNodePairing(input: RelayConnectionPairRequest): Promise<Re
   };
 }
 
+async function requestHostedNodePairing(
+  input: RelayConnectionHostedPairRequest,
+  hostedRelay: HostedRelayStatus,
+): Promise<RelayConnectionCredentials> {
+  if (!hostedRelay.configured || hostedRelay.mode !== 'available') {
+    throw new RelayAdminOperationError(
+      hostedRelay.mode === 'maintenance' ? 'hosted-relay-maintenance' : 'hosted-relay-unavailable',
+      hostedRelay.message,
+      hostedRelay.mode === 'maintenance' ? 502 : 400,
+    );
+  }
+  const relayUrl = normalizeRelayUrl(hostedRelay.relayUrl);
+  const accountToken = typeof input.accountToken === 'string' ? input.accountToken.trim() : '';
+  if (!accountToken) {
+    throw new RelayAdminOperationError('account-token-required', 'An account token is required for hosted relay pairing.');
+  }
+  const displayName = typeof input.displayName === 'string' && input.displayName.trim()
+    ? input.displayName.trim()
+    : undefined;
+  const publicBaseUrl = typeof input.publicBaseUrl === 'string' && input.publicBaseUrl.trim()
+    ? input.publicBaseUrl.trim()
+    : undefined;
+  let res: Response;
+  try {
+    res = await fetch(new URL('/relay/account/nodes', relayUrl), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${accountToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        ...(displayName ? { displayName } : {}),
+      }),
+    });
+  } catch {
+    throw new RelayAdminOperationError('relay-unreachable', 'Hosted relay could not be reached.', 502);
+  }
+  if (res.status === 401 || res.status === 403) {
+    throw new RelayAdminOperationError('hosted-account-auth-failed', 'Hosted relay rejected the account credential.', 401);
+  }
+  if (res.status === 429) {
+    throw new RelayAdminOperationError('hosted-pairing-rate-limited', 'Hosted relay pairing is rate-limited.', 502);
+  }
+  if (res.status === 503) {
+    const body = await res.json().catch(() => ({})) as { error?: unknown };
+    throw new RelayAdminOperationError(
+      body.error === 'hosted-relay-maintenance' ? 'hosted-relay-maintenance' : 'hosted-relay-emergency-disabled',
+      'Hosted relay is temporarily unavailable for new pairings.',
+      502,
+    );
+  }
+  if (!res.ok) {
+    throw new RelayAdminOperationError('hosted-pairing-failed', 'Hosted relay pairing failed.', 502);
+  }
+  const body = await res.json().catch(() => null) as Partial<HostedRelayNodeCredentialResponse> | null;
+  if (typeof body?.nodeId !== 'string' || typeof body.nodeToken !== 'string') {
+    throw new RelayAdminOperationError('hosted-pairing-bad-response', 'Hosted relay pairing response was invalid.', 502);
+  }
+  return {
+    relayUrl,
+    nodeId: body.nodeId,
+    relayToken: body.nodeToken,
+    ...(displayName ? { displayName } : {}),
+    ...(publicBaseUrl ? { publicBaseUrl } : {}),
+  };
+}
+
 async function requestNodeTokenRotation(
   credentials: RelayConnectionCredentials,
   input: RelayConnectionRotateRequest,
@@ -221,6 +293,7 @@ async function requestNodeTokenRotation(
 
 export function createRelayConnectionManager(opts: RelayConnectionManagerOptions): RelayConnectionManager {
   const env = opts.env ?? process.env;
+  const getHostedRelayStatus = opts.getHostedRelayStatus ?? (() => hostedRelayStatusFromEnv(env));
   let activeConfig: ActiveConfig | null = null;
   let runtime: RelayRuntimeHandle | null = null;
   let state: RelayConnectionState = 'localOnly';
@@ -243,6 +316,7 @@ export function createRelayConnectionManager(opts: RelayConnectionManagerOptions
       ...(nodeStatus ? { nodeId: nodeStatus.nodeId, nodeMode: nodeStatus.nodeMode } : activeConfig?.credentials.nodeId ? { nodeId: activeConfig.credentials.nodeId } : {}),
       ...(lastConnectedAt ? { lastConnectedAt } : {}),
       ...(lastError ? { lastError } : {}),
+      hostedRelay: getHostedRelayStatus(),
     };
     opts.onStatusChange?.(status);
     return status;
@@ -275,7 +349,7 @@ export function createRelayConnectionManager(opts: RelayConnectionManagerOptions
     state = 'connecting';
     lastError = undefined;
     await stopRuntime();
-    if (persist && config.source === 'stored') {
+    if (persist && (config.source === 'stored' || config.source === 'hosted')) {
       await saveStoredRelayConnectionCredentials(opts.kookrDir, config.credentials);
     }
     if (config.credentials.nodeId) {
@@ -330,6 +404,12 @@ export function createRelayConnectionManager(opts: RelayConnectionManagerOptions
     },
     async pair(input: RelayConnectionPairRequest): Promise<RelayConnectionStatus> {
       return runExclusive(async () => start({ source: 'stored', credentials: await requestNodePairing(input) }, true));
+    },
+    async pairHosted(input: RelayConnectionHostedPairRequest): Promise<RelayConnectionStatus> {
+      return runExclusive(async () => start({
+        source: 'hosted',
+        credentials: await requestHostedNodePairing(input, getHostedRelayStatus()),
+      }, true));
     },
     async rotate(input: RelayConnectionRotateRequest): Promise<RelayConnectionStatus> {
       return runExclusive(async () => {

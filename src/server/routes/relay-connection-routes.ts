@@ -66,6 +66,27 @@ export function registerRelayConnectionRoutes(app: Hono, deps: RouteDeps): void 
     }
   });
 
+  app.post('/api/relay-connection/hosted/pair', async (c) => {
+    if (!deps.relayConnection) return c.json({ error: 'relay-connection-not-configured' }, 500);
+    const guard = guardRelayMutation(c, deps);
+    if (!guard.ok) return c.json({ error: guard.error }, guard.status);
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid-json-body' }, 400);
+    }
+    try {
+      const status = await deps.relayConnection.pairHosted(body as never);
+      const response: RelayConnectionStatusResponse = { status };
+      return c.json(response);
+    } catch (err) {
+      const relayErr = err as { code?: unknown; status?: unknown };
+      const status = relayErr.status === 401 || relayErr.status === 502 ? relayErr.status : 400;
+      return c.json({ error: typeof relayErr.code === 'string' ? relayErr.code : 'hosted-pairing-failed' }, status);
+    }
+  });
+
   app.post('/api/relay-connection/rotate', async (c) => {
     if (!deps.relayConnection) return c.json({ error: 'relay-connection-not-configured' }, 500);
     const guard = guardRelayMutation(c, deps);

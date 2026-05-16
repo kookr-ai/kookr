@@ -5,9 +5,31 @@ import type { RelayConnectionManager } from '../relay-connection-manager.js';
 import { registerRelayConnectionRoutes } from './relay-connection-routes.js';
 import type { RouteDeps } from './shared.js';
 import { SHARE_CSRF_HEADER } from './share-routes.js';
+import type { HostedRelayStatus } from '../../shared/contracts/hosted-relay.js';
 
 const CSRF = 'csrf-nonce';
 const ORIGIN = 'http://127.0.0.1';
+
+const HOSTED_RELAY: HostedRelayStatus = {
+  configured: false,
+  relayUrl: 'https://share.kookr.dev',
+  defaultEnabled: false,
+  operationalGatesMet: false,
+  mode: 'notConfigured',
+  message: 'Hosted relay is not enabled.',
+  checkedAt: '2026-05-16T00:00:00.000Z',
+  gates: {
+    deploymentOwner: false,
+    environment: false,
+    tlsDomain: false,
+    accountDeviceAuth: false,
+    nodePairingAuth: false,
+    dataRetention: false,
+    rateLimitAbuse: false,
+    emergencyMaintenance: false,
+    metricsAlerts: false,
+  },
+};
 
 function manager(overrides: Partial<RelayConnectionManager> = {}): RelayConnectionManager {
   return {
@@ -16,12 +38,14 @@ function manager(overrides: Partial<RelayConnectionManager> = {}): RelayConnecti
       source: 'none',
       connectionState: 'localOnly',
       relayConnected: false,
+      hostedRelay: HOSTED_RELAY,
     }),
     startConfigured: async () => ({
       configured: false,
       source: 'none',
       connectionState: 'localOnly',
       relayConnected: false,
+      hostedRelay: HOSTED_RELAY,
     }),
     connect: vi.fn(async () => ({
       configured: true,
@@ -29,6 +53,7 @@ function manager(overrides: Partial<RelayConnectionManager> = {}): RelayConnecti
       relayUrl: 'http://relay.test',
       connectionState: 'connected',
       relayConnected: true,
+      hostedRelay: HOSTED_RELAY,
     })),
     pair: vi.fn(async () => ({
       configured: true,
@@ -37,6 +62,16 @@ function manager(overrides: Partial<RelayConnectionManager> = {}): RelayConnecti
       nodeId: 'kookr-node-paired',
       connectionState: 'connected',
       relayConnected: true,
+      hostedRelay: HOSTED_RELAY,
+    })),
+    pairHosted: vi.fn(async () => ({
+      configured: true,
+      source: 'hosted',
+      relayUrl: 'https://share.kookr.dev',
+      nodeId: 'kookr-node-hosted',
+      connectionState: 'connected',
+      relayConnected: true,
+      hostedRelay: { ...HOSTED_RELAY, configured: true, defaultEnabled: true, operationalGatesMet: true, mode: 'available' },
     })),
     rotate: vi.fn(async () => ({
       configured: true,
@@ -45,6 +80,7 @@ function manager(overrides: Partial<RelayConnectionManager> = {}): RelayConnecti
       nodeId: 'kookr-node-paired',
       connectionState: 'connected',
       relayConnected: true,
+      hostedRelay: HOSTED_RELAY,
     })),
     disconnect: vi.fn(async () => ({
       configured: true,
@@ -52,12 +88,14 @@ function manager(overrides: Partial<RelayConnectionManager> = {}): RelayConnecti
       relayUrl: 'http://relay.test',
       connectionState: 'stopped',
       relayConnected: false,
+      hostedRelay: HOSTED_RELAY,
     })),
     forget: vi.fn(async () => ({
       configured: false,
       source: 'none',
       connectionState: 'localOnly',
       relayConnected: false,
+      hostedRelay: HOSTED_RELAY,
     })),
     ...overrides,
   };
@@ -89,6 +127,7 @@ describe('relay connection routes', () => {
         relayUrl: 'http://relay.test',
         connectionState: 'connected',
         relayConnected: true,
+        hostedRelay: HOSTED_RELAY,
       }),
     });
     const res = await app(relayConnection).request(`${ORIGIN}/api/relay-connection`);
@@ -196,6 +235,39 @@ describe('relay connection routes', () => {
     });
     expect(rotated.status).toBe(200);
     expect(relayConnection.rotate).toHaveBeenCalledWith({ relayAdminToken: 'admin-secret' });
+  });
+
+  it('protects hosted relay account pairing and never returns the account token', async () => {
+    const relayConnection = manager();
+
+    const missingCsrf = await post(app(relayConnection), '/api/relay-connection/hosted/pair', { Origin: ORIGIN }, {
+      accountToken: 'account-secret',
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const badOrigin = await post(app(relayConnection), '/api/relay-connection/hosted/pair', {
+      Origin: 'http://evil.test',
+      [SHARE_CSRF_HEADER]: CSRF,
+    }, {
+      accountToken: 'account-secret',
+    });
+    expect(badOrigin.status).toBe(403);
+    expect(relayConnection.pairHosted).not.toHaveBeenCalled();
+
+    const paired = await post(app(relayConnection), '/api/relay-connection/hosted/pair', {
+      Origin: ORIGIN,
+      [SHARE_CSRF_HEADER]: CSRF,
+    }, {
+      accountToken: 'account-secret',
+      displayName: 'Desk',
+    });
+
+    expect(paired.status).toBe(200);
+    expect(relayConnection.pairHosted).toHaveBeenCalledWith({
+      accountToken: 'account-secret',
+      displayName: 'Desk',
+    });
+    expect(await paired.text()).not.toContain('account-secret');
   });
 
   it('returns redacted pairing errors', async () => {

@@ -85,6 +85,7 @@ async function injectStopEvent(request: APIRequestContext, tmuxName: string) {
 async function launchViaUI(page: Page, prompt: string, cwd: string) {
   // Ensure WebSocket is connected before launching (CI can be slow to connect)
   await expect(page.locator('.health-dot-connected')).toBeVisible({ timeout: 5000 });
+  const expectedTaskCount = await currentTaskCount(page) + 1;
   await page.locator('.btn-launch').click();
   await page.locator('.dialog textarea').fill(prompt);
   const cwdInput = page.locator('.dialog input[type="text"]').first();
@@ -92,10 +93,17 @@ async function launchViaUI(page: Page, prompt: string, cwd: string) {
   await cwdInput.fill(cwd);
   await page.locator('.dialog .btn-primary').click();
   await expect(page.locator('.dialog')).not.toBeVisible();
+  await waitForAgentCount(page, expectedTaskCount);
 }
 
 async function waitForAgentCount(page: Page, count: number) {
   await expect(page.locator('.statusbar')).toContainText(`${count} task`, { timeout: 5000 });
+}
+
+async function currentTaskCount(page: Page): Promise<number> {
+  const status = await page.locator('.statusbar').textContent();
+  const match = status?.match(/(\d+)\s+tasks?/);
+  return match ? Number(match[1]) : 0;
 }
 
 async function setProjectId(request: APIRequestContext, taskId: string, projectId: string) {

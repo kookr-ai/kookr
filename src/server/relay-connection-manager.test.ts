@@ -164,6 +164,146 @@ describe('RelayConnectionManager', () => {
     expect(storedText).not.toContain('admin-secret');
   });
 
+  it('pairs with a hosted relay account token when operational gates are met', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-hosted-'));
+    relay = createRelayServer({
+      accountToken: 'account-secret',
+      accountId: 'acct-1',
+      hostedRelay: {
+        enabled: true,
+        operationalGatesMet: true,
+        mode: 'available',
+      },
+    });
+    await new Promise<void>((resolve) => relay!.httpServer.listen(0, '127.0.0.1', () => resolve()));
+    const startedWith: string[] = [];
+    const manager = createRelayConnectionManager({
+      kookrDir: dir,
+      env: {},
+      getHostedRelayStatus: () => ({
+        configured: true,
+        defaultEnabled: true,
+        operationalGatesMet: true,
+        relayUrl: relay!.url(),
+        mode: 'available',
+        message: 'Hosted relay is ready.',
+        checkedAt: '2026-05-16T00:00:00.000Z',
+        gates: {
+          deploymentOwner: true,
+          environment: true,
+          tlsDomain: true,
+          accountDeviceAuth: true,
+          nodePairingAuth: true,
+          dataRetention: true,
+          rateLimitAbuse: true,
+          emergencyMaintenance: true,
+          metricsAlerts: true,
+        },
+      }),
+      startRuntime: async (credentials) => {
+        startedWith.push(credentials.relayToken);
+        return fakeRuntime(() => undefined);
+      },
+    });
+
+    const status = await manager.pairHosted({ accountToken: 'account-secret', displayName: 'Hosted desk' });
+
+    expect(status).toMatchObject({
+      configured: true,
+      source: 'hosted',
+      relayUrl: relay.url(),
+      displayName: 'Hosted desk',
+      connectionState: 'connected',
+      relayConnected: true,
+    });
+    const storedText = await readFile(relayConnectionCredentialsPath(dir), 'utf8');
+    expect(storedText).toContain(startedWith[0]!);
+    expect(storedText).not.toContain('account-secret');
+  });
+
+  it('ignores caller-supplied hosted relay URLs so account tokens cannot be redirected', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-hosted-url-'));
+    relay = createRelayServer({
+      accountToken: 'account-secret',
+      hostedRelay: {
+        enabled: true,
+        operationalGatesMet: true,
+        mode: 'available',
+      },
+    });
+    await new Promise<void>((resolve) => relay!.httpServer.listen(0, '127.0.0.1', () => resolve()));
+    const manager = createRelayConnectionManager({
+      kookrDir: dir,
+      env: {},
+      getHostedRelayStatus: () => ({
+        configured: true,
+        defaultEnabled: true,
+        operationalGatesMet: true,
+        relayUrl: relay!.url(),
+        mode: 'available',
+        message: 'Hosted relay is ready.',
+        checkedAt: '2026-05-16T00:00:00.000Z',
+        gates: {
+          deploymentOwner: true,
+          environment: true,
+          tlsDomain: true,
+          accountDeviceAuth: true,
+          nodePairingAuth: true,
+          dataRetention: true,
+          rateLimitAbuse: true,
+          emergencyMaintenance: true,
+          metricsAlerts: true,
+        },
+      }),
+      startRuntime: async () => fakeRuntime(() => undefined),
+    });
+
+    const status = await manager.pairHosted({
+      accountToken: 'account-secret',
+      relayUrl: 'http://127.0.0.1:1',
+    } as unknown as Parameters<typeof manager.pairHosted>[0]);
+
+    expect(status).toMatchObject({ source: 'hosted', relayUrl: relay.url(), connectionState: 'connected' });
+  });
+
+  it('does not call the hosted relay when the local operational gate is closed', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-hosted-closed-'));
+    let starts = 0;
+    const manager = createRelayConnectionManager({
+      kookrDir: dir,
+      env: {},
+      getHostedRelayStatus: () => ({
+        configured: false,
+        defaultEnabled: true,
+        operationalGatesMet: false,
+        relayUrl: 'http://127.0.0.1:1',
+        mode: 'notConfigured',
+        message: 'Hosted relay is waiting for operational gates.',
+        checkedAt: '2026-05-16T00:00:00.000Z',
+        gates: {
+          deploymentOwner: false,
+          environment: false,
+          tlsDomain: false,
+          accountDeviceAuth: false,
+          nodePairingAuth: false,
+          dataRetention: false,
+          rateLimitAbuse: false,
+          emergencyMaintenance: false,
+          metricsAlerts: false,
+        },
+      }),
+      startRuntime: async () => {
+        starts += 1;
+        return fakeRuntime(() => undefined);
+      },
+    });
+
+    await expect(manager.pairHosted({ accountToken: 'account-secret' })).rejects.toMatchObject({
+      code: 'hosted-relay-unavailable',
+    });
+    expect(starts).toBe(0);
+  });
+
   it('rejects anonymous pairing and reports redacted auth failures', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-pair-auth-'));
     const { relayUrl } = await startRelay();
