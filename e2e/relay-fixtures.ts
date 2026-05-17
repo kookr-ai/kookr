@@ -10,7 +10,12 @@ export const test = base.extend<{ suppressOnboarding: boolean }, { serverURL: st
       'node',
       ['--import', 'tsx', join(__dirname, 'test-server.ts')],
       {
-        env: { ...process.env, E2E_PORT: '0', E2E_WITH_RELAY: '1' },
+        env: {
+          ...process.env,
+          E2E_PORT: '0',
+          E2E_WITH_RELAY: '1',
+          KOOKR_RELAY_TRUSTED: 'true',
+        },
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     );
