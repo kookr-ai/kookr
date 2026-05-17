@@ -84,6 +84,14 @@ test.describe('Easy connection sharing Phase A0', () => {
     await expect(dialog.getByRole('status')).toContainText('Viewer connected', { timeout: 10_000 });
     await dialog.getByRole('button', { name: 'Revoke' }).click();
     await expect(dialog.getByRole('status')).toContainText('Revoked', { timeout: 10_000 });
+    await expect(dialog.getByRole('button', { name: 'Create new share' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Revoke' })).toHaveCount(0);
+    await expect(dialog.getByText('Link expires in')).toHaveCount(0);
+    await expect(dialog.getByText('Display label')).toHaveCount(0);
+    await expect(dialog.getByText('Approved grants')).toHaveCount(0);
+    await expect(dialog.getByText('Terminal sharing')).toHaveCount(0);
+    await expect(dialog.getByRole('textbox', { name: 'Share ID' })).toHaveCount(0);
+    await expect(dialog.getByRole('textbox', { name: 'Password' })).toHaveCount(0);
     await expect(collaboratorPage.getByRole('status')).toContainText('Disconnected', { timeout: 10_000 });
 
     await collaborator.close();
