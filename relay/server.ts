@@ -58,6 +58,7 @@ interface RelayClientSubscription {
     projectionId?: string;
     sessionAlias?: 'primary';
   };
+  terminalTransportAllowed?: boolean;
 }
 
 interface RelayClientAuth {
@@ -226,6 +227,10 @@ function requestIsSecure(req: IncomingMessage, opts: { trustedProxy: boolean }):
   const forwardedProto = req.headers['x-forwarded-proto'];
   const raw = Array.isArray(forwardedProto) ? forwardedProto.at(-1) : forwardedProto;
   return raw?.split(',').map((part) => part.trim().toLowerCase()).at(-1) === 'https';
+}
+
+function terminalTransportAllowed(req: IncomingMessage, opts: { trustedProxy: boolean }): boolean {
+  return requestIsSecure(req, opts) || isLoopbackAddress(clientAddress(req, opts));
 }
 
 class RelayStateWriteError extends Error {
@@ -1221,6 +1226,24 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     return { state: buildMemberShareState({ invitation, node }) };
   };
 
+  const memberShareStateForTransport = (
+    state: MemberShareStateResponse,
+    allowed: boolean,
+  ): MemberShareStateResponse => {
+    if (allowed) return state;
+    if (state.state.terminal.state !== 'available' && state.state.terminal.state !== 'viewOnly') return state;
+    return {
+      state: {
+        ...state.state,
+        terminal: {
+          state: 'blocked',
+          reason: 'transport.insecure',
+          message: 'Terminal sharing requires HTTPS for public links.',
+        },
+      },
+    };
+  };
+
   const nodeStatuses = (): RelayNodeStatus[] => [...registrations.values()].map((registration) => {
     const hello = nodeHello.get(registration.nodeId);
     const policy = currentNodePolicyState(registration.nodeId);
@@ -1385,6 +1408,11 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         const terminal = parseTerminalSubscription(url);
         if (terminal && !authAllowsTerminalStream(auth, invitations)) {
           sendJson(res, 403, { error: 'terminal grant required' });
+          return;
+        }
+        if (terminal && !terminalTransportAllowed(req, { trustedProxy })) {
+          incrementSecurityEvent();
+          sendJson(res, 403, { error: 'transport.insecure' });
           return;
         }
         const resolvedTerminal = resolveTerminalSubscription(asNodeId(nodeId), auth, terminal);
@@ -1683,7 +1711,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 401, { error: 'member-auth-required' });
           return;
         }
-        sendJson(res, 200, state);
+        sendJson(res, 200, memberShareStateForTransport(state, terminalTransportAllowed(req, { trustedProxy })));
         return;
       }
       if (req.method === 'POST' && url.pathname === '/relay/member/grant-requests') {
@@ -2013,6 +2041,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       }
       const terminal = parseTerminalSubscription(url);
       if (terminal && !authAllowsTerminalStream(auth, invitations)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      if (terminal && !terminalTransportAllowed(req, { trustedProxy })) {
+        incrementSecurityEvent();
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
         socket.destroy();
         return;
@@ -2440,9 +2474,13 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       const node = memberNodeState(nodeId);
       if (!invitation || !node) continue;
       if (sub.ws.readyState === sub.ws.OPEN) {
+        const state = memberShareStateForTransport(
+          { state: buildMemberShareState({ invitation, node }) },
+          sub.terminalTransportAllowed ?? true,
+        );
         sub.ws.send(JSON.stringify({
           type: 'relay.memberShareState',
-          state: buildMemberShareState({ invitation, node }),
+          state: state.state,
         }));
       }
     }
@@ -2584,6 +2622,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
 
   clientWss.on('connection', (ws: WebSocket, _req: IncomingMessage, subscribedNodeId: NodeId, auth: RelayClientAuth) => {
     const url = new URL(_req.url ?? '/', 'http://127.0.0.1');
+    const terminalInputTransportAllowed = terminalTransportAllowed(_req, { trustedProxy });
     const relayClientId = `relay-client-${randomUUID()}`;
     const terminal = parseTerminalSubscription(url);
     const resolvedTerminal = resolveTerminalSubscription(subscribedNodeId, auth, terminal);
@@ -2591,7 +2630,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       ws.close(1008, resolvedTerminal.error);
       return;
     }
-    const subscription: RelayClientSubscription = { ws, auth, ...(resolvedTerminal ? { terminal: resolvedTerminal } : {}) };
+    const subscription: RelayClientSubscription = {
+      ws,
+      auth,
+      terminalTransportAllowed: terminalInputTransportAllowed,
+      ...(resolvedTerminal ? { terminal: resolvedTerminal } : {}),
+    };
     let set = subscribers.get(subscribedNodeId);
     if (!set) {
       set = new Set();
@@ -2619,9 +2663,13 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       const invitation = invitations.list().find((candidate) => candidate.invitationId === auth.invitationId);
       const node = memberNodeState(subscribedNodeId);
       if (invitation && node && ws.readyState === ws.OPEN) {
+        const state = memberShareStateForTransport(
+          { state: buildMemberShareState({ invitation, node }) },
+          terminalInputTransportAllowed,
+        );
         ws.send(JSON.stringify({
           type: 'relay.memberShareState',
-          state: buildMemberShareState({ invitation, node }),
+          state: state.state,
         }));
       }
     }
@@ -2698,6 +2746,27 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         timestamp: new Date().toISOString(),
       });
       const requiredGrant = grantForRemoteCommandAction(action);
+      if (requiredGrant === 'terminalInput' && !terminalInputTransportAllowed) {
+        incrementSecurityEvent();
+        const result = {
+          type: 'remote.command.result',
+          commandId,
+          action: typeof action === 'string' ? action : 'presetReply',
+          outcome: 'rejected-pre-audit',
+          reason: 'transport.insecure',
+        };
+        appendMetadataAudit({
+          type: 'relay.metadata-audit',
+          commandId,
+          nodeId: subscribedNodeId,
+          ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
+          outcome: 'rejected-pre-audit',
+          timestamp: new Date().toISOString(),
+          reason: result.reason,
+        });
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+        return;
+      }
       if (!authAllows(auth, requiredGrant, invitations)) {
         const result = {
           type: 'remote.command.result',
@@ -3221,16 +3290,19 @@ function relayJoinHtml(): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Kookr shared task</title>
+  <link rel="stylesheet" href="/relay/assets/xterm.css">
   <style>
     :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #0d1117; color: #e7ecef; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0d1117; }
-    main { width: min(720px, calc(100vw - 32px)); }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; min-height: 100dvh; display: flex; align-items: stretch; justify-content: center; background: #0d1117; }
+    main { width: min(960px, 100vw); padding: 16px; display: flex; }
     h1 { font-size: 24px; margin: 0 0 8px; }
-    .panel { border: 1px solid #2b373d; border-radius: 8px; background: #151c20; padding: 18px; }
+    .panel { border: 1px solid #2b373d; border-radius: 8px; background: #151c20; padding: 18px; width: 100%; align-self: center; }
     .muted { color: #aeb9bf; }
     .status { margin: 12px 0; min-height: 20px; color: #aeb9bf; }
     label { display: grid; gap: 6px; margin: 14px 0; }
     input { background: #0c1114; color: #e7ecef; border: 1px solid #2b373d; border-radius: 4px; padding: 9px 10px; }
+    textarea { width: 100%; min-height: 68px; resize: vertical; background: #0c1114; color: #e7ecef; border: 1px solid #2b373d; border-radius: 4px; padding: 9px 10px; font: inherit; }
     button { background: #1f6feb; color: white; border: 0; border-radius: 4px; padding: 9px 12px; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     .task { border: 1px solid #2b373d; border-radius: 6px; padding: 14px; margin-top: 14px; background: #0f1519; }
@@ -3242,13 +3314,27 @@ function relayJoinHtml(): string {
     .error { color: #ff7b72; }
     .request { border: 1px solid #7c5f16; border-radius: 6px; padding: 12px; margin-top: 14px; background: #211b0d; }
     .blocked { border-color: #7f1d1d; background: #2a1111; }
+    .terminal-shell { margin-top: 14px; border: 1px solid #2b373d; border-radius: 6px; background: #06080a; overflow: hidden; }
+    .terminal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; background: #0f1519; border-bottom: 1px solid #2b373d; }
+    .terminal-toolbar strong { font-size: 13px; }
+    .terminal-viewer { height: clamp(220px, 42dvh, 520px); min-height: 180px; }
+    .terminal-banner { margin-top: 10px; border: 1px solid #7c5f16; border-radius: 6px; padding: 10px; background: #211b0d; color: #f4d58d; }
+    .composer { margin-top: 14px; display: grid; gap: 8px; }
+    .composer-actions { display: flex; justify-content: flex-end; }
+    @media (max-width: 520px) {
+      main { padding: 10px; }
+      .panel { padding: 14px; align-self: stretch; }
+      h1 { font-size: 21px; }
+      .task dl { grid-template-columns: 1fr; gap: 3px; }
+      .terminal-viewer { height: clamp(180px, 36dvh, 360px); }
+    }
   </style>
 </head>
 <body>
 <main>
   <section class="panel">
     <h1>Shared Kookr task</h1>
-    <p class="muted">View-only access as an unverified guest.</p>
+    <p class="muted">Shared task access as an unverified guest.</p>
     <form id="join-form">
       <div id="ticket-fields">
         <label>
@@ -3284,12 +3370,27 @@ function relayJoinHtml(): string {
       <strong id="terminal-status-title"></strong>
       <p id="terminal-status-copy" class="muted"></p>
     </section>
+    <section id="terminal-shell" class="terminal-shell" hidden aria-label="Shared terminal">
+      <div class="terminal-toolbar">
+        <strong>Terminal</strong>
+        <span id="terminal-live-state" class="muted">Waiting for terminal projection</span>
+      </div>
+      <div id="terminal" class="terminal-viewer"></div>
+    </section>
+    <div id="terminal-banner" class="terminal-banner" aria-live="polite" hidden></div>
+    <section id="terminal-composer" class="composer" hidden aria-label="Terminal input">
+      <textarea id="terminal-input" disabled aria-label="Terminal input message"></textarea>
+      <div class="composer-actions">
+        <button id="terminal-send" type="button" disabled>Send</button>
+      </div>
+    </section>
     <section id="grant-request" class="request" hidden aria-label="Collaborator grant request">
       <p id="grant-request-copy" class="muted">Terminal input requires owner approval.</p>
       <button id="request-control" type="button">Request terminal input</button>
     </section>
   </section>
 </main>
+<script src="/relay/assets/xterm.js"></script>
 <script>
 const fragmentParams = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : '');
 const inviteToken = fragmentParams.get('inviteToken') || '';
@@ -3329,9 +3430,22 @@ const offlineLastSeenEl = document.getElementById('offline-last-seen');
 const terminalStatusEl = document.getElementById('terminal-status');
 const terminalStatusTitleEl = document.getElementById('terminal-status-title');
 const terminalStatusCopyEl = document.getElementById('terminal-status-copy');
+const terminalShellEl = document.getElementById('terminal-shell');
+const terminalEl = document.getElementById('terminal');
+const terminalLiveStateEl = document.getElementById('terminal-live-state');
+const terminalBannerEl = document.getElementById('terminal-banner');
+const terminalComposerEl = document.getElementById('terminal-composer');
+const terminalInputEl = document.getElementById('terminal-input');
+const terminalSendEl = document.getElementById('terminal-send');
 const nodeKey = 'kookr-relay-join-node:' + location.host;
 let nodeId = sessionStorage.getItem(nodeKey) || '';
 let ws = null;
+let terminalWs = null;
+let terminal = null;
+let terminalProjection = null;
+let terminalStreamKey = '';
+let lastTerminalSeq = 0;
+let terminalMayView = false;
 shareIdEl.value = pathShareId;
 sharePasswordEl.value = fragmentPassword;
 if (inviteToken) ticketFieldsEl.hidden = true;
@@ -3380,6 +3494,136 @@ function renderOfflineNode(node) {
   setStatus('Machine offline. The link is still valid, but the task is not viewable right now.');
 }
 
+function setTerminalBanner(text, blocked) {
+  terminalBannerEl.textContent = text || '';
+  terminalBannerEl.hidden = !text;
+  terminalBannerEl.className = blocked ? 'terminal-banner blocked' : 'terminal-banner';
+  terminalBannerEl.dataset.sticky = '';
+  terminalInputEl.disabled = true;
+  terminalSendEl.disabled = true;
+}
+
+function ensureTerminal() {
+  terminalShellEl.hidden = false;
+  terminalComposerEl.hidden = false;
+  if (terminal) return;
+  const TerminalCtor = window.Terminal;
+  if (!TerminalCtor) {
+    setTerminalBanner('Terminal renderer is unavailable in this browser.', true);
+    return;
+  }
+  terminal = new TerminalCtor({
+    cursorBlink: false,
+    disableStdin: true,
+    screenReaderMode: true,
+    fontSize: 12,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    scrollback: 10000,
+    theme: {
+      background: '#06080a',
+      foreground: '#d8dee9',
+      cursor: '#d8dee9',
+    },
+  });
+  terminal.open(terminalEl);
+  terminal.textarea?.setAttribute('aria-label', 'Read-only terminal output');
+}
+
+function writeTerminal(textOrBytes) {
+  ensureTerminal();
+  terminal?.write(textOrBytes);
+}
+
+function resetTerminalStream(message) {
+  terminalProjection = null;
+  terminalStreamKey = '';
+  lastTerminalSeq = 0;
+  if (terminalWs) {
+    terminalWs.onclose = null;
+    terminalWs.close();
+    terminalWs = null;
+  }
+  terminalLiveStateEl.textContent = 'Waiting for terminal projection';
+  if (message) setTerminalBanner(message, true);
+}
+
+function projectionFromEvent(event) {
+  const payload = event && event.payload;
+  if (!payload || payload.type !== 'remote.shareSessionProjection.v1') return null;
+  const projection = payload.projection || {};
+  const primary = projection.primarySharedSession || {};
+  if (projection.projectionId && primary.sessionAlias === 'primary') {
+    return {
+      projectionId: projection.projectionId,
+      projectionVersion: projection.projectionVersion || 0,
+    };
+  }
+  return null;
+}
+
+function connectTerminalStream() {
+  if (!nodeId || !terminalMayView || !terminalProjection) return;
+  const key = terminalProjection.projectionId + ':' + terminalProjection.projectionVersion;
+  if (terminalWs && terminalStreamKey === key) return;
+  if (terminalWs) {
+    terminalWs.onclose = null;
+    terminalWs.close();
+  }
+  terminalStreamKey = key;
+  ensureTerminal();
+  terminalLiveStateEl.textContent = 'Connecting';
+  const wsUrl = new URL('/relay/client', location.href);
+  wsUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  wsUrl.searchParams.set('nodeId', nodeId);
+  wsUrl.searchParams.set('projectionId', terminalProjection.projectionId);
+  wsUrl.searchParams.set('sessionAlias', 'primary');
+  wsUrl.searchParams.set('afterSeq', String(lastTerminalSeq));
+  const nextTerminalWs = new WebSocket(wsUrl);
+  terminalWs = nextTerminalWs;
+  nextTerminalWs.onopen = () => {
+    if (terminalWs !== nextTerminalWs) return;
+    terminalLiveStateEl.textContent = 'Live';
+    if (!terminalBannerEl.hidden && !terminalBannerEl.className.includes('blocked') && terminalBannerEl.dataset.sticky !== 'true') setTerminalBanner('', false);
+  };
+  nextTerminalWs.onclose = (event) => {
+    if (terminalWs !== nextTerminalWs) return;
+    terminalWs = null;
+    terminalLiveStateEl.textContent = 'Disconnected';
+    if (event.code === 4001) {
+      setTerminalBanner('Terminal sharing was revoked.', true);
+    } else if (event.code === 4002) {
+      setTerminalBanner('This share expired.', true);
+    } else if (event.code === 4004 || event.code === 1008) {
+      resetTerminalStream('Terminal projection changed. Waiting for fresh terminal output.');
+    } else {
+      setTerminalBanner('Terminal stream disconnected. Reconnecting when the owner node is available.', true);
+    }
+  };
+  nextTerminalWs.onmessage = (msg) => {
+    if (terminalWs !== nextTerminalWs) return;
+    try { ingest(JSON.parse(msg.data)); } catch {}
+  };
+}
+
+function ingestTerminal(event) {
+  if (!event || typeof event !== 'object') return;
+  ensureTerminal();
+  if (event.kind === 'terminal.bytes' && event.payload && event.payload.encoding === 'base64') {
+    const raw = atob(event.payload.data || '');
+    const bytes = Uint8Array.from(raw, (ch) => ch.charCodeAt(0));
+    writeTerminal(bytes);
+    if (typeof event.seq === 'number') lastTerminalSeq = Math.max(lastTerminalSeq, event.seq);
+    terminalLiveStateEl.textContent = 'Live';
+    if (!terminalBannerEl.hidden && !terminalBannerEl.className.includes('blocked') && terminalBannerEl.dataset.sticky !== 'true') setTerminalBanner('', false);
+  } else if (event.kind === 'terminal.replay-gap' && event.payload) {
+    if (typeof event.payload.toSeq === 'number') lastTerminalSeq = Math.max(lastTerminalSeq, event.payload.toSeq);
+    writeTerminal('\\r\\n\\x1b[33m[terminal replay gap: missing seq ' + event.payload.fromSeq + '-' + event.payload.toSeq + ']\\x1b[0m\\r\\n');
+    terminalLiveStateEl.textContent = 'Replay gap';
+    setTerminalBanner('Terminal replay gap detected. Input remains disabled until fresh terminal output arrives.', false);
+    terminalBannerEl.dataset.sticky = 'true';
+  }
+}
+
 function renderMemberShareState(memberState) {
   if (!memberState || memberState.schemaVersion !== 'member-share-state.v1') return;
   if (memberState.nodeId) {
@@ -3391,29 +3635,39 @@ function renderMemberShareState(memberState) {
   terminalStatusEl.className = terminal.state === 'blocked' ? 'request blocked' : 'request';
   grantRequestEl.hidden = true;
   requestControlEl.disabled = false;
+  terminalMayView = terminal.state === 'available' || terminal.state === 'viewOnly';
   if (terminal.state === 'available') {
-    terminalStatusTitleEl.textContent = 'Terminal input approved';
-    terminalStatusCopyEl.textContent = 'Terminal viewing and input are available for this shared task.';
+    terminalStatusTitleEl.textContent = 'Terminal viewing approved';
+    terminalStatusCopyEl.textContent = 'You can watch this shared task terminal. Browser input is read-only in this version.';
+    ensureTerminal();
+    connectTerminalStream();
   } else if (terminal.state === 'viewOnly') {
     terminalStatusTitleEl.textContent = 'Terminal viewing approved';
     terminalStatusCopyEl.textContent = 'You can watch this shared task terminal. Sending messages still needs owner approval.';
+    ensureTerminal();
+    connectTerminalStream();
   } else if (terminal.state === 'pendingApproval') {
     terminalStatusTitleEl.textContent = 'Terminal request pending';
     terminalStatusCopyEl.textContent = 'Waiting for owner approval.';
+    resetTerminalStream('');
   } else if (terminal.state === 'denied') {
     terminalStatusTitleEl.textContent = 'Terminal request denied';
     terminalStatusCopyEl.textContent = 'The owner denied terminal input for this share.';
     grantRequestEl.hidden = false;
     grantRequestCopyEl.textContent = 'You can send another terminal input request.';
+    resetTerminalStream('Terminal access is denied for this share.');
   } else if (terminal.state === 'revoked') {
     terminalStatusTitleEl.textContent = 'Share revoked';
     terminalStatusCopyEl.textContent = 'This share is no longer active.';
+    resetTerminalStream('Terminal sharing was revoked.');
   } else if (terminal.state === 'expired') {
     terminalStatusTitleEl.textContent = 'Share expired';
     terminalStatusCopyEl.textContent = 'This share is no longer active.';
+    resetTerminalStream('This share expired.');
   } else {
     terminalStatusTitleEl.textContent = terminal.reason === 'policy.grantRequired' ? 'Terminal input not approved' : 'Terminal sharing unavailable';
     terminalStatusCopyEl.textContent = terminal.message || 'Terminal sharing is not available for this session.';
+    resetTerminalStream(terminal.message || 'Terminal sharing is not available for this session.');
     if (terminal.reason === 'policy.grantRequired') {
       grantRequestEl.hidden = false;
       grantRequestCopyEl.textContent = 'Terminal input requires owner approval.';
@@ -3425,6 +3679,27 @@ function renderMemberShareState(memberState) {
 function ingest(event) {
   if (event && event.type === 'relay.memberShareState') {
     renderMemberShareState(event.state);
+    return;
+  }
+  if (event && typeof event === 'object' && String(event.kind || '').startsWith('terminal.')) {
+    ingestTerminal(event);
+    return;
+  }
+  const nextProjection = projectionFromEvent(event);
+  if (nextProjection) {
+    const changed = !terminalProjection
+      || terminalProjection.projectionId !== nextProjection.projectionId
+      || terminalProjection.projectionVersion !== nextProjection.projectionVersion;
+    const replacedExistingProjection = Boolean(terminalProjection) && changed;
+    terminalProjection = nextProjection;
+    if (changed) {
+      lastTerminalSeq = 0;
+      terminalLiveStateEl.textContent = 'Terminal projection ready';
+      if (replacedExistingProjection) {
+        setTerminalBanner('Terminal projection changed. Input remains disabled until fresh terminal output arrives.', true);
+      }
+    }
+    connectTerminalStream();
     return;
   }
   const payload = event && event.payload;
