@@ -2296,6 +2296,65 @@ kbd {
   background: var(--hover);
 }
 
+.operations-panel {
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100dvh - 48px);
+}
+.operations-panel-header {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-dim);
+}
+.operations-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 12px -8px 0;
+}
+.operations-panel-body .audio-alerts-section,
+.operations-panel-body .detection-stats-section,
+.operations-panel-body .circuit-breaker-section {
+  border-top: 0;
+  border-bottom: 1px solid var(--border-dim);
+}
+.operations-panel-body .circuit-breaker-section {
+  border-bottom: 0;
+}
+.operations-panel-body .section-header {
+  min-width: 0;
+}
+.operations-panel-body .stats-label {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .operations-panel {
+    width: 100%;
+  }
+  .operations-panel-body {
+    margin-right: 0;
+    margin-left: 0;
+  }
+  .operations-panel .diagnostic-status-row,
+  .operations-panel .cb-row {
+    flex-wrap: wrap;
+  }
+  .operations-panel .diagnostic-timestamp {
+    flex-basis: 100%;
+    order: 3;
+  }
+  .operations-panel .diagnostic-run-btn {
+    margin-left: auto;
+  }
+  .operations-panel .audio-alert-row {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+  .operations-panel .audio-alert-description {
+    grid-column: 1 / -1;
+    white-space: normal;
+  }
+}
+
 .dialog label {
   display: flex;
   flex-direction: column;

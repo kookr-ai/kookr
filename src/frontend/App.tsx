@@ -207,6 +207,9 @@ export function App() {
   // Keyboard shortcuts
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      if (showOperations && e.key !== 'Escape') {
+        return;
+      }
       if (e.altKey && e.key === 'n') {
         e.preventDefault();
         track({ type: 'shortcut_used', key: 'Alt+N', action: 'next_bottleneck', context: 'global' });
@@ -354,7 +357,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nextBottleneck, nextTask, previousTask, send, toggleProjectSidebar, selectProject, toggleAchievementsPanel]);
+  }, [nextBottleneck, nextTask, previousTask, send, showOperations, toggleProjectSidebar, selectProject, toggleAchievementsPanel]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;
