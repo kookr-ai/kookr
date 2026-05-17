@@ -77,6 +77,7 @@ describe('InvitationStore', () => {
       redactedShareLabel: '482-***',
     });
     expect(created.invitation.passwordVerifier).not.toContain('cobalt-mint-7');
+    expect(created.invitation.passwordVerifier).toMatch(/^scrypt:16384:8:1:/);
 
     const accepted = store.acceptTicket('482 913', 'cobalt-mint-7', 'alice');
     expect(accepted.ok).toBe(true);
@@ -109,5 +110,34 @@ describe('InvitationStore', () => {
       failedAcceptCount: 5,
       lockedUntil: '2026-05-15T20:15:00.000Z',
     });
+  });
+
+  it('resets a locked share ticket with a new scrypt verifier', () => {
+    const store = new InvitationStore({
+      now: () => new Date('2026-05-15T20:00:00.000Z'),
+      tokenBytes: 8,
+      shareId: () => '482-913',
+      sharePassword: () => 'cobalt-mint-7',
+    });
+    const created = store.create({
+      nodeId: asNodeId('node-1'),
+      grants: ['view'],
+      ttlMs: 60_000,
+      shareTicket: true,
+    });
+    for (let i = 0; i < 5; i += 1) store.acceptTicket('482-913', `wrong-${i}`);
+
+    const reset = store.resetShareTicket(created.invitation.invitationId);
+    expect(reset.ok).toBe(true);
+    if (!reset.ok) throw new Error('expected reset');
+    expect(reset.shareTicket).toEqual({
+      shareId: '482-913',
+      password: 'cobalt-mint-7',
+      redactedShareLabel: '482-***',
+    });
+    expect(reset.invitation.failedAcceptCount).toBe(0);
+    expect(reset.invitation.lockedUntil).toBeUndefined();
+    expect(reset.invitation.passwordVerifier).toMatch(/^scrypt:16384:8:1:/);
+    expect(store.acceptTicket('482-913', 'cobalt-mint-7', 'alice').ok).toBe(true);
   });
 });

@@ -108,12 +108,21 @@ export interface HostedRelayMetricSnapshot {
   ticketsExpired: number;
   acceptFailuresByReason: Record<string, number>;
   rateLimitHits: number;
+  perShareLockCount: number;
+  securityEvents: number;
   activeNodeSockets: number;
   activeClientSockets: number;
   maxNodeHeartbeatAgeMs: number | null;
   lastRevokePropagationLatencyMs: number | null;
   policySyncFailures: number;
   http5xxCount: number;
+  recentWindowMs?: number;
+  recent?: {
+    rateLimitHits: number;
+    perShareLockCount: number;
+    securityEvents: number;
+    http5xxCount: number;
+  };
 }
 
 export interface HostedRelayAlert {

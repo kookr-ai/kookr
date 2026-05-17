@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 
 import type { GrantId, NodeId, PolicyVersion } from '../../../src/remote/ids.js';
 import { asGrantId, asPolicyVersion } from '../../../src/remote/ids.js';
@@ -58,6 +58,8 @@ export interface InvitationStoreOptions {
   defaultTtlMs?: number;
   shareId?: () => string;
   sharePassword?: () => string;
+  initialInvitations?: InvitationRecord[];
+  onSave?: (invitation: InvitationRecord) => void;
 }
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -66,6 +68,11 @@ const SHARE_PASSWORD_BYTES = 7;
 export const SHARE_TICKET_MAX_FAILED_ATTEMPTS = 5;
 export const SHARE_TICKET_LOCKOUT_MS = 15 * 60 * 1000;
 const MAX_GRANT_REQUEST_COMMENT_LENGTH = 160;
+const PASSWORD_VERIFIER_SCHEME = 'scrypt';
+const PASSWORD_VERIFIER_KEY_LENGTH = 32;
+const PASSWORD_VERIFIER_N = 16_384;
+const PASSWORD_VERIFIER_R = 8;
+const PASSWORD_VERIFIER_P = 1;
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -99,8 +106,12 @@ function issueSharePassword(): string {
 
 function createPasswordVerifier(password: string): string {
   const salt = randomBytes(16).toString('base64url');
-  const digest = createHash('sha256').update(`${salt}:${password}`).digest('base64url');
-  return `sha256:${salt}:${digest}`;
+  const digest = scryptSync(password, salt, PASSWORD_VERIFIER_KEY_LENGTH, {
+    N: PASSWORD_VERIFIER_N,
+    r: PASSWORD_VERIFIER_R,
+    p: PASSWORD_VERIFIER_P,
+  }).toString('base64url');
+  return `${PASSWORD_VERIFIER_SCHEME}:${PASSWORD_VERIFIER_N}:${PASSWORD_VERIFIER_R}:${PASSWORD_VERIFIER_P}:${salt}:${digest}`;
 }
 
 function cloneInvitation(invitation: InvitationRecord): InvitationRecord {
@@ -124,13 +135,45 @@ function sanitizeGrantRequestComment(comment: string | undefined): string | unde
 }
 
 function verifyPassword(password: string, verifier: string): boolean {
-  const [scheme, salt, expected] = verifier.split(':');
-  if (scheme !== 'sha256' || !salt || !expected) return false;
-  const actual = createHash('sha256').update(`${salt}:${password}`).digest('base64url');
+  const [scheme, nRaw, rRaw, pRaw, salt, expected] = verifier.split(':');
+  if (scheme !== PASSWORD_VERIFIER_SCHEME || !salt || !expected) return false;
+  const N = Number.parseInt(nRaw ?? '', 10);
+  const r = Number.parseInt(rRaw ?? '', 10);
+  const p = Number.parseInt(pRaw ?? '', 10);
+  if (!Number.isInteger(N) || !Number.isInteger(r) || !Number.isInteger(p)) return false;
+  const actual = scryptSync(password, salt, PASSWORD_VERIFIER_KEY_LENGTH, { N, r, p }).toString('base64url');
   const expectedBytes = Buffer.from(expected);
   const actualBytes = Buffer.from(actual);
   if (expectedBytes.length !== actualBytes.length) return false;
   return timingSafeEqual(expectedBytes, actualBytes);
+}
+
+export function isInvitationRecord(value: unknown): value is InvitationRecord {
+  const invitation = value as Partial<InvitationRecord>;
+  return typeof value === 'object'
+    && value !== null
+    && typeof invitation.invitationId === 'string'
+    && typeof invitation.nodeId === 'string'
+    && typeof invitation.subject === 'object'
+    && invitation.subject !== null
+    && Array.isArray(invitation.grants)
+    && invitation.grants.every((grant) => typeof grant === 'string')
+    && typeof invitation.grantId === 'string'
+    && typeof invitation.tokenHash === 'string'
+    && typeof invitation.createdAt === 'string'
+    && typeof invitation.expiresAt === 'string'
+    && typeof invitation.policyVersion === 'number'
+    && (invitation.revokedAt === undefined || typeof invitation.revokedAt === 'string')
+    && (invitation.acceptedAt === undefined || typeof invitation.acceptedAt === 'string')
+    && (invitation.acceptedBy === undefined || typeof invitation.acceptedBy === 'string')
+    && (invitation.memberTokenHash === undefined || typeof invitation.memberTokenHash === 'string')
+    && (invitation.memberId === undefined || typeof invitation.memberId === 'string')
+    && (invitation.shareId === undefined || typeof invitation.shareId === 'string')
+    && (invitation.passwordVerifier === undefined || typeof invitation.passwordVerifier === 'string')
+    && (invitation.failedAcceptCount === undefined || typeof invitation.failedAcceptCount === 'number')
+    && (invitation.lockedUntil === undefined || typeof invitation.lockedUntil === 'string')
+    && (invitation.redactedShareLabel === undefined || typeof invitation.redactedShareLabel === 'string')
+    && (invitation.grantRequests === undefined || Array.isArray(invitation.grantRequests));
 }
 
 export class InvitationStore {
@@ -144,6 +187,7 @@ export class InvitationStore {
   private readonly defaultTtlMs: number;
   private readonly nextShareId: () => string;
   private readonly nextSharePassword: () => string;
+  private readonly onSave?: (invitation: InvitationRecord) => void;
 
   constructor(opts: InvitationStoreOptions = {}) {
     this.now = opts.now ?? (() => new Date());
@@ -151,6 +195,23 @@ export class InvitationStore {
     this.defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_TTL_MS;
     this.nextShareId = opts.shareId ?? issueShareId;
     this.nextSharePassword = opts.sharePassword ?? issueSharePassword;
+    this.onSave = opts.onSave;
+    for (const invitation of opts.initialInvitations ?? []) {
+      this.remember(invitation);
+      this.policyVersion = Math.max(this.policyVersion, Number(invitation.policyVersion));
+    }
+  }
+
+  private remember(invitation: InvitationRecord): void {
+    this.invitations.set(invitation.invitationId, invitation);
+    this.invitationTokenIndex.set(invitation.tokenHash, invitation.invitationId);
+    if (invitation.shareId) this.shareIdIndex.set(invitation.shareId, invitation.invitationId);
+    if (invitation.memberTokenHash) this.memberTokenIndex.set(invitation.memberTokenHash, invitation.invitationId);
+  }
+
+  private save(invitation: InvitationRecord): void {
+    this.onSave?.(cloneInvitation(invitation));
+    this.remember(invitation);
   }
 
   create(input: {
@@ -184,9 +245,7 @@ export class InvitationStore {
       } : {}),
       policyVersion: asPolicyVersion(this.policyVersion),
     };
-    this.invitations.set(invitationId, invitation);
-    this.invitationTokenIndex.set(invitation.tokenHash, invitationId);
-    if (shareTicket) this.shareIdIndex.set(shareTicket.shareId, invitationId);
+    this.save(invitation);
     return { invitation: cloneInvitation(invitation), token, ...(shareTicket ? { shareTicket } : {}) };
   }
 
@@ -203,22 +262,51 @@ export class InvitationStore {
     if (!invitationId) return { ok: false, reason: 'not-found' };
     const invitation = this.invitations.get(invitationId);
     if (!invitation) return { ok: false, reason: 'not-found' };
-    if (invitation.lockedUntil && Date.parse(invitation.lockedUntil) > this.now().getTime()) {
+    const nowMs = this.now().getTime();
+    const lockedUntilMs = invitation.lockedUntil ? Date.parse(invitation.lockedUntil) : Number.NaN;
+    if (Number.isFinite(lockedUntilMs) && lockedUntilMs > nowMs) {
       return { ok: false, reason: 'locked' };
     }
+    const decayedFailures = Number.isFinite(lockedUntilMs) && lockedUntilMs <= nowMs
+      ? 0
+      : (invitation.failedAcceptCount ?? 0);
     if (!invitation.passwordVerifier || !verifyPassword(password, invitation.passwordVerifier)) {
-      const failedAcceptCount = (invitation.failedAcceptCount ?? 0) + 1;
+      const failedAcceptCount = decayedFailures + 1;
       const lockedUntil = failedAcceptCount >= SHARE_TICKET_MAX_FAILED_ATTEMPTS
         ? new Date(this.now().getTime() + SHARE_TICKET_LOCKOUT_MS).toISOString()
-        : invitation.lockedUntil;
-      this.invitations.set(invitationId, {
-        ...invitation,
+        : undefined;
+      const { lockedUntil: _previousLockedUntil, ...unlockedInvitation } = invitation;
+      this.save({
+        ...unlockedInvitation,
         failedAcceptCount,
         ...(lockedUntil ? { lockedUntil } : {}),
       });
       return { ok: false, reason: lockedUntil ? 'locked' : 'invalid-password' };
     }
     return this.acceptByInvitationId(invitationId, acceptedBy);
+  }
+
+  resetShareTicket(invitationId: string): { ok: true; invitation: InvitationRecord; shareTicket: ShareTicketSecret } | { ok: false; reason: 'not-found' | 'not-share-ticket' } {
+    const invitation = this.invitations.get(invitationId);
+    if (!invitation) return { ok: false, reason: 'not-found' };
+    if (!invitation.shareId) return { ok: false, reason: 'not-share-ticket' };
+    const password = this.nextSharePassword();
+    const { lockedUntil: _lockedUntil, ...unlockedInvitation } = invitation;
+    const updated: InvitationRecord = {
+      ...unlockedInvitation,
+      passwordVerifier: createPasswordVerifier(password),
+      failedAcceptCount: 0,
+    };
+    this.save(updated);
+    return {
+      ok: true,
+      invitation: cloneInvitation(updated),
+      shareTicket: {
+        shareId: invitation.shareId,
+        password,
+        redactedShareLabel: invitation.redactedShareLabel ?? redactShareId(invitation.shareId),
+      },
+    };
   }
 
   private acceptByInvitationId(invitationId: string, acceptedBy?: string): InvitationAcceptResult {
@@ -237,8 +325,7 @@ export class InvitationStore {
       memberId: `member-${randomUUID()}`,
       memberTokenHash,
     };
-    this.invitations.set(invitationId, accepted);
-    this.memberTokenIndex.set(memberTokenHash, invitationId);
+    this.save(accepted);
     const policyGrant: PolicyGrantRecord = {
       grantId: accepted.grantId,
       subject: accepted.subject,
@@ -270,12 +357,17 @@ export class InvitationStore {
     const invitation = this.invitations.get(invitationId);
     if (!invitation) return { ok: false, reason: 'not-found' };
     const alreadyRevoked = Boolean(invitation.revokedAt);
+    let updated = invitation;
     if (!alreadyRevoked) {
       this.policyVersion += 1;
-      invitation.revokedAt = this.now().toISOString();
-      invitation.policyVersion = asPolicyVersion(this.policyVersion);
+      updated = {
+        ...invitation,
+        revokedAt: this.now().toISOString(),
+        policyVersion: asPolicyVersion(this.policyVersion),
+      };
+      this.save(updated);
     }
-    return { ok: true, invitation: cloneInvitation(invitation), alreadyRevoked };
+    return { ok: true, invitation: cloneInvitation(updated), alreadyRevoked };
   }
 
   requestGrants(input: {
@@ -304,7 +396,7 @@ export class InvitationStore {
       ...invitation,
       grantRequests: [...(invitation.grantRequests ?? []), request],
     };
-    this.invitations.set(input.invitationId, updated);
+    this.save(updated);
     return { ok: true, invitation: cloneInvitation(updated), request: { ...request, requestedGrants: [...request.requestedGrants] } };
   }
 
@@ -337,7 +429,7 @@ export class InvitationStore {
       grantRequests: requests.map((candidate) => candidate.requestId === input.requestId ? resolvedRequest : candidate),
       ...(input.approve ? { policyVersion: asPolicyVersion(this.policyVersion) } : {}),
     };
-    this.invitations.set(input.invitationId, updated);
+    this.save(updated);
     return { ok: true, invitation: cloneInvitation(updated), request: { ...resolvedRequest, requestedGrants: [...resolvedRequest.requestedGrants] } };
   }
 
