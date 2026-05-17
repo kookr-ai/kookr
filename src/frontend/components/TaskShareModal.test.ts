@@ -187,7 +187,7 @@ describe('TaskShareModal hosted relay errors', () => {
               terminalSharing: {
                 state: 'blocked',
                 reason: 'nodeUntrusted',
-                message: `Terminal sharing is disabled for this node. Set ${RELAY_TRUSTED_ENV_NAME}=true in /home/jean/git/kookr/.env and restart with pnpm prod:restart.`,
+                message: 'Terminal sharing is disabled for this node.',
                 checkedAt: '2026-05-16T12:01:00.000Z',
                 remediation: {
                   kind: 'setEnvAndRestart',
@@ -210,8 +210,8 @@ describe('TaskShareModal hosted relay errors', () => {
 
     expect(container.textContent).toContain('Terminal sharing');
     expect(container.textContent).toContain('Disabled for this node');
-    expect(container.textContent).toContain(`${RELAY_TRUSTED_ENV_NAME}=true`);
-    expect(container.textContent).toContain('pnpm prod:restart');
+    const remediationCodes = [...container.querySelectorAll('.task-share-remediation code')].map((element) => element.textContent);
+    expect(remediationCodes).toEqual([`${RELAY_TRUSTED_ENV_NAME}=true`, 'pnpm prod:restart']);
   });
 
   test('offers preset link durations and defaults to 10 minutes', async () => {

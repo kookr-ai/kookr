@@ -1,10 +1,8 @@
 import type { NodeHello } from '../../src/remote/handshake.js';
-import type { NodeId } from '../../src/remote/ids.js';
 import type { MemberBlockedReason, MemberShareState, MemberTerminalSharingStatus } from '../../src/shared/contracts/session-sharing-public.js';
 import type { InvitationRecord } from './invitations/store.js';
 
 export interface MemberNodeState {
-  nodeId: NodeId;
   displayName?: string;
   connected: boolean;
   lastSeen?: string;
@@ -26,16 +24,6 @@ export function memberBlockedMessage(reason: MemberBlockedReason): string {
       return 'Terminal sharing is not available for this session.';
     case 'node.untrusted':
       return 'The owner has not enabled terminal sharing on this node.';
-    case 'node.terminalAdapterUnavailable':
-      return 'Terminal sharing is not available for this session.';
-    case 'session.unavailable':
-      return 'Terminal sharing is not available for this session.';
-    case 'session.projectionStale':
-      return 'Terminal sharing is waiting for a fresh session view.';
-    case 'transport.insecure':
-      return 'Terminal sharing requires a secure connection.';
-    case 'client.unsupported':
-      return 'This browser does not support terminal sharing.';
   }
 }
 

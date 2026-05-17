@@ -453,6 +453,7 @@ export class InvitationStore {
     if (!invitationId) return null;
     const invitation = this.invitations.get(invitationId);
     if (!invitation || !invitation.acceptedAt) return null;
+    // Status pages need to render revoked/expired share state instead of treating the member token as unknown.
     return cloneInvitation(invitation);
   }
 

@@ -1057,7 +1057,6 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (!registration) return null;
     const policy = nodePolicySync.get(nodeId);
     return {
-      nodeId,
       displayName: registration.displayName,
       connected: nodeSockets.has(nodeId),
       ...(registration.lastSeen ? { lastSeen: registration.lastSeen } : {}),

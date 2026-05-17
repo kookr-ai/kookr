@@ -28,7 +28,6 @@ describe('buildMemberShareState', () => {
     const state = buildMemberShareState({
       invitation: invitation({ grants: ['view', 'terminalInput'] }),
       node: {
-        nodeId: asNodeId('node-1'),
         connected: true,
         displayName: 'Owner desktop',
         hello: {
@@ -69,7 +68,7 @@ describe('buildMemberShareState', () => {
           comment: 'Need terminal input',
         }],
       }),
-      node: { nodeId: asNodeId('node-1'), connected: false, policySyncStatus: 'synced' },
+      node: { connected: false, policySyncStatus: 'synced' },
       now: new Date('2026-05-17T00:04:00.000Z'),
     });
 
@@ -88,7 +87,6 @@ describe('buildMemberShareState', () => {
     const pending = buildMemberShareState({
       invitation: invitation({ grants: ['view', 'terminalInput'] }),
       node: {
-        nodeId: asNodeId('node-1'),
         connected: true,
         hello: {
           type: 'node.hello',
@@ -104,7 +102,7 @@ describe('buildMemberShareState', () => {
     });
     const offline = buildMemberShareState({
       invitation: invitation({ grants: ['view', 'terminalInput'] }),
-      node: { nodeId: asNodeId('node-1'), connected: false, policySyncStatus: 'synced' },
+      node: { connected: false, policySyncStatus: 'synced' },
       now: new Date('2026-05-17T00:02:00.000Z'),
     });
 
@@ -144,7 +142,6 @@ describe('buildMemberShareState', () => {
         ],
       }),
       node: {
-        nodeId: asNodeId('node-1'),
         connected: true,
         hello: {
           type: 'node.hello',

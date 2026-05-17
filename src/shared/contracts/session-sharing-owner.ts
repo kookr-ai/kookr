@@ -1,12 +1,10 @@
 export type OwnerTerminalBlockedReason =
   | 'relayNotConfigured'
   | 'relayNodeOffline'
-  | 'relayPairingRequired'
   | 'nodeUntrusted'
   | 'nodeFeatureUnavailable'
   | 'terminalAdapterUnavailable'
-  | 'policySyncPending'
-  | 'policySyncFailed';
+  | 'policySyncPending';
 
 export type OwnerRemediation =
   | {

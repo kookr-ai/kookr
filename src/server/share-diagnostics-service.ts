@@ -166,6 +166,7 @@ export class ShareDiagnosticsService {
         envFileValue: parseEnvValue(text, this.relayTrustedEnvName),
       };
     } catch {
+      // Missing/unreadable .env is common in dev and test runs; process env still tells us what this node advertised.
       return base;
     }
   }

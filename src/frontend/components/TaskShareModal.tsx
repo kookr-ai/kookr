@@ -134,10 +134,7 @@ function terminalSharingTitle(share: TaskShareSummary): string {
       return 'Adapter unavailable';
     case 'policySyncPending':
       return 'Approval syncing';
-    case 'policySyncFailed':
-      return 'Approval sync failed';
     case 'relayNotConfigured':
-    case 'relayPairingRequired':
       return 'Relay setup required';
   }
 }

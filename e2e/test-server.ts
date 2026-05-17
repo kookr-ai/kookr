@@ -24,6 +24,8 @@ const injectedSessionIds = new Map<string, string>();
 let relayHandle: RelayServerHandle | null = null;
 let runtimeRelayCredentials: { relayUrl: string; nodeId: string; nodeToken: string } | null = null;
 
+process.env.KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE ??= '0';
+
 function stableInjectedSessionId(tmuxName: string): string {
   return `e2e-${tmuxName.replace(/[^A-Za-z0-9_-]/g, '_')}`;
 }

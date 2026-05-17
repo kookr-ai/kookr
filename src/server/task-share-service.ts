@@ -54,9 +54,9 @@ export class TaskShareService {
 
   async createTaskShare(input: { taskId: string; ttlMs: number; displayLabel?: string }): Promise<{ share: TaskShareSummary; joinUrl: string; shareTicket?: TaskShareTicket }> {
     const created = await this.client.createTaskShare(input);
-    this.remember(created.share);
-    this.publishProjectionForShare(created.share);
-    return created;
+    const share = this.remember(created.share);
+    this.publishProjectionForShare(share);
+    return { ...created, share };
   }
 
   async listTaskShares(): Promise<TaskShareSummary[]> {
@@ -81,8 +81,8 @@ export class TaskShareService {
     try {
       const revoked = await this.client.revokeTaskShare(invitationId);
       this.pendingRevokeInvitationIds.delete(invitationId);
-      this.remember({ ...revoked.share, state: 'revoked', revokePendingAt: undefined });
-      return revoked;
+      const share = this.remember({ ...revoked.share, state: 'revoked', revokePendingAt: undefined });
+      return { ...revoked, share };
     } catch (err) {
       if (existing) {
         this.shares.set(invitationId, {
@@ -98,15 +98,15 @@ export class TaskShareService {
 
   async approveGrantRequest(invitationId: string, requestId: string): Promise<{ share: TaskShareSummary; request: NonNullable<TaskShareSummary['grantRequests']>[number] }> {
     const approved = await this.client.approveGrantRequest(invitationId, requestId);
-    this.remember(approved.share);
-    this.publishProjectionForShare(approved.share);
-    return approved;
+    const share = this.remember(approved.share);
+    this.publishProjectionForShare(share);
+    return { ...approved, share };
   }
 
   async denyGrantRequest(invitationId: string, requestId: string): Promise<{ share: TaskShareSummary; request: NonNullable<TaskShareSummary['grantRequests']>[number] }> {
     const denied = await this.client.denyGrantRequest(invitationId, requestId);
-    this.remember(denied.share);
-    return denied;
+    const share = this.remember(denied.share);
+    return { ...denied, share };
   }
 
   publishActiveTaskProjections(): void {
@@ -123,15 +123,17 @@ export class TaskShareService {
     }
   }
 
-  private remember(share: TaskShareSummary): void {
+  private remember(share: TaskShareSummary): TaskShareSummary {
     const local = this.shares.get(share.invitationId);
-    this.shares.set(share.invitationId, this.withLocalState({
+    const remembered = this.withLocalState({
       ...local,
       ...share,
       revokePendingAt: this.pendingRevokeInvitationIds.has(share.invitationId)
         ? local?.revokePendingAt ?? new Date().toISOString()
         : share.revokePendingAt,
-    }));
+    });
+    this.shares.set(share.invitationId, remembered);
+    return remembered;
   }
 
   private withLocalState(share: TaskShareSummary): TaskShareSummary {

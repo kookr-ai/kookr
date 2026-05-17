@@ -7,12 +7,7 @@ export type MemberBlockedReason =
   | 'policy.syncFailed'
   | 'node.offline'
   | 'node.featureUnavailable'
-  | 'node.untrusted'
-  | 'node.terminalAdapterUnavailable'
-  | 'session.unavailable'
-  | 'session.projectionStale'
-  | 'transport.insecure'
-  | 'client.unsupported';
+  | 'node.untrusted';
 
 export type MemberTerminalSharingStatus =
   | { state: 'available' }
