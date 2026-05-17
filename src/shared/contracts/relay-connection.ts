@@ -29,7 +29,29 @@ export interface RelayConnectionStatus {
   nodeMode?: 'active' | 'degraded';
   lastConnectedAt?: string;
   lastError?: RelayConnectionErrorView;
+  setupDiagnosis: RelaySetupDiagnosis;
   hostedRelay: HostedRelayStatus;
+}
+
+export interface RelaySetupDiagnosis {
+  envState: 'ok' | 'missing-env' | 'missing-admin-token' | 'restart-required';
+  envMessage: string;
+  requiresRelayRestart: boolean;
+  envFilePath: string;
+  localRelayCommands: {
+    start: 'pnpm relay:start';
+    status: 'pnpm relay:status';
+    logs: 'pnpm relay:logs';
+    restart: 'pnpm relay:restart';
+    stop: 'pnpm relay:stop';
+    doctor: 'pnpm relay:doctor';
+  };
+  recommendedAction:
+    | { kind: 'restartKookr'; command: 'pnpm prod:restart'; reason: string }
+    | { kind: 'restartRelay'; command: 'pnpm relay:restart'; reason: string }
+    | { kind: 'repairRelayPairing'; command: string; reason: string }
+    | { kind: 'fixEnv'; command: string; reason: string }
+    | { kind: 'none'; reason: string };
 }
 
 export interface RelayConnectionConnectRequest {

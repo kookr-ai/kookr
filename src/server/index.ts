@@ -1233,6 +1233,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   const relayConnection = createRelayConnectionManager({
     kookrDir,
+    cwd: serverCwd,
     startRuntime: startRemoteRuntime,
   });
   await relayConnection.startConfigured();
