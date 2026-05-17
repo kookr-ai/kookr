@@ -1,0 +1,72 @@
+import type { NodeId, Seq, SessionEpoch, SessionId } from '../../remote/ids.js';
+import type { TaskShareGrant, TaskShareGrantRequest } from '../../remote/share-contract.js';
+
+export type MemberBlockedReason =
+  | 'policy.grantRequired'
+  | 'policy.syncPending'
+  | 'policy.syncFailed'
+  | 'node.offline'
+  | 'node.featureUnavailable'
+  | 'node.untrusted'
+  | 'node.terminalAdapterUnavailable'
+  | 'session.unavailable'
+  | 'session.projectionStale'
+  | 'transport.insecure'
+  | 'client.unsupported';
+
+export type MemberTerminalSharingStatus =
+  | { state: 'available' }
+  | { state: 'pendingApproval'; requestId: string }
+  | { state: 'denied'; deniedAt: string; canRequestAgainAt?: string }
+  | { state: 'blocked'; reason: MemberBlockedReason; message: string; nextRetryAt?: string }
+  | { state: 'revoked' }
+  | { state: 'expired' };
+
+export type MemberShareLifecycleState =
+  | 'pending'
+  | 'approved'
+  | 'denied'
+  | 'revoked'
+  | 'expired';
+
+export type MemberGrantRequest = Omit<TaskShareGrantRequest, 'requestedBy'>;
+
+export interface MemberShareState {
+  schemaVersion: 'member-share-state.v1';
+  invitationId: string;
+  nodeId: NodeId;
+  share: {
+    state: MemberShareLifecycleState;
+    label?: string;
+    expiresAt: string;
+  };
+  grants: TaskShareGrant[];
+  grantRequests: MemberGrantRequest[];
+  node: {
+    online: boolean;
+    displayName?: string;
+    lastSeenAt?: string;
+    nextRetryAt?: string;
+  };
+  terminal: MemberTerminalSharingStatus;
+  freshness: {
+    checkedAt: string;
+    lastNodeSeenAt?: string;
+    lastPolicyAckAt?: string;
+    nextRetryAt?: string;
+  };
+  controllerLease?: {
+    state: 'available' | 'heldByThisDevice' | 'heldByAnotherDevice';
+    holderLabel?: string;
+    expiresAt?: string;
+  };
+  terminalReplayCursor?: {
+    sessionId: SessionId;
+    sessionEpoch: SessionEpoch;
+    afterSeq: Seq;
+  };
+}
+
+export interface MemberShareStateResponse {
+  state: MemberShareState;
+}

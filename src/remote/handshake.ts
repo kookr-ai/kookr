@@ -1,6 +1,7 @@
 import type { NodeEpoch, NodeId } from './ids.js';
 
 export const REMOTE_PROTOCOL_VERSION = 1;
+export const RELAY_TRUSTED_ENV_NAME = 'KOOKR_RELAY_TRUSTED';
 
 export type RemoteFeature =
   | 'control.snapshot'
@@ -95,6 +96,10 @@ export function remoteTerminalInputFeatureEnabled(
 ): boolean {
   if (!env.KOOKR_RELAY_URL?.trim()) return false;
   return env.KOOKR_RELAY_TRUSTED === 'true' && !parseTerminalInputKillSwitch(env.KOOKR_RELAY_FEATURES).disabled;
+}
+
+export function relayTrustedProcessValue(env: NodeJS.ProcessEnv = process.env): string | null {
+  return env[RELAY_TRUSTED_ENV_NAME] ?? null;
 }
 
 export function makeRelayHello(opts: {

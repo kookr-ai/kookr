@@ -448,6 +448,14 @@ export class InvitationStore {
     return cloneInvitation(invitation);
   }
 
+  findByMemberToken(token: string): InvitationRecord | null {
+    const invitationId = this.memberTokenIndex.get(hashToken(token));
+    if (!invitationId) return null;
+    const invitation = this.invitations.get(invitationId);
+    if (!invitation || !invitation.acceptedAt) return null;
+    return cloneInvitation(invitation);
+  }
+
   currentPolicyVersion(): PolicyVersion {
     return asPolicyVersion(this.policyVersion);
   }

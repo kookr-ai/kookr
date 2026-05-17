@@ -25,6 +25,7 @@ export interface TaskShareServiceOptions {
   getNodeIdentity: () => { nodeId: NodeId; nodeEpoch: NodeEpoch } | null;
   nextServerRevision: () => ServerRevision;
   publish: PublishRemoteEvent;
+  diagnoseTerminalSharing?: (share: TaskShareSummary) => TaskShareSummary['terminalSharing'];
 }
 
 export class TaskShareService {
@@ -35,6 +36,7 @@ export class TaskShareService {
   private readonly getNodeIdentity: TaskShareServiceOptions['getNodeIdentity'];
   private readonly nextServerRevision: TaskShareServiceOptions['nextServerRevision'];
   private readonly publish: PublishRemoteEvent;
+  private readonly diagnoseTerminalSharing?: TaskShareServiceOptions['diagnoseTerminalSharing'];
   private readonly shares = new Map<string, TaskShareSummary>();
   private readonly pendingRevokeInvitationIds = new Set<string>();
   private readonly lastPublishedProjectionKeys = new Map<string, string>();
@@ -47,6 +49,7 @@ export class TaskShareService {
     this.getNodeIdentity = opts.getNodeIdentity;
     this.nextServerRevision = opts.nextServerRevision;
     this.publish = opts.publish;
+    this.diagnoseTerminalSharing = opts.diagnoseTerminalSharing;
   }
 
   async createTaskShare(input: { taskId: string; ttlMs: number; displayLabel?: string }): Promise<{ share: TaskShareSummary; joinUrl: string; shareTicket?: TaskShareTicket }> {
@@ -132,14 +135,27 @@ export class TaskShareService {
   }
 
   private withLocalState(share: TaskShareSummary): TaskShareSummary {
-    if (this.pendingRevokeInvitationIds.has(share.invitationId)) {
-      return { ...share, state: 'revokePending' };
-    }
-    return { ...share, state: computeOwnerState(share) };
+    const withState = this.pendingRevokeInvitationIds.has(share.invitationId)
+      ? { ...share, state: 'revokePending' as const }
+      : { ...share, state: computeOwnerState(share) };
+    if (!this.diagnoseTerminalSharing) return withState;
+    return {
+      ...withState,
+      terminalSharing: this.diagnoseTerminalSharing(withState),
+    };
+  }
+
+  private shareWithoutDiagnostics(share: TaskShareSummary): TaskShareSummary {
+    const { terminalSharing: _terminalSharing, ...rest } = share;
+    return rest;
   }
 
   private publishProjectionForShare(share: TaskShareSummary, options: PublishProjectionOptions = {}): boolean {
-    const effective = this.withLocalState(share);
+    const effective = this.withLocalState(this.shareWithoutDiagnostics(share));
+    if (this.pendingRevokeInvitationIds.has(share.invitationId)) {
+      this.lastPublishedProjectionKeys.delete(effective.invitationId);
+      return false;
+    }
     if (effective.state === 'revoked' || effective.state === 'expired' || effective.state === 'revokePending') {
       this.lastPublishedProjectionKeys.delete(effective.invitationId);
       return false;

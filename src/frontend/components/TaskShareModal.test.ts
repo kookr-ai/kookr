@@ -4,6 +4,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { RELAY_TRUSTED_ENV_NAME } from '../../remote/handshake.js';
 import { TaskShareModal } from './TaskShareModal.js';
 
 function renderModal(container: HTMLElement): Root {
@@ -163,6 +164,54 @@ describe('TaskShareModal hosted relay errors', () => {
     );
     expect(container.textContent).toContain('Approved grants');
     expect(container.textContent).toContain('Terminal input');
+  });
+
+  test('surfaces terminal sharing trust remediation for owners', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-share' }) } as Response;
+      }
+      if (url === '/api/share/task' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            shares: [{
+              invitationId: 'inv-1',
+              taskId: 'task-1',
+              createdAt: '2026-05-16T12:00:00.000Z',
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              state: 'viewerConnected',
+              connectedViewerCount: 1,
+              grants: ['view', 'terminalInput'],
+              grantRequests: [],
+              terminalSharing: {
+                state: 'blocked',
+                reason: 'nodeUntrusted',
+                message: `Terminal sharing is disabled for this node. Set ${RELAY_TRUSTED_ENV_NAME}=true in /home/jean/git/kookr/.env and restart with pnpm prod:restart.`,
+                checkedAt: '2026-05-16T12:01:00.000Z',
+                remediation: {
+                  kind: 'setEnvAndRestart',
+                  envName: RELAY_TRUSTED_ENV_NAME,
+                  expectedValue: 'true',
+                  processValue: null,
+                  diagnosedAt: '2026-05-16T12:01:00.000Z',
+                  requiresRestart: false,
+                  command: 'pnpm prod:restart',
+                },
+              },
+            }],
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    }));
+    root = renderModal(container);
+    await flush();
+
+    expect(container.textContent).toContain('Terminal sharing');
+    expect(container.textContent).toContain('Disabled for this node');
+    expect(container.textContent).toContain(`${RELAY_TRUSTED_ENV_NAME}=true`);
+    expect(container.textContent).toContain('pnpm prod:restart');
   });
 
   test('offers preset link durations and defaults to 10 minutes', async () => {

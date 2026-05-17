@@ -12,6 +12,7 @@
  */
 
 import type { NodeId } from './ids.js';
+import type { OwnerTerminalSharingStatus } from '../shared/contracts/session-sharing-owner.js';
 
 export type TaskShareGrant =
   | 'view'
@@ -179,6 +180,7 @@ export interface TaskShareSummary {
   redactedShareLabel?: string;
   grants: TaskShareGrant[];
   grantRequests: TaskShareGrantRequest[];
+  terminalSharing?: OwnerTerminalSharingStatus;
 }
 
 /**

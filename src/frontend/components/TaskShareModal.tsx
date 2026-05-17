@@ -120,6 +120,28 @@ function grantLabel(grant: TaskShareMutableGrant): string {
   }
 }
 
+function terminalSharingTitle(share: TaskShareSummary): string {
+  if (!share.terminalSharing) return 'Status unavailable';
+  if (share.terminalSharing.state === 'available') return 'Available';
+  switch (share.terminalSharing.reason) {
+    case 'nodeUntrusted':
+      return 'Disabled for this node';
+    case 'relayNodeOffline':
+      return 'Node offline';
+    case 'nodeFeatureUnavailable':
+      return 'Feature unavailable';
+    case 'terminalAdapterUnavailable':
+      return 'Adapter unavailable';
+    case 'policySyncPending':
+      return 'Approval syncing';
+    case 'policySyncFailed':
+      return 'Approval sync failed';
+    case 'relayNotConfigured':
+    case 'relayPairingRequired':
+      return 'Relay setup required';
+  }
+}
+
 export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
   const [status, setStatus] = useState<ShareModalStatus>('idle');
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
@@ -440,6 +462,26 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
                 <span>Approved grants</span>
                 <strong>{displayedShare.grants.filter((grant) => grant !== 'view').map(grantLabel).join(', ')}</strong>
               </div>
+            )}
+
+            {displayedShare?.terminalSharing && (
+              <section className="task-share-diagnostic" aria-label="Terminal sharing status">
+                <div className="task-share-row">
+                  <span>Terminal sharing</span>
+                  <strong>{terminalSharingTitle(displayedShare)}</strong>
+                </div>
+                <p>{displayedShare.terminalSharing.message}</p>
+                {displayedShare.terminalSharing.state === 'blocked'
+                  && displayedShare.terminalSharing.remediation?.kind === 'setEnvAndRestart' && (
+                    <div className="task-share-remediation">
+                      <code>
+                        {displayedShare.terminalSharing.remediation.envName}=
+                        {displayedShare.terminalSharing.remediation.expectedValue}
+                      </code>
+                      <code>{displayedShare.terminalSharing.remediation.command}</code>
+                    </div>
+                )}
+              </section>
             )}
 
             {displayedShare?.grantRequests.some((request) => request.status === 'pending') && (
