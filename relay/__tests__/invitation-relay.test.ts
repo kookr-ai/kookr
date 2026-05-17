@@ -271,6 +271,87 @@ describe('relay invitations', () => {
     await expectMemberConnectionRejected(relay, nodeB.nodeId, accepted.accepted.memberToken);
   });
 
+  it('serves member-safe share state from the member cookie rather than query parameters', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const nodeA = relay.registerNode({ displayName: 'desktop-a' });
+    const nodeB = relay.registerNode({ displayName: 'desktop-b' });
+    const created = relay.createInvitation({
+      nodeId: nodeA.nodeId,
+      subject: { kind: 'task', nodeId: nodeA.nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalInput'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'alice');
+    if (!accepted.ok) throw new Error('expected accept');
+
+    const stateUrl = new URL('/relay/member/share-state', relay.url());
+    stateUrl.searchParams.set('nodeId', nodeB.nodeId);
+    const res = await fetch(stateUrl, {
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { state: { nodeId: string; terminal: { state: string; reason?: string } } };
+    expect(body.state.nodeId).toBe(nodeA.nodeId);
+    expect(body.state.terminal).toEqual(expect.objectContaining({
+      state: 'blocked',
+      reason: 'node.offline',
+    }));
+    expect(JSON.stringify(body)).not.toContain('memberToken');
+    expect(JSON.stringify(body)).not.toContain('tokenHash');
+  });
+
+  it('pushes member-safe share state over member WebSockets as node and policy state changes', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalInput'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'alice');
+    if (!accepted.ok) throw new Error('expected accept');
+
+    const member = await connectMember(relay, node.nodeId, accepted.accepted.memberToken);
+    sockets.push(member.ws);
+    await waitFor(() => member.messages.some((msg) => (
+      (msg as { type?: string; state?: { terminal?: { reason?: string } } }).type === 'relay.memberShareState'
+      && (msg as { state: { terminal: { reason: string } } }).state.terminal.reason === 'node.offline'
+    )));
+
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, [
+      'control.snapshot',
+      'control.state-delta',
+      'policy-sync',
+      'terminal-stream',
+      'terminal-input',
+    ]);
+    sockets.push(nodeConn.ws);
+    await waitFor(() => member.messages.some((msg) => (
+      (msg as { type?: string; state?: { terminal?: { reason?: string } } }).type === 'relay.memberShareState'
+      && (msg as { state: { terminal: { reason: string } } }).state.terminal.reason === 'policy.syncPending'
+    )));
+    nodeConn.ws.send(JSON.stringify({
+      type: 'policy.delta.ack',
+      nodeId: node.nodeId,
+      policyVersion: 1,
+      appliedGrantIds: [created.invitation.grantId],
+      revokedGrantIds: [],
+    }));
+    await waitFor(() => member.messages.some((msg) => (
+      (msg as { type?: string; state?: { terminal?: { state?: string } } }).type === 'relay.memberShareState'
+      && (msg as { state: { terminal: { state: string } } }).state.terminal.state === 'available'
+    )));
+
+    const messagesBeforeClose = member.messages.length;
+    nodeConn.ws.close();
+    await waitFor(() => member.messages.slice(messagesBeforeClose).some((msg) => (
+      (msg as { type?: string; state?: { terminal?: { reason?: string } } }).type === 'relay.memberShareState'
+      && (msg as { state: { terminal: { reason: string } } }).state.terminal.reason === 'node.offline'
+    )));
+  });
+
   it('closes active member subscriptions after invitation expiry before streaming more data', async () => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);

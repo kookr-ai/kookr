@@ -2563,6 +2563,39 @@ textarea::-webkit-resizer { background: transparent; }
   margin-top: 10px;
 }
 
+.task-share-diagnostic {
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  border-radius: 6px;
+  background: rgba(251, 191, 36, 0.08);
+  padding: 10px 12px;
+  margin-top: 12px;
+}
+
+.task-share-diagnostic .task-share-row {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.task-share-diagnostic p {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+}
+
+.task-share-diagnostic code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.task-share-remediation {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 .task-share-disabled {
   border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
   border-radius: 6px;

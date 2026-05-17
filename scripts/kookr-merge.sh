@@ -82,6 +82,47 @@ fi
 command -v gh >/dev/null || { echo "kookr-merge: gh (GitHub CLI) is required" >&2; exit 1; }
 command -v jq >/dev/null || { echo "kookr-merge: jq is required" >&2; exit 1; }
 
+watch_checks() {
+  if gh pr checks --help 2>/dev/null | grep -q -- '--watch'; then
+    gh pr checks "$PR" "${REPO_ARG[@]}" --watch
+    return $?
+  fi
+
+  local timeout="${KOOKR_MERGE_CHECK_TIMEOUT_SECONDS:-3600}"
+  local interval="${KOOKR_MERGE_CHECK_INTERVAL_SECONDS:-15}"
+  local start now elapsed checks failed pending total
+  start=$(date +%s)
+  echo "kookr-merge: gh pr checks --watch unavailable; polling statusCheckRollup"
+
+  while true; do
+    checks="$(gh pr view "$PR" "${REPO_ARG[@]}" --json statusCheckRollup)" || return 3
+    total="$(printf '%s' "$checks" | jq '.statusCheckRollup | length')"
+    failed="$(printf '%s' "$checks" | jq '[.statusCheckRollup[] | select(.status == "COMPLETED" and (.conclusion as $c | $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL"))] | length')"
+    pending="$(printf '%s' "$checks" | jq '[.statusCheckRollup[] | select(.status != "COMPLETED")] | length')"
+
+    if [[ "$failed" != "0" ]]; then
+      printf '%s\n' "$checks" | jq -r '.statusCheckRollup[] | select(.status == "COMPLETED" and (.conclusion as $c | $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL")) | "  \(.name): \(.conclusion)"' >&2
+      return 3
+    fi
+
+    if [[ "$total" != "0" && "$pending" == "0" ]]; then
+      printf '%s\n' "$checks" | jq -r '.statusCheckRollup[] | "  \(.name): \(.conclusion)"'
+      return 0
+    fi
+
+    now=$(date +%s)
+    elapsed=$((now - start))
+    if (( elapsed >= timeout )); then
+      echo "kookr-merge: timed out waiting for checks after ${elapsed}s" >&2
+      printf '%s\n' "$checks" | jq -r '.statusCheckRollup[] | "  \(.name): \(.status) \(.conclusion // "")"' >&2
+      return 3
+    fi
+
+    echo "kookr-merge: checks pending (${pending}/${total}); sleeping ${interval}s"
+    sleep "$interval"
+  done
+}
+
 state_json="$(gh pr view "$PR" "${REPO_ARG[@]}" --json state,isDraft,reviewDecision)"
 state=$(printf '%s' "$state_json" | jq -r '.state')
 is_draft=$(printf '%s' "$state_json" | jq -r '.isDraft')
@@ -106,7 +147,7 @@ if [[ "$review_decision" == "CHANGES_REQUESTED" ]]; then
 fi
 
 echo "kookr-merge: watching checks for PR #$PR"
-if ! gh pr checks "$PR" "${REPO_ARG[@]}" --watch; then
+if ! watch_checks; then
   echo "kookr-merge: checks did not pass for PR #$PR" >&2
   exit 3
 fi

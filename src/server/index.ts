@@ -23,6 +23,7 @@ import { createRelayShareClient } from './relay-share-client.js';
 import type { RemoteShareDeps } from './routes/shared.js';
 import { TaskShareService } from './task-share-service.js';
 import { createRelayConnectionManager, type RelayRuntimeHandle } from './relay-connection-manager.js';
+import { ShareDiagnosticsService, terminalAdapterAvailableFromStats } from './share-diagnostics-service.js';
 import type { RelayConnectionCredentials } from './relay-connection-store.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
@@ -1058,6 +1059,34 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       return typeof value === 'number' && Number.isFinite(value) ? value : null;
     },
   };
+  const {
+    parseTerminalInputKillSwitch,
+    RELAY_TRUSTED_ENV_NAME,
+    relayTrustedProcessValue,
+  } = await import('../remote/handshake.js');
+  const shareDiagnostics = new ShareDiagnosticsService({
+    serverCwd,
+    processStartedAt: serverStartedAt,
+    getRemoteNodeStatus: () => remoteNodeClient?.status ?? null,
+    getRelayConfigured: () => Boolean(remoteShare.client),
+    getTerminalAdapterAvailable: () => terminalAdapterAvailableFromStats(terminalBackend.getStats()),
+    getPolicySynced: (share) => {
+      if (!remotePolicyCache) return false;
+      const identity = remoteNodeClient?.status.nodeId;
+      if (!identity) return false;
+      return remotePolicyCache.snapshot().grants.some((grant) => (
+        grant.subject.kind === 'task'
+        && grant.subject.nodeId === identity
+        && grant.subject.taskId === share.taskId
+        && grant.grants.includes('terminalInput')
+        && !remotePolicyCache?.hasTombstone(grant.grantId)
+        && (!grant.expiresAt || Date.parse(grant.expiresAt) > Date.now())
+      ));
+    },
+    relayTrustedEnvName: RELAY_TRUSTED_ENV_NAME,
+    relayTrustedProcessValue,
+    parseTerminalInputKillSwitch,
+  });
 
   const stopRemoteRuntime = async (): Promise<void> => {
     sessionStreamPublisher?.stop();
@@ -1182,6 +1211,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       }),
       nextServerRevision: nextRemoteShareRevision,
       publish: (event) => nodeClient.publish(event),
+      diagnoseTerminalSharing: (share) => shareDiagnostics.diagnoseTerminalSharing(share),
     });
     remoteShare.client = relayShareClient;
     remoteShare.service = taskShareService;

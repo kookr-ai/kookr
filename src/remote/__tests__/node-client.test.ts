@@ -106,9 +106,10 @@ describe('RemoteNodeClient', () => {
     expect(constructed).toBe(0);
   });
 
-  it('delivers policy revoke messages to the policy handler', async () => {
+  it('delivers policy messages to the handler and acknowledges them', async () => {
     const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-node-client-policy-'));
     const policyMessages: unknown[] = [];
+    const acks: unknown[] = [];
     wss = new WebSocketServer({ port: 0, host: '127.0.0.1', path: '/relay/node' });
     wss.on('connection', (ws) => {
       ws.once('message', (data) => {
@@ -118,11 +119,45 @@ describe('RemoteNodeClient', () => {
           acceptedVersion: 1,
           enabledFeatures: hello.supportedFeatures,
         })));
+        ws.on('message', (ack) => {
+          acks.push(JSON.parse(ack.toString()) as unknown);
+        });
+        ws.send(JSON.stringify({
+          type: 'policy.sync',
+          nodeId: hello.nodeId,
+          policyVersion: 1,
+          grants: [{
+            grantId: 'grant-sync',
+            subject: { kind: 'task', nodeId: hello.nodeId, taskId: 'task-1' },
+            grants: ['view'],
+            policyVersion: 1,
+          }],
+          revokedGrantIds: ['grant-old'],
+        }));
+        ws.send(JSON.stringify({
+          type: 'policy.delta',
+          nodeId: hello.nodeId,
+          policyVersion: 2,
+          upserts: [{
+            grantId: 'grant-delta',
+            subject: { kind: 'task', nodeId: hello.nodeId, taskId: 'task-1' },
+            grants: ['view', 'terminalInput'],
+            policyVersion: 2,
+          }],
+          revokes: ['grant-sync'],
+        }));
         ws.send(JSON.stringify({
           type: 'policy.revoke',
           nodeId: hello.nodeId,
           grantId: 'grant-1',
-          policyVersion: 2,
+          policyVersion: 3,
+        }));
+        ws.send(JSON.stringify({
+          type: 'policy.delta.ack',
+          nodeId: hello.nodeId,
+          policyVersion: 4,
+          appliedGrantIds: [],
+          revokedGrantIds: [],
         }));
       });
     });
@@ -143,7 +178,7 @@ describe('RemoteNodeClient', () => {
     await new Promise<void>((resolve, reject) => {
       const started = Date.now();
       const timer = setInterval(() => {
-        if (policyMessages.length > 0) {
+        if (policyMessages.length === 4 && acks.length === 3) {
           clearInterval(timer);
           resolve();
         } else if (Date.now() - started > 2_000) {
@@ -156,7 +191,29 @@ describe('RemoteNodeClient', () => {
     expect(policyMessages).toContainEqual(expect.objectContaining({
       type: 'policy.revoke',
       grantId: 'grant-1',
-      policyVersion: 2,
+      policyVersion: 3,
     }));
+    expect(acks).toContainEqual({
+      type: 'policy.delta.ack',
+      nodeId: expect.any(String),
+      policyVersion: 1,
+      appliedGrantIds: ['grant-sync'],
+      revokedGrantIds: ['grant-old'],
+    });
+    expect(acks).toContainEqual({
+      type: 'policy.delta.ack',
+      nodeId: expect.any(String),
+      policyVersion: 2,
+      appliedGrantIds: ['grant-delta'],
+      revokedGrantIds: ['grant-sync'],
+    });
+    expect(acks).toContainEqual({
+      type: 'policy.delta.ack',
+      nodeId: expect.any(String),
+      policyVersion: 3,
+      appliedGrantIds: [],
+      revokedGrantIds: ['grant-1'],
+    });
+    expect(acks).not.toContainEqual(expect.objectContaining({ policyVersion: 4 }));
   });
 });

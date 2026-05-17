@@ -163,6 +163,35 @@ function makeRemoteCommandResultMessage(result: CommandResult): { type: 'remote.
   return { type: 'remote.command.result', ...result };
 }
 
+function makePolicyAck(message: PolicySyncProtocolMessage): PolicySyncProtocolMessage | null {
+  if (message.type === 'policy.delta.ack') return null;
+  if (message.type === 'policy.sync') {
+    return {
+      type: 'policy.delta.ack',
+      nodeId: message.nodeId,
+      policyVersion: message.policyVersion,
+      appliedGrantIds: message.grants.map((grant) => grant.grantId),
+      revokedGrantIds: [...message.revokedGrantIds],
+    };
+  }
+  if (message.type === 'policy.delta') {
+    return {
+      type: 'policy.delta.ack',
+      nodeId: message.nodeId,
+      policyVersion: message.policyVersion,
+      appliedGrantIds: message.upserts.map((grant) => grant.grantId),
+      revokedGrantIds: [...message.revokes],
+    };
+  }
+  return {
+    type: 'policy.delta.ack',
+    nodeId: message.nodeId,
+    policyVersion: message.policyVersion,
+    appliedGrantIds: [],
+    revokedGrantIds: [message.grantId],
+  };
+}
+
 function isPolicySyncProtocolMessage(value: unknown): value is PolicySyncProtocolMessage {
   const msg = value as Partial<PolicySyncProtocolMessage>;
   if (typeof value !== 'object' || value === null || typeof msg.type !== 'string') return false;
@@ -324,9 +353,15 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
       }
       if (isPolicySyncProtocolMessage(parsed)) {
         if (parsed.nodeId !== status.nodeId) return;
-        void Promise.resolve(opts.onPolicyMessage?.(parsed)).catch((err) => {
-          logger.warn(`[remote-node] policy message handler failed: ${err instanceof Error ? err.message : String(err)}`);
-        });
+        void (async () => {
+          try {
+            await Promise.resolve(opts.onPolicyMessage?.(parsed));
+            const ack = makePolicyAck(parsed);
+            if (ack && next.readyState === next.OPEN) next.send(JSON.stringify(ack));
+          } catch (err) {
+            logger.warn(`[remote-node] policy message handler failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        })();
       }
     });
 

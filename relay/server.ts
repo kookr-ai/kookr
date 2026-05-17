@@ -29,6 +29,7 @@ import { grantForRemoteCommandAction, isKnownGrant } from '../src/remote/grants.
 import { isTerminalStreamEvent, type TerminalReplayGapEvent, type TerminalStreamEvent } from '../src/remote/stream-events.js';
 import { isPushAlertDeltaPayload, makeRedactedPushPayload } from '../src/remote/push.js';
 import type { RelayNodeCredentialStatusResponse } from '../src/shared/contracts/relay-connection.js';
+import type { MemberShareStateResponse } from '../src/shared/contracts/session-sharing-public.js';
 import type {
   RemoteTaskProjectionEnvelopeV1,
   RemoteTaskProjectionV1,
@@ -38,6 +39,7 @@ import type {
   TaskShareMutableGrant,
 } from '../src/remote/share-contract.js';
 import { InvitationStore, type InvitationRecord } from './src/invitations/store.js';
+import { buildMemberShareState, type MemberNodeState } from './src/member-state.js';
 import { createPushFanout, type PushDeliveryOutcome, type PushFanout, type PushSender } from './src/push/fanout.js';
 import { createPushSubscriptionStore, isPushSubscription, type PushSubscriptionStore, type StoredPushSubscription } from './src/push/subscriptions.js';
 import { createVapidKeyStore, type VapidKeyStore } from './src/push/vapid.js';
@@ -738,6 +740,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const tokenIndex = new Map<string, NodeRegistration>();
   const nodeSockets = new Map<NodeId, WebSocket>();
   const nodeHello = new Map<NodeId, NodeHello>();
+  const nodePolicySync = new Map<NodeId, { status: RelayNodeStatus['policySyncStatus']; policyVersion: number; lastAckAt?: string }>();
   const subscribers = new Map<NodeId, Set<RelayClientSubscription>>();
   const commandRecipients = new Map<string, PendingCommandRecipient>();
   const presence = new Map<NodeId, Map<string, PresenceMember>>();
@@ -979,6 +982,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const ws = nodeSockets.get(nodeId);
     if (!ws || ws.readyState !== ws.OPEN) return;
     try {
+      nodePolicySync.set(nodeId, { status: 'syncing', policyVersion: grant.policyVersion });
       ws.send(JSON.stringify({
         type: 'policy.delta',
         nodeId,
@@ -986,13 +990,17 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         upserts: [grant],
         revokes: [],
       }));
+      broadcastMemberShareState(nodeId);
     } catch {
+      nodePolicySync.set(nodeId, { status: 'lagging', policyVersion: grant.policyVersion });
       relayMetrics.policySyncFailures += 1;
+      broadcastMemberShareState(nodeId);
     }
   };
 
   const sendPolicySync = (nodeId: NodeId, ws: WebSocket): void => {
     if (ws.readyState !== ws.OPEN) return;
+    nodePolicySync.set(nodeId, { status: 'syncing', policyVersion: invitations.currentPolicyVersion() });
     ws.send(JSON.stringify({
       type: 'policy.sync',
       nodeId,
@@ -1000,6 +1008,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       grants: invitations.activePolicyGrantsForNode(nodeId),
       revokedGrantIds: invitations.revokedGrantIdsForNode(nodeId),
     }));
+    broadcastMemberShareState(nodeId);
   };
 
   const sendPolicyRevoke = (invitation: InvitationRecord): void => {
@@ -1012,9 +1021,13 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       policyVersion: invitation.policyVersion,
     };
     try {
+      nodePolicySync.set(invitation.nodeId, { status: 'syncing', policyVersion: invitation.policyVersion });
       ws.send(JSON.stringify(msg));
+      broadcastMemberShareState(invitation.nodeId);
     } catch {
+      nodePolicySync.set(invitation.nodeId, { status: 'lagging', policyVersion: invitation.policyVersion });
       relayMetrics.policySyncFailures += 1;
+      broadcastMemberShareState(invitation.nodeId);
     }
   };
 
@@ -1039,6 +1052,28 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     toNodeInvitationView(invitation, connectedViewerCount(invitation.nodeId, invitation.invitationId))
   );
 
+  const memberNodeState = (nodeId: NodeId): MemberNodeState | null => {
+    const registration = registrations.get(nodeId);
+    if (!registration) return null;
+    const policy = nodePolicySync.get(nodeId);
+    return {
+      displayName: registration.displayName,
+      connected: nodeSockets.has(nodeId),
+      ...(registration.lastSeen ? { lastSeen: registration.lastSeen } : {}),
+      ...(nodeHello.get(nodeId) ? { hello: nodeHello.get(nodeId)! } : {}),
+      policySyncStatus: policy?.status ?? 'synced',
+      ...(policy?.lastAckAt ? { lastPolicyAckAt: policy.lastAckAt } : {}),
+    };
+  };
+
+  const memberShareStateForToken = (memberToken: string): MemberShareStateResponse | null => {
+    const invitation = invitations.findByMemberToken(memberToken);
+    if (!invitation) return null;
+    const node = memberNodeState(invitation.nodeId);
+    if (!node) return null;
+    return { state: buildMemberShareState({ invitation, node }) };
+  };
+
   const nodeStatuses = (): RelayNodeStatus[] => [...registrations.values()].map((registration) => {
     const hello = nodeHello.get(registration.nodeId);
     return {
@@ -1048,8 +1083,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       connected: nodeSockets.has(registration.nodeId),
       ...(registration.lastSeen ? { lastSeen: registration.lastSeen } : {}),
       ...(hello ? { protocolVersion: hello.protocolVersion } : {}),
-      policySyncVersion: 0,
-      policySyncStatus: 'synced',
+      policySyncVersion: nodePolicySync.get(registration.nodeId)?.policyVersion ?? 0,
+      policySyncStatus: nodePolicySync.get(registration.nodeId)?.status ?? 'synced',
       activeLeases: 0,
       pendingPermissions: 0,
     };
@@ -1486,6 +1521,16 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         );
         return;
       }
+      if (req.method === 'GET' && url.pathname === '/relay/member/share-state') {
+        const memberToken = cookieValue(req, RELAY_MEMBER_COOKIE);
+        const state = memberToken ? memberShareStateForToken(memberToken) : null;
+        if (!state) {
+          sendJson(res, 401, { error: 'member-auth-required' });
+          return;
+        }
+        sendJson(res, 200, state);
+        return;
+      }
       if (req.method === 'POST' && url.pathname === '/relay/member/grant-requests') {
         const modeBlock = hostedBlocksNewShares();
         if (modeBlock) {
@@ -1518,6 +1563,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, grantRequestStatus(requested.reason), { error: requested.reason });
           return;
         }
+        broadcastMemberShareState(requested.invitation.nodeId);
         sendJson(res, 201, { request: requested.request });
         return;
       }
@@ -1754,6 +1800,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           });
         }
         broadcastPresence(registration.nodeId);
+        broadcastMemberShareState(registration.nodeId);
         sendJson(res, 200, {
           invitation: toNodeInvitationViewWithPresence(resolved.invitation),
           request: resolved.request,
@@ -1869,6 +1916,27 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           shareMaxTtlMs,
         })));
         sendPolicySync(registration.nodeId, ws);
+        broadcastMemberShareState(registration.nodeId);
+        return;
+      }
+
+      if (
+        parsed
+        && typeof parsed === 'object'
+        && (parsed as { type?: unknown }).type === 'policy.delta.ack'
+        && (parsed as { nodeId?: unknown }).nodeId === registration.nodeId
+        && typeof (parsed as { policyVersion?: unknown }).policyVersion === 'number'
+      ) {
+        const ack = parsed as { policyVersion: number };
+        const current = nodePolicySync.get(registration.nodeId);
+        if (!current || ack.policyVersion >= current.policyVersion) {
+          nodePolicySync.set(registration.nodeId, {
+            status: 'synced',
+            policyVersion: ack.policyVersion,
+            lastAckAt: new Date().toISOString(),
+          });
+          broadcastMemberShareState(registration.nodeId);
+        }
         return;
       }
 
@@ -1907,6 +1975,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       if (nodeSockets.get(registration.nodeId) === ws) {
         nodeSockets.delete(registration.nodeId);
         recordLastSeen(registration);
+        broadcastMemberShareState(registration.nodeId);
       }
     });
   });
@@ -2067,6 +2136,24 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     for (const sub of [...subscribed]) {
       if (!subscriptionStillAuthorized(nodeId, sub)) continue;
       if (sub.ws.readyState === sub.ws.OPEN) sub.ws.send(encoded);
+    }
+  }
+
+  function broadcastMemberShareState(nodeId: NodeId): void {
+    const subscribed = subscribers.get(nodeId);
+    if (!subscribed) return;
+    for (const sub of [...subscribed]) {
+      if (!subscriptionStillAuthorized(nodeId, sub)) continue;
+      if (sub.auth.kind !== 'member' || !sub.auth.invitationId) continue;
+      const invitation = invitations.list().find((candidate) => candidate.invitationId === sub.auth.invitationId);
+      const node = memberNodeState(nodeId);
+      if (!invitation || !node) continue;
+      if (sub.ws.readyState === sub.ws.OPEN) {
+        sub.ws.send(JSON.stringify({
+          type: 'relay.memberShareState',
+          state: buildMemberShareState({ invitation, node }),
+        }));
+      }
     }
   }
 
@@ -2232,6 +2319,16 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       );
     }
     recordPresence(subscribedNodeId, relayClientId, auth);
+    if (auth.kind === 'member' && auth.invitationId) {
+      const invitation = invitations.list().find((candidate) => candidate.invitationId === auth.invitationId);
+      const node = memberNodeState(subscribedNodeId);
+      if (invitation && node && ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'relay.memberShareState',
+          state: buildMemberShareState({ invitation, node }),
+        }));
+      }
+    }
     ws.on('message', (data) => {
       let parsed: unknown;
       try {
@@ -2753,6 +2850,7 @@ function relayJoinHtml(): string {
     .offline { border: 1px solid #4b5563; border-radius: 6px; padding: 14px; margin-top: 14px; background: #111827; }
     .error { color: #ff7b72; }
     .request { border: 1px solid #7c5f16; border-radius: 6px; padding: 12px; margin-top: 14px; background: #211b0d; }
+    .blocked { border-color: #7f1d1d; background: #2a1111; }
   </style>
 </head>
 <body>
@@ -2791,8 +2889,12 @@ function relayJoinHtml(): string {
       <strong>The shared task's machine is currently offline.</strong>
       <p id="offline-last-seen" class="muted"></p>
     </section>
+    <section id="terminal-status" class="request" hidden aria-label="Terminal sharing status">
+      <strong id="terminal-status-title"></strong>
+      <p id="terminal-status-copy" class="muted"></p>
+    </section>
     <section id="grant-request" class="request" hidden aria-label="Collaborator grant request">
-      <p class="muted">Ask the owner before any remote control is enabled.</p>
+      <p id="grant-request-copy" class="muted">Terminal input requires owner approval.</p>
       <button id="request-control" type="button">Request terminal input</button>
     </section>
   </section>
@@ -2830,8 +2932,12 @@ const taskNeedsInputEl = document.getElementById('task-needs-input');
 const taskUpdatedEl = document.getElementById('task-updated');
 const grantRequestEl = document.getElementById('grant-request');
 const requestControlEl = document.getElementById('request-control');
+const grantRequestCopyEl = document.getElementById('grant-request-copy');
 const offlineNodeEl = document.getElementById('offline-node');
 const offlineLastSeenEl = document.getElementById('offline-last-seen');
+const terminalStatusEl = document.getElementById('terminal-status');
+const terminalStatusTitleEl = document.getElementById('terminal-status-title');
+const terminalStatusCopyEl = document.getElementById('terminal-status-copy');
 const nodeKey = 'kookr-relay-join-node:' + location.host;
 let nodeId = sessionStorage.getItem(nodeKey) || '';
 let ws = null;
@@ -2866,7 +2972,6 @@ function renderProjection(projection) {
   taskNeedsInputEl.textContent = projection.needsInput ? 'yes' : 'no';
   taskUpdatedEl.textContent = projection.updatedAt || '';
   taskEl.hidden = false;
-  grantRequestEl.hidden = false;
 }
 
 function formatLastSeen(value) {
@@ -2884,7 +2989,50 @@ function renderOfflineNode(node) {
   setStatus('Machine offline. The link is still valid, but the task is not viewable right now.');
 }
 
+function renderMemberShareState(memberState) {
+  if (!memberState || memberState.schemaVersion !== 'member-share-state.v1') return;
+  if (memberState.nodeId) {
+    nodeId = memberState.nodeId;
+    sessionStorage.setItem(nodeKey, nodeId);
+  }
+  const terminal = memberState.terminal || {};
+  terminalStatusEl.hidden = false;
+  terminalStatusEl.className = terminal.state === 'blocked' ? 'request blocked' : 'request';
+  grantRequestEl.hidden = true;
+  requestControlEl.disabled = false;
+  if (terminal.state === 'available') {
+    terminalStatusTitleEl.textContent = 'Terminal sharing approved';
+    terminalStatusCopyEl.textContent = 'Terminal input is available for this shared task.';
+  } else if (terminal.state === 'pendingApproval') {
+    terminalStatusTitleEl.textContent = 'Terminal request pending';
+    terminalStatusCopyEl.textContent = 'Waiting for owner approval.';
+  } else if (terminal.state === 'denied') {
+    terminalStatusTitleEl.textContent = 'Terminal request denied';
+    terminalStatusCopyEl.textContent = 'The owner denied terminal input for this share.';
+    grantRequestEl.hidden = false;
+    grantRequestCopyEl.textContent = 'You can send another terminal input request.';
+  } else if (terminal.state === 'revoked') {
+    terminalStatusTitleEl.textContent = 'Share revoked';
+    terminalStatusCopyEl.textContent = 'This share is no longer active.';
+  } else if (terminal.state === 'expired') {
+    terminalStatusTitleEl.textContent = 'Share expired';
+    terminalStatusCopyEl.textContent = 'This share is no longer active.';
+  } else {
+    terminalStatusTitleEl.textContent = terminal.reason === 'policy.grantRequired' ? 'Terminal input not approved' : 'Terminal sharing unavailable';
+    terminalStatusCopyEl.textContent = terminal.message || 'Terminal sharing is not available for this session.';
+    if (terminal.reason === 'policy.grantRequired') {
+      grantRequestEl.hidden = false;
+      grantRequestCopyEl.textContent = 'Terminal input requires owner approval.';
+    }
+    if (terminal.reason === 'node.offline') renderOfflineNode(memberState.node);
+  }
+}
+
 function ingest(event) {
+  if (event && event.type === 'relay.memberShareState') {
+    renderMemberShareState(event.state);
+    return;
+  }
   const payload = event && event.payload;
   if (payload && payload.type === 'remote.taskProjection.v1') {
     renderProjection(payload.projection);
@@ -2893,6 +3041,17 @@ function ingest(event) {
 }
 
 async function loadState() {
+  try {
+    const memberState = await fetch('/relay/member/share-state', { credentials: 'include' });
+    if (memberState.ok) {
+      const body = await memberState.json();
+      renderMemberShareState(body.state);
+      if (body.state && body.state.nodeId) nodeId = body.state.nodeId;
+    }
+  } catch {
+    // Member state is the richer status path; older/failed relays can still
+    // load the legacy dashboard state below.
+  }
   if (!nodeId) return false;
   const stateUrl = new URL('/relay/dashboard/state', location.href);
   stateUrl.searchParams.set('nodeId', nodeId);
@@ -2973,6 +3132,11 @@ requestControlEl.addEventListener('click', async () => {
     requestControlEl.disabled = false;
     return;
   }
+  grantRequestEl.hidden = true;
+  terminalStatusEl.hidden = false;
+  terminalStatusEl.className = 'request';
+  terminalStatusTitleEl.textContent = 'Terminal request pending';
+  terminalStatusCopyEl.textContent = 'Waiting for owner approval.';
   setStatus('Waiting for owner approval.');
 });
 

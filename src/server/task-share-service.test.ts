@@ -108,6 +108,12 @@ describe('TaskShareService', () => {
       getNodeIdentity: () => ({ nodeId: asNodeId('kookr-node-test'), nodeEpoch: asNodeEpoch('1') }),
       nextServerRevision: () => asServerRevision(1),
       publish: () => true,
+      diagnoseTerminalSharing: () => ({
+        state: 'blocked',
+        reason: 'nodeUntrusted',
+        message: 'Terminal sharing is disabled for this node.',
+        checkedAt: '2026-05-17T00:00:00.000Z',
+      }),
     });
     await service.createTaskShare({ taskId: task.id, ttlMs: 60_000 });
 
@@ -120,7 +126,10 @@ describe('TaskShareService', () => {
 
     releaseRevoke?.();
     await expect(revoke).resolves.toEqual(expect.objectContaining({
-      share: expect.objectContaining({ state: 'revoked' }),
+      share: expect.objectContaining({
+        state: 'revoked',
+        terminalSharing: expect.objectContaining({ reason: 'nodeUntrusted' }),
+      }),
     }));
   });
 
@@ -261,10 +270,20 @@ describe('TaskShareService', () => {
         events.push(event);
         return true;
       },
+      diagnoseTerminalSharing: () => ({
+        state: 'blocked',
+        reason: 'policySyncPending',
+        message: 'Approval is syncing.',
+        checkedAt: '2026-05-17T00:00:00.000Z',
+      }),
     });
 
-    await service.approveGrantRequest('inv-1', 'grant-req-1');
+    const approved = await service.approveGrantRequest('inv-1', 'grant-req-1');
 
+    expect(approved.share.terminalSharing).toEqual(expect.objectContaining({
+      state: 'blocked',
+      reason: 'policySyncPending',
+    }));
     expect(await service.listTaskShares()).toEqual([
       expect.objectContaining({
         invitationId: 'inv-1',
@@ -302,10 +321,20 @@ describe('TaskShareService', () => {
         events.push(event);
         return true;
       },
+      diagnoseTerminalSharing: () => ({
+        state: 'blocked',
+        reason: 'nodeUntrusted',
+        message: 'Terminal sharing is disabled for this node.',
+        checkedAt: '2026-05-17T00:00:00.000Z',
+      }),
     });
 
-    await service.denyGrantRequest('inv-1', 'grant-req-1');
+    const denied = await service.denyGrantRequest('inv-1', 'grant-req-1');
 
+    expect(denied.share.terminalSharing).toEqual(expect.objectContaining({
+      state: 'blocked',
+      reason: 'nodeUntrusted',
+    }));
     expect(await service.listTaskShares()).toEqual([
       expect.objectContaining({
         invitationId: 'inv-1',
@@ -314,5 +343,40 @@ describe('TaskShareService', () => {
       }),
     ]);
     expect(events).toHaveLength(0);
+  });
+
+  it('attaches terminal sharing diagnostics to listed shares', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('task', '/tmp');
+    const createdShare = share({ taskId: task.id });
+    const service = new TaskShareService({
+      client: clientFor(createdShare),
+      taskStore,
+      getNodeIdentity: () => ({ nodeId: asNodeId('kookr-node-test'), nodeEpoch: asNodeEpoch('1') }),
+      nextServerRevision: () => asServerRevision(1),
+      publish: () => true,
+      diagnoseTerminalSharing: () => ({
+        state: 'blocked',
+        reason: 'nodeUntrusted',
+        message: 'Terminal sharing is disabled for this node.',
+        checkedAt: '2026-05-17T00:00:00.000Z',
+      }),
+    });
+
+    const created = await service.createTaskShare({ taskId: task.id, ttlMs: 60_000 });
+
+    expect(created.share.terminalSharing).toEqual(expect.objectContaining({
+      state: 'blocked',
+      reason: 'nodeUntrusted',
+    }));
+    expect(await service.listTaskShares()).toEqual([
+      expect.objectContaining({
+        invitationId: 'inv-1',
+        terminalSharing: expect.objectContaining({
+          state: 'blocked',
+          reason: 'nodeUntrusted',
+        }),
+      }),
+    ]);
   });
 });
