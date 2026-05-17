@@ -4,7 +4,6 @@ import { join } from 'node:path';
 
 import type { BackendStats } from '../adapters/terminal-backend.js';
 import type { RemoteNodeStatus } from '../remote/node-client.js';
-import { parseTerminalInputKillSwitch, RELAY_TRUSTED_ENV_NAME, relayTrustedProcessValue } from '../remote/handshake.js';
 import type { TaskShareSummary } from '../remote/share-contract.js';
 import type { OwnerRemediation, OwnerTerminalSharingStatus } from '../shared/contracts/session-sharing-owner.js';
 
@@ -28,6 +27,9 @@ export interface ShareDiagnosticsServiceOptions {
   getRelayConfigured: () => boolean;
   getTerminalAdapterAvailable: () => boolean;
   getPolicySynced: (share: TaskShareSummary) => boolean;
+  relayTrustedEnvName: string;
+  relayTrustedProcessValue: (env: NodeJS.ProcessEnv) => string | null;
+  parseTerminalInputKillSwitch: (raw: string | undefined) => { disabled: boolean };
   env?: NodeJS.ProcessEnv;
 }
 
@@ -38,6 +40,9 @@ export class ShareDiagnosticsService {
   private readonly getRelayConfigured: ShareDiagnosticsServiceOptions['getRelayConfigured'];
   private readonly getTerminalAdapterAvailable: ShareDiagnosticsServiceOptions['getTerminalAdapterAvailable'];
   private readonly getPolicySynced: ShareDiagnosticsServiceOptions['getPolicySynced'];
+  private readonly relayTrustedEnvName: string;
+  private readonly relayTrustedProcessValue: ShareDiagnosticsServiceOptions['relayTrustedProcessValue'];
+  private readonly parseTerminalInputKillSwitch: ShareDiagnosticsServiceOptions['parseTerminalInputKillSwitch'];
   private readonly env: NodeJS.ProcessEnv;
 
   constructor(opts: ShareDiagnosticsServiceOptions) {
@@ -47,6 +52,9 @@ export class ShareDiagnosticsService {
     this.getRelayConfigured = opts.getRelayConfigured;
     this.getTerminalAdapterAvailable = opts.getTerminalAdapterAvailable;
     this.getPolicySynced = opts.getPolicySynced;
+    this.relayTrustedEnvName = opts.relayTrustedEnvName;
+    this.relayTrustedProcessValue = opts.relayTrustedProcessValue;
+    this.parseTerminalInputKillSwitch = opts.parseTerminalInputKillSwitch;
     this.env = opts.env ?? process.env;
   }
 
@@ -66,12 +74,12 @@ export class ShareDiagnosticsService {
       return {
         state: 'blocked',
         reason: 'nodeUntrusted',
-        message: `Terminal sharing is disabled for this node. Set ${RELAY_TRUSTED_ENV_NAME}=true in ${trust.loadedEnvPath ?? join(this.serverCwd, '.env')} and restart with pnpm prod:restart.`,
+        message: `Terminal sharing is disabled for this node. Set ${this.relayTrustedEnvName}=true in ${trust.loadedEnvPath ?? join(this.serverCwd, '.env')} and restart with pnpm prod:restart.`,
         checkedAt,
         remediation: this.trustRemediation(trust, checkedAt),
       };
     }
-    if (parseTerminalInputKillSwitch(this.env.KOOKR_RELAY_FEATURES).disabled) {
+    if (this.parseTerminalInputKillSwitch(this.env.KOOKR_RELAY_FEATURES).disabled) {
       return {
         state: 'blocked',
         reason: 'nodeFeatureUnavailable',
@@ -128,7 +136,7 @@ export class ShareDiagnosticsService {
   private trustRemediation(snapshot: EnvSnapshot, diagnosedAt: string): OwnerRemediation {
     return {
       kind: 'setEnvAndRestart',
-      envName: RELAY_TRUSTED_ENV_NAME,
+      envName: this.relayTrustedEnvName,
       expectedValue: 'true',
       ...(snapshot.loadedEnvPath ? { loadedEnvPath: snapshot.loadedEnvPath } : {}),
       ...(snapshot.envFileHash ? { envFileHash: snapshot.envFileHash } : {}),
@@ -144,7 +152,7 @@ export class ShareDiagnosticsService {
   private trustSnapshot(): EnvSnapshot {
     const envPath = join(this.serverCwd, '.env');
     const base: EnvSnapshot = {
-      processValue: relayTrustedProcessValue(this.env),
+      processValue: this.relayTrustedProcessValue(this.env),
       processStartedAt: this.processStartedAt,
     };
     try {
@@ -155,7 +163,7 @@ export class ShareDiagnosticsService {
         loadedEnvPath: envPath,
         envFileHash: createHash('sha256').update(text).digest('hex'),
         envFileMtime: stat.mtime.toISOString(),
-        envFileValue: parseEnvValue(text, RELAY_TRUSTED_ENV_NAME),
+        envFileValue: parseEnvValue(text, this.relayTrustedEnvName),
       };
     } catch {
       return base;

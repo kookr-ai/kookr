@@ -1059,6 +1059,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       return typeof value === 'number' && Number.isFinite(value) ? value : null;
     },
   };
+  const {
+    parseTerminalInputKillSwitch,
+    RELAY_TRUSTED_ENV_NAME,
+    relayTrustedProcessValue,
+  } = await import('../remote/handshake.js');
   const shareDiagnostics = new ShareDiagnosticsService({
     serverCwd,
     processStartedAt: serverStartedAt,
@@ -1078,6 +1083,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         && (!grant.expiresAt || Date.parse(grant.expiresAt) > Date.now())
       ));
     },
+    relayTrustedEnvName: RELAY_TRUSTED_ENV_NAME,
+    relayTrustedProcessValue,
+    parseTerminalInputKillSwitch,
   });
 
   const stopRemoteRuntime = async (): Promise<void> => {

@@ -37,6 +37,14 @@ function remoteStatus(overrides: Partial<RemoteNodeStatus> = {}): RemoteNodeStat
   };
 }
 
+const diagnosticTrustDeps = {
+  relayTrustedEnvName: RELAY_TRUSTED_ENV_NAME,
+  relayTrustedProcessValue: (env: NodeJS.ProcessEnv): string | null => env[RELAY_TRUSTED_ENV_NAME] ?? null,
+  parseTerminalInputKillSwitch: (raw: string | undefined): { disabled: boolean } => ({
+    disabled: (raw ?? '').split(',').some((token) => token.trim() === 'terminal-input'),
+  }),
+};
+
 describe('ShareDiagnosticsService', () => {
   it('returns exact owner remediation when relay trust is missing', () => {
     const dir = join(tmpdir(), `kookr-share-diag-${Date.now()}`);
@@ -49,6 +57,7 @@ describe('ShareDiagnosticsService', () => {
       getRelayConfigured: () => true,
       getTerminalAdapterAvailable: () => true,
       getPolicySynced: () => true,
+      ...diagnosticTrustDeps,
       env: {},
     });
 
@@ -74,6 +83,7 @@ describe('ShareDiagnosticsService', () => {
       getRelayConfigured: () => true,
       getTerminalAdapterAvailable: () => true,
       getPolicySynced: () => true,
+      ...diagnosticTrustDeps,
       env: { [RELAY_TRUSTED_ENV_NAME]: 'true' },
     });
 
