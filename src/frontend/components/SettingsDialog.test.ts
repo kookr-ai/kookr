@@ -17,6 +17,55 @@ interface MockSettings {
   defaultAgentType: AgentSelection;
 }
 
+function relayStatusWithAction(
+  kind: 'fixEnv' | 'restartRelay' | 'repairRelayPairing' | 'restartKookr',
+  reason: string,
+  command: string,
+) {
+  return {
+    configured: kind === 'repairRelayPairing',
+    source: kind === 'repairRelayPairing' ? 'stored' : 'none',
+    relayUrl: kind === 'repairRelayPairing' ? 'http://relay.test' : undefined,
+    connectionState: kind === 'repairRelayPairing' ? 'authFailed' : 'localOnly',
+    relayConnected: false,
+    setupDiagnosis: {
+      envState: kind === 'fixEnv' ? 'missing-env' : kind === 'restartRelay' ? 'restart-required' : 'ok',
+      envMessage: reason,
+      requiresRelayRestart: kind === 'restartRelay',
+      envFilePath: '/tmp/kookr/.env',
+      localRelayCommands: {
+        start: 'pnpm relay:start',
+        status: 'pnpm relay:status',
+        logs: 'pnpm relay:logs',
+        restart: 'pnpm relay:restart',
+        stop: 'pnpm relay:stop',
+        doctor: 'pnpm relay:doctor',
+      },
+      recommendedAction: { kind, command, reason },
+    },
+    hostedRelay: {
+      configured: false,
+      relayUrl: 'https://share.kookr.dev',
+      defaultEnabled: false,
+      operationalGatesMet: false,
+      mode: 'disabled',
+      message: 'Hosted relay is not enabled.',
+      checkedAt: '2026-05-17T00:00:00.000Z',
+      gates: {
+        deploymentOwner: false,
+        environment: false,
+        tlsDomain: false,
+        accountDeviceAuth: false,
+        nodePairingAuth: false,
+        dataRetention: false,
+        rateLimitAbuse: false,
+        emergencyMaintenance: false,
+        metricsAlerts: false,
+      },
+    },
+  };
+}
+
 const DEFAULT_SETTINGS: MockSettings = {
   githubPollingEnabled: true,
   githubPollingIntervalSec: 60,
@@ -277,6 +326,44 @@ describe('SettingsDialog tabs', () => {
       nodeId: 'kookr-node-test',
       relayToken: 'node-token-secret',
     });
+  });
+
+  test.each([
+    ['fixEnv', 'Fix env', 'No .env file or process relay admin token was found.', 'Set KOOKR_RELAY_ADMIN_TOKEN in /tmp/kookr/.env'] as const,
+    ['restartRelay', 'Restart relay', 'Relay env changed after the relay process started.', 'pnpm relay:restart'] as const,
+    ['repairRelayPairing', 'Re-pair node', 'Relay rejected the configured node credential.', 'Open Settings > Sharing and pair this node again.'] as const,
+    ['restartKookr', 'Restart Kookr', 'The relay admin token is present in .env but the running Kookr process has not loaded it.', 'pnpm prod:restart'] as const,
+  ])('surfaces %s relay setup diagnosis in Settings', async (kind, label, reason, command) => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === '/api/settings') {
+        return { ok: true, json: async () => DEFAULT_SETTINGS } as Response;
+      }
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-relay' }) } as Response;
+      }
+      if (url === '/api/relay-connection' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: relayStatusWithAction(kind, reason, command),
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    await flush();
+
+    const sharingTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Sharing');
+    await act(async () => {
+      sharingTab!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain(label);
+    expect(container.textContent).toContain(reason);
+    expect(container.textContent).toContain(command);
   });
 
   test('pairs a custom relay with an admin token without sending a node token', async () => {

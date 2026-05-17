@@ -20,9 +20,11 @@ import type {
   RelayConnectionSource,
   RelayConnectionState,
   RelayConnectionStatus,
+  RelaySetupDiagnosis,
 } from '../shared/contracts/relay-connection.js';
 import type { HostedRelayNodeCredentialResponse, HostedRelayStatus } from '../shared/contracts/hosted-relay.js';
 import { hostedRelayStatusFromEnv } from './hosted-relay-config.js';
+import { diagnoseRelayEnv } from './relay-lifecycle.js';
 
 export interface RelayRuntimeHandle {
   readonly nodeStatus: RemoteNodeStatus;
@@ -32,6 +34,7 @@ export interface RelayRuntimeHandle {
 
 export interface RelayConnectionManagerOptions {
   kookrDir: string;
+  cwd?: string;
   env?: NodeJS.ProcessEnv;
   getHostedRelayStatus?: () => HostedRelayStatus;
   startRuntime: (credentials: RelayConnectionCredentials) => Promise<RelayRuntimeHandle>;
@@ -85,6 +88,64 @@ function statusFromNodeState(state: RemoteNodeStatus['connectionState']): RelayC
     case 'stopped':
       return 'stopped';
   }
+}
+
+function setupDiagnosis(opts: { kookrDir: string; cwd?: string; env: NodeJS.ProcessEnv; lastError?: RelayConnectionErrorView }): RelaySetupDiagnosis {
+  const envDiagnosis = diagnoseRelayEnv({ kookrDir: opts.kookrDir, cwd: opts.cwd, env: opts.env });
+  let recommendedAction: RelaySetupDiagnosis['recommendedAction'];
+  if (opts.lastError?.code === 'authFailed') {
+    recommendedAction = {
+      kind: 'repairRelayPairing',
+      command: 'Open Settings > Sharing and pair this node again.',
+      reason: 'Relay rejected the configured node credential.',
+    };
+  } else if (opts.lastError?.code === 'relay-validation-failed') {
+    recommendedAction = {
+      kind: 'restartRelay',
+      command: 'pnpm relay:restart',
+      reason: 'Relay is unreachable or did not validate credentials.',
+    };
+  } else if (envDiagnosis.state === 'restart-required') {
+    recommendedAction = {
+      kind: 'restartRelay',
+      command: 'pnpm relay:restart',
+      reason: 'Relay env changed after the relay process started.',
+    };
+  } else if (
+    envDiagnosis.envFilePresent
+    && envDiagnosis.adminTokenConfigured
+    && !envDiagnosis.processAdminTokenConfigured
+    && !envDiagnosis.insecureDev
+  ) {
+    recommendedAction = {
+      kind: 'restartKookr',
+      command: 'pnpm prod:restart',
+      reason: 'The relay admin token is present in .env but the running Kookr process has not loaded it.',
+    };
+  } else if (envDiagnosis.state === 'missing-env' || envDiagnosis.state === 'missing-admin-token') {
+    recommendedAction = {
+      kind: 'fixEnv',
+      command: `Set KOOKR_RELAY_ADMIN_TOKEN in ${envDiagnosis.envFilePath} or use KOOKR_RELAY_INSECURE_DEV=1 locally.`,
+      reason: envDiagnosis.message,
+    };
+  } else {
+    recommendedAction = { kind: 'none', reason: 'Relay setup has no immediate local action.' };
+  }
+  return {
+    envState: envDiagnosis.state,
+    envMessage: envDiagnosis.message,
+    requiresRelayRestart: envDiagnosis.requiresRestart,
+    envFilePath: envDiagnosis.envFilePath,
+    localRelayCommands: {
+      start: 'pnpm relay:start',
+      status: 'pnpm relay:status',
+      logs: 'pnpm relay:logs',
+      restart: 'pnpm relay:restart',
+      stop: 'pnpm relay:stop',
+      doctor: 'pnpm relay:doctor',
+    },
+    recommendedAction,
+  };
 }
 
 async function validateNodeCredentials(credentials: RelayConnectionCredentials): Promise<RelayConnectionErrorView | null> {
@@ -316,6 +377,7 @@ export function createRelayConnectionManager(opts: RelayConnectionManagerOptions
       ...(nodeStatus ? { nodeId: nodeStatus.nodeId, nodeMode: nodeStatus.nodeMode } : activeConfig?.credentials.nodeId ? { nodeId: activeConfig.credentials.nodeId } : {}),
       ...(lastConnectedAt ? { lastConnectedAt } : {}),
       ...(lastError ? { lastError } : {}),
+      setupDiagnosis: setupDiagnosis({ kookrDir: opts.kookrDir, cwd: opts.cwd, env, lastError }),
       hostedRelay: getHostedRelayStatus(),
     };
     opts.onStatusChange?.(status);

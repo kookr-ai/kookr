@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createRelayServer, type RelayServerHandle } from '../../relay/server.js';
 import { createRelayConnectionManager, type RelayRuntimeHandle } from './relay-connection-manager.js';
 import { relayConnectionCredentialsPath } from './relay-connection-store.js';
+import { relayLifecyclePaths } from './relay-lifecycle.js';
 import type { RemoteNodeStatus } from '../remote/node-client.js';
 
 let relay: RelayServerHandle | null = null;
@@ -94,8 +95,58 @@ describe('RelayConnectionManager', () => {
       connectionState: 'authFailed',
       relayConnected: false,
       lastError: { code: 'authFailed' },
+      setupDiagnosis: {
+        recommendedAction: {
+          kind: 'repairRelayPairing',
+          command: 'Open Settings > Sharing and pair this node again.',
+        },
+      },
     });
     expect(JSON.stringify(status)).not.toContain('wrong-token');
+  });
+
+  it('distinguishes fix-env, restart-Kookr, and restart-relay setup actions', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-setup-cwd-'));
+    const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-setup-state-'));
+    const manager = createRelayConnectionManager({
+      kookrDir,
+      cwd,
+      env: {},
+      startRuntime: async () => fakeRuntime(() => undefined),
+    });
+
+    expect(manager.status().setupDiagnosis.recommendedAction).toMatchObject({
+      kind: 'fixEnv',
+      reason: 'No .env file or process relay admin token was found.',
+    });
+
+    await writeFile(join(cwd, '.env'), 'KOOKR_RELAY_ADMIN_TOKEN=admin-from-file\n', 'utf8');
+    expect(manager.status().setupDiagnosis.recommendedAction).toMatchObject({
+      kind: 'restartKookr',
+      command: 'pnpm prod:restart',
+    });
+
+    const paths = relayLifecyclePaths(kookrDir);
+    await mkdir(kookrDir, { recursive: true });
+    await writeFile(paths.statePath, JSON.stringify({
+      schemaVersion: 'relay-lifecycle-state.v1',
+      mode: 'detached',
+      pid: 99999999,
+      command: ['node', 'relay/server.ts'],
+      cwd,
+      bindHost: '127.0.0.1',
+      port: 8080,
+      relayUrl: 'http://127.0.0.1:8080',
+      stateDbPath: paths.dbPath,
+      logPath: paths.logPath,
+      startedAt: '2026-05-17T00:00:00.000Z',
+      envFilePath: join(cwd, '.env'),
+      envFileHash: 'old-hash',
+    }), 'utf8');
+    expect(manager.status().setupDiagnosis.recommendedAction).toMatchObject({
+      kind: 'restartRelay',
+      command: 'pnpm relay:restart',
+    });
   });
 
   it('forgets stored credentials and returns to local-only mode', async () => {

@@ -92,6 +92,21 @@ function hostedRelayBadge(status: RelayConnectionStatus | null): string {
   return 'Ready';
 }
 
+function relaySetupActionLabel(kind: RelayConnectionStatus['setupDiagnosis']['recommendedAction']['kind']): string {
+  switch (kind) {
+    case 'restartKookr':
+      return 'Restart Kookr';
+    case 'restartRelay':
+      return 'Restart relay';
+    case 'repairRelayPairing':
+      return 'Re-pair node';
+    case 'fixEnv':
+      return 'Fix env';
+    case 'none':
+      return 'Relay setup';
+  }
+}
+
 function RelayConnectionSection() {
   const [status, setStatus] = useState<RelayConnectionStatus | null>(null);
   const [relayUrl, setRelayUrl] = useState('');
@@ -191,6 +206,19 @@ function RelayConnectionSection() {
         <span className={`relay-status-dot ${status?.relayConnected ? 'connected' : ''}`} aria-hidden="true" />
       </div>
       {status?.lastError && <div className="settings-error">{status.lastError.message}</div>}
+      {status?.setupDiagnosis?.recommendedAction.kind !== 'none' && status?.setupDiagnosis && (
+        <div className="settings-warning" role="status">
+          <strong>{relaySetupActionLabel(status.setupDiagnosis.recommendedAction.kind)}</strong>
+          <span>{status.setupDiagnosis.recommendedAction.reason}</span>
+          <code>{status.setupDiagnosis.recommendedAction.command}</code>
+        </div>
+      )}
+      {status?.setupDiagnosis?.requiresRelayRestart && (
+        <div className="settings-warning" role="status">
+          <strong>Relay restart required</strong>
+          <span>{status.setupDiagnosis.envMessage}</span>
+        </div>
+      )}
       {error && <div className="settings-error">{error}</div>}
 
       {status?.hostedRelay?.defaultEnabled && (
