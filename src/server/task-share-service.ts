@@ -200,7 +200,7 @@ export class TaskShareService {
     identity: { nodeId: NodeId; nodeEpoch: NodeEpoch },
     task: NonNullable<ReturnType<TaskStore['getTask']>>,
   ): boolean {
-    if (!share.grants.includes('terminalView')) return false;
+    if (!grantsAllowTerminalView(share.grants)) return false;
     const session = task.sessions[0];
     if (!session) return false;
     return this.publish({
@@ -257,6 +257,10 @@ function projectionDedupeKey(projection: RemoteTaskProjectionV1): string {
     needsInput: projection.needsInput,
     updatedAt: projection.updatedAt,
   });
+}
+
+function grantsAllowTerminalView(grants: readonly string[]): boolean {
+  return grants.includes('terminalView') || grants.includes('terminalInput');
 }
 
 function computeOwnerState(share: TaskShareSummary): TaskShareOwnerState {

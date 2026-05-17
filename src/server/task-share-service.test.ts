@@ -299,6 +299,67 @@ describe('TaskShareService', () => {
     ]);
   });
 
+  it('publishes a session projection when approval carries terminal input without explicit terminal view', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('task', '/tmp');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      createdAt: new Date('2026-05-17T00:00:00.000Z'),
+      cwd: '/tmp',
+      status: 'running',
+    });
+    const baseShare = share({ taskId: task.id });
+    const approvedShare = share({
+      taskId: task.id,
+      grants: ['view', 'terminalInput'],
+      grantRequests: [grantRequest],
+      policyVersion: asPolicyVersion(2),
+    });
+    const events: unknown[] = [];
+    const client: RelayShareClient = {
+      createTaskShare: async () => ({ share: baseShare, joinUrl: 'http://relay/join#inviteToken=tok' }),
+      revokeTaskShare: async () => ({ share: { ...baseShare, state: 'revoked', revokedAt: new Date().toISOString() }, alreadyRevoked: false }),
+      listTaskShares: async () => [],
+      approveGrantRequest: async () => ({ share: approvedShare, request: grantRequest }),
+      denyGrantRequest: async () => ({ share: baseShare, request: { ...grantRequest, status: 'denied', resolution: 'denied' } }),
+    };
+    const service = new TaskShareService({
+      client,
+      taskStore,
+      getNodeIdentity: () => ({ nodeId: asNodeId('kookr-node-test'), nodeEpoch: asNodeEpoch('1') }),
+      nextServerRevision: () => asServerRevision(events.length + 1),
+      publish: (event) => {
+        events.push(event);
+        return true;
+      },
+    });
+
+    await service.approveGrantRequest('inv-1', 'grant-req-1');
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          type: 'remote.taskProjection.v1',
+          invitationId: 'inv-1',
+        }),
+      }),
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          type: 'remote.shareSessionProjection.v1',
+          invitationId: 'inv-1',
+          projection: expect.objectContaining({
+            policyVersion: asPolicyVersion(2),
+            primarySharedSession: expect.objectContaining({
+              sessionAlias: 'primary',
+              sessionId: 'agent-1',
+            }),
+          }),
+        }),
+      }),
+    ]);
+  });
+
   it('remembers denied grants without publishing a new projection', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('task', '/tmp');

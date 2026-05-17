@@ -15,8 +15,6 @@ export function memberBlockedMessage(reason: MemberBlockedReason): string {
   switch (reason) {
     case 'policy.grantRequired':
       return 'Terminal input requires owner approval.';
-    case 'policy.terminalViewRequired':
-      return 'Terminal viewing requires owner approval.';
     case 'policy.syncPending':
       return 'The owner is still applying your approval.';
     case 'policy.syncFailed':
@@ -124,8 +122,8 @@ function buildTerminalStatus(input: {
 }): MemberTerminalSharingStatus {
   if (input.invitation.revokedAt) return { state: 'revoked' };
   if (input.expired) return { state: 'expired' };
-  const hasTerminalView = input.invitation.grants.includes('terminalView');
   const hasTerminalInput = input.invitation.grants.includes('terminalInput');
+  const hasTerminalView = input.invitation.grants.includes('terminalView') || hasTerminalInput;
   if (hasTerminalView || hasTerminalInput) {
     if (!input.node.connected) return blocked('node.offline', input.nextRetryAt);
     const features = new Set(input.node.hello?.supportedFeatures ?? []);
@@ -141,7 +139,6 @@ function buildTerminalStatus(input: {
     if (input.node.policySyncStatus === 'timedOut') return blocked('policy.syncTimedOut', input.nextRetryAt);
     if (input.node.policySyncStatus === 'stale') return blocked('policy.syncStale', input.nextRetryAt);
     if (input.node.policySyncStatus === 'failed') return blocked('policy.syncFailed', input.nextRetryAt);
-    if (hasTerminalInput && !hasTerminalView) return blocked('policy.terminalViewRequired', input.nextRetryAt);
     return hasTerminalInput ? { state: 'available' } : { state: 'viewOnly' };
   }
   const requests = input.invitation.grantRequests ?? [];
