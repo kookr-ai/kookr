@@ -21,11 +21,12 @@ function listSourceFiles(dir: string): string[] {
 }
 
 describe('KOOKR_RELAY_TRUSTED boundary', () => {
-  it('is read only by src/remote modules', () => {
+  it('is read only by src/remote modules with an explicit recovery-writer exception', () => {
     const offenders = listSourceFiles(join(root, 'src'))
       .filter((file) => readFileSync(file, 'utf8').includes('KOOKR_RELAY_TRUSTED'))
       .map((file) => relative(root, file))
-      .filter((file) => !file.startsWith('src/remote/'));
+      .filter((file) => !file.startsWith('src/remote/'))
+      .filter((file) => file !== 'src/shared/contracts/session-sharing-recovery.ts');
 
     expect(offenders).toEqual([]);
   });

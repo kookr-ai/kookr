@@ -9,6 +9,10 @@ import type {
   RelayConnectionStatus,
   RelayConnectionStatusResponse,
 } from '../../shared/contracts/relay-connection.js';
+import type {
+  SessionSharingRecoveryAction,
+  SessionSharingRecoveryActionResponse,
+} from '../../shared/contracts/session-sharing-recovery.js';
 
 interface ServerSettings {
   githubPollingEnabled: boolean;
@@ -99,7 +103,7 @@ function relaySetupActionLabel(kind: RelayConnectionStatus['setupDiagnosis']['re
     case 'restartRelay':
       return 'Restart relay';
     case 'repairRelayPairing':
-      return 'Re-pair node';
+      return 'Reconnect node';
     case 'fixEnv':
       return 'Fix env';
     case 'none':
@@ -118,6 +122,7 @@ function RelayConnectionSection() {
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recoveryResult, setRecoveryResult] = useState<string | null>(null);
 
   const loadStatus = useCallback(async () => {
     const res = await fetch('/api/relay-connection');
@@ -176,8 +181,43 @@ function RelayConnectionSection() {
       setRelayToken('');
       setRelayAdminToken('');
       setAccountToken('');
+      setRecoveryResult(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Relay update failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runRecovery(
+    action: SessionSharingRecoveryAction,
+    body: Record<string, unknown> = {},
+    confirmText?: string,
+  ): Promise<void> {
+    if (!csrfToken) return;
+    if (confirmText && !window.confirm(confirmText)) return;
+    setBusy(true);
+    setError(null);
+    setRecoveryResult(null);
+    try {
+      const res = await fetch(`/api/session-sharing/recovery/${action}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [SHARE_CSRF_HEADER]: csrfToken,
+        },
+        body: JSON.stringify(body),
+      });
+      const payload = await res.json() as SessionSharingRecoveryActionResponse | { error?: string };
+      if (!res.ok || !('result' in payload)) throw new Error('error' in payload && payload.error ? payload.error : `HTTP ${res.status}`);
+      if (payload.result.state === 'failed' || payload.result.state === 'partial') {
+        throw new Error(`${payload.result.message} ${payload.result.verification}`);
+      }
+      setRecoveryResult(`${payload.result.message} ${payload.result.verification}`);
+      await loadStatus().catch(() => undefined);
+      if (action === 'rotateNodeCredential' || action === 'repairRelayPairing') setRelayAdminToken('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Recovery action failed');
     } finally {
       setBusy(false);
     }
@@ -219,7 +259,8 @@ function RelayConnectionSection() {
           <span>{status.setupDiagnosis.envMessage}</span>
         </div>
       )}
-      {error && <div className="settings-error">{error}</div>}
+      {error && <div className="settings-error" role="alert">{error}</div>}
+      {recoveryResult && <div className="settings-warning" role="status">{recoveryResult}</div>}
 
       {status?.hostedRelay?.defaultEnabled && (
         <div className="relay-status-strip">
@@ -372,6 +413,82 @@ function RelayConnectionSection() {
           disabled={busy || !status?.configured || envManaged}
         >
           Forget
+        </button>
+      </div>
+
+      <div className="settings-section-title">Session Sharing Recovery</div>
+      <div className="settings-warning">
+        <strong>Recovery controls</strong>
+        <span>These actions affect active browser collaborators, node credentials, or local relay state. Destructive actions require confirmation and write an audit record.</span>
+      </div>
+      <div className="settings-action-row">
+        <button
+          type="button"
+          className="btn-secondary danger"
+          onClick={() => runRecovery(
+            'revokeAllShares',
+            { confirmation: 'revoke all shares' },
+            'Revoke every active task share owned by this node?',
+          )}
+          disabled={busy || !status?.configured}
+        >
+          Revoke all shares
+        </button>
+        <button
+          type="button"
+          className="btn-secondary danger"
+          onClick={() => runRecovery(
+            'disableTerminalSharing',
+            { confirmation: 'disable terminal sharing' },
+            'Disable terminal sharing in .env and disconnect the current relay runtime?',
+          )}
+          disabled={busy}
+        >
+          Disable terminal sharing
+        </button>
+        <button
+          type="button"
+          className="btn-secondary danger"
+          onClick={() => runRecovery(
+            'rotateNodeCredential',
+            { confirmation: 'rotate node credential', relayAdminToken },
+            'Rotate this node credential and invalidate the current token?',
+          )}
+          disabled={!canRotate || envManaged}
+        >
+          Rotate credential
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => runRecovery('repairRelayPairing', {
+            relayUrl,
+            relayAdminToken,
+            ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+          })}
+          disabled={!canPair || envManaged}
+        >
+          Reconnect node
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => runRecovery('openRelayLogs')}
+          disabled={busy}
+        >
+          Relay logs
+        </button>
+        <button
+          type="button"
+          className="btn-secondary danger"
+          onClick={() => runRecovery(
+            'resetRelayState',
+            { confirmation: 'reset local relay state' },
+            'Stop the owned local relay, back up SQLite state, and reset local relay state?',
+          )}
+          disabled={busy}
+        >
+          Reset relay state
         </button>
       </div>
     </div>

@@ -13,6 +13,7 @@ import { registerRalphRoutes } from './ralph/routes.js';
 import { registerOssAttemptRoutes } from './routes/oss-attempts-routes.js';
 import { registerShareRoutes } from './routes/share-routes.js';
 import { registerRelayConnectionRoutes } from './routes/relay-connection-routes.js';
+import { registerSessionSharingRecoveryRoutes } from './routes/session-sharing-recovery-routes.js';
 import type { RouteDeps } from './routes/shared.js';
 
 export type { RouteDeps } from './routes/shared.js';
@@ -30,6 +31,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerDeployRoutes(app, deps);
   registerShareRoutes(app, deps);
   registerRelayConnectionRoutes(app, deps);
+  registerSessionSharingRecoveryRoutes(app, deps);
 
   // Cache headers for frontend assets:
   // - /assets/* have content hashes in filenames → cache forever
