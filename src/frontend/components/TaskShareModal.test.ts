@@ -164,4 +164,132 @@ describe('TaskShareModal hosted relay errors', () => {
     expect(container.textContent).toContain('Approved grants');
     expect(container.textContent).toContain('Terminal input');
   });
+
+  test('offers preset link durations and defaults to 10 minutes', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-share' }) } as Response;
+      }
+      if (url === '/api/share/task' && !init) {
+        return { ok: true, json: async () => ({ shares: [] }) } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    }));
+    root = renderModal(container);
+    await flush();
+
+    const select = container.querySelector('select');
+    expect(select).not.toBeNull();
+    expect(Array.from(select!.options).map((option) => option.textContent)).toEqual([
+      '10 minutes', '1 hour', '8 hours', '24 hours',
+    ]);
+    // Default stays the short-lived 10 minutes.
+    expect(select!.value).toBe(String(10 * 60 * 1000));
+  });
+
+  test('creates a share with the chosen link duration', async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-share' }) } as Response;
+      }
+      if (url === '/api/share/task' && !init) {
+        return { ok: true, json: async () => ({ shares: [] }) } as Response;
+      }
+      if (url === '/api/share/task' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            share: {
+              invitationId: 'inv-1',
+              taskId: 'task-1',
+              createdAt: '2026-05-16T12:00:00.000Z',
+              expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+              state: 'waiting',
+              connectedViewerCount: 0,
+              grants: ['view'],
+              grantRequests: [],
+            },
+            joinUrl: 'http://relay.example/relay/join#inviteToken=tok',
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    root = renderModal(container);
+    await flush();
+
+    const select = container.querySelector('select')!;
+    await act(async () => {
+      select.value = String(8 * 60 * 60 * 1000);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const create = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Create share link');
+    await act(async () => {
+      create!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const postCall = fetchMock.mock.calls.find(
+      ([url, init]) => url === '/api/share/task' && (init as RequestInit | undefined)?.method === 'POST',
+    );
+    expect(postCall).toBeDefined();
+    expect(JSON.parse((postCall![1] as RequestInit).body as string)).toEqual({
+      taskId: 'task-1',
+      ttlMs: 8 * 60 * 60 * 1000,
+    });
+  });
+
+  test('creates a share with the default 10-minute duration when the picker is untouched', async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-share' }) } as Response;
+      }
+      if (url === '/api/share/task' && !init) {
+        return { ok: true, json: async () => ({ shares: [] }) } as Response;
+      }
+      if (url === '/api/share/task' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            share: {
+              invitationId: 'inv-1',
+              taskId: 'task-1',
+              createdAt: '2026-05-16T12:00:00.000Z',
+              expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+              state: 'waiting',
+              connectedViewerCount: 0,
+              grants: ['view'],
+              grantRequests: [],
+            },
+            joinUrl: 'http://relay.example/relay/join#inviteToken=tok',
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    root = renderModal(container);
+    await flush();
+
+    // No interaction with the duration <select> — Create must still send the
+    // 10-minute default, not a stale or hardcoded value.
+    const create = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Create share link');
+    await act(async () => {
+      create!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const postCall = fetchMock.mock.calls.find(
+      ([url, init]) => url === '/api/share/task' && (init as RequestInit | undefined)?.method === 'POST',
+    );
+    expect(postCall).toBeDefined();
+    expect(JSON.parse((postCall![1] as RequestInit).body as string)).toEqual({
+      taskId: 'task-1',
+      ttlMs: 10 * 60 * 1000,
+    });
+  });
 });

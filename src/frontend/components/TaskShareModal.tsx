@@ -12,7 +12,20 @@ import type {
 } from '../../remote/share-contract.js';
 
 const SHARE_CSRF_HEADER = 'x-kookr-csrf';
-const DEFAULT_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Selectable share-link lifetimes. The longest stays within the 24h ceiling
+ * the backend enforces — `TASK_SHARE_MAX_TTL_MS` in relay-share-client.ts,
+ * which the relay re-validates against its own `NODE_SHARE_MAX_TTL_MS` bound;
+ * the backend rejects any larger ttlMs.
+ */
+const SHARE_DURATIONS = [
+  { label: '10 minutes', ms: 10 * 60 * 1000 },
+  { label: '1 hour', ms: 60 * 60 * 1000 },
+  { label: '8 hours', ms: 8 * 60 * 60 * 1000 },
+  { label: '24 hours', ms: 24 * 60 * 60 * 1000 },
+] as const;
+const DEFAULT_TTL_MS = SHARE_DURATIONS[0].ms;
 const FOCUSABLE_SELECTOR = [
   'button:not(:disabled)',
   'input:not(:disabled)',
@@ -65,7 +78,11 @@ function isActiveShare(share: TaskShareSummary): boolean {
 function formatExpiry(expiresAt: string): string {
   const date = new Date(expiresAt);
   if (Number.isNaN(date.getTime())) return 'unknown expiry';
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  // A longer share can expire on a later calendar day; include the date then
+  // so a bare "08:30" is not read as a time already in the past.
+  if (date.toDateString() === new Date().toDateString()) return time;
+  return `${date.toLocaleDateString()} ${time}`;
 }
 
 function joinUrlUsesFragment(url: string | null): boolean {
@@ -112,6 +129,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
   const [generatedJoinUrl, setGeneratedJoinUrl] = useState<GeneratedJoinUrl | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ttlMs, setTtlMs] = useState<number>(DEFAULT_TTL_MS);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -247,7 +265,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
           'content-type': 'application/json',
           [SHARE_CSRF_HEADER]: csrfToken,
         },
-        body: JSON.stringify({ taskId, ttlMs: DEFAULT_TTL_MS }),
+        body: JSON.stringify({ taskId, ttlMs }),
       });
       if (!res.ok) {
         const failed = await res.json().catch(() => ({})) as { error?: string };
@@ -357,10 +375,25 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
 
         {status === 'ready' && (
           <>
-            <div className="task-share-row">
-              <span>Expires</span>
-              <strong>{displayedShare ? formatExpiry(displayedShare.expiresAt) : '10 minutes after creation'}</strong>
-            </div>
+            {activeShare ? (
+              <div className="task-share-row">
+                <span>Expires</span>
+                <strong>{formatExpiry(activeShare.expiresAt)}</strong>
+              </div>
+            ) : (
+              <label className="task-share-row">
+                <span>Link expires in</span>
+                <select
+                  value={ttlMs}
+                  onChange={(event) => setTtlMs(Number(event.currentTarget.value))}
+                  disabled={busy}
+                >
+                  {SHARE_DURATIONS.map((option) => (
+                    <option key={option.ms} value={option.ms}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+            )}
 
             <div className="task-share-state" role="status" aria-live="polite">
               {displayedShare ? stateTitle(displayedShare) : 'No active share'}
