@@ -1,0 +1,29 @@
+[Unit]
+Description=Kookr public relay
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=kookr-relay
+Group=kookr-relay
+WorkingDirectory=/opt/kookr
+EnvironmentFile=/etc/kookr/relay.env
+ExecStart=/usr/bin/node /opt/kookr/dist/relay/server.js
+Restart=on-failure
+RestartSec=5
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kookr-relay /var/log/kookr-relay
+CapabilityBoundingSet=
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

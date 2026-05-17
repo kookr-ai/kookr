@@ -116,10 +116,11 @@ set.
 | `KOOKR_TELEGRAM_API_URL` | Telegram API default | HTTP URL | Overrides the Telegram API base URL. Used by tests and local fakes. |
 | `KOOKR_STT_WHISPER_URL` | unset | HTTP URL of the local faster-whisper-server (e.g. `http://127.0.0.1:8010`) | Enables Telegram audio transcription for voice, uploaded audio, video notes, and audio documents. When unset, audio messages are dropped with the `dropped_audio_disabled` audit kind and the user is told audio is unsupported. The server must expose the OpenAI-compatible `POST /v1/audio/transcriptions` endpoint and is reached over plain HTTP — bind it to localhost only. |
 
-## Hosted Relay
+## Relay
 
-Hosted relay is inert until the operational gate is explicitly enabled. See
-`docs/reference/hosted-relay-operations.md` for the deployment and alert plan.
+Hosted relay is inert until the operational gate is explicitly enabled; see
+`docs/reference/hosted-relay-operations.md`. For user-operated public relays,
+see `docs/reference/self-hosted-relay-runbook.md`.
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
@@ -133,6 +134,14 @@ Hosted relay is inert until the operational gate is explicitly enabled. See
 | `KOOKR_HOSTED_RELAY_RETENTION_DAYS` | `30` | Positive integer days | Metadata retention window for hosted relay operations. |
 | `KOOKR_RELAY_ACCOUNT_TOKEN` | unset | Secret bearer token | Enables account-authenticated hosted node pairing through `/relay/account/nodes`. Never returned in status responses. |
 | `KOOKR_RELAY_ACCOUNT_ID` | `hosted-owner` | Account id string | Owner id assigned to nodes paired through account auth. |
+| `KOOKR_RELAY_BIND_HOST` | `0.0.0.0` for this release | Hostname or IP address | Bind host for the relay binary. Self-hosted public deployments should set `127.0.0.1` and put Caddy in front. Non-loopback binds warn unless acknowledged. |
+| `KOOKR_RELAY_ALLOW_INSECURE_BIND` | unset | `1` | Acknowledges the current-release warning when intentionally binding the relay to a non-loopback host. |
+| `KOOKR_RELAY_TRUSTED_PROXY` | `1` when bound to loopback | `0` or `1` | Controls whether the relay trusts a loopback reverse proxy's `X-Forwarded-For` client IP for rate limits and lockouts. |
+| `KOOKR_RELAY_PUBLIC_ORIGIN` | unset | HTTPS URL | Public relay origin used by self-hosted deployments and health/operator docs. |
+| `KOOKR_RELAY_STATE_DB_PATH` | `relay-state.sqlite` for the standalone relay binary | SQLite file path | Enables durable relay state for node registrations, hashed node tokens, invitations, share verifiers, and per-share lockout counters. |
+| `KOOKR_RELAY_REQUEST_BODY_LIMIT_BYTES` | `1000000` | Positive integer bytes | Maximum JSON request body size accepted by the relay. |
+| `KOOKR_RELAY_METADATA_RETENTION_DAYS` | `30` | Positive integer days | Self-hosted relay metadata retention setting; keep aligned with backup/ops policy. |
+| `KOOKR_RELAY_METRICS_WINDOW_MS` | `300000` | Positive integer ms | Recent metrics window used by relay alerts so rate-limit/security alerts can clear. |
 | `KOOKR_RELAY_SHARE_CREATE_LIMIT_PER_MINUTE` | `20` | Positive integer | Per-node share creation limit. Hits appear in relay metrics and alerts. |
 | `KOOKR_RELAY_ACCOUNT_PAIR_LIMIT_PER_MINUTE` | `10` | Positive integer | Per-account hosted node pairing limit. |
 | `KOOKR_RELAY_HEARTBEAT_ALERT_MS` | `60000` | Positive integer ms | Alert threshold for stale node heartbeat age. |

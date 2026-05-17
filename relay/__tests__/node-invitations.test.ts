@@ -440,6 +440,99 @@ describe('relay node-scoped task-share endpoints', () => {
     });
     expect(correctAfterLock.status).toBe(409);
     expect(await correctAfterLock.json()).toEqual({ error: 'ticket-unavailable' });
+
+    const diagnostic = await fetch(new URL(`/relay/node/invitations/${body.invitation.invitationId}`, relay.url()), {
+      headers: { authorization: `Bearer ${nodeToken}` },
+    });
+    expect(diagnostic.status).toBe(200);
+    expect(await diagnostic.json()).toMatchObject({
+      invitation: {
+        invitationId: body.invitation.invitationId,
+        failedAcceptCount: 5,
+        lockedUntil: expect.any(String),
+      },
+      node: { connected: false },
+    });
+
+    const reset = await fetch(new URL(`/relay/node/invitations/${body.invitation.invitationId}/share-ticket/reset`, relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+    });
+    expect(reset.status).toBe(200);
+    const resetBody = await reset.json() as { invitation: { failedAcceptCount?: number; lockedUntil?: string }; shareTicket: { shareId: string; password: string } };
+    expect(resetBody.invitation.failedAcceptCount).toBe(0);
+    expect(resetBody.invitation.lockedUntil).toBeUndefined();
+    expect(resetBody.shareTicket.shareId).toBe(body.shareTicket.shareId);
+
+    const acceptedAfterReset = await fetch(new URL('/relay/share-tickets/accept', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shareId: resetBody.shareTicket.shareId, password: resetBody.shareTicket.password }),
+    });
+    expect(acceptedAfterReset.status).toBe(200);
+  });
+
+  it('protects share-ticket reset by node ownership and task-share scope', async () => {
+    const relay = await startRelay();
+    const nodeA = relay.registerNode();
+    const nodeB = relay.registerNode();
+    const created = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeA.nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 'task-reset' }, grants: ['view'] }),
+    });
+    const body = await created.json() as { invitation: { invitationId: string } };
+    const resetUrl = new URL(`/relay/node/invitations/${body.invitation.invitationId}/share-ticket/reset`, relay.url());
+
+    const anonymous = await fetch(resetUrl, { method: 'POST' });
+    expect(anonymous.status).toBe(401);
+
+    const crossNode = await fetch(resetUrl, { method: 'POST', headers: nodeHeaders(nodeB.nodeToken) });
+    expect(crossNode.status).toBe(404);
+
+    const adminInvite = relay.createInvitation({
+      nodeId: nodeA.nodeId,
+      subject: { kind: 'task', nodeId: nodeA.nodeId, taskId: 'admin-task' },
+      grants: ['view', 'comment'],
+      shareTicket: true,
+    });
+    const nonA0 = await fetch(
+      new URL(`/relay/node/invitations/${adminInvite.invitation.invitationId}/share-ticket/reset`, relay.url()),
+      { method: 'POST', headers: nodeHeaders(nodeA.nodeToken) },
+    );
+    expect(nonA0.status).toBe(404);
+
+    const owner = await fetch(resetUrl, { method: 'POST', headers: nodeHeaders(nodeA.nodeToken) });
+    expect(owner.status).toBe(200);
+  });
+
+  it('uses trusted proxy client IP for share-ticket source lockout', async () => {
+    const relay = createRelayServer({ adminToken: 'admin-secret', bindHost: '127.0.0.1' });
+    openHandle = relay;
+    await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
+
+    const attempt = async (xff: string) => fetch(new URL('/relay/share-tickets/accept', relay.url()), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': xff,
+      },
+      body: JSON.stringify({ shareId: '111-222', password: 'wrong-password' }),
+    });
+
+    for (let i = 0; i < 10; i += 1) {
+      expect((await attempt('198.51.100.10')).status).toBe(409);
+    }
+    expect((await attempt('198.51.100.10')).status).toBe(409);
+    expect((await attempt('198.51.100.11')).status).toBe(409);
+
+    const metrics = await fetch(new URL('/relay/admin/metrics', relay.url()), {
+      headers: { authorization: 'Bearer admin-secret' },
+    });
+    expect(metrics.status).toBe(200);
+    const body = await metrics.json() as { metrics: { rateLimitHits: number; recent?: { rateLimitHits: number } } };
+    expect(body.metrics.rateLimitHits).toBe(1);
+    expect(body.metrics.recent?.rateLimitHits).toBe(1);
   });
 
   it('rejects requests with a missing or unknown node token', async () => {

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
@@ -41,16 +41,9 @@ import { InvitationStore, type InvitationRecord } from './src/invitations/store.
 import { createPushFanout, type PushDeliveryOutcome, type PushFanout, type PushSender } from './src/push/fanout.js';
 import { createPushSubscriptionStore, isPushSubscription, type PushSubscriptionStore, type StoredPushSubscription } from './src/push/subscriptions.js';
 import { createVapidKeyStore, type VapidKeyStore } from './src/push/vapid.js';
+import { RelaySqliteStateStore, type PersistedNodeRegistration } from './src/state/sqlite.js';
 
-interface NodeRegistration {
-  nodeId: NodeId;
-  ownerId: string;
-  displayName: string;
-  deviceId?: string;
-  tokenHash: string;
-  createdAt: string;
-  lastSeen?: string;
-}
+interface NodeRegistration extends PersistedNodeRegistration {}
 
 interface RelayClientSubscription {
   ws: WebSocket;
@@ -122,6 +115,11 @@ export interface RelayServerOptions {
   pushSubject?: string;
   streamBackpressureBytes?: number;
   terminalReplayMaxEvents?: number;
+  stateDbPath?: string | null;
+  stateStore?: Pick<RelaySqliteStateStore, 'load' | 'saveRegistration' | 'saveInvitation' | 'probe' | 'close'>;
+  stateProbe?: () => boolean;
+  bindHost?: string;
+  trustedProxy?: boolean;
 }
 
 interface HostedRelayRuntimeOptions {
@@ -160,8 +158,56 @@ function tokenHash(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-function remoteAddressKey(req: IncomingMessage): string {
-  return (req.socket.remoteAddress || 'unknown').slice(0, 160);
+function safeEqualString(actual: string | null | undefined, expected: string | null | undefined): boolean {
+  if (!actual || !expected) return false;
+  const actualDigest = createHash('sha256').update(actual).digest();
+  const expectedDigest = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(actualDigest, expectedDigest);
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === 'localhost'
+    || host === '127.0.0.1'
+    || host === '::1'
+    || host === '[::1]';
+}
+
+function isLoopbackAddress(address: string): boolean {
+  return address === '127.0.0.1'
+    || address === '::1'
+    || address === '::ffff:127.0.0.1'
+    || address === 'localhost';
+}
+
+function clientAddress(req: IncomingMessage, opts: { trustedProxy: boolean }): string {
+  const socketAddress = (req.socket.remoteAddress || 'unknown').slice(0, 160);
+  if (!opts.trustedProxy || !isLoopbackAddress(socketAddress)) return socketAddress;
+  const forwardedFor = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(forwardedFor) ? forwardedFor.at(-1) : forwardedFor;
+  const forwarded = raw?.split(',').map((part) => part.trim()).filter(Boolean).at(-1);
+  return (forwarded || socketAddress).slice(0, 160);
+}
+
+function remoteAddressKey(req: IncomingMessage, opts: { trustedProxy: boolean }): string {
+  return clientAddress(req, opts);
+}
+
+function requestIsSecure(req: IncomingMessage, opts: { trustedProxy: boolean }): boolean {
+  if (Boolean((req.socket as typeof req.socket & { encrypted?: boolean }).encrypted)) return true;
+  if (!opts.trustedProxy || !isLoopbackAddress(req.socket.remoteAddress || 'unknown')) return false;
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const raw = Array.isArray(forwardedProto) ? forwardedProto.at(-1) : forwardedProto;
+  return raw?.split(',').map((part) => part.trim().toLowerCase()).at(-1) === 'https';
+}
+
+class RelayStateWriteError extends Error {
+  constructor(
+    readonly operation: string,
+    cause: unknown,
+  ) {
+    super(`relay state write failed during ${operation}`, { cause });
+    this.name = 'RelayStateWriteError';
+  }
 }
 
 function issueNodeToken(): string {
@@ -169,12 +215,14 @@ function issueNodeToken(): string {
 }
 
 function readJson(req: IncomingMessage): Promise<unknown> {
+  const limitBytes = Number.parseInt(process.env.KOOKR_RELAY_REQUEST_BODY_LIMIT_BYTES ?? '1000000', 10);
+  const maxBytes = Number.isInteger(limitBytes) && limitBytes > 0 ? limitBytes : 1_000_000;
   return new Promise((resolve, reject) => {
     let body = '';
     req.setEncoding('utf8');
     req.on('data', (chunk) => {
       body += chunk;
-      if (body.length > 1_000_000) {
+      if (body.length > maxBytes) {
         reject(new Error('request body too large'));
         req.destroy();
       }
@@ -237,20 +285,20 @@ function cookieValue(req: IncomingMessage, name: string): string | null {
   return null;
 }
 
-function memberCookie(token: string, req: IncomingMessage): string {
-  const encrypted = Boolean((req.socket as typeof req.socket & { encrypted?: boolean }).encrypted);
+function memberCookie(token: string, req: IncomingMessage, opts: { trustedProxy: boolean }): string {
+  const secure = requestIsSecure(req, opts);
   return [
     `${RELAY_MEMBER_COOKIE}=${encodeURIComponent(token)}`,
     'Path=/relay',
     'HttpOnly',
     'SameSite=Lax',
-    encrypted ? 'Secure' : '',
+    secure ? 'Secure' : '',
   ].filter(Boolean).join('; ');
 }
 
 function isAuthorizedAdmin(req: IncomingMessage, adminToken: string | undefined): boolean {
   if (!adminToken) return false;
-  return bearer(req) === adminToken;
+  return safeEqualString(bearer(req), adminToken);
 }
 
 function ownerClientAuth(ownerId: string, nodeId: NodeId): RelayClientAuth {
@@ -362,7 +410,7 @@ function normalizeHostedRelayOptions(opts: RelayServerOptions): HostedRelayRunti
     environment: hosted.environment ?? process.env.KOOKR_HOSTED_RELAY_ENVIRONMENT ?? '',
     tlsExpiresAt: hosted.tlsExpiresAt ?? process.env.KOOKR_HOSTED_RELAY_TLS_EXPIRES_AT ?? null,
     dataRetentionDays: parseHostedRelayPositiveInt(
-      hosted.dataRetentionDays ?? process.env.KOOKR_HOSTED_RELAY_RETENTION_DAYS,
+      hosted.dataRetentionDays ?? process.env.KOOKR_RELAY_METADATA_RETENTION_DAYS ?? process.env.KOOKR_HOSTED_RELAY_RETENTION_DAYS,
       30,
     ),
     shareCreateLimitPerMinute: parseHostedRelayPositiveInt(
@@ -434,6 +482,8 @@ function emptyMetrics(): HostedRelayMetricSnapshot {
     ticketsExpired: 0,
     acceptFailuresByReason: {},
     rateLimitHits: 0,
+    perShareLockCount: 0,
+    securityEvents: 0,
     activeNodeSockets: 0,
     activeClientSockets: 0,
     maxNodeHeartbeatAgeMs: null,
@@ -636,6 +686,31 @@ function supportsTerminalStream(hello: NodeHello | undefined): boolean {
 }
 
 export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHandle {
+  const stateLoadedStartedAt = Date.now();
+  const stateDbPath = opts.stateDbPath ?? process.env.KOOKR_RELAY_STATE_DB_PATH ?? null;
+  const stateStore = opts.stateStore ?? (stateDbPath ? new RelaySqliteStateStore(stateDbPath) : null);
+  const stateSnapshot = stateStore?.load() ?? { registrations: [], invitations: [], quarantinedRows: 0 };
+  if (stateStore) {
+    console.log(JSON.stringify({
+      event: 'relay.state.loaded',
+      invitations: stateSnapshot.invitations.length,
+      registrations: stateSnapshot.registrations.length,
+      lockouts: stateSnapshot.invitations.filter((invitation) => Boolean(invitation.lockedUntil)).length,
+      quarantinedRows: stateSnapshot.quarantinedRows,
+      ms: Date.now() - stateLoadedStartedAt,
+    }));
+  }
+  const bindHost = opts.bindHost ?? process.env.KOOKR_RELAY_BIND_HOST ?? '0.0.0.0';
+  const trustedProxy = opts.trustedProxy ?? (
+    process.env.KOOKR_RELAY_TRUSTED_PROXY === '0' ? false : isLoopbackHost(bindHost)
+  );
+  if (!isLoopbackHost(bindHost) && process.env.KOOKR_RELAY_ALLOW_INSECURE_BIND !== '1') {
+    console.warn(JSON.stringify({
+      event: 'relay.insecure_bind_warning',
+      bindHost,
+      message: 'KOOKR_RELAY_BIND_HOST is non-loopback; put the relay behind TLS and set KOOKR_RELAY_ALLOW_INSECURE_BIND=1 to acknowledge this release warning.',
+    }));
+  }
   const registrations = new Map<NodeId, NodeRegistration>();
   const tokenIndex = new Map<string, NodeRegistration>();
   const nodeSockets = new Map<NodeId, WebSocket>();
@@ -647,13 +722,33 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const terminalReplay = new Map<NodeId, Map<string, TerminalStreamEvent[]>>();
   const metadataAudit: RelayMetadataAuditRow[] = [];
   const ticketSourceFailures = new Map<string, { count: number; lockedUntil?: number }>();
+  let closing = false;
+  let stateWriteFailure: { operation: string; message: string; at: string } | null = null;
   const hosted = normalizeHostedRelayOptions(opts);
   const accountToken = opts.accountToken ?? process.env.KOOKR_RELAY_ACCOUNT_TOKEN;
   const accountId = opts.accountId ?? process.env.KOOKR_RELAY_ACCOUNT_ID ?? opts.ownerId ?? 'hosted-owner';
   const accountPairLimiter = createWindowLimiter(60_000);
   const shareCreateLimiter = createWindowLimiter(60_000);
+  const shareResetLimiter = createWindowLimiter(60_000);
   const relayMetrics = emptyMetrics();
-  const invitations = new InvitationStore();
+  const windowEvents: Array<{ at: number; kind: 'rateLimitHits' | 'perShareLockCount' | 'securityEvents' | 'http5xxCount' }> = [];
+  const recentWindowMs = parseHostedRelayPositiveInt(process.env.KOOKR_RELAY_METRICS_WINDOW_MS, 5 * 60_000);
+  const invitations = new InvitationStore({
+    initialInvitations: stateSnapshot.invitations,
+    onSave: (invitation) => {
+      if (!stateStore) return;
+      try {
+        stateStore.saveInvitation(invitation);
+      } catch (err) {
+        stateWriteFailure = {
+          operation: 'saveInvitation',
+          message: err instanceof Error ? err.message : String(err),
+          at: new Date().toISOString(),
+        };
+        throw new RelayStateWriteError('saveInvitation', err);
+      }
+    },
+  });
   const streamMetrics = { clientDropped: { backpressure: 0 } };
   const streamBackpressureBytes = opts.streamBackpressureBytes ?? 1_000_000;
   const terminalReplayMaxEvents = opts.terminalReplayMaxEvents ?? 512;
@@ -668,6 +763,63 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   });
   const ownerId = opts.ownerId ?? 'local-owner';
 
+  for (const registration of stateSnapshot.registrations) {
+    registrations.set(registration.nodeId, registration);
+    tokenIndex.set(registration.tokenHash, registration);
+  }
+
+  const recordRecent = (kind: 'rateLimitHits' | 'perShareLockCount' | 'securityEvents' | 'http5xxCount'): void => {
+    windowEvents.push({ at: Date.now(), kind });
+  };
+
+  const incrementRateLimit = (): void => {
+    relayMetrics.rateLimitHits += 1;
+    recordRecent('rateLimitHits');
+  };
+
+  const incrementHttp5xx = (): void => {
+    relayMetrics.http5xxCount += 1;
+    recordRecent('http5xxCount');
+  };
+
+  const incrementSecurityEvent = (): void => {
+    relayMetrics.securityEvents += 1;
+    recordRecent('securityEvents');
+  };
+
+  const persistRegistration = (registration: NodeRegistration): void => {
+    if (closing) return;
+    if (!stateStore) return;
+    try {
+      stateStore.saveRegistration(registration);
+    } catch (err) {
+      stateWriteFailure = {
+        operation: 'saveRegistration',
+        message: err instanceof Error ? err.message : String(err),
+        at: new Date().toISOString(),
+      };
+      throw new RelayStateWriteError('saveRegistration', err);
+    }
+  };
+
+  const recordLastSeen = (registration: NodeRegistration): void => {
+    const updated: NodeRegistration = { ...registration, lastSeen: new Date().toISOString() };
+    try {
+      persistRegistration(updated);
+      Object.assign(registration, updated);
+    } catch (err) {
+      if (err instanceof RelayStateWriteError) {
+        console.error(JSON.stringify({
+          event: 'relay.state.write_failed',
+          operation: err.operation,
+          message: err.message,
+        }));
+        return;
+      }
+      throw err;
+    }
+  };
+
   const registerNode = (regOpts: { displayName?: string; ownerId?: string; deviceId?: string } = {}) => {
     const nodeId = asNodeId(`kookr-node-${randomUUID()}`);
     const nodeToken = issueNodeToken();
@@ -679,6 +831,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       tokenHash: tokenHash(nodeToken),
       createdAt: new Date().toISOString(),
     };
+    persistRegistration(registration);
     registrations.set(nodeId, registration);
     tokenIndex.set(registration.tokenHash, registration);
     return { nodeId, nodeToken };
@@ -705,16 +858,18 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
 
   const authenticateAccount = (req: IncomingMessage): string | null => {
     if (!accountToken) return null;
-    return bearer(req) === accountToken ? accountId : null;
+    return safeEqualString(bearer(req), accountToken) ? accountId : null;
   };
 
   const rotateNodeToken = (nodeId: NodeId): { nodeId: NodeId; nodeToken: string } | null => {
     const registration = registrations.get(nodeId);
     if (!registration) return null;
-    tokenIndex.delete(registration.tokenHash);
     const nodeToken = issueNodeToken();
-    registration.tokenHash = tokenHash(nodeToken);
-    tokenIndex.set(registration.tokenHash, registration);
+    const updated: NodeRegistration = { ...registration, tokenHash: tokenHash(nodeToken) };
+    persistRegistration(updated);
+    tokenIndex.delete(registration.tokenHash);
+    Object.assign(registration, updated);
+    tokenIndex.set(updated.tokenHash, registration);
     const activeSocket = nodeSockets.get(nodeId);
     if (activeSocket) {
       nodeSockets.delete(nodeId);
@@ -757,6 +912,10 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       sendPolicyDelta(accepted.accepted.invitation.nodeId, accepted.accepted.policyGrant);
     } else {
       countReason(relayMetrics, accepted.reason);
+      if (accepted.reason === 'locked') {
+        relayMetrics.perShareLockCount += 1;
+        recordRecent('perShareLockCount');
+      }
     }
     return accepted;
   };
@@ -874,6 +1033,13 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
 
   const metricsSnapshot = (): HostedRelayMetricSnapshot => {
     const now = Date.now();
+    while (windowEvents.length > 0 && now - windowEvents[0].at > recentWindowMs) windowEvents.shift();
+    const recent = {
+      rateLimitHits: windowEvents.filter((event) => event.kind === 'rateLimitHits').length,
+      perShareLockCount: windowEvents.filter((event) => event.kind === 'perShareLockCount').length,
+      securityEvents: windowEvents.filter((event) => event.kind === 'securityEvents').length,
+      http5xxCount: windowEvents.filter((event) => event.kind === 'http5xxCount').length,
+    };
     const heartbeatAges = [...registrations.values()]
       .map((registration) => registration.lastSeen ? now - Date.parse(registration.lastSeen) : null)
       .filter((age): age is number => typeof age === 'number' && Number.isFinite(age));
@@ -885,6 +1051,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       activeNodeSockets: nodeSockets.size,
       activeClientSockets: [...subscribers.values()].reduce((total, set) => total + set.size, 0),
       maxNodeHeartbeatAgeMs: heartbeatAges.length > 0 ? Math.max(...heartbeatAges) : null,
+      recentWindowMs,
+      recent,
     };
   };
 
@@ -896,8 +1064,14 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (currentHostedStatus().mode === 'emergencyDisabled') {
       alerts.push({ code: 'emergency-disabled', severity: 'critical', message: 'Hosted relay sharing is emergency-disabled.' });
     }
-    if (metrics.rateLimitHits > 0) {
+    if ((metrics.recent?.rateLimitHits ?? metrics.rateLimitHits) > 0) {
       alerts.push({ code: 'rate-limit-hits', severity: 'warning', message: 'Relay rate limits have blocked recent requests.' });
+    }
+    if ((metrics.recent?.perShareLockCount ?? metrics.perShareLockCount) > 0) {
+      alerts.push({ code: 'per-share-lockout', severity: 'warning', message: 'At least one share ticket has been locked after repeated failures.' });
+    }
+    if ((metrics.recent?.securityEvents ?? metrics.securityEvents) > 0) {
+      alerts.push({ code: 'security-events', severity: 'critical', message: 'Relay security events were observed recently.' });
     }
     if (metrics.maxNodeHeartbeatAgeMs !== null && metrics.maxNodeHeartbeatAgeMs > hosted.maxHeartbeatAgeMsAlert) {
       alerts.push({ code: 'heartbeat-age', severity: 'warning', message: 'At least one node heartbeat is stale.' });
@@ -905,7 +1079,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (metrics.policySyncFailures > 0) {
       alerts.push({ code: 'policy-sync-failures', severity: 'critical', message: 'Policy sync messages have failed.' });
     }
-    if (metrics.http5xxCount >= hosted.maxHttp5xxAlert) {
+    if ((metrics.recent?.http5xxCount ?? metrics.http5xxCount) >= hosted.maxHttp5xxAlert) {
       alerts.push({ code: 'http-5xx-rate', severity: 'critical', message: 'Relay 5xx responses crossed the alert threshold.' });
     }
     return alerts;
@@ -915,13 +1089,25 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
+        const dbProbeOk = opts.stateProbe ? opts.stateProbe() : (stateStore?.probe() ?? true);
+        const dbReachable = dbProbeOk && stateWriteFailure === null;
         sendJson(res, 200, {
-          status: currentHostedStatus().mode === 'emergencyDisabled' ? 'degraded' : 'ok',
-          dbReachable: true,
+          status: currentHostedStatus().mode === 'emergencyDisabled' || !dbReachable ? 'degraded' : 'ok',
+          dbReachable,
+          ...(stateWriteFailure ? { stateWriteFailure } : {}),
           tlsExpiresAt: hosted.tlsExpiresAt,
-          version: 'dev',
+          version: process.env.KOOKR_BUILD_VERSION ?? process.env.npm_package_version ?? 'dev',
           hostedRelay: currentHostedStatus(),
         });
+        return;
+      }
+      if (
+        url.pathname.startsWith('/relay/admin/')
+        && !opts.allowInsecureAdmin
+        && !isLoopbackAddress(clientAddress(req, { trustedProxy }))
+      ) {
+        incrementSecurityEvent();
+        sendJson(res, 403, { error: 'admin-api-loopback-only' });
         return;
       }
       if (req.method === 'GET' && url.pathname === '/relay/ops/status') {
@@ -1108,12 +1294,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         }
         const modeBlock = hostedBlocksAccountPairing();
         if (modeBlock) {
-          relayMetrics.http5xxCount += 1;
+          incrementHttp5xx();
           sendJson(res, 503, { error: modeBlock });
           return;
         }
         if (!accountPairLimiter(`account:${account}`, hosted.accountPairLimitPerMinute)) {
-          relayMetrics.rateLimitHits += 1;
+          incrementRateLimit();
           sendJson(res, 429, { error: 'rate-limit-exceeded' });
           return;
         }
@@ -1180,7 +1366,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         }
         const modeBlock = hostedBlocksNewShares();
         if (modeBlock) {
-          relayMetrics.http5xxCount += 1;
+          incrementHttp5xx();
           sendJson(res, 503, { error: modeBlock });
           return;
         }
@@ -1228,12 +1414,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           res,
           200,
           { nodeId: accepted.accepted.invitation.nodeId },
-          { 'set-cookie': memberCookie(accepted.accepted.memberToken, req) },
+          { 'set-cookie': memberCookie(accepted.accepted.memberToken, req, { trustedProxy }) },
         );
         return;
       }
       if (req.method === 'POST' && url.pathname === '/relay/share-tickets/accept') {
-        const sourceKey = remoteAddressKey(req);
+        const sourceKey = remoteAddressKey(req, { trustedProxy });
         const body = await readJson(req) as { shareId?: unknown; password?: unknown; displayName?: unknown };
         const shareId = typeof body.shareId === 'string' ? body.shareId : '';
         const password = typeof body.password === 'string' ? body.password : '';
@@ -1242,7 +1428,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           return;
         }
         if (sourceLocked(sourceKey)) {
-          relayMetrics.rateLimitHits += 1;
+          incrementRateLimit();
           sendJson(res, 409, { error: 'ticket-unavailable' });
           return;
         }
@@ -1261,14 +1447,14 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           res,
           200,
           { nodeId: accepted.accepted.invitation.nodeId },
-          { 'set-cookie': memberCookie(accepted.accepted.memberToken, req) },
+          { 'set-cookie': memberCookie(accepted.accepted.memberToken, req, { trustedProxy }) },
         );
         return;
       }
       if (req.method === 'POST' && url.pathname === '/relay/member/grant-requests') {
         const modeBlock = hostedBlocksNewShares();
         if (modeBlock) {
-          relayMetrics.http5xxCount += 1;
+          incrementHttp5xx();
           sendJson(res, 503, { error: modeBlock });
           return;
         }
@@ -1344,6 +1530,36 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         });
         return;
       }
+      if (
+        req.method === 'GET'
+        && url.pathname.startsWith('/relay/node/invitations/')
+        && !url.pathname.endsWith('/revoke')
+      ) {
+        const registration = authenticateNode(req);
+        if (!registration) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const invitationId = decodeURIComponent(url.pathname.slice('/relay/node/invitations/'.length));
+        if (!invitationId || invitationId.includes('/')) {
+          sendJson(res, 404, { error: 'not-found' });
+          return;
+        }
+        const existing = invitations.list().find((invitation) => invitation.invitationId === invitationId);
+        if (!existing || existing.nodeId !== registration.nodeId || !isNodeTaskShare(existing)) {
+          sendJson(res, 404, { error: 'not-found' });
+          return;
+        }
+        sendJson(res, 200, {
+          invitation: toNodeInvitationViewWithPresence(existing),
+          node: {
+            nodeId: registration.nodeId,
+            connected: nodeSockets.has(registration.nodeId),
+            ...(registration.lastSeen ? { lastSeen: registration.lastSeen } : {}),
+          },
+        });
+        return;
+      }
       if (req.method === 'POST' && url.pathname === '/relay/node/invitations') {
         const registration = authenticateNode(req);
         if (!registration) {
@@ -1352,12 +1568,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         }
         const modeBlock = hostedBlocksNewShares();
         if (modeBlock) {
-          relayMetrics.http5xxCount += 1;
+          incrementHttp5xx();
           sendJson(res, 503, { error: modeBlock });
           return;
         }
         if (!shareCreateLimiter(`node:${registration.nodeId}`, hosted.shareCreateLimitPerMinute)) {
-          relayMetrics.rateLimitHits += 1;
+          incrementRateLimit();
           sendJson(res, 429, { error: 'rate-limit-exceeded' });
           return;
         }
@@ -1380,6 +1596,40 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           invitation: toNodeInvitationViewWithPresence(created.invitation),
           token: created.token,
           ...(created.shareTicket ? { shareTicket: created.shareTicket } : {}),
+        });
+        return;
+      }
+      if (
+        req.method === 'POST'
+        && url.pathname.startsWith('/relay/node/invitations/')
+        && url.pathname.endsWith('/share-ticket/reset')
+      ) {
+        const registration = authenticateNode(req);
+        if (!registration) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const invitationId = decodeURIComponent(
+          url.pathname.slice('/relay/node/invitations/'.length, -'/share-ticket/reset'.length),
+        );
+        const existing = invitations.list().find((invitation) => invitation.invitationId === invitationId);
+        if (!existing || existing.nodeId !== registration.nodeId || !isNodeTaskShare(existing)) {
+          sendJson(res, 404, { error: 'not-found' });
+          return;
+        }
+        if (!shareResetLimiter(`share-reset:${invitationId}`, 3)) {
+          incrementRateLimit();
+          sendJson(res, 429, { error: 'rate-limit-exceeded' });
+          return;
+        }
+        const reset = invitations.resetShareTicket(invitationId);
+        if (!reset.ok) {
+          sendJson(res, 409, { error: reset.reason });
+          return;
+        }
+        sendJson(res, 200, {
+          invitation: toNodeInvitationViewWithPresence(reset.invitation),
+          shareTicket: reset.shareTicket,
         });
         return;
       }
@@ -1439,7 +1689,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         }
         const modeBlock = hostedBlocksNewShares();
         if (modeBlock) {
-          relayMetrics.http5xxCount += 1;
+          incrementHttp5xx();
           sendJson(res, 503, { error: modeBlock });
           return;
         }
@@ -1475,6 +1725,11 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       }
       sendJson(res, 404, { error: 'not found' });
     } catch (err) {
+      if (err instanceof RelayStateWriteError) {
+        incrementHttp5xx();
+        sendJson(res, 503, { error: 'relay-state-write-failed', operation: err.operation });
+        return;
+      }
       sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -1569,7 +1824,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         }
         nodeSockets.set(registration.nodeId, ws);
         nodeHello.set(registration.nodeId, parsed);
-        registration.lastSeen = new Date().toISOString();
+        recordLastSeen(registration);
         ws.send(JSON.stringify(makeRelayHello({
           outcome: 'accepted',
           acceptedVersion: REMOTE_PROTOCOL_VERSION,
@@ -1585,7 +1840,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         && parsed.nodeEpoch === nodeHello.get(registration.nodeId)?.nodeEpoch
         && nodeSockets.get(registration.nodeId) === ws
       ) {
-        registration.lastSeen = new Date().toISOString();
+        recordLastSeen(registration);
         routeControlEvent(parsed);
         return;
       }
@@ -1597,7 +1852,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         && nodeSockets.get(registration.nodeId) === ws
         && supportsTerminalStream(nodeHello.get(registration.nodeId))
       ) {
-        registration.lastSeen = new Date().toISOString();
+        recordLastSeen(registration);
         routeTerminalStreamEvent(parsed);
         return;
       }
@@ -1606,14 +1861,14 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         isRemoteCommandResultMessage(parsed)
         && nodeSockets.get(registration.nodeId) === ws
       ) {
-        registration.lastSeen = new Date().toISOString();
+        recordLastSeen(registration);
         routeCommandResult(registration.nodeId, parsed);
       }
     });
     ws.on('close', () => {
       if (nodeSockets.get(registration.nodeId) === ws) {
         nodeSockets.delete(registration.nodeId);
-        registration.lastSeen = new Date().toISOString();
+        recordLastSeen(registration);
       }
     });
   });
@@ -2061,6 +2316,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     sendTestPush,
     metadataAuditRows: () => [...metadataAudit],
     async close(): Promise<void> {
+      closing = true;
       for (const ws of [...nodeSockets.values()]) ws.close(1001, 'relay closing');
       for (const set of subscribers.values()) {
         for (const sub of set) sub.ws.close(1001, 'relay closing');
@@ -2068,6 +2324,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       nodeWss.close();
       clientWss.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      stateStore?.close();
     },
   };
 
@@ -2651,17 +2908,26 @@ if (process.argv[1]?.endsWith('/relay/server.ts') || process.argv[1]?.endsWith('
   const adminToken = process.env.KOOKR_RELAY_ADMIN_TOKEN;
   const clientToken = process.env.KOOKR_RELAY_CLIENT_TOKEN;
   const allowInsecureAdmin = process.env.KOOKR_RELAY_INSECURE_DEV === '1';
+  const bindHost = process.env.KOOKR_RELAY_BIND_HOST ?? '0.0.0.0';
+  const stateDbPath = process.env.KOOKR_RELAY_STATE_DB_PATH ?? 'relay-state.sqlite';
   if (!adminToken && !allowInsecureAdmin) {
     console.error('[relay] KOOKR_RELAY_ADMIN_TOKEN is required. Set KOOKR_RELAY_INSECURE_DEV=1 only for local development.');
     process.exit(1);
   }
-  const relay = createRelayServer({
-    adminToken,
-    clientToken,
-    allowInsecureAdmin,
-    allowInsecureClients: allowInsecureAdmin,
-  });
-  relay.httpServer.listen(port, '0.0.0.0', () => {
-    console.log(`[relay] listening on http://0.0.0.0:${port}`);
-  });
+  try {
+    const relay = createRelayServer({
+      adminToken,
+      clientToken,
+      allowInsecureAdmin,
+      allowInsecureClients: allowInsecureAdmin,
+      bindHost,
+      stateDbPath,
+    });
+    relay.httpServer.listen(port, bindHost, () => {
+      console.log(`[relay] listening on http://${bindHost}:${port}`);
+    });
+  } catch (err) {
+    console.error('[relay] failed to start:', err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
 }
