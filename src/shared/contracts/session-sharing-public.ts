@@ -3,7 +3,6 @@ import type { TaskShareGrant, TaskShareGrantRequest } from '../../remote/share-c
 
 export type MemberBlockedReason =
   | 'policy.grantRequired'
-  | 'policy.terminalViewRequired'
   | 'policy.syncPending'
   | 'policy.syncFailed'
   | 'policy.syncTimedOut'

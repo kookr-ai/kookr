@@ -192,4 +192,25 @@ describe('buildMemberShareState', () => {
 
     expect(state.terminal).toEqual({ state: 'available' });
   });
+
+  it('treats legacy terminal input grants as terminal viewing plus input', () => {
+    const state = buildMemberShareState({
+      invitation: invitation({ grants: ['view', 'terminalInput'] }),
+      node: {
+        connected: true,
+        hello: {
+          type: 'node.hello',
+          nodeId: asNodeId('node-1'),
+          nodeEpoch: asNodeEpoch('1'),
+          protocolVersion: 1,
+          supportedFeatures: ['policy-sync', 'terminal-stream', 'terminal-input'],
+          softwareVersion: 'test',
+        },
+        policySyncStatus: 'acked',
+      },
+      now: new Date('2026-05-17T00:07:00.000Z'),
+    });
+
+    expect(state.terminal).toEqual({ state: 'available' });
+  });
 });

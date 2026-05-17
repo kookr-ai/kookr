@@ -830,14 +830,17 @@ function authAllows(auth: RelayClientAuth, grant: KnownGrant | null, invitationS
     if (!invitation || invitation.revokedAt || Date.parse(invitation.expiresAt) <= Date.now()) return false;
     grants = invitation.grants;
   }
-  if (grant === 'terminalInput') {
-    return grants.includes('terminalInput') && grants.includes('terminalView');
-  }
+  if (grant === 'terminalInput') return grants.includes('terminalInput');
+  if (grant === 'terminalView') return grants.includes('terminalView') || grants.includes('terminalInput');
   return grants.some((candidate) => candidate === grant && isKnownGrant(candidate));
 }
 
 function authAllowsTerminalStream(auth: RelayClientAuth, invitationStore?: InvitationStore): boolean {
   return authAllows(auth, 'terminalView', invitationStore);
+}
+
+function grantsAllowTerminalView(grants: readonly ShareGrant[]): boolean {
+  return grants.includes('terminalView') || grants.includes('terminalInput');
 }
 
 function isRemoteCommandResultMessage(value: unknown): value is { type: 'remote.command.result' } & CommandResult {
@@ -2699,7 +2702,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (!invitation || invitation.nodeId !== nodeId || invitation.grantId !== auth.grantId) return false;
     if (invitation.revokedAt || Date.parse(invitation.expiresAt) <= Date.now()) return false;
     if (!isNodeTaskShare(invitation)) return false;
-    if (!invitation.grants.includes('terminalView')) return false;
+    if (!grantsAllowTerminalView(invitation.grants)) return false;
     if (envelope.projection.nodeId !== nodeId) return false;
     if (envelope.projection.nodeInstanceId !== String(nodeHello.get(nodeId)?.nodeEpoch ?? '')) return false;
     if (envelope.projection.expiresAt && Date.parse(envelope.projection.expiresAt) <= Date.now()) return false;
