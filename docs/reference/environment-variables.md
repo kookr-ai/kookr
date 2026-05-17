@@ -141,6 +141,7 @@ see `docs/reference/self-hosted-relay-runbook.md`.
 | `KOOKR_RELAY_STATE_DB_PATH` | `relay-state.sqlite` for the standalone relay binary | SQLite file path | Enables durable relay state for node registrations, hashed node tokens, invitations, share verifiers, and per-share lockout counters. |
 | `KOOKR_RELAY_REQUEST_BODY_LIMIT_BYTES` | `1000000` | Positive integer bytes | Maximum JSON request body size accepted by the relay. |
 | `KOOKR_RELAY_METADATA_RETENTION_DAYS` | `30` | Positive integer days | Self-hosted relay metadata retention setting; keep aligned with backup/ops policy. |
+| `KOOKR_RELAY_SHARE_MAX_TTL_MS` | `86400000` | Positive integer ms, clamped to 31 days | Operator opt-in ceiling for task-share links. Unset keeps the 24h default; values above 31 days are reduced to the hard cap. |
 | `KOOKR_RELAY_METRICS_WINDOW_MS` | `300000` | Positive integer ms | Recent metrics window used by relay alerts so rate-limit/security alerts can clear. |
 | `KOOKR_RELAY_SHARE_CREATE_LIMIT_PER_MINUTE` | `20` | Positive integer | Per-node share creation limit. Hits appear in relay metrics and alerts. |
 | `KOOKR_RELAY_ACCOUNT_PAIR_LIMIT_PER_MINUTE` | `10` | Positive integer | Per-account hosted node pairing limit. |

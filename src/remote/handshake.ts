@@ -50,6 +50,7 @@ export interface RelayHello {
   enabledFeatures: RemoteFeature[];
   disabledFeatures?: RemoteFeature[];
   refusalReason?: RelayRefusalReason;
+  shareMaxTtlMs?: number;
 }
 
 export type HandshakeState =
@@ -102,6 +103,7 @@ export function makeRelayHello(opts: {
   enabledFeatures?: readonly RemoteFeature[];
   disabledFeatures?: readonly RemoteFeature[];
   refusalReason?: RelayRefusalReason;
+  shareMaxTtlMs?: number;
 }): RelayHello {
   return {
     type: 'relay.hello',
@@ -110,6 +112,7 @@ export function makeRelayHello(opts: {
     enabledFeatures: [...(opts.enabledFeatures ?? [])],
     ...(opts.disabledFeatures ? { disabledFeatures: [...opts.disabledFeatures] } : {}),
     ...(opts.refusalReason ? { refusalReason: opts.refusalReason } : {}),
+    ...(typeof opts.shareMaxTtlMs === 'number' && Number.isFinite(opts.shareMaxTtlMs) ? { shareMaxTtlMs: opts.shareMaxTtlMs } : {}),
   };
 }
 
@@ -134,5 +137,6 @@ export function isRelayHello(value: unknown): value is RelayHello {
     && (msg.outcome === 'accepted' || msg.outcome === 'downgraded' || msg.outcome === 'refused')
     && typeof msg.acceptedVersion === 'number'
     && Array.isArray(msg.enabledFeatures)
-    && msg.enabledFeatures.every((feature) => typeof feature === 'string');
+    && msg.enabledFeatures.every((feature) => typeof feature === 'string')
+    && (msg.shareMaxTtlMs === undefined || (typeof msg.shareMaxTtlMs === 'number' && Number.isFinite(msg.shareMaxTtlMs)));
 }

@@ -87,6 +87,51 @@ describe('InvitationStore', () => {
     expect(store.acceptTicket('482-913', 'cobalt-mint-7', 'bob')).toEqual({ ok: false, reason: 'already-used' });
   });
 
+  it('scales share-ticket password entropy above the 24h share class', () => {
+    const store = new InvitationStore({
+      now: () => new Date('2026-05-15T20:00:00.000Z'),
+      tokenBytes: 8,
+      shareId: () => '482-913',
+    });
+    const created = store.create({
+      nodeId: asNodeId('node-1'),
+      grants: ['view'],
+      ttlMs: 25 * 60 * 60 * 1000,
+      shareTicket: true,
+    });
+
+    expect(created.shareTicket).toBeDefined();
+    expect(Buffer.from(created.shareTicket!.password, 'base64url').byteLength).toBeGreaterThanOrEqual(10);
+  });
+
+  it('keeps 31-day invitation metadata valid after a fake-clock reload', () => {
+    let now = new Date('2026-05-01T00:00:00.000Z');
+    let persisted = [] as ReturnType<InvitationStore['list']>;
+    const first = new InvitationStore({
+      now: () => now,
+      tokenBytes: 8,
+      shareId: () => '482-913',
+      onSave: (invitation) => {
+        persisted = [invitation];
+      },
+    });
+    first.create({
+      nodeId: asNodeId('node-1'),
+      grants: ['view'],
+      ttlMs: 31 * 24 * 60 * 60 * 1000,
+      shareTicket: true,
+    });
+
+    now = new Date('2026-05-31T00:00:00.000Z');
+    const reloaded = new InvitationStore({ now: () => now, tokenBytes: 8, initialInvitations: persisted });
+
+    expect(reloaded.list()).toHaveLength(1);
+    expect(reloaded.list()[0]).toMatchObject({
+      shareId: '482-913',
+      expiresAt: '2026-06-01T00:00:00.000Z',
+    });
+  });
+
   it('locks a share ticket after repeated failed password guesses', () => {
     const store = new InvitationStore({
       now: () => new Date('2026-05-15T20:00:00.000Z'),

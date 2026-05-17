@@ -190,6 +190,51 @@ describe('relay SQLite state', () => {
     });
   });
 
+  it('keeps 31-day share metadata available across a relay restart', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'kookr-relay-state-'));
+    const dbPath = join(tmp, 'relay.sqlite');
+    const thirtyOneDays = 31 * 24 * 60 * 60 * 1000;
+    relay = createRelayServer({ adminToken: 'admin', stateDbPath: dbPath, shareMaxTtlMs: thirtyOneDays });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const created = await fetch(`${relay.url()}/relay/node/invitations`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${node.nodeToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        subject: { kind: 'task', taskId: 'task-month' },
+        grants: ['view'],
+        ttlMs: thirtyOneDays,
+      }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json() as {
+      invitation: { invitationId: string; expiresAt: string };
+      shareTicket: { shareId: string; password: string };
+    };
+    const expiresAt = Date.parse(createdBody.invitation.expiresAt);
+    expect(expiresAt - Date.now()).toBeGreaterThan(30 * 24 * 60 * 60 * 1000);
+    await relay.close();
+    relay = null;
+
+    relay = createRelayServer({ adminToken: 'admin', stateDbPath: dbPath, shareMaxTtlMs: thirtyOneDays });
+    await listen(relay);
+    expect(relay.invitations()).toContainEqual(expect.objectContaining({
+      invitationId: createdBody.invitation.invitationId,
+      expiresAt: createdBody.invitation.expiresAt,
+      shareId: createdBody.shareTicket.shareId,
+    }));
+    const accepted = await fetch(`${relay.url()}/relay/share-tickets/accept`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        shareId: createdBody.shareTicket.shareId,
+        password: createdBody.shareTicket.password,
+      }),
+    });
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toEqual({ nodeId: node.nodeId });
+  });
+
   it('fails hard when the state database cannot be opened', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'kookr-relay-state-'));
     expect(() => createRelayServer({ adminToken: 'admin', stateDbPath: tmp })).toThrow(/failed to open relay state database/);

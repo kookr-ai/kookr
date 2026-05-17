@@ -63,8 +63,10 @@ export interface InvitationStoreOptions {
 }
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+const LONG_SHARE_ENTROPY_THRESHOLD_MS = DEFAULT_TTL_MS;
 const SHARE_ID_DIGITS = 6;
 const SHARE_PASSWORD_BYTES = 7;
+const LONG_SHARE_PASSWORD_BYTES = 10;
 export const SHARE_TICKET_MAX_FAILED_ATTEMPTS = 5;
 export const SHARE_TICKET_LOCKOUT_MS = 15 * 60 * 1000;
 const MAX_GRANT_REQUEST_COMMENT_LENGTH = 160;
@@ -100,8 +102,8 @@ function redactShareId(shareId: string): string {
   return `${normalized.slice(0, 3)}-***`;
 }
 
-function issueSharePassword(): string {
-  return randomBytes(SHARE_PASSWORD_BYTES).toString('base64url');
+function issueSharePassword(ttlMs: number): string {
+  return randomBytes(ttlMs > LONG_SHARE_ENTROPY_THRESHOLD_MS ? LONG_SHARE_PASSWORD_BYTES : SHARE_PASSWORD_BYTES).toString('base64url');
 }
 
 function createPasswordVerifier(password: string): string {
@@ -186,7 +188,7 @@ export class InvitationStore {
   private readonly tokenBytes: number;
   private readonly defaultTtlMs: number;
   private readonly nextShareId: () => string;
-  private readonly nextSharePassword: () => string;
+  private readonly nextSharePassword: (ttlMs: number) => string;
   private readonly onSave?: (invitation: InvitationRecord) => void;
 
   constructor(opts: InvitationStoreOptions = {}) {
@@ -194,7 +196,9 @@ export class InvitationStore {
     this.tokenBytes = opts.tokenBytes ?? 24;
     this.defaultTtlMs = opts.defaultTtlMs ?? DEFAULT_TTL_MS;
     this.nextShareId = opts.shareId ?? issueShareId;
-    this.nextSharePassword = opts.sharePassword ?? issueSharePassword;
+    this.nextSharePassword = opts.sharePassword
+      ? () => opts.sharePassword!()
+      : issueSharePassword;
     this.onSave = opts.onSave;
     for (const invitation of opts.initialInvitations ?? []) {
       this.remember(invitation);
@@ -220,13 +224,14 @@ export class InvitationStore {
     grants: ShareGrant[];
     ttlMs?: number;
     shareTicket?: boolean;
+    displayLabel?: string;
   }): { invitation: InvitationRecord; token: string; shareTicket?: ShareTicketSecret } {
     const token = issueToken('kookr_inv_v1', this.tokenBytes);
     const invitationId = `inv-${randomUUID()}`;
     const grantId = asGrantId(`grant-${randomUUID()}`);
     const now = this.now();
     const ttlMs = input.ttlMs ?? this.defaultTtlMs;
-    const shareTicket = input.shareTicket ? this.createShareTicket() : undefined;
+    const shareTicket = input.shareTicket ? this.createShareTicket(ttlMs) : undefined;
     this.policyVersion += 1;
     const invitation: InvitationRecord = {
       invitationId,
@@ -241,7 +246,7 @@ export class InvitationStore {
         shareId: shareTicket.shareId,
         passwordVerifier: createPasswordVerifier(shareTicket.password),
         failedAcceptCount: 0,
-        redactedShareLabel: shareTicket.redactedShareLabel,
+        redactedShareLabel: input.displayLabel ?? shareTicket.redactedShareLabel,
       } : {}),
       policyVersion: asPolicyVersion(this.policyVersion),
     };
@@ -290,7 +295,8 @@ export class InvitationStore {
     const invitation = this.invitations.get(invitationId);
     if (!invitation) return { ok: false, reason: 'not-found' };
     if (!invitation.shareId) return { ok: false, reason: 'not-share-ticket' };
-    const password = this.nextSharePassword();
+    const remainingTtlMs = Math.max(0, Date.parse(invitation.expiresAt) - this.now().getTime());
+    const password = this.nextSharePassword(remainingTtlMs);
     const { lockedUntil: _lockedUntil, ...unlockedInvitation } = invitation;
     const updated: InvitationRecord = {
       ...unlockedInvitation,
@@ -343,11 +349,11 @@ export class InvitationStore {
     };
   }
 
-  private createShareTicket(): ShareTicketSecret {
+  private createShareTicket(ttlMs: number): ShareTicketSecret {
     for (let attempt = 0; attempt < 32; attempt += 1) {
       const shareId = normalizeShareId(this.nextShareId());
       if (!shareId || this.shareIdIndex.has(shareId)) continue;
-      const password = this.nextSharePassword();
+      const password = this.nextSharePassword(ttlMs);
       return { shareId, password, redactedShareLabel: redactShareId(shareId) };
     }
     throw new Error('failed to allocate unique share ID');

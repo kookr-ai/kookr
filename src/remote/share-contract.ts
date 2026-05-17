@@ -52,6 +52,7 @@ export interface CreateNodeTaskShareRequest {
   subject: TaskShareSubject;
   grants: [TaskShareCreateGrant];
   ttlMs?: number;
+  displayLabel?: string;
 }
 
 /**
@@ -194,6 +195,7 @@ export interface CreateTaskShareApiResponse {
   joinUrl: string;
   /** Phase C share ID/password ticket, returned only once at creation. */
   shareTicket?: TaskShareTicket;
+  shareMaxTtlMs?: number;
 }
 
 /** `POST /api/share/task/:invitationId/revoke` response. */
@@ -206,6 +208,7 @@ export interface RevokeTaskShareApiResponse {
 /** `GET /api/share/task` response. */
 export interface ListTaskSharesApiResponse {
   shares: TaskShareSummary[];
+  shareMaxTtlMs?: number;
 }
 
 export interface ResolveTaskShareGrantRequestApiResponse {

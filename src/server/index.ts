@@ -1053,6 +1053,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const remoteShare: RemoteShareDeps = {
     csrfToken: randomBytes(16).toString('hex'),
     client: null,
+    getShareMaxTtlMs: () => {
+      const value = remoteNodeClient?.status.lastRelayHello?.shareMaxTtlMs;
+      return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    },
   };
 
   const stopRemoteRuntime = async (): Promise<void> => {

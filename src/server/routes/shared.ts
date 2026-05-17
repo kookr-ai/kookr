@@ -50,6 +50,8 @@ export interface RemoteShareDeps {
   client: RelayShareClient | null;
   /** Local owner of A0 projection publication/revoke overlay state. */
   service?: TaskShareService;
+  /** Relay-advertised task-share max TTL from the node handshake, when connected. */
+  getShareMaxTtlMs?: () => number | null;
 }
 
 export interface RouteDeps {

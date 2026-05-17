@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   makeNodeHello,
   makeRelayHello,
+  isRelayHello,
   parseTerminalInputKillSwitch,
   remoteTerminalInputFeatureEnabled,
   REMOTE_PROTOCOL_VERSION,
@@ -32,18 +33,24 @@ describe('remote handshake protocol', () => {
   });
 
   it('serializes relay decisions with accepted and disabled features separated', () => {
-    expect(makeRelayHello({
+    const hello = makeRelayHello({
       outcome: 'downgraded',
       acceptedVersion: 1,
       enabledFeatures: ['control.snapshot'],
       disabledFeatures: ['control.state-delta'],
-    })).toEqual({
+      shareMaxTtlMs: 31 * 24 * 60 * 60 * 1000,
+    });
+    expect(hello).toEqual({
       type: 'relay.hello',
       outcome: 'downgraded',
       acceptedVersion: 1,
       enabledFeatures: ['control.snapshot'],
       disabledFeatures: ['control.state-delta'],
+      shareMaxTtlMs: 31 * 24 * 60 * 60 * 1000,
     });
+    expect(isRelayHello(hello)).toBe(true);
+    expect(isRelayHello({ ...hello, shareMaxTtlMs: Number.NaN })).toBe(false);
+    expect(isRelayHello({ ...hello, shareMaxTtlMs: '2678400000' })).toBe(false);
   });
 
   it('parses KOOKR_RELAY_FEATURES as a terminal-input kill switch without changing legacy tokens', () => {

@@ -50,7 +50,7 @@ export class RelayShareError extends Error {
 
 export interface RelayShareClient {
   /** Create a view-only invitation for `taskId` on the configured node. */
-  createTaskShare(input: { taskId: string; ttlMs: number }): Promise<{
+  createTaskShare(input: { taskId: string; ttlMs: number; displayLabel?: string }): Promise<{
     share: TaskShareSummary;
     joinUrl: string;
     shareTicket?: TaskShareTicket;
@@ -182,6 +182,7 @@ export function createRelayShareClient(opts: RelayShareClientOptions): RelayShar
         subject: { kind: 'task', taskId: input.taskId },
         grants: ['view'],
         ttlMs: input.ttlMs,
+        ...(input.displayLabel ? { displayLabel: input.displayLabel } : {}),
       };
       const parsed = await call('/relay/node/invitations', requestBody) as Partial<CreateNodeTaskShareResponse>;
       if (!parsed.invitation || typeof parsed.token !== 'string') {
