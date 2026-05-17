@@ -59,6 +59,55 @@ async function connectNode(
   return { ws, messages };
 }
 
+function ackPolicyMessages(ws: WebSocket, nodeId: string): void {
+  ws.on('message', (data) => {
+    const msg = JSON.parse(data.toString()) as {
+      type?: string;
+      policyVersion?: number;
+      upserts?: Array<{ grantId: string }>;
+      grants?: Array<{ grantId: string }>;
+      revokes?: string[];
+      revokedGrantIds?: string[];
+    };
+    if (msg.type !== 'policy.delta' && msg.type !== 'policy.sync' && msg.type !== 'policy.revoke') return;
+    ws.send(JSON.stringify({
+      type: 'policy.delta.ack',
+      nodeId,
+      policyVersion: msg.policyVersion,
+      appliedGrantIds: (msg.upserts ?? msg.grants ?? []).map((grant) => grant.grantId),
+      revokedGrantIds: msg.revokes ?? msg.revokedGrantIds ?? [],
+    }));
+  });
+}
+
+function publishSessionProjection(ws: WebSocket, opts: { nodeId: string; invitationId: string; policyVersion: number }): void {
+  ws.send(JSON.stringify({
+    nodeId: opts.nodeId,
+    nodeEpoch: '1',
+    serverRevision: 1,
+    ts: new Date().toISOString(),
+    kind: 'snapshot',
+    payload: {
+      type: 'remote.shareSessionProjection.v1',
+      invitationId: opts.invitationId,
+      projection: {
+        schemaVersion: 'share-session-projection.v1',
+        nodeId: opts.nodeId,
+        nodeInstanceId: '1',
+        projectionId: 'proj-primary',
+        projectionVersion: 1,
+        policyVersion: opts.policyVersion,
+        generatedAt: new Date().toISOString(),
+        primarySharedSession: {
+          sessionAlias: 'primary',
+          sessionId: 'session-1',
+          sessionEpoch: '1',
+        },
+      },
+    },
+  }));
+}
+
 async function connectMember(relay: RelayServerHandle, nodeId: string, memberToken: string): Promise<{ ws: WebSocket; messages: unknown[]; closed: Promise<unknown[]> }> {
   const wsUrl = new URL('/relay/client', relay.url());
   wsUrl.protocol = 'ws:';
@@ -71,6 +120,34 @@ async function connectMember(relay: RelayServerHandle, nodeId: string, memberTok
   ws.on('message', (data) => messages.push(JSON.parse(data.toString()) as unknown));
   await once(ws, 'open');
   return { ws, messages, closed };
+}
+
+async function expectProjectedTerminalInputRejected(opts: {
+  relay: RelayServerHandle;
+  nodeId: string;
+  memberToken: string;
+  commandId: string;
+  reason: string;
+  nodeMessages: unknown[];
+  sockets: WebSocket[];
+}): Promise<void> {
+  const member = await connectMember(opts.relay, opts.nodeId, opts.memberToken);
+  opts.sockets.push(member.ws);
+  member.ws.send(JSON.stringify({
+    type: 'remote.command',
+    commandId: opts.commandId,
+    action: 'submitMessage',
+    projectionId: 'proj-primary',
+    sessionAlias: 'primary',
+    payload: { text: 'blocked' },
+  }));
+  await waitFor(() => member.messages.some((msg) => (msg as { commandId?: string }).commandId === opts.commandId));
+  expect(member.messages).toContainEqual(expect.objectContaining({
+    commandId: opts.commandId,
+    outcome: 'rejected-pre-audit',
+    reason: opts.reason,
+  }));
+  expect(opts.nodeMessages.some((msg) => (msg as { commandId?: string }).commandId === opts.commandId)).toBe(false);
 }
 
 async function expectMemberConnectionRejected(relay: RelayServerHandle, nodeId: string, memberToken: string): Promise<void> {
@@ -148,6 +225,7 @@ describe('relay invitations', () => {
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
     const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken);
+    ackPolicyMessages(nodeConn.ws, node.nodeId);
     sockets.push(nodeConn.ws);
 
     const created = relay.createInvitation({
@@ -245,7 +323,7 @@ describe('relay invitations', () => {
     const created = relay.createInvitation({
       nodeId: node.nodeId,
       subject: { kind: 'session', nodeId: node.nodeId, sessionId: 'session-1' },
-      grants: ['terminalInput'],
+      grants: ['view', 'terminalInput'],
     });
     const accepted = relay.acceptInvitation(created.token, 'alice');
     expect(accepted.ok).toBe(true);
@@ -357,6 +435,7 @@ describe('relay invitations', () => {
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
     const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken);
+    ackPolicyMessages(nodeConn.ws, node.nodeId);
     sockets.push(nodeConn.ws);
     const created = relay.createInvitation({ nodeId: node.nodeId, grants: ['view'], ttlMs: 20 });
     const accepted = relay.acceptInvitation(created.token, 'alice');
@@ -385,6 +464,7 @@ describe('relay invitations', () => {
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
     const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken);
+    ackPolicyMessages(nodeConn.ws, node.nodeId);
     sockets.push(nodeConn.ws);
     const inviteA = relay.createInvitation({
       nodeId: node.nodeId,
@@ -601,21 +681,408 @@ describe('relay invitations', () => {
     expect(member.messages).not.toContainEqual(expect.objectContaining({ kind: 'terminal.bytes' }));
   });
 
+  it('allows projected terminal viewing without granting terminal input', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, [
+      'control.snapshot',
+      'control.state-delta',
+      'policy-sync',
+      'terminal-stream',
+    ]);
+    ackPolicyMessages(nodeConn.ws, node.nodeId);
+    sockets.push(nodeConn.ws);
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalView'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'viewer');
+    if (!accepted.ok) throw new Error('expected accept');
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    publishSessionProjection(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: accepted.accepted.invitation.invitationId,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    });
+
+    nodeConn.ws.send(JSON.stringify({
+      nodeId: node.nodeId,
+      nodeEpoch: asNodeEpoch('1'),
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      seq: 1,
+      ts: new Date().toISOString(),
+      kind: 'terminal.bytes',
+      payload: {
+        encoding: 'base64',
+        data: Buffer.from('VISIBLE_TERMINAL_BYTES').toString('base64'),
+        byteLength: Buffer.byteLength('VISIBLE_TERMINAL_BYTES'),
+      },
+    }));
+    await sleep(50);
+
+    const rawStateUrl = new URL('/relay/dashboard/state', relay.url());
+    rawStateUrl.searchParams.set('nodeId', node.nodeId);
+    rawStateUrl.searchParams.set('terminalSessionId', 'session-1');
+    rawStateUrl.searchParams.set('terminalSessionEpoch', '1');
+    rawStateUrl.searchParams.set('afterSeq', '0');
+    const rawRes = await fetch(rawStateUrl, {
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+    });
+    expect(rawRes.status).toBe(403);
+    await expect(rawRes.json()).resolves.toEqual({ error: 'projection-required' });
+
+    const projectedStateUrl = new URL('/relay/dashboard/state', relay.url());
+    projectedStateUrl.searchParams.set('nodeId', node.nodeId);
+    projectedStateUrl.searchParams.set('projectionId', 'proj-primary');
+    projectedStateUrl.searchParams.set('sessionAlias', 'primary');
+    projectedStateUrl.searchParams.set('afterSeq', '0');
+    const projectedRes = await fetch(projectedStateUrl, {
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+    });
+    expect(projectedRes.status).toBe(200);
+    const body = await projectedRes.json() as { terminalEvents: unknown[] };
+    expect(body.terminalEvents).toContainEqual(expect.objectContaining({
+      kind: 'terminal.bytes',
+      payload: expect.objectContaining({
+        data: Buffer.from('VISIBLE_TERMINAL_BYTES').toString('base64'),
+      }),
+    }));
+
+    const member = await connectMember(relay, node.nodeId, accepted.accepted.memberToken);
+    sockets.push(member.ws);
+    member.ws.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-view-only-input-denied',
+      action: 'submitMessage',
+      projectionId: 'proj-primary',
+      sessionAlias: 'primary',
+      payload: { text: 'nope' },
+    }));
+    await waitFor(() => member.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-view-only-input-denied'));
+    expect(member.messages).toContainEqual(expect.objectContaining({
+      commandId: 'cmd-view-only-input-denied',
+      outcome: 'rejected-pre-audit',
+      reason: 'missing terminalInput grant',
+    }));
+  });
+
+  it('allows raw terminal access only for matching session-scoped invitations', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, [
+      'control.snapshot',
+      'control.state-delta',
+      'policy-sync',
+      'terminal-stream',
+      'terminal-input',
+    ]);
+    ackPolicyMessages(nodeConn.ws, node.nodeId);
+    sockets.push(nodeConn.ws);
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'session', nodeId: node.nodeId, sessionId: 'session-1' },
+      grants: ['view', 'terminalInput'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'operator');
+    if (!accepted.ok) throw new Error('expected accept');
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+
+    nodeConn.ws.send(JSON.stringify({
+      nodeId: node.nodeId,
+      nodeEpoch: asNodeEpoch('1'),
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      seq: 1,
+      ts: new Date().toISOString(),
+      kind: 'terminal.bytes',
+      payload: {
+        encoding: 'base64',
+        data: Buffer.from('SESSION_ONE_BYTES').toString('base64'),
+        byteLength: Buffer.byteLength('SESSION_ONE_BYTES'),
+      },
+    }));
+    await sleep(50);
+
+    const matchingStateUrl = new URL('/relay/dashboard/state', relay.url());
+    matchingStateUrl.searchParams.set('nodeId', node.nodeId);
+    matchingStateUrl.searchParams.set('terminalSessionId', 'session-1');
+    matchingStateUrl.searchParams.set('terminalSessionEpoch', '1');
+    matchingStateUrl.searchParams.set('afterSeq', '0');
+    const matchingRes = await fetch(matchingStateUrl, {
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+    });
+    expect(matchingRes.status).toBe(200);
+    const matchingBody = await matchingRes.json() as { terminalEvents: unknown[] };
+    expect(matchingBody.terminalEvents).toContainEqual(expect.objectContaining({
+      kind: 'terminal.bytes',
+      payload: expect.objectContaining({
+        data: Buffer.from('SESSION_ONE_BYTES').toString('base64'),
+      }),
+    }));
+
+    const mismatchedStateUrl = new URL('/relay/dashboard/state', relay.url());
+    mismatchedStateUrl.searchParams.set('nodeId', node.nodeId);
+    mismatchedStateUrl.searchParams.set('terminalSessionId', 'session-2');
+    mismatchedStateUrl.searchParams.set('terminalSessionEpoch', '1');
+    mismatchedStateUrl.searchParams.set('afterSeq', '0');
+    const mismatchedRes = await fetch(mismatchedStateUrl, {
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+    });
+    expect(mismatchedRes.status).toBe(403);
+    await expect(mismatchedRes.json()).resolves.toEqual({ error: 'projection-required' });
+
+    const member = await connectMember(relay, node.nodeId, accepted.accepted.memberToken);
+    sockets.push(member.ws);
+    member.ws.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-session-match',
+      action: 'submitMessage',
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      payload: { text: 'ok' },
+    }));
+    await waitFor(() => nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-session-match'));
+    expect(nodeConn.messages).toContainEqual(expect.objectContaining({
+      type: 'remote.command',
+      commandId: 'cmd-session-match',
+      sessionId: 'session-1',
+    }));
+
+    member.ws.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-session-mismatch',
+      action: 'submitMessage',
+      sessionId: 'session-2',
+      sessionEpoch: '1',
+      payload: { text: 'nope' },
+    }));
+    await waitFor(() => member.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-session-mismatch'));
+    expect(member.messages).toContainEqual(expect.objectContaining({
+      commandId: 'cmd-session-mismatch',
+      outcome: 'rejected-pre-audit',
+      reason: 'projection-required',
+    }));
+    expect(nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-session-mismatch')).toBe(false);
+  });
+
+  it('blocks terminal input until the current policy version is acked', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, [
+      'control.snapshot',
+      'control.state-delta',
+      'policy-sync',
+      'terminal-stream',
+      'terminal-input',
+    ]);
+    sockets.push(nodeConn.ws);
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalInput'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'operator');
+    if (!accepted.ok) throw new Error('expected accept');
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'sentAwaitingAck');
+    publishSessionProjection(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: accepted.accepted.invitation.invitationId,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    });
+
+    const member = await connectMember(relay, node.nodeId, accepted.accepted.memberToken);
+    sockets.push(member.ws);
+    member.ws.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-policy-pending',
+      action: 'submitMessage',
+      projectionId: 'proj-primary',
+      sessionAlias: 'primary',
+      payload: { text: 'not yet' },
+    }));
+    await waitFor(() => member.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-policy-pending'));
+    expect(member.messages).toContainEqual(expect.objectContaining({
+      commandId: 'cmd-policy-pending',
+      outcome: 'rejected-pre-audit',
+      reason: 'policy sync sentAwaitingAck',
+    }));
+  });
+
+  it('blocks terminal input after policy sync acknowledgement times out', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin', policyAckTimeoutMs: 1 });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, [
+      'control.snapshot',
+      'control.state-delta',
+      'policy-sync',
+      'terminal-stream',
+      'terminal-input',
+    ]);
+    sockets.push(nodeConn.ws);
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalInput'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'operator');
+    if (!accepted.ok) throw new Error('expected accept');
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'timedOut');
+    publishSessionProjection(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: accepted.accepted.invitation.invitationId,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    });
+
+    await expectProjectedTerminalInputRejected({
+      relay,
+      nodeId: node.nodeId,
+      memberToken: accepted.accepted.memberToken,
+      commandId: 'cmd-policy-timeout',
+      reason: 'policy sync timedOut',
+      nodeMessages: nodeConn.messages,
+      sockets,
+    });
+  });
+
+  it('blocks terminal input when the node acknowledges an older policy version', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, [
+      'control.snapshot',
+      'control.state-delta',
+      'policy-sync',
+      'terminal-stream',
+      'terminal-input',
+    ]);
+    sockets.push(nodeConn.ws);
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalInput'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'operator');
+    if (!accepted.ok) throw new Error('expected accept');
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'sentAwaitingAck');
+    nodeConn.ws.send(JSON.stringify({
+      type: 'policy.delta.ack',
+      nodeId: node.nodeId,
+      policyVersion: accepted.accepted.invitation.policyVersion - 1,
+      appliedGrantIds: [],
+      revokedGrantIds: [],
+    }));
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'stale');
+    publishSessionProjection(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: accepted.accepted.invitation.invitationId,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    });
+
+    await expectProjectedTerminalInputRejected({
+      relay,
+      nodeId: node.nodeId,
+      memberToken: accepted.accepted.memberToken,
+      commandId: 'cmd-policy-stale',
+      reason: 'policy sync stale',
+      nodeMessages: nodeConn.messages,
+      sockets,
+    });
+  });
+
+  it('blocks terminal input when policy sync delivery fails', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, [
+      'control.snapshot',
+      'control.state-delta',
+      'policy-sync',
+      'terminal-stream',
+      'terminal-input',
+    ]);
+    sockets.push(nodeConn.ws);
+    const originalSend = WebSocket.prototype.send;
+    WebSocket.prototype.send = function patchedSend(
+      this: WebSocket,
+      data: Parameters<typeof originalSend>[0],
+      ...rest: Parameters<typeof originalSend> extends [unknown, ...infer Rest] ? Rest : never
+    ): ReturnType<typeof originalSend> {
+      if (typeof data === 'string' && data.includes('"type":"policy.delta"')) {
+        throw new Error('forced policy sync failure');
+      }
+      return originalSend.call(this, data, ...rest);
+    } as typeof WebSocket.prototype.send;
+    let accepted: Extract<ReturnType<RelayServerHandle['acceptInvitation']>, { ok: true }> | null = null;
+    try {
+      const created = relay.createInvitation({
+        nodeId: node.nodeId,
+        subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+        grants: ['view', 'terminalInput'],
+      });
+      const result = relay.acceptInvitation(created.token, 'operator');
+      if (!result.ok) throw new Error('expected accept');
+      accepted = result;
+    } finally {
+      WebSocket.prototype.send = originalSend;
+    }
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'failed');
+    expect(relay.nodeStatuses()[0]).toEqual(expect.objectContaining({
+      lastPolicySyncError: 'forced policy sync failure',
+    }));
+    if (!accepted) throw new Error('expected accepted invitation');
+    publishSessionProjection(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: accepted.accepted.invitation.invitationId,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    });
+
+    await expectProjectedTerminalInputRejected({
+      relay,
+      nodeId: node.nodeId,
+      memberToken: accepted.accepted.memberToken,
+      commandId: 'cmd-policy-failed',
+      reason: 'policy sync failed',
+      nodeMessages: nodeConn.messages,
+      sockets,
+    });
+  });
+
   it('routes command results only to the member that originated the command', async () => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
     const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken);
+    ackPolicyMessages(nodeConn.ws, node.nodeId);
     sockets.push(nodeConn.ws);
     const viewInvite = relay.createInvitation({
       nodeId: node.nodeId,
       subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
       grants: ['view'],
     });
-    const terminalInvite = relay.createInvitation({ nodeId: node.nodeId, grants: ['terminalInput'] });
+    const terminalInvite = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalInput'],
+    });
     const acceptedView = relay.acceptInvitation(viewInvite.token, 'viewer');
     const acceptedTerminal = relay.acceptInvitation(terminalInvite.token, 'operator');
     if (!acceptedView.ok || !acceptedTerminal.ok) throw new Error('expected accept');
+    await waitFor(() => nodeConn.messages.some((msg) => (
+      (msg as { type?: string; policyVersion?: number }).type === 'policy.delta'
+      && (msg as { policyVersion?: number }).policyVersion === acceptedTerminal.accepted.invitation.policyVersion
+    )));
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    publishSessionProjection(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: acceptedTerminal.accepted.invitation.invitationId,
+      policyVersion: acceptedTerminal.accepted.invitation.policyVersion,
+    });
     const viewMember = await connectMember(relay, node.nodeId, acceptedView.accepted.memberToken);
     const terminalMember = await connectMember(relay, node.nodeId, acceptedTerminal.accepted.memberToken);
     const ownerUrl = new URL('/relay/client', relay.url());
@@ -646,9 +1113,10 @@ describe('relay invitations', () => {
       type: 'remote.command',
       commandId: 'cmd-secret-result',
       action: 'presetReply',
+      projectionId: 'proj-primary',
+      sessionAlias: 'primary',
       payload: { presetId: 'continue' },
     }));
-
     await nodeSawCommand;
     await waitFor(() => terminalMember.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-secret-result'));
     await sleep(50);

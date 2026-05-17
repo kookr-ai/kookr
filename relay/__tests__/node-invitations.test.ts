@@ -88,6 +88,55 @@ async function connectNode(relay: RelayServerHandle, nodeId: string, token: stri
   return ws;
 }
 
+function ackPolicyMessages(ws: WebSocket, nodeId: string): void {
+  ws.on('message', (data) => {
+    const msg = JSON.parse(data.toString()) as {
+      type?: string;
+      policyVersion?: number;
+      upserts?: Array<{ grantId: string }>;
+      grants?: Array<{ grantId: string }>;
+      revokes?: string[];
+      revokedGrantIds?: string[];
+    };
+    if (msg.type !== 'policy.delta' && msg.type !== 'policy.sync' && msg.type !== 'policy.revoke') return;
+    ws.send(JSON.stringify({
+      type: 'policy.delta.ack',
+      nodeId,
+      policyVersion: msg.policyVersion,
+      appliedGrantIds: (msg.upserts ?? msg.grants ?? []).map((grant) => grant.grantId),
+      revokedGrantIds: msg.revokes ?? msg.revokedGrantIds ?? [],
+    }));
+  });
+}
+
+function publishSessionProjection(ws: WebSocket, opts: { nodeId: string; invitationId: string; policyVersion: number }): void {
+  ws.send(JSON.stringify({
+    nodeId: opts.nodeId,
+    nodeEpoch: '1',
+    serverRevision: 1,
+    ts: new Date().toISOString(),
+    kind: 'snapshot',
+    payload: {
+      type: 'remote.shareSessionProjection.v1',
+      invitationId: opts.invitationId,
+      projection: {
+        schemaVersion: 'share-session-projection.v1',
+        nodeId: opts.nodeId,
+        nodeInstanceId: '1',
+        projectionId: 'proj-primary',
+        projectionVersion: 1,
+        policyVersion: opts.policyVersion,
+        generatedAt: new Date().toISOString(),
+        primarySharedSession: {
+          sessionAlias: 'primary',
+          sessionId: 'session-1',
+          sessionEpoch: '1',
+        },
+      },
+    },
+  }));
+}
+
 describe('relay node-scoped task-share endpoints', () => {
   it('returns the node ID bound to a node token', async () => {
     const relay = await startRelay();
@@ -361,7 +410,7 @@ describe('relay node-scoped task-share endpoints', () => {
     expect(body.invitation).not.toHaveProperty('tokenHash');
     expect(body.invitation).not.toHaveProperty('memberTokenHash');
     expect(body.invitation).not.toHaveProperty('grantId');
-    expect(body.invitation).not.toHaveProperty('policyVersion');
+    expect(body.invitation.policyVersion).toBe(1);
     // The node endpoint never returns a query-string accept URL.
     expect(body).not.toHaveProperty('acceptUrl');
   });
@@ -867,6 +916,7 @@ describe('relay node-scoped task-share endpoints', () => {
     const relay = await startRelay();
     const { nodeId, nodeToken } = relay.registerNode();
     const nodeWs = await connectNode(relay, nodeId, nodeToken);
+    ackPolicyMessages(nodeWs, nodeId);
     const nodeMessages: unknown[] = [];
     nodeWs.on('message', (data) => nodeMessages.push(JSON.parse(data.toString()) as unknown));
 
@@ -917,7 +967,7 @@ describe('relay node-scoped task-share endpoints', () => {
     });
     expect(requestRes.status).toBe(201);
     const requested = await requestRes.json() as { request: { requestId: string; comment?: string; requestedGrants: string[] } };
-    expect(requested.request.requestedGrants).toEqual(['terminalInput']);
+    expect(requested.request.requestedGrants).toEqual(['terminalView', 'terminalInput']);
     expect(requested.request.comment).toBe('Alice wants control<script>alert(1)</script>');
 
     const deniedRes = await fetch(new URL(`/relay/node/invitations/${created.invitation.invitationId}/grant-requests/${requested.request.requestId}/deny`, relay.url()), {
@@ -944,12 +994,32 @@ describe('relay node-scoped task-share endpoints', () => {
     expect(approvedRes.status).toBe(200);
     expect(await approvedRes.json()).toEqual(expect.objectContaining({
       request: expect.objectContaining({ status: 'approved', resolution: 'approved' }),
-      invitation: expect.objectContaining({ grants: ['view', 'terminalInput'] }),
+      invitation: expect.objectContaining({ grants: ['view', 'terminalView', 'terminalInput'] }),
     }));
     await waitFor(() => nodeMessages.some((msg) => (
       (msg as { type?: string; upserts?: Array<{ grants?: string[] }> }).type === 'policy.delta'
       && (msg as { upserts?: Array<{ grants?: string[] }> }).upserts?.some((grant) => grant.grants?.includes('terminalInput'))
     )));
+    await waitFor(() => relay.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    publishSessionProjection(nodeWs, { nodeId, invitationId: created.invitation.invitationId, policyVersion: 2 });
+
+    member.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-after-approval-raw-session',
+      nodeId,
+      nodeEpoch: '1',
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      idempotencyKey: 'idem-after-raw',
+      action: 'submitMessage',
+    }));
+    await waitFor(() => memberMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-after-approval-raw-session'));
+    expect(memberMessages).toContainEqual(expect.objectContaining({
+      commandId: 'cmd-after-approval-raw-session',
+      outcome: 'rejected-pre-audit',
+      reason: 'projection-required',
+    }));
+    expect(nodeMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-after-approval-raw-session')).toBe(false);
 
     member.send(JSON.stringify({
       type: 'remote.command',
@@ -958,6 +1028,8 @@ describe('relay node-scoped task-share endpoints', () => {
       nodeEpoch: '1',
       sessionId: 'session-1',
       sessionEpoch: '1',
+      projectionId: 'proj-primary',
+      sessionAlias: 'primary',
       idempotencyKey: 'idem-after',
       action: 'submitMessage',
     }));

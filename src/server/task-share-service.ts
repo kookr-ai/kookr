@@ -1,12 +1,13 @@
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { RemoteControlEvent } from '../remote/control-events.js';
-import type { NodeEpoch, NodeId, ServerRevision } from '../remote/ids.js';
+import type { NodeEpoch, NodeId, PolicyVersion, ServerRevision, SessionId } from '../remote/ids.js';
 import type { ShareSubject } from '../remote/policy-sync.js';
 import type { RemotePolicyCache } from '../remote/policy-cache.js';
 import type {
   RemoteTaskProjectionEnvelopeV1,
   RemoteTaskProjectionV1,
+  ShareSessionProjectionEnvelopeV1,
   TaskShareTicket,
   TaskShareOwnerState,
   TaskShareSummary,
@@ -14,7 +15,8 @@ import type {
 import type { RelayShareClient } from './relay-share-client.js';
 import { projectTaskForRemoteShare } from './share-projection.js';
 
-type PublishRemoteEvent = (event: RemoteControlEvent<RemoteTaskProjectionEnvelopeV1>) => boolean;
+type ShareProjectionEnvelope = RemoteTaskProjectionEnvelopeV1 | ShareSessionProjectionEnvelopeV1;
+type PublishRemoteEvent = (event: RemoteControlEvent<ShareProjectionEnvelope>) => boolean;
 type PublishProjectionOptions = { dedupe?: boolean };
 
 export interface TaskShareServiceOptions {
@@ -188,8 +190,45 @@ export class TaskShareService {
     });
     if (published) {
       this.lastPublishedProjectionKeys.set(effective.invitationId, projectionKey);
+      this.publishSessionProjectionForShare(effective, identity, task);
     }
     return published;
+  }
+
+  private publishSessionProjectionForShare(
+    share: TaskShareSummary,
+    identity: { nodeId: NodeId; nodeEpoch: NodeEpoch },
+    task: NonNullable<ReturnType<TaskStore['getTask']>>,
+  ): boolean {
+    if (!share.grants.includes('terminalView')) return false;
+    const session = task.sessions[0];
+    if (!session) return false;
+    return this.publish({
+      nodeId: identity.nodeId,
+      nodeEpoch: identity.nodeEpoch,
+      serverRevision: this.nextServerRevision(),
+      ts: new Date().toISOString(),
+      kind: 'snapshot',
+      payload: {
+        type: 'remote.shareSessionProjection.v1',
+        invitationId: share.invitationId,
+        projection: {
+          schemaVersion: 'share-session-projection.v1',
+          nodeId: identity.nodeId,
+          nodeInstanceId: String(identity.nodeEpoch),
+          projectionId: `proj-${share.invitationId}`,
+          projectionVersion: 1,
+          policyVersion: share.policyVersion ?? (0 as PolicyVersion),
+          generatedAt: new Date().toISOString(),
+          expiresAt: share.expiresAt,
+          primarySharedSession: {
+            sessionAlias: 'primary',
+            sessionId: session.tmuxSession as SessionId,
+            lastActivityAt: task.updatedAt.toISOString(),
+          },
+        },
+      },
+    });
   }
 
   private grantAllowsProjection(nodeId: NodeId, taskId: string): boolean {

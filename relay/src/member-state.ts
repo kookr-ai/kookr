@@ -7,7 +7,7 @@ export interface MemberNodeState {
   connected: boolean;
   lastSeen?: string;
   hello?: NodeHello;
-  policySyncStatus: 'synced' | 'syncing' | 'lagging';
+  policySyncStatus: 'notSent' | 'sentAwaitingAck' | 'acked' | 'stale' | 'timedOut' | 'failed';
   lastPolicyAckAt?: string;
 }
 
@@ -15,9 +15,16 @@ export function memberBlockedMessage(reason: MemberBlockedReason): string {
   switch (reason) {
     case 'policy.grantRequired':
       return 'Terminal input requires owner approval.';
+    case 'policy.terminalViewRequired':
+      return 'Terminal viewing requires owner approval.';
     case 'policy.syncPending':
-    case 'policy.syncFailed':
       return 'The owner is still applying your approval.';
+    case 'policy.syncFailed':
+      return 'The owner could not apply the latest sharing policy.';
+    case 'policy.syncTimedOut':
+      return 'The owner has not acknowledged the latest sharing policy yet.';
+    case 'policy.syncStale':
+      return 'The owner is using an older sharing policy.';
     case 'node.offline':
       return 'The owner node is offline right now.';
     case 'node.featureUnavailable':
@@ -49,6 +56,7 @@ export function buildMemberShareState(input: {
     },
     grants: invitation.grants.filter((grant): grant is MemberShareState['grants'][number] => (
       grant === 'view'
+      || grant === 'terminalView'
       || grant === 'terminalInput'
       || grant === 'launch'
       || grant === 'stop'
@@ -88,26 +96,33 @@ function buildTerminalStatus(input: {
 }): MemberTerminalSharingStatus {
   if (input.invitation.revokedAt) return { state: 'revoked' };
   if (input.expired) return { state: 'expired' };
-  if (input.invitation.grants.includes('terminalInput')) {
+  const hasTerminalView = input.invitation.grants.includes('terminalView');
+  const hasTerminalInput = input.invitation.grants.includes('terminalInput');
+  if (hasTerminalView || hasTerminalInput) {
     if (!input.node.connected) return blocked('node.offline', input.nextRetryAt);
     const features = new Set(input.node.hello?.supportedFeatures ?? []);
-    if (!features.has('terminal-stream') && !features.has('terminal-input')) {
+    if (!features.has('terminal-stream') && (!hasTerminalInput || !features.has('terminal-input'))) {
       return blocked('node.untrusted', input.nextRetryAt);
     }
-    if (!features.has('terminal-stream') || !features.has('terminal-input')) {
+    if (!features.has('terminal-stream') || (hasTerminalInput && !features.has('terminal-input'))) {
       return blocked('node.featureUnavailable', input.nextRetryAt);
     }
-    if (input.node.policySyncStatus === 'syncing') return blocked('policy.syncPending', input.nextRetryAt);
-    if (input.node.policySyncStatus === 'lagging') return blocked('policy.syncFailed', input.nextRetryAt);
-    return { state: 'available' };
+    if (input.node.policySyncStatus === 'notSent' || input.node.policySyncStatus === 'sentAwaitingAck') {
+      return blocked('policy.syncPending', input.nextRetryAt);
+    }
+    if (input.node.policySyncStatus === 'timedOut') return blocked('policy.syncTimedOut', input.nextRetryAt);
+    if (input.node.policySyncStatus === 'stale') return blocked('policy.syncStale', input.nextRetryAt);
+    if (input.node.policySyncStatus === 'failed') return blocked('policy.syncFailed', input.nextRetryAt);
+    if (hasTerminalInput && !hasTerminalView) return blocked('policy.terminalViewRequired', input.nextRetryAt);
+    return hasTerminalInput ? { state: 'available' } : { state: 'viewOnly' };
   }
   const requests = input.invitation.grantRequests ?? [];
   const pending = [...requests].reverse().find((request) => (
-    request.status === 'pending' && request.requestedGrants.includes('terminalInput')
+    request.status === 'pending' && (request.requestedGrants.includes('terminalInput') || request.requestedGrants.includes('terminalView'))
   ));
   if (pending) return { state: 'pendingApproval', requestId: pending.requestId };
   const denied = [...requests].reverse().find((request) => (
-    request.status === 'denied' && request.requestedGrants.includes('terminalInput')
+    request.status === 'denied' && (request.requestedGrants.includes('terminalInput') || request.requestedGrants.includes('terminalView'))
   ));
   if (denied) return { state: 'denied', deniedAt: denied.resolvedAt ?? denied.requestedAt };
   return blocked('policy.grantRequired', input.nextRetryAt);

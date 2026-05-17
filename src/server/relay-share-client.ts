@@ -96,6 +96,7 @@ function toSummary(view: RelayNodeInvitationView): TaskShareSummary {
     ...(typeof view.failedAcceptCount === 'number' ? { failedAcceptCount: view.failedAcceptCount } : {}),
     ...(view.lockedUntil ? { lockedUntil: view.lockedUntil } : {}),
     ...(view.redactedShareLabel ? { redactedShareLabel: view.redactedShareLabel } : {}),
+    ...(view.policyVersion !== undefined ? { policyVersion: view.policyVersion } : {}),
     grants: [...view.grants],
     grantRequests: (view.grantRequests ?? []).map((request) => ({
       ...request,

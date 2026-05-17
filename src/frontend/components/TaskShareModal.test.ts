@@ -117,11 +117,11 @@ describe('TaskShareModal hosted relay errors', () => {
               expiresAt: new Date(Date.now() + 60_000).toISOString(),
               state: 'viewerConnected',
               connectedViewerCount: 1,
-              grants: ['view', 'terminalInput'],
+              grants: ['view', 'terminalView', 'terminalInput'],
               grantRequests: [{
                 requestId: 'grant-req-1',
                 invitationId: 'inv-1',
-                requestedGrants: ['terminalInput'],
+                requestedGrants: ['terminalView', 'terminalInput'],
                 status: 'approved',
                 requestedAt: '2026-05-16T12:01:00.000Z',
                 resolvedAt: '2026-05-16T12:02:00.000Z',
@@ -131,7 +131,7 @@ describe('TaskShareModal hosted relay errors', () => {
             request: {
               requestId: 'grant-req-1',
               invitationId: 'inv-1',
-              requestedGrants: ['terminalInput'],
+              requestedGrants: ['terminalView', 'terminalInput'],
               status: 'approved',
               requestedAt: '2026-05-16T12:01:00.000Z',
               resolvedAt: '2026-05-16T12:02:00.000Z',
@@ -146,7 +146,7 @@ describe('TaskShareModal hosted relay errors', () => {
     root = renderModal(container);
     await flush();
 
-    expect(container.textContent).toContain('Terminal input');
+    expect(container.textContent).toContain('Send messages');
     expect(container.textContent).toContain('Alice requested terminal input');
     const approve = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent?.trim() === 'Approve');
@@ -163,7 +163,7 @@ describe('TaskShareModal hosted relay errors', () => {
       }),
     );
     expect(container.textContent).toContain('Approved grants');
-    expect(container.textContent).toContain('Terminal input');
+    expect(container.textContent).toContain('Send messages');
   });
 
   test('surfaces terminal sharing trust remediation for owners', async () => {

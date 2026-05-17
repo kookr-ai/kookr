@@ -26,7 +26,7 @@ function invitation(overrides: Partial<InvitationRecord> = {}): InvitationRecord
 describe('buildMemberShareState', () => {
   it('redacts owner-only fields and reports missing terminal trust', () => {
     const state = buildMemberShareState({
-      invitation: invitation({ grants: ['view', 'terminalInput'] }),
+      invitation: invitation({ grants: ['view', 'terminalView', 'terminalInput'] }),
       node: {
         connected: true,
         displayName: 'Owner desktop',
@@ -38,7 +38,7 @@ describe('buildMemberShareState', () => {
           supportedFeatures: ['policy-sync'],
           softwareVersion: 'test',
         },
-        policySyncStatus: 'synced',
+        policySyncStatus: 'acked',
       },
       now: new Date('2026-05-17T00:02:00.000Z'),
     });
@@ -61,21 +61,21 @@ describe('buildMemberShareState', () => {
         grantRequests: [{
           requestId: 'grant-req-1',
           invitationId: 'inv-1',
-          requestedGrants: ['terminalInput'],
+          requestedGrants: ['terminalView', 'terminalInput'],
           status: 'pending',
           requestedAt: '2026-05-17T00:03:00.000Z',
           requestedBy: 'alice-local-user',
           comment: 'Need terminal input',
         }],
       }),
-      node: { connected: false, policySyncStatus: 'synced' },
+      node: { connected: false, policySyncStatus: 'acked' },
       now: new Date('2026-05-17T00:04:00.000Z'),
     });
 
     expect(state.grantRequests).toEqual([{
       requestId: 'grant-req-1',
       invitationId: 'inv-1',
-      requestedGrants: ['terminalInput'],
+      requestedGrants: ['terminalView', 'terminalInput'],
       status: 'pending',
       requestedAt: '2026-05-17T00:03:00.000Z',
       comment: 'Need terminal input',
@@ -85,7 +85,7 @@ describe('buildMemberShareState', () => {
 
   it('renders policy sync pending distinctly from node offline', () => {
     const pending = buildMemberShareState({
-      invitation: invitation({ grants: ['view', 'terminalInput'] }),
+      invitation: invitation({ grants: ['view', 'terminalView', 'terminalInput'] }),
       node: {
         connected: true,
         hello: {
@@ -96,13 +96,13 @@ describe('buildMemberShareState', () => {
           supportedFeatures: ['policy-sync', 'terminal-stream', 'terminal-input'],
           softwareVersion: 'test',
         },
-        policySyncStatus: 'syncing',
+        policySyncStatus: 'sentAwaitingAck',
       },
       now: new Date('2026-05-17T00:02:00.000Z'),
     });
     const offline = buildMemberShareState({
-      invitation: invitation({ grants: ['view', 'terminalInput'] }),
-      node: { connected: false, policySyncStatus: 'synced' },
+      invitation: invitation({ grants: ['view', 'terminalView', 'terminalInput'] }),
+      node: { connected: false, policySyncStatus: 'acked' },
       now: new Date('2026-05-17T00:02:00.000Z'),
     });
 
@@ -116,10 +116,40 @@ describe('buildMemberShareState', () => {
     }));
   });
 
+  it('renders policy timeout, stale, and failed states distinctly', () => {
+    const baseNode = {
+      connected: true,
+      hello: {
+        type: 'node.hello' as const,
+        nodeId: asNodeId('node-1'),
+        nodeEpoch: asNodeEpoch('1'),
+        protocolVersion: 1,
+        supportedFeatures: ['policy-sync', 'terminal-stream', 'terminal-input'] as const,
+        softwareVersion: 'test',
+      },
+    };
+
+    for (const [policySyncStatus, reason] of [
+      ['timedOut', 'policy.syncTimedOut'],
+      ['stale', 'policy.syncStale'],
+      ['failed', 'policy.syncFailed'],
+    ] as const) {
+      const state = buildMemberShareState({
+        invitation: invitation({ grants: ['view', 'terminalView', 'terminalInput'] }),
+        node: { ...baseNode, policySyncStatus },
+        now: new Date('2026-05-17T00:02:00.000Z'),
+      });
+      expect(state.terminal).toEqual(expect.objectContaining({
+        state: 'blocked',
+        reason,
+      }));
+    }
+  });
+
   it('honors current terminal grants over historical denied requests', () => {
     const state = buildMemberShareState({
       invitation: invitation({
-        grants: ['view', 'terminalInput'],
+        grants: ['view', 'terminalView', 'terminalInput'],
         grantRequests: [
           {
             requestId: 'grant-req-old',
@@ -151,7 +181,7 @@ describe('buildMemberShareState', () => {
           supportedFeatures: ['policy-sync', 'terminal-stream', 'terminal-input'],
           softwareVersion: 'test',
         },
-        policySyncStatus: 'synced',
+        policySyncStatus: 'acked',
       },
       now: new Date('2026-05-17T00:07:00.000Z'),
     });

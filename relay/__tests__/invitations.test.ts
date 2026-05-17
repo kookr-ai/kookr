@@ -10,7 +10,7 @@ describe('InvitationStore', () => {
 
     const created = store.create({
       nodeId: asNodeId('node-1'),
-      grants: ['view', 'comment', 'terminalInput'],
+      grants: ['view', 'comment', 'terminalView', 'terminalInput'],
       ttlMs: 60_000,
     });
 
@@ -18,7 +18,7 @@ describe('InvitationStore', () => {
     expect(created.invitation.tokenHash).not.toBe(created.token);
     expect(store.list()[0]).toMatchObject({
       nodeId: 'node-1',
-      grants: ['view', 'comment', 'terminalInput'],
+      grants: ['view', 'comment', 'terminalView', 'terminalInput'],
       expiresAt: '2026-05-15T20:01:00.000Z',
     });
 
@@ -28,7 +28,7 @@ describe('InvitationStore', () => {
     expect(accepted.accepted.memberToken).toMatch(/^kookr_member_v1_/);
     expect(accepted.accepted.policyGrant).toMatchObject({
       grantId: created.invitation.grantId,
-      grants: ['view', 'comment', 'terminalInput'],
+      grants: ['view', 'comment', 'terminalView', 'terminalInput'],
     });
     expect(store.accept(created.token, 'bob')).toEqual({ ok: false, reason: 'already-used' });
     expect(store.authenticateMember(accepted.accepted.memberToken)).toMatchObject({ acceptedBy: 'alice' });
@@ -130,6 +130,30 @@ describe('InvitationStore', () => {
       shareId: '482-913',
       expiresAt: '2026-06-01T00:00:00.000Z',
     });
+  });
+
+  it('normalizes pre-upgrade persisted terminal input grants on reload', () => {
+    let persisted = [] as ReturnType<InvitationStore['list']>;
+    const first = new InvitationStore({
+      now: () => new Date('2026-05-15T20:00:00.000Z'),
+      tokenBytes: 8,
+      onSave: (invitation) => {
+        persisted = [invitation];
+      },
+    });
+    first.create({
+      nodeId: asNodeId('node-1'),
+      grants: ['view', 'terminalInput'],
+      ttlMs: 60_000,
+    });
+    persisted[0] = {
+      ...persisted[0],
+      grants: ['view', 'terminalInput'],
+    };
+
+    const reloaded = new InvitationStore({ tokenBytes: 8, initialInvitations: persisted });
+
+    expect(reloaded.list()[0].grants).toEqual(['view', 'terminalView', 'terminalInput']);
   });
 
   it('locks a share ticket after repeated failed password guesses', () => {

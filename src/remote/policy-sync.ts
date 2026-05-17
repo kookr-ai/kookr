@@ -3,6 +3,7 @@ import type { GrantId, NodeId, PolicyVersion } from './ids.js';
 export type KnownGrant =
   | 'view'
   | 'comment'
+  | 'terminalView'
   | 'terminalInput'
   | 'launch'
   | 'stop'
