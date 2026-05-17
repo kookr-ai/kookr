@@ -491,6 +491,7 @@ describe('relay node-scoped task-share endpoints', () => {
 
     expect(accepted.status).toBe(200);
     expect(accepted.headers.get('set-cookie')).toContain('kookr_relay_member_token=');
+    expect(accepted.headers.get('set-cookie')).toContain('Max-Age=');
     expect(await accepted.json()).toEqual(expect.objectContaining({ nodeId }));
 
     const second = await fetch(new URL('/relay/share-tickets/accept', relay.url()), {
@@ -498,8 +499,10 @@ describe('relay node-scoped task-share endpoints', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ shareId: body.shareTicket.shareId, password: body.shareTicket.password, displayName: 'viewer-2' }),
     });
-    expect(second.status).toBe(409);
-    expect(await second.json()).toEqual({ error: 'ticket-unavailable' });
+    expect(second.status).toBe(200);
+    expect(second.headers.get('set-cookie')).toContain('kookr_relay_member_token=');
+    expect(second.headers.get('set-cookie')).toContain('Max-Age=');
+    expect(await second.json()).toEqual(expect.objectContaining({ nodeId }));
   });
 
   it('locks bad share-ticket guesses without distinguishing unknown IDs from wrong passwords', async () => {

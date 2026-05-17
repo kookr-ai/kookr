@@ -125,6 +125,19 @@ async function memberWebSocketNonce(relay: RelayServerHandle, memberToken: strin
   return body.security!.webSocketNonce!;
 }
 
+function responseCookieHeader(res: Response): string {
+  return (res.headers.getSetCookie?.() ?? []).map((cookie) => cookie.split(';')[0]).join('; ');
+}
+
+function responseCookieValue(res: Response, name: string): string {
+  for (const cookie of res.headers.getSetCookie?.() ?? []) {
+    const [pair] = cookie.split(';');
+    const [key, ...rawValue] = pair.split('=');
+    if (key === name) return decodeURIComponent(rawValue.join('='));
+  }
+  throw new Error(`missing response cookie ${name}`);
+}
+
 async function connectMember(
   relay: RelayServerHandle,
   nodeId: string,
@@ -640,31 +653,18 @@ describe('relay invitations', () => {
       replayed.once('error', reject);
     });
 
-    const deviceBoundNonce = await memberWebSocketNonce(relay, accepted.accepted.memberToken, accepted.accepted.deviceId);
-    const wrongDeviceUrl = new URL('/relay/client', relay.url());
-    wrongDeviceUrl.protocol = 'ws:';
-    wrongDeviceUrl.searchParams.set('nodeId', node.nodeId);
-    wrongDeviceUrl.searchParams.set('wsNonce', deviceBoundNonce);
-    const wrongDevice = new WebSocket(wrongDeviceUrl, {
+    const forgedDeviceState = await fetch(`${relay.url()}/relay/member/share-state`, {
       headers: {
-        origin: relay.url(),
         cookie: [
           `kookr_relay_member_token=${accepted.accepted.memberToken}`,
           'kookr_relay_device_id=other-device',
         ].join('; '),
       },
     });
-    await new Promise<void>((resolve, reject) => {
-      wrongDevice.once('open', () => {
-        wrongDevice.close();
-        reject(new Error('wrong-device nonce unexpectedly connected'));
-      });
-      wrongDevice.once('unexpected-response', (_req, res) => {
-        expect(res.statusCode).toBe(403);
-        resolve();
-      });
-      wrongDevice.once('error', reject);
-    });
+    expect(forgedDeviceState.status).toBe(200);
+    await expect(forgedDeviceState.json()).resolves.toEqual(expect.objectContaining({
+      security: expect.objectContaining({ deviceId: accepted.accepted.deviceId }),
+    }));
   });
 
   it('repairs legacy accepted member sessions with CSRF and device cookies', async () => {
@@ -753,9 +753,22 @@ describe('relay invitations', () => {
       nodeId: node.nodeId,
       subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
       grants: ['view', 'terminalInput'],
+      shareTicket: true,
     });
+    if (!created.shareTicket) throw new Error('expected share ticket');
     const accepted = relay.acceptInvitation(created.token, 'Laptop');
     if (!accepted.ok) throw new Error('expected accept');
+    const phoneAccept = await fetch(`${relay.url()}/relay/share-tickets/accept`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        shareId: created.shareTicket.shareId,
+        password: created.shareTicket.password,
+        displayName: 'Phone',
+      }),
+    });
+    expect(phoneAccept.status).toBe(200);
+    const phoneCookie = responseCookieHeader(phoneAccept);
     await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
     publishSessionProjection(nodeConn.ws, {
       nodeId: node.nodeId,
@@ -797,10 +810,14 @@ describe('relay invitations', () => {
     expect(acquired.lease.deviceId).toBe(accepted.accepted.deviceId);
 
     const phoneState = await fetch(`${relay.url()}/relay/member/share-state`, {
-      headers: { cookie: [memberCookie, csrfCookie, 'kookr_relay_device_id=phone-device'].join('; ') },
+      headers: { cookie: phoneCookie },
     });
     expect(phoneState.status).toBe(200);
-    await expect(phoneState.json()).resolves.toEqual(expect.objectContaining({
+    const phoneStateBody = await phoneState.json() as { security?: { csrfToken?: string; deviceId?: string }; state?: unknown };
+    expect(phoneStateBody.security?.csrfToken).toBeTruthy();
+    expect(phoneStateBody.security?.deviceId).toBeTruthy();
+    expect(phoneStateBody.security!.deviceId).not.toBe(accepted.accepted.deviceId);
+    expect(phoneStateBody).toEqual(expect.objectContaining({
       state: expect.objectContaining({
         controllerLease: expect.objectContaining({ state: 'heldByAnotherDevice', holderLabel: 'Laptop' }),
       }),
@@ -810,8 +827,8 @@ describe('relay invitations', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        cookie: [memberCookie, csrfCookie, 'kookr_relay_device_id=phone-device'].join('; '),
-        'x-kookr-csrf-token': accepted.accepted.csrfToken,
+        cookie: phoneCookie,
+        'x-kookr-csrf-token': phoneStateBody.security!.csrfToken!,
       },
       body: JSON.stringify({
         nodeId: node.nodeId,
@@ -828,8 +845,8 @@ describe('relay invitations', () => {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        cookie: [memberCookie, csrfCookie, 'kookr_relay_device_id=phone-device'].join('; '),
-        'x-kookr-csrf-token': accepted.accepted.csrfToken,
+        cookie: phoneCookie,
+        'x-kookr-csrf-token': phoneStateBody.security!.csrfToken!,
       },
       body: JSON.stringify({
         nodeId: node.nodeId,
@@ -843,7 +860,7 @@ describe('relay invitations', () => {
     });
     expect(takeover.status).toBe(200);
     await expect(takeover.json()).resolves.toEqual(expect.objectContaining({
-      lease: expect.objectContaining({ deviceId: 'phone-device' }),
+      lease: expect.objectContaining({ deviceId: phoneStateBody.security!.deviceId }),
       previousLease: expect.objectContaining({ leaseId: acquired.lease.leaseId }),
     }));
   });
@@ -865,9 +882,24 @@ describe('relay invitations', () => {
       nodeId: node.nodeId,
       subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
       grants: ['view', 'terminalInput'],
+      shareTicket: true,
     });
+    if (!created.shareTicket) throw new Error('expected share ticket');
     const accepted = relay.acceptInvitation(created.token, 'Laptop');
     if (!accepted.ok) throw new Error('expected accept');
+    const phoneAccept = await fetch(`${relay.url()}/relay/share-tickets/accept`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        shareId: created.shareTicket.shareId,
+        password: created.shareTicket.password,
+        displayName: 'Phone',
+      }),
+    });
+    expect(phoneAccept.status).toBe(200);
+    const phoneMemberToken = responseCookieValue(phoneAccept, 'kookr_relay_member_token');
+    const phoneCsrfToken = responseCookieValue(phoneAccept, 'kookr_relay_csrf_token');
+    const phoneDeviceId = responseCookieValue(phoneAccept, 'kookr_relay_device_id');
     await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
     publishSessionProjection(nodeConn.ws, {
       nodeId: node.nodeId,
@@ -989,9 +1021,9 @@ describe('relay invitations', () => {
       expect(nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === mismatch.commandId)).toBe(false);
     }
 
-    const phoneMember = await connectMember(relay, node.nodeId, accepted.accepted.memberToken, {
-      csrfToken: accepted.accepted.csrfToken,
-      deviceId: 'phone-device',
+    const phoneMember = await connectMember(relay, node.nodeId, phoneMemberToken, {
+      csrfToken: phoneCsrfToken,
+      deviceId: phoneDeviceId,
     });
     sockets.push(phoneMember.ws);
     phoneMember.ws.send(JSON.stringify({

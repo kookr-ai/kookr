@@ -3,7 +3,7 @@ import type { RemoteStateDeltaEvent } from './control-events.js';
 import type { ServerRevision } from './ids.js';
 import type { Task } from '../core/tasks.js';
 
-export type PushAlertKind = 'blocked' | 'permission-requested' | 'findings';
+export type PushAlertKind = 'blocked' | 'permission-requested' | 'findings' | 'approval-updated';
 
 export interface RedactedPushPayload {
   redactor: 'redactor.v1';
@@ -129,6 +129,6 @@ export function isRedactedPushPayload(value: unknown): value is RedactedPushPayl
     && msg.redactor === 'redactor.v1'
     && typeof msg.nodeDisplayName === 'string'
     && typeof msg.taskShortLabel === 'string'
-    && (msg.alertKind === 'blocked' || msg.alertKind === 'permission-requested' || msg.alertKind === 'findings')
+    && (msg.alertKind === 'blocked' || msg.alertKind === 'permission-requested' || msg.alertKind === 'findings' || msg.alertKind === 'approval-updated')
     && typeof msg.alertId === 'string';
 }

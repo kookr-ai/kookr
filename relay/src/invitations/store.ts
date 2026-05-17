@@ -21,6 +21,7 @@ export interface InvitationRecord {
   memberId?: string;
   memberDeviceId?: string;
   memberCsrfTokenHash?: string;
+  memberSessions?: MemberSessionRecord[];
   controllerLease?: ControllerLeaseRecord;
   shareId?: string;
   passwordVerifier?: string;
@@ -29,6 +30,15 @@ export interface InvitationRecord {
   redactedShareLabel?: string;
   grantRequests?: TaskShareGrantRequest[];
   policyVersion: PolicyVersion;
+}
+
+export interface MemberSessionRecord {
+  memberTokenHash: string;
+  memberId: string;
+  deviceId: string;
+  csrfTokenHash: string;
+  createdAt: string;
+  acceptedBy?: string;
 }
 
 export interface ControllerLeaseRecord {
@@ -156,6 +166,7 @@ function cloneInvitation(invitation: InvitationRecord): InvitationRecord {
   return {
     ...invitation,
     ...(invitation.controllerLease ? { controllerLease: { ...invitation.controllerLease } } : {}),
+    ...(invitation.memberSessions ? { memberSessions: invitation.memberSessions.map((session) => ({ ...session })) } : {}),
     grants: [...invitation.grants],
     ...(invitation.grantRequests ? { grantRequests: invitation.grantRequests.map((request) => ({
       ...request,
@@ -246,6 +257,22 @@ export function isInvitationRecord(value: unknown): value is InvitationRecord {
     && (invitation.memberDeviceId === undefined || typeof invitation.memberDeviceId === 'string')
     && (invitation.memberCsrfTokenHash === undefined || typeof invitation.memberCsrfTokenHash === 'string')
     && (
+      invitation.memberSessions === undefined
+      || (
+        Array.isArray(invitation.memberSessions)
+        && invitation.memberSessions.every((session) => (
+          typeof session === 'object'
+          && session !== null
+          && typeof session.memberTokenHash === 'string'
+          && typeof session.memberId === 'string'
+          && typeof session.deviceId === 'string'
+          && typeof session.csrfTokenHash === 'string'
+          && typeof session.createdAt === 'string'
+          && ((session as Partial<MemberSessionRecord>).acceptedBy === undefined || typeof (session as Partial<MemberSessionRecord>).acceptedBy === 'string')
+        ))
+      )
+    )
+    && (
       invitation.controllerLease === undefined
       || (
         typeof invitation.controllerLease === 'object'
@@ -298,6 +325,9 @@ export class InvitationStore {
     this.invitationTokenIndex.set(invitation.tokenHash, invitation.invitationId);
     if (invitation.shareId) this.shareIdIndex.set(invitation.shareId, invitation.invitationId);
     if (invitation.memberTokenHash) this.memberTokenIndex.set(invitation.memberTokenHash, invitation.invitationId);
+    for (const session of invitation.memberSessions ?? []) {
+      this.memberTokenIndex.set(session.memberTokenHash, invitation.invitationId);
+    }
   }
 
   private save(invitation: InvitationRecord): void {
@@ -375,6 +405,7 @@ export class InvitationStore {
       });
       return { ok: false, reason: lockedUntil ? 'locked' : 'invalid-password' };
     }
+    if (invitation.acceptedAt) return this.addMemberSession(invitationId, acceptedBy, deviceId);
     return this.acceptByInvitationId(invitationId, acceptedBy, deviceId);
   }
 
@@ -412,14 +443,25 @@ export class InvitationStore {
     const memberToken = issueToken('kookr_member_v1', this.tokenBytes);
     const csrfToken = issueToken('kookr_csrf_v1', this.tokenBytes);
     const memberTokenHash = hashToken(memberToken);
+    const now = this.now();
+    const memberId = `member-${randomUUID()}`;
+    const memberDeviceId = deviceId ?? `device-${randomUUID()}`;
     const accepted = {
       ...invitation,
-      acceptedAt: this.now().toISOString(),
+      acceptedAt: now.toISOString(),
       ...(acceptedBy ? { acceptedBy } : {}),
-      memberId: `member-${randomUUID()}`,
-      memberDeviceId: deviceId ?? `device-${randomUUID()}`,
+      memberId,
+      memberDeviceId,
       memberTokenHash,
       memberCsrfTokenHash: hashToken(csrfToken),
+      memberSessions: [{
+        memberTokenHash,
+        memberId,
+        deviceId: memberDeviceId,
+        csrfTokenHash: hashToken(csrfToken),
+        createdAt: now.toISOString(),
+        ...(acceptedBy ? { acceptedBy } : {}),
+      }],
     };
     this.save(accepted);
     const policyGrant: PolicyGrantRecord = {
@@ -443,11 +485,15 @@ export class InvitationStore {
 
   verifyMemberCsrfToken(invitationId: string, csrfToken: string): boolean {
     const invitation = this.invitations.get(invitationId);
-    if (!invitation?.memberCsrfTokenHash) return false;
-    const expected = Buffer.from(invitation.memberCsrfTokenHash);
     const actual = Buffer.from(hashToken(csrfToken));
-    if (expected.length !== actual.length) return false;
-    return timingSafeEqual(expected, actual);
+    const candidates = [
+      invitation?.memberCsrfTokenHash,
+      ...(invitation?.memberSessions ?? []).map((session) => session.csrfTokenHash),
+    ].filter((value): value is string => typeof value === 'string');
+    return candidates.some((candidate) => {
+      const expected = Buffer.from(candidate);
+      return expected.length === actual.length && timingSafeEqual(expected, actual);
+    });
   }
 
   ensureMemberBrowserSession(input: {
@@ -642,21 +688,21 @@ export class InvitationStore {
   }
 
   authenticateMember(token: string): InvitationRecord | null {
-    const invitationId = this.memberTokenIndex.get(hashToken(token));
-    if (!invitationId) return null;
-    const invitation = this.invitations.get(invitationId);
+    const found = this.findInvitationAndSessionByMemberToken(token);
+    if (!found) return null;
+    const { invitation, session } = found;
     if (!invitation || !invitation.acceptedAt || invitation.revokedAt) return null;
     if (Date.parse(invitation.expiresAt) <= this.now().getTime()) return null;
-    return cloneInvitation(invitation);
+    return cloneInvitation(this.withMemberSession(invitation, session));
   }
 
   findByMemberToken(token: string): InvitationRecord | null {
-    const invitationId = this.memberTokenIndex.get(hashToken(token));
-    if (!invitationId) return null;
-    const invitation = this.invitations.get(invitationId);
+    const found = this.findInvitationAndSessionByMemberToken(token);
+    if (!found) return null;
+    const { invitation, session } = found;
     if (!invitation || !invitation.acceptedAt) return null;
     // Status pages need to render revoked/expired share state instead of treating the member token as unknown.
-    return cloneInvitation(invitation);
+    return cloneInvitation(this.withMemberSession(invitation, session));
   }
 
   currentPolicyVersion(): PolicyVersion {
@@ -689,5 +735,68 @@ export class InvitationStore {
 
   list(): InvitationRecord[] {
     return [...this.invitations.values()].map(cloneInvitation);
+  }
+
+  private addMemberSession(invitationId: string, acceptedBy?: string, deviceId?: string): InvitationAcceptResult {
+    const invitation = this.invitations.get(invitationId);
+    if (!invitation) return { ok: false, reason: 'not-found' };
+    if (invitation.revokedAt) return { ok: false, reason: 'revoked' };
+    if (Date.parse(invitation.expiresAt) <= this.now().getTime()) return { ok: false, reason: 'expired' };
+    if (!invitation.acceptedAt) return this.acceptByInvitationId(invitationId, acceptedBy, deviceId);
+
+    const now = this.now();
+    const memberToken = issueToken('kookr_member_v1', this.tokenBytes);
+    const csrfToken = issueToken('kookr_csrf_v1', this.tokenBytes);
+    const session: MemberSessionRecord = {
+      memberTokenHash: hashToken(memberToken),
+      memberId: `member-${randomUUID()}`,
+      deviceId: deviceId ?? `device-${randomUUID()}`,
+      csrfTokenHash: hashToken(csrfToken),
+      createdAt: now.toISOString(),
+      ...(acceptedBy ? { acceptedBy } : {}),
+    };
+    const updated: InvitationRecord = {
+      ...invitation,
+      memberSessions: [...(invitation.memberSessions ?? []), session],
+    };
+    this.save(updated);
+    return {
+      ok: true,
+      accepted: {
+        invitation: cloneInvitation(this.withMemberSession(updated, session)),
+        memberToken,
+        csrfToken,
+        deviceId: session.deviceId,
+        policyGrant: {
+          grantId: updated.grantId,
+          subject: updated.subject,
+          grants: [...updated.grants],
+          policyVersion: updated.policyVersion,
+          expiresAt: updated.expiresAt,
+        },
+      },
+    };
+  }
+
+  private findInvitationAndSessionByMemberToken(token: string): { invitation: InvitationRecord; session?: MemberSessionRecord } | null {
+    const tokenHash = hashToken(token);
+    const invitationId = this.memberTokenIndex.get(tokenHash);
+    if (!invitationId) return null;
+    const invitation = this.invitations.get(invitationId);
+    if (!invitation) return null;
+    const session = (invitation.memberSessions ?? []).find((candidate) => candidate.memberTokenHash === tokenHash);
+    return { invitation, ...(session ? { session } : {}) };
+  }
+
+  private withMemberSession(invitation: InvitationRecord, session: MemberSessionRecord | undefined): InvitationRecord {
+    if (!session) return invitation;
+    return {
+      ...invitation,
+      memberTokenHash: session.memberTokenHash,
+      memberId: session.memberId,
+      memberDeviceId: session.deviceId,
+      memberCsrfTokenHash: session.csrfTokenHash,
+      ...(session.acceptedBy ? { acceptedBy: session.acceptedBy } : {}),
+    };
   }
 }

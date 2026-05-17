@@ -84,7 +84,12 @@ describe('InvitationStore', () => {
     if (!accepted.ok) throw new Error('expected accept');
     expect(accepted.accepted.memberToken).toMatch(/^kookr_member_v1_/);
     expect(store.authenticateMember(accepted.accepted.memberToken)).toMatchObject({ acceptedBy: 'alice' });
-    expect(store.acceptTicket('482-913', 'cobalt-mint-7', 'bob')).toEqual({ ok: false, reason: 'already-used' });
+    const resumed = store.acceptTicket('482-913', 'cobalt-mint-7', 'bob');
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) throw new Error('expected resumed accept');
+    expect(resumed.accepted.memberToken).toMatch(/^kookr_member_v1_/);
+    expect(resumed.accepted.memberToken).not.toBe(accepted.accepted.memberToken);
+    expect(store.authenticateMember(resumed.accepted.memberToken)).toMatchObject({ acceptedBy: 'bob' });
   });
 
   it('scales share-ticket password entropy above the 24h share class', () => {

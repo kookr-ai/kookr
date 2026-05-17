@@ -355,17 +355,19 @@ function cookieValue(req: IncomingMessage, name: string): string | null {
   return null;
 }
 
-function cookieAttributes(req: IncomingMessage, opts: { trustedProxy: boolean }): string[] {
+function cookieAttributes(req: IncomingMessage, opts: { trustedProxy: boolean }, expiresAt?: string): string[] {
   const secure = requestIsSecure(req, opts);
+  const maxAge = expiresAt ? Math.max(0, Math.floor((Date.parse(expiresAt) - Date.now()) / 1000)) : null;
   return [
     'Path=/relay',
     'SameSite=Lax',
+    Number.isFinite(maxAge) && maxAge !== null ? `Max-Age=${maxAge}` : '',
     secure ? 'Secure' : '',
   ].filter(Boolean);
 }
 
-function memberCookies(input: { memberToken: string; csrfToken: string; deviceId: string }, req: IncomingMessage, opts: { trustedProxy: boolean }): string[] {
-  const attrs = cookieAttributes(req, opts);
+function memberCookies(input: { memberToken: string; csrfToken: string; deviceId: string; expiresAt?: string }, req: IncomingMessage, opts: { trustedProxy: boolean }): string[] {
+  const attrs = cookieAttributes(req, opts, input.expiresAt);
   return [
     [`${RELAY_MEMBER_COOKIE}=${encodeURIComponent(input.memberToken)}`, ...attrs, 'HttpOnly'].join('; '),
     [`${RELAY_MEMBER_CSRF_COOKIE}=${encodeURIComponent(input.csrfToken)}`, ...attrs].join('; '),
@@ -373,8 +375,8 @@ function memberCookies(input: { memberToken: string; csrfToken: string; deviceId
   ];
 }
 
-function memberBrowserCookies(input: { csrfToken: string; deviceId: string }, req: IncomingMessage, opts: { trustedProxy: boolean }): string[] {
-  const attrs = cookieAttributes(req, opts);
+function memberBrowserCookies(input: { csrfToken: string; deviceId: string; expiresAt?: string }, req: IncomingMessage, opts: { trustedProxy: boolean }): string[] {
+  const attrs = cookieAttributes(req, opts, input.expiresAt);
   return [
     [`${RELAY_MEMBER_CSRF_COOKIE}=${encodeURIComponent(input.csrfToken)}`, ...attrs].join('; '),
     [`${RELAY_MEMBER_DEVICE_COOKIE}=${encodeURIComponent(input.deviceId)}`, ...attrs].join('; '),
@@ -410,7 +412,7 @@ function authenticateClient(
   if (memberToken) {
     const invitation = invitations.authenticateMember(memberToken);
     if (invitation && invitation.nodeId === nodeId) {
-      const deviceId = cookieValue(req, RELAY_MEMBER_DEVICE_COOKIE) ?? invitation.memberDeviceId;
+      const deviceId = invitation.memberDeviceId ?? cookieValue(req, RELAY_MEMBER_DEVICE_COOKIE) ?? undefined;
       return {
         kind: 'member',
         actorId: invitation.acceptedBy ?? invitation.memberId ?? invitation.invitationId,
@@ -934,6 +936,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     sender: opts.pushSender,
     subject: opts.pushSubject,
   });
+  const approvalNotificationDevices = new Map<string, Set<string>>();
   const ownerId = opts.ownerId ?? 'local-owner';
 
   for (const registration of stateSnapshot.registrations) {
@@ -1350,6 +1353,29 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     deviceId,
   });
 
+  const rememberApprovalNotificationDevice = (invitationId: string, deviceId: string): void => {
+    const devices = approvalNotificationDevices.get(invitationId) ?? new Set<string>();
+    devices.add(deviceId);
+    approvalNotificationDevices.set(invitationId, devices);
+  };
+
+  const notifyApprovalWatchers = (invitation: InvitationRecord, requestId: string, resolution: 'approved' | 'denied'): void => {
+    const devices = approvalNotificationDevices.get(invitation.invitationId);
+    if (!devices || devices.size === 0) return;
+    const node = registrations.get(invitation.nodeId);
+    const taskId = invitation.subject.kind === 'task' ? invitation.subject.taskId : invitation.invitationId;
+    const taskLabel = invitation.redactedShareLabel ?? defaultRedactedShareLabel(invitation.shareId);
+    for (const deviceId of devices) {
+      void pushFanout.sendToDevice(deviceId, makeRedactedPushPayload({
+        nodeDisplayName: node?.displayName,
+        taskId,
+        taskLabel,
+        alertKind: 'approval-updated',
+        alertId: `approval-${invitation.invitationId}-${requestId}-${resolution}`,
+      }));
+    }
+  };
+
   const nodeStatuses = (): RelayNodeStatus[] => [...registrations.values()].map((registration) => {
     const hello = nodeHello.get(registration.nodeId);
     const policy = currentNodePolicyState(registration.nodeId);
@@ -1486,6 +1512,10 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           'text/css; charset=utf-8',
           await readFile(join(process.cwd(), 'node_modules/@xterm/xterm/css/xterm.css'), 'utf8'),
         );
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/relay/member-sw.js') {
+        sendText(res, 200, 'text/javascript; charset=utf-8', relayMemberServiceWorkerJs());
         return;
       }
       if (req.method === 'GET' && url.pathname === '/relay/dashboard/state') {
@@ -1789,6 +1819,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
               memberToken: accepted.accepted.memberToken,
               csrfToken: accepted.accepted.csrfToken,
               deviceId: accepted.accepted.deviceId,
+              expiresAt: accepted.accepted.invitation.expiresAt,
             }, req, { trustedProxy }),
           },
         );
@@ -1836,6 +1867,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
               memberToken: accepted.accepted.memberToken,
               csrfToken: accepted.accepted.csrfToken,
               deviceId: accepted.accepted.deviceId,
+              expiresAt: accepted.accepted.invitation.expiresAt,
             }, req, { trustedProxy }),
           },
         );
@@ -1847,7 +1879,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         const browserSession = invitation
           ? invitations.ensureMemberBrowserSession({
               invitationId: invitation.invitationId,
-              deviceId: cookieValue(req, RELAY_MEMBER_DEVICE_COOKIE) ?? undefined,
+              deviceId: invitation.memberDeviceId ?? cookieValue(req, RELAY_MEMBER_DEVICE_COOKIE) ?? undefined,
               csrfToken: cookieValue(req, RELAY_MEMBER_CSRF_COOKIE) ?? undefined,
             })
           : null;
@@ -1867,8 +1899,56 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
             ),
           } : {}),
         }, browserSession?.ok
-          ? { 'set-cookie': memberBrowserCookies(browserSession, req, { trustedProxy }) }
+          ? { 'set-cookie': memberBrowserCookies({
+              csrfToken: browserSession.csrfToken,
+              deviceId: browserSession.deviceId,
+              expiresAt: browserSession.invitation.expiresAt,
+            }, req, { trustedProxy }) }
           : {});
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/relay/member/approval-notifications') {
+        const body = await readJson(req) as { nodeId?: unknown; subscription?: unknown; vapidKeyVersion?: unknown };
+        if (typeof body.nodeId !== 'string') {
+          sendJson(res, 400, { error: 'nodeId is required' });
+          return;
+        }
+        const auth = authenticateClient(req, opts, invitations, ownerId, asNodeId(body.nodeId), url);
+        if (!auth || auth.kind !== 'member' || !auth.invitationId || !auth.deviceId) {
+          sendJson(res, 401, { error: 'member-auth-required' });
+          return;
+        }
+        if (!verifyMemberCsrf(req, auth)) {
+          incrementSecurityEvent();
+          sendJson(res, 403, { error: 'csrf-required' });
+          return;
+        }
+        rememberApprovalNotificationDevice(auth.invitationId, auth.deviceId);
+        if (body.subscription !== undefined) {
+          if (!isPushSubscription(body.subscription)) {
+            sendJson(res, 400, { error: 'valid push subscription is required' });
+            return;
+          }
+          const current = vapidKeys.current();
+          if (body.vapidKeyVersion !== undefined && body.vapidKeyVersion !== current.version) {
+            sendJson(res, 409, { error: 'vapid key version mismatch', currentVersion: current.version });
+            return;
+          }
+          const stored = pushSubscriptions.upsert({
+            deviceId: auth.deviceId,
+            nodeId: asNodeId(body.nodeId),
+            subscription: body.subscription,
+            vapidKeyVersion: current.version,
+          });
+          sendJson(res, 201, {
+            mode: 'push',
+            deviceId: stored.deviceId,
+            nodeId: stored.nodeId,
+            vapidKeyVersion: stored.vapidKeyVersion,
+          });
+          return;
+        }
+        sendJson(res, 202, { mode: 'poll', deviceId: auth.deviceId });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/relay/member/grant-requests') {
@@ -2291,6 +2371,11 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
             expiresAt: resolved.invitation.expiresAt,
           });
         }
+        notifyApprovalWatchers(
+          resolved.invitation,
+          requestId,
+          resolution === 'approve' ? 'approved' : 'denied',
+        );
         broadcastPresence(registration.nodeId);
         broadcastMemberShareState(registration.nodeId);
         sendJson(res, 200, {
@@ -3685,6 +3770,32 @@ boot();
 </html>`;
 }
 
+function relayMemberServiceWorkerJs(): string {
+  return `
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try { payload = event.data ? event.data.json() : {}; } catch {}
+  const task = typeof payload.taskShortLabel === 'string' && payload.taskShortLabel
+    ? payload.taskShortLabel
+    : 'Shared task';
+  const node = typeof payload.nodeDisplayName === 'string' && payload.nodeDisplayName
+    ? payload.nodeDisplayName
+    : 'Kookr';
+  const title = payload.alertKind === 'approval-updated' ? 'Kookr approval updated' : 'Kookr share update';
+  event.waitUntil(self.registration.showNotification(title, {
+    body: node + ' · ' + task,
+    tag: typeof payload.alertId === 'string' ? payload.alertId : 'kookr-share-update',
+    data: { url: '/relay/join' },
+  }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(clients.openWindow(event.notification.data && event.notification.data.url || '/relay/join'));
+});
+`;
+}
+
 function relayJoinHtml(): string {
   return `<!doctype html>
 <html lang="en">
@@ -3716,6 +3827,8 @@ function relayJoinHtml(): string {
     .error { color: #ff7b72; }
     .request { border: 1px solid #7c5f16; border-radius: 6px; padding: 12px; margin-top: 14px; background: #211b0d; }
     .blocked { border-color: #7f1d1d; background: #2a1111; }
+    .approval-watch { border: 1px solid #2b373d; border-radius: 6px; padding: 12px; margin-top: 10px; background: #0f1519; }
+    .approval-watch .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .terminal-shell { margin-top: 14px; border: 1px solid #2b373d; border-radius: 6px; background: #06080a; overflow: hidden; }
     .terminal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; background: #0f1519; border-bottom: 1px solid #2b373d; }
     .terminal-toolbar strong { font-size: 13px; }
@@ -3791,6 +3904,12 @@ function relayJoinHtml(): string {
       <p id="grant-request-copy" class="muted">Terminal input requires owner approval.</p>
       <button id="request-control" type="button">Request terminal input</button>
     </section>
+    <section id="approval-watch" class="approval-watch" hidden aria-label="Approval notification">
+      <div class="row">
+        <button id="notify-approval" type="button">Notify me when approved</button>
+        <span id="approval-watch-status" class="muted" role="status" aria-live="polite">Polling for approval.</span>
+      </div>
+    </section>
   </section>
 </main>
 <script src="/relay/assets/xterm.js"></script>
@@ -3828,6 +3947,9 @@ const taskUpdatedEl = document.getElementById('task-updated');
 const grantRequestEl = document.getElementById('grant-request');
 const requestControlEl = document.getElementById('request-control');
 const grantRequestCopyEl = document.getElementById('grant-request-copy');
+const approvalWatchEl = document.getElementById('approval-watch');
+const notifyApprovalEl = document.getElementById('notify-approval');
+const approvalWatchStatusEl = document.getElementById('approval-watch-status');
 const offlineNodeEl = document.getElementById('offline-node');
 const offlineLastSeenEl = document.getElementById('offline-last-seen');
 const terminalStatusEl = document.getElementById('terminal-status');
@@ -3857,6 +3979,7 @@ let nextWebSocketNonce = '';
 let controllerLease = null;
 let nodeLeaseReady = false;
 let leaseHeartbeatTimer = null;
+let statePollingTimer = null;
 const pendingCommands = new Map();
 shareIdEl.value = pathShareId;
 sharePasswordEl.value = fragmentPassword;
@@ -3876,6 +3999,88 @@ function applySecurity(body) {
   if (!security || typeof security !== 'object') return;
   if (typeof security.csrfToken === 'string') csrfToken = security.csrfToken;
   if (typeof security.webSocketNonce === 'string') nextWebSocketNonce = security.webSocketNonce;
+}
+
+function base64UrlToUint8Array(value) {
+  const padding = '='.repeat((4 - value.length % 4) % 4);
+  const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from(raw, (ch) => ch.charCodeAt(0));
+}
+
+async function pollMemberState() {
+  try {
+    const res = await fetch('/relay/member/share-state', { credentials: 'include' });
+    if (!res.ok) return false;
+    const body = await res.json();
+    applySecurity(body);
+    renderMemberShareState(body.state);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startStatePolling(label) {
+  approvalWatchEl.hidden = false;
+  approvalWatchStatusEl.textContent = label || 'Polling for approval.';
+  if (statePollingTimer) return;
+  statePollingTimer = setInterval(() => {
+    void pollMemberState();
+  }, 5000);
+}
+
+function stopStatePolling() {
+  if (statePollingTimer) clearInterval(statePollingTimer);
+  statePollingTimer = null;
+  approvalWatchEl.hidden = true;
+}
+
+async function registerApprovalNotification(payload) {
+  return fetch('/relay/member/approval-notifications', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-kookr-csrf-token': csrfToken || cookieValue('kookr_relay_csrf_token'),
+    },
+    credentials: 'include',
+    body: JSON.stringify({ nodeId, ...payload }),
+  });
+}
+
+async function enableApprovalNotification() {
+  if (!nodeId) return;
+  notifyApprovalEl.disabled = true;
+  startStatePolling('Polling is active.');
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+      await registerApprovalNotification({});
+      approvalWatchStatusEl.textContent = 'Polling for approval.';
+      return;
+    }
+    const permission = Notification.permission === 'granted'
+      ? 'granted'
+      : await Notification.requestPermission();
+    if (permission !== 'granted') {
+      await registerApprovalNotification({});
+      approvalWatchStatusEl.textContent = 'Notifications unavailable; polling for approval.';
+      return;
+    }
+    const keyRes = await fetch('/relay/push/vapid-public-key', { credentials: 'include' });
+    if (!keyRes.ok) throw new Error('push key unavailable');
+    const key = await keyRes.json();
+    const registration = await navigator.serviceWorker.register('/relay/member-sw.js', { scope: '/relay/' });
+    const existing = await registration.pushManager.getSubscription();
+    const subscription = existing || await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: base64UrlToUint8Array(key.publicKey),
+    });
+    const res = await registerApprovalNotification({ subscription: subscription.toJSON(), vapidKeyVersion: key.version });
+    if (!res.ok) throw new Error('subscription failed');
+    approvalWatchStatusEl.textContent = 'Notifications enabled. Polling stays active as backup.';
+  } catch {
+    approvalWatchStatusEl.textContent = 'Notifications unavailable; polling for approval.';
+  }
 }
 
 async function takeWebSocketNonce() {
@@ -4286,46 +4491,60 @@ function renderMemberShareState(memberState) {
   terminalStatusEl.className = terminal.state === 'blocked' ? 'request blocked' : 'request';
   grantRequestEl.hidden = true;
   requestControlEl.disabled = false;
+  notifyApprovalEl.disabled = false;
   terminalMayView = terminal.state === 'available' || terminal.state === 'viewOnly';
   terminalMayInput = terminal.state === 'available';
   if (terminal.state === 'available') {
     terminalStatusTitleEl.textContent = 'Terminal input approved';
-    terminalStatusCopyEl.textContent = 'You can watch this shared task terminal and send semantic input.';
+    terminalStatusCopyEl.textContent = memberState.controllerLease && memberState.controllerLease.state === 'heldByAnotherDevice'
+      ? 'Terminal input is approved, but control is held from another device.'
+      : 'You can watch this shared task terminal and send semantic input.';
+    stopStatePolling();
     ensureTerminal();
     void connectTerminalStream();
     void acquireControllerLease();
   } else if (terminal.state === 'viewOnly') {
     terminalStatusTitleEl.textContent = 'Terminal viewing approved';
     terminalStatusCopyEl.textContent = 'You can watch this shared task terminal. Sending messages still needs owner approval.';
+    stopStatePolling();
     stopLeaseHeartbeat();
     ensureTerminal();
     void connectTerminalStream();
   } else if (terminal.state === 'pendingApproval') {
     terminalStatusTitleEl.textContent = 'Terminal request pending';
     terminalStatusCopyEl.textContent = 'Waiting for owner approval.';
+    startStatePolling('Polling for approval.');
     stopLeaseHeartbeat();
     resetTerminalStream('');
   } else if (terminal.state === 'denied') {
     terminalStatusTitleEl.textContent = 'Terminal request denied';
     terminalStatusCopyEl.textContent = 'The owner denied terminal input for this share.';
+    stopStatePolling();
     grantRequestEl.hidden = false;
     grantRequestCopyEl.textContent = 'You can send another terminal input request after the cooldown.';
     resetTerminalStream('Terminal access is denied for this share.');
   } else if (terminal.state === 'revoked') {
     terminalStatusTitleEl.textContent = 'Share revoked';
     terminalStatusCopyEl.textContent = 'This share is no longer active.';
+    stopStatePolling();
     resetTerminalStream('Terminal sharing was revoked.');
   } else if (terminal.state === 'expired') {
     terminalStatusTitleEl.textContent = 'Share expired';
     terminalStatusCopyEl.textContent = 'This share is no longer active.';
+    stopStatePolling();
     resetTerminalStream('This share expired.');
   } else {
     terminalStatusTitleEl.textContent = terminal.reason === 'policy.grantRequired' ? 'Terminal input not approved' : 'Terminal sharing unavailable';
     terminalStatusCopyEl.textContent = terminal.message || 'Terminal sharing is not available for this session.';
     resetTerminalStream(terminal.message || 'Terminal sharing is not available for this session.');
     if (terminal.reason === 'policy.grantRequired') {
+      stopStatePolling();
       grantRequestEl.hidden = false;
       grantRequestCopyEl.textContent = 'Terminal input requires owner approval.';
+    } else if (terminal.reason === 'node.offline' || terminal.reason === 'policy.syncPending' || terminal.reason === 'policy.syncTimedOut' || terminal.reason === 'policy.syncStale' || terminal.reason === 'policy.syncFailed') {
+      startStatePolling('Polling for share status.');
+    } else {
+      stopStatePolling();
     }
     if (terminal.reason === 'node.offline') renderOfflineNode(memberState.node);
   }
@@ -4403,6 +4622,15 @@ async function loadState() {
   }
   for (const event of body.events || []) ingest(event);
   return true;
+}
+
+async function resumeExistingSession() {
+  if (await loadState()) {
+    formEl.hidden = true;
+    void connect();
+    return true;
+  }
+  return false;
 }
 
 async function connect() {
@@ -4492,6 +4720,7 @@ requestControlEl.addEventListener('click', async () => {
   terminalStatusEl.className = 'request';
   terminalStatusTitleEl.textContent = 'Terminal request pending';
   terminalStatusCopyEl.textContent = 'Waiting for owner approval.';
+  startStatePolling('Polling for approval.');
   setStatus('Waiting for owner approval.');
 });
 
@@ -4502,15 +4731,19 @@ terminalSendTextEl.addEventListener('click', () => {
 terminalSendEnterEl.addEventListener('click', () => {
   void submitTerminalInput(true);
 });
+notifyApprovalEl.addEventListener('click', () => {
+  void enableApprovalNotification();
+});
 
 formEl.addEventListener('submit', (event) => {
   event.preventDefault();
   void acceptInvite();
 });
 
-if (!inviteToken && nodeId) {
-  formEl.hidden = true;
-  void acceptInvite();
+if (!inviteToken) {
+  void resumeExistingSession().then((resumed) => {
+    if (!resumed && nodeId) void acceptInvite();
+  });
 }
 </script>
 </body>

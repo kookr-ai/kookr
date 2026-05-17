@@ -314,4 +314,73 @@ test.describe('relay join terminal viewer', () => {
       },
     });
   });
+
+  test('resumes approved terminal access after refresh and browser restart with approval notification affordance', async ({ page }) => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken);
+    nodeConn.ws.on('message', (data) => {
+      const msg = JSON.parse(data.toString()) as { type?: string; commandId?: string; action?: string };
+      if (msg.type !== 'remote.command' || !msg.commandId || !msg.action) return;
+      nodeConn.ws.send(JSON.stringify({
+        type: 'remote.command.result',
+        commandId: msg.commandId,
+        action: msg.action,
+        outcome: 'accepted',
+        result: msg.action === 'leaseAcquire' ? { leaseId: (msg as { leaseId?: string }).leaseId } : {},
+      }));
+    });
+    sockets.push(nodeConn.ws);
+
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view'],
+      shareTicket: true,
+    });
+    if (!created.shareTicket) throw new Error('expected share ticket');
+    const joinUrl = `${relay.url()}/relay/join/${encodeURIComponent(created.shareTicket.shareId)}#password=${encodeURIComponent(created.shareTicket.password)}`;
+
+    await joinShare(page, joinUrl);
+    await waitFor(() => Boolean(relay!.invitations()[0]?.acceptedAt));
+    await expect(page.getByRole('button', { name: 'Request terminal input' })).toBeVisible({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Request terminal input' }).click();
+    await expect(page.getByRole('button', { name: 'Notify me when approved' })).toBeVisible();
+    await expect(page.getByText('Polling for approval.')).toBeVisible();
+
+    const accepted = relay.invitations()[0]!;
+    const pending = accepted.grantRequests?.find((request) => request.status === 'pending');
+    expect(pending?.requestId).toBeTruthy();
+    const approve = await fetch(
+      `${relay.url()}/relay/node/invitations/${encodeURIComponent(accepted.invitationId)}/grant-requests/${encodeURIComponent(pending!.requestId)}/approve`,
+      { method: 'POST', headers: { authorization: `Bearer ${node.nodeToken}` } },
+    );
+    expect(approve.status).toBe(200);
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    const approved = relay.invitations()[0]!;
+    publishTaskProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: approved.invitationId });
+    publishSessionProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: approved.invitationId, policyVersion: approved.policyVersion });
+    sendTerminalBytes(nodeConn.ws, node.nodeId, 1, 'MOBILE_RESUME_READY');
+
+    await expect(page.getByLabel('Terminal input message')).toBeEnabled({ timeout: 10_000 });
+    await expect(page.locator('#terminal')).toContainText('MOBILE_RESUME_READY', { timeout: 10_000 });
+
+    await page.reload();
+    await expect(page.getByLabel('Terminal input message')).toBeEnabled({ timeout: 10_000 });
+    await expect(page.locator('#terminal')).toContainText('MOBILE_RESUME_READY', { timeout: 10_000 });
+
+    const restartedPage = await page.context().newPage();
+    await restartedPage.setViewportSize({ width: 390, height: 520 });
+    await restartedPage.goto(`${relay.url()}/relay/join`);
+    await expect(restartedPage.getByLabel('Terminal input message')).toBeEnabled({ timeout: 10_000 });
+    await expect(restartedPage.locator('#terminal')).toContainText('MOBILE_RESUME_READY', { timeout: 10_000 });
+    const noOverlap = await restartedPage.evaluate(() => {
+      const terminal = document.getElementById('terminal-shell')!.getBoundingClientRect();
+      const composer = document.getElementById('terminal-composer')!.getBoundingClientRect();
+      return terminal.bottom <= composer.top || composer.bottom <= terminal.top;
+    });
+    expect(noOverlap).toBe(true);
+    await restartedPage.close();
+  });
 });
