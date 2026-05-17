@@ -11,6 +11,8 @@ import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus
 import { computeTerminalVisible } from './detail-panel-visibility.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
+import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../remote/share-contract.js';
+import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -223,6 +225,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [shareHeaderShares, setShareHeaderShares] = useState<TaskShareSummary[]>([]);
   const hookSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const [permissionButtonsDisabled, setPermissionButtonsDisabled] = useState(false);
   const [isNarrowViewport, setIsNarrowViewport] = useState(() =>
@@ -250,6 +253,42 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
     window.addEventListener('resize', updateViewportMode);
     return () => window.removeEventListener('resize', updateViewportMode);
   }, []);
+
+  useEffect(() => {
+    // The header is a lightweight hint; if sharing is unavailable or the
+    // status refresh fails, keep the primary Share action available.
+    if (!agent?.taskId || typeof fetch !== 'function') {
+      setShareHeaderShares((current) => current.length === 0 ? current : []);
+      return;
+    }
+
+    let cancelled = false;
+    setShareHeaderShares((current) => current.length === 0 ? current : []);
+    async function loadShareHeader() {
+      try {
+        const res = await fetch('/api/share/task');
+        if (cancelled) return;
+        if (res.status === 409) {
+          setShareHeaderShares((current) => current.length === 0 ? current : []);
+          return;
+        }
+        if (!res.ok) throw new Error(`share-list-${res.status}`);
+        const body = await res.json() as ListTaskSharesApiResponse;
+        setShareHeaderShares(Array.isArray(body.shares) ? body.shares : []);
+      } catch {
+        if (!cancelled) setShareHeaderShares((current) => current.length === 0 ? current : []);
+      }
+    }
+
+    void loadShareHeader();
+    const timer = window.setInterval(() => {
+      void loadShareHeader();
+    }, 2_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [agent?.taskId]);
 
   // Clear diff state when the selected agent changes. Avoids showing stale diff
   // content bound to a different agent's toolUseId.
@@ -560,6 +599,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
     ? isCompletedTurn ? 'TURN COMPLETE' : agent.anomaly.type.replace('_', ' ').toUpperCase()
     : 'RUNNING';
   const agentProvider = agent.agentType ? agentProviderPresentation(agent.agentType) : null;
+  const shareHeaderStatus = deriveTaskShareHeaderStatus(agent.taskId, shareHeaderShares);
 
   return (
     <div className="detail-panel kookr-tour-target-layout">
@@ -576,10 +616,15 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
             <button
               type="button"
               data-testid="task-share-button"
-              className="action-btn action-btn--neutral"
+              className={`action-btn action-btn--neutral task-share-header-button task-share-header-button--${shareHeaderStatus.kind}`}
+              title={shareHeaderStatus.title}
+              aria-label={shareHeaderStatus.title}
               onClick={() => setShowShareModal(true)}
             >
-              Share
+              <span>{shareHeaderStatus.buttonLabel}</span>
+              {shareHeaderStatus.badgeLabel && (
+                <span className="task-share-header-badge">{shareHeaderStatus.badgeLabel}</span>
+              )}
             </button>
           )}
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
@@ -627,6 +672,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
           taskLabel={agent.taskName ?? agent.agentId}
           open={showShareModal}
           onClose={() => setShowShareModal(false)}
+          onSharesChanged={setShareHeaderShares}
         />
       )}
 
