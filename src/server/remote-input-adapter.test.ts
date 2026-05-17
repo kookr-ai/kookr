@@ -79,6 +79,38 @@ describe('remote input adapter', () => {
     expect(backend.getWrittenText('s1')).toBe('hello from relay\r');
   });
 
+  it('allows a bare enter semantic submission', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s1', 'bash');
+    const leases = leaseManager();
+    leases.acquireRemote({
+      sessionId: asSessionId('s1'),
+      sessionEpoch: asSessionEpoch('1'),
+      actorId: asActorId('owner-1'),
+      clientId: asClientId('client-1'),
+      leaseId: asLeaseId('lease-1'),
+    });
+    const adapter = await createRemoteInputAdapter({ terminalBackend: backend, leaseManager: leases });
+
+    await expect(adapter.submit(command({
+      payload: {
+        ...command().payload,
+        text: '',
+        appendNewline: true,
+      },
+    }))).resolves.toEqual({ bytesWritten: 1, appendNewline: true });
+
+    expect(backend.getWrittenText('s1')).toBe('\r');
+  });
+
+  it('rejects empty no-op submit message payloads', () => {
+    expect(isSubmitMessageRequest({
+      ...command().payload,
+      text: '',
+      appendNewline: false,
+    })).toBe(false);
+  });
+
   it('rejects stale holder commands after owner override without writing', async () => {
     const backend = new FakeTerminalBackend();
     await backend.createSession('s1', 'bash');

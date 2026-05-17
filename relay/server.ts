@@ -720,12 +720,14 @@ function parseGrantRequestBody(body: { grants?: unknown; comment?: unknown }): {
   };
 }
 
-function grantRequestStatus(reason: string): 400 | 404 | 409 {
+function grantRequestStatus(reason: string): 400 | 404 | 409 | 429 {
   switch (reason) {
     case 'not-found':
       return 404;
     case 'empty-grants':
       return 400;
+    case 'denied-cooldown':
+      return 429;
     default:
       return 409;
   }
@@ -1903,7 +1905,10 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           comment: parsed.comment,
         });
         if (!requested.ok) {
-          sendJson(res, grantRequestStatus(requested.reason), { error: requested.reason });
+          sendJson(res, grantRequestStatus(requested.reason), {
+            error: requested.reason,
+            ...(requested.retryAt ? { retryAt: requested.retryAt } : {}),
+          });
           return;
         }
         broadcastMemberShareState(requested.invitation.nodeId);
@@ -1916,6 +1921,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           holderLabel?: unknown;
           ttlMs?: unknown;
           takeover?: unknown;
+          projectionId?: unknown;
+          sessionAlias?: unknown;
           projectionVersion?: unknown;
           policyVersion?: unknown;
         };
@@ -1941,6 +1948,30 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         if (!authAllows(auth, 'terminalInput', invitations)) {
           sendJson(res, 403, { error: 'terminal-input-grant-required' });
           return;
+        }
+        const invitation = invitations.list().find((candidate) => candidate.invitationId === auth.invitationId);
+        if (!invitation || !policyAckedForInput(asNodeId(body.nodeId), invitation.policyVersion)) {
+          sendJson(res, 409, { error: `policy sync ${currentNodePolicyState(asNodeId(body.nodeId)).status}` });
+          return;
+        }
+        if (invitation.subject.kind !== 'session') {
+          const projection = terminalProjectionForAuth(
+            asNodeId(body.nodeId),
+            auth,
+            typeof body.projectionId === 'string' ? body.projectionId : null,
+            body.sessionAlias === 'primary' ? 'primary' : null,
+          );
+          if (!projection) {
+            sendJson(res, 409, { error: 'projection-stale' });
+            return;
+          }
+          if (
+            body.projectionVersion !== projection.projection.projectionVersion
+            || body.policyVersion !== projection.projection.policyVersion
+          ) {
+            sendJson(res, 409, { error: 'projection-stale' });
+            return;
+          }
         }
         const lease = invitations.acquireControllerLease({
           invitationId: auth.invitationId,
@@ -3027,6 +3058,25 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         ? (command as { commandId: string }).commandId
         : `invalid-${Date.now()}`;
       const action = (command as { action?: unknown }).action;
+      const sendCommandReject = (reason: string, outcome: CommandOutcome = 'rejected-pre-audit'): void => {
+        const result = {
+          type: 'remote.command.result',
+          commandId,
+          action: typeof action === 'string' ? action : 'presetReply',
+          outcome,
+          reason,
+        };
+        appendMetadataAudit({
+          type: 'relay.metadata-audit',
+          commandId,
+          nodeId: subscribedNodeId,
+          ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
+          outcome,
+          timestamp: new Date().toISOString(),
+          reason,
+        });
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+      };
       appendMetadataAudit({
         type: 'relay.metadata-audit',
         commandId,
@@ -3038,69 +3088,26 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       const requiredGrant = grantForRemoteCommandAction(action);
       if (requiredGrant === 'terminalInput' && !terminalInputTransportAllowed) {
         incrementSecurityEvent();
-        const result = {
-          type: 'remote.command.result',
-          commandId,
-          action: typeof action === 'string' ? action : 'presetReply',
-          outcome: 'rejected-pre-audit',
-          reason: 'transport.insecure',
-        };
-        appendMetadataAudit({
-          type: 'relay.metadata-audit',
-          commandId,
-          nodeId: subscribedNodeId,
-          ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
-          outcome: 'rejected-pre-audit',
-          timestamp: new Date().toISOString(),
-          reason: result.reason,
-        });
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+        sendCommandReject('transport.insecure');
         return;
       }
       if (!authAllows(auth, requiredGrant, invitations)) {
-        const result = {
-          type: 'remote.command.result',
-          commandId,
-          action: typeof action === 'string' ? action : 'presetReply',
-          outcome: 'rejected-pre-audit',
-          reason: requiredGrant ? `missing ${requiredGrant} grant` : 'unknown action',
-        };
-        appendMetadataAudit({
-          type: 'relay.metadata-audit',
-          commandId,
-          nodeId: subscribedNodeId,
-          ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
-          outcome: 'rejected-pre-audit',
-          timestamp: new Date().toISOString(),
-          reason: result.reason,
-        });
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+        sendCommandReject(requiredGrant ? `missing ${requiredGrant} grant` : 'unknown action');
         return;
       }
       let terminalCommandSession: RelayClientSubscription['terminal'] | null = null;
+      let submitMessagePayload: {
+        text: string;
+        appendNewline: boolean;
+        provenance?: 'typed' | 'paste';
+      } | null = null;
       if (auth.kind === 'member' && requiredGrant === 'terminalInput') {
         const invitation = auth.invitationId
           ? invitations.list().find((candidate) => candidate.invitationId === auth.invitationId)
           : null;
         if (!invitation || !policyAckedForInput(subscribedNodeId, invitation.policyVersion)) {
           const policyState = currentNodePolicyState(subscribedNodeId).status;
-          const result = {
-            type: 'remote.command.result',
-            commandId,
-            action: typeof action === 'string' ? action : 'presetReply',
-            outcome: 'rejected-pre-audit',
-            reason: `policy sync ${policyState}`,
-          };
-          appendMetadataAudit({
-            type: 'relay.metadata-audit',
-            commandId,
-            nodeId: subscribedNodeId,
-            ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
-            outcome: 'rejected-pre-audit',
-            timestamp: new Date().toISOString(),
-            reason: result.reason,
-          });
-          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+          sendCommandReject(`policy sync ${policyState}`);
           return;
         }
         const projectionId = typeof (command as { projectionId?: unknown }).projectionId === 'string'
@@ -3113,6 +3120,9 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           : (command.payload as { sessionAlias?: unknown } | undefined)?.sessionAlias === 'primary'
             ? 'primary'
             : null;
+        const projection = projectionId && sessionAlias === 'primary'
+          ? terminalProjectionForAuth(subscribedNodeId, auth, projectionId, sessionAlias)
+          : null;
         const resolved = resolveTerminalSubscription(subscribedNodeId, auth, {
           projectionId: projectionId ?? undefined,
           sessionAlias: sessionAlias ?? undefined,
@@ -3124,23 +3134,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
             : asSessionEpoch(''),
         });
         if (!resolved || 'error' in resolved) {
-          const result = {
-            type: 'remote.command.result',
-            commandId,
-            action: typeof action === 'string' ? action : 'presetReply',
-            outcome: 'rejected-pre-audit',
-            reason: resolved?.error ?? 'projection-required',
-          };
-          appendMetadataAudit({
-            type: 'relay.metadata-audit',
-            commandId,
-            nodeId: subscribedNodeId,
-            ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
-            outcome: 'rejected-pre-audit',
-            timestamp: new Date().toISOString(),
-            reason: result.reason,
-          });
-          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+          sendCommandReject(resolved?.error ?? 'projection-required');
           return;
         }
         const leaseId = typeof (command as { leaseId?: unknown }).leaseId === 'string'
@@ -3148,6 +3142,10 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           : typeof (command.payload as { leaseId?: unknown } | undefined)?.leaseId === 'string'
             ? (command.payload as { leaseId: string }).leaseId
             : '';
+        if ((action === 'submitMessage' || action === 'leaseHeartbeat') && !leaseId) {
+          sendCommandReject('controller-lease-required');
+          return;
+        }
         const projectionVersion = typeof (command as { projectionVersion?: unknown }).projectionVersion === 'number'
           ? (command as { projectionVersion: number }).projectionVersion
           : typeof (command.payload as { projectionVersion?: unknown } | undefined)?.projectionVersion === 'number'
@@ -3174,25 +3172,33 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
             && binding.policyVersion === policyVersion
             && binding.payloadHash === payloadHash(command.payload);
           if (!matches) {
-            const result = {
-              type: 'remote.command.result',
-              commandId,
-              action: typeof action === 'string' ? action : 'presetReply',
-              outcome: 'rejected-pre-audit',
-              reason: 'retry-token-mismatch',
-            };
-            appendMetadataAudit({
-              type: 'relay.metadata-audit',
-              commandId,
-              nodeId: subscribedNodeId,
-              ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
-              outcome: 'rejected-pre-audit',
-              timestamp: new Date().toISOString(),
-              reason: result.reason,
-            });
-            if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+            sendCommandReject('retry-token-mismatch');
             return;
           }
+        }
+        if (projection && (
+          projectionVersion !== projection.projection.projectionVersion
+          || policyVersion !== projection.projection.policyVersion
+        )) {
+          sendCommandReject('projection-stale');
+          return;
+        }
+        if (action === 'submitMessage') {
+          const payload = command.payload as { text?: unknown; appendNewline?: unknown; provenance?: unknown } | undefined;
+          if (
+            typeof payload?.text !== 'string'
+            || payload.text.length > 4096
+            || (payload.appendNewline !== undefined && typeof payload.appendNewline !== 'boolean')
+            || (payload.text.length === 0 && payload.appendNewline === false)
+          ) {
+            sendCommandReject('invalid submit message');
+            return;
+          }
+          submitMessagePayload = {
+            text: payload.text,
+            appendNewline: payload.appendNewline !== false,
+            ...(payload.provenance === 'paste' ? { provenance: 'paste' as const } : { provenance: 'typed' as const }),
+          };
         }
         const activeLease = invitation.controllerLease && Date.parse(invitation.controllerLease.expiresAt) > Date.now()
           ? invitation.controllerLease
@@ -3203,25 +3209,9 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           && activeLease.deviceId === auth.deviceId,
         );
         if (!leaseMatches) {
-          const result = {
-            type: 'remote.command.result',
-            commandId,
-            action: typeof action === 'string' ? action : 'presetReply',
-            outcome: 'rejected-pre-audit',
-            reason: activeLease && activeLease.deviceId !== auth.deviceId
+          sendCommandReject(activeLease && activeLease.deviceId !== auth.deviceId
               ? 'controller-lease-held-by-another-device'
-              : 'controller-lease-required',
-          };
-          appendMetadataAudit({
-            type: 'relay.metadata-audit',
-            commandId,
-            nodeId: subscribedNodeId,
-            ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
-            outcome: 'rejected-pre-audit',
-            timestamp: new Date().toISOString(),
-            reason: result.reason,
-          });
-          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+              : 'controller-lease-required');
           return;
         }
         terminalCommandSession = resolved;
@@ -3229,15 +3219,56 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       const target = nodeSockets.get(subscribedNodeId);
       if (target?.readyState === WebSocket.OPEN) {
         const registration = registrations.get(subscribedNodeId);
+        const nodeEpoch = nodeHello.get(subscribedNodeId)?.nodeEpoch;
+        if (!nodeEpoch) {
+          sendCommandReject('node epoch unavailable', 'node-offline');
+          return;
+        }
+        const idempotencyKey = typeof (command as { idempotencyKey?: unknown }).idempotencyKey === 'string'
+          ? (command as { idempotencyKey: string }).idempotencyKey
+          : `idem-${commandId}`;
+        const baseRevision = typeof (command as { baseRevision?: unknown }).baseRevision === 'number'
+          ? (command as { baseRevision: number }).baseRevision
+          : 0;
+        const lastSeenSeq = typeof (command as { lastSeenSeq?: unknown }).lastSeenSeq === 'number'
+          ? (command as { lastSeenSeq: number }).lastSeenSeq
+          : 0;
+        const commandLeaseId = typeof (command as { leaseId?: unknown }).leaseId === 'string'
+          ? (command as { leaseId: string }).leaseId
+          : (command.payload as { leaseId?: string } | undefined)?.leaseId;
         rememberCommandRecipient(subscribedNodeId, commandId, subscription);
         target.send(JSON.stringify({
           ...command,
           nodeId: subscribedNodeId,
+          nodeEpoch,
+          idempotencyKey,
+          ...(commandLeaseId ? { leaseId: commandLeaseId } : {}),
           ...(terminalCommandSession ? {
             sessionId: terminalCommandSession.sessionId,
             sessionEpoch: terminalCommandSession.sessionEpoch,
             projectionId: terminalCommandSession.projectionId,
             sessionAlias: terminalCommandSession.sessionAlias,
+          } : {}),
+          ...(action === 'submitMessage' && terminalCommandSession && submitMessagePayload ? {
+            baseRevision,
+            lastSeenSeq,
+            payload: {
+              type: 'submit-message',
+              sessionId: terminalCommandSession.sessionId,
+              sessionEpoch: terminalCommandSession.sessionEpoch,
+              leaseId: commandLeaseId,
+              commandId,
+              idempotencyKey,
+              text: submitMessagePayload.text,
+              appendNewline: submitMessagePayload.appendNewline,
+              baseRevision,
+              lastSeenSeq,
+              maxAgeMs: 10_000,
+              commandMetadata: {
+                provenance: submitMessagePayload.provenance,
+                ...(auth.deviceId ? { sourceDeviceId: auth.deviceId } : {}),
+              },
+            },
           } : {}),
           actorId: auth.actorId || registration?.ownerId || ownerId,
           clientId: relayClientId,
@@ -3691,7 +3722,7 @@ function relayJoinHtml(): string {
     .terminal-viewer { height: clamp(220px, 42dvh, 520px); min-height: 180px; }
     .terminal-banner { margin-top: 10px; border: 1px solid #7c5f16; border-radius: 6px; padding: 10px; background: #211b0d; color: #f4d58d; }
     .composer { margin-top: 14px; display: grid; gap: 8px; }
-    .composer-actions { display: flex; justify-content: flex-end; }
+    .composer-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
     @media (max-width: 520px) {
       main { padding: 10px; }
       .panel { padding: 14px; align-self: stretch; }
@@ -3752,7 +3783,8 @@ function relayJoinHtml(): string {
     <section id="terminal-composer" class="composer" hidden aria-label="Terminal input">
       <textarea id="terminal-input" disabled aria-label="Terminal input message"></textarea>
       <div class="composer-actions">
-        <button id="terminal-send" type="button" disabled>Send</button>
+        <button id="terminal-send-text" type="button" disabled>Send text</button>
+        <button id="terminal-send-enter" type="button" disabled>Send Enter</button>
       </div>
     </section>
     <section id="grant-request" class="request" hidden aria-label="Collaborator grant request">
@@ -3807,7 +3839,8 @@ const terminalLiveStateEl = document.getElementById('terminal-live-state');
 const terminalBannerEl = document.getElementById('terminal-banner');
 const terminalComposerEl = document.getElementById('terminal-composer');
 const terminalInputEl = document.getElementById('terminal-input');
-const terminalSendEl = document.getElementById('terminal-send');
+const terminalSendTextEl = document.getElementById('terminal-send-text');
+const terminalSendEnterEl = document.getElementById('terminal-send-enter');
 const nodeKey = 'kookr-relay-join-node:' + location.host;
 let nodeId = sessionStorage.getItem(nodeKey) || '';
 let ws = null;
@@ -3816,9 +3849,15 @@ let terminal = null;
 let terminalProjection = null;
 let terminalStreamKey = '';
 let lastTerminalSeq = 0;
+let terminalStreamOpenedAtMs = 0;
 let terminalMayView = false;
+let terminalMayInput = false;
 let csrfToken = '';
 let nextWebSocketNonce = '';
+let controllerLease = null;
+let nodeLeaseReady = false;
+let leaseHeartbeatTimer = null;
+const pendingCommands = new Map();
 shareIdEl.value = pathShareId;
 sharePasswordEl.value = fragmentPassword;
 if (inviteToken) ticketFieldsEl.hidden = true;
@@ -3909,7 +3948,8 @@ function setTerminalBanner(text, blocked) {
   terminalBannerEl.className = blocked ? 'terminal-banner blocked' : 'terminal-banner';
   terminalBannerEl.dataset.sticky = '';
   terminalInputEl.disabled = true;
-  terminalSendEl.disabled = true;
+  terminalSendTextEl.disabled = true;
+  terminalSendEnterEl.disabled = true;
 }
 
 function ensureTerminal() {
@@ -3943,10 +3983,197 @@ function writeTerminal(textOrBytes) {
   terminal?.write(textOrBytes);
 }
 
+function commandId(prefix) {
+  const suffix = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+  return prefix + '-' + suffix;
+}
+
+// Must match canonicalJson in src/remote/retry-token.ts for relay-side retry-token validation.
+function canonicalJson(value) {
+  if (value === undefined) return '"__kookr_undefined__"';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + canonicalJson(value[key])).join(',') + '}';
+}
+
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function commandPayloadHash(payload) {
+  return sha256Hex(canonicalJson(payload));
+}
+
+function remoteCommand(action, extra) {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !nodeId) return Promise.reject(new Error('not connected'));
+  const id = commandId(action);
+  const message = {
+    type: 'remote.command',
+    commandId: id,
+    nodeId,
+    nodeEpoch: terminalProjection?.nodeEpoch || '',
+    action,
+    idempotencyKey: 'idem-' + id,
+    projectionId: terminalProjection?.projectionId,
+    sessionAlias: 'primary',
+    projectionVersion: terminalProjection?.projectionVersion,
+    policyVersion: terminalProjection?.policyVersion,
+    ...extra,
+  };
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingCommands.delete(id);
+      reject(new Error('command timed out'));
+    }, 10_000);
+    pendingCommands.set(id, {
+      resolve: (result) => {
+        clearTimeout(timeout);
+        if (result.outcome === 'accepted') resolve(result);
+        else reject(new Error(result.reason || result.outcome || 'command rejected'));
+      },
+    });
+    ws.send(JSON.stringify(message));
+  });
+}
+
+function renderComposerState() {
+  const sticky = terminalBannerEl.dataset.sticky === 'true';
+  const enabled = Boolean(terminalMayInput && terminalProjection && controllerLease && nodeLeaseReady && !sticky && ws && ws.readyState === WebSocket.OPEN);
+  terminalInputEl.disabled = !enabled;
+  terminalSendTextEl.disabled = !enabled || terminalInputEl.value.length === 0;
+  terminalSendEnterEl.disabled = !enabled;
+}
+
+function stopLeaseHeartbeat() {
+  if (leaseHeartbeatTimer) clearInterval(leaseHeartbeatTimer);
+  leaseHeartbeatTimer = null;
+  nodeLeaseReady = false;
+}
+
+async function refreshRelayLease() {
+  if (!terminalProjection || !nodeId) throw new Error('Terminal projection is not ready.');
+  const res = await fetch('/relay/member/controller-lease', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-kookr-csrf-token': csrfToken || cookieValue('kookr_relay_csrf_token'),
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      nodeId,
+      holderLabel: sanitizeDisplayName(nameEl.value),
+      ttlMs: 30000,
+      projectionId: terminalProjection.projectionId,
+      sessionAlias: 'primary',
+      projectionVersion: terminalProjection.projectionVersion,
+      policyVersion: terminalProjection.policyVersion,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'controller lease failed');
+  }
+  const body = await res.json();
+  controllerLease = body.lease;
+  return body.lease;
+}
+
+async function acquireControllerLease() {
+  if (!terminalMayInput || !terminalProjection || nodeLeaseReady) return;
+  try {
+    const lease = await refreshRelayLease();
+    await remoteCommand('leaseAcquire', {
+      leaseId: lease.leaseId,
+      payload: { leaseId: lease.leaseId },
+    });
+    nodeLeaseReady = true;
+    setTerminalBanner('', false);
+    renderComposerState();
+    startLeaseHeartbeat();
+  } catch (err) {
+    nodeLeaseReady = false;
+    setTerminalBanner(err instanceof Error ? err.message : 'Controller lease failed.', true);
+  }
+}
+
+function startLeaseHeartbeat() {
+  if (leaseHeartbeatTimer) return;
+  leaseHeartbeatTimer = setInterval(() => {
+    void (async () => {
+      if (!controllerLease || !terminalProjection || !terminalMayInput) return;
+      try {
+        const lease = await refreshRelayLease();
+        await remoteCommand('leaseHeartbeat', {
+          leaseId: lease.leaseId,
+          payload: { leaseId: lease.leaseId },
+        });
+        nodeLeaseReady = true;
+        renderComposerState();
+      } catch (err) {
+        stopLeaseHeartbeat();
+        setTerminalBanner(err instanceof Error ? err.message : 'Controller lease heartbeat failed.', true);
+      }
+    })();
+  }, 10000);
+}
+
+async function issueRetryToken(leaseId, payload) {
+  const payloadHash = await commandPayloadHash(payload);
+  const res = await fetch('/relay/member/retry-tokens', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-kookr-csrf-token': csrfToken || cookieValue('kookr_relay_csrf_token'),
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      nodeId,
+      leaseId,
+      projectionVersion: terminalProjection?.projectionVersion,
+      policyVersion: terminalProjection?.policyVersion,
+      payloadHash,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'retry token failed');
+  }
+  const body = await res.json();
+  return body.retryToken;
+}
+
+async function submitTerminalInput(appendNewline) {
+  const text = terminalInputEl.value;
+  if (!appendNewline && !text) return;
+  if (!controllerLease || !terminalProjection) return;
+  terminalSendTextEl.disabled = true;
+  terminalSendEnterEl.disabled = true;
+  try {
+    const payload = { text, appendNewline };
+    const retryToken = await issueRetryToken(controllerLease.leaseId, payload);
+    await remoteCommand('submitMessage', {
+      leaseId: controllerLease.leaseId,
+      baseRevision: 0,
+      lastSeenSeq: lastTerminalSeq,
+      retryToken,
+      payload,
+    });
+    terminalInputEl.value = '';
+    setStatus('Terminal input sent.');
+  } catch (err) {
+    setTerminalBanner(err instanceof Error ? err.message : 'Terminal input failed.', true);
+  } finally {
+    renderComposerState();
+  }
+}
+
 function resetTerminalStream(message) {
   terminalProjection = null;
   terminalStreamKey = '';
   lastTerminalSeq = 0;
+  controllerLease = null;
+  stopLeaseHeartbeat();
   if (terminalWs) {
     terminalWs.onclose = null;
     terminalWs.close();
@@ -3954,6 +4181,7 @@ function resetTerminalStream(message) {
   }
   terminalLiveStateEl.textContent = 'Waiting for terminal projection';
   if (message) setTerminalBanner(message, true);
+  renderComposerState();
 }
 
 function projectionFromEvent(event) {
@@ -3965,6 +4193,8 @@ function projectionFromEvent(event) {
     return {
       projectionId: projection.projectionId,
       projectionVersion: projection.projectionVersion || 0,
+      policyVersion: projection.policyVersion || 0,
+      nodeEpoch: projection.nodeInstanceId || '',
     };
   }
   return null;
@@ -3997,6 +4227,7 @@ async function connectTerminalStream() {
   terminalWs = nextTerminalWs;
   nextTerminalWs.onopen = () => {
     if (terminalWs !== nextTerminalWs) return;
+    terminalStreamOpenedAtMs = Date.now();
     terminalLiveStateEl.textContent = 'Live';
     if (!terminalBannerEl.hidden && !terminalBannerEl.className.includes('blocked') && terminalBannerEl.dataset.sticky !== 'true') setTerminalBanner('', false);
   };
@@ -4029,13 +4260,18 @@ function ingestTerminal(event) {
     writeTerminal(bytes);
     if (typeof event.seq === 'number') lastTerminalSeq = Math.max(lastTerminalSeq, event.seq);
     terminalLiveStateEl.textContent = 'Live';
-    if (!terminalBannerEl.hidden && !terminalBannerEl.className.includes('blocked') && terminalBannerEl.dataset.sticky !== 'true') setTerminalBanner('', false);
+    const eventTs = typeof event.ts === 'string' ? Date.parse(event.ts) : NaN;
+    const freshAfterReplayGap = terminalBannerEl.dataset.sticky === 'true'
+      && (Number.isNaN(eventTs) || eventTs >= terminalStreamOpenedAtMs);
+    if (!terminalBannerEl.hidden && !terminalBannerEl.className.includes('blocked') && (terminalBannerEl.dataset.sticky !== 'true' || freshAfterReplayGap)) setTerminalBanner('', false);
+    renderComposerState();
   } else if (event.kind === 'terminal.replay-gap' && event.payload) {
     if (typeof event.payload.toSeq === 'number') lastTerminalSeq = Math.max(lastTerminalSeq, event.payload.toSeq);
     writeTerminal('\\r\\n\\x1b[33m[terminal replay gap: missing seq ' + event.payload.fromSeq + '-' + event.payload.toSeq + ']\\x1b[0m\\r\\n');
     terminalLiveStateEl.textContent = 'Replay gap';
     setTerminalBanner('Terminal replay gap detected. Input remains disabled until fresh terminal output arrives.', false);
     terminalBannerEl.dataset.sticky = 'true';
+    renderComposerState();
   }
 }
 
@@ -4051,25 +4287,29 @@ function renderMemberShareState(memberState) {
   grantRequestEl.hidden = true;
   requestControlEl.disabled = false;
   terminalMayView = terminal.state === 'available' || terminal.state === 'viewOnly';
+  terminalMayInput = terminal.state === 'available';
   if (terminal.state === 'available') {
-    terminalStatusTitleEl.textContent = 'Terminal viewing approved';
-    terminalStatusCopyEl.textContent = 'You can watch this shared task terminal. Browser input is read-only in this version.';
+    terminalStatusTitleEl.textContent = 'Terminal input approved';
+    terminalStatusCopyEl.textContent = 'You can watch this shared task terminal and send semantic input.';
     ensureTerminal();
     void connectTerminalStream();
+    void acquireControllerLease();
   } else if (terminal.state === 'viewOnly') {
     terminalStatusTitleEl.textContent = 'Terminal viewing approved';
     terminalStatusCopyEl.textContent = 'You can watch this shared task terminal. Sending messages still needs owner approval.';
+    stopLeaseHeartbeat();
     ensureTerminal();
     void connectTerminalStream();
   } else if (terminal.state === 'pendingApproval') {
     terminalStatusTitleEl.textContent = 'Terminal request pending';
     terminalStatusCopyEl.textContent = 'Waiting for owner approval.';
+    stopLeaseHeartbeat();
     resetTerminalStream('');
   } else if (terminal.state === 'denied') {
     terminalStatusTitleEl.textContent = 'Terminal request denied';
     terminalStatusCopyEl.textContent = 'The owner denied terminal input for this share.';
     grantRequestEl.hidden = false;
-    grantRequestCopyEl.textContent = 'You can send another terminal input request.';
+    grantRequestCopyEl.textContent = 'You can send another terminal input request after the cooldown.';
     resetTerminalStream('Terminal access is denied for this share.');
   } else if (terminal.state === 'revoked') {
     terminalStatusTitleEl.textContent = 'Share revoked';
@@ -4089,11 +4329,23 @@ function renderMemberShareState(memberState) {
     }
     if (terminal.reason === 'node.offline') renderOfflineNode(memberState.node);
   }
+  renderComposerState();
 }
 
 function ingest(event) {
   if (event && event.type === 'relay.memberShareState') {
     renderMemberShareState(event.state);
+    return;
+  }
+  if (event && event.type === 'remote.command.result' && typeof event.commandId === 'string') {
+    const pending = pendingCommands.get(event.commandId);
+    if (pending) {
+      pendingCommands.delete(event.commandId);
+      pending.resolve(event);
+    }
+    if (event.action === 'submitMessage') {
+      setStatus(event.outcome === 'accepted' ? 'Terminal input accepted.' : (event.reason || 'Terminal input rejected.'), event.outcome !== 'accepted');
+    }
     return;
   }
   if (event && typeof event === 'object' && String(event.kind || '').startsWith('terminal.')) {
@@ -4115,6 +4367,8 @@ function ingest(event) {
       }
     }
     void connectTerminalStream();
+    void acquireControllerLease();
+    renderComposerState();
     return;
   }
   const payload = event && event.payload;
@@ -4164,9 +4418,15 @@ async function connect() {
   }
   wsUrl.searchParams.set('wsNonce', nonce);
   ws = new WebSocket(wsUrl);
-  ws.onopen = () => setStatus('Connected. Waiting for task projection...');
+  ws.onopen = () => {
+    setStatus('Connected. Waiting for task projection...');
+    renderComposerState();
+    void acquireControllerLease();
+  };
   ws.onclose = () => {
     if (!taskEl.hidden) setStatus('Disconnected. Access may have been revoked or expired.', true);
+    stopLeaseHeartbeat();
+    renderComposerState();
   };
   ws.onmessage = (msg) => { try { ingest(JSON.parse(msg.data)); } catch {} };
 }
@@ -4233,6 +4493,14 @@ requestControlEl.addEventListener('click', async () => {
   terminalStatusTitleEl.textContent = 'Terminal request pending';
   terminalStatusCopyEl.textContent = 'Waiting for owner approval.';
   setStatus('Waiting for owner approval.');
+});
+
+terminalInputEl.addEventListener('input', renderComposerState);
+terminalSendTextEl.addEventListener('click', () => {
+  void submitTerminalInput(false);
+});
+terminalSendEnterEl.addEventListener('click', () => {
+  void submitTerminalInput(true);
 });
 
 formEl.addEventListener('submit', (event) => {

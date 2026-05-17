@@ -91,7 +91,7 @@ async function acquireMemberControllerLease(
   nodeId: string,
   cookie: string,
   opts: { projectionVersion?: number; policyVersion?: number } = {},
-): Promise<void> {
+): Promise<{ leaseId: string }> {
   const stateRes = await fetch(new URL('/relay/member/share-state', relay.url()), { headers: { cookie } });
   expect(stateRes.status).toBe(200);
   const state = await stateRes.json() as { security?: { csrfToken?: string; deviceId?: string } };
@@ -111,11 +111,14 @@ async function acquireMemberControllerLease(
     body: JSON.stringify({
       nodeId,
       holderLabel: 'test device',
+      ...(opts.projectionVersion !== undefined ? { projectionId: 'proj-primary', sessionAlias: 'primary' } : {}),
       ...(opts.projectionVersion !== undefined ? { projectionVersion: opts.projectionVersion } : {}),
       ...(opts.policyVersion !== undefined ? { policyVersion: opts.policyVersion } : {}),
     }),
   });
   expect(res.status).toBe(200);
+  const body = await res.json() as { lease: { leaseId: string } };
+  return body.lease;
 }
 
 async function connectNode(relay: RelayServerHandle, nodeId: string, token: string): Promise<WebSocket> {
@@ -1028,24 +1031,7 @@ describe('relay node-scoped task-share endpoints', () => {
     expect(requested.request.requestedGrants).toEqual(['terminalView', 'terminalInput']);
     expect(requested.request.comment).toBe('Alice wants control<script>alert(1)</script>');
 
-    const deniedRes = await fetch(new URL(`/relay/node/invitations/${created.invitation.invitationId}/grant-requests/${requested.request.requestId}/deny`, relay.url()), {
-      method: 'POST',
-      headers: nodeHeaders(nodeToken),
-    });
-    expect(deniedRes.status).toBe(200);
-    expect(await deniedRes.json()).toEqual(expect.objectContaining({
-      request: expect.objectContaining({ status: 'denied', resolution: 'denied' }),
-      invitation: expect.objectContaining({ grants: ['view'] }),
-    }));
-
-    const secondRequestRes = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', cookie, 'x-kookr-csrf-token': csrfToken },
-      body: JSON.stringify({ nodeId, grants: ['terminalInput'] }),
-    });
-    expect(secondRequestRes.status).toBe(201);
-    const second = await secondRequestRes.json() as { request: { requestId: string } };
-    const approvedRes = await fetch(new URL(`/relay/node/invitations/${created.invitation.invitationId}/grant-requests/${second.request.requestId}/approve`, relay.url()), {
+    const approvedRes = await fetch(new URL(`/relay/node/invitations/${created.invitation.invitationId}/grant-requests/${requested.request.requestId}/approve`, relay.url()), {
       method: 'POST',
       headers: nodeHeaders(nodeToken),
     });
@@ -1060,7 +1046,7 @@ describe('relay node-scoped task-share endpoints', () => {
     )));
     await waitFor(() => relay.nodeStatuses()[0]?.policySyncStatus === 'acked');
     publishSessionProjection(nodeWs, { nodeId, invitationId: created.invitation.invitationId, policyVersion: 2 });
-    await acquireMemberControllerLease(relay, nodeId, cookie, { projectionVersion: 1, policyVersion: 2 });
+    const lease = await acquireMemberControllerLease(relay, nodeId, cookie, { projectionVersion: 1, policyVersion: 2 });
 
     member.send(JSON.stringify({
       type: 'remote.command',
@@ -1089,8 +1075,12 @@ describe('relay node-scoped task-share endpoints', () => {
       sessionEpoch: '1',
       projectionId: 'proj-primary',
       sessionAlias: 'primary',
+      projectionVersion: 1,
+      policyVersion: 2,
       idempotencyKey: 'idem-after',
+      leaseId: lease.leaseId,
       action: 'submitMessage',
+      payload: { text: 'hello' },
     }));
     await waitFor(() => nodeMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-after-approval'));
     expect(nodeMessages).toContainEqual(expect.objectContaining({
@@ -1111,5 +1101,50 @@ describe('relay node-scoped task-share endpoints', () => {
       body: JSON.stringify({ nodeId, grants: ['permissionApprove'] }),
     });
     expect(revokedRequest.status).toBe(401);
+  });
+
+  it('cooldowns duplicate terminal-input requests after owner denial', async () => {
+    const relay = await startRelay();
+    const { nodeId, nodeToken } = relay.registerNode();
+    const createdRes = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 'task-1' }, grants: ['view'] }),
+    });
+    expect(createdRes.status).toBe(201);
+    const created = await createdRes.json() as { token: string; invitation: { invitationId: string } };
+    const acceptRes = await fetch(new URL('/relay/invitations/accept', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: created.token, displayName: 'Alice' }),
+    });
+    expect(acceptRes.status).toBe(200);
+    const cookie = cookieHeaderFromSetCookie(acceptRes.headers.get('set-cookie') ?? '');
+    const csrfToken = cookieValue(cookie, 'kookr_relay_csrf_token');
+
+    const requestRes = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie, 'x-kookr-csrf-token': csrfToken },
+      body: JSON.stringify({ nodeId, grants: ['terminalInput'] }),
+    });
+    expect(requestRes.status).toBe(201);
+    const requested = await requestRes.json() as { request: { requestId: string } };
+
+    const deniedRes = await fetch(new URL(`/relay/node/invitations/${created.invitation.invitationId}/grant-requests/${requested.request.requestId}/deny`, relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+    });
+    expect(deniedRes.status).toBe(200);
+
+    const retryRes = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie, 'x-kookr-csrf-token': csrfToken },
+      body: JSON.stringify({ nodeId, grants: ['terminalInput'] }),
+    });
+    expect(retryRes.status).toBe(429);
+    await expect(retryRes.json()).resolves.toEqual(expect.objectContaining({
+      error: 'denied-cooldown',
+      retryAt: expect.any(String),
+    }));
   });
 });

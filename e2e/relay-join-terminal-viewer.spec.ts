@@ -188,7 +188,7 @@ test.describe('relay join terminal viewer', () => {
     await expect(page.getByLabel('Shared terminal')).toBeVisible();
     await expect(page.locator('#terminal')).toContainText('DESKTOP_TERMINAL_STREAM', { timeout: 10_000 });
     await expect(page.getByLabel('Terminal input message')).toBeDisabled();
-    await expect(page.getByRole('button', { name: 'Send' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Send Enter' })).toBeDisabled();
 
     await page.setViewportSize({ width: 390, height: 420 });
     await expect(page.getByLabel('Shared terminal')).toBeVisible();
@@ -226,6 +226,8 @@ test.describe('relay join terminal viewer', () => {
 
     await expect(page.locator('#terminal-banner')).toContainText('Terminal replay gap detected', { timeout: 10_000 });
     await expect(page.getByLabel('Terminal input message')).toBeDisabled();
+    sendTerminalBytes(nodeConn.ws, node.nodeId, 3, 'fresh');
+    await expect(page.locator('#terminal-banner')).toBeHidden({ timeout: 10_000 });
 
     publishSessionProjection(nodeConn.ws, {
       nodeId: node.nodeId,
@@ -234,6 +236,82 @@ test.describe('relay join terminal viewer', () => {
       version: 2,
     });
     await expect(page.locator('#terminal-banner')).toContainText('Terminal projection changed', { timeout: 10_000 });
-    await expect(page.getByRole('button', { name: 'Send' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Send Enter' })).toBeDisabled();
+  });
+
+  test('submits approved semantic terminal input through the controller lease', async ({ page }) => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken);
+    nodeConn.ws.on('message', (data) => {
+      const msg = JSON.parse(data.toString()) as { type?: string; commandId?: string; action?: string };
+      if (msg.type !== 'remote.command' || !msg.commandId || !msg.action) return;
+      nodeConn.ws.send(JSON.stringify({
+        type: 'remote.command.result',
+        commandId: msg.commandId,
+        action: msg.action,
+        outcome: 'accepted',
+        result: msg.action === 'leaseAcquire' ? { leaseId: (msg as { leaseId?: string }).leaseId } : {},
+      }));
+    });
+    sockets.push(nodeConn.ws);
+
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalInput'],
+      shareTicket: true,
+    });
+    if (!created.shareTicket) throw new Error('expected share ticket');
+    const joinUrl = `${relay.url()}/relay/join/${encodeURIComponent(created.shareTicket.shareId)}#password=${encodeURIComponent(created.shareTicket.password)}`;
+
+    await joinShare(page, joinUrl);
+    await waitFor(() => Boolean(relay!.invitations()[0]?.acceptedAt));
+    const accepted = relay.invitations()[0]!;
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    publishTaskProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: accepted.invitationId });
+    publishSessionProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: accepted.invitationId, policyVersion: accepted.policyVersion });
+    sendTerminalBytes(nodeConn.ws, node.nodeId, 1, 'INPUT_READY');
+
+    await expect(page.getByLabel('Terminal input message')).toBeEnabled({ timeout: 10_000 });
+    await page.getByLabel('Terminal input message').fill('hello from browser');
+    await page.getByRole('button', { name: 'Send Enter' }).click();
+    await expect(page.locator('#status')).toContainText('Terminal input', { timeout: 10_000 });
+    await waitFor(() => nodeConn.messages.some((msg) => (
+      (msg as { type?: string; action?: string; payload?: { text?: string } }).type === 'remote.command'
+      && (msg as { action?: string }).action === 'submitMessage'
+      && (msg as { payload?: { text?: string } }).payload?.text === 'hello from browser'
+    )));
+    const submitCommand = nodeConn.messages.find((msg) => (
+      (msg as { type?: string; action?: string; payload?: { text?: string } }).type === 'remote.command'
+      && (msg as { action?: string }).action === 'submitMessage'
+    )) as {
+      leaseId?: string;
+      projectionId?: string;
+      sessionAlias?: string;
+      payload?: {
+        type?: string;
+        sessionId?: string;
+        sessionEpoch?: string;
+        leaseId?: string;
+        text?: string;
+        appendNewline?: boolean;
+      };
+    } | undefined;
+    const activeLease = relay.invitations()[0]?.controllerLease;
+    expect(submitCommand).toMatchObject({
+      leaseId: activeLease?.leaseId,
+      projectionId: 'proj-primary',
+      sessionAlias: 'primary',
+      payload: {
+        type: 'submit-message',
+        sessionId: 'session-1',
+        sessionEpoch: '1',
+        leaseId: activeLease?.leaseId,
+        text: 'hello from browser',
+        appendNewline: true,
+      },
+    });
   });
 });
