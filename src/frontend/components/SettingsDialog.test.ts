@@ -331,7 +331,7 @@ describe('SettingsDialog tabs', () => {
   test.each([
     ['fixEnv', 'Fix env', 'No .env file or process relay admin token was found.', 'Set KOOKR_RELAY_ADMIN_TOKEN in /tmp/kookr/.env'] as const,
     ['restartRelay', 'Restart relay', 'Relay env changed after the relay process started.', 'pnpm relay:restart'] as const,
-    ['repairRelayPairing', 'Re-pair node', 'Relay rejected the configured node credential.', 'Open Settings > Sharing and pair this node again.'] as const,
+    ['repairRelayPairing', 'Reconnect node', 'Relay rejected the configured node credential.', 'Open Settings > Sharing and pair this node again.'] as const,
     ['restartKookr', 'Restart Kookr', 'The relay admin token is present in .env but the running Kookr process has not loaded it.', 'pnpm prod:restart'] as const,
   ])('surfaces %s relay setup diagnosis in Settings', async (kind, label, reason, command) => {
     const fetchMock = vi.mocked(fetch);

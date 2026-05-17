@@ -103,7 +103,7 @@ function relaySetupActionLabel(kind: RelayConnectionStatus['setupDiagnosis']['re
     case 'restartRelay':
       return 'Restart relay';
     case 'repairRelayPairing':
-      return 'Re-pair node';
+      return 'Reconnect node';
     case 'fixEnv':
       return 'Fix env';
     case 'none':
@@ -468,7 +468,7 @@ function RelayConnectionSection() {
           })}
           disabled={!canPair || envManaged}
         >
-          Re-pair node
+          Reconnect node
         </button>
         <button
           type="button"

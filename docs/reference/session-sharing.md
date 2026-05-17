@@ -123,7 +123,7 @@ Actions:
 - Revoke all shares: revokes every active task share owned by this node.
 - Disable terminal sharing: writes `KOOKR_RELAY_TRUSTED=false`, disconnects the current relay runtime, and requires `pnpm prod:restart`.
 - Rotate credential: uses a relay admin token to invalidate the current node token and reconnect with a replacement.
-- Re-pair node: issues a fresh node registration with a relay admin token.
+- Reconnect node: issues a fresh node registration with a relay admin token.
 - Relay logs: returns the local relay log path; equivalent command is `pnpm relay:logs`.
 - Reset relay state: stops an owned local relay, backs up SQLite/WAL files, removes local relay state, and verifies removal.
 
