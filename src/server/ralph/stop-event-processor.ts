@@ -20,6 +20,7 @@ export interface RalphStopProcessorDeps {
   runningLoopHandlingEnabled: boolean;
   ralphStopHandler: RalphStopHandler;
   broadcastSnapshot: () => void;
+  publishTaskProjection?: (taskId: string) => void;
 }
 
 export interface RalphStopProcessor {
@@ -31,13 +32,17 @@ export function createRalphStopProcessor({
   runningLoopHandlingEnabled,
   ralphStopHandler,
   broadcastSnapshot,
+  publishTaskProjection,
 }: RalphStopProcessorDeps): RalphStopProcessor {
   return {
     process(stopTask, tmuxName, event) {
       if (stopTask?.ralphLoop?.status === 'completed') {
         ralphStopHandler.finalizeCompletedLoopStop(stopTask, tmuxName, event)
           .then((changed) => {
-            if (changed) broadcastSnapshot();
+            if (changed) {
+              broadcastSnapshot();
+              publishTaskProjection?.(stopTask.id);
+            }
           })
           .catch((err) => {
             console.error('[ralph-loop-service] finalizeCompletedLoopStop failed:', err);
@@ -46,6 +51,9 @@ export function createRalphStopProcessor({
         ralphStopHandler.handleStopEvent(stopTask, tmuxName, event, {
           cumulativeCostUsd: taskCostReader.getUsage(stopTask.id)?.costUsd ?? null,
         })
+          .then(() => {
+            publishTaskProjection?.(stopTask.id);
+          })
           .catch((err) => {
             console.error('[ralph-loop-service] handleStopEvent failed:', err);
           });

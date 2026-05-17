@@ -21,6 +21,7 @@ export interface StopTokenScanProcessorDeps {
   tokenScanner: TaskTokenScanner;
   tokenActivityRecorder: TokenActivityRecorder;
   broadcastSnapshot: () => void;
+  publishTaskProjection?: (taskId: string) => void;
 }
 
 export interface StopTokenScanProcessor {
@@ -32,6 +33,7 @@ export function createStopTokenScanProcessor({
   tokenScanner,
   tokenActivityRecorder,
   broadcastSnapshot,
+  publishTaskProjection,
 }: StopTokenScanProcessorDeps): StopTokenScanProcessor {
   return {
     process(stopTask) {
@@ -51,6 +53,7 @@ export function createStopTokenScanProcessor({
           }
         }
         broadcastSnapshot();
+        publishTaskProjection?.(stopTask.id);
       }).catch(() => { /* scan failure is non-critical — fallback poll will catch it */ });
     },
   };

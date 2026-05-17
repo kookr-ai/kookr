@@ -210,6 +210,72 @@ describe('event-pipeline: anomaly-diff clearing (mock-based)', () => {
   });
 });
 
+describe('event-pipeline: task-share projection refresh (mock-based)', () => {
+  let deps: EventPipelineDeps;
+  let fireEvent: (tmuxName: string, event: AgentEvent, meta?: Partial<EventMeta>) => void;
+
+  beforeEach(() => {
+    _resetLifecycles();
+    const mocks = createMockDeps();
+    deps = mocks.deps;
+    fireEvent = mocks.fireEvent;
+  });
+
+  test('refreshes a shared task projection after a parent agent event', () => {
+    const publishTaskProjectionForTask = vi.fn();
+    deps.taskShareService = { publishTaskProjectionForTask };
+    (deps.taskStore.findTaskBySession as any).mockReturnValue({
+      id: 'task-shared-1',
+      prompt: 'p',
+      cwd: '/c',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'agent-1', agentType: 'claude-code', createdAt: new Date(), cwd: '/c' }],
+    });
+    wireEventPipeline(deps);
+
+    fireEvent('agent-1', { type: 'tool_use', toolName: 'Read', toolUseId: 'tu-1' } as AgentEvent);
+
+    expect(publishTaskProjectionForTask).toHaveBeenCalledTimes(1);
+    expect(publishTaskProjectionForTask).toHaveBeenCalledWith('task-shared-1');
+  });
+
+  test('refreshes a shared task projection after async Ralph stop finalization', async () => {
+    const publishTaskProjectionForTask = vi.fn();
+    const task = {
+      id: 'task-shared-ralph',
+      prompt: 'p',
+      cwd: '/c',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'agent-1', agentType: 'claude-code', createdAt: new Date(), cwd: '/c' }],
+      ralphLoop: {
+        prompt: 'p',
+        iterationCap: 1,
+        currentIteration: 1,
+        status: 'completed',
+        lastIterationStartedAt: 0,
+        cumulativeIterations: 1,
+        ownerSessionId: 'agent-1',
+      },
+    };
+    deps.taskShareService = { publishTaskProjectionForTask };
+    (deps.taskStore.findTaskBySession as any).mockReturnValue(task);
+    (deps.ralphLoopService.finalizeCompletedLoopStop as any).mockImplementation(async () => {
+      task.status = 'completed';
+      return true;
+    });
+    wireEventPipeline(deps);
+
+    fireEvent('agent-1', { type: 'stop', sessionId: 'runtime-1', lastMessage: 'done' } as AgentEvent);
+
+    expect(publishTaskProjectionForTask).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(publishTaskProjectionForTask).toHaveBeenCalledTimes(2);
+    });
+    expect(publishTaskProjectionForTask).toHaveBeenNthCalledWith(2, 'task-shared-ralph');
+  });
+
+});
+
 // ---------------------------------------------------------------------------
 // Integration tests: real Monitor/Adapter, hook event injection
 // ---------------------------------------------------------------------------

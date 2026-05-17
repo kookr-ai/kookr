@@ -56,6 +56,8 @@ export interface EventPipelineDeps {
   ralphLoopService: RalphLoopService;
   /** Provides per-Kookr-session activityMeta for the snapshot. */
   hookIngestion?: HookIngestion;
+  /** Optional publisher for refreshing remote task-share projections after local task state changes. */
+  taskShareService?: { publishTaskProjectionForTask(taskId: string): void };
 }
 
 /**
@@ -72,6 +74,9 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
   const broadcastSnapshot = () => {
     broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: deps.hookIngestion }));
   };
+  const publishTaskProjection = (taskId: string) => {
+    deps.taskShareService?.publishTaskProjectionForTask(taskId);
+  };
   const getAgentState = (agentId: string) => monitor.getSnapshot().find(s => s.agentId === agentId);
 
   const tokenAccountingProcessor = createTokenAccountingProcessor({
@@ -87,6 +92,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     tokenScanner: tokenTracker,
     tokenActivityRecorder: watchdog,
     broadcastSnapshot,
+    publishTaskProjection,
   });
   const sessionActivityProcessor = createSessionActivityProcessor({ taskLookup: taskStore });
   const checkpointStopProcessor = createCheckpointStopProcessor({
@@ -98,6 +104,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     runningLoopHandlingEnabled: Boolean(deps.ralphCycler),
     ralphStopHandler: deps.ralphLoopService,
     broadcastSnapshot,
+    publishTaskProjection,
   });
   const responseAssistProcessor = createResponseAssistProcessor({
     getAgentState,
@@ -149,6 +156,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     sessionActivityProcessor.process(tmuxName);
     const snapshot = monitor.getSnapshot();
     broadcastSnapshot();
+    if (ownerTask) publishTaskProjection(ownerTask.id);
 
     // On stop/stop_failure events, immediately scan transcript for updated spending
     if (event.type === 'stop' || event.type === 'stop_failure') {
