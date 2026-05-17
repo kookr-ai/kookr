@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { W_OK } from 'node:constants';
 import { once } from 'node:events';
-import { accessSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { appendFile, readFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 
 import { envRelayConnectionCredentials, loadStoredRelayConnectionCredentials, type RelayConnectionCredentials } from './relay-connection-store.js';
@@ -89,6 +89,12 @@ export interface RelayDoctorReport {
   };
   recentLogs: string[];
   nextActions: string[];
+}
+
+export interface RelayStateResetResult {
+  backupDir: string;
+  backedUpPaths: string[];
+  removedPaths: string[];
 }
 
 export interface RelayLifecycleOptions {
@@ -460,6 +466,51 @@ export async function restartRelay(opts: RelayLifecycleOptions = {}): Promise<st
   });
   const started = await startRelay(opts);
   return `${stopped}\n${started}`;
+}
+
+export async function backupAndResetRelayState(opts: RelayLifecycleOptions = {}): Promise<RelayStateResetResult> {
+  const config = resolveRuntimeConfig(opts);
+  const diagnosis = await diagnoseRelayProcess(opts);
+  if (diagnosis.state === 'foreign-process' || diagnosis.state === 'foreign-port') {
+    throw new Error(`${diagnosis.message} Refusing to reset state for an unowned relay runtime.`);
+  }
+
+  await stopRelay(opts);
+  const timestamp = (opts.now ?? (() => new Date()))().toISOString().replace(/[:.]/g, '-');
+  const backupDir = join(config.paths.kookrDir, 'relay-state-backups', `reset-${timestamp}`);
+  mkdirSync(backupDir, { recursive: true });
+
+  const statePaths = [
+    config.stateDbPath,
+    `${config.stateDbPath}-wal`,
+    `${config.stateDbPath}-shm`,
+    `${config.stateDbPath}-journal`,
+  ];
+  const backedUpPaths: string[] = [];
+  const removedPaths: string[] = [];
+  for (const path of statePaths) {
+    if (!existsSync(path)) continue;
+    const backupPath = join(backupDir, basename(path));
+    copyFileSync(path, backupPath);
+    backedUpPaths.push(backupPath);
+  }
+  writeFileSync(join(backupDir, 'manifest.json'), JSON.stringify({
+    schemaVersion: 'relay-state-reset-backup.v1',
+    createdAt: (opts.now ?? (() => new Date()))().toISOString(),
+    sourcePaths: statePaths.filter((path) => existsSync(path)),
+    backedUpPaths,
+  }, null, 2), 'utf8');
+
+  for (const path of statePaths) {
+    if (!existsSync(path)) continue;
+    rmSync(path, { force: true });
+    removedPaths.push(path);
+  }
+  const remaining = statePaths.filter((path) => existsSync(path));
+  if (remaining.length > 0) {
+    throw new Error(`Relay state reset verification failed; remaining files: ${remaining.join(', ')}`);
+  }
+  return { backupDir, backedUpPaths, removedPaths };
 }
 
 export async function readRecentRelayLogs(logPath: string, maxLines = 80): Promise<string[]> {

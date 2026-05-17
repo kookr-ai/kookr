@@ -2,6 +2,9 @@
 
 Phase A0 sharing is intentionally env-configured and view-only.
 
+For current terminal-sharing setup, browser collaborator flow, troubleshooting,
+and recovery controls, see [session-sharing.md](./session-sharing.md).
+
 ## Enable
 
 1. Start a relay with a short-lived dogfood token.

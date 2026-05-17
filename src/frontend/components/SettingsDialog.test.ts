@@ -689,4 +689,69 @@ describe('SettingsDialog tabs', () => {
       relayAdminToken: 'admin-token-secret',
     });
   });
+
+  test('announces failed recovery results as errors', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === '/api/settings') {
+        return { ok: true, json: async () => DEFAULT_SETTINGS } as Response;
+      }
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-relay' }) } as Response;
+      }
+      if (url === '/api/relay-connection' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: true,
+              source: 'stored',
+              relayUrl: 'http://relay.test',
+              nodeId: 'kookr-node-paired',
+              connectionState: 'connected',
+              relayConnected: true,
+            },
+          }),
+        } as Response;
+      }
+      if (url === '/api/session-sharing/recovery/revokeAllShares' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            result: {
+              action: 'revokeAllShares',
+              auditId: 'audit-1',
+              state: 'partial',
+              message: 'Revoked 1 shares; 1 revocations failed.',
+              affected: [],
+              verification: 'Some relay revoke calls failed; retry after checking relay logs.',
+            },
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    await flush();
+
+    const sharingTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Sharing');
+    await act(async () => {
+      sharingTab!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const revokeAll = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Revoke all shares');
+    expect(revokeAll?.disabled).toBe(false);
+    await act(async () => {
+      revokeAll!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('Revoked 1 shares; 1 revocations failed.');
+    expect(container.textContent).not.toContain('Relay logs are at');
+    confirmSpy.mockRestore();
+  });
 });
