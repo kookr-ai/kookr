@@ -26,6 +26,7 @@ import { isRemoteControlEvent, type RemoteControlEvent } from '../src/remote/con
 import { asGrantId, asNodeId, asPolicyVersion, asSeq, asSessionEpoch, asSessionId, type GrantId, type NodeEpoch, type NodeId, type PolicyVersion, type Seq, type SessionEpoch, type SessionId } from '../src/remote/ids.js';
 import type { KnownGrant, PolicyGrantRecord, PolicyRevokeMessage, ShareGrant, ShareSubject } from '../src/remote/policy-sync.js';
 import { grantForRemoteCommandAction, isKnownGrant } from '../src/remote/grants.js';
+import { payloadHash } from '../src/remote/retry-token.js';
 import { isTerminalStreamEvent, type TerminalReplayGapEvent, type TerminalStreamEvent } from '../src/remote/stream-events.js';
 import { isPushAlertDeltaPayload, makeRedactedPushPayload } from '../src/remote/push.js';
 import type { RelayNodeCredentialStatusResponse } from '../src/shared/contracts/relay-connection.js';
@@ -66,6 +67,7 @@ interface RelayClientAuth {
   actorId: string;
   grants: ShareGrant[];
   grantId: GrantId;
+  deviceId?: string;
   invitationId?: string;
   expiresAt?: string;
 }
@@ -93,6 +95,22 @@ interface PendingCommandRecipient {
   nodeId: NodeId;
   commandId: string;
   subscription: RelayClientSubscription;
+}
+
+interface MemberWebSocketNonce {
+  invitationId: string;
+  deviceId: string;
+  expiresAt: number;
+}
+
+interface MemberRetryTokenBinding {
+  invitationId: string;
+  deviceId: string;
+  leaseId: string;
+  projectionVersion: number;
+  policyVersion: PolicyVersion;
+  payloadHash: string;
+  expiresAt: number;
 }
 
 export interface RelayNodeStatus {
@@ -233,6 +251,21 @@ function terminalTransportAllowed(req: IncomingMessage, opts: { trustedProxy: bo
   return requestIsSecure(req, opts) || isLoopbackAddress(clientAddress(req, opts));
 }
 
+function requestOrigin(req: IncomingMessage, opts: { trustedProxy: boolean }): string {
+  const proto = requestIsSecure(req, opts) ? 'https' : 'http';
+  return `${proto}://${req.headers.host ?? '127.0.0.1'}`;
+}
+
+function originHeaderAllowed(req: IncomingMessage, opts: { trustedProxy: boolean }): boolean {
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string' || origin.length === 0) return false;
+  try {
+    return new URL(origin).origin === requestOrigin(req, opts);
+  } catch {
+    return false;
+  }
+}
+
 class RelayStateWriteError extends Error {
   constructor(
     readonly operation: string,
@@ -280,8 +313,12 @@ function readJson(req: IncomingMessage): Promise<unknown> {
 // cross-origin navigation or sub-resource request. RFC: Phase A0.
 const RELAY_SECURITY_HEADERS = { 'referrer-policy': 'no-referrer' } as const;
 const RELAY_MEMBER_COOKIE = 'kookr_relay_member_token';
+const RELAY_MEMBER_CSRF_COOKIE = 'kookr_relay_csrf_token';
+const RELAY_MEMBER_DEVICE_COOKIE = 'kookr_relay_device_id';
+const MEMBER_WS_NONCE_TTL_MS = 60_000;
+const MEMBER_RETRY_TOKEN_TTL_MS = 30_000;
 
-function sendJson(res: ServerResponse, status: number, payload: unknown, headers: Record<string, string> = {}): void {
+function sendJson(res: ServerResponse, status: number, payload: unknown, headers: Record<string, string | string[]> = {}): void {
   res.writeHead(status, { 'content-type': 'application/json', ...RELAY_SECURITY_HEADERS, ...headers });
   res.end(JSON.stringify(payload));
 }
@@ -318,15 +355,30 @@ function cookieValue(req: IncomingMessage, name: string): string | null {
   return null;
 }
 
-function memberCookie(token: string, req: IncomingMessage, opts: { trustedProxy: boolean }): string {
+function cookieAttributes(req: IncomingMessage, opts: { trustedProxy: boolean }): string[] {
   const secure = requestIsSecure(req, opts);
   return [
-    `${RELAY_MEMBER_COOKIE}=${encodeURIComponent(token)}`,
     'Path=/relay',
-    'HttpOnly',
     'SameSite=Lax',
     secure ? 'Secure' : '',
-  ].filter(Boolean).join('; ');
+  ].filter(Boolean);
+}
+
+function memberCookies(input: { memberToken: string; csrfToken: string; deviceId: string }, req: IncomingMessage, opts: { trustedProxy: boolean }): string[] {
+  const attrs = cookieAttributes(req, opts);
+  return [
+    [`${RELAY_MEMBER_COOKIE}=${encodeURIComponent(input.memberToken)}`, ...attrs, 'HttpOnly'].join('; '),
+    [`${RELAY_MEMBER_CSRF_COOKIE}=${encodeURIComponent(input.csrfToken)}`, ...attrs].join('; '),
+    [`${RELAY_MEMBER_DEVICE_COOKIE}=${encodeURIComponent(input.deviceId)}`, ...attrs].join('; '),
+  ];
+}
+
+function memberBrowserCookies(input: { csrfToken: string; deviceId: string }, req: IncomingMessage, opts: { trustedProxy: boolean }): string[] {
+  const attrs = cookieAttributes(req, opts);
+  return [
+    [`${RELAY_MEMBER_CSRF_COOKIE}=${encodeURIComponent(input.csrfToken)}`, ...attrs].join('; '),
+    [`${RELAY_MEMBER_DEVICE_COOKIE}=${encodeURIComponent(input.deviceId)}`, ...attrs].join('; '),
+  ];
 }
 
 function isAuthorizedAdmin(req: IncomingMessage, adminToken: string | undefined): boolean {
@@ -358,11 +410,13 @@ function authenticateClient(
   if (memberToken) {
     const invitation = invitations.authenticateMember(memberToken);
     if (invitation && invitation.nodeId === nodeId) {
+      const deviceId = cookieValue(req, RELAY_MEMBER_DEVICE_COOKIE) ?? invitation.memberDeviceId;
       return {
         kind: 'member',
         actorId: invitation.acceptedBy ?? invitation.memberId ?? invitation.invitationId,
         grants: [...invitation.grants],
         grantId: invitation.grantId,
+        ...(deviceId ? { deviceId } : {}),
         invitationId: invitation.invitationId,
         expiresAt: invitation.expiresAt,
       };
@@ -833,6 +887,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const replay = new Map<NodeId, RemoteControlEvent[]>();
   const terminalReplay = new Map<NodeId, Map<string, TerminalStreamEvent[]>>();
   const shareSessionProjections = new Map<string, ShareSessionProjectionEnvelopeV1>();
+  const memberWebSocketNonces = new Map<string, MemberWebSocketNonce>();
+  const memberRetryTokens = new Map<string, MemberRetryTokenBinding>();
   const metadataAudit: RelayMetadataAuditRow[] = [];
   const ticketSourceFailures = new Map<string, { count: number; lockedUntil?: number }>();
   let closing = false;
@@ -1009,8 +1065,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     return tokenIndex.get(tokenHash(token)) ?? null;
   };
 
-  const acceptInvitation = (token: string, acceptedBy?: string) => {
-    const accepted = invitations.accept(token, acceptedBy);
+  const acceptInvitation = (token: string, acceptedBy?: string, deviceId?: string) => {
+    const accepted = invitations.accept(token, acceptedBy, deviceId);
     if (accepted.ok) {
       relayMetrics.ticketsAccepted += 1;
       sendPolicyDelta(accepted.accepted.invitation.nodeId, accepted.accepted.policyGrant);
@@ -1020,8 +1076,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     return accepted;
   };
 
-  const acceptShareTicket = (shareId: string, password: string, acceptedBy?: string) => {
-    const accepted = invitations.acceptTicket(shareId, password, acceptedBy);
+  const acceptShareTicket = (shareId: string, password: string, acceptedBy?: string, deviceId?: string) => {
+    const accepted = invitations.acceptTicket(shareId, password, acceptedBy, deviceId);
     if (accepted.ok) {
       relayMetrics.ticketsAccepted += 1;
       sendPolicyDelta(accepted.accepted.invitation.nodeId, accepted.accepted.policyGrant);
@@ -1218,12 +1274,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     };
   };
 
-  const memberShareStateForToken = (memberToken: string): MemberShareStateResponse | null => {
+  const memberShareStateForToken = (memberToken: string, deviceId?: string): MemberShareStateResponse | null => {
     const invitation = invitations.findByMemberToken(memberToken);
     if (!invitation) return null;
     const node = memberNodeState(invitation.nodeId);
     if (!node) return null;
-    return { state: buildMemberShareState({ invitation, node }) };
+    return { state: buildMemberShareState({ invitation, node, deviceId }) };
   };
 
   const memberShareStateForTransport = (
@@ -1243,6 +1299,54 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       },
     };
   };
+
+  const issueMemberWebSocketNonce = (invitationId: string, deviceId: string): string => {
+    const now = Date.now();
+    for (const [key, record] of memberWebSocketNonces) {
+      if (record.expiresAt <= now) memberWebSocketNonces.delete(key);
+    }
+    const nonce = `kookr_ws_v1_${randomBytes(24).toString('base64url')}`;
+    memberWebSocketNonces.set(tokenHash(nonce), {
+      invitationId,
+      deviceId,
+      expiresAt: now + MEMBER_WS_NONCE_TTL_MS,
+    });
+    return nonce;
+  };
+
+  const consumeMemberWebSocketNonce = (auth: RelayClientAuth, url: URL): boolean => {
+    if (auth.kind !== 'member' || !auth.invitationId || !auth.deviceId) return false;
+    const nonce = url.searchParams.get('wsNonce');
+    if (!nonce) return false;
+    const key = tokenHash(nonce);
+    const record = memberWebSocketNonces.get(key);
+    if (!record || record.expiresAt <= Date.now()) {
+      memberWebSocketNonces.delete(key);
+      return false;
+    }
+    if (record.invitationId !== auth.invitationId || record.deviceId !== auth.deviceId) return false;
+    memberWebSocketNonces.delete(key);
+    return true;
+  };
+
+  const verifyMemberCsrf = (req: IncomingMessage, auth: RelayClientAuth): boolean => {
+    if (auth.kind !== 'member' || !auth.invitationId) return false;
+    const header = req.headers['x-kookr-csrf-token'] ?? req.headers['x-kookr-csrf'];
+    const headerToken = Array.isArray(header) ? header.at(-1) : header;
+    const cookieToken = cookieValue(req, RELAY_MEMBER_CSRF_COOKIE);
+    if (!headerToken || !cookieToken || headerToken !== cookieToken) return false;
+    return invitations.verifyMemberCsrfToken(auth.invitationId, headerToken);
+  };
+
+  const memberSecurityPayload = (invitationId: string, deviceId: string, csrfToken: string | null): {
+    csrfToken?: string;
+    webSocketNonce: string;
+    deviceId: string;
+  } => ({
+    ...(csrfToken ? { csrfToken } : {}),
+    webSocketNonce: issueMemberWebSocketNonce(invitationId, deviceId),
+    deviceId,
+  });
 
   const nodeStatuses = (): RelayNodeStatus[] => [...registrations.values()].map((registration) => {
     const hello = nodeHello.get(registration.nodeId);
@@ -1658,7 +1762,11 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 400, { error: 'token is required' });
           return;
         }
-        const accepted = acceptInvitation(token, typeof body.displayName === 'string' ? body.displayName : undefined);
+        const accepted = acceptInvitation(
+          token,
+          typeof body.displayName === 'string' ? body.displayName : undefined,
+          cookieValue(req, RELAY_MEMBER_DEVICE_COOKIE) ?? undefined,
+        );
         if (!accepted.ok) {
           sendJson(res, accepted.reason === 'not-found' ? 404 : 409, { error: accepted.reason });
           return;
@@ -1666,8 +1774,21 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         sendJson(
           res,
           200,
-          { nodeId: accepted.accepted.invitation.nodeId },
-          { 'set-cookie': memberCookie(accepted.accepted.memberToken, req, { trustedProxy }) },
+          {
+            nodeId: accepted.accepted.invitation.nodeId,
+            security: memberSecurityPayload(
+              accepted.accepted.invitation.invitationId,
+              accepted.accepted.deviceId,
+              accepted.accepted.csrfToken,
+            ),
+          },
+          {
+            'set-cookie': memberCookies({
+              memberToken: accepted.accepted.memberToken,
+              csrfToken: accepted.accepted.csrfToken,
+              deviceId: accepted.accepted.deviceId,
+            }, req, { trustedProxy }),
+          },
         );
         return;
       }
@@ -1689,6 +1810,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           shareId,
           password,
           typeof body.displayName === 'string' ? body.displayName : undefined,
+          cookieValue(req, RELAY_MEMBER_DEVICE_COOKIE) ?? undefined,
         );
         if (!accepted.ok) {
           recordTicketFailure(sourceKey);
@@ -1699,19 +1821,52 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         sendJson(
           res,
           200,
-          { nodeId: accepted.accepted.invitation.nodeId },
-          { 'set-cookie': memberCookie(accepted.accepted.memberToken, req, { trustedProxy }) },
+          {
+            nodeId: accepted.accepted.invitation.nodeId,
+            security: memberSecurityPayload(
+              accepted.accepted.invitation.invitationId,
+              accepted.accepted.deviceId,
+              accepted.accepted.csrfToken,
+            ),
+          },
+          {
+            'set-cookie': memberCookies({
+              memberToken: accepted.accepted.memberToken,
+              csrfToken: accepted.accepted.csrfToken,
+              deviceId: accepted.accepted.deviceId,
+            }, req, { trustedProxy }),
+          },
         );
         return;
       }
       if (req.method === 'GET' && url.pathname === '/relay/member/share-state') {
         const memberToken = cookieValue(req, RELAY_MEMBER_COOKIE);
-        const state = memberToken ? memberShareStateForToken(memberToken) : null;
+        const invitation = memberToken ? invitations.findByMemberToken(memberToken) : null;
+        const browserSession = invitation
+          ? invitations.ensureMemberBrowserSession({
+              invitationId: invitation.invitationId,
+              deviceId: cookieValue(req, RELAY_MEMBER_DEVICE_COOKIE) ?? undefined,
+              csrfToken: cookieValue(req, RELAY_MEMBER_CSRF_COOKIE) ?? undefined,
+            })
+          : null;
+        const deviceId = browserSession?.ok ? browserSession.deviceId : '';
+        const state = memberToken ? memberShareStateForToken(memberToken, deviceId) : null;
         if (!state) {
           sendJson(res, 401, { error: 'member-auth-required' });
           return;
         }
-        sendJson(res, 200, memberShareStateForTransport(state, terminalTransportAllowed(req, { trustedProxy })));
+        sendJson(res, 200, {
+          ...memberShareStateForTransport(state, terminalTransportAllowed(req, { trustedProxy })),
+          ...(browserSession?.ok ? {
+            security: memberSecurityPayload(
+              browserSession.invitation.invitationId,
+              browserSession.deviceId,
+              browserSession.csrfToken,
+            ),
+          } : {}),
+        }, browserSession?.ok
+          ? { 'set-cookie': memberBrowserCookies(browserSession, req, { trustedProxy }) }
+          : {});
         return;
       }
       if (req.method === 'POST' && url.pathname === '/relay/member/grant-requests') {
@@ -1731,6 +1886,11 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 401, { error: 'member-auth-required' });
           return;
         }
+        if (!verifyMemberCsrf(req, auth)) {
+          incrementSecurityEvent();
+          sendJson(res, 403, { error: 'csrf-required' });
+          return;
+        }
         const parsed = parseGrantRequestBody(body);
         if ('error' in parsed) {
           sendJson(res, 400, { error: parsed.error });
@@ -1748,6 +1908,124 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         }
         broadcastMemberShareState(requested.invitation.nodeId);
         sendJson(res, 201, { request: requested.request });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/relay/member/controller-lease') {
+        const body = await readJson(req) as {
+          nodeId?: unknown;
+          holderLabel?: unknown;
+          ttlMs?: unknown;
+          takeover?: unknown;
+          projectionVersion?: unknown;
+          policyVersion?: unknown;
+        };
+        if (typeof body.nodeId !== 'string') {
+          sendJson(res, 400, { error: 'nodeId is required' });
+          return;
+        }
+        const auth = authenticateClient(req, opts, invitations, ownerId, asNodeId(body.nodeId), url);
+        if (!auth || auth.kind !== 'member' || !auth.invitationId || !auth.deviceId) {
+          sendJson(res, 401, { error: 'member-auth-required' });
+          return;
+        }
+        if (!terminalTransportAllowed(req, { trustedProxy })) {
+          incrementSecurityEvent();
+          sendJson(res, 403, { error: 'transport.insecure' });
+          return;
+        }
+        if (!verifyMemberCsrf(req, auth)) {
+          incrementSecurityEvent();
+          sendJson(res, 403, { error: 'csrf-required' });
+          return;
+        }
+        if (!authAllows(auth, 'terminalInput', invitations)) {
+          sendJson(res, 403, { error: 'terminal-input-grant-required' });
+          return;
+        }
+        const lease = invitations.acquireControllerLease({
+          invitationId: auth.invitationId,
+          deviceId: auth.deviceId,
+          holderLabel: typeof body.holderLabel === 'string' ? body.holderLabel : undefined,
+          ttlMs: typeof body.ttlMs === 'number' && Number.isFinite(body.ttlMs) ? body.ttlMs : undefined,
+          takeover: body.takeover === true,
+          projectionVersion: typeof body.projectionVersion === 'number' && Number.isInteger(body.projectionVersion)
+            ? body.projectionVersion
+            : undefined,
+          policyVersion: typeof body.policyVersion === 'number' && Number.isInteger(body.policyVersion)
+            ? asPolicyVersion(body.policyVersion)
+            : undefined,
+        });
+        if (!lease.ok) {
+          sendJson(res, lease.reason === 'held-by-another-device' ? 409 : 400, {
+            error: lease.reason,
+            ...(lease.lease ? { lease: lease.lease } : {}),
+          });
+          return;
+        }
+        broadcastMemberShareState(lease.invitation.nodeId);
+        sendJson(res, 200, {
+          lease: lease.lease,
+          ...(lease.previousLease ? { previousLease: lease.previousLease } : {}),
+        });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/relay/member/retry-tokens') {
+        const body = await readJson(req) as {
+          nodeId?: unknown;
+          leaseId?: unknown;
+          projectionVersion?: unknown;
+          policyVersion?: unknown;
+          payloadHash?: unknown;
+        };
+        if (typeof body.nodeId !== 'string') {
+          sendJson(res, 400, { error: 'nodeId is required' });
+          return;
+        }
+        const auth = authenticateClient(req, opts, invitations, ownerId, asNodeId(body.nodeId), url);
+        if (!auth || auth.kind !== 'member' || !auth.invitationId || !auth.deviceId) {
+          sendJson(res, 401, { error: 'member-auth-required' });
+          return;
+        }
+        if (!terminalTransportAllowed(req, { trustedProxy })) {
+          incrementSecurityEvent();
+          sendJson(res, 403, { error: 'transport.insecure' });
+          return;
+        }
+        if (!verifyMemberCsrf(req, auth)) {
+          incrementSecurityEvent();
+          sendJson(res, 403, { error: 'csrf-required' });
+          return;
+        }
+        const invitation = invitations.list().find((candidate) => candidate.invitationId === auth.invitationId);
+        const lease = invitation?.controllerLease;
+        if (
+          !invitation
+          || !lease
+          || lease.deviceId !== auth.deviceId
+          || Date.parse(lease.expiresAt) <= Date.now()
+          || body.leaseId !== lease.leaseId
+          || typeof body.projectionVersion !== 'number'
+          || typeof body.policyVersion !== 'number'
+          || typeof body.payloadHash !== 'string'
+        ) {
+          sendJson(res, 409, { error: 'retry-token-binding-required' });
+          return;
+        }
+        const token = `kookr_retry_v1_${randomBytes(24).toString('base64url')}`;
+        const expiresAt = Date.now() + MEMBER_RETRY_TOKEN_TTL_MS;
+        for (const [key, binding] of memberRetryTokens) {
+          if (binding.expiresAt <= Date.now()) memberRetryTokens.delete(key);
+        }
+        memberRetryTokens.set(tokenHash(token), {
+          invitationId: auth.invitationId,
+          deviceId: auth.deviceId,
+          leaseId: lease.leaseId,
+          projectionVersion: body.projectionVersion,
+          policyVersion: asPolicyVersion(body.policyVersion),
+          payloadHash: body.payloadHash,
+          expiresAt,
+        });
+        sendJson(res, 201, { retryToken: token, expiresAt: new Date(expiresAt).toISOString() });
         return;
       }
       if (req.method === 'POST' && url.pathname.startsWith('/relay/admin/invitations/') && url.pathname.endsWith('/revoke')) {
@@ -2036,6 +2314,18 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       );
       if (!auth) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      if (auth.kind === 'member' && !originHeaderAllowed(req, { trustedProxy })) {
+        incrementSecurityEvent();
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      if (auth.kind === 'member' && !consumeMemberWebSocketNonce(auth, url)) {
+        incrementSecurityEvent();
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
         socket.destroy();
         return;
       }
@@ -2475,7 +2765,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       if (!invitation || !node) continue;
       if (sub.ws.readyState === sub.ws.OPEN) {
         const state = memberShareStateForTransport(
-          { state: buildMemberShareState({ invitation, node }) },
+          { state: buildMemberShareState({ invitation, node, deviceId: sub.auth.deviceId }) },
           sub.terminalTransportAllowed ?? true,
         );
         sub.ws.send(JSON.stringify({
@@ -2664,7 +2954,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       const node = memberNodeState(subscribedNodeId);
       if (invitation && node && ws.readyState === ws.OPEN) {
         const state = memberShareStateForTransport(
-          { state: buildMemberShareState({ invitation, node }) },
+          { state: buildMemberShareState({ invitation, node, deviceId: auth.deviceId }) },
           terminalInputTransportAllowed,
         );
         ws.send(JSON.stringify({
@@ -2840,6 +3130,87 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
             action: typeof action === 'string' ? action : 'presetReply',
             outcome: 'rejected-pre-audit',
             reason: resolved?.error ?? 'projection-required',
+          };
+          appendMetadataAudit({
+            type: 'relay.metadata-audit',
+            commandId,
+            nodeId: subscribedNodeId,
+            ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
+            outcome: 'rejected-pre-audit',
+            timestamp: new Date().toISOString(),
+            reason: result.reason,
+          });
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+          return;
+        }
+        const leaseId = typeof (command as { leaseId?: unknown }).leaseId === 'string'
+          ? (command as { leaseId: string }).leaseId
+          : typeof (command.payload as { leaseId?: unknown } | undefined)?.leaseId === 'string'
+            ? (command.payload as { leaseId: string }).leaseId
+            : '';
+        const projectionVersion = typeof (command as { projectionVersion?: unknown }).projectionVersion === 'number'
+          ? (command as { projectionVersion: number }).projectionVersion
+          : typeof (command.payload as { projectionVersion?: unknown } | undefined)?.projectionVersion === 'number'
+            ? (command.payload as { projectionVersion: number }).projectionVersion
+            : Number.NaN;
+        const policyVersion = typeof (command as { policyVersion?: unknown }).policyVersion === 'number'
+          ? (command as { policyVersion: number }).policyVersion
+          : typeof (command.payload as { policyVersion?: unknown } | undefined)?.policyVersion === 'number'
+            ? (command.payload as { policyVersion: number }).policyVersion
+            : Number.NaN;
+        const retryToken = typeof (command as { retryToken?: unknown }).retryToken === 'string'
+          ? (command as { retryToken: string }).retryToken
+          : typeof (command.payload as { retryToken?: unknown } | undefined)?.retryToken === 'string'
+            ? (command.payload as { retryToken: string }).retryToken
+            : null;
+        if (retryToken) {
+          const binding = memberRetryTokens.get(tokenHash(retryToken));
+          const matches = binding
+            && binding.expiresAt > Date.now()
+            && binding.invitationId === auth.invitationId
+            && binding.deviceId === auth.deviceId
+            && binding.leaseId === leaseId
+            && binding.projectionVersion === projectionVersion
+            && binding.policyVersion === policyVersion
+            && binding.payloadHash === payloadHash(command.payload);
+          if (!matches) {
+            const result = {
+              type: 'remote.command.result',
+              commandId,
+              action: typeof action === 'string' ? action : 'presetReply',
+              outcome: 'rejected-pre-audit',
+              reason: 'retry-token-mismatch',
+            };
+            appendMetadataAudit({
+              type: 'relay.metadata-audit',
+              commandId,
+              nodeId: subscribedNodeId,
+              ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
+              outcome: 'rejected-pre-audit',
+              timestamp: new Date().toISOString(),
+              reason: result.reason,
+            });
+            if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+            return;
+          }
+        }
+        const activeLease = invitation.controllerLease && Date.parse(invitation.controllerLease.expiresAt) > Date.now()
+          ? invitation.controllerLease
+          : null;
+        const leaseMatches = Boolean(
+          activeLease
+          && auth.deviceId
+          && activeLease.deviceId === auth.deviceId,
+        );
+        if (!leaseMatches) {
+          const result = {
+            type: 'remote.command.result',
+            commandId,
+            action: typeof action === 'string' ? action : 'presetReply',
+            outcome: 'rejected-pre-audit',
+            reason: activeLease && activeLease.deviceId !== auth.deviceId
+              ? 'controller-lease-held-by-another-device'
+              : 'controller-lease-required',
           };
           appendMetadataAudit({
             type: 'relay.metadata-audit',
@@ -3446,9 +3817,47 @@ let terminalProjection = null;
 let terminalStreamKey = '';
 let lastTerminalSeq = 0;
 let terminalMayView = false;
+let csrfToken = '';
+let nextWebSocketNonce = '';
 shareIdEl.value = pathShareId;
 sharePasswordEl.value = fragmentPassword;
 if (inviteToken) ticketFieldsEl.hidden = true;
+
+function cookieValue(name) {
+  const prefix = name + '=';
+  for (const part of document.cookie.split(';')) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(prefix)) return decodeURIComponent(trimmed.slice(prefix.length));
+  }
+  return '';
+}
+
+function applySecurity(body) {
+  const security = body && body.security;
+  if (!security || typeof security !== 'object') return;
+  if (typeof security.csrfToken === 'string') csrfToken = security.csrfToken;
+  if (typeof security.webSocketNonce === 'string') nextWebSocketNonce = security.webSocketNonce;
+}
+
+async function takeWebSocketNonce() {
+  if (nextWebSocketNonce) {
+    const nonce = nextWebSocketNonce;
+    nextWebSocketNonce = '';
+    return nonce;
+  }
+  try {
+    const res = await fetch('/relay/member/share-state', { credentials: 'include' });
+    if (!res.ok) return '';
+    const body = await res.json();
+    applySecurity(body);
+    if (nextWebSocketNonce) {
+      const nonce = nextWebSocketNonce;
+      nextWebSocketNonce = '';
+      return nonce;
+    }
+  } catch {}
+  return '';
+}
 
 function sanitizeDisplayName(value) {
   return String(value || 'Guest')
@@ -3561,7 +3970,7 @@ function projectionFromEvent(event) {
   return null;
 }
 
-function connectTerminalStream() {
+async function connectTerminalStream() {
   if (!nodeId || !terminalMayView || !terminalProjection) return;
   const key = terminalProjection.projectionId + ':' + terminalProjection.projectionVersion;
   if (terminalWs && terminalStreamKey === key) return;
@@ -3578,6 +3987,12 @@ function connectTerminalStream() {
   wsUrl.searchParams.set('projectionId', terminalProjection.projectionId);
   wsUrl.searchParams.set('sessionAlias', 'primary');
   wsUrl.searchParams.set('afterSeq', String(lastTerminalSeq));
+  const nonce = await takeWebSocketNonce();
+  if (!nonce) {
+    setTerminalBanner('Terminal stream authorization expired. Refresh the page and try again.', true);
+    return;
+  }
+  wsUrl.searchParams.set('wsNonce', nonce);
   const nextTerminalWs = new WebSocket(wsUrl);
   terminalWs = nextTerminalWs;
   nextTerminalWs.onopen = () => {
@@ -3640,12 +4055,12 @@ function renderMemberShareState(memberState) {
     terminalStatusTitleEl.textContent = 'Terminal viewing approved';
     terminalStatusCopyEl.textContent = 'You can watch this shared task terminal. Browser input is read-only in this version.';
     ensureTerminal();
-    connectTerminalStream();
+    void connectTerminalStream();
   } else if (terminal.state === 'viewOnly') {
     terminalStatusTitleEl.textContent = 'Terminal viewing approved';
     terminalStatusCopyEl.textContent = 'You can watch this shared task terminal. Sending messages still needs owner approval.';
     ensureTerminal();
-    connectTerminalStream();
+    void connectTerminalStream();
   } else if (terminal.state === 'pendingApproval') {
     terminalStatusTitleEl.textContent = 'Terminal request pending';
     terminalStatusCopyEl.textContent = 'Waiting for owner approval.';
@@ -3699,7 +4114,7 @@ function ingest(event) {
         setTerminalBanner('Terminal projection changed. Input remains disabled until fresh terminal output arrives.', true);
       }
     }
-    connectTerminalStream();
+    void connectTerminalStream();
     return;
   }
   const payload = event && event.payload;
@@ -3714,6 +4129,7 @@ async function loadState() {
     const memberState = await fetch('/relay/member/share-state', { credentials: 'include' });
     if (memberState.ok) {
       const body = await memberState.json();
+      applySecurity(body);
       renderMemberShareState(body.state);
       if (body.state && body.state.nodeId) nodeId = body.state.nodeId;
     }
@@ -3735,12 +4151,18 @@ async function loadState() {
   return true;
 }
 
-function connect() {
+async function connect() {
   if (!nodeId) return;
   if (ws) ws.close();
   const wsUrl = new URL('/relay/client', location.href);
   wsUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   wsUrl.searchParams.set('nodeId', nodeId);
+  const nonce = await takeWebSocketNonce();
+  if (!nonce) {
+    setStatus('Share session authorization expired. Refresh the page and try again.', true);
+    return;
+  }
+  wsUrl.searchParams.set('wsNonce', nonce);
   ws = new WebSocket(wsUrl);
   ws.onopen = () => setStatus('Connected. Waiting for task projection...');
   ws.onclose = () => {
@@ -3754,7 +4176,7 @@ async function acceptInvite() {
   const password = sharePasswordEl.value;
   if (!inviteToken && (!shareId || !password)) {
     if (nodeId) {
-      if (await loadState()) connect();
+      if (await loadState()) void connect();
       return;
     }
     setStatus('Enter the share ID and password.', true);
@@ -3776,9 +4198,10 @@ async function acceptInvite() {
     return;
   }
   const body = await res.json();
+  applySecurity(body);
   nodeId = typeof body.nodeId === 'string' ? body.nodeId : '';
   if (nodeId) sessionStorage.setItem(nodeKey, nodeId);
-  if (await loadState()) connect();
+  if (await loadState()) void connect();
   formEl.hidden = true;
 }
 
@@ -3788,7 +4211,10 @@ requestControlEl.addEventListener('click', async () => {
   setStatus('Requesting owner approval...');
   const res = await fetch('/relay/member/grant-requests', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      'x-kookr-csrf-token': csrfToken || cookieValue('kookr_relay_csrf_token'),
+    },
     credentials: 'include',
     body: JSON.stringify({
       nodeId,

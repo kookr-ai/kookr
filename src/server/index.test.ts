@@ -67,6 +67,51 @@ async function waitForCondition(predicate: () => boolean): Promise<void> {
   });
 }
 
+async function memberWebSocketNonce(relayUrl: string, memberToken: string, deviceId?: string): Promise<string> {
+  const res = await fetch(`${relayUrl}/relay/member/share-state`, {
+    headers: {
+      cookie: [
+        `kookr_relay_member_token=${memberToken}`,
+        deviceId ? `kookr_relay_device_id=${deviceId}` : '',
+      ].filter(Boolean).join('; '),
+    },
+  });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { security?: { webSocketNonce?: string } };
+  expect(body.security?.webSocketNonce).toBeTruthy();
+  return body.security!.webSocketNonce!;
+}
+
+async function acquireRelayControllerLease(relayUrl: string, nodeId: string, memberToken: string, deviceId: string): Promise<void> {
+  const stateRes = await fetch(`${relayUrl}/relay/member/share-state`, {
+    headers: {
+      cookie: [
+        `kookr_relay_member_token=${memberToken}`,
+        `kookr_relay_device_id=${deviceId}`,
+      ].join('; '),
+    },
+  });
+  expect(stateRes.status).toBe(200);
+  const state = await stateRes.json() as { security?: { csrfToken?: string; deviceId?: string } };
+  const csrfToken = state.security?.csrfToken;
+  expect(csrfToken).toBeTruthy();
+  const resolvedDeviceId = state.security?.deviceId ?? deviceId;
+  const leaseRes = await fetch(`${relayUrl}/relay/member/controller-lease`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      cookie: [
+        `kookr_relay_member_token=${memberToken}`,
+        `kookr_relay_csrf_token=${csrfToken}`,
+        `kookr_relay_device_id=${resolvedDeviceId}`,
+      ].join('; '),
+      'x-kookr-csrf-token': csrfToken!,
+    },
+    body: JSON.stringify({ nodeId, holderLabel: 'test device' }),
+  });
+  expect(leaseRes.status).toBe(200);
+}
+
 describe('createKookrServer', () => {
   let tempDir: string;
   let server: KookrServerInternal;
@@ -509,16 +554,32 @@ describe('createKookrServer', () => {
         const accepted = relay.acceptInvitation(invitation.token, 'alice');
         expect(accepted.ok).toBe(true);
         if (!accepted.ok) throw new Error('expected invitation accept');
-
         const clientUrl = new URL('/relay/client', relay.url());
         clientUrl.protocol = 'ws:';
         clientUrl.searchParams.set('nodeId', registration.nodeId);
+        clientUrl.searchParams.set('wsNonce', await memberWebSocketNonce(
+          relay.url(),
+          accepted.accepted.memberToken,
+          accepted.accepted.deviceId,
+        ));
         clientWs = new WebSocket(clientUrl, {
-          headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+          headers: {
+            origin: relay.url(),
+            cookie: [
+              `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+              `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+            ].join('; '),
+          },
         });
         const messages: unknown[] = [];
         clientWs.on('message', (data) => messages.push(JSON.parse(data.toString()) as unknown));
         await new Promise<void>((resolve) => clientWs!.once('open', () => resolve()));
+        await acquireRelayControllerLease(
+          relay.url(),
+          registration.nodeId,
+          accepted.accepted.memberToken,
+          accepted.accepted.deviceId,
+        );
         clientWs.send(JSON.stringify({
           type: 'remote.command',
           commandId: 'cmd-member-lease',
@@ -531,10 +592,11 @@ describe('createKookrServer', () => {
           baseRevision: 1,
           payload: { leaseId: 'lease-member' },
         }));
-        await waitForCondition(() => messages.some((msg) => (
-          (msg as { commandId?: string; outcome?: string }).commandId === 'cmd-member-lease'
-          && (msg as { outcome?: string }).outcome === 'accepted'
-        )));
+        await waitForCondition(() => messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-member-lease'));
+        expect(messages).toContainEqual(expect.objectContaining({
+          commandId: 'cmd-member-lease',
+          outcome: 'accepted',
+        }));
 
         clientWs.send(JSON.stringify({
           type: 'remote.command',
@@ -648,8 +710,19 @@ describe('createKookrServer', () => {
         const clientUrl = new URL('/relay/client', relay.url());
         clientUrl.protocol = 'ws:';
         clientUrl.searchParams.set('nodeId', registration.nodeId);
+        clientUrl.searchParams.set('wsNonce', await memberWebSocketNonce(
+          relay.url(),
+          accepted.accepted.memberToken,
+          accepted.accepted.deviceId,
+        ));
         clientWs = new WebSocket(clientUrl, {
-          headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+          headers: {
+            origin: relay.url(),
+            cookie: [
+              `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+              `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+            ].join('; '),
+          },
         });
         const messages: unknown[] = [];
         clientWs.on('message', (data) => messages.push(JSON.parse(data.toString()) as unknown));

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { W_OK } from 'node:constants';
+import { once } from 'node:events';
 import { accessSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { appendFile, readFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
@@ -407,8 +408,9 @@ export async function startRelay(opts: RelayLifecycleOptions = {}): Promise<stri
   }
 
   const command = relayServerCommand(config.cwd);
-  const logStream = createWriteStream(config.paths.logPath, { flags: 'a' });
   await appendFile(config.paths.logPath, `[relay-lifecycle] starting at ${new Date().toISOString()}\n`, 'utf8');
+  const logStream = createWriteStream(config.paths.logPath, { flags: 'a' });
+  await once(logStream, 'open');
   const child = spawn(command[0]!, command.slice(1), {
     cwd: config.cwd,
     detached: true,

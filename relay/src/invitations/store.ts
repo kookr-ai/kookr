@@ -19,6 +19,9 @@ export interface InvitationRecord {
   acceptedBy?: string;
   memberTokenHash?: string;
   memberId?: string;
+  memberDeviceId?: string;
+  memberCsrfTokenHash?: string;
+  controllerLease?: ControllerLeaseRecord;
   shareId?: string;
   passwordVerifier?: string;
   failedAcceptCount?: number;
@@ -26,6 +29,16 @@ export interface InvitationRecord {
   redactedShareLabel?: string;
   grantRequests?: TaskShareGrantRequest[];
   policyVersion: PolicyVersion;
+}
+
+export interface ControllerLeaseRecord {
+  leaseId: string;
+  deviceId: string;
+  holderLabel?: string;
+  acquiredAt: string;
+  expiresAt: string;
+  projectionVersion?: number;
+  policyVersion?: PolicyVersion;
 }
 
 export interface ShareTicketSecret {
@@ -37,6 +50,8 @@ export interface ShareTicketSecret {
 export interface AcceptedInvitation {
   invitation: InvitationRecord;
   memberToken: string;
+  csrfToken: string;
+  deviceId: string;
   policyGrant: PolicyGrantRecord;
 }
 
@@ -51,6 +66,14 @@ export type InvitationRevokeResult =
 export type GrantRequestResult =
   | { ok: true; invitation: InvitationRecord; request: TaskShareGrantRequest }
   | { ok: false; reason: 'not-found' | 'expired' | 'revoked' | 'not-accepted' | 'empty-grants' | 'already-resolved' };
+
+export type ControllerLeaseResult =
+  | { ok: true; invitation: InvitationRecord; lease: ControllerLeaseRecord; previousLease?: ControllerLeaseRecord }
+  | { ok: false; reason: 'not-found' | 'expired' | 'revoked' | 'not-accepted' | 'held-by-another-device'; lease?: ControllerLeaseRecord };
+
+export type MemberBrowserSessionResult =
+  | { ok: true; invitation: InvitationRecord; csrfToken: string; deviceId: string }
+  | { ok: false; reason: 'not-found' | 'expired' | 'revoked' | 'not-accepted' };
 
 export interface InvitationStoreOptions {
   now?: () => Date;
@@ -119,6 +142,7 @@ function createPasswordVerifier(password: string): string {
 function cloneInvitation(invitation: InvitationRecord): InvitationRecord {
   return {
     ...invitation,
+    ...(invitation.controllerLease ? { controllerLease: { ...invitation.controllerLease } } : {}),
     grants: [...invitation.grants],
     ...(invitation.grantRequests ? { grantRequests: invitation.grantRequests.map((request) => ({
       ...request,
@@ -200,6 +224,19 @@ export function isInvitationRecord(value: unknown): value is InvitationRecord {
     && (invitation.acceptedBy === undefined || typeof invitation.acceptedBy === 'string')
     && (invitation.memberTokenHash === undefined || typeof invitation.memberTokenHash === 'string')
     && (invitation.memberId === undefined || typeof invitation.memberId === 'string')
+    && (invitation.memberDeviceId === undefined || typeof invitation.memberDeviceId === 'string')
+    && (invitation.memberCsrfTokenHash === undefined || typeof invitation.memberCsrfTokenHash === 'string')
+    && (
+      invitation.controllerLease === undefined
+      || (
+        typeof invitation.controllerLease === 'object'
+        && invitation.controllerLease !== null
+        && typeof invitation.controllerLease.leaseId === 'string'
+        && typeof invitation.controllerLease.deviceId === 'string'
+        && typeof invitation.controllerLease.acquiredAt === 'string'
+        && typeof invitation.controllerLease.expiresAt === 'string'
+      )
+    )
     && (invitation.shareId === undefined || typeof invitation.shareId === 'string')
     && (invitation.passwordVerifier === undefined || typeof invitation.passwordVerifier === 'string')
     && (invitation.failedAcceptCount === undefined || typeof invitation.failedAcceptCount === 'number')
@@ -285,13 +322,13 @@ export class InvitationStore {
     return { invitation: cloneInvitation(invitation), token, ...(shareTicket ? { shareTicket } : {}) };
   }
 
-  accept(token: string, acceptedBy?: string): InvitationAcceptResult {
+  accept(token: string, acceptedBy?: string, deviceId?: string): InvitationAcceptResult {
     const invitationId = this.invitationTokenIndex.get(hashToken(token));
     if (!invitationId) return { ok: false, reason: 'not-found' };
-    return this.acceptByInvitationId(invitationId, acceptedBy);
+    return this.acceptByInvitationId(invitationId, acceptedBy, deviceId);
   }
 
-  acceptTicket(shareId: string, password: string, acceptedBy?: string): InvitationAcceptResult {
+  acceptTicket(shareId: string, password: string, acceptedBy?: string, deviceId?: string): InvitationAcceptResult {
     const normalizedShareId = normalizeShareId(shareId);
     if (!normalizedShareId || !password) return { ok: false, reason: 'not-found' };
     const invitationId = this.shareIdIndex.get(normalizedShareId);
@@ -319,7 +356,7 @@ export class InvitationStore {
       });
       return { ok: false, reason: lockedUntil ? 'locked' : 'invalid-password' };
     }
-    return this.acceptByInvitationId(invitationId, acceptedBy);
+    return this.acceptByInvitationId(invitationId, acceptedBy, deviceId);
   }
 
   resetShareTicket(invitationId: string): { ok: true; invitation: InvitationRecord; shareTicket: ShareTicketSecret } | { ok: false; reason: 'not-found' | 'not-share-ticket' } {
@@ -346,7 +383,7 @@ export class InvitationStore {
     };
   }
 
-  private acceptByInvitationId(invitationId: string, acceptedBy?: string): InvitationAcceptResult {
+  private acceptByInvitationId(invitationId: string, acceptedBy?: string, deviceId?: string): InvitationAcceptResult {
     const invitation = this.invitations.get(invitationId);
     if (!invitation) return { ok: false, reason: 'not-found' };
     if (invitation.revokedAt) return { ok: false, reason: 'revoked' };
@@ -354,13 +391,16 @@ export class InvitationStore {
     if (Date.parse(invitation.expiresAt) <= this.now().getTime()) return { ok: false, reason: 'expired' };
 
     const memberToken = issueToken('kookr_member_v1', this.tokenBytes);
+    const csrfToken = issueToken('kookr_csrf_v1', this.tokenBytes);
     const memberTokenHash = hashToken(memberToken);
     const accepted = {
       ...invitation,
       acceptedAt: this.now().toISOString(),
       ...(acceptedBy ? { acceptedBy } : {}),
       memberId: `member-${randomUUID()}`,
+      memberDeviceId: deviceId ?? `device-${randomUUID()}`,
       memberTokenHash,
+      memberCsrfTokenHash: hashToken(csrfToken),
     };
     this.save(accepted);
     const policyGrant: PolicyGrantRecord = {
@@ -375,8 +415,91 @@ export class InvitationStore {
       accepted: {
         invitation: cloneInvitation(accepted),
         memberToken,
+        csrfToken,
+        deviceId: accepted.memberDeviceId,
         policyGrant,
       },
+    };
+  }
+
+  verifyMemberCsrfToken(invitationId: string, csrfToken: string): boolean {
+    const invitation = this.invitations.get(invitationId);
+    if (!invitation?.memberCsrfTokenHash) return false;
+    const expected = Buffer.from(invitation.memberCsrfTokenHash);
+    const actual = Buffer.from(hashToken(csrfToken));
+    if (expected.length !== actual.length) return false;
+    return timingSafeEqual(expected, actual);
+  }
+
+  ensureMemberBrowserSession(input: {
+    invitationId: string;
+    deviceId?: string;
+    csrfToken?: string;
+  }): MemberBrowserSessionResult {
+    const invitation = this.invitations.get(input.invitationId);
+    if (!invitation) return { ok: false, reason: 'not-found' };
+    if (invitation.revokedAt) return { ok: false, reason: 'revoked' };
+    if (!invitation.acceptedAt) return { ok: false, reason: 'not-accepted' };
+    if (Date.parse(invitation.expiresAt) <= this.now().getTime()) return { ok: false, reason: 'expired' };
+
+    const deviceId = input.deviceId || invitation.memberDeviceId || `device-${randomUUID()}`;
+    const csrfTokenValid = input.csrfToken
+      ? this.verifyMemberCsrfToken(invitation.invitationId, input.csrfToken)
+      : false;
+    const csrfToken = csrfTokenValid
+      ? input.csrfToken!
+      : issueToken('kookr_csrf_v1', this.tokenBytes);
+    const needsSave = !invitation.memberDeviceId || !csrfTokenValid;
+    const updated: InvitationRecord = {
+      ...invitation,
+      ...(invitation.memberDeviceId ? {} : { memberDeviceId: deviceId }),
+      ...(csrfTokenValid ? {} : { memberCsrfTokenHash: hashToken(csrfToken) }),
+    };
+    if (needsSave) this.save(updated);
+    return {
+      ok: true,
+      invitation: cloneInvitation(updated),
+      csrfToken,
+      deviceId,
+    };
+  }
+
+  acquireControllerLease(input: {
+    invitationId: string;
+    deviceId: string;
+    holderLabel?: string;
+    ttlMs?: number;
+    takeover?: boolean;
+    projectionVersion?: number;
+    policyVersion?: PolicyVersion;
+  }): ControllerLeaseResult {
+    const invitation = this.invitations.get(input.invitationId);
+    if (!invitation) return { ok: false, reason: 'not-found' };
+    if (invitation.revokedAt) return { ok: false, reason: 'revoked' };
+    if (!invitation.acceptedAt) return { ok: false, reason: 'not-accepted' };
+    if (Date.parse(invitation.expiresAt) <= this.now().getTime()) return { ok: false, reason: 'expired' };
+    const now = this.now();
+    const current = invitation.controllerLease;
+    const currentActive = current && Date.parse(current.expiresAt) > now.getTime() ? current : undefined;
+    if (currentActive && currentActive.deviceId !== input.deviceId && !input.takeover) {
+      return { ok: false, reason: 'held-by-another-device', lease: { ...currentActive } };
+    }
+    const lease: ControllerLeaseRecord = {
+      leaseId: `lease-${randomUUID()}`,
+      deviceId: input.deviceId,
+      ...(input.holderLabel ? { holderLabel: input.holderLabel.slice(0, 80) } : {}),
+      acquiredAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + Math.max(1_000, input.ttlMs ?? 30_000)).toISOString(),
+      ...(typeof input.projectionVersion === 'number' ? { projectionVersion: input.projectionVersion } : {}),
+      ...(input.policyVersion !== undefined ? { policyVersion: input.policyVersion } : {}),
+    };
+    const updated = { ...invitation, controllerLease: lease };
+    this.save(updated);
+    return {
+      ok: true,
+      invitation: cloneInvitation(updated),
+      lease: { ...lease },
+      ...(currentActive ? { previousLease: { ...currentActive } } : {}),
     };
   }
 
