@@ -69,8 +69,8 @@ export function isSubmitMessageRequest(value: unknown): value is SubmitMessageRe
     && typeof req.commandId === 'string'
     && typeof req.idempotencyKey === 'string'
     && typeof req.text === 'string'
-    && req.text.length > 0
     && typeof req.appendNewline === 'boolean'
+    && (req.text.length > 0 || req.appendNewline)
     && typeof req.baseRevision === 'number'
     && Number.isInteger(req.baseRevision)
     && req.baseRevision >= 0

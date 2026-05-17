@@ -210,6 +210,7 @@ async function acquireMemberControllerLease(
     body: JSON.stringify({
       nodeId,
       holderLabel: opts.holderLabel ?? 'test device',
+      ...(opts.projectionVersion !== undefined ? { projectionId: 'proj-primary', sessionAlias: 'primary' } : {}),
       ...(opts.projectionVersion !== undefined ? { projectionVersion: opts.projectionVersion } : {}),
       ...(opts.policyVersion !== undefined ? { policyVersion: opts.policyVersion } : {}),
       ...(opts.takeover ? { takeover: true } : {}),
@@ -739,6 +740,15 @@ describe('relay invitations', () => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, [
+      'control.snapshot',
+      'control.state-delta',
+      'policy-sync',
+      'terminal-stream',
+      'terminal-input',
+    ]);
+    ackPolicyMessages(nodeConn.ws, node.nodeId);
+    sockets.push(nodeConn.ws);
     const created = relay.createInvitation({
       nodeId: node.nodeId,
       subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
@@ -746,6 +756,12 @@ describe('relay invitations', () => {
     });
     const accepted = relay.acceptInvitation(created.token, 'Laptop');
     if (!accepted.ok) throw new Error('expected accept');
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    publishSessionProjection(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: accepted.accepted.invitation.invitationId,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    });
     const csrfCookie = `kookr_relay_csrf_token=${accepted.accepted.csrfToken}`;
     const memberCookie = `kookr_relay_member_token=${accepted.accepted.memberToken}`;
 
@@ -767,7 +783,14 @@ describe('relay invitations', () => {
         cookie: [memberCookie, csrfCookie, `kookr_relay_device_id=${accepted.accepted.deviceId}`].join('; '),
         'x-kookr-csrf-token': accepted.accepted.csrfToken,
       },
-      body: JSON.stringify({ nodeId: node.nodeId, holderLabel: 'Laptop', projectionVersion: 1, policyVersion: 1 }),
+      body: JSON.stringify({
+        nodeId: node.nodeId,
+        holderLabel: 'Laptop',
+        projectionId: 'proj-primary',
+        sessionAlias: 'primary',
+        projectionVersion: 1,
+        policyVersion: 1,
+      }),
     });
     expect(acquire.status).toBe(200);
     const acquired = await acquire.json() as { lease: { leaseId: string; deviceId: string } };
@@ -790,7 +813,14 @@ describe('relay invitations', () => {
         cookie: [memberCookie, csrfCookie, 'kookr_relay_device_id=phone-device'].join('; '),
         'x-kookr-csrf-token': accepted.accepted.csrfToken,
       },
-      body: JSON.stringify({ nodeId: node.nodeId, holderLabel: 'Phone', projectionVersion: 1, policyVersion: 1 }),
+      body: JSON.stringify({
+        nodeId: node.nodeId,
+        holderLabel: 'Phone',
+        projectionId: 'proj-primary',
+        sessionAlias: 'primary',
+        projectionVersion: 1,
+        policyVersion: 1,
+      }),
     });
     expect(blockedTakeover.status).toBe(409);
 
@@ -801,7 +831,15 @@ describe('relay invitations', () => {
         cookie: [memberCookie, csrfCookie, 'kookr_relay_device_id=phone-device'].join('; '),
         'x-kookr-csrf-token': accepted.accepted.csrfToken,
       },
-      body: JSON.stringify({ nodeId: node.nodeId, holderLabel: 'Phone', projectionVersion: 1, policyVersion: 1, takeover: true }),
+      body: JSON.stringify({
+        nodeId: node.nodeId,
+        holderLabel: 'Phone',
+        projectionId: 'proj-primary',
+        sessionAlias: 'primary',
+        projectionVersion: 1,
+        policyVersion: 1,
+        takeover: true,
+      }),
     });
     expect(takeover.status).toBe(200);
     await expect(takeover.json()).resolves.toEqual(expect.objectContaining({

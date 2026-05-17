@@ -65,7 +65,19 @@ export type InvitationRevokeResult =
 
 export type GrantRequestResult =
   | { ok: true; invitation: InvitationRecord; request: TaskShareGrantRequest }
-  | { ok: false; reason: 'not-found' | 'expired' | 'revoked' | 'not-accepted' | 'empty-grants' | 'already-resolved' };
+  | {
+      ok: false;
+      reason:
+        | 'not-found'
+        | 'expired'
+        | 'revoked'
+        | 'not-accepted'
+        | 'empty-grants'
+        | 'already-pending'
+        | 'already-resolved'
+        | 'denied-cooldown';
+      retryAt?: string;
+    };
 
 export type ControllerLeaseResult =
   | { ok: true; invitation: InvitationRecord; lease: ControllerLeaseRecord; previousLease?: ControllerLeaseRecord }
@@ -98,6 +110,7 @@ const PASSWORD_VERIFIER_KEY_LENGTH = 32;
 const PASSWORD_VERIFIER_N = 16_384;
 const PASSWORD_VERIFIER_R = 8;
 const PASSWORD_VERIFIER_P = 1;
+const DENIED_GRANT_REQUEST_COOLDOWN_MS = 5 * 60 * 1000;
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -188,6 +201,12 @@ function sanitizeGrantRequestComment(comment: string | undefined): string | unde
     .trim()
     .slice(0, MAX_GRANT_REQUEST_COMMENT_LENGTH);
   return sanitized || undefined;
+}
+
+function sameGrantSet(a: readonly ShareGrant[], b: readonly ShareGrant[]): boolean {
+  const left = [...new Set(a)].sort();
+  const right = [...new Set(b)].sort();
+  return left.length === right.length && left.every((grant, index) => grant === right[index]);
 }
 
 function verifyPassword(password: string, verifier: string): boolean {
@@ -484,6 +503,18 @@ export class InvitationStore {
     if (currentActive && currentActive.deviceId !== input.deviceId && !input.takeover) {
       return { ok: false, reason: 'held-by-another-device', lease: { ...currentActive } };
     }
+    if (currentActive && currentActive.deviceId === input.deviceId && !input.takeover) {
+      const refreshed: ControllerLeaseRecord = {
+        ...currentActive,
+        ...(input.holderLabel ? { holderLabel: input.holderLabel.slice(0, 80) } : {}),
+        expiresAt: new Date(now.getTime() + Math.max(1_000, input.ttlMs ?? 30_000)).toISOString(),
+        ...(typeof input.projectionVersion === 'number' ? { projectionVersion: input.projectionVersion } : {}),
+        ...(input.policyVersion !== undefined ? { policyVersion: input.policyVersion } : {}),
+      };
+      const updated = { ...invitation, controllerLease: refreshed };
+      this.save(updated);
+      return { ok: true, invitation: cloneInvitation(updated), lease: { ...refreshed } };
+    }
     const lease: ControllerLeaseRecord = {
       leaseId: `lease-${randomUUID()}`,
       deviceId: input.deviceId,
@@ -543,6 +574,23 @@ export class InvitationStore {
     if (Date.parse(invitation.expiresAt) <= this.now().getTime()) return { ok: false, reason: 'expired' };
     const requestedGrants = normalizeMutableShareGrants(input.requestedGrants).filter((grant) => !invitation.grants.includes(grant));
     if (requestedGrants.length === 0) return { ok: false, reason: 'empty-grants' };
+    const requests = invitation.grantRequests ?? [];
+    const duplicatePending = [...requests].reverse().find((request) => (
+      request.status === 'pending' && sameGrantSet(request.requestedGrants, requestedGrants)
+    ));
+    if (duplicatePending) return { ok: false, reason: 'already-pending' };
+    const recentDenied = [...requests].reverse().find((request) => (
+      request.status === 'denied' && sameGrantSet(request.requestedGrants, requestedGrants)
+    ));
+    if (recentDenied) {
+      const deniedAt = Date.parse(recentDenied.resolvedAt ?? recentDenied.requestedAt);
+      if (Number.isFinite(deniedAt)) {
+        const retryAtMs = deniedAt + DENIED_GRANT_REQUEST_COOLDOWN_MS;
+        if (retryAtMs > this.now().getTime()) {
+          return { ok: false, reason: 'denied-cooldown', retryAt: new Date(retryAtMs).toISOString() };
+        }
+      }
+    }
     const request: TaskShareGrantRequest = {
       requestId: `grant-req-${randomUUID()}`,
       invitationId: input.invitationId,
@@ -554,7 +602,7 @@ export class InvitationStore {
     };
     const updated = {
       ...invitation,
-      grantRequests: [...(invitation.grantRequests ?? []), request],
+      grantRequests: [...requests, request],
     };
     this.save(updated);
     return { ok: true, invitation: cloneInvitation(updated), request: { ...request, requestedGrants: [...request.requestedGrants] } };
