@@ -15,6 +15,30 @@ async function createTask(request: APIRequestContext): Promise<void> {
   expect(res.status()).toBe(201);
 }
 
+async function getLatestTmuxName(request: APIRequestContext): Promise<string> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const res = await request.get('/api/tasks');
+    const tasks = await res.json() as Array<{
+      status: string;
+      sessions: Array<{ tmuxSession: string }>;
+    }>;
+    const inProgress = tasks.filter((task) => task.status === 'inProgress');
+    const last = inProgress.at(-1);
+    const session = last?.sessions.at(-1);
+    if (session) return session.tmuxSession;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('Timed out waiting for an in-progress task session');
+}
+
+async function getKeysReceived(request: APIRequestContext, tmuxName: string): Promise<string[]> {
+  const res = await request.get(`/api/test/keys-received/${encodeURIComponent(tmuxName)}`);
+  expect(res.status()).toBe(200);
+  const body = await res.json() as { keysReceived: string[] };
+  return body.keysReceived;
+}
+
 async function selectTask(page: Page) {
   await expect(page.locator('.statusbar')).toContainText('1 task', { timeout: 5_000 });
   const shareButton = page.getByTestId('task-share-button');
@@ -93,6 +117,72 @@ test.describe('Easy connection sharing Phase A0', () => {
     await expect(dialog.getByRole('textbox', { name: 'Share ID' })).toHaveCount(0);
     await expect(dialog.getByRole('textbox', { name: 'Password' })).toHaveCount(0);
     await expect(collaboratorPage.getByRole('status')).toContainText('Disconnected', { timeout: 10_000 });
+
+    await collaborator.close();
+  });
+
+  test('owner approval unlocks collaborator terminal input without reloading the join page', async ({ page, request, browser }) => {
+    await createTask(request);
+    const tmuxName = await getLatestTmuxName(request);
+    await selectTask(page);
+    const joinUrl = await createShareFromDashboard(page);
+
+    const collaborator = await browser.newContext();
+    const collaboratorPage = await collaborator.newPage();
+    const requestedUrls: string[] = [];
+    collaboratorPage.on('request', (req) => requestedUrls.push(req.url()));
+    collaboratorPage.on('websocket', (ws) => requestedUrls.push(ws.url()));
+
+    const joinResponse = await collaboratorPage.goto(joinUrl);
+    expect(joinResponse?.headers()['referrer-policy']).toBe('no-referrer');
+    await expect.poll(() => collaboratorPage.evaluate(() => location.hash)).toBe('');
+    await collaboratorPage.getByLabel('Display name').fill('Dogfood guest');
+    await collaboratorPage.getByRole('button', { name: 'Join' }).click();
+
+    await expect(collaboratorPage.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
+    await expect(collaboratorPage.getByRole('button', { name: 'Request terminal input' })).toBeEnabled({ timeout: 10_000 });
+    await expect(collaboratorPage.getByLabel('Terminal input message')).toBeDisabled();
+
+    const message = 'approved terminal input from dashboard flow';
+    const keysBeforeApprovalRequest = await getKeysReceived(request, tmuxName);
+    await collaboratorPage.getByRole('button', { name: 'Request terminal input' }).click();
+    await expect(collaboratorPage.getByLabel('Terminal sharing status')).toContainText('Waiting for owner approval.');
+    await expect(collaboratorPage.getByLabel('Terminal input message')).toBeDisabled();
+    expect(await getKeysReceived(request, tmuxName)).toEqual(keysBeforeApprovalRequest);
+    const reloadSentinel = await collaboratorPage.evaluate(() => {
+      const value = crypto.randomUUID();
+      (window as Window & { __kookrApprovalSentinel?: string }).__kookrApprovalSentinel = value;
+      return value;
+    });
+
+    const dialog = page.getByRole('dialog', { name: 'Share this task' });
+    await expect(dialog.getByRole('status')).toContainText('Viewer connected', { timeout: 10_000 });
+    const requestPanel = dialog.getByLabel('Collaborator grant requests');
+    await expect(requestPanel).toContainText('Watch terminal, Send messages', { timeout: 10_000 });
+    await requestPanel.getByRole('button', { name: 'Approve' }).click();
+    await expect(dialog.getByLabel('Approved collaborator grants')).toContainText('Watch terminal, Send messages', { timeout: 10_000 });
+
+    await expect(collaboratorPage.getByText('Terminal input approved')).toBeVisible({ timeout: 10_000 });
+    await expect(collaboratorPage.getByLabel('Shared terminal')).toBeVisible();
+    const terminalInput = collaboratorPage.getByLabel('Terminal input message');
+    await expect(terminalInput).toBeEnabled({ timeout: 10_000 });
+    await expect.poll(() => collaboratorPage.evaluate(() => (
+      (window as Window & { __kookrApprovalSentinel?: string }).__kookrApprovalSentinel
+    ))).toBe(reloadSentinel);
+
+    await terminalInput.fill(message);
+    await collaboratorPage.getByRole('button', { name: 'Send Enter' }).click();
+    await expect(collaboratorPage.getByRole('status')).toContainText(/Terminal input (sent|accepted)/, { timeout: 10_000 });
+    await expect(async () => {
+      expect(await getKeysReceived(request, tmuxName)).toContain(message);
+    }).toPass({ timeout: 5_000 });
+
+    expect(requestedUrls.some((url) => url.includes('inviteToken=') || url.includes('password=') || url.includes('memberToken='))).toBe(false);
+
+    await dialog.getByRole('button', { name: 'Revoke' }).click();
+    await expect(dialog.getByRole('status')).toContainText('Revoked', { timeout: 10_000 });
+    await expect(collaboratorPage.getByRole('status')).toContainText('Disconnected', { timeout: 10_000 });
+    await expect(terminalInput).toBeDisabled();
 
     await collaborator.close();
   });
