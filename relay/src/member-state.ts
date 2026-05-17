@@ -31,6 +31,8 @@ export function memberBlockedMessage(reason: MemberBlockedReason): string {
       return 'Terminal sharing is not available for this session.';
     case 'node.untrusted':
       return 'The owner has not enabled terminal sharing on this node.';
+    case 'transport.insecure':
+      return 'Terminal sharing requires HTTPS for public links.';
   }
 }
 

@@ -769,6 +769,123 @@ describe('relay invitations', () => {
     }));
   });
 
+  it('blocks projected terminal stream and input over public insecure transport while allowing loopback HTTP', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin', trustedProxy: true });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, [
+      'control.snapshot',
+      'control.state-delta',
+      'policy-sync',
+      'terminal-stream',
+      'terminal-input',
+    ]);
+    ackPolicyMessages(nodeConn.ws, node.nodeId);
+    sockets.push(nodeConn.ws);
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalInput'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'operator');
+    if (!accepted.ok) throw new Error('expected accept');
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    publishSessionProjection(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: accepted.accepted.invitation.invitationId,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    });
+
+    const stateUrl = new URL('/relay/dashboard/state', relay.url());
+    stateUrl.searchParams.set('nodeId', node.nodeId);
+    stateUrl.searchParams.set('projectionId', 'proj-primary');
+    stateUrl.searchParams.set('sessionAlias', 'primary');
+    stateUrl.searchParams.set('afterSeq', '0');
+
+    const publicInsecureHeaders = {
+      cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+      'x-forwarded-for': '203.0.113.10',
+      'x-forwarded-proto': 'http',
+    };
+    const publicRes = await fetch(stateUrl, { headers: publicInsecureHeaders });
+    expect(publicRes.status).toBe(403);
+    await expect(publicRes.json()).resolves.toEqual({ error: 'transport.insecure' });
+
+    const memberStateUrl = new URL('/relay/member/share-state', relay.url());
+    const memberStateRes = await fetch(memberStateUrl, { headers: publicInsecureHeaders });
+    expect(memberStateRes.status).toBe(200);
+    await expect(memberStateRes.json()).resolves.toEqual({
+      state: expect.objectContaining({
+        terminal: {
+          state: 'blocked',
+          reason: 'transport.insecure',
+          message: 'Terminal sharing requires HTTPS for public links.',
+        },
+      }),
+    });
+
+    const loopbackRes = await fetch(stateUrl, {
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+    });
+    expect(loopbackRes.status).toBe(200);
+
+    const member = await connectMember(relay, node.nodeId, accepted.accepted.memberToken);
+    sockets.push(member.ws);
+    member.ws.close();
+
+    const wsUrl = new URL('/relay/client', relay.url());
+    wsUrl.protocol = 'ws:';
+    wsUrl.searchParams.set('nodeId', node.nodeId);
+    wsUrl.searchParams.set('projectionId', 'proj-primary');
+    wsUrl.searchParams.set('sessionAlias', 'primary');
+    const publicTerminalStream = new WebSocket(wsUrl, { headers: publicInsecureHeaders });
+    await new Promise<void>((resolve, reject) => {
+      publicTerminalStream.once('open', () => {
+        publicTerminalStream.close();
+        reject(new Error('public insecure terminal stream unexpectedly connected'));
+      });
+      publicTerminalStream.once('unexpected-response', (_req, res) => {
+        expect(res.statusCode).toBe(403);
+        resolve();
+      });
+      publicTerminalStream.once('error', reject);
+    });
+
+    const memberUrl = new URL('/relay/client', relay.url());
+    memberUrl.protocol = 'ws:';
+    memberUrl.searchParams.set('nodeId', node.nodeId);
+    const publicMember = new WebSocket(memberUrl, { headers: publicInsecureHeaders });
+    const messages: unknown[] = [];
+    publicMember.on('message', (data) => messages.push(JSON.parse(data.toString()) as unknown));
+    sockets.push(publicMember);
+    await once(publicMember, 'open');
+    await waitFor(() => messages.some((msg) => (msg as { type?: string }).type === 'relay.memberShareState'));
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'relay.memberShareState',
+      state: expect.objectContaining({
+        terminal: expect.objectContaining({
+          state: 'blocked',
+          reason: 'transport.insecure',
+        }),
+      }),
+    }));
+    publicMember.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-insecure-input',
+      action: 'submitMessage',
+      projectionId: 'proj-primary',
+      sessionAlias: 'primary',
+      payload: { text: 'blocked' },
+    }));
+    await waitFor(() => messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-insecure-input'));
+    expect(messages).toContainEqual(expect.objectContaining({
+      commandId: 'cmd-insecure-input',
+      outcome: 'rejected-pre-audit',
+      reason: 'transport.insecure',
+    }));
+    expect(nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-insecure-input')).toBe(false);
+  });
+
   it('allows raw terminal access only for matching session-scoped invitations', async () => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);

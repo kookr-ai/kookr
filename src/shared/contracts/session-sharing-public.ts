@@ -10,7 +10,8 @@ export type MemberBlockedReason =
   | 'policy.syncStale'
   | 'node.offline'
   | 'node.featureUnavailable'
-  | 'node.untrusted';
+  | 'node.untrusted'
+  | 'transport.insecure';
 
 export type MemberTerminalSharingStatus =
   | { state: 'available' }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { asGrantId, asNodeEpoch, asNodeId, asPolicyVersion } from '../../src/remote/ids.js';
 import type { InvitationRecord } from './invitations/store.js';
-import { buildMemberShareState } from './member-state.js';
+import { buildMemberShareState, memberBlockedMessage } from './member-state.js';
 
 function invitation(overrides: Partial<InvitationRecord> = {}): InvitationRecord {
   return {
@@ -24,6 +24,10 @@ function invitation(overrides: Partial<InvitationRecord> = {}): InvitationRecord
 }
 
 describe('buildMemberShareState', () => {
+  it('describes insecure public terminal transport without owner internals', () => {
+    expect(memberBlockedMessage('transport.insecure')).toBe('Terminal sharing requires HTTPS for public links.');
+  });
+
   it('redacts owner-only fields and reports missing terminal trust', () => {
     const state = buildMemberShareState({
       invitation: invitation({ grants: ['view', 'terminalView', 'terminalInput'] }),
