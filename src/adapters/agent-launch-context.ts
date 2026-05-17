@@ -5,6 +5,7 @@ import { ENTER_BYTES } from './keystroke.js';
 import type { SessionId, TerminalBackend } from './terminal-backend.js';
 
 const promptEncoder = new TextEncoder();
+const promptDecoder = new TextDecoder('utf-8', { fatal: false });
 export const INITIAL_PROMPT_CHUNK_BYTES = 16 * 1024;
 
 /**
@@ -23,11 +24,13 @@ const PASTE_END = promptEncoder.encode(PASTE_END_TEXT);
 
 /**
  * Default cushion (ms) between the bracketed prompt block and the
- * submitting Enter. Bracketed paste makes the Enter unambiguous on its own;
- * this small gap just keeps the Enter in its own write/`read()` so a UI
- * that finalises the paste lazily still sees a clean keystroke.
+ * submitting Enter. Claude Code finalises bracketed paste asynchronously
+ * under dtach; 150ms left the prompt visible but unsubmitted in live repro,
+ * while 500ms reliably submitted.
  */
-export const DEFAULT_PROMPT_SUBMIT_DELAY_MS = 150;
+export const DEFAULT_PROMPT_SUBMIT_DELAY_MS = 500;
+export const DEFAULT_PROMPT_READY_TIMEOUT_MS = 15_000;
+const DEFAULT_PROMPT_READY_POLL_MS = 100;
 
 /** Env var that disables bracketed-paste prompt submission when set falsey. */
 export const PROMPT_BRACKETED_PASTE_ENV = 'KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE';
@@ -138,6 +141,17 @@ export interface DeliverInitialPromptOptions {
    */
   bracketedPaste?: boolean;
   /**
+   * Bracketed-paste mode only: wait until Claude Code's full-screen TUI has
+   * painted its composer before sending the paste block. Without this, the
+   * paste opener can arrive before Claude enables bracketed-paste mode and
+   * the prompt remains visible but unsubmitted.
+   */
+  waitForReady?: boolean;
+  /** Bracketed-paste ready wait timeout. On timeout, delivery proceeds. */
+  readyTimeoutMs?: number;
+  /** Bracketed-paste ready wait poll interval. */
+  readyPollMs?: number;
+  /**
    * Bracketed-paste mode only: cushion (ms) between the wrapped prompt
    * block and the submitting Enter. Defaults to
    * {@link DEFAULT_PROMPT_SUBMIT_DELAY_MS}.
@@ -152,6 +166,35 @@ export interface DeliverInitialPromptOptions {
 
 function realSleep(ms: number): Promise<void> {
   return ms > 0 ? new Promise((res) => setTimeout(res, ms)) : Promise.resolve();
+}
+
+export function isClaudeComposerReady(text: string): boolean {
+  const plain = stripTerminalControls(text);
+  return (plain.includes('ClaudeCode') || plain.includes('Claude Code')) && plain.includes('❯');
+}
+
+function stripTerminalControls(text: string): string {
+  return text
+    // OSC sequences, including terminal-title updates.
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    // CSI/ANSI escape sequences.
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+async function waitForComposerReady(
+  backend: TerminalBackend,
+  sessionId: SessionId,
+  options: Required<Pick<DeliverInitialPromptOptions, 'readyTimeoutMs' | 'readyPollMs' | 'sleep'>>,
+): Promise<void> {
+  const deadline = Date.now() + options.readyTimeoutMs;
+  while (Date.now() <= deadline) {
+    const bytes = await backend.captureBytes(sessionId);
+    if (isClaudeComposerReady(promptDecoder.decode(bytes))) return;
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await options.sleep(Math.min(options.readyPollMs, remainingMs));
+  }
 }
 
 /** Split a prompt byte string into ARG_MAX-safe terminal-write chunks. */
@@ -205,7 +248,12 @@ export async function deliverInitialPromptToSession(
   const safeBody = prompt.replaceAll(PASTE_START_TEXT, '').replaceAll(PASTE_END_TEXT, '');
   const chunks = chunkPromptBytes(promptEncoder.encode(safeBody));
   const submitDelayMs = options.submitDelayMs ?? DEFAULT_PROMPT_SUBMIT_DELAY_MS;
+  const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_PROMPT_READY_TIMEOUT_MS;
+  const readyPollMs = options.readyPollMs ?? DEFAULT_PROMPT_READY_POLL_MS;
   const sleep = options.sleep ?? realSleep;
+  if (options.waitForReady) {
+    await waitForComposerReady(backend, sessionId, { readyTimeoutMs, readyPollMs, sleep });
+  }
   // Deliver the body wrapped in paste markers, then send Enter as its own
   // write so it is parsed as a keystroke, not paste content.
   await backend.writeSequence(sessionId, [PASTE_START, ...chunks, PASTE_END]);

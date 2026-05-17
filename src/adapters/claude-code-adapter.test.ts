@@ -75,7 +75,12 @@ describe('ClaudeCodeAdapter', () => {
     const writeSpy = vi.spyOn(backend, 'write');
 
     const task = taskStore.createTask('Fix bug', '/cwd');
-    const sessionId = await bracketAdapter.launch(task.id, 'Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Fix bug', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    expect(backend.getWrittenText(pendingSessionId)).toBe('');
+    backend.emit(pendingSessionId, 'ClaudeCode\n❯ ');
+    const sessionId = await launchPromise;
 
     // Body wrapped in ESC[200~ … ESC[201~; Enter is a separate write
     // carrying exactly the CR (0x0d) byte — never bundled with the body.
@@ -97,7 +102,12 @@ describe('ClaudeCodeAdapter', () => {
     try {
       const defaultAdapter = new ClaudeCodeAdapter(backend, taskStore);
       const task = taskStore.createTask('Fix bug', '/cwd');
-      const sessionId = await defaultAdapter.launch(task.id, 'Fix bug', '/cwd');
+      const launchPromise = defaultAdapter.launch(task.id, 'Fix bug', '/cwd');
+      await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+      const pendingSessionId = [...backend.sessions.keys()][0]!;
+      expect(backend.getWrittenText(pendingSessionId)).toBe('');
+      backend.emit(pendingSessionId, 'ClaudeCode\n❯ ');
+      const sessionId = await launchPromise;
       expect(backend.getWrittenText(sessionId)).toBe('\x1b[200~Fix bug\x1b[201~\r');
     } finally {
       vi.unstubAllEnvs();
