@@ -261,6 +261,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       // deliverInitialPromptToSession.
       await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
         bracketedPaste: this.promptBracketedPaste,
+        waitForReady: this.promptBracketedPaste,
       });
     }
 

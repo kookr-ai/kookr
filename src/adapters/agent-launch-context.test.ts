@@ -8,8 +8,10 @@ import {
   buildAgentLaunchContext,
   deliverInitialPromptToSession,
   resolveBracketedPasteSubmit,
+  isClaudeComposerReady,
   PROMPT_BRACKETED_PASTE_ENV,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
+  DEFAULT_PROMPT_READY_TIMEOUT_MS,
   INITIAL_PROMPT_CHUNK_BYTES,
 } from './agent-launch-context.js';
 
@@ -255,8 +257,40 @@ describe('deliverInitialPromptToSession', () => {
       sleep,
     });
 
-    expect(sleep).toHaveBeenCalledWith(DEFAULT_PROMPT_SUBMIT_DELAY_MS);
+    expect(DEFAULT_PROMPT_SUBMIT_DELAY_MS).toBe(500);
+    expect(sleep).toHaveBeenCalledWith(500);
     expect(backend.getWrittenText('s5')).toBe('\x1b[200~hi\x1b[201~\r');
+  });
+
+  test('bracketed-paste mode can wait for Claude Code composer readiness before writing', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s6', 'claude');
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const writeSpy = vi.spyOn(backend, 'write');
+    let sleepCalls = 0;
+    const sleep = vi.fn(async (_ms: number) => {
+      sleepCalls += 1;
+      if (sleepCalls === 1) {
+        backend.emit('s6', '\x1b]0;Claude Code\x07ClaudeCode\n❯ ');
+      }
+    });
+
+    await deliverInitialPromptToSession(backend, 's6', 'ready submit', {
+      bracketedPaste: true,
+      waitForReady: true,
+      readyTimeoutMs: DEFAULT_PROMPT_READY_TIMEOUT_MS,
+      readyPollMs: 10,
+      submitDelayMs: 0,
+      sleep,
+    });
+
+    expect(sleep).toHaveBeenCalledWith(10);
+    expect(writeSeqSpy).toHaveBeenCalledTimes(1);
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(writeSeqSpy.mock.invocationCallOrder[0]).toBeGreaterThan(
+      sleep.mock.invocationCallOrder[0],
+    );
+    expect(backend.getWrittenText('s6')).toBe('\x1b[200~ready submit\x1b[201~\r');
   });
 });
 
@@ -285,5 +319,13 @@ describe('resolveBracketedPasteSubmit', () => {
     // An unrecognised env value falls through to the default rather than
     // silently disabling the fix.
     expect(resolveBracketedPasteSubmit(undefined, { [PROMPT_BRACKETED_PASTE_ENV]: 'garbage' })).toBe(true);
+  });
+});
+
+describe('isClaudeComposerReady', () => {
+  test('recognises Claude Code composer output with terminal controls stripped', () => {
+    expect(isClaudeComposerReady('\x1b]0;Claude Code\x07\x1b[7mClaudeCode\x1b[0m\n❯ ')).toBe(true);
+    expect(isClaudeComposerReady('Claude Code\n❯ ')).toBe(true);
+    expect(isClaudeComposerReady('ClaudeCode without composer')).toBe(false);
   });
 });
