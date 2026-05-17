@@ -1178,6 +1178,37 @@ kbd {
   align-items: center;
   flex-shrink: 0;
 }
+.task-share-header-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+}
+.task-share-header-button > span:first-child {
+  flex-shrink: 0;
+}
+.task-share-header-badge {
+  min-width: 0;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 3px;
+  padding: 1px 5px;
+  background: rgba(96,165,250,0.12);
+  color: var(--blue);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.task-share-header-button--viewerConnected .task-share-header-badge {
+  background: rgba(52,211,153,0.12);
+  color: var(--green);
+}
+.task-share-header-button--approvalRequested .task-share-header-badge {
+  background: rgba(251,191,36,0.14);
+  color: var(--amber);
+}
 .detail-header-warning {
   max-width: 120px;
 }

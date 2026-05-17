@@ -41,6 +41,7 @@ interface Props {
   taskLabel: string;
   open: boolean;
   onClose: () => void;
+  onSharesChanged?: (shares: TaskShareSummary[]) => void;
 }
 
 interface GeneratedJoinUrl {
@@ -76,6 +77,10 @@ function isActiveShare(share: TaskShareSummary): boolean {
 
 function isTerminalShare(share: TaskShareSummary): boolean {
   return share.state === 'revoked' || share.state === 'expired';
+}
+
+function replaceShare(shares: TaskShareSummary[], nextShare: TaskShareSummary): TaskShareSummary[] {
+  return [nextShare, ...shares.filter((share) => share.invitationId !== nextShare.invitationId)];
 }
 
 function formatExpiry(expiresAt: string): string {
@@ -171,7 +176,7 @@ function terminalSharingTitle(share: TaskShareSummary): string {
   }
 }
 
-export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
+export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChanged }: Props) {
   const [status, setStatus] = useState<ShareModalStatus>('idle');
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [shares, setShares] = useState<TaskShareSummary[]>([]);
@@ -184,6 +189,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
   const [newShareMode, setNewShareMode] = useState(false);
   const [copiedSecret, setCopiedSecret] = useState<CopiedShareSecret | null>(null);
   const [passwordRevealed, setPasswordRevealed] = useState(false);
+  const sharesRef = useRef<TaskShareSummary[]>([]);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -216,6 +222,12 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
   const longLivedShare = ttlMs > ONE_DAY_MS;
   const longLivedWarningId = 'task-share-long-lived-warning';
 
+  function commitShares(nextShares: TaskShareSummary[]) {
+    sharesRef.current = nextShares;
+    setShares(nextShares);
+    onSharesChanged?.(nextShares);
+  }
+
   async function loadShares() {
     const res = await fetch('/api/share/task');
     if (res.status === 409) {
@@ -231,7 +243,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
         setTtlMs(SHARE_DURATIONS.filter((option) => option.ms <= body.shareMaxTtlMs!).at(-1)?.ms ?? DEFAULT_TTL_MS);
       }
     }
-    setShares(body.shares);
+    commitShares(body.shares);
     setStatus('ready');
   }
 
@@ -382,7 +394,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
         ...(body.shareTicket ? { ticket: body.shareTicket } : {}),
       });
       setNewShareMode(false);
-      setShares((prev) => [body.share, ...prev.filter((share) => share.invitationId !== body.share.invitationId)]);
+      commitShares(replaceShare(sharesRef.current, body.share));
       setStatus('ready');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Share link was not created.');
@@ -402,7 +414,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
       });
       if (!res.ok) throw new Error(`revoke-${res.status}`);
       const body = await res.json() as RevokeTaskShareApiResponse;
-      setShares((prev) => [body.share, ...prev.filter((share) => share.invitationId !== body.share.invitationId)]);
+      commitShares(replaceShare(sharesRef.current, body.share));
       setNewShareMode(false);
       setGeneratedJoinUrl((prev) => (
         prev?.invitationId === body.share.invitationId ? null : prev
@@ -429,7 +441,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
       );
       if (!res.ok) throw new Error(`grant-request-${decision}-${res.status}`);
       const body = await res.json() as ResolveTaskShareGrantRequestApiResponse;
-      setShares((prev) => [body.share, ...prev.filter((share) => share.invitationId !== body.share.invitationId)]);
+      commitShares(replaceShare(sharesRef.current, body.share));
     } catch {
       setError(decision === 'approve' ? 'Grant request was not approved.' : 'Grant request was not denied.');
     } finally {
