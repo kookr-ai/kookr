@@ -109,8 +109,10 @@ function shareCreateErrorMessage(errorCode: string | undefined): string {
 
 function grantLabel(grant: TaskShareMutableGrant): string {
   switch (grant) {
+    case 'terminalView':
+      return 'Watch terminal';
     case 'terminalInput':
-      return 'Terminal input';
+      return 'Send messages';
     case 'launch':
       return 'Launch';
     case 'stop':

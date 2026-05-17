@@ -23,7 +23,7 @@ import {
 import { isNodeHello, makeRelayHello, REMOTE_PROTOCOL_VERSION, type NodeHello } from '../src/remote/handshake.js';
 import type { CommandOutcome, CommandResult, RemoteCommandAction } from '../src/remote/command-journal.js';
 import { isRemoteControlEvent, type RemoteControlEvent } from '../src/remote/control-events.js';
-import { asGrantId, asNodeId, asSeq, asSessionEpoch, asSessionId, type GrantId, type NodeEpoch, type NodeId, type Seq, type SessionEpoch, type SessionId } from '../src/remote/ids.js';
+import { asGrantId, asNodeId, asPolicyVersion, asSeq, asSessionEpoch, asSessionId, type GrantId, type NodeEpoch, type NodeId, type PolicyVersion, type Seq, type SessionEpoch, type SessionId } from '../src/remote/ids.js';
 import type { KnownGrant, PolicyGrantRecord, PolicyRevokeMessage, ShareGrant, ShareSubject } from '../src/remote/policy-sync.js';
 import { grantForRemoteCommandAction, isKnownGrant } from '../src/remote/grants.js';
 import { isTerminalStreamEvent, type TerminalReplayGapEvent, type TerminalStreamEvent } from '../src/remote/stream-events.js';
@@ -35,6 +35,8 @@ import type {
   RemoteTaskProjectionV1,
   RelayNodeInvitationView,
   RelayShareTicketSecret,
+  ShareSessionProjectionEnvelopeV1,
+  ShareSessionProjectionV1,
   TaskShareGrant,
   TaskShareMutableGrant,
 } from '../src/remote/share-contract.js';
@@ -53,6 +55,8 @@ interface RelayClientSubscription {
   terminal?: {
     sessionId: SessionId;
     sessionEpoch: SessionEpoch;
+    projectionId?: string;
+    sessionAlias?: 'primary';
   };
 }
 
@@ -98,7 +102,9 @@ export interface RelayNodeStatus {
   lastSeen?: string;
   protocolVersion?: number;
   policySyncVersion: number;
-  policySyncStatus: 'synced' | 'syncing' | 'lagging';
+  policySyncStatus: PolicySyncState;
+  pendingPolicyGrantIds?: GrantId[];
+  lastPolicySyncError?: string;
   activeLeases: number;
   pendingPermissions: number;
 }
@@ -123,6 +129,19 @@ export interface RelayServerOptions {
   bindHost?: string;
   trustedProxy?: boolean;
   shareMaxTtlMs?: number;
+  policyAckTimeoutMs?: number;
+}
+
+type PolicySyncState = 'notSent' | 'sentAwaitingAck' | 'acked' | 'stale' | 'timedOut' | 'failed';
+
+interface NodePolicySyncState {
+  status: PolicySyncState;
+  relayPolicyVersion: PolicyVersion;
+  lastPolicySentAt?: string;
+  nodeAckedPolicyVersion?: PolicyVersion;
+  lastPolicyAckAt?: string;
+  pendingGrantIds: GrantId[];
+  lastSyncError?: string;
 }
 
 interface HostedRelayRuntimeOptions {
@@ -365,6 +384,17 @@ function parseSeq(value: string | null): Seq | null {
 }
 
 function parseTerminalSubscription(url: URL): RelayClientSubscription['terminal'] | undefined {
+  const projectionId = url.searchParams.get('projectionId');
+  const sessionAlias = url.searchParams.get('sessionAlias');
+  if (projectionId || sessionAlias) {
+    if (!projectionId || sessionAlias !== 'primary') return undefined;
+    return {
+      projectionId,
+      sessionAlias,
+      sessionId: asSessionId(''),
+      sessionEpoch: asSessionEpoch(''),
+    };
+  }
   const sessionId = url.searchParams.get('terminalSessionId');
   const sessionEpoch = url.searchParams.get('terminalSessionEpoch');
   if (!sessionId || !sessionEpoch) return undefined;
@@ -520,8 +550,8 @@ function countReason(metrics: HostedRelayMetricSnapshot, reason: string): void {
  * Admin-created non-task or unknown-grant invitations stay outside the
  * node-scoped dashboard surface.
  */
-const TASK_SHARE_GRANTS: readonly TaskShareGrant[] = ['view', 'terminalInput', 'launch', 'stop', 'permissionApprove'];
-const MUTABLE_TASK_SHARE_GRANTS: readonly TaskShareMutableGrant[] = ['terminalInput', 'launch', 'stop', 'permissionApprove'];
+const TASK_SHARE_GRANTS: readonly TaskShareGrant[] = ['view', 'terminalView', 'terminalInput', 'launch', 'stop', 'permissionApprove'];
+const MUTABLE_TASK_SHARE_GRANTS: readonly TaskShareMutableGrant[] = ['terminalView', 'terminalInput', 'launch', 'stop', 'permissionApprove'];
 
 function isTaskShareGrant(value: ShareGrant): value is TaskShareGrant {
   return (TASK_SHARE_GRANTS as readonly string[]).includes(value);
@@ -542,7 +572,9 @@ function isNodeTaskShare(
 /**
  * Project a Phase A0 task-share invitation down to the safe view returned by
  * the node-scoped endpoints. Relay-internal secrets/hashes (`tokenHash`,
- * `memberTokenHash`, `grantId`, `policyVersion`) are intentionally dropped.
+ * `memberTokenHash`, `grantId`) are intentionally dropped. `policyVersion`
+ * stays visible so the node can publish share-session projections against the
+ * same policy version that terminal-input authorization waits to be acked.
  * Callers pre-filter with {@link isNodeTaskShare}, so the non-task branch of
  * the `taskId` ternary is unreachable and only satisfies union narrowing.
  */
@@ -554,6 +586,7 @@ function toNodeInvitationView(invitation: InvitationRecord, connectedViewerCount
     grants: invitation.grants.filter(isTaskShareGrant),
     createdAt: invitation.createdAt,
     expiresAt: invitation.expiresAt,
+    policyVersion: invitation.policyVersion,
     connectedViewerCount,
     ...(invitation.revokedAt ? { revokedAt: invitation.revokedAt } : {}),
     ...(invitation.acceptedAt ? { acceptedAt: invitation.acceptedAt } : {}),
@@ -612,8 +645,11 @@ function parseNodeTaskShareBody(
 function parseGrantRequestBody(body: { grants?: unknown; comment?: unknown }): { grants: TaskShareMutableGrant[]; comment?: string } | { error: string } {
   const grants = parseGrantList(body.grants);
   if (!grants) return { error: 'non-empty grants array is required' };
-  const requestedGrants = [...new Set(grants)].filter(isMutableTaskShareGrant);
-  if (requestedGrants.length !== grants.length || requestedGrants.length === 0) {
+  const normalized = [...new Set(grants.includes('terminalInput') && !grants.includes('terminalView')
+    ? ['terminalView', ...grants]
+    : grants)];
+  const requestedGrants = normalized.filter(isMutableTaskShareGrant);
+  if (requestedGrants.length !== normalized.length || requestedGrants.length === 0) {
     return { error: 'request grants must be Phase E mutable task-share grants' };
   }
   if (body.comment !== undefined && typeof body.comment !== 'string') {
@@ -673,6 +709,48 @@ function remoteTaskProjectionEnvelopeFromEvent(event: RemoteControlEvent): Remot
   return null;
 }
 
+function isShareSessionProjection(value: unknown): value is ShareSessionProjectionV1 {
+  const projection = value as Partial<ShareSessionProjectionV1>;
+  const primary = projection.primarySharedSession as Partial<NonNullable<ShareSessionProjectionV1['primarySharedSession']>> | undefined;
+  return typeof value === 'object'
+    && value !== null
+    && projection.schemaVersion === 'share-session-projection.v1'
+    && typeof projection.nodeId === 'string'
+    && typeof projection.nodeInstanceId === 'string'
+    && typeof projection.projectionId === 'string'
+    && typeof projection.projectionVersion === 'number'
+    && typeof projection.policyVersion === 'number'
+    && typeof projection.generatedAt === 'string'
+    && (projection.expiresAt === undefined || typeof projection.expiresAt === 'string')
+    && (
+      projection.primarySharedSession === undefined
+      || (
+        typeof primary === 'object'
+        && primary !== null
+        && primary.sessionAlias === 'primary'
+        && typeof primary.sessionId === 'string'
+        && (primary.sessionEpoch === undefined || typeof primary.sessionEpoch === 'string')
+        && (primary.title === undefined || typeof primary.title === 'string')
+        && (primary.lastActivityAt === undefined || typeof primary.lastActivityAt === 'string')
+        && (primary.replayCursor === undefined || typeof primary.replayCursor === 'string')
+      )
+    );
+}
+
+function shareSessionProjectionEnvelopeFromEvent(event: RemoteControlEvent): ShareSessionProjectionEnvelopeV1 | null {
+  const payload = event.payload as Partial<ShareSessionProjectionEnvelopeV1>;
+  if (
+    typeof payload === 'object'
+    && payload !== null
+    && payload.type === 'remote.shareSessionProjection.v1'
+    && typeof payload.invitationId === 'string'
+    && isShareSessionProjection(payload.projection)
+  ) {
+    return payload as ShareSessionProjectionEnvelopeV1;
+  }
+  return null;
+}
+
 function isRemoteTaskProjectionPayload(value: unknown): boolean {
   return typeof value === 'object'
     && value !== null
@@ -689,11 +767,14 @@ function authAllows(auth: RelayClientAuth, grant: KnownGrant | null, invitationS
     if (!invitation || invitation.revokedAt || Date.parse(invitation.expiresAt) <= Date.now()) return false;
     grants = invitation.grants;
   }
+  if (grant === 'terminalInput') {
+    return grants.includes('terminalInput') && grants.includes('terminalView');
+  }
   return grants.some((candidate) => candidate === grant && isKnownGrant(candidate));
 }
 
 function authAllowsTerminalStream(auth: RelayClientAuth, invitationStore?: InvitationStore): boolean {
-  return authAllows(auth, 'terminalInput', invitationStore);
+  return authAllows(auth, 'terminalView', invitationStore);
 }
 
 function isRemoteCommandResultMessage(value: unknown): value is { type: 'remote.command.result' } & CommandResult {
@@ -740,12 +821,13 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const tokenIndex = new Map<string, NodeRegistration>();
   const nodeSockets = new Map<NodeId, WebSocket>();
   const nodeHello = new Map<NodeId, NodeHello>();
-  const nodePolicySync = new Map<NodeId, { status: RelayNodeStatus['policySyncStatus']; policyVersion: number; lastAckAt?: string }>();
+  const nodePolicySync = new Map<NodeId, NodePolicySyncState>();
   const subscribers = new Map<NodeId, Set<RelayClientSubscription>>();
   const commandRecipients = new Map<string, PendingCommandRecipient>();
   const presence = new Map<NodeId, Map<string, PresenceMember>>();
   const replay = new Map<NodeId, RemoteControlEvent[]>();
   const terminalReplay = new Map<NodeId, Map<string, TerminalStreamEvent[]>>();
+  const shareSessionProjections = new Map<string, ShareSessionProjectionEnvelopeV1>();
   const metadataAudit: RelayMetadataAuditRow[] = [];
   const ticketSourceFailures = new Map<string, { count: number; lockedUntil?: number }>();
   let closing = false;
@@ -779,6 +861,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const streamMetrics = { clientDropped: { backpressure: 0 } };
   const streamBackpressureBytes = opts.streamBackpressureBytes ?? 1_000_000;
   const terminalReplayMaxEvents = opts.terminalReplayMaxEvents ?? 512;
+  const policyAckTimeoutMs = opts.policyAckTimeoutMs ?? 5_000;
   const vapidKeys: VapidKeyStore = createVapidKeyStore();
   const pushSubscriptions: PushSubscriptionStore = createPushSubscriptionStore();
   const pushFanout: PushFanout = createPushFanout({
@@ -978,11 +1061,70 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     return revoked;
   };
 
+  const currentNodePolicyState = (nodeId: NodeId): NodePolicySyncState => {
+    const existing = nodePolicySync.get(nodeId);
+    if (!existing) {
+      return {
+        status: 'notSent',
+        relayPolicyVersion: asPolicyVersion(0),
+        pendingGrantIds: [],
+      };
+    }
+    if (
+      existing.status === 'sentAwaitingAck'
+      && existing.lastPolicySentAt
+      && Date.now() - Date.parse(existing.lastPolicySentAt) > policyAckTimeoutMs
+    ) {
+      return { ...existing, status: 'timedOut' };
+    }
+    if (
+      existing.nodeAckedPolicyVersion !== undefined
+      && existing.nodeAckedPolicyVersion < existing.relayPolicyVersion
+      && existing.status === 'acked'
+    ) {
+      return { ...existing, status: 'stale' };
+    }
+    return existing;
+  };
+
+  const setPolicySent = (nodeId: NodeId, policyVersion: PolicyVersion, pendingGrantIds: GrantId[]): void => {
+    const previous = currentNodePolicyState(nodeId);
+    nodePolicySync.set(nodeId, {
+      status: 'sentAwaitingAck',
+      relayPolicyVersion: policyVersion,
+      lastPolicySentAt: new Date().toISOString(),
+      ...(previous.nodeAckedPolicyVersion !== undefined ? { nodeAckedPolicyVersion: previous.nodeAckedPolicyVersion } : {}),
+      ...(previous.lastPolicyAckAt ? { lastPolicyAckAt: previous.lastPolicyAckAt } : {}),
+      pendingGrantIds,
+    });
+  };
+
+  const setPolicyFailed = (nodeId: NodeId, policyVersion: PolicyVersion, pendingGrantIds: GrantId[], error: string): void => {
+    const previous = currentNodePolicyState(nodeId);
+    nodePolicySync.set(nodeId, {
+      status: 'failed',
+      relayPolicyVersion: policyVersion,
+      lastPolicySentAt: previous.lastPolicySentAt,
+      ...(previous.nodeAckedPolicyVersion !== undefined ? { nodeAckedPolicyVersion: previous.nodeAckedPolicyVersion } : {}),
+      ...(previous.lastPolicyAckAt ? { lastPolicyAckAt: previous.lastPolicyAckAt } : {}),
+      pendingGrantIds,
+      lastSyncError: error,
+    });
+  };
+
+  const policyAckedForInput = (nodeId: NodeId, policyVersion: PolicyVersion): boolean => {
+    const state = currentNodePolicyState(nodeId);
+    return state.status === 'acked'
+      && state.nodeAckedPolicyVersion !== undefined
+      && state.nodeAckedPolicyVersion >= policyVersion
+      && state.relayPolicyVersion <= state.nodeAckedPolicyVersion;
+  };
+
   const sendPolicyDelta = (nodeId: NodeId, grant: PolicyGrantRecord): void => {
     const ws = nodeSockets.get(nodeId);
     if (!ws || ws.readyState !== ws.OPEN) return;
     try {
-      nodePolicySync.set(nodeId, { status: 'syncing', policyVersion: grant.policyVersion });
+      setPolicySent(nodeId, grant.policyVersion, [grant.grantId]);
       ws.send(JSON.stringify({
         type: 'policy.delta',
         nodeId,
@@ -991,8 +1133,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         revokes: [],
       }));
       broadcastMemberShareState(nodeId);
-    } catch {
-      nodePolicySync.set(nodeId, { status: 'lagging', policyVersion: grant.policyVersion });
+    } catch (err) {
+      setPolicyFailed(nodeId, grant.policyVersion, [grant.grantId], err instanceof Error ? err.message : String(err));
       relayMetrics.policySyncFailures += 1;
       broadcastMemberShareState(nodeId);
     }
@@ -1000,13 +1142,18 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
 
   const sendPolicySync = (nodeId: NodeId, ws: WebSocket): void => {
     if (ws.readyState !== ws.OPEN) return;
-    nodePolicySync.set(nodeId, { status: 'syncing', policyVersion: invitations.currentPolicyVersion() });
+    const grants = invitations.activePolicyGrantsForNode(nodeId);
+    const revokedGrantIds = invitations.revokedGrantIdsForNode(nodeId);
+    setPolicySent(nodeId, invitations.currentPolicyVersion(), [
+      ...grants.map((grant) => grant.grantId),
+      ...revokedGrantIds,
+    ]);
     ws.send(JSON.stringify({
       type: 'policy.sync',
       nodeId,
       policyVersion: invitations.currentPolicyVersion(),
-      grants: invitations.activePolicyGrantsForNode(nodeId),
-      revokedGrantIds: invitations.revokedGrantIdsForNode(nodeId),
+      grants,
+      revokedGrantIds,
     }));
     broadcastMemberShareState(nodeId);
   };
@@ -1021,11 +1168,11 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       policyVersion: invitation.policyVersion,
     };
     try {
-      nodePolicySync.set(invitation.nodeId, { status: 'syncing', policyVersion: invitation.policyVersion });
+      setPolicySent(invitation.nodeId, invitation.policyVersion, [invitation.grantId]);
       ws.send(JSON.stringify(msg));
       broadcastMemberShareState(invitation.nodeId);
-    } catch {
-      nodePolicySync.set(invitation.nodeId, { status: 'lagging', policyVersion: invitation.policyVersion });
+    } catch (err) {
+      setPolicyFailed(invitation.nodeId, invitation.policyVersion, [invitation.grantId], err instanceof Error ? err.message : String(err));
       relayMetrics.policySyncFailures += 1;
       broadcastMemberShareState(invitation.nodeId);
     }
@@ -1061,8 +1208,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       connected: nodeSockets.has(nodeId),
       ...(registration.lastSeen ? { lastSeen: registration.lastSeen } : {}),
       ...(nodeHello.get(nodeId) ? { hello: nodeHello.get(nodeId)! } : {}),
-      policySyncStatus: policy?.status ?? 'synced',
-      ...(policy?.lastAckAt ? { lastPolicyAckAt: policy.lastAckAt } : {}),
+      policySyncStatus: currentNodePolicyState(nodeId).status,
+      ...(policy?.lastPolicyAckAt ? { lastPolicyAckAt: policy.lastPolicyAckAt } : {}),
     };
   };
 
@@ -1076,6 +1223,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
 
   const nodeStatuses = (): RelayNodeStatus[] => [...registrations.values()].map((registration) => {
     const hello = nodeHello.get(registration.nodeId);
+    const policy = currentNodePolicyState(registration.nodeId);
     return {
       nodeId: registration.nodeId,
       ownerId: registration.ownerId,
@@ -1083,8 +1231,10 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       connected: nodeSockets.has(registration.nodeId),
       ...(registration.lastSeen ? { lastSeen: registration.lastSeen } : {}),
       ...(hello ? { protocolVersion: hello.protocolVersion } : {}),
-      policySyncVersion: nodePolicySync.get(registration.nodeId)?.policyVersion ?? 0,
-      policySyncStatus: nodePolicySync.get(registration.nodeId)?.status ?? 'synced',
+      policySyncVersion: policy.relayPolicyVersion,
+      policySyncStatus: policy.status,
+      ...(policy.pendingGrantIds.length > 0 ? { pendingPolicyGrantIds: [...policy.pendingGrantIds] } : {}),
+      ...(policy.lastSyncError ? { lastPolicySyncError: policy.lastSyncError } : {}),
       activeLeases: 0,
       pendingPermissions: 0,
     };
@@ -1237,9 +1387,14 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 403, { error: 'terminal grant required' });
           return;
         }
+        const resolvedTerminal = resolveTerminalSubscription(asNodeId(nodeId), auth, terminal);
+        if (resolvedTerminal && 'error' in resolvedTerminal) {
+          sendJson(res, 403, { error: resolvedTerminal.error });
+          return;
+        }
         const afterSeq = parseSeq(url.searchParams.get('afterSeq')) ?? asSeq(0);
-        const terminalEvents = terminal
-          ? collectTerminalReplayEvents(asNodeId(nodeId), terminal.sessionId, terminal.sessionEpoch, afterSeq)
+        const terminalEvents = resolvedTerminal
+          ? collectTerminalReplayEvents(asNodeId(nodeId), resolvedTerminal.sessionId, resolvedTerminal.sessionEpoch, afterSeq)
           : [];
         const requestedNodeId = asNodeId(nodeId);
         const registration = registrations.get(requestedNodeId);
@@ -1862,6 +2017,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         socket.destroy();
         return;
       }
+      const resolvedTerminal = resolveTerminalSubscription(asNodeId(nodeId), auth, terminal);
+      if (resolvedTerminal && 'error' in resolvedTerminal) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       clientWss.handleUpgrade(req, socket, head, (ws) => {
         clientWss.emit('connection', ws, req, asNodeId(nodeId), auth);
       });
@@ -1908,6 +2069,18 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         }
         nodeSockets.set(registration.nodeId, ws);
         nodeHello.set(registration.nodeId, parsed);
+        for (const [key, projection] of [...shareSessionProjections]) {
+          if (projection.projection.nodeId === registration.nodeId && projection.projection.nodeInstanceId !== String(parsed.nodeEpoch)) {
+            shareSessionProjections.delete(key);
+          }
+        }
+        const subscribed = subscribers.get(registration.nodeId);
+        for (const sub of [...(subscribed ?? [])]) {
+          if (sub.terminal?.projectionId) {
+            sub.ws.close(4004, 'projection stale');
+            subscribed?.delete(sub);
+          }
+        }
         recordLastSeen(registration);
         ws.send(JSON.stringify(makeRelayHello({
           outcome: 'accepted',
@@ -1928,15 +2101,25 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         && typeof (parsed as { policyVersion?: unknown }).policyVersion === 'number'
       ) {
         const ack = parsed as { policyVersion: number };
-        const current = nodePolicySync.get(registration.nodeId);
-        if (!current || ack.policyVersion >= current.policyVersion) {
+        const current = currentNodePolicyState(registration.nodeId);
+        if (ack.policyVersion >= current.relayPolicyVersion) {
           nodePolicySync.set(registration.nodeId, {
-            status: 'synced',
-            policyVersion: ack.policyVersion,
-            lastAckAt: new Date().toISOString(),
+            status: 'acked',
+            relayPolicyVersion: asPolicyVersion(ack.policyVersion),
+            nodeAckedPolicyVersion: asPolicyVersion(ack.policyVersion),
+            lastPolicySentAt: current.lastPolicySentAt,
+            lastPolicyAckAt: new Date().toISOString(),
+            pendingGrantIds: [],
           });
-          broadcastMemberShareState(registration.nodeId);
+        } else {
+          nodePolicySync.set(registration.nodeId, {
+            ...current,
+            status: 'stale',
+            nodeAckedPolicyVersion: asPolicyVersion(ack.policyVersion),
+            lastPolicyAckAt: new Date().toISOString(),
+          });
         }
+          broadcastMemberShareState(registration.nodeId);
         return;
       }
 
@@ -1981,6 +2164,28 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   });
 
   function routeControlEvent(event: RemoteControlEvent): void {
+    const sessionProjection = shareSessionProjectionEnvelopeFromEvent(event);
+    if (sessionProjection) {
+      const key = `${event.nodeId}\0${sessionProjection.projection.projectionId}`;
+      const previous = shareSessionProjections.get(key);
+      shareSessionProjections.set(key, sessionProjection);
+      if (
+        previous
+        && (
+          previous.invitationId !== sessionProjection.invitationId
+          || previous.projection.projectionVersion !== sessionProjection.projection.projectionVersion
+          || previous.projection.nodeInstanceId !== sessionProjection.projection.nodeInstanceId
+        )
+      ) {
+        const subscribed = subscribers.get(event.nodeId);
+        for (const sub of [...(subscribed ?? [])]) {
+          if (sub.terminal?.projectionId === sessionProjection.projection.projectionId) {
+            sub.ws.close(4004, 'projection replaced');
+            subscribed?.delete(sub);
+          }
+        }
+      }
+    }
     const events = replay.get(event.nodeId) ?? [];
     events.push(event);
     replay.set(event.nodeId, events.slice(-100));
@@ -2043,6 +2248,68 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       && envelope.projection.nodeId === nodeId;
   }
 
+  function shareSessionProjectionAuthStillAuthorized(
+    nodeId: NodeId,
+    auth: RelayClientAuth,
+    envelope: ShareSessionProjectionEnvelopeV1,
+  ): boolean {
+    if (auth.kind === 'owner') return true;
+    if (!auth.invitationId || auth.invitationId !== envelope.invitationId) return false;
+    const invitation = invitations.list().find((candidate) => candidate.invitationId === auth.invitationId);
+    if (!invitation || invitation.nodeId !== nodeId || invitation.grantId !== auth.grantId) return false;
+    if (invitation.revokedAt || Date.parse(invitation.expiresAt) <= Date.now()) return false;
+    if (!isNodeTaskShare(invitation)) return false;
+    if (!invitation.grants.includes('terminalView')) return false;
+    if (envelope.projection.nodeId !== nodeId) return false;
+    if (envelope.projection.nodeInstanceId !== String(nodeHello.get(nodeId)?.nodeEpoch ?? '')) return false;
+    if (envelope.projection.expiresAt && Date.parse(envelope.projection.expiresAt) <= Date.now()) return false;
+    return true;
+  }
+
+  function terminalProjectionForAuth(
+    nodeId: NodeId,
+    auth: RelayClientAuth,
+    projectionId: string | null,
+    sessionAlias: string | null,
+  ): ShareSessionProjectionEnvelopeV1 | null {
+    if (!projectionId || sessionAlias !== 'primary') return null;
+    const envelope = shareSessionProjections.get(`${nodeId}\0${projectionId}`);
+    if (!envelope || !shareSessionProjectionAuthStillAuthorized(nodeId, auth, envelope)) return null;
+    if (!envelope.projection.primarySharedSession) return null;
+    return envelope;
+  }
+
+  function resolveTerminalSubscription(
+    nodeId: NodeId,
+    auth: RelayClientAuth,
+    terminal: RelayClientSubscription['terminal'] | undefined,
+  ): RelayClientSubscription['terminal'] | { error: 'projection-required' | 'projection-stale' } | undefined {
+    if (!terminal) return undefined;
+    if (auth.kind === 'owner') return terminal;
+    if (!terminal.projectionId || terminal.sessionAlias !== 'primary') {
+      const invitation = auth.invitationId
+        ? invitations.list().find((candidate) => candidate.invitationId === auth.invitationId)
+        : null;
+      if (
+        invitation?.subject.kind === 'session'
+        && invitation.subject.sessionId === terminal.sessionId
+        && invitation.nodeId === nodeId
+      ) {
+        return terminal;
+      }
+      return { error: 'projection-required' };
+    }
+    const envelope = terminalProjectionForAuth(nodeId, auth, terminal.projectionId, terminal.sessionAlias);
+    const primary = envelope?.projection.primarySharedSession;
+    if (!primary) return { error: 'projection-stale' };
+    return {
+      projectionId: terminal.projectionId,
+      sessionAlias: 'primary',
+      sessionId: primary.sessionId,
+      sessionEpoch: primary.sessionEpoch ?? asSessionEpoch('1'),
+    };
+  }
+
   function projectionSubscriptionStillAuthorized(
     nodeId: NodeId,
     sub: RelayClientSubscription,
@@ -2067,6 +2334,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (auth.kind === 'owner') return true;
     const projection = remoteTaskProjectionEnvelopeFromEvent(event);
     if (projection) return projectionAuthStillAuthorized(nodeId, auth, projection);
+    const sessionProjection = shareSessionProjectionEnvelopeFromEvent(event);
+    if (sessionProjection) return shareSessionProjectionAuthStillAuthorized(nodeId, auth, sessionProjection);
     return false;
   }
 
@@ -2075,11 +2344,33 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (sub.auth.kind === 'owner') return true;
     const projection = remoteTaskProjectionEnvelopeFromEvent(event);
     if (projection) return projectionSubscriptionStillAuthorized(nodeId, sub, projection);
+    const sessionProjection = shareSessionProjectionEnvelopeFromEvent(event);
+    if (sessionProjection) return shareSessionProjectionAuthStillAuthorized(nodeId, sub.auth, sessionProjection);
     return false;
   }
 
   function eventForAuth(auth: RelayClientAuth, event: RemoteControlEvent): RemoteControlEvent {
     if (auth.kind === 'owner' || !auth.invitationId) return event;
+    const sessionEnvelope = shareSessionProjectionEnvelopeFromEvent(event);
+    if (sessionEnvelope) {
+      return {
+        ...event,
+        payload: {
+          ...sessionEnvelope,
+          projection: {
+            ...sessionEnvelope.projection,
+            primarySharedSession: sessionEnvelope.projection.primarySharedSession
+              ? {
+                  sessionAlias: sessionEnvelope.projection.primarySharedSession.sessionAlias,
+                  title: sessionEnvelope.projection.primarySharedSession.title,
+                  lastActivityAt: sessionEnvelope.projection.primarySharedSession.lastActivityAt,
+                  replayCursor: sessionEnvelope.projection.primarySharedSession.replayCursor,
+                }
+              : undefined,
+          },
+        },
+      } as RemoteControlEvent;
+    }
     const envelope = remoteTaskProjectionEnvelopeFromEvent(event);
     if (!envelope) return event;
     const invitation = invitations.list().find((candidate) => candidate.invitationId === auth.invitationId);
@@ -2295,7 +2586,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const url = new URL(_req.url ?? '/', 'http://127.0.0.1');
     const relayClientId = `relay-client-${randomUUID()}`;
     const terminal = parseTerminalSubscription(url);
-    const subscription: RelayClientSubscription = { ws, auth, ...(terminal ? { terminal } : {}) };
+    const resolvedTerminal = resolveTerminalSubscription(subscribedNodeId, auth, terminal);
+    if (resolvedTerminal && 'error' in resolvedTerminal) {
+      ws.close(1008, resolvedTerminal.error);
+      return;
+    }
+    const subscription: RelayClientSubscription = { ws, auth, ...(resolvedTerminal ? { terminal: resolvedTerminal } : {}) };
     let set = subscribers.get(subscribedNodeId);
     if (!set) {
       set = new Set();
@@ -2309,12 +2605,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const requestedSessionId = url.searchParams.get('terminalSessionId');
     const requestedSessionEpoch = url.searchParams.get('terminalSessionEpoch');
     const requestedAfterSeq = parseSeq(url.searchParams.get('afterSeq'));
-    if (requestedSessionId && requestedSessionEpoch && requestedAfterSeq !== null) {
+    if (subscription.terminal && requestedAfterSeq !== null) {
       replayTerminalEvents(
         ws,
         subscribedNodeId,
-        asSessionId(requestedSessionId),
-        asSessionEpoch(requestedSessionEpoch),
+        subscription.terminal.sessionId,
+        subscription.terminal.sessionEpoch,
         requestedAfterSeq,
       );
     }
@@ -2343,21 +2639,42 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           ws.close(1008, 'terminal grant required');
           return;
         }
-        const payload = command.payload as { sessionId?: unknown; sessionEpoch?: unknown; afterSeq?: unknown };
+        const payload = command.payload as {
+          sessionId?: unknown;
+          sessionEpoch?: unknown;
+          projectionId?: unknown;
+          sessionAlias?: unknown;
+          afterSeq?: unknown;
+        };
         const afterSeq = typeof payload?.afterSeq === 'number' && Number.isInteger(payload.afterSeq)
           ? payload.afterSeq
           : null;
+        const requestedTerminal = auth.kind === 'owner'
+          ? (
+              typeof payload?.sessionId === 'string' && typeof payload.sessionEpoch === 'string'
+                ? { sessionId: asSessionId(payload.sessionId), sessionEpoch: asSessionEpoch(payload.sessionEpoch) }
+                : null
+            )
+          : resolveTerminalSubscription(subscribedNodeId, auth, {
+              projectionId: typeof payload?.projectionId === 'string' ? payload.projectionId : undefined,
+              sessionAlias: payload?.sessionAlias === 'primary' ? 'primary' : undefined,
+              sessionId: asSessionId(''),
+              sessionEpoch: asSessionEpoch(''),
+            });
+        if (requestedTerminal && 'error' in requestedTerminal) {
+          ws.close(1008, requestedTerminal.error);
+          return;
+        }
         if (
-          typeof payload?.sessionId === 'string'
-          && typeof payload.sessionEpoch === 'string'
+          requestedTerminal
           && afterSeq !== null
           && afterSeq >= 0
         ) {
           replayTerminalEvents(
             ws,
             subscribedNodeId,
-            asSessionId(payload.sessionId),
-            asSessionEpoch(payload.sessionEpoch),
+            requestedTerminal.sessionId,
+            requestedTerminal.sessionEpoch,
             asSeq(afterSeq),
           );
         }
@@ -2401,6 +2718,74 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
         return;
       }
+      let terminalCommandSession: RelayClientSubscription['terminal'] | null = null;
+      if (auth.kind === 'member' && requiredGrant === 'terminalInput') {
+        const invitation = auth.invitationId
+          ? invitations.list().find((candidate) => candidate.invitationId === auth.invitationId)
+          : null;
+        if (!invitation || !policyAckedForInput(subscribedNodeId, invitation.policyVersion)) {
+          const policyState = currentNodePolicyState(subscribedNodeId).status;
+          const result = {
+            type: 'remote.command.result',
+            commandId,
+            action: typeof action === 'string' ? action : 'presetReply',
+            outcome: 'rejected-pre-audit',
+            reason: `policy sync ${policyState}`,
+          };
+          appendMetadataAudit({
+            type: 'relay.metadata-audit',
+            commandId,
+            nodeId: subscribedNodeId,
+            ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
+            outcome: 'rejected-pre-audit',
+            timestamp: new Date().toISOString(),
+            reason: result.reason,
+          });
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+          return;
+        }
+        const projectionId = typeof (command as { projectionId?: unknown }).projectionId === 'string'
+          ? (command as { projectionId: string }).projectionId
+          : typeof (command.payload as { projectionId?: unknown } | undefined)?.projectionId === 'string'
+            ? (command.payload as { projectionId: string }).projectionId
+            : null;
+        const sessionAlias = (command as { sessionAlias?: unknown }).sessionAlias === 'primary'
+          ? 'primary'
+          : (command.payload as { sessionAlias?: unknown } | undefined)?.sessionAlias === 'primary'
+            ? 'primary'
+            : null;
+        const resolved = resolveTerminalSubscription(subscribedNodeId, auth, {
+          projectionId: projectionId ?? undefined,
+          sessionAlias: sessionAlias ?? undefined,
+          sessionId: typeof (command as { sessionId?: unknown }).sessionId === 'string'
+            ? asSessionId((command as { sessionId: string }).sessionId)
+            : asSessionId(''),
+          sessionEpoch: typeof (command as { sessionEpoch?: unknown }).sessionEpoch === 'string'
+            ? asSessionEpoch((command as { sessionEpoch: string }).sessionEpoch)
+            : asSessionEpoch(''),
+        });
+        if (!resolved || 'error' in resolved) {
+          const result = {
+            type: 'remote.command.result',
+            commandId,
+            action: typeof action === 'string' ? action : 'presetReply',
+            outcome: 'rejected-pre-audit',
+            reason: resolved?.error ?? 'projection-required',
+          };
+          appendMetadataAudit({
+            type: 'relay.metadata-audit',
+            commandId,
+            nodeId: subscribedNodeId,
+            ...(typeof action === 'string' ? { action: action as RemoteCommandAction } : {}),
+            outcome: 'rejected-pre-audit',
+            timestamp: new Date().toISOString(),
+            reason: result.reason,
+          });
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
+          return;
+        }
+        terminalCommandSession = resolved;
+      }
       const target = nodeSockets.get(subscribedNodeId);
       if (target?.readyState === WebSocket.OPEN) {
         const registration = registrations.get(subscribedNodeId);
@@ -2408,6 +2793,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         target.send(JSON.stringify({
           ...command,
           nodeId: subscribedNodeId,
+          ...(terminalCommandSession ? {
+            sessionId: terminalCommandSession.sessionId,
+            sessionEpoch: terminalCommandSession.sessionEpoch,
+            projectionId: terminalCommandSession.projectionId,
+            sessionAlias: terminalCommandSession.sessionAlias,
+          } : {}),
           actorId: auth.actorId || registration?.ownerId || ownerId,
           clientId: relayClientId,
           grantId: auth.grantId,
@@ -2534,7 +2925,7 @@ function relayDashboardHtml(): string {
   <section class="invitations" id="invitation-admin" hidden>
     <strong>Invitations</strong>
     <div class="row">
-      <input id="invite-grants" value="view,comment,terminalInput" aria-label="Invitation grants">
+      <input id="invite-grants" value="view,comment,terminalView,terminalInput" aria-label="Invitation grants">
       <button id="invite-create" type="button">Create invite</button>
     </div>
     <div id="invite-output" class="muted" role="status" aria-live="polite"></div>
@@ -3001,8 +3392,11 @@ function renderMemberShareState(memberState) {
   grantRequestEl.hidden = true;
   requestControlEl.disabled = false;
   if (terminal.state === 'available') {
-    terminalStatusTitleEl.textContent = 'Terminal sharing approved';
-    terminalStatusCopyEl.textContent = 'Terminal input is available for this shared task.';
+    terminalStatusTitleEl.textContent = 'Terminal input approved';
+    terminalStatusCopyEl.textContent = 'Terminal viewing and input are available for this shared task.';
+  } else if (terminal.state === 'viewOnly') {
+    terminalStatusTitleEl.textContent = 'Terminal viewing approved';
+    terminalStatusCopyEl.textContent = 'You can watch this shared task terminal. Sending messages still needs owner approval.';
   } else if (terminal.state === 'pendingApproval') {
     terminalStatusTitleEl.textContent = 'Terminal request pending';
     terminalStatusCopyEl.textContent = 'Waiting for owner approval.';
@@ -3123,8 +3517,8 @@ requestControlEl.addEventListener('click', async () => {
     credentials: 'include',
     body: JSON.stringify({
       nodeId,
-      grants: ['terminalInput'],
-      comment: sanitizeDisplayName(nameEl.value) + ' requested terminal input',
+      grants: ['terminalView', 'terminalInput'],
+      comment: sanitizeDisplayName(nameEl.value) + ' requested terminal viewing and input',
     }),
   });
   if (!res.ok) {

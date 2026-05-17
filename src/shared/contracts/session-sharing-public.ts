@@ -3,14 +3,18 @@ import type { TaskShareGrant, TaskShareGrantRequest } from '../../remote/share-c
 
 export type MemberBlockedReason =
   | 'policy.grantRequired'
+  | 'policy.terminalViewRequired'
   | 'policy.syncPending'
   | 'policy.syncFailed'
+  | 'policy.syncTimedOut'
+  | 'policy.syncStale'
   | 'node.offline'
   | 'node.featureUnavailable'
   | 'node.untrusted';
 
 export type MemberTerminalSharingStatus =
   | { state: 'available' }
+  | { state: 'viewOnly' }
   | { state: 'pendingApproval'; requestId: string }
   | { state: 'denied'; deniedAt: string; canRequestAgainAt?: string }
   | { state: 'blocked'; reason: MemberBlockedReason; message: string; nextRetryAt?: string }
@@ -57,6 +61,8 @@ export interface MemberShareState {
   };
   terminalReplayCursor?: {
     sessionId: SessionId;
+    projectionId?: string;
+    sessionAlias?: 'primary';
     sessionEpoch: SessionEpoch;
     afterSeq: Seq;
   };

@@ -127,6 +127,36 @@ function cloneInvitation(invitation: InvitationRecord): InvitationRecord {
   };
 }
 
+function normalizeTerminalGrantDependency(grants: ShareGrant[]): ShareGrant[] {
+  const normalized = [...grants];
+  if (normalized.includes('terminalInput') && !normalized.includes('terminalView')) {
+    const inputIndex = normalized.indexOf('terminalInput');
+    normalized.splice(Math.max(0, inputIndex), 0, 'terminalView');
+  }
+  return [...new Set(normalized)];
+}
+
+function normalizeShareGrants(grants: ShareGrant[]): ShareGrant[] {
+  return normalizeTerminalGrantDependency(grants);
+}
+
+function normalizeMutableShareGrants(grants: TaskShareMutableGrant[]): TaskShareMutableGrant[] {
+  return normalizeTerminalGrantDependency(grants) as TaskShareMutableGrant[];
+}
+
+function normalizeInvitationRecord(invitation: InvitationRecord): InvitationRecord {
+  return {
+    ...invitation,
+    grants: normalizeShareGrants(invitation.grants),
+    ...(invitation.grantRequests ? {
+      grantRequests: invitation.grantRequests.map((request) => ({
+        ...request,
+        requestedGrants: normalizeMutableShareGrants(request.requestedGrants),
+      })),
+    } : {}),
+  };
+}
+
 function sanitizeGrantRequestComment(comment: string | undefined): string | undefined {
   if (comment === undefined) return undefined;
   const sanitized = comment
@@ -201,7 +231,8 @@ export class InvitationStore {
       : issueSharePassword;
     this.onSave = opts.onSave;
     for (const invitation of opts.initialInvitations ?? []) {
-      this.remember(invitation);
+      const normalized = normalizeInvitationRecord(invitation);
+      this.remember(normalized);
       this.policyVersion = Math.max(this.policyVersion, Number(invitation.policyVersion));
     }
   }
@@ -237,7 +268,7 @@ export class InvitationStore {
       invitationId,
       nodeId: input.nodeId,
       subject: input.subject ?? { kind: 'node', nodeId: input.nodeId },
-      grants: [...input.grants],
+      grants: normalizeShareGrants(input.grants),
       grantId,
       tokenHash: hashToken(token),
       createdAt: now.toISOString(),
@@ -387,7 +418,7 @@ export class InvitationStore {
     if (invitation.revokedAt) return { ok: false, reason: 'revoked' };
     if (!invitation.acceptedAt) return { ok: false, reason: 'not-accepted' };
     if (Date.parse(invitation.expiresAt) <= this.now().getTime()) return { ok: false, reason: 'expired' };
-    const requestedGrants = [...new Set(input.requestedGrants)].filter((grant) => !invitation.grants.includes(grant));
+    const requestedGrants = normalizeMutableShareGrants(input.requestedGrants).filter((grant) => !invitation.grants.includes(grant));
     if (requestedGrants.length === 0) return { ok: false, reason: 'empty-grants' };
     const request: TaskShareGrantRequest = {
       requestId: `grant-req-${randomUUID()}`,
@@ -426,7 +457,7 @@ export class InvitationStore {
       resolvedAt: this.now().toISOString(),
     };
     const nextGrants = input.approve
-      ? [...new Set([...invitation.grants, ...request.requestedGrants])]
+      ? normalizeShareGrants([...invitation.grants, ...request.requestedGrants])
       : invitation.grants;
     if (input.approve) this.policyVersion += 1;
     const updated: InvitationRecord = {

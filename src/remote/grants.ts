@@ -3,6 +3,7 @@ import type { KnownGrant, ShareGrant } from './policy-sync.js';
 export const KNOWN_GRANTS: readonly KnownGrant[] = [
   'view',
   'comment',
+  'terminalView',
   'terminalInput',
   'launch',
   'stop',

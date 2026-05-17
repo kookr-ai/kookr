@@ -11,11 +11,12 @@
  * RFC: `docs/rfc/rfc-easy-connection-sharing.md` — Phases A0-E.
  */
 
-import type { NodeId } from './ids.js';
+import type { NodeId, PolicyVersion, SessionEpoch, SessionId } from './ids.js';
 import type { OwnerTerminalSharingStatus } from '../shared/contracts/session-sharing-owner.js';
 
 export type TaskShareGrant =
   | 'view'
+  | 'terminalView'
   | 'terminalInput'
   | 'launch'
   | 'stop'
@@ -60,8 +61,9 @@ export interface CreateNodeTaskShareRequest {
  * Safe projection of a relay invitation record returned to the node.
  *
  * Deliberately excludes `tokenHash`, `memberTokenHash`, `grantId`, and
- * `policyVersion`: the dashboard backend never needs relay-internal
- * secrets or hashes to render owner state.
+ * other relay-internal secrets or hashes. `policyVersion` remains available
+ * so node-published share-session projections can reference the policy that
+ * must be acked before terminal input is allowed.
  */
 export interface RelayNodeInvitationView {
   invitationId: string;
@@ -78,6 +80,7 @@ export interface RelayNodeInvitationView {
   lockedUntil?: string;
   redactedShareLabel?: string;
   grantRequests?: TaskShareGrantRequest[];
+  policyVersion?: PolicyVersion;
 }
 
 /** One-time Phase C ticket secret returned only on creation. */
@@ -151,6 +154,31 @@ export interface RemoteTaskProjectionEnvelopeV1 {
   projection: RemoteTaskProjectionV1;
 }
 
+export interface ShareSessionProjectionV1 {
+  schemaVersion: 'share-session-projection.v1';
+  nodeId: NodeId;
+  nodeInstanceId: string;
+  projectionId: string;
+  projectionVersion: number;
+  policyVersion: PolicyVersion;
+  generatedAt: string;
+  expiresAt?: string;
+  primarySharedSession?: {
+    sessionAlias: 'primary';
+    sessionId: SessionId;
+    sessionEpoch?: SessionEpoch;
+    title?: string;
+    lastActivityAt?: string;
+    replayCursor?: string;
+  };
+}
+
+export interface ShareSessionProjectionEnvelopeV1 {
+  type: 'remote.shareSessionProjection.v1';
+  invitationId: string;
+  projection: ShareSessionProjectionV1;
+}
+
 export type TaskShareOwnerState =
   | 'waiting'
   | 'viewerConnected'
@@ -181,6 +209,7 @@ export interface TaskShareSummary {
   grants: TaskShareGrant[];
   grantRequests: TaskShareGrantRequest[];
   terminalSharing?: OwnerTerminalSharingStatus;
+  policyVersion?: PolicyVersion;
 }
 
 /**
