@@ -34,6 +34,7 @@ const FOCUSABLE_SELECTOR = [
 ].join(',');
 
 type ShareModalStatus = 'idle' | 'loading' | 'ready' | 'disabled' | 'error';
+type CopiedShareSecret = 'share-link' | 'share-id' | 'password';
 
 interface Props {
   taskId: string;
@@ -98,6 +99,31 @@ function joinUrlUsesFragment(url: string | null): boolean {
   }
 }
 
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  try {
+    if (!document.execCommand('copy')) {
+      throw new Error('copy-failed');
+    }
+  } finally {
+    document.body.removeChild(textarea);
+    previousFocus?.focus();
+  }
+}
+
 function shareCreateErrorMessage(errorCode: string | undefined): string {
   switch (errorCode) {
     case 'hosted-relay-maintenance':
@@ -156,6 +182,8 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
   const [shareMaxTtlMs, setShareMaxTtlMs] = useState<number>(ONE_DAY_MS);
   const [displayLabel, setDisplayLabel] = useState('');
   const [newShareMode, setNewShareMode] = useState(false);
+  const [copiedSecret, setCopiedSecret] = useState<CopiedShareSecret | null>(null);
+  const [passwordRevealed, setPasswordRevealed] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -172,15 +200,18 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
   const showCreateForm = !activeShare && !terminalShare;
   const joinUrl = generatedJoinUrl?.taskId === taskId
     && generatedJoinUrl.invitationId === displayedShare?.invitationId
-    && !terminalShare
+    && displayedShare !== null
+    && isActiveShare(displayedShare)
     ? generatedJoinUrl.ticket?.joinUrl ?? generatedJoinUrl.url
     : null;
   const shareTicket = generatedJoinUrl?.taskId === taskId
     && generatedJoinUrl.invitationId === displayedShare?.invitationId
-    && !terminalShare
+    && displayedShare !== null
+    && isActiveShare(displayedShare)
     ? generatedJoinUrl.ticket
     : null;
   const fragmentSafe = joinUrlUsesFragment(joinUrl);
+  const hasCopyableCredentials = Boolean(joinUrl);
   const durationOptions = SHARE_DURATIONS.filter((option) => option.ms <= shareMaxTtlMs);
   const longLivedShare = ttlMs > ONE_DAY_MS;
   const longLivedWarningId = 'task-share-long-lived-warning';
@@ -304,6 +335,24 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [open, onClose]);
 
+  useEffect(() => {
+    if (!open) {
+      setCopiedSecret(null);
+      setPasswordRevealed(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    setCopiedSecret(null);
+    setPasswordRevealed(false);
+  }, [taskId, displayedShare?.invitationId]);
+
+  useEffect(() => {
+    if (!copiedSecret) return;
+    const timer = window.setTimeout(() => setCopiedSecret(null), 1_200);
+    return () => window.clearTimeout(timer);
+  }, [copiedSecret]);
+
   async function createShare() {
     if (!csrfToken || busy) return;
     setBusy(true);
@@ -401,6 +450,17 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
       return;
     }
     void createShare();
+  }
+
+  async function copyShareSecret(kind: CopiedShareSecret, value: string) {
+    try {
+      await copyText(value);
+      setCopiedSecret(kind);
+      setError(null);
+    } catch {
+      setCopiedSecret(null);
+      setError('Copy did not complete.');
+    }
   }
 
   if (!open) return null;
@@ -560,30 +620,92 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
               <>
                 {shareTicket && (
                   <div className="task-share-ticket" aria-label="Share ID and password">
-                    <label>
-                      <span>Share ID</span>
-                      <input readOnly value={shareTicket.shareId} onFocus={(event) => event.currentTarget.select()} />
-                    </label>
-                    <label>
-                      <span>Password</span>
-                      <input readOnly value={shareTicket.password} onFocus={(event) => event.currentTarget.select()} />
-                    </label>
+                    <div className="task-share-field">
+                      <label>
+                        <span>Share ID</span>
+                        <input readOnly value={shareTicket.shareId} onFocus={(event) => event.currentTarget.select()} />
+                      </label>
+                      <button
+                        type="button"
+                        className="btn-secondary task-share-copy"
+                        aria-label="Copy Share ID"
+                        onClick={() => void copyShareSecret('share-id', shareTicket.shareId)}
+                      >
+                        {copiedSecret === 'share-id' ? 'Copied' : 'Copy'}
+                      </button>
+                    </div>
+                    <div className="task-share-field">
+                      <label>
+                        <span>Password</span>
+                        <input
+                          readOnly
+                          type={passwordRevealed ? 'text' : 'password'}
+                          value={shareTicket.password}
+                          onFocus={(event) => event.currentTarget.select()}
+                        />
+                      </label>
+                      <div className="task-share-field-actions">
+                        <button
+                          type="button"
+                          className="btn-secondary task-share-copy"
+                          aria-label={passwordRevealed ? 'Hide password' : 'Show password'}
+                          onClick={() => setPasswordRevealed((value) => !value)}
+                        >
+                          {passwordRevealed ? 'Hide' : 'Reveal'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary task-share-copy"
+                          aria-label="Copy password"
+                          onClick={() => void copyShareSecret('password', shareTicket.password)}
+                        >
+                          {copiedSecret === 'password' ? 'Copied' : 'Copy'}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 )}
-                <label className="task-share-link">
-                  <span>Share link</span>
-                  <input readOnly value={joinUrl} onFocus={(event) => event.currentTarget.select()} />
+                <div className="task-share-link task-share-field">
+                  <label htmlFor="task-share-link-input">Share link</label>
+                  <div className="task-share-input-row">
+                    <input
+                      id="task-share-link-input"
+                      readOnly
+                      value={joinUrl}
+                      onFocus={(event) => event.currentTarget.select()}
+                    />
+                    <button
+                      type="button"
+                      className="btn-secondary task-share-copy"
+                      aria-label="Copy share link from field"
+                      onClick={() => void copyShareSecret('share-link', joinUrl)}
+                    >
+                      {copiedSecret === 'share-link' ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
                   <small className={fragmentSafe ? 'task-share-muted' : 'task-share-error'}>
                     {fragmentSafe ? 'Secret is in the URL fragment.' : 'Share URL is not fragment-only.'}
                   </small>
-                </label>
+                </div>
               </>
             )}
 
             <div className="task-share-actions">
-              <button type="button" className="btn-primary" onClick={handleCreateAction} disabled={busy || Boolean(activeShare)}>
-                {terminalShare ? 'Create new share' : 'Create share link'}
-              </button>
+              {joinUrl ? (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  aria-label="Copy share link"
+                  onClick={() => void copyShareSecret('share-link', joinUrl)}
+                  disabled={busy}
+                >
+                  {copiedSecret === 'share-link' ? 'Copied' : 'Copy share link'}
+                </button>
+              ) : (
+                <button type="button" className="btn-primary" onClick={handleCreateAction} disabled={busy || Boolean(activeShare)}>
+                  {terminalShare ? 'Create new share' : activeShare ? 'Share link active' : 'Create share link'}
+                </button>
+              )}
               {displayedShare && !terminalShare && (
                 <button
                   type="button"
@@ -595,6 +717,14 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
                 </button>
               )}
             </div>
+
+            {hasCopyableCredentials && (
+              <div className="task-share-copy-status" aria-live="polite">
+                {copiedSecret === 'share-link' && 'Share link copied.'}
+                {copiedSecret === 'share-id' && 'Share ID copied.'}
+                {copiedSecret === 'password' && 'Password copied.'}
+              </div>
+            )}
 
             {error && <div className="task-share-error" role="alert">{error}</div>}
           </>

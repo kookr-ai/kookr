@@ -7,6 +7,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { RELAY_TRUSTED_ENV_NAME } from '../../remote/handshake.js';
 import { TaskShareModal } from './TaskShareModal.js';
 
+const TASK_ID = 'task-1';
+const SHARE_ID = '123-456';
+const PASSWORD = 'correct-horse-battery-staple';
+const JOIN_URL = `http://localhost:4801/relay/join/${SHARE_ID}#password=${PASSWORD}`;
+
+type ShareState = 'waiting' | 'viewerConnected' | 'revoked' | 'expired' | 'revokePending';
+
 function renderModal(container: HTMLElement, props: Partial<React.ComponentProps<typeof TaskShareModal>> = {}): Root {
   const root = createRoot(container);
   act(() => {
@@ -36,6 +43,82 @@ function rerenderModal(root: Root, props: Partial<React.ComponentProps<typeof Ta
 async function flush() {
   await act(async () => { await Promise.resolve(); });
   await act(async () => { await Promise.resolve(); });
+}
+
+function jsonResponse(body: unknown, init: ResponseInit = {}) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+    ...init,
+  });
+}
+
+function shareSummary(state: ShareState = 'waiting') {
+  return {
+    invitationId: 'inv-copy',
+    taskId: TASK_ID,
+    createdAt: '2026-05-17T12:00:00.000Z',
+    expiresAt: '2026-05-17T12:10:00.000Z',
+    state,
+    connectedViewerCount: 0,
+    grants: ['view'],
+    grantRequests: [],
+  };
+}
+
+function createShareResponse() {
+  return {
+    share: shareSummary(),
+    joinUrl: JOIN_URL,
+    shareTicket: {
+      shareId: SHARE_ID,
+      password: PASSWORD,
+      joinUrl: JOIN_URL,
+      redactedShareLabel: SHARE_ID,
+    },
+  };
+}
+
+function stubCopyShareFetch(initialShares: unknown[] = []) {
+  let shares = initialShares;
+  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (url === '/api/share/csrf-token') return jsonResponse({ csrfToken: 'csrf-share' });
+    if (url === '/api/share/task' && init?.method === 'POST') {
+      const response = createShareResponse();
+      shares = [response.share];
+      return jsonResponse(response);
+    }
+    if (url === '/api/share/task' && !init) return jsonResponse({ shares });
+    throw new Error(`unexpected fetch ${String(url)}`);
+  });
+  vi.stubGlobal('fetch', fetch);
+  return {
+    fetch,
+    setShares(nextShares: unknown[]) {
+      shares = nextShares;
+    },
+  };
+}
+
+function getButton(container: HTMLElement, label: string): HTMLButtonElement {
+  const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  expect(button).toBeInstanceOf(HTMLButtonElement);
+  return button;
+}
+
+function getButtonByText(container: HTMLElement, text: string): HTMLButtonElement {
+  const button = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+    .find((candidate) => candidate.textContent?.trim() === text);
+  expect(button).toBeInstanceOf(HTMLButtonElement);
+  return button;
+}
+
+function getInputForLabel(container: HTMLElement, labelText: string): HTMLInputElement {
+  const label = Array.from(container.querySelectorAll('label'))
+    .find((candidate) => candidate.textContent?.includes(labelText));
+  const input = label?.querySelector('input');
+  expect(input).toBeInstanceOf(HTMLInputElement);
+  return input as HTMLInputElement;
 }
 
 describe('TaskShareModal', () => {
@@ -616,5 +699,108 @@ describe('TaskShareModal', () => {
       taskId: 'task-1',
       ttlMs: 10 * 60 * 1000,
     });
+  });
+
+  test('renders copy-safe controls and copies each generated credential value', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    stubCopyShareFetch();
+    root = renderModal(container);
+    await flush();
+
+    await act(async () => {
+      getButtonByText(container, 'Create share link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain('Create share link');
+    expect(getButtonByText(container, 'Copy share link').disabled).toBe(false);
+    expect(getInputForLabel(container, 'Share ID').value).toBe(SHARE_ID);
+    const passwordInput = getInputForLabel(container, 'Password');
+    expect(passwordInput.value).toBe(PASSWORD);
+    expect(passwordInput.type).toBe('password');
+
+    await act(async () => {
+      getButton(container, 'Show password').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(passwordInput.type).toBe('text');
+
+    const ariaLabels = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .map((button) => button.getAttribute('aria-label') ?? '');
+    expect(ariaLabels).toEqual(expect.arrayContaining([
+      'Copy Share ID',
+      'Copy password',
+      'Copy share link',
+      'Copy share link from field',
+      'Hide password',
+    ]));
+    expect(ariaLabels.join('\n')).not.toContain(SHARE_ID);
+    expect(ariaLabels.join('\n')).not.toContain(PASSWORD);
+
+    await act(async () => {
+      getButton(container, 'Copy Share ID').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => {
+      getButton(container, 'Copy password').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => {
+      getButton(container, 'Copy share link from field').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => {
+      getButton(container, 'Copy share link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(writeText).toHaveBeenNthCalledWith(1, SHARE_ID);
+    expect(writeText).toHaveBeenNthCalledWith(2, PASSWORD);
+    expect(writeText).toHaveBeenNthCalledWith(3, JOIN_URL);
+    expect(writeText).toHaveBeenNthCalledWith(4, JOIN_URL);
+  });
+
+  test('hides generated credentials after the same share becomes revoked while polling', async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const shareFetch = stubCopyShareFetch();
+    root = renderModal(container);
+    await flush();
+
+    await act(async () => {
+      getButtonByText(container, 'Create share link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(getInputForLabel(container, 'Password').value).toBe(PASSWORD);
+
+    shareFetch.setShares([shareSummary('revoked')]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain('Copy share link');
+    expect(container.querySelector('[aria-label="Copy password"]')).toBeNull();
+    expect(getButtonByText(container, 'Create new share').disabled).toBe(false);
+  });
+
+  test('reports fallback clipboard failures instead of marking a credential copied', async () => {
+    vi.stubGlobal('navigator', {});
+    Object.defineProperty(document, 'execCommand', {
+      value: vi.fn().mockReturnValue(false),
+      configurable: true,
+    });
+    stubCopyShareFetch();
+    root = renderModal(container);
+    await flush();
+
+    await act(async () => {
+      getButtonByText(container, 'Create share link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    await act(async () => {
+      getButton(container, 'Copy Share ID').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain('Copy did not complete.');
+    expect(container.textContent).not.toContain('Share ID copied.');
   });
 });

@@ -30,7 +30,7 @@ async function createShareFromDashboard(page: Page): Promise<string> {
   await expect(dialog.getByText('View-only access')).toBeVisible();
   await dialog.getByRole('button', { name: 'Create share link' }).click();
   const shareIdInput = dialog.getByRole('textbox', { name: 'Share ID' });
-  const passwordInput = dialog.getByRole('textbox', { name: 'Password' });
+  const passwordInput = dialog.locator('.task-share-ticket label', { hasText: 'Password' }).locator('input');
   await expect(shareIdInput).toBeVisible();
   await expect(passwordInput).toBeVisible();
   await expect(shareIdInput).toHaveValue(/^\d{3}-\d{3}$/);
