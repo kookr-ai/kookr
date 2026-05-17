@@ -39,6 +39,7 @@ export function memberBlockedMessage(reason: MemberBlockedReason): string {
 export function buildMemberShareState(input: {
   invitation: InvitationRecord;
   node: MemberNodeState;
+  deviceId?: string;
   now?: Date;
 }): MemberShareState {
   const now = input.now ?? new Date();
@@ -47,6 +48,7 @@ export function buildMemberShareState(input: {
   const expired = Date.parse(invitation.expiresAt) <= now.getTime();
   const nodeNextRetryAt = input.node.connected ? undefined : new Date(now.getTime() + 5_000).toISOString();
   const terminal = buildTerminalStatus({ invitation, node: input.node, expired, nextRetryAt: nodeNextRetryAt });
+  const controllerLease = controllerLeaseState(invitation, input.deviceId, now);
   return {
     schemaVersion: 'member-share-state.v1',
     invitationId: invitation.invitationId,
@@ -81,12 +83,36 @@ export function buildMemberShareState(input: {
       ...(nodeNextRetryAt ? { nextRetryAt: nodeNextRetryAt } : {}),
     },
     terminal,
+    controllerLease,
     freshness: {
       checkedAt,
       ...(input.node.lastSeen ? { lastNodeSeenAt: input.node.lastSeen } : {}),
       ...(input.node.lastPolicyAckAt ? { lastPolicyAckAt: input.node.lastPolicyAckAt } : {}),
       ...(nodeNextRetryAt ? { nextRetryAt: nodeNextRetryAt } : {}),
     },
+  };
+}
+
+function controllerLeaseState(
+  invitation: InvitationRecord,
+  deviceId: string | undefined,
+  now: Date,
+): NonNullable<MemberShareState['controllerLease']> {
+  const lease = invitation.controllerLease;
+  if (!lease || Date.parse(lease.expiresAt) <= now.getTime()) {
+    return { state: 'available' };
+  }
+  if (deviceId && lease.deviceId === deviceId) {
+    return {
+      state: 'heldByThisDevice',
+      ...(lease.holderLabel ? { holderLabel: lease.holderLabel } : {}),
+      expiresAt: lease.expiresAt,
+    };
+  }
+  return {
+    state: 'heldByAnotherDevice',
+    ...(lease.holderLabel ? { holderLabel: lease.holderLabel } : {}),
+    expiresAt: lease.expiresAt,
   };
 }
 

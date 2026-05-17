@@ -232,7 +232,7 @@ describe('relay SQLite state', () => {
       }),
     });
     expect(accepted.status).toBe(200);
-    await expect(accepted.json()).resolves.toEqual({ nodeId: node.nodeId });
+    await expect(accepted.json()).resolves.toEqual(expect.objectContaining({ nodeId: node.nodeId }));
   });
 
   it('fails hard when the state database cannot be opened', async () => {

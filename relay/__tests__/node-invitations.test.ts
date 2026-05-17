@@ -53,14 +53,69 @@ function nodeHeaders(token: string): Record<string, string> {
   return { 'content-type': 'application/json', authorization: `Bearer ${token}` };
 }
 
-async function connectMember(relay: RelayServerHandle, nodeId: string, memberToken: string): Promise<WebSocket> {
+function cookieHeaderFromSetCookie(setCookie: string): string {
+  return setCookie
+    .split(/,\s*(?=kookr_relay_)/)
+    .map((part) => part.split(';')[0])
+    .join('; ');
+}
+
+function cookieValue(header: string, name: string): string {
+  const match = new RegExp(`${name}=([^;]+)`).exec(header);
+  return match ? decodeURIComponent(match[1] ?? '') : '';
+}
+
+async function memberWebSocketNonce(relay: RelayServerHandle, cookie: string): Promise<string> {
+  const res = await fetch(new URL('/relay/member/share-state', relay.url()), { headers: { cookie } });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { security?: { webSocketNonce?: string } };
+  expect(body.security?.webSocketNonce).toBeTruthy();
+  return body.security!.webSocketNonce!;
+}
+
+async function connectMember(relay: RelayServerHandle, nodeId: string, memberToken: string, cookie?: string): Promise<WebSocket> {
+  const memberCookie = cookie ?? `kookr_relay_member_token=${memberToken}`;
+  const nonce = await memberWebSocketNonce(relay, memberCookie);
   const wsUrl = new URL('/relay/client', relay.url());
   wsUrl.protocol = 'ws:';
   wsUrl.searchParams.set('nodeId', nodeId);
-  const ws = new WebSocket(wsUrl, { headers: { cookie: `kookr_relay_member_token=${memberToken}` } });
+  wsUrl.searchParams.set('wsNonce', nonce);
+  const ws = new WebSocket(wsUrl, { headers: { origin: relay.url(), cookie: memberCookie } });
   sockets.push(ws);
   await once(ws, 'open');
   return ws;
+}
+
+async function acquireMemberControllerLease(
+  relay: RelayServerHandle,
+  nodeId: string,
+  cookie: string,
+  opts: { projectionVersion?: number; policyVersion?: number } = {},
+): Promise<void> {
+  const stateRes = await fetch(new URL('/relay/member/share-state', relay.url()), { headers: { cookie } });
+  expect(stateRes.status).toBe(200);
+  const state = await stateRes.json() as { security?: { csrfToken?: string; deviceId?: string } };
+  const csrfToken = state.security?.csrfToken ?? cookieValue(cookie, 'kookr_relay_csrf_token');
+  const deviceId = state.security?.deviceId ?? cookieValue(cookie, 'kookr_relay_device_id');
+  const res = await fetch(new URL('/relay/member/controller-lease', relay.url()), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      cookie: [
+        `kookr_relay_member_token=${cookieValue(cookie, 'kookr_relay_member_token')}`,
+        `kookr_relay_csrf_token=${csrfToken}`,
+        `kookr_relay_device_id=${deviceId}`,
+      ].join('; '),
+      'x-kookr-csrf-token': csrfToken,
+    },
+    body: JSON.stringify({
+      nodeId,
+      holderLabel: 'test device',
+      ...(opts.projectionVersion !== undefined ? { projectionVersion: opts.projectionVersion } : {}),
+      ...(opts.policyVersion !== undefined ? { policyVersion: opts.policyVersion } : {}),
+    }),
+  });
+  expect(res.status).toBe(200);
 }
 
 async function connectNode(relay: RelayServerHandle, nodeId: string, token: string): Promise<WebSocket> {
@@ -433,7 +488,7 @@ describe('relay node-scoped task-share endpoints', () => {
 
     expect(accepted.status).toBe(200);
     expect(accepted.headers.get('set-cookie')).toContain('kookr_relay_member_token=');
-    expect(await accepted.json()).toEqual({ nodeId });
+    expect(await accepted.json()).toEqual(expect.objectContaining({ nodeId }));
 
     const second = await fetch(new URL('/relay/share-tickets/accept', relay.url()), {
       method: 'POST',
@@ -885,7 +940,9 @@ describe('relay node-scoped task-share endpoints', () => {
     const memberUrl = new URL('/relay/client', relay.url());
     memberUrl.protocol = 'ws:';
     memberUrl.searchParams.set('nodeId', nodeId);
-    const memberWs = new WebSocket(memberUrl, { headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` } });
+    const memberCookie = `kookr_relay_member_token=${accepted.accepted.memberToken}`;
+    memberUrl.searchParams.set('wsNonce', await memberWebSocketNonce(relay, memberCookie));
+    const memberWs = new WebSocket(memberUrl, { headers: { origin: relay.url(), cookie: memberCookie } });
     sockets.push(memberWs);
     const replayed = await new Promise<{ payload?: { projection?: { taskLabel?: string } } }>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('timed out waiting for member replay')), 1_000);
@@ -933,8 +990,9 @@ describe('relay node-scoped task-share endpoints', () => {
       body: JSON.stringify({ token: created.token, displayName: 'Alice\u202e<script>' }),
     });
     expect(acceptRes.status).toBe(200);
-    const cookie = acceptRes.headers.get('set-cookie') ?? '';
-    const member = await connectMember(relay, nodeId, decodeURIComponent(/kookr_relay_member_token=([^;]+)/.exec(cookie)?.[1] ?? ''));
+    const cookie = cookieHeaderFromSetCookie(acceptRes.headers.get('set-cookie') ?? '');
+    const csrfToken = cookieValue(cookie, 'kookr_relay_csrf_token');
+    const member = await connectMember(relay, nodeId, cookieValue(cookie, 'kookr_relay_member_token'), cookie);
     const memberMessages: unknown[] = [];
     member.on('message', (data) => memberMessages.push(JSON.parse(data.toString()) as unknown));
 
@@ -958,7 +1016,7 @@ describe('relay node-scoped task-share endpoints', () => {
 
     const requestRes = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
       method: 'POST',
-      headers: { 'content-type': 'application/json', cookie },
+      headers: { 'content-type': 'application/json', cookie, 'x-kookr-csrf-token': csrfToken },
       body: JSON.stringify({
         nodeId,
         grants: ['terminalInput'],
@@ -982,7 +1040,7 @@ describe('relay node-scoped task-share endpoints', () => {
 
     const secondRequestRes = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
       method: 'POST',
-      headers: { 'content-type': 'application/json', cookie },
+      headers: { 'content-type': 'application/json', cookie, 'x-kookr-csrf-token': csrfToken },
       body: JSON.stringify({ nodeId, grants: ['terminalInput'] }),
     });
     expect(secondRequestRes.status).toBe(201);
@@ -1002,6 +1060,7 @@ describe('relay node-scoped task-share endpoints', () => {
     )));
     await waitFor(() => relay.nodeStatuses()[0]?.policySyncStatus === 'acked');
     publishSessionProjection(nodeWs, { nodeId, invitationId: created.invitation.invitationId, policyVersion: 2 });
+    await acquireMemberControllerLease(relay, nodeId, cookie, { projectionVersion: 1, policyVersion: 2 });
 
     member.send(JSON.stringify({
       type: 'remote.command',
@@ -1048,7 +1107,7 @@ describe('relay node-scoped task-share endpoints', () => {
     expect(revoked.status).toBe(200);
     const revokedRequest = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
       method: 'POST',
-      headers: { 'content-type': 'application/json', cookie },
+      headers: { 'content-type': 'application/json', cookie, 'x-kookr-csrf-token': csrfToken },
       body: JSON.stringify({ nodeId, grants: ['permissionApprove'] }),
     });
     expect(revokedRequest.status).toBe(401);

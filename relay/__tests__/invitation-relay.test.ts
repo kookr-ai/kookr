@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRelayServer, type RelayServerHandle } from '../server.js';
 import { makeNodeHello, type RelayHello, type RemoteFeature } from '../../src/remote/handshake.js';
-import { asNodeEpoch } from '../../src/remote/ids.js';
+import { asNodeEpoch, asNodeId } from '../../src/remote/ids.js';
+import { payloadHash } from '../../src/remote/retry-token.js';
+import { InvitationStore } from '../src/invitations/store.js';
 
 async function listen(relay: RelayServerHandle): Promise<void> {
   await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
@@ -108,11 +110,55 @@ function publishSessionProjection(ws: WebSocket, opts: { nodeId: string; invitat
   }));
 }
 
-async function connectMember(relay: RelayServerHandle, nodeId: string, memberToken: string): Promise<{ ws: WebSocket; messages: unknown[]; closed: Promise<unknown[]> }> {
+async function memberWebSocketNonce(relay: RelayServerHandle, memberToken: string, deviceId?: string): Promise<string> {
+  const res = await fetch(`${relay.url()}/relay/member/share-state`, {
+    headers: {
+      cookie: [
+        `kookr_relay_member_token=${memberToken}`,
+        deviceId ? `kookr_relay_device_id=${deviceId}` : '',
+      ].filter(Boolean).join('; '),
+    },
+  });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { security?: { webSocketNonce?: string } };
+  expect(body.security?.webSocketNonce).toBeTruthy();
+  return body.security!.webSocketNonce!;
+}
+
+async function connectMember(
+  relay: RelayServerHandle,
+  nodeId: string,
+  memberToken: string,
+  opts: { csrfToken?: string; deviceId?: string; extraHeaders?: Record<string, string> } = {},
+): Promise<{ ws: WebSocket; messages: unknown[]; closed: Promise<unknown[]> }> {
+  const nonceRes = await fetch(`${relay.url()}/relay/member/share-state`, {
+    headers: {
+      cookie: [
+        `kookr_relay_member_token=${memberToken}`,
+        opts.csrfToken ? `kookr_relay_csrf_token=${opts.csrfToken}` : '',
+        opts.deviceId ? `kookr_relay_device_id=${opts.deviceId}` : '',
+      ].filter(Boolean).join('; '),
+    },
+  });
+  expect(nonceRes.status).toBe(200);
+  const nonceBody = await nonceRes.json() as { security?: { webSocketNonce?: string } };
+  const nonce = nonceBody.security!.webSocketNonce!;
   const wsUrl = new URL('/relay/client', relay.url());
   wsUrl.protocol = 'ws:';
   wsUrl.searchParams.set('nodeId', nodeId);
-  const ws = new WebSocket(wsUrl, { headers: { cookie: `kookr_relay_member_token=${memberToken}` } });
+  wsUrl.searchParams.set('wsNonce', nonce);
+  const cookie = [
+    `kookr_relay_member_token=${memberToken}`,
+    opts.csrfToken ? `kookr_relay_csrf_token=${opts.csrfToken}` : '',
+    opts.deviceId ? `kookr_relay_device_id=${opts.deviceId}` : '',
+  ].filter(Boolean).join('; ');
+  const ws = new WebSocket(wsUrl, {
+    headers: {
+      origin: relay.url(),
+      cookie,
+      ...opts.extraHeaders,
+    },
+  });
   const messages: unknown[] = [];
   const closed = new Promise<unknown[]>((resolve) => {
     ws.once('close', (code, reason) => resolve([code, reason.toString()]));
@@ -120,6 +166,61 @@ async function connectMember(relay: RelayServerHandle, nodeId: string, memberTok
   ws.on('message', (data) => messages.push(JSON.parse(data.toString()) as unknown));
   await once(ws, 'open');
   return { ws, messages, closed };
+}
+
+type AcceptedMemberSession = Extract<ReturnType<RelayServerHandle['acceptInvitation']>, { ok: true }>['accepted'];
+
+async function acquireMemberControllerLease(
+  relay: RelayServerHandle,
+  nodeId: string,
+  member: AcceptedMemberSession,
+  opts: {
+    holderLabel?: string;
+    deviceId?: string;
+    projectionVersion?: number;
+    policyVersion?: number;
+    takeover?: boolean;
+  } = {},
+): Promise<{ leaseId: string; deviceId: string }> {
+  const requestedDeviceId = opts.deviceId ?? member.deviceId;
+  const stateRes = await fetch(`${relay.url()}/relay/member/share-state`, {
+    headers: {
+      cookie: [
+        `kookr_relay_member_token=${member.memberToken}`,
+        `kookr_relay_csrf_token=${member.csrfToken}`,
+        `kookr_relay_device_id=${requestedDeviceId}`,
+      ].join('; '),
+    },
+  });
+  expect(stateRes.status).toBe(200);
+  const state = await stateRes.json() as { security?: { csrfToken?: string; deviceId?: string } };
+  const csrfToken = state.security?.csrfToken ?? member.csrfToken;
+  const deviceId = state.security?.deviceId ?? requestedDeviceId;
+  const res = await fetch(`${relay.url()}/relay/member/controller-lease`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      cookie: [
+        `kookr_relay_member_token=${member.memberToken}`,
+        `kookr_relay_csrf_token=${csrfToken}`,
+        `kookr_relay_device_id=${deviceId}`,
+      ].join('; '),
+      'x-kookr-csrf-token': csrfToken,
+    },
+    body: JSON.stringify({
+      nodeId,
+      holderLabel: opts.holderLabel ?? 'test device',
+      ...(opts.projectionVersion !== undefined ? { projectionVersion: opts.projectionVersion } : {}),
+      ...(opts.policyVersion !== undefined ? { policyVersion: opts.policyVersion } : {}),
+      ...(opts.takeover ? { takeover: true } : {}),
+    }),
+  });
+  if (res.status !== 200) {
+    throw new Error(`expected controller lease acquisition to succeed, got ${res.status}: ${await res.text()}`);
+  }
+  const body = await res.json() as { lease: { leaseId: string; deviceId: string } };
+  expect(body.lease.deviceId).toBe(deviceId);
+  return body.lease;
 }
 
 async function expectProjectedTerminalInputRejected(opts: {
@@ -188,13 +289,15 @@ async function expectMemberQueryConnectionRejected(relay: RelayServerHandle, nod
 }
 
 async function expectTerminalConnectionRejected(relay: RelayServerHandle, nodeId: string, memberToken: string): Promise<void> {
+  const nonce = await memberWebSocketNonce(relay, memberToken);
   const wsUrl = new URL('/relay/client', relay.url());
   wsUrl.protocol = 'ws:';
   wsUrl.searchParams.set('nodeId', nodeId);
   wsUrl.searchParams.set('terminalSessionId', 'session-1');
   wsUrl.searchParams.set('terminalSessionEpoch', '1');
   wsUrl.searchParams.set('afterSeq', '0');
-  const ws = new WebSocket(wsUrl, { headers: { cookie: `kookr_relay_member_token=${memberToken}` } });
+  wsUrl.searchParams.set('wsNonce', nonce);
+  const ws = new WebSocket(wsUrl, { headers: { origin: relay.url(), cookie: `kookr_relay_member_token=${memberToken}` } });
   await new Promise<void>((resolve, reject) => {
     ws.once('open', () => {
       ws.close();
@@ -377,6 +480,519 @@ describe('relay invitations', () => {
     }));
     expect(JSON.stringify(body)).not.toContain('memberToken');
     expect(JSON.stringify(body)).not.toContain('tokenHash');
+  });
+
+  it('requires CSRF for member terminal grant mutations', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'alice');
+    if (!accepted.ok) throw new Error('expected accept');
+
+    const mutationBody = JSON.stringify({ nodeId: node.nodeId, grants: ['terminalView', 'terminalInput'] });
+    const withoutCsrf = await fetch(`${relay.url()}/relay/member/grant-requests`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+      },
+      body: mutationBody,
+    });
+    expect(withoutCsrf.status).toBe(403);
+    await expect(withoutCsrf.json()).resolves.toEqual({ error: 'csrf-required' });
+
+    const mismatchedCsrf = await fetch(`${relay.url()}/relay/member/grant-requests`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: [
+          `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+          `kookr_relay_csrf_token=${accepted.accepted.csrfToken}`,
+          `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+        ].join('; '),
+        'x-kookr-csrf-token': 'kookr_csrf_v1_mismatch',
+      },
+      body: mutationBody,
+    });
+    expect(mismatchedCsrf.status).toBe(403);
+    await expect(mismatchedCsrf.json()).resolves.toEqual({ error: 'csrf-required' });
+
+    const forgedCsrf = await fetch(`${relay.url()}/relay/member/grant-requests`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: [
+          `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+          'kookr_relay_csrf_token=kookr_csrf_v1_forged',
+          `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+        ].join('; '),
+        'x-kookr-csrf-token': 'kookr_csrf_v1_forged',
+      },
+      body: mutationBody,
+    });
+    expect(forgedCsrf.status).toBe(403);
+    await expect(forgedCsrf.json()).resolves.toEqual({ error: 'csrf-required' });
+
+    const withCsrf = await fetch(`${relay.url()}/relay/member/grant-requests`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: [
+          `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+          `kookr_relay_csrf_token=${accepted.accepted.csrfToken}`,
+          `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+        ].join('; '),
+        'x-kookr-csrf-token': accepted.accepted.csrfToken,
+      },
+      body: mutationBody,
+    });
+    expect(withCsrf.status).toBe(201);
+  });
+
+  it('rejects cross-origin and nonce-less member WebSocket attempts', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const created = relay.createInvitation({ nodeId: node.nodeId, grants: ['view'] });
+    const accepted = relay.acceptInvitation(created.token, 'alice');
+    if (!accepted.ok) throw new Error('expected accept');
+
+    const nonce = await memberWebSocketNonce(relay, accepted.accepted.memberToken, accepted.accepted.deviceId);
+    const crossOriginUrl = new URL('/relay/client', relay.url());
+    crossOriginUrl.protocol = 'ws:';
+    crossOriginUrl.searchParams.set('nodeId', node.nodeId);
+    crossOriginUrl.searchParams.set('wsNonce', nonce);
+    const crossOrigin = new WebSocket(crossOriginUrl, {
+      headers: {
+        origin: 'https://evil.example',
+        cookie: [
+          `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+          `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+        ].join('; '),
+      },
+    });
+    await new Promise<void>((resolve, reject) => {
+      crossOrigin.once('open', () => {
+        crossOrigin.close();
+        reject(new Error('cross-origin member websocket unexpectedly connected'));
+      });
+      crossOrigin.once('unexpected-response', (_req, res) => {
+        expect(res.statusCode).toBe(403);
+        resolve();
+      });
+      crossOrigin.once('error', reject);
+    });
+
+    const noNonceUrl = new URL('/relay/client', relay.url());
+    noNonceUrl.protocol = 'ws:';
+    noNonceUrl.searchParams.set('nodeId', node.nodeId);
+    const noNonce = new WebSocket(noNonceUrl, {
+      headers: {
+        origin: relay.url(),
+        cookie: [
+          `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+          `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+        ].join('; '),
+      },
+    });
+    await new Promise<void>((resolve, reject) => {
+      noNonce.once('open', () => {
+        noNonce.close();
+        reject(new Error('nonce-less member websocket unexpectedly connected'));
+      });
+      noNonce.once('unexpected-response', (_req, res) => {
+        expect(res.statusCode).toBe(403);
+        resolve();
+      });
+      noNonce.once('error', reject);
+    });
+
+    const reusableNonce = await memberWebSocketNonce(relay, accepted.accepted.memberToken, accepted.accepted.deviceId);
+    const validUrl = new URL('/relay/client', relay.url());
+    validUrl.protocol = 'ws:';
+    validUrl.searchParams.set('nodeId', node.nodeId);
+    validUrl.searchParams.set('wsNonce', reusableNonce);
+    const cookie = [
+      `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+      `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+    ].join('; ');
+    const firstUse = new WebSocket(validUrl, { headers: { origin: relay.url(), cookie } });
+    sockets.push(firstUse);
+    await once(firstUse, 'open');
+    firstUse.close();
+
+    const replayed = new WebSocket(validUrl, { headers: { origin: relay.url(), cookie } });
+    await new Promise<void>((resolve, reject) => {
+      replayed.once('open', () => {
+        replayed.close();
+        reject(new Error('replayed nonce unexpectedly connected'));
+      });
+      replayed.once('unexpected-response', (_req, res) => {
+        expect(res.statusCode).toBe(403);
+        resolve();
+      });
+      replayed.once('error', reject);
+    });
+
+    const deviceBoundNonce = await memberWebSocketNonce(relay, accepted.accepted.memberToken, accepted.accepted.deviceId);
+    const wrongDeviceUrl = new URL('/relay/client', relay.url());
+    wrongDeviceUrl.protocol = 'ws:';
+    wrongDeviceUrl.searchParams.set('nodeId', node.nodeId);
+    wrongDeviceUrl.searchParams.set('wsNonce', deviceBoundNonce);
+    const wrongDevice = new WebSocket(wrongDeviceUrl, {
+      headers: {
+        origin: relay.url(),
+        cookie: [
+          `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+          'kookr_relay_device_id=other-device',
+        ].join('; '),
+      },
+    });
+    await new Promise<void>((resolve, reject) => {
+      wrongDevice.once('open', () => {
+        wrongDevice.close();
+        reject(new Error('wrong-device nonce unexpectedly connected'));
+      });
+      wrongDevice.once('unexpected-response', (_req, res) => {
+        expect(res.statusCode).toBe(403);
+        resolve();
+      });
+      wrongDevice.once('error', reject);
+    });
+  });
+
+  it('repairs legacy accepted member sessions with CSRF and device cookies', async () => {
+    const nodeId = asNodeId('node-legacy');
+    const store = new InvitationStore({
+      now: () => new Date('2026-05-17T00:00:00.000Z'),
+      tokenBytes: 8,
+    });
+    const created = store.create({
+      nodeId,
+      subject: { kind: 'task', nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalView'],
+      ttlMs: 24 * 60 * 60 * 1000,
+    });
+    const accepted = store.accept(created.token, 'legacy-viewer');
+    if (!accepted.ok) throw new Error('expected accept');
+    const { memberDeviceId: _memberDeviceId, memberCsrfTokenHash: _memberCsrfTokenHash, ...legacyInvitation } = accepted.accepted.invitation;
+    let savedInvitation = legacyInvitation;
+
+    relay = createRelayServer({
+      stateStore: {
+        load: () => ({
+          registrations: [{
+            nodeId,
+            ownerId: 'owner',
+            displayName: 'Legacy desktop',
+            tokenHash: 'unused-token-hash',
+            createdAt: '2026-05-17T00:00:00.000Z',
+          }],
+          invitations: [legacyInvitation],
+          quarantinedRows: 0,
+        }),
+        saveRegistration: () => undefined,
+        saveInvitation: (invitation) => { savedInvitation = invitation; },
+        probe: () => true,
+        close: () => undefined,
+      },
+    });
+    await listen(relay);
+
+    const stateRes = await fetch(`${relay.url()}/relay/member/share-state`, {
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+    });
+    expect(stateRes.status).toBe(200);
+    const stateBody = await stateRes.json() as { security?: { webSocketNonce?: string; csrfToken?: string; deviceId?: string } };
+    expect(stateBody.security).toEqual(expect.objectContaining({
+      csrfToken: expect.stringMatching(/^kookr_csrf_v1_/),
+      deviceId: expect.stringMatching(/^device-/),
+      webSocketNonce: expect.stringMatching(/^kookr_ws_v1_/),
+    }));
+    expect(savedInvitation.memberDeviceId).toBe(stateBody.security?.deviceId);
+    expect(savedInvitation.memberCsrfTokenHash).toBeTruthy();
+
+    const wsUrl = new URL('/relay/client', relay.url());
+    wsUrl.protocol = 'ws:';
+    wsUrl.searchParams.set('nodeId', nodeId);
+    wsUrl.searchParams.set('wsNonce', stateBody.security!.webSocketNonce!);
+    const ws = new WebSocket(wsUrl, {
+      headers: {
+        origin: relay.url(),
+        cookie: [
+          `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+          `kookr_relay_csrf_token=${stateBody.security!.csrfToken!}`,
+          `kookr_relay_device_id=${stateBody.security!.deviceId!}`,
+        ].join('; '),
+      },
+    });
+    sockets.push(ws);
+    await once(ws, 'open');
+  });
+
+  it('reports device-scoped controller leases and supports explicit takeover', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalInput'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'Laptop');
+    if (!accepted.ok) throw new Error('expected accept');
+    const csrfCookie = `kookr_relay_csrf_token=${accepted.accepted.csrfToken}`;
+    const memberCookie = `kookr_relay_member_token=${accepted.accepted.memberToken}`;
+
+    const missingCsrfLease = await fetch(`${relay.url()}/relay/member/controller-lease`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: [memberCookie, csrfCookie, `kookr_relay_device_id=${accepted.accepted.deviceId}`].join('; '),
+      },
+      body: JSON.stringify({ nodeId: node.nodeId, holderLabel: 'Laptop' }),
+    });
+    expect(missingCsrfLease.status).toBe(403);
+    await expect(missingCsrfLease.json()).resolves.toEqual({ error: 'csrf-required' });
+
+    const acquire = await fetch(`${relay.url()}/relay/member/controller-lease`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: [memberCookie, csrfCookie, `kookr_relay_device_id=${accepted.accepted.deviceId}`].join('; '),
+        'x-kookr-csrf-token': accepted.accepted.csrfToken,
+      },
+      body: JSON.stringify({ nodeId: node.nodeId, holderLabel: 'Laptop', projectionVersion: 1, policyVersion: 1 }),
+    });
+    expect(acquire.status).toBe(200);
+    const acquired = await acquire.json() as { lease: { leaseId: string; deviceId: string } };
+    expect(acquired.lease.deviceId).toBe(accepted.accepted.deviceId);
+
+    const phoneState = await fetch(`${relay.url()}/relay/member/share-state`, {
+      headers: { cookie: [memberCookie, csrfCookie, 'kookr_relay_device_id=phone-device'].join('; ') },
+    });
+    expect(phoneState.status).toBe(200);
+    await expect(phoneState.json()).resolves.toEqual(expect.objectContaining({
+      state: expect.objectContaining({
+        controllerLease: expect.objectContaining({ state: 'heldByAnotherDevice', holderLabel: 'Laptop' }),
+      }),
+    }));
+
+    const blockedTakeover = await fetch(`${relay.url()}/relay/member/controller-lease`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: [memberCookie, csrfCookie, 'kookr_relay_device_id=phone-device'].join('; '),
+        'x-kookr-csrf-token': accepted.accepted.csrfToken,
+      },
+      body: JSON.stringify({ nodeId: node.nodeId, holderLabel: 'Phone', projectionVersion: 1, policyVersion: 1 }),
+    });
+    expect(blockedTakeover.status).toBe(409);
+
+    const takeover = await fetch(`${relay.url()}/relay/member/controller-lease`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: [memberCookie, csrfCookie, 'kookr_relay_device_id=phone-device'].join('; '),
+        'x-kookr-csrf-token': accepted.accepted.csrfToken,
+      },
+      body: JSON.stringify({ nodeId: node.nodeId, holderLabel: 'Phone', projectionVersion: 1, policyVersion: 1, takeover: true }),
+    });
+    expect(takeover.status).toBe(200);
+    await expect(takeover.json()).resolves.toEqual(expect.objectContaining({
+      lease: expect.objectContaining({ deviceId: 'phone-device' }),
+      previousLease: expect.objectContaining({ leaseId: acquired.lease.leaseId }),
+    }));
+  });
+
+  it('rejects retry tokens replayed with a different terminal payload', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, [
+      'control.snapshot',
+      'control.state-delta',
+      'policy-sync',
+      'terminal-stream',
+      'terminal-input',
+    ]);
+    ackPolicyMessages(nodeConn.ws, node.nodeId);
+    sockets.push(nodeConn.ws);
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view', 'terminalInput'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'Laptop');
+    if (!accepted.ok) throw new Error('expected accept');
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    publishSessionProjection(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: accepted.accepted.invitation.invitationId,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    });
+
+    const cookie = [
+      `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+      `kookr_relay_csrf_token=${accepted.accepted.csrfToken}`,
+      `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+    ].join('; ');
+    const member = await connectMember(relay, node.nodeId, accepted.accepted.memberToken, {
+      csrfToken: accepted.accepted.csrfToken,
+      deviceId: accepted.accepted.deviceId,
+    });
+    sockets.push(member.ws);
+    member.ws.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-retry-no-lease',
+      action: 'submitMessage',
+      projectionId: 'proj-primary',
+      sessionAlias: 'primary',
+      projectionVersion: 1,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+      payload: { text: 'without lease' },
+    }));
+    await waitFor(() => member.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-retry-no-lease'));
+    expect(member.messages).toContainEqual(expect.objectContaining({
+      commandId: 'cmd-retry-no-lease',
+      outcome: 'rejected-pre-audit',
+      reason: 'controller-lease-required',
+    }));
+    expect(nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-retry-no-lease')).toBe(false);
+
+    const leaseBody = { lease: await acquireMemberControllerLease(relay, node.nodeId, accepted.accepted, {
+      holderLabel: 'Laptop',
+      projectionVersion: 1,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    }) };
+    const originalPayload = { text: 'original' };
+    const missingCsrfRetry = await fetch(`${relay.url()}/relay/member/retry-tokens`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({
+        nodeId: node.nodeId,
+        leaseId: leaseBody.lease.leaseId,
+        projectionVersion: 1,
+        policyVersion: accepted.accepted.invitation.policyVersion,
+        payloadHash: payloadHash(originalPayload),
+      }),
+    });
+    expect(missingCsrfRetry.status).toBe(403);
+    await expect(missingCsrfRetry.json()).resolves.toEqual({ error: 'csrf-required' });
+
+    const issueRetryToken = async (): Promise<string> => {
+      const retryRes = await fetch(`${relay.url()}/relay/member/retry-tokens`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie, 'x-kookr-csrf-token': accepted.accepted.csrfToken },
+        body: JSON.stringify({
+          nodeId: node.nodeId,
+          leaseId: leaseBody.lease.leaseId,
+          projectionVersion: 1,
+          policyVersion: accepted.accepted.invitation.policyVersion,
+          payloadHash: payloadHash(originalPayload),
+        }),
+      });
+      expect(retryRes.status).toBe(201);
+      const retry = await retryRes.json() as { retryToken: string };
+      return retry.retryToken;
+    };
+
+    member.ws.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-retry-mismatch',
+      action: 'submitMessage',
+      projectionId: 'proj-primary',
+      sessionAlias: 'primary',
+      leaseId: leaseBody.lease.leaseId,
+      projectionVersion: 1,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+      retryToken: await issueRetryToken(),
+      payload: { text: 'changed' },
+    }));
+    await waitFor(() => member.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-retry-mismatch'));
+    expect(member.messages).toContainEqual(expect.objectContaining({
+      commandId: 'cmd-retry-mismatch',
+      outcome: 'rejected-pre-audit',
+      reason: 'retry-token-mismatch',
+    }));
+    expect(nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-retry-mismatch')).toBe(false);
+
+    const retryMismatchCases = [
+      { commandId: 'cmd-retry-wrong-lease', leaseId: 'lease-other', projectionVersion: 1, policyVersion: accepted.accepted.invitation.policyVersion, payload: originalPayload },
+      { commandId: 'cmd-retry-wrong-projection', leaseId: leaseBody.lease.leaseId, projectionVersion: 2, policyVersion: accepted.accepted.invitation.policyVersion, payload: originalPayload },
+      { commandId: 'cmd-retry-wrong-policy', leaseId: leaseBody.lease.leaseId, projectionVersion: 1, policyVersion: accepted.accepted.invitation.policyVersion + 1, payload: originalPayload },
+      { commandId: 'cmd-retry-missing-payload', leaseId: leaseBody.lease.leaseId, projectionVersion: 1, policyVersion: accepted.accepted.invitation.policyVersion },
+    ];
+    for (const mismatch of retryMismatchCases) {
+      const retryToken = await issueRetryToken();
+      member.ws.send(JSON.stringify({
+        type: 'remote.command',
+        commandId: mismatch.commandId,
+        action: 'submitMessage',
+        projectionId: 'proj-primary',
+        sessionAlias: 'primary',
+        leaseId: mismatch.leaseId,
+        projectionVersion: mismatch.projectionVersion,
+        policyVersion: mismatch.policyVersion,
+        retryToken,
+        ...(mismatch.payload ? { payload: mismatch.payload } : {}),
+      }));
+      await waitFor(() => member.messages.some((msg) => (msg as { commandId?: string }).commandId === mismatch.commandId));
+      expect(member.messages).toContainEqual(expect.objectContaining({
+        commandId: mismatch.commandId,
+        outcome: 'rejected-pre-audit',
+        reason: 'retry-token-mismatch',
+      }));
+      expect(nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === mismatch.commandId)).toBe(false);
+    }
+
+    const phoneMember = await connectMember(relay, node.nodeId, accepted.accepted.memberToken, {
+      csrfToken: accepted.accepted.csrfToken,
+      deviceId: 'phone-device',
+    });
+    sockets.push(phoneMember.ws);
+    phoneMember.ws.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-retry-wrong-device',
+      action: 'submitMessage',
+      projectionId: 'proj-primary',
+      sessionAlias: 'primary',
+      leaseId: leaseBody.lease.leaseId,
+      projectionVersion: 1,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+      retryToken: await issueRetryToken(),
+      payload: originalPayload,
+    }));
+    await waitFor(() => phoneMember.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-retry-wrong-device'));
+    expect(phoneMember.messages).toContainEqual(expect.objectContaining({
+      commandId: 'cmd-retry-wrong-device',
+      outcome: 'rejected-pre-audit',
+      reason: 'retry-token-mismatch',
+    }));
+    expect(nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-retry-wrong-device')).toBe(false);
+
+    member.ws.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-retry-match',
+      action: 'submitMessage',
+      projectionId: 'proj-primary',
+      sessionAlias: 'primary',
+      leaseId: leaseBody.lease.leaseId,
+      projectionVersion: 1,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+      retryToken: await issueRetryToken(),
+      payload: originalPayload,
+    }));
+    await waitFor(() => nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-retry-match'));
+    expect(nodeConn.messages).toContainEqual(expect.objectContaining({
+      type: 'remote.command',
+      commandId: 'cmd-retry-match',
+    }));
   });
 
   it('pushes member-safe share state over member WebSockets as node and policy state changes', async () => {
@@ -814,7 +1430,7 @@ describe('relay invitations', () => {
     const memberStateUrl = new URL('/relay/member/share-state', relay.url());
     const memberStateRes = await fetch(memberStateUrl, { headers: publicInsecureHeaders });
     expect(memberStateRes.status).toBe(200);
-    await expect(memberStateRes.json()).resolves.toEqual({
+    await expect(memberStateRes.json()).resolves.toEqual(expect.objectContaining({
       state: expect.objectContaining({
         terminal: {
           state: 'blocked',
@@ -822,7 +1438,24 @@ describe('relay invitations', () => {
           message: 'Terminal sharing requires HTTPS for public links.',
         },
       }),
+    }));
+
+    const insecureLease = await fetch(`${relay.url()}/relay/member/controller-lease`, {
+      method: 'POST',
+      headers: {
+        ...publicInsecureHeaders,
+        'content-type': 'application/json',
+        cookie: [
+          `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+          `kookr_relay_csrf_token=${accepted.accepted.csrfToken}`,
+          `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+        ].join('; '),
+        'x-kookr-csrf-token': accepted.accepted.csrfToken,
+      },
+      body: JSON.stringify({ nodeId: node.nodeId, holderLabel: 'public-http' }),
     });
+    expect(insecureLease.status).toBe(403);
+    await expect(insecureLease.json()).resolves.toEqual({ error: 'transport.insecure' });
 
     const loopbackRes = await fetch(stateUrl, {
       headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
@@ -854,7 +1487,13 @@ describe('relay invitations', () => {
     const memberUrl = new URL('/relay/client', relay.url());
     memberUrl.protocol = 'ws:';
     memberUrl.searchParams.set('nodeId', node.nodeId);
-    const publicMember = new WebSocket(memberUrl, { headers: publicInsecureHeaders });
+    memberUrl.searchParams.set('wsNonce', await memberWebSocketNonce(relay, accepted.accepted.memberToken));
+    const publicMember = new WebSocket(memberUrl, {
+      headers: {
+        ...publicInsecureHeaders,
+        origin: relay.url(),
+      },
+    });
     const messages: unknown[] = [];
     publicMember.on('message', (data) => messages.push(JSON.parse(data.toString()) as unknown));
     sockets.push(publicMember);
@@ -954,12 +1593,18 @@ describe('relay invitations', () => {
 
     const member = await connectMember(relay, node.nodeId, accepted.accepted.memberToken);
     sockets.push(member.ws);
+    const lease = await acquireMemberControllerLease(relay, node.nodeId, accepted.accepted, {
+      holderLabel: 'operator',
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    });
     member.ws.send(JSON.stringify({
       type: 'remote.command',
       commandId: 'cmd-session-match',
       action: 'submitMessage',
       sessionId: 'session-1',
       sessionEpoch: '1',
+      leaseId: lease.leaseId,
+      policyVersion: accepted.accepted.invitation.policyVersion,
       payload: { text: 'ok' },
     }));
     await waitFor(() => nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-session-match'));
@@ -975,6 +1620,8 @@ describe('relay invitations', () => {
       action: 'submitMessage',
       sessionId: 'session-2',
       sessionEpoch: '1',
+      leaseId: lease.leaseId,
+      policyVersion: accepted.accepted.invitation.policyVersion,
       payload: { text: 'nope' },
     }));
     await waitFor(() => member.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-session-mismatch'));
@@ -1202,6 +1849,11 @@ describe('relay invitations', () => {
     });
     const viewMember = await connectMember(relay, node.nodeId, acceptedView.accepted.memberToken);
     const terminalMember = await connectMember(relay, node.nodeId, acceptedTerminal.accepted.memberToken);
+    const terminalLease = await acquireMemberControllerLease(relay, node.nodeId, acceptedTerminal.accepted, {
+      holderLabel: 'operator',
+      projectionVersion: 1,
+      policyVersion: acceptedTerminal.accepted.invitation.policyVersion,
+    });
     const ownerUrl = new URL('/relay/client', relay.url());
     ownerUrl.protocol = 'ws:';
     ownerUrl.searchParams.set('nodeId', node.nodeId);
@@ -1232,6 +1884,9 @@ describe('relay invitations', () => {
       action: 'presetReply',
       projectionId: 'proj-primary',
       sessionAlias: 'primary',
+      leaseId: terminalLease.leaseId,
+      projectionVersion: 1,
+      policyVersion: acceptedTerminal.accepted.invitation.policyVersion,
       payload: { presetId: 'continue' },
     }));
     await nodeSawCommand;
