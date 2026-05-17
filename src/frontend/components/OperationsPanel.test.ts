@@ -9,7 +9,7 @@ import { __resetAudioAlertLogForTests, getAudioAlertSnapshot } from '../audio/au
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
 import { __resetDndForTests, disableDnd } from '../hooks/useDnd.js';
 
-let root: Root;
+let root: Root | null;
 let container: HTMLDivElement;
 
 function mount(onClose = vi.fn()) {
@@ -45,6 +45,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root?.unmount());
+  root = null;
   container?.remove();
   __resetAudioAlertLogForTests();
   __resetSoundPreferenceForTests();
@@ -56,12 +57,19 @@ describe('OperationsPanel', () => {
   test('renders diagnostics and circuit breaker empty states in the utility surface', async () => {
     const { el } = mount();
     await flush();
+    const dialog = el.querySelector<HTMLElement>('.operations-panel');
+    const title = el.querySelector<HTMLElement>('#operations-panel-title');
 
     expect(el.textContent).toContain('Diagnostics');
     expect(el.textContent).toContain('Audio Alerts');
     expect(el.textContent).toContain('No audio alert decisions recorded yet');
     expect(el.textContent).toContain('No detection checks recorded yet');
     expect(el.textContent).toContain('No circuit breakers reported yet');
+    expect(dialog?.getAttribute('role')).toBe('dialog');
+    expect(dialog?.getAttribute('aria-modal')).toBe('true');
+    expect(dialog?.getAttribute('aria-labelledby')).toBe(title?.id);
+    expect(title?.textContent).toBe('Diagnostics');
+    expect(document.activeElement).toBe(el.querySelector('.operations-panel-close'));
   });
 
   test('test alert policy action records a local decision', async () => {
@@ -91,5 +99,76 @@ describe('OperationsPanel', () => {
     expect(close).toBeTruthy();
     act(() => close?.click());
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  test('overlay click closes but dialog body click does not', async () => {
+    const { el, onClose } = mount();
+    await flush();
+
+    const dialog = el.querySelector<HTMLElement>('.operations-panel');
+    act(() => dialog?.click());
+    expect(onClose).not.toHaveBeenCalled();
+
+    const overlay = el.querySelector<HTMLElement>('.dialog-overlay');
+    act(() => overlay?.click());
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  test('Escape closes the diagnostics dialog', async () => {
+    const { onClose } = mount();
+    await flush();
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  test('keeps tab focus inside the diagnostics dialog', async () => {
+    const { el } = mount();
+    await flush();
+
+    const close = el.querySelector<HTMLButtonElement>('.operations-panel-close');
+    const runDiagnostic = el.querySelector<HTMLButtonElement>('.diagnostic-run-btn');
+
+    close?.focus();
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Tab',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(document.activeElement).toBe(runDiagnostic);
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Tab',
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(document.activeElement).toBe(close);
+  });
+
+  test('restores focus to the opener when unmounted', async () => {
+    const opener = document.createElement('button');
+    opener.type = 'button';
+    document.body.appendChild(opener);
+    opener.focus();
+
+    const { el } = mount();
+    await flush();
+    expect(document.activeElement).toBe(el.querySelector('.operations-panel-close'));
+
+    act(() => root?.unmount());
+    root = null;
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
   });
 });
