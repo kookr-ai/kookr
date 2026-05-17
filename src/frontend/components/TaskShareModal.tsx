@@ -13,17 +13,15 @@ import type {
 
 const SHARE_CSRF_HEADER = 'x-kookr-csrf';
 
-/**
- * Selectable share-link lifetimes. The longest stays within the 24h ceiling
- * the backend enforces — `TASK_SHARE_MAX_TTL_MS` in relay-share-client.ts,
- * which the relay re-validates against its own `NODE_SHARE_MAX_TTL_MS` bound;
- * the backend rejects any larger ttlMs.
- */
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const SHARE_DURATIONS = [
   { label: '10 minutes', ms: 10 * 60 * 1000 },
   { label: '1 hour', ms: 60 * 60 * 1000 },
   { label: '8 hours', ms: 8 * 60 * 60 * 1000 },
-  { label: '24 hours', ms: 24 * 60 * 60 * 1000 },
+  { label: '24 hours', ms: ONE_DAY_MS },
+  { label: '7 days', ms: 7 * ONE_DAY_MS },
+  { label: '14 days', ms: 14 * ONE_DAY_MS },
+  { label: '31 days', ms: 31 * ONE_DAY_MS },
 ] as const;
 const DEFAULT_TTL_MS = SHARE_DURATIONS[0].ms;
 const FOCUSABLE_SELECTOR = [
@@ -130,6 +128,8 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [ttlMs, setTtlMs] = useState<number>(DEFAULT_TTL_MS);
+  const [shareMaxTtlMs, setShareMaxTtlMs] = useState<number>(ONE_DAY_MS);
+  const [displayLabel, setDisplayLabel] = useState('');
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -149,6 +149,9 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
     ? generatedJoinUrl.ticket
     : null;
   const fragmentSafe = joinUrlUsesFragment(joinUrl);
+  const durationOptions = SHARE_DURATIONS.filter((option) => option.ms <= shareMaxTtlMs);
+  const longLivedShare = ttlMs > ONE_DAY_MS;
+  const longLivedWarningId = 'task-share-long-lived-warning';
 
   async function loadShares() {
     const res = await fetch('/api/share/task');
@@ -159,6 +162,12 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
     }
     if (!res.ok) throw new Error(`share-list-${res.status}`);
     const body = await res.json() as ListTaskSharesApiResponse;
+    if (typeof body.shareMaxTtlMs === 'number' && Number.isFinite(body.shareMaxTtlMs)) {
+      setShareMaxTtlMs(body.shareMaxTtlMs);
+      if (ttlMs > body.shareMaxTtlMs) {
+        setTtlMs(SHARE_DURATIONS.filter((option) => option.ms <= body.shareMaxTtlMs!).at(-1)?.ms ?? DEFAULT_TTL_MS);
+      }
+    }
     setShares(body.shares);
     setStatus('ready');
   }
@@ -180,8 +189,11 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
           return;
         }
         if (!tokenRes.ok) throw new Error(`csrf-${tokenRes.status}`);
-        const tokenBody = await tokenRes.json() as { csrfToken?: unknown };
+        const tokenBody = await tokenRes.json() as { csrfToken?: unknown; shareMaxTtlMs?: unknown };
         if (typeof tokenBody.csrfToken !== 'string') throw new Error('csrf-missing');
+        if (typeof tokenBody.shareMaxTtlMs === 'number' && Number.isFinite(tokenBody.shareMaxTtlMs)) {
+          setShareMaxTtlMs(tokenBody.shareMaxTtlMs);
+        }
         setCsrfToken(tokenBody.csrfToken);
         await loadShares();
       } catch {
@@ -265,7 +277,11 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
           'content-type': 'application/json',
           [SHARE_CSRF_HEADER]: csrfToken,
         },
-        body: JSON.stringify({ taskId, ttlMs }),
+        body: JSON.stringify({
+          taskId,
+          ttlMs,
+          ...(displayLabel.trim() ? { displayLabel: displayLabel.trim() } : {}),
+        }),
       });
       if (!res.ok) {
         const failed = await res.json().catch(() => ({})) as { error?: string };
@@ -386,13 +402,33 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
                 <select
                   value={ttlMs}
                   onChange={(event) => setTtlMs(Number(event.currentTarget.value))}
+                  aria-describedby={longLivedShare ? longLivedWarningId : undefined}
                   disabled={busy}
                 >
-                  {SHARE_DURATIONS.map((option) => (
+                  {durationOptions.map((option) => (
                     <option key={option.ms} value={option.ms}>{option.label}</option>
                   ))}
                 </select>
               </label>
+            )}
+
+            {!activeShare && (
+              <label className="task-share-row">
+                <span>Display label</span>
+                <input
+                  value={displayLabel}
+                  maxLength={80}
+                  placeholder={taskLabel}
+                  onInput={(event) => setDisplayLabel(event.currentTarget.value)}
+                  disabled={busy}
+                />
+              </label>
+            )}
+
+            {!activeShare && longLivedShare && (
+              <div id={longLivedWarningId} className="task-share-error" role="status" aria-live="polite">
+                This share can expose the display label, status, finding flag, needs-input flag, and updated time until it expires.
+              </div>
             )}
 
             <div className="task-share-state" role="status" aria-live="polite">

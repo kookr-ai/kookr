@@ -49,7 +49,7 @@ export class TaskShareService {
     this.publish = opts.publish;
   }
 
-  async createTaskShare(input: { taskId: string; ttlMs: number }): Promise<{ share: TaskShareSummary; joinUrl: string; shareTicket?: TaskShareTicket }> {
+  async createTaskShare(input: { taskId: string; ttlMs: number; displayLabel?: string }): Promise<{ share: TaskShareSummary; joinUrl: string; shareTicket?: TaskShareTicket }> {
     const created = await this.client.createTaskShare(input);
     this.remember(created.share);
     this.publishProjectionForShare(created.share);

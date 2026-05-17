@@ -20,8 +20,8 @@ afterEach(async () => {
   }
 });
 
-async function startRelay(): Promise<RelayServerHandle> {
-  const relay = createRelayServer({ adminToken: 'admin-secret' });
+async function startRelay(opts: Parameters<typeof createRelayServer>[0] = {}): Promise<RelayServerHandle> {
+  const relay = createRelayServer({ adminToken: 'admin-secret', ...opts });
   openHandle = relay;
   await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
   return relay;
@@ -600,6 +600,69 @@ describe('relay node-scoped task-share endpoints', () => {
     }
   });
 
+  it('honors an operator-configured max TTL up to the 31-day hard cap', async () => {
+    const thirtyOneDays = 31 * 24 * 60 * 60 * 1000;
+    const relay = await startRelay({ shareMaxTtlMs: 45 * 24 * 60 * 60 * 1000 });
+    const { nodeId, nodeToken } = relay.registerNode();
+
+    const wsUrl = new URL('/relay/node', relay.url());
+    wsUrl.protocol = 'ws:';
+    const ws = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${nodeToken}` } });
+    sockets.push(ws);
+    await once(ws, 'open');
+    const helloPromise = new Promise<RelayHello>((resolve) => {
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString()) as RelayHello;
+        if (msg.type === 'relay.hello') resolve(msg);
+      });
+    });
+    ws.send(JSON.stringify(makeNodeHello({
+      nodeId: nodeId as ReturnType<typeof makeNodeHello>['nodeId'],
+      nodeEpoch: asNodeEpoch('1'),
+      softwareVersion: 'test',
+    })));
+    const hello = await helloPromise;
+    expect(hello.shareMaxTtlMs).toBe(thirtyOneDays);
+
+    const overHardCap = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 't' }, grants: ['view'], ttlMs: thirtyOneDays + 1 }),
+    });
+    expect(overHardCap.status).toBe(400);
+
+    const atHardCap = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 't' }, grants: ['view'], ttlMs: thirtyOneDays }),
+    });
+    expect(atHardCap.status).toBe(201);
+  });
+
+  it('parses KOOKR_RELAY_SHARE_MAX_TTL_MS from the startup environment', async () => {
+    const previous = process.env.KOOKR_RELAY_SHARE_MAX_TTL_MS;
+    process.env.KOOKR_RELAY_SHARE_MAX_TTL_MS = String(7 * 24 * 60 * 60 * 1000);
+    try {
+      const relay = await startRelay();
+      const { nodeToken } = relay.registerNode();
+      const accepted = await fetch(new URL('/relay/node/invitations', relay.url()), {
+        method: 'POST',
+        headers: nodeHeaders(nodeToken),
+        body: JSON.stringify({ subject: { kind: 'task', taskId: 't' }, grants: ['view'], ttlMs: 7 * 24 * 60 * 60 * 1000 }),
+      });
+      expect(accepted.status).toBe(201);
+      const rejected = await fetch(new URL('/relay/node/invitations', relay.url()), {
+        method: 'POST',
+        headers: nodeHeaders(nodeToken),
+        body: JSON.stringify({ subject: { kind: 'task', taskId: 't' }, grants: ['view'], ttlMs: 8 * 24 * 60 * 60 * 1000 }),
+      });
+      expect(rejected.status).toBe(400);
+    } finally {
+      if (previous === undefined) delete process.env.KOOKR_RELAY_SHARE_MAX_TTL_MS;
+      else process.env.KOOKR_RELAY_SHARE_MAX_TTL_MS = previous;
+    }
+  });
+
   it('revokes only the calling node\'s own invitations', async () => {
     const relay = await startRelay();
     const nodeA = relay.registerNode();
@@ -717,6 +780,87 @@ describe('relay node-scoped task-share endpoints', () => {
         acceptedAt: expect.any(String),
       })],
     });
+  });
+
+  it('redacts member projection labels and reports offline nodes without stale projections', async () => {
+    const relay = await startRelay();
+    const { nodeId, nodeToken } = relay.registerNode();
+    const nodeWs = await connectNode(relay, nodeId, nodeToken);
+    const createdRes = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({
+        subject: { kind: 'task', taskId: 'task-secret' },
+        grants: ['view'],
+        ttlMs: 24 * 60 * 60 * 1000,
+        displayLabel: 'Review-safe label',
+      }),
+    });
+    expect(createdRes.status).toBe(201);
+    const created = await createdRes.json() as { token: string; invitation: { invitationId: string } };
+    const accepted = relay.acceptInvitation(created.token, 'viewer');
+    if (!accepted.ok) throw new Error('expected accept');
+
+    nodeWs.send(JSON.stringify({
+      nodeId,
+      nodeEpoch: asNodeEpoch('1'),
+      serverRevision: 1,
+      ts: new Date().toISOString(),
+      kind: 'snapshot',
+      payload: {
+        type: 'remote.taskProjection.v1',
+        invitationId: created.invitation.invitationId,
+        projection: {
+          schemaVersion: 'remote-task-projection.v1',
+          nodeId,
+          taskId: 'task-secret',
+          taskLabel: 'Secret payment incident',
+          status: 'open',
+          hasFinding: true,
+          needsInput: false,
+          updatedAt: '2026-05-17T00:00:00.000Z',
+        },
+      },
+    }));
+
+    const stateUrl = new URL('/relay/dashboard/state', relay.url());
+    stateUrl.searchParams.set('nodeId', nodeId);
+    await waitFor(async () => {
+      const res = await fetch(stateUrl, {
+        headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+      });
+      const body = await res.json() as { events: Array<{ payload?: { projection?: { taskLabel?: string } } }> };
+      return body.events.some((event) => event.payload?.projection?.taskLabel === 'Review-safe label');
+    });
+
+    const memberUrl = new URL('/relay/client', relay.url());
+    memberUrl.protocol = 'ws:';
+    memberUrl.searchParams.set('nodeId', nodeId);
+    const memberWs = new WebSocket(memberUrl, { headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` } });
+    sockets.push(memberWs);
+    const replayed = await new Promise<{ payload?: { projection?: { taskLabel?: string } } }>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('timed out waiting for member replay')), 1_000);
+      memberWs.on('message', (data) => {
+        const msg = JSON.parse(data.toString()) as { payload?: { projection?: { taskLabel?: string } } };
+        if (msg.payload?.projection?.taskLabel) {
+          clearTimeout(timeout);
+          resolve(msg);
+        }
+      });
+    });
+    expect(replayed.payload?.projection?.taskLabel).toBe('Review-safe label');
+
+    nodeWs.close();
+    await waitFor(async () => {
+      const res = await fetch(stateUrl, {
+        headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+      });
+      const body = await res.json() as { node?: { connected?: boolean; lastSeen?: string }; events: unknown[] };
+      return body.node?.connected === false && typeof body.node.lastSeen === 'string' && body.events.length === 0;
+    });
+
+    const joinPage = await fetch(new URL('/relay/join', relay.url()));
+    await expect(joinPage.text()).resolves.toContain("The shared task's machine is currently offline.");
   });
 
   it('requires owner approval before member task shares gain mutating grants', async () => {

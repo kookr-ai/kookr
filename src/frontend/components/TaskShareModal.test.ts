@@ -242,6 +242,71 @@ describe('TaskShareModal hosted relay errors', () => {
     });
   });
 
+  test('shows long relay-advertised durations and sends an operator display label', async () => {
+    const maxTtl = 31 * 24 * 60 * 60 * 1000;
+    const fetchMock = vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-share', shareMaxTtlMs: maxTtl }) } as Response;
+      }
+      if (url === '/api/share/task' && !init) {
+        return { ok: true, json: async () => ({ shares: [], shareMaxTtlMs: maxTtl }) } as Response;
+      }
+      if (url === '/api/share/task' && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            share: {
+              invitationId: 'inv-1',
+              taskId: 'task-1',
+              createdAt: '2026-05-16T12:00:00.000Z',
+              expiresAt: new Date(Date.now() + maxTtl).toISOString(),
+              state: 'waiting',
+              connectedViewerCount: 0,
+              grants: ['view'],
+              grantRequests: [],
+            },
+            joinUrl: 'http://relay.example/relay/join#inviteToken=tok',
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    root = renderModal(container);
+    await flush();
+
+    const select = container.querySelector('select')!;
+    expect(Array.from(select.options).map((option) => option.textContent)).toContain('31 days');
+    await act(async () => {
+      select.value = String(maxTtl);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const labelInput = Array.from(container.querySelectorAll<HTMLInputElement>('input'))
+      .find((input) => input.placeholder === 'Shared task');
+    await act(async () => {
+      labelInput!.value = 'Review-safe label';
+      labelInput!.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(container.textContent).toContain('This share can expose the display label');
+
+    const create = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Create share link');
+    await act(async () => {
+      create!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const postCall = fetchMock.mock.calls.find(
+      ([url, init]) => url === '/api/share/task' && (init as RequestInit | undefined)?.method === 'POST',
+    );
+    expect(postCall).toBeDefined();
+    expect(JSON.parse((postCall![1] as RequestInit).body as string)).toEqual({
+      taskId: 'task-1',
+      ttlMs: maxTtl,
+      displayLabel: 'Review-safe label',
+    });
+  });
+
   test('creates a share with the default 10-minute duration when the picker is untouched', async () => {
     const fetchMock = vi.fn(async (url, init) => {
       if (url === '/api/share/csrf-token') {

@@ -120,6 +120,7 @@ export interface RelayServerOptions {
   stateProbe?: () => boolean;
   bindHost?: string;
   trustedProxy?: boolean;
+  shareMaxTtlMs?: number;
 }
 
 interface HostedRelayRuntimeOptions {
@@ -141,7 +142,7 @@ export interface RelayServerHandle {
   httpServer: Server;
   url(): string;
   registerNode(opts?: { displayName?: string; ownerId?: string }): { nodeId: NodeId; nodeToken: string };
-  createInvitation(opts: { nodeId: NodeId; subject?: ShareSubject; grants: ShareGrant[]; ttlMs?: number; shareTicket?: boolean }): { invitation: InvitationRecord; token: string; shareTicket?: RelayShareTicketSecret };
+  createInvitation(opts: { nodeId: NodeId; subject?: ShareSubject; grants: ShareGrant[]; ttlMs?: number; shareTicket?: boolean; displayLabel?: string }): { invitation: InvitationRecord; token: string; shareTicket?: RelayShareTicketSecret };
   acceptInvitation(token: string, acceptedBy?: string): ReturnType<InvitationStore['accept']>;
   revokeInvitation(invitationId: string): ReturnType<InvitationStore['revoke']>;
   invitations(): InvitationRecord[];
@@ -177,6 +178,12 @@ function isLoopbackAddress(address: string): boolean {
     || address === '::1'
     || address === '::ffff:127.0.0.1'
     || address === 'localhost';
+}
+
+function defaultRedactedShareLabel(shareId: string | undefined): string {
+  const digits = (shareId ?? '').replace(/\D/g, '');
+  if (digits.length !== 6) return '';
+  return `${digits.slice(0, 3)}-***`;
 }
 
 function clientAddress(req: IncomingMessage, opts: { trustedProxy: boolean }): string {
@@ -390,10 +397,18 @@ function parseGrantList(value: unknown): ShareGrant[] | null {
 // Keep in sync with `TASK_SHARE_{MIN,MAX}_TTL_MS` in
 // `src/server/relay-share-client.ts` (the boundary forbids sharing the value).
 const NODE_SHARE_MIN_TTL_MS = 60_000;
-const NODE_SHARE_MAX_TTL_MS = 24 * 60 * 60 * 1000;
+const NODE_SHARE_DEFAULT_MAX_TTL_MS = 24 * 60 * 60 * 1000;
+export const RELAY_SHARE_TTL_HARD_CAP_MS = 31 * 24 * 60 * 60 * 1000;
 const NODE_SHARE_DEFAULT_TTL_MS = 10 * 60 * 1000;
 const SHARE_TICKET_SOURCE_MAX_FAILED_ATTEMPTS = 10;
 const SHARE_TICKET_SOURCE_LOCKOUT_MS = 15 * 60 * 1000;
+
+function resolveRelayShareMaxTtlMs(raw: unknown): number {
+  if (raw === undefined || raw === null || raw === '') return NODE_SHARE_DEFAULT_MAX_TTL_MS;
+  const parsed = typeof raw === 'number' ? raw : Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return NODE_SHARE_DEFAULT_MAX_TTL_MS;
+  return Math.min(Math.floor(parsed), RELAY_SHARE_TTL_HARD_CAP_MS);
+}
 function normalizeHostedRelayOptions(opts: RelayServerOptions): HostedRelayRuntimeOptions {
   const hosted = opts.hostedRelay ?? {};
   const relayUrl = hosted.relayUrl
@@ -553,8 +568,9 @@ function toNodeInvitationView(invitation: InvitationRecord, connectedViewerCount
 
 /** Parse a node-scoped create-share request body. */
 function parseNodeTaskShareBody(
-  body: { subject?: unknown; grants?: unknown; ttlMs?: unknown },
-): { taskId: string; ttlMs?: number } | { error: string } {
+  body: { subject?: unknown; grants?: unknown; ttlMs?: unknown; displayLabel?: unknown },
+  shareMaxTtlMs: number,
+): { taskId: string; ttlMs?: number; displayLabel?: string } | { error: string } {
   const subject = body.subject as { kind?: unknown; taskId?: unknown } | undefined;
   if (
     typeof subject !== 'object'
@@ -574,13 +590,20 @@ function parseNodeTaskShareBody(
     typeof body.ttlMs !== 'number'
     || !Number.isFinite(body.ttlMs)
     || body.ttlMs < NODE_SHARE_MIN_TTL_MS
-    || body.ttlMs > NODE_SHARE_MAX_TTL_MS
+    || body.ttlMs > shareMaxTtlMs
   )) {
-    return { error: `ttlMs must be a number between ${NODE_SHARE_MIN_TTL_MS} and ${NODE_SHARE_MAX_TTL_MS}` };
+    return { error: `ttlMs must be a number between ${NODE_SHARE_MIN_TTL_MS} and ${shareMaxTtlMs}` };
   }
+  if (body.displayLabel !== undefined && typeof body.displayLabel !== 'string') {
+    return { error: 'displayLabel must be a string' };
+  }
+  const displayLabel = typeof body.displayLabel === 'string'
+    ? body.displayLabel.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '').trim().slice(0, 80)
+    : '';
   return {
     taskId: subject.taskId,
     ...(body.ttlMs !== undefined ? { ttlMs: body.ttlMs as number } : {}),
+    ...(displayLabel ? { displayLabel } : {}),
   };
 }
 
@@ -730,6 +753,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const accountPairLimiter = createWindowLimiter(60_000);
   const shareCreateLimiter = createWindowLimiter(60_000);
   const shareResetLimiter = createWindowLimiter(60_000);
+  const shareMaxTtlMs = resolveRelayShareMaxTtlMs(opts.shareMaxTtlMs ?? process.env.KOOKR_RELAY_SHARE_MAX_TTL_MS);
   const relayMetrics = emptyMetrics();
   const windowEvents: Array<{ at: number; kind: 'rateLimitHits' | 'perShareLockCount' | 'securityEvents' | 'http5xxCount' }> = [];
   const recentWindowMs = parseHostedRelayPositiveInt(process.env.KOOKR_RELAY_METRICS_WINDOW_MS, 5 * 60_000);
@@ -878,7 +902,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     return { nodeId, nodeToken };
   };
 
-  const createInvitation = (input: { nodeId: NodeId; subject?: ShareSubject; grants: ShareGrant[]; ttlMs?: number; shareTicket?: boolean }) => (
+  const createInvitation = (input: { nodeId: NodeId; subject?: ShareSubject; grants: ShareGrant[]; ttlMs?: number; shareTicket?: boolean; displayLabel?: string }) => (
     invitations.create(input)
   );
 
@@ -1182,11 +1206,22 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         const terminalEvents = terminal
           ? collectTerminalReplayEvents(asNodeId(nodeId), terminal.sessionId, terminal.sessionEpoch, afterSeq)
           : [];
+        const requestedNodeId = asNodeId(nodeId);
+        const registration = registrations.get(requestedNodeId);
+        const connected = nodeSockets.has(requestedNodeId);
         sendJson(res, 200, {
           nodeId,
           relayHostFingerprint,
-          events: (replay.get(asNodeId(nodeId)) ?? [])
-            .filter((event) => canSendEventToAuth(asNodeId(nodeId), auth, event)),
+          node: {
+            nodeId,
+            connected,
+            ...(registration?.lastSeen ? { lastSeen: registration.lastSeen } : {}),
+          },
+          events: connected
+            ? (replay.get(requestedNodeId) ?? [])
+              .filter((event) => canSendEventToAuth(requestedNodeId, auth, event))
+              .map((event) => eventForAuth(auth, event))
+            : [],
           terminalEvents,
           members: [...(presence.get(asNodeId(nodeId))?.values() ?? [])],
         });
@@ -1578,7 +1613,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           return;
         }
         const parsed = parseNodeTaskShareBody(
-          await readJson(req) as { subject?: unknown; grants?: unknown; ttlMs?: unknown },
+          await readJson(req) as { subject?: unknown; grants?: unknown; ttlMs?: unknown; displayLabel?: unknown },
+          shareMaxTtlMs,
         );
         if ('error' in parsed) {
           sendJson(res, 400, { error: parsed.error });
@@ -1590,6 +1626,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           grants: ['view'],
           shareTicket: true,
           ttlMs: parsed.ttlMs ?? NODE_SHARE_DEFAULT_TTL_MS,
+          ...(parsed.displayLabel ? { displayLabel: parsed.displayLabel } : {}),
         });
         relayMetrics.ticketsCreated += 1;
         sendJson(res, 201, {
@@ -1829,6 +1866,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           outcome: 'accepted',
           acceptedVersion: REMOTE_PROTOCOL_VERSION,
           enabledFeatures: parsed.supportedFeatures,
+          shareMaxTtlMs,
         })));
         sendPolicySync(registration.nodeId, ws);
         return;
@@ -1884,10 +1922,9 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
 
     const subscribed = subscribers.get(event.nodeId);
     if (!subscribed) return;
-    const encoded = JSON.stringify(event);
     for (const sub of [...subscribed]) {
       if (!canSendEventToSubscriber(event.nodeId, sub, event)) continue;
-      if (sub.ws.readyState === sub.ws.OPEN) sub.ws.send(encoded);
+      if (sub.ws.readyState === sub.ws.OPEN) sub.ws.send(JSON.stringify(eventForAuth(sub.auth, event)));
     }
   }
 
@@ -1970,6 +2007,28 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const projection = remoteTaskProjectionEnvelopeFromEvent(event);
     if (projection) return projectionSubscriptionStillAuthorized(nodeId, sub, projection);
     return false;
+  }
+
+  function eventForAuth(auth: RelayClientAuth, event: RemoteControlEvent): RemoteControlEvent {
+    if (auth.kind === 'owner' || !auth.invitationId) return event;
+    const envelope = remoteTaskProjectionEnvelopeFromEvent(event);
+    if (!envelope) return event;
+    const invitation = invitations.list().find((candidate) => candidate.invitationId === auth.invitationId);
+    const displayLabel = invitation?.redactedShareLabel?.trim();
+    if (!displayLabel) return event;
+    const defaultLabel = defaultRedactedShareLabel(invitation?.shareId);
+    const shareLifetimeMs = invitation ? Date.parse(invitation.expiresAt) - Date.parse(invitation.createdAt) : 0;
+    if (displayLabel === defaultLabel && shareLifetimeMs <= NODE_SHARE_DEFAULT_MAX_TTL_MS) return event;
+    return {
+      ...event,
+      payload: {
+        ...envelope,
+        projection: {
+          ...envelope.projection,
+          taskLabel: displayLabel,
+        },
+      },
+    } as RemoteControlEvent;
   }
 
   function recordPresence(nodeId: NodeId, clientId: string, auth: RelayClientAuth): void {
@@ -2158,7 +2217,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     set.add(subscription);
     for (const event of replay.get(subscribedNodeId) ?? []) {
       if (!canSendEventToSubscriber(subscribedNodeId, subscription, event)) continue;
-      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(eventForAuth(auth, event)));
     }
     const requestedSessionId = url.searchParams.get('terminalSessionId');
     const requestedSessionEpoch = url.searchParams.get('terminalSessionEpoch');
@@ -2691,6 +2750,7 @@ function relayJoinHtml(): string {
     .task dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 0; }
     .task dt { color: #aeb9bf; }
     .task dd { margin: 0; }
+    .offline { border: 1px solid #4b5563; border-radius: 6px; padding: 14px; margin-top: 14px; background: #111827; }
     .error { color: #ff7b72; }
     .request { border: 1px solid #7c5f16; border-radius: 6px; padding: 12px; margin-top: 14px; background: #211b0d; }
   </style>
@@ -2726,6 +2786,10 @@ function relayJoinHtml(): string {
         <dt>Needs input</dt><dd id="task-needs-input"></dd>
         <dt>Updated</dt><dd id="task-updated"></dd>
       </dl>
+    </section>
+    <section id="offline-node" class="offline" hidden aria-label="Shared machine offline">
+      <strong>The shared task's machine is currently offline.</strong>
+      <p id="offline-last-seen" class="muted"></p>
     </section>
     <section id="grant-request" class="request" hidden aria-label="Collaborator grant request">
       <p class="muted">Ask the owner before any remote control is enabled.</p>
@@ -2766,6 +2830,8 @@ const taskNeedsInputEl = document.getElementById('task-needs-input');
 const taskUpdatedEl = document.getElementById('task-updated');
 const grantRequestEl = document.getElementById('grant-request');
 const requestControlEl = document.getElementById('request-control');
+const offlineNodeEl = document.getElementById('offline-node');
+const offlineLastSeenEl = document.getElementById('offline-last-seen');
 const nodeKey = 'kookr-relay-join-node:' + location.host;
 let nodeId = sessionStorage.getItem(nodeKey) || '';
 let ws = null;
@@ -2793,6 +2859,7 @@ function setStatus(text, error) {
 
 function renderProjection(projection) {
   if (!projection || projection.schemaVersion !== 'remote-task-projection.v1') return;
+  offlineNodeEl.hidden = true;
   taskLabelEl.textContent = projection.taskLabel || projection.taskId || 'Task';
   taskStatusEl.textContent = projection.status || 'unknown';
   taskFindingEl.textContent = projection.hasFinding ? 'yes' : 'no';
@@ -2800,6 +2867,21 @@ function renderProjection(projection) {
   taskUpdatedEl.textContent = projection.updatedAt || '';
   taskEl.hidden = false;
   grantRequestEl.hidden = false;
+}
+
+function formatLastSeen(value) {
+  if (!value) return 'Last seen unknown.';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Last seen unknown.';
+  return 'Last seen ' + date.toLocaleString() + '.';
+}
+
+function renderOfflineNode(node) {
+  taskEl.hidden = true;
+  grantRequestEl.hidden = true;
+  offlineLastSeenEl.textContent = formatLastSeen(node && node.lastSeen);
+  offlineNodeEl.hidden = false;
+  setStatus('Machine offline. The link is still valid, but the task is not viewable right now.');
 }
 
 function ingest(event) {
@@ -2811,13 +2893,18 @@ function ingest(event) {
 }
 
 async function loadState() {
-  if (!nodeId) return;
+  if (!nodeId) return false;
   const stateUrl = new URL('/relay/dashboard/state', location.href);
   stateUrl.searchParams.set('nodeId', nodeId);
   const state = await fetch(stateUrl, { credentials: 'include' });
-  if (!state.ok) return;
+  if (!state.ok) return false;
   const body = await state.json();
+  if (body.node && body.node.connected === false) {
+    renderOfflineNode(body.node);
+    return false;
+  }
   for (const event of body.events || []) ingest(event);
+  return true;
 }
 
 function connect() {
@@ -2828,7 +2915,9 @@ function connect() {
   wsUrl.searchParams.set('nodeId', nodeId);
   ws = new WebSocket(wsUrl);
   ws.onopen = () => setStatus('Connected. Waiting for task projection...');
-  ws.onclose = () => setStatus('Disconnected. Access may have been revoked or expired.', true);
+  ws.onclose = () => {
+    if (!taskEl.hidden) setStatus('Disconnected. Access may have been revoked or expired.', true);
+  };
   ws.onmessage = (msg) => { try { ingest(JSON.parse(msg.data)); } catch {} };
 }
 
@@ -2837,8 +2926,7 @@ async function acceptInvite() {
   const password = sharePasswordEl.value;
   if (!inviteToken && (!shareId || !password)) {
     if (nodeId) {
-      await loadState();
-      connect();
+      if (await loadState()) connect();
       return;
     }
     setStatus('Enter the share ID and password.', true);
@@ -2862,8 +2950,7 @@ async function acceptInvite() {
   const body = await res.json();
   nodeId = typeof body.nodeId === 'string' ? body.nodeId : '';
   if (nodeId) sessionStorage.setItem(nodeKey, nodeId);
-  await loadState();
-  connect();
+  if (await loadState()) connect();
   formEl.hidden = true;
 }
 

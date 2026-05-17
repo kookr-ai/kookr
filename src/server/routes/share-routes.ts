@@ -81,12 +81,17 @@ export function evaluateShareMutationGuard(input: ShareMutationGuardInput): Shar
 }
 
 export function registerShareRoutes(app: Hono, deps: RouteDeps): void {
+  const shareMaxTtlMs = (): number => {
+    const relayMax = deps.remoteShare?.getShareMaxTtlMs?.();
+    return typeof relayMax === 'number' && Number.isFinite(relayMax) ? relayMax : TASK_SHARE_MAX_TTL_MS;
+  };
+
   // The dashboard fetches this nonce once, then echoes it back in the
   // SHARE_CSRF_HEADER on every share mutation.
   app.get('/api/share/csrf-token', (c) => {
     const remoteShare = deps.remoteShare;
     if (!remoteShare) return c.json({ error: 'relay-not-configured' }, 409);
-    return c.json({ csrfToken: remoteShare.csrfToken });
+    return c.json({ csrfToken: remoteShare.csrfToken, shareMaxTtlMs: shareMaxTtlMs() });
   });
 
   app.get('/api/share/task', async (c) => {
@@ -96,7 +101,7 @@ export function registerShareRoutes(app: Hono, deps: RouteDeps): void {
       const shares = remoteShare.service
         ? await remoteShare.service.listTaskShares()
         : await remoteShare.client.listTaskShares();
-      const response: ListTaskSharesApiResponse = { shares };
+      const response: ListTaskSharesApiResponse = { shares, shareMaxTtlMs: shareMaxTtlMs() };
       return c.json(response);
     } catch (err) {
       if (err instanceof RelayShareError) return c.json({ error: err.code }, err.status);
@@ -134,24 +139,36 @@ export function registerShareRoutes(app: Hono, deps: RouteDeps): void {
     }
     const ttlRaw = (body as { ttlMs?: unknown }).ttlMs;
     let ttlMs = TASK_SHARE_DEFAULT_TTL_MS;
+    const maxTtlMs = shareMaxTtlMs();
     if (ttlRaw !== undefined) {
       if (
         typeof ttlRaw !== 'number'
         || !Number.isFinite(ttlRaw)
         || ttlRaw < TASK_SHARE_MIN_TTL_MS
-        || ttlRaw > TASK_SHARE_MAX_TTL_MS
+        || ttlRaw > maxTtlMs
       ) {
         return c.json(
-          { error: `ttlMs must be a number between ${TASK_SHARE_MIN_TTL_MS} and ${TASK_SHARE_MAX_TTL_MS}` },
+          { error: `ttlMs must be a number between ${TASK_SHARE_MIN_TTL_MS} and ${maxTtlMs}` },
           400,
         );
       }
       ttlMs = ttlRaw;
     }
+    const displayLabelRaw = (body as { displayLabel?: unknown }).displayLabel;
+    if (displayLabelRaw !== undefined && typeof displayLabelRaw !== 'string') {
+      return c.json({ error: 'displayLabel must be a string' }, 400);
+    }
+    const displayLabel = typeof displayLabelRaw === 'string'
+      ? displayLabelRaw.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '').trim().slice(0, 80)
+      : '';
 
     try {
-      const result = await (remoteShare.service ?? remoteShare.client).createTaskShare({ taskId, ttlMs });
-      const response: CreateTaskShareApiResponse = result;
+      const result = await (remoteShare.service ?? remoteShare.client).createTaskShare({
+        taskId,
+        ttlMs,
+        ...(displayLabel ? { displayLabel } : {}),
+      });
+      const response: CreateTaskShareApiResponse = { ...result, shareMaxTtlMs: maxTtlMs };
       return c.json(response, 201);
     } catch (err) {
       if (err instanceof RelayShareError) return c.json({ error: err.code }, err.status);

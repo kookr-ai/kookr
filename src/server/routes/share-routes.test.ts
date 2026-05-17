@@ -221,7 +221,7 @@ describe('share routes — CSRF / Origin enforcement', () => {
   it('serves the CSRF nonce', async () => {
     const res = await mkApp(remoteShare).request(`${ORIGIN}/api/share/csrf-token`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ csrfToken: CSRF });
+    expect(await res.json()).toEqual({ csrfToken: CSRF, shareMaxTtlMs: 24 * 60 * 60 * 1000 });
   });
 
   it('rejects a create with no CSRF header', async () => {
@@ -259,6 +259,7 @@ describe('share routes — create and revoke', () => {
     const res = await mkApp(remoteShare).request(`${ORIGIN}/api/share/task`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
+      shareMaxTtlMs: 24 * 60 * 60 * 1000,
       shares: [expect.objectContaining({
         invitationId: 'inv-listed',
         taskId: 'listed',
@@ -321,6 +322,75 @@ describe('share routes — create and revoke', () => {
   it('rejects an out-of-range TTL', async () => {
     const res = await post(mkApp(remoteShare), '/api/share/task', okHeaders, { taskId: 't', ttlMs: 5 });
     expect(res.status).toBe(400);
+  });
+
+  it('uses the relay-advertised max TTL and passes a display label through', async () => {
+    const createTaskShare = async ({ taskId, ttlMs, displayLabel }: { taskId: string; ttlMs: number; displayLabel?: string }) => ({
+      share: {
+        invitationId: `inv-${taskId}`,
+        taskId,
+        createdAt: 'c',
+        expiresAt: `ttl:${ttlMs}:${displayLabel}`,
+        state: 'waiting' as const,
+        connectedViewerCount: 0,
+        grants: ['view' as const],
+        grantRequests: [],
+      },
+      joinUrl: 'http://relay.test/relay/join#inviteToken=tok',
+    });
+    const app = mkApp({
+      csrfToken: CSRF,
+      client: fakeClient({ createTaskShare }),
+      getShareMaxTtlMs: () => 31 * 24 * 60 * 60 * 1000,
+    });
+    const res = await post(app, '/api/share/task', okHeaders, {
+      taskId: 't',
+      ttlMs: 31 * 24 * 60 * 60 * 1000,
+      displayLabel: 'Public task label',
+    });
+
+    expect(res.status).toBe(201);
+    await expect(res.json()).resolves.toMatchObject({
+      shareMaxTtlMs: 31 * 24 * 60 * 60 * 1000,
+      share: { expiresAt: `ttl:${31 * 24 * 60 * 60 * 1000}:Public task label` },
+    });
+  });
+
+  it('sanitizes display labels before forwarding them to the relay client', async () => {
+    const createTaskShare = async ({ taskId, ttlMs, displayLabel }: { taskId: string; ttlMs: number; displayLabel?: string }) => ({
+      share: {
+        invitationId: `inv-${taskId}`,
+        taskId,
+        createdAt: 'c',
+        expiresAt: `ttl:${ttlMs}:${displayLabel}`,
+        state: 'waiting' as const,
+        connectedViewerCount: 0,
+        grants: ['view' as const],
+        grantRequests: [],
+      },
+      joinUrl: 'http://relay.test/relay/join#inviteToken=tok',
+    });
+    const app = mkApp({ csrfToken: CSRF, client: fakeClient({ createTaskShare }) });
+    const raw = `  ${'a'.repeat(90)}\u202e\n  `;
+    const res = await post(app, '/api/share/task', okHeaders, {
+      taskId: 't',
+      ttlMs: 60_000,
+      displayLabel: raw,
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json() as { share: { expiresAt: string } };
+    expect(body.share.expiresAt).toBe(`ttl:60000:${'a'.repeat(80)}`);
+  });
+
+  it('rejects non-string display labels', async () => {
+    const res = await post(mkApp(remoteShare), '/api/share/task', okHeaders, {
+      taskId: 't',
+      ttlMs: 60_000,
+      displayLabel: 123,
+    });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({ error: 'displayLabel must be a string' });
   });
 
   it('revokes a share and reports alreadyRevoked', async () => {
