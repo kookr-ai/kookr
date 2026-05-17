@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { RELAY_TRUSTED_ENV_NAME } from '../../remote/handshake.js';
 import { TaskShareModal } from './TaskShareModal.js';
 
-function renderModal(container: HTMLElement): Root {
+function renderModal(container: HTMLElement, props: Partial<React.ComponentProps<typeof TaskShareModal>> = {}): Root {
   const root = createRoot(container);
   act(() => {
     root.render(React.createElement(TaskShareModal, {
@@ -15,9 +15,22 @@ function renderModal(container: HTMLElement): Root {
       taskLabel: 'Shared task',
       open: true,
       onClose: vi.fn(),
+      ...props,
     }));
   });
   return root;
+}
+
+function rerenderModal(root: Root, props: Partial<React.ComponentProps<typeof TaskShareModal>> = {}) {
+  act(() => {
+    root.render(React.createElement(TaskShareModal, {
+      taskId: 'task-1',
+      taskLabel: 'Shared task',
+      open: true,
+      onClose: vi.fn(),
+      ...props,
+    }));
+  });
 }
 
 async function flush() {
@@ -25,7 +38,7 @@ async function flush() {
   await act(async () => { await Promise.resolve(); });
 }
 
-describe('TaskShareModal hosted relay errors', () => {
+describe('TaskShareModal', () => {
   let container: HTMLDivElement;
   let root: Root | null;
 
@@ -40,6 +53,7 @@ describe('TaskShareModal hosted relay errors', () => {
   afterEach(() => {
     act(() => root?.unmount());
     vi.unstubAllGlobals();
+    vi.useRealTimers();
     document.body.innerHTML = '';
   });
 
@@ -164,6 +178,203 @@ describe('TaskShareModal hosted relay errors', () => {
     );
     expect(container.textContent).toContain('Approved grants');
     expect(container.textContent).toContain('Send messages');
+  });
+
+  test.each([
+    ['revoked', 'Revoked'],
+    ['expired', 'Expired'],
+  ] as const)('renders %s shares as terminal owner state', async (state, label) => {
+    const fetchMock = vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-share' }) } as Response;
+      }
+      if (url === '/api/share/task' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            shares: [{
+              invitationId: 'inv-1',
+              taskId: 'task-1',
+              createdAt: '2026-05-16T12:00:00.000Z',
+              expiresAt: new Date(Date.now() - 60_000).toISOString(),
+              state,
+              connectedViewerCount: 0,
+              grants: ['view', 'terminalInput'],
+              grantRequests: [{
+                requestId: 'grant-req-1',
+                invitationId: 'inv-1',
+                requestedGrants: ['terminalInput'],
+                status: 'pending',
+                requestedAt: '2026-05-16T12:01:00.000Z',
+                comment: 'Alice requested terminal input',
+              }],
+              terminalSharing: {
+                state: 'blocked',
+                reason: 'policySyncPending',
+                message: 'Terminal sharing approval is syncing.',
+                checkedAt: '2026-05-16T12:01:00.000Z',
+              },
+            }],
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    root = renderModal(container);
+    await flush();
+
+    expect(container.textContent).toContain(label);
+    expect(container.textContent).toContain('Create a new share to invite another collaborator.');
+    expect(container.textContent).not.toContain('Link expires in');
+    expect(container.textContent).not.toContain('Display label');
+    expect(container.textContent).not.toContain('Approved grants');
+    expect(container.textContent).not.toContain('Send messages');
+    expect(container.textContent).not.toContain('Terminal sharing');
+    expect(container.textContent).not.toContain('Approval syncing');
+    expect(container.textContent).not.toContain('Alice requested terminal input');
+
+    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .map((button) => ({ text: button.textContent?.trim(), disabled: button.disabled }));
+    expect(buttons).toContainEqual({ text: 'Create new share', disabled: false });
+    expect(buttons.some((button) => button.text === 'Revoke')).toBe(false);
+
+    const createNewShare = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Create new share');
+    await act(async () => {
+      createNewShare!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toBe(false);
+    expect(container.textContent).toContain('No active share');
+    expect(container.textContent).toContain('Link expires in');
+    expect(container.textContent).toContain('Display label');
+    expect(container.textContent).toContain('Create share link');
+    expect(container.textContent).not.toContain('Approved grants');
+    expect(container.textContent).not.toContain('Send messages');
+    expect(container.textContent).not.toContain('Terminal sharing');
+  });
+
+  test('keeps new-share mode stable with multiple terminal shares', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-share' }) } as Response;
+      }
+      if (url === '/api/share/task' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            shares: [
+              {
+                invitationId: 'inv-1',
+                taskId: 'task-1',
+                createdAt: '2026-05-16T12:00:00.000Z',
+                expiresAt: new Date(Date.now() - 60_000).toISOString(),
+                state: 'revoked',
+                connectedViewerCount: 0,
+                grants: ['view', 'terminalInput'],
+                grantRequests: [],
+              },
+              {
+                invitationId: 'inv-2',
+                taskId: 'task-1',
+                createdAt: '2026-05-16T11:00:00.000Z',
+                expiresAt: new Date(Date.now() - 120_000).toISOString(),
+                state: 'expired',
+                connectedViewerCount: 0,
+                grants: ['view', 'terminalInput'],
+                grantRequests: [],
+              },
+            ],
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    root = renderModal(container);
+    await flush();
+
+    const createNewShare = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Create new share');
+    await act(async () => {
+      createNewShare!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain('No active share');
+    expect(container.textContent).toContain('Create share link');
+
+    const listFetchesBeforePoll = fetchMock.mock.calls
+      .filter(([url, init]) => url === '/api/share/task' && !init).length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_050);
+    });
+    await flush();
+    const listFetchesAfterPoll = fetchMock.mock.calls
+      .filter(([url, init]) => url === '/api/share/task' && !init).length;
+
+    expect(listFetchesAfterPoll).toBeGreaterThan(listFetchesBeforePoll);
+    expect(container.textContent).toContain('No active share');
+    expect(container.textContent).toContain('Create share link');
+    expect(container.textContent).not.toContain('Revoked');
+    expect(container.textContent).not.toContain('Expired');
+  });
+
+  test('resets new-share mode when the selected task changes', async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-share' }) } as Response;
+      }
+      if (url === '/api/share/task' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            shares: [
+              {
+                invitationId: 'inv-1',
+                taskId: 'task-1',
+                createdAt: '2026-05-16T12:00:00.000Z',
+                expiresAt: new Date(Date.now() - 60_000).toISOString(),
+                state: 'revoked',
+                connectedViewerCount: 0,
+                grants: ['view'],
+                grantRequests: [],
+              },
+              {
+                invitationId: 'inv-2',
+                taskId: 'task-2',
+                createdAt: '2026-05-16T12:00:00.000Z',
+                expiresAt: new Date(Date.now() - 60_000).toISOString(),
+                state: 'expired',
+                connectedViewerCount: 0,
+                grants: ['view'],
+                grantRequests: [],
+              },
+            ],
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    root = renderModal(container);
+    await flush();
+
+    const createNewShare = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Create new share');
+    await act(async () => {
+      createNewShare!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container.textContent).toContain('No active share');
+
+    rerenderModal(root, { taskId: 'task-2', taskLabel: 'Second task' });
+    await flush();
+
+    expect(container.textContent).toContain('Second task');
+    expect(container.textContent).toContain('Expired');
+    expect(container.textContent).toContain('Create new share');
+    expect(container.textContent).not.toContain('No active share');
   });
 
   test('surfaces terminal sharing trust remediation for owners', async () => {

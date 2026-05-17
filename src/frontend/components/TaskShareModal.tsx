@@ -73,6 +73,10 @@ function isActiveShare(share: TaskShareSummary): boolean {
   return share.state === 'waiting' || share.state === 'viewerConnected' || share.state === 'revokePending';
 }
 
+function isTerminalShare(share: TaskShareSummary): boolean {
+  return share.state === 'revoked' || share.state === 'expired';
+}
+
 function formatExpiry(expiresAt: string): string {
   const date = new Date(expiresAt);
   if (Number.isNaN(date.getTime())) return 'unknown expiry';
@@ -151,6 +155,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
   const [ttlMs, setTtlMs] = useState<number>(DEFAULT_TTL_MS);
   const [shareMaxTtlMs, setShareMaxTtlMs] = useState<number>(ONE_DAY_MS);
   const [displayLabel, setDisplayLabel] = useState('');
+  const [newShareMode, setNewShareMode] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -160,13 +165,19 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
     [shares, taskId],
   );
   const activeShare = currentShares.find(isActiveShare) ?? null;
-  const displayedShare = activeShare ?? currentShares[0] ?? null;
+  const latestShare = activeShare ?? currentShares[0] ?? null;
+  const terminalShareCandidate = latestShare && isTerminalShare(latestShare) ? latestShare : null;
+  const terminalShare = terminalShareCandidate && !newShareMode ? terminalShareCandidate : null;
+  const displayedShare = terminalShareCandidate && newShareMode ? null : latestShare;
+  const showCreateForm = !activeShare && !terminalShare;
   const joinUrl = generatedJoinUrl?.taskId === taskId
     && generatedJoinUrl.invitationId === displayedShare?.invitationId
+    && !terminalShare
     ? generatedJoinUrl.ticket?.joinUrl ?? generatedJoinUrl.url
     : null;
   const shareTicket = generatedJoinUrl?.taskId === taskId
     && generatedJoinUrl.invitationId === displayedShare?.invitationId
+    && !terminalShare
     ? generatedJoinUrl.ticket
     : null;
   const fragmentSafe = joinUrlUsesFragment(joinUrl);
@@ -192,6 +203,12 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
     setShares(body.shares);
     setStatus('ready');
   }
+
+  useEffect(() => {
+    if (!open) return;
+    setNewShareMode(false);
+    setGeneratedJoinUrl(null);
+  }, [open, taskId]);
 
   useEffect(() => {
     if (!open) return;
@@ -315,6 +332,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
         url: body.joinUrl,
         ...(body.shareTicket ? { ticket: body.shareTicket } : {}),
       });
+      setNewShareMode(false);
       setShares((prev) => [body.share, ...prev.filter((share) => share.invitationId !== body.share.invitationId)]);
       setStatus('ready');
     } catch (err) {
@@ -336,6 +354,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
       if (!res.ok) throw new Error(`revoke-${res.status}`);
       const body = await res.json() as RevokeTaskShareApiResponse;
       setShares((prev) => [body.share, ...prev.filter((share) => share.invitationId !== body.share.invitationId)]);
+      setNewShareMode(false);
       setGeneratedJoinUrl((prev) => (
         prev?.invitationId === body.share.invitationId ? null : prev
       ));
@@ -367,6 +386,21 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
     } finally {
       setBusy(false);
     }
+  }
+
+  function enterNewShareMode() {
+    setNewShareMode(true);
+    setTtlMs(DEFAULT_TTL_MS);
+    setDisplayLabel('');
+    setGeneratedJoinUrl(null);
+  }
+
+  function handleCreateAction() {
+    if (terminalShare) {
+      enterNewShareMode();
+      return;
+    }
+    void createShare();
   }
 
   if (!open) return null;
@@ -417,7 +451,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
                 <span>Expires</span>
                 <strong>{formatExpiry(activeShare.expiresAt)}</strong>
               </div>
-            ) : (
+            ) : showCreateForm ? (
               <label className="task-share-row">
                 <span>Link expires in</span>
                 <select
@@ -431,9 +465,15 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
                   ))}
                 </select>
               </label>
+            ) : null}
+
+            {terminalShare && (
+              <p className="task-share-muted">
+                This share is no longer active. Create a new share to invite another collaborator.
+              </p>
             )}
 
-            {!activeShare && (
+            {showCreateForm && (
               <label className="task-share-row">
                 <span>Display label</span>
                 <input
@@ -446,7 +486,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
               </label>
             )}
 
-            {!activeShare && longLivedShare && (
+            {showCreateForm && longLivedShare && (
               <div id={longLivedWarningId} className="task-share-error" role="status" aria-live="polite">
                 This share can expose the display label, status, finding flag, needs-input flag, and updated time until it expires.
               </div>
@@ -456,14 +496,14 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
               {displayedShare ? stateTitle(displayedShare) : 'No active share'}
             </div>
 
-            {displayedShare && displayedShare.grants.length > 1 && (
+            {displayedShare && !terminalShare && displayedShare.grants.length > 1 && (
               <div className="task-share-row" aria-label="Approved collaborator grants">
                 <span>Approved grants</span>
                 <strong>{displayedShare.grants.filter((grant) => grant !== 'view').map(grantLabel).join(', ')}</strong>
               </div>
             )}
 
-            {displayedShare?.terminalSharing && (
+            {displayedShare?.terminalSharing && !terminalShare && (
               <section className="task-share-diagnostic" aria-label="Terminal sharing status">
                 <div className="task-share-row">
                   <span>Terminal sharing</span>
@@ -483,7 +523,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
               </section>
             )}
 
-            {displayedShare?.grantRequests.some((request) => request.status === 'pending') && (
+            {displayedShare && !terminalShare && displayedShare.grantRequests.some((request) => request.status === 'pending') && (
               <div className="task-share-requests" aria-label="Collaborator grant requests">
                 {displayedShare.grantRequests
                   .filter((request): request is TaskShareGrantRequest & { status: 'pending' } => request.status === 'pending')
@@ -497,7 +537,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
                         <button
                           type="button"
                           className="btn-primary"
-                          disabled={busy || displayedShare.state === 'revoked' || displayedShare.state === 'expired'}
+                          disabled={busy}
                           onClick={() => resolveGrantRequest(displayedShare.invitationId, request.requestId, 'approve')}
                         >
                           Approve
@@ -505,7 +545,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
                         <button
                           type="button"
                           className="btn-secondary"
-                          disabled={busy || displayedShare.state === 'revoked' || displayedShare.state === 'expired'}
+                          disabled={busy}
                           onClick={() => resolveGrantRequest(displayedShare.invitationId, request.requestId, 'deny')}
                         >
                           Deny
@@ -541,15 +581,15 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose }: Props) {
             )}
 
             <div className="task-share-actions">
-              <button type="button" className="btn-primary" onClick={createShare} disabled={busy || Boolean(activeShare)}>
-                Create share link
+              <button type="button" className="btn-primary" onClick={handleCreateAction} disabled={busy || Boolean(activeShare)}>
+                {terminalShare ? 'Create new share' : 'Create share link'}
               </button>
-              {displayedShare && (
+              {displayedShare && !terminalShare && (
                 <button
                   type="button"
                   className="btn-secondary"
                   onClick={() => revokeShare(displayedShare.invitationId)}
-                  disabled={busy || displayedShare.state === 'revoked' || displayedShare.state === 'expired'}
+                  disabled={busy}
                 >
                   Revoke
                 </button>
