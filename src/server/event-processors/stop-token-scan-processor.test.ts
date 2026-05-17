@@ -19,11 +19,13 @@ describe('StopTokenScanProcessor', () => {
     };
     const tokenActivityRecorder = { recordTokenActivity: vi.fn() };
     const broadcastSnapshot = vi.fn();
+    const publishTaskProjection = vi.fn();
     const processor = createStopTokenScanProcessor({
       tokenUsageWriter,
       tokenScanner,
       tokenActivityRecorder,
       broadcastSnapshot,
+      publishTaskProjection,
     });
 
     processor.process({
@@ -39,12 +41,15 @@ describe('StopTokenScanProcessor', () => {
     expect(tokenUsageWriter.updateTokenUsage).toHaveBeenCalledWith('task-1', usage);
     expect(tokenActivityRecorder.recordTokenActivity).toHaveBeenCalledTimes(1);
     expect(tokenActivityRecorder.recordTokenActivity).toHaveBeenCalledWith('running-session');
+    expect(publishTaskProjection).toHaveBeenCalledTimes(1);
+    expect(publishTaskProjection).toHaveBeenCalledWith('task-1');
   });
 
   test('does not broadcast when scan reports unchanged usage', async () => {
     const tokenUsageWriter = { updateTokenUsage: vi.fn() };
     const tokenActivityRecorder = { recordTokenActivity: vi.fn() };
     const broadcastSnapshot = vi.fn();
+    const publishTaskProjection = vi.fn();
     const processor = createStopTokenScanProcessor({
       tokenUsageWriter,
       tokenScanner: {
@@ -53,6 +58,7 @@ describe('StopTokenScanProcessor', () => {
       },
       tokenActivityRecorder,
       broadcastSnapshot,
+      publishTaskProjection,
     });
 
     processor.process({ id: 'task-1', sessions: [] });
@@ -61,5 +67,6 @@ describe('StopTokenScanProcessor', () => {
     expect(tokenUsageWriter.updateTokenUsage).not.toHaveBeenCalled();
     expect(tokenActivityRecorder.recordTokenActivity).not.toHaveBeenCalled();
     expect(broadcastSnapshot).not.toHaveBeenCalled();
+    expect(publishTaskProjection).not.toHaveBeenCalled();
   });
 });

@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+import { AttentionQueue } from '../core/attention-queue.js';
 import { TaskStore } from '../core/tasks.js';
+import type { Anomaly } from '../core/types.js';
+import type { RemoteControlEvent } from '../remote/control-events.js';
 import { asGrantId, asNodeEpoch, asNodeId, asPolicyVersion, asServerRevision } from '../remote/ids.js';
 import { RemotePolicyCache } from '../remote/policy-cache.js';
-import type { TaskShareSummary } from '../remote/share-contract.js';
+import type { RemoteTaskProjectionEnvelopeV1, TaskShareSummary } from '../remote/share-contract.js';
 import type { RelayShareClient } from './relay-share-client.js';
 import { TaskShareService } from './task-share-service.js';
 
@@ -30,6 +33,16 @@ const grantRequest = {
   resolvedAt: new Date().toISOString(),
   resolution: 'approved' as const,
 };
+
+function clientFor(createdShare: TaskShareSummary): RelayShareClient {
+  return {
+    createTaskShare: async () => ({ share: createdShare, joinUrl: 'http://relay/join#inviteToken=tok' }),
+    revokeTaskShare: async () => ({ share: { ...createdShare, state: 'revoked', revokedAt: new Date().toISOString() }, alreadyRevoked: false }),
+    listTaskShares: async () => [createdShare],
+    approveGrantRequest: async () => ({ share: { ...createdShare, grants: ['view', 'terminalInput'] }, request: grantRequest }),
+    denyGrantRequest: async () => ({ share: createdShare, request: { ...grantRequest, status: 'denied', resolution: 'denied' } }),
+  };
+}
 
 describe('TaskShareService', () => {
   it('publishes a safe task projection for a created share', async () => {
@@ -163,6 +176,63 @@ describe('TaskShareService', () => {
     });
     service.publishActiveTaskProjections();
     expect(events).toHaveLength(1);
+  });
+
+  it('re-publishes a task projection when a shared task projected state changes', async () => {
+    const taskStore = new TaskStore();
+    const queue = new AttentionQueue();
+    const task = taskStore.createTask('task', '/tmp');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      createdAt: new Date(),
+      cwd: '/tmp',
+      status: 'running',
+    });
+    const createdShare = share({ taskId: task.id });
+    const events: Array<RemoteControlEvent<RemoteTaskProjectionEnvelopeV1>> = [];
+    const service = new TaskShareService({
+      client: clientFor(createdShare),
+      taskStore,
+      queue,
+      getNodeIdentity: () => ({ nodeId: asNodeId('kookr-node-test'), nodeEpoch: asNodeEpoch('1') }),
+      nextServerRevision: () => asServerRevision(events.length + 1),
+      publish: (event) => {
+        events.push(event);
+        return true;
+      },
+    });
+    await service.createTaskShare({ taskId: task.id, ttlMs: 60_000 });
+    expect(events[0].payload.projection).toEqual(expect.objectContaining({
+      status: 'inProgress',
+      needsInput: false,
+      hasFinding: false,
+    }));
+
+    const needsInput: Anomaly = {
+      type: 'needs_input',
+      agentId: 'agent-1',
+      severity: 'warning',
+      explanation: 'Waiting for input',
+      detectedAt: new Date().toISOString(),
+    };
+    queue.enqueue('agent-1', needsInput);
+    service.publishTaskProjectionForTask(task.id);
+
+    expect(events).toHaveLength(2);
+    expect(events[1].payload).toEqual(expect.objectContaining({
+      type: 'remote.taskProjection.v1',
+      invitationId: 'inv-1',
+      projection: expect.objectContaining({
+        taskId: task.id,
+        status: 'needsInput',
+        needsInput: true,
+        hasFinding: true,
+      }),
+    }));
+
+    service.publishTaskProjectionForTask(task.id);
+    expect(events).toHaveLength(2);
   });
 
   it('remembers approved grants and publishes the task projection', async () => {

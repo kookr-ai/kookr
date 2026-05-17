@@ -6,6 +6,7 @@ import type { ShareSubject } from '../remote/policy-sync.js';
 import type { RemotePolicyCache } from '../remote/policy-cache.js';
 import type {
   RemoteTaskProjectionEnvelopeV1,
+  RemoteTaskProjectionV1,
   TaskShareTicket,
   TaskShareOwnerState,
   TaskShareSummary,
@@ -14,6 +15,7 @@ import type { RelayShareClient } from './relay-share-client.js';
 import { projectTaskForRemoteShare } from './share-projection.js';
 
 type PublishRemoteEvent = (event: RemoteControlEvent<RemoteTaskProjectionEnvelopeV1>) => boolean;
+type PublishProjectionOptions = { dedupe?: boolean };
 
 export interface TaskShareServiceOptions {
   client: RelayShareClient;
@@ -35,6 +37,7 @@ export class TaskShareService {
   private readonly publish: PublishRemoteEvent;
   private readonly shares = new Map<string, TaskShareSummary>();
   private readonly pendingRevokeInvitationIds = new Set<string>();
+  private readonly lastPublishedProjectionKeys = new Map<string, string>();
 
   constructor(opts: TaskShareServiceOptions) {
     this.client = opts.client;
@@ -109,6 +112,14 @@ export class TaskShareService {
     }
   }
 
+  publishTaskProjectionForTask(taskId: string): void {
+    for (const share of this.shares.values()) {
+      if (share.taskId === taskId) {
+        this.publishProjectionForShare(share, { dedupe: true });
+      }
+    }
+  }
+
   private remember(share: TaskShareSummary): void {
     const local = this.shares.get(share.invitationId);
     this.shares.set(share.invitationId, this.withLocalState({
@@ -127,9 +138,10 @@ export class TaskShareService {
     return { ...share, state: computeOwnerState(share) };
   }
 
-  private publishProjectionForShare(share: TaskShareSummary): boolean {
+  private publishProjectionForShare(share: TaskShareSummary, options: PublishProjectionOptions = {}): boolean {
     const effective = this.withLocalState(share);
     if (effective.state === 'revoked' || effective.state === 'expired' || effective.state === 'revokePending') {
+      this.lastPublishedProjectionKeys.delete(effective.invitationId);
       return false;
     }
     const identity = this.getNodeIdentity();
@@ -139,7 +151,12 @@ export class TaskShareService {
     if (!this.grantAllowsProjection(identity.nodeId, effective.taskId)) return false;
 
     const projection = projectTaskForRemoteShare(task, { nodeId: identity.nodeId, queue: this.queue });
-    return this.publish({
+    const projectionKey = projectionDedupeKey(projection);
+    if (options.dedupe && this.lastPublishedProjectionKeys.get(effective.invitationId) === projectionKey) {
+      return false;
+    }
+
+    const published = this.publish({
       nodeId: identity.nodeId,
       nodeEpoch: identity.nodeEpoch,
       serverRevision: this.nextServerRevision(),
@@ -151,6 +168,10 @@ export class TaskShareService {
         projection,
       },
     });
+    if (published) {
+      this.lastPublishedProjectionKeys.set(effective.invitationId, projectionKey);
+    }
+    return published;
   }
 
   private grantAllowsProjection(nodeId: NodeId, taskId: string): boolean {
@@ -166,6 +187,19 @@ export class TaskShareService {
       && (!grant.expiresAt || Date.parse(grant.expiresAt) > Date.now())
     ));
   }
+}
+
+function projectionDedupeKey(projection: RemoteTaskProjectionV1): string {
+  return JSON.stringify({
+    schemaVersion: projection.schemaVersion,
+    nodeId: projection.nodeId,
+    taskId: projection.taskId,
+    taskLabel: projection.taskLabel,
+    status: projection.status,
+    hasFinding: projection.hasFinding,
+    needsInput: projection.needsInput,
+    updatedAt: projection.updatedAt,
+  });
 }
 
 function computeOwnerState(share: TaskShareSummary): TaskShareOwnerState {

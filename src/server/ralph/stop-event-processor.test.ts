@@ -26,6 +26,7 @@ function ralphTask(status: 'running' | 'completed'): Task {
 describe('RalphStopProcessor', () => {
   test('finalizes completed loops and broadcasts when finalization changes state', async () => {
     const broadcastSnapshot = vi.fn();
+    const publishTaskProjection = vi.fn();
     const ralphLoopService = {
       finalizeCompletedLoopStop: vi.fn().mockResolvedValue(true),
       handleStopEvent: vi.fn(),
@@ -35,12 +36,15 @@ describe('RalphStopProcessor', () => {
       runningLoopHandlingEnabled: false,
       ralphStopHandler: ralphLoopService,
       broadcastSnapshot,
+      publishTaskProjection,
     });
     const event = { type: 'stop' as const, sessionId: 's1', lastMessage: 'done' };
 
     processor.process(ralphTask('completed'), 'agent-1', event);
 
     await vi.waitFor(() => expect(broadcastSnapshot).toHaveBeenCalledTimes(1));
+    expect(publishTaskProjection).toHaveBeenCalledTimes(1);
+    expect(publishTaskProjection).toHaveBeenCalledWith('task-1');
     expect(ralphLoopService.finalizeCompletedLoopStop).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'task-1' }),
       'agent-1',
@@ -50,6 +54,7 @@ describe('RalphStopProcessor', () => {
   });
 
   test('handles running loops with cumulative cost when enabled', async () => {
+    const publishTaskProjection = vi.fn();
     const ralphLoopService = {
       finalizeCompletedLoopStop: vi.fn(),
       handleStopEvent: vi.fn().mockResolvedValue(undefined),
@@ -59,12 +64,15 @@ describe('RalphStopProcessor', () => {
       runningLoopHandlingEnabled: true,
       ralphStopHandler: ralphLoopService,
       broadcastSnapshot: vi.fn(),
+      publishTaskProjection,
     });
     const event = { type: 'stop' as const, sessionId: 's1', lastMessage: 'again' };
 
     processor.process(ralphTask('running'), 'agent-1', event);
 
     await vi.waitFor(() => expect(ralphLoopService.handleStopEvent).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(publishTaskProjection).toHaveBeenCalledTimes(1));
+    expect(publishTaskProjection).toHaveBeenCalledWith('task-1');
     expect(ralphLoopService.handleStopEvent).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'task-1' }),
       'agent-1',
@@ -75,6 +83,7 @@ describe('RalphStopProcessor', () => {
   });
 
   test('does not handle running loops when disabled', async () => {
+    const publishTaskProjection = vi.fn();
     const ralphLoopService = {
       finalizeCompletedLoopStop: vi.fn(),
       handleStopEvent: vi.fn().mockResolvedValue(undefined),
@@ -84,6 +93,7 @@ describe('RalphStopProcessor', () => {
       runningLoopHandlingEnabled: false,
       ralphStopHandler: ralphLoopService,
       broadcastSnapshot: vi.fn(),
+      publishTaskProjection,
     });
 
     processor.process(ralphTask('running'), 'agent-1', { type: 'stop', sessionId: 's1', lastMessage: 'again' });
@@ -91,5 +101,6 @@ describe('RalphStopProcessor', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(ralphLoopService.handleStopEvent).not.toHaveBeenCalled();
     expect(ralphLoopService.finalizeCompletedLoopStop).not.toHaveBeenCalled();
+    expect(publishTaskProjection).not.toHaveBeenCalled();
   });
 });

@@ -591,6 +591,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ralphCycler,
     ralphLoopService,
     hookIngestion,
+    taskShareService: {
+      publishTaskProjectionForTask: (taskId) => taskShareService?.publishTaskProjectionForTask(taskId),
+    },
     onPermissionBlocked: (taskId, promptText) => {
       onPermissionBlockedHolder?.(taskId, promptText);
       const task = remoteNodeClient && process.env.KOOKR_PUSH_DISABLED !== 'true'
