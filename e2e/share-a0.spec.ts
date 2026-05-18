@@ -143,10 +143,10 @@ test.describe('Easy connection sharing Phase A0', () => {
 
     await expect(collaboratorPage.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
     await expect(collaboratorPage.locator('#terminal-banner')).toContainText(
-      'Guest Links are view-only and do not support terminal viewing.',
+      'Terminal viewing requires owner approval.',
       { timeout: 10_000 },
     );
-    await expect(collaboratorPage.getByRole('button', { name: 'Request terminal input' })).toHaveCount(0);
+    await expect(collaboratorPage.getByRole('button', { name: 'Request terminal viewing' })).toHaveCount(1);
     await expect(collaboratorPage.getByLabel('Terminal input message')).toBeDisabled();
 
     const keysAfterJoin = await getKeysReceived(request, tmuxName);

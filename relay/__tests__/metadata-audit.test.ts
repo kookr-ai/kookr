@@ -10,7 +10,7 @@ import { createRelayServer, type RelayServerHandle } from '../server.js';
 import { executeWithPipeline } from '../../src/remote/command-pipeline.js';
 import { CommandJournal } from '../../src/remote/command-journal.js';
 import { makeNodeHello, PHASE1_SUPPORTED_FEATURES } from '../../src/remote/handshake.js';
-import { asActorId, asClientId, asCommandId, asGrantId, asIdempotencyKey, asNodeEpoch, asSessionEpoch, asSessionId } from '../../src/remote/ids.js';
+import { asActorId, asClientId, asCommandId, asGrantId, asIdempotencyKey, asNodeEpoch, asPolicyVersion, asSeq, asSessionEpoch, asSessionId } from '../../src/remote/ids.js';
 import { createRemoteNodeClient, type RemoteNodeClient } from '../../src/remote/node-client.js';
 
 async function listen(relay: RelayServerHandle): Promise<void> {
@@ -153,6 +153,69 @@ describe('relay command metadata audit', () => {
       expect.objectContaining({ outcome: 'forwarded' }),
       expect.objectContaining({ outcome: 'accepted' }),
     ]);
+  });
+
+  it('records terminal publication metadata without terminal payloads', async () => {
+    relay = createRelayServer({ allowInsecureClients: true });
+    await listen(relay);
+    const node = relay.registerNode();
+
+    const nodeUrl = new URL('/relay/node', relay.url());
+    nodeUrl.protocol = 'ws:';
+    const nodeWs = new WebSocket(nodeUrl, { headers: { authorization: `Bearer ${node.nodeToken}` } });
+    sockets.push(nodeWs);
+    await once(nodeWs, 'open');
+    nodeWs.send(JSON.stringify(makeNodeHello({
+      nodeId: node.nodeId,
+      nodeEpoch: asNodeEpoch('1'),
+      softwareVersion: 'test',
+      supportedFeatures: [...PHASE1_SUPPORTED_FEATURES, 'terminal-stream', 'terminal-publication-gate.v1'],
+    })));
+    await once(nodeWs, 'message');
+
+    nodeWs.send(JSON.stringify({
+      nodeId: node.nodeId,
+      nodeEpoch: asNodeEpoch('1'),
+      sessionId: asSessionId('session-1'),
+      sessionEpoch: asSessionEpoch('1'),
+      seq: asSeq(7),
+      ts: new Date().toISOString(),
+      kind: 'terminal.bytes',
+      payload: {
+        encoding: 'base64',
+        data: Buffer.from('SECRET_TERMINAL_PAYLOAD').toString('base64'),
+        byteLength: Buffer.byteLength('SECRET_TERMINAL_PAYLOAD'),
+      },
+      publication: {
+        publicationScopeId: 'scope-audit',
+        principal: { kind: 'guest-member', invitationId: 'inv-1', memberSessionId: 'member-1', deviceId: 'device-1' },
+        policyVersion: asPolicyVersion(2),
+        streamEncryption: { kind: 'guest-transport', memberSessionId: 'member-1' },
+      },
+    }));
+    await waitFor(() => relay!.metadataAuditRows().some((row) => row.publicationScopeId === 'scope-audit'));
+
+    const rows = relay.metadataAuditRows().filter((row) => row.publicationScopeId === 'scope-audit');
+    expect(rows).toEqual([
+      expect.objectContaining({
+        outcome: 'forwarded',
+        nodeId: node.nodeId,
+        relayId: 'hosted-owner',
+        principalKind: 'guest-member',
+        pseudonymousMemberId: expect.stringMatching(/^[a-f0-9]{24}$/),
+        pseudonymousSessionId: expect.stringMatching(/^[a-f0-9]{24}$/),
+        policyVersion: asPolicyVersion(2),
+        byteCount: Buffer.byteLength('SECRET_TERMINAL_PAYLOAD'),
+        seqFrom: 7,
+        seqTo: 7,
+        revocationAckState: 'not-revoked',
+      }),
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('SECRET_TERMINAL_PAYLOAD');
+    expect(JSON.stringify(rows)).not.toContain(Buffer.from('SECRET_TERMINAL_PAYLOAD').toString('base64'));
+    expect(JSON.stringify(rows)).not.toContain('member-1');
+    expect(JSON.stringify(rows)).not.toContain('device-1');
+    expect(JSON.stringify(rows)).not.toContain('session-1');
   });
 });
 

@@ -570,6 +570,114 @@ describe('relay invitations', () => {
     await expect(withCsrf.json()).resolves.toEqual({ error: 'guest-terminal-disabled' });
   });
 
+  it('allows Guest Link terminal viewing approvals only for the requesting member session', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, ['policy-sync', 'terminal-stream']);
+    ackPolicyMessages(nodeConn.ws, node.nodeId);
+    sockets.push(nodeConn.ws);
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view'],
+      shareTicket: true,
+    });
+    if (!created.shareTicket) throw new Error('expected share ticket');
+    const firstAccepted = relay.acceptInvitation(created.token, 'alice');
+    if (!firstAccepted.ok) throw new Error('expected accept');
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+
+    const firstCookie = [
+      `kookr_relay_member_token=${firstAccepted.accepted.memberToken}`,
+      `kookr_relay_csrf_token=${firstAccepted.accepted.csrfToken}`,
+      `kookr_relay_device_id=${firstAccepted.accepted.deviceId}`,
+    ].join('; ');
+    const firstRequest = await fetch(`${relay.url()}/relay/member/grant-requests`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: firstCookie,
+        'x-kookr-csrf-token': firstAccepted.accepted.csrfToken,
+      },
+      body: JSON.stringify({ nodeId: node.nodeId, grants: ['terminalView'] }),
+    });
+    expect(firstRequest.status).toBe(201);
+    const firstRequestBody = await firstRequest.json() as { request: { requestId: string; requestedGrants: string[]; status: string } };
+    expect(firstRequestBody.request).toEqual(expect.objectContaining({
+      requestedGrants: ['terminalView'],
+      status: 'pending',
+    }));
+
+    const firstApprove = await fetch(
+      `${relay.url()}/relay/node/invitations/${encodeURIComponent(created.invitation.invitationId)}/grant-requests/${encodeURIComponent(firstRequestBody.request.requestId)}/approve`,
+      { method: 'POST', headers: { authorization: `Bearer ${node.nodeToken}` } },
+    );
+    expect(firstApprove.status).toBe(200);
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    const firstState = await fetch(`${relay.url()}/relay/member/share-state`, { headers: { cookie: firstCookie } });
+    expect(firstState.status).toBe(200);
+    const firstStateBody = await firstState.json() as { state: { grants: string[]; terminal: { state: string } } };
+    expect(firstStateBody.state.grants).toEqual(['view', 'terminalView']);
+    expect(firstStateBody.state.terminal.state).toBe('viewOnly');
+
+    const secondAccept = await fetch(`${relay.url()}/relay/share-tickets/accept`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        shareId: created.shareTicket.shareId,
+        password: created.shareTicket.password,
+        displayName: 'bob',
+      }),
+    });
+    expect(secondAccept.status).toBe(200);
+    const secondCookie = responseCookieHeader(secondAccept);
+    const secondCsrfToken = responseCookieValue(secondAccept, 'kookr_relay_csrf_token');
+    const secondMemberToken = responseCookieValue(secondAccept, 'kookr_relay_member_token');
+    const secondDeviceId = responseCookieValue(secondAccept, 'kookr_relay_device_id');
+
+    const secondMember = await connectMember(relay, node.nodeId, secondMemberToken, { deviceId: secondDeviceId });
+    sockets.push(secondMember.ws);
+    await waitFor(() => secondMember.messages.some((msg) => (
+      (msg as { type?: string; state?: { terminal?: { reason?: string } } }).type === 'relay.memberShareState'
+      && (msg as { state: { terminal: { reason: string } } }).state.terminal.reason === 'policy.grantRequired'
+    )));
+    expect(secondMember.messages).not.toContainEqual(expect.objectContaining({
+      type: 'relay.memberShareState',
+      state: expect.objectContaining({
+        terminal: expect.objectContaining({ state: 'viewOnly' }),
+      }),
+    }));
+
+    const secondRequest = await fetch(`${relay.url()}/relay/member/grant-requests`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: secondCookie,
+        'x-kookr-csrf-token': secondCsrfToken,
+      },
+      body: JSON.stringify({ nodeId: node.nodeId, grants: ['terminalView'] }),
+    });
+    expect(secondRequest.status).toBe(201);
+    const secondRequestBody = await secondRequest.json() as { request: { requestId: string; requestedGrants: string[]; status: string } };
+    expect(secondRequestBody.request).toEqual(expect.objectContaining({
+      requestedGrants: ['terminalView'],
+      status: 'pending',
+    }));
+
+    const secondApprove = await fetch(
+      `${relay.url()}/relay/node/invitations/${encodeURIComponent(created.invitation.invitationId)}/grant-requests/${encodeURIComponent(secondRequestBody.request.requestId)}/approve`,
+      { method: 'POST', headers: { authorization: `Bearer ${node.nodeToken}` } },
+    );
+    expect(secondApprove.status).toBe(200);
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    const approvedSecondState = await fetch(`${relay.url()}/relay/member/share-state`, { headers: { cookie: secondCookie } });
+    expect(approvedSecondState.status).toBe(200);
+    const approvedSecondStateBody = await approvedSecondState.json() as { state: { grants: string[]; terminal: { state: string } } };
+    expect(approvedSecondStateBody.state.grants).toEqual(['view', 'terminalView']);
+    expect(approvedSecondStateBody.state.terminal.state).toBe('viewOnly');
+  });
+
   it('keeps non-Guest task-share terminal grant requests available', async () => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
@@ -1506,12 +1614,7 @@ describe('relay invitations', () => {
     });
     expect(projectedRes.status).toBe(200);
     const body = await projectedRes.json() as { terminalEvents: unknown[] };
-    expect(body.terminalEvents).toContainEqual(expect.objectContaining({
-      kind: 'terminal.bytes',
-      payload: expect.objectContaining({
-        data: Buffer.from('VISIBLE_TERMINAL_BYTES').toString('base64'),
-      }),
-    }));
+    expect(body.terminalEvents).toEqual([]);
 
     const member = await connectMember(relay, node.nodeId, accepted.accepted.memberToken);
     sockets.push(member.ws);
@@ -1674,38 +1777,14 @@ describe('relay invitations', () => {
     });
     expect(firstRes.status).toBe(200);
     const firstBody = await firstRes.json() as { terminalEvents: unknown[] };
-    expect(firstBody.terminalEvents).toContainEqual(expect.objectContaining({
-      kind: 'terminal.bytes',
-      publication: memberOnePublication,
-      payload: expect.objectContaining({
-        data: Buffer.from('MEMBER_ONE_BYTES').toString('base64'),
-      }),
-    }));
-    expect(firstBody.terminalEvents).not.toContainEqual(expect.objectContaining({
-      kind: 'terminal.bytes',
-      payload: expect.objectContaining({
-        data: Buffer.from('MEMBER_TWO_BYTES').toString('base64'),
-      }),
-    }));
+    expect(firstBody.terminalEvents).toEqual([]);
 
     const secondRes = await fetch(stateUrl, {
       headers: { cookie: `kookr_relay_member_token=${secondAccepted.accepted.memberToken}; kookr_relay_device_id=${secondAccepted.accepted.deviceId}` },
     });
     expect(secondRes.status).toBe(200);
     const secondBody = await secondRes.json() as { terminalEvents: unknown[] };
-    expect(secondBody.terminalEvents).toContainEqual(expect.objectContaining({
-      kind: 'terminal.bytes',
-      publication: memberTwoPublication,
-      payload: expect.objectContaining({
-        data: Buffer.from('MEMBER_TWO_BYTES').toString('base64'),
-      }),
-    }));
-    expect(secondBody.terminalEvents).not.toContainEqual(expect.objectContaining({
-      kind: 'terminal.bytes',
-      payload: expect.objectContaining({
-        data: Buffer.from('MEMBER_ONE_BYTES').toString('base64'),
-      }),
-    }));
+    expect(secondBody.terminalEvents).toEqual([]);
 
     const secondMember = await connectMember(relay, node.nodeId, secondAccepted.accepted.memberToken, {
       deviceId: secondAccepted.accepted.deviceId,
@@ -1865,7 +1944,7 @@ describe('relay invitations', () => {
     expect(nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-insecure-input')).toBe(false);
   });
 
-  it('allows raw terminal access only for matching session-scoped invitations', async () => {
+  it('allows session-scoped terminal input while HTTP replay remains disabled', async () => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
@@ -1924,12 +2003,7 @@ describe('relay invitations', () => {
     });
     expect(matchingRes.status).toBe(200);
     const matchingBody = await matchingRes.json() as { terminalEvents: unknown[] };
-    expect(matchingBody.terminalEvents).toContainEqual(expect.objectContaining({
-      kind: 'terminal.bytes',
-      payload: expect.objectContaining({
-        data: Buffer.from('SESSION_ONE_BYTES').toString('base64'),
-      }),
-    }));
+    expect(matchingBody.terminalEvents).toEqual([]);
 
     const mismatchedStateUrl = new URL('/relay/dashboard/state', relay.url());
     mismatchedStateUrl.searchParams.set('nodeId', node.nodeId);

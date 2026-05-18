@@ -220,6 +220,10 @@ function sameGrantSet(a: readonly ShareGrant[], b: readonly ShareGrant[]): boole
   return left.length === right.length && left.every((grant, index) => grant === right[index]);
 }
 
+function isTerminalViewOnlyGrantSet(grants: readonly ShareGrant[]): boolean {
+  return grants.length > 0 && grants.every((grant) => grant === 'terminalView');
+}
+
 function verifyPassword(password: string, verifier: string): boolean {
   const [scheme, nRaw, rRaw, pRaw, salt, expected] = verifier.split(':');
   if (scheme !== PASSWORD_VERIFIER_SCHEME || !salt || !expected) return false;
@@ -624,15 +628,23 @@ export class InvitationStore {
     if (invitation.revokedAt) return { ok: false, reason: 'revoked' };
     if (!invitation.acceptedAt) return { ok: false, reason: 'not-accepted' };
     if (Date.parse(invitation.expiresAt) <= this.now().getTime()) return { ok: false, reason: 'expired' };
-    const requestedGrants = normalizeMutableShareGrants(input.requestedGrants).filter((grant) => !invitation.grants.includes(grant));
+    const normalizedRequestedGrants = normalizeMutableShareGrants(input.requestedGrants);
+    const guestTerminalViewRequest = isGuestLinkTaskShare(invitation) && isTerminalViewOnlyGrantSet(normalizedRequestedGrants);
+    const requestedGrants = guestTerminalViewRequest
+      ? normalizedRequestedGrants
+      : normalizedRequestedGrants.filter((grant) => !invitation.grants.includes(grant));
     if (requestedGrants.length === 0) return { ok: false, reason: 'empty-grants' };
     const requests = invitation.grantRequests ?? [];
     const duplicatePending = [...requests].reverse().find((request) => (
-      request.status === 'pending' && sameGrantSet(request.requestedGrants, requestedGrants)
+      request.status === 'pending'
+      && sameGrantSet(request.requestedGrants, requestedGrants)
+      && (!guestTerminalViewRequest || request.requestedBy === input.requestedBy)
     ));
     if (duplicatePending) return { ok: false, reason: 'already-pending' };
     const recentDenied = [...requests].reverse().find((request) => (
-      request.status === 'denied' && sameGrantSet(request.requestedGrants, requestedGrants)
+      request.status === 'denied'
+      && sameGrantSet(request.requestedGrants, requestedGrants)
+      && (!guestTerminalViewRequest || request.requestedBy === input.requestedBy)
     ));
     if (recentDenied) {
       const deniedAt = Date.parse(recentDenied.resolvedAt ?? recentDenied.requestedAt);

@@ -92,8 +92,8 @@ describe('relay terminal stream fanout', () => {
     relay = null;
   });
 
-  it('fans out stream bytes and serves bounded replay gaps on reconnect', async () => {
-    relay = createRelayServer({ allowInsecureClients: true, terminalReplayMaxEvents: 2 });
+  it('fans out live stream bytes without public replay on reconnect', async () => {
+    relay = createRelayServer({ allowInsecureClients: true });
     await listen(relay);
     const node = relay.registerNode();
     const nodeWs = await connectNode(relay.url(), node.nodeId, node.nodeToken);
@@ -115,25 +115,9 @@ describe('relay terminal stream fanout', () => {
     });
     sockets.push(client.ws, otherSessionClient.ws);
 
-    await new Promise<void>((resolve, reject) => {
-      const started = Date.now();
-      const timer = setInterval(() => {
-        if (client.messages.filter((msg) => (msg as { kind?: string }).kind?.startsWith('terminal.')).length >= 3) {
-          clearInterval(timer);
-          resolve();
-        } else if (Date.now() - started > 1_000) {
-          clearInterval(timer);
-          reject(new Error('timed out waiting for terminal replay'));
-        }
-      }, 10);
-    });
-
-    expect(client.messages).toContainEqual(expect.objectContaining({
-      kind: 'terminal.replay-gap',
-      payload: expect.objectContaining({ fromSeq: 1, toSeq: 1 }),
-    }));
-    expect(client.messages).toContainEqual(expect.objectContaining({ kind: 'terminal.bytes', seq: 2 }));
-    expect(client.messages).toContainEqual(expect.objectContaining({ kind: 'terminal.bytes', seq: 3 }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(client.messages).not.toContainEqual(expect.objectContaining({ kind: 'terminal.replay-gap' }));
+    expect(client.messages).not.toContainEqual(expect.objectContaining({ kind: 'terminal.bytes' }));
     expect(otherSessionClient.messages).not.toContainEqual(expect.objectContaining({ kind: 'terminal.bytes' }));
 
     nodeWs.send(JSON.stringify(terminalBytes(node.nodeId, 4, 'four')));
@@ -210,8 +194,8 @@ describe('relay terminal stream fanout', () => {
     });
   });
 
-  it('scopes replay by node epoch and applies afterSeq to dashboard state', async () => {
-    relay = createRelayServer({ allowInsecureClients: true, terminalReplayMaxEvents: 10 });
+  it('keeps dashboard terminal state live-only even when afterSeq is requested', async () => {
+    relay = createRelayServer({ allowInsecureClients: true });
     await listen(relay);
     const node = relay.registerNode();
     const firstNodeWs = await connectNode(relay.url(), node.nodeId, node.nodeToken, { nodeEpoch: '1' });
@@ -234,15 +218,7 @@ describe('relay terminal stream fanout', () => {
     expect(state.ok).toBe(true);
     const body = await state.json() as { terminalEvents: TerminalStreamEvent[] };
 
-    expect(body.terminalEvents).toHaveLength(1);
-    expect(body.terminalEvents[0]).toMatchObject({
-      kind: 'terminal.bytes',
-      nodeEpoch: '2',
-      seq: 2,
-      payload: expect.objectContaining({
-        data: Buffer.from('new-two').toString('base64'),
-      }),
-    });
+    expect(body.terminalEvents).toHaveLength(0);
     expect(body.terminalEvents).not.toContainEqual(expect.objectContaining({ nodeEpoch: '1' }));
   });
 
