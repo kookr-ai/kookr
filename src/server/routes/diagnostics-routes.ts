@@ -73,6 +73,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
   app.get('/api/anomaly-stats', (c) => c.json(getDetectionStats()));
 
+  app.get('/api/finding-evidence-audit', (c) => c.json({
+    records: deps.monitor.getFindingEvidenceAuditRecords(),
+    reviewCandidates: deps.monitor.getFindingEvidenceReviewCandidates(20),
+  }));
+
   app.get('/api/circuit-breakers', (c) => {
     if (!deps.circuitBreakerRegistry) return c.json([]);
     return c.json(deps.circuitBreakerRegistry.getAllSnapshots());

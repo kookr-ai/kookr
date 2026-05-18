@@ -266,7 +266,19 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         // to it and let Monitor decide whether to enqueue, suppress, or clear —
         // this replaces the former in-place reconciliation between Monitor
         // and Watchdog that lived in this file (issue #367 sub-goal 3).
-        if (monitor.applyWatchdogVerdict(agentId, verdict, { paneCaptureSucceeded })) {
+        const watchdogActionable = verdict.status === 'needs_input'
+          || verdict.status === 'permission_blocked'
+          || verdict.status === 'stale_agent'
+          || verdict.status === 'hook_disconnected';
+
+        if (monitor.applyWatchdogVerdict(agentId, verdict, { paneCaptureSucceeded, paneText: paneContent })) {
+          changed = true;
+        }
+
+        if (
+          !watchdogActionable
+          && monitor.sampleFindingEvidence(agentId, paneCaptureSucceeded ? paneContent : undefined)
+        ) {
           changed = true;
         }
 
