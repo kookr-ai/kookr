@@ -63,7 +63,10 @@ describe('InvitationStore member continuity', () => {
     expect(laptop.ok).toBe(true);
     if (!phone.ok || !laptop.ok) throw new Error('expected accepted sessions');
 
-    const restored = new InvitationStore({ initialInvitations: store.list() });
+    const restored = new InvitationStore({
+      initialInvitations: store.list(),
+      now: () => new Date('2026-05-17T00:00:00.000Z'),
+    });
 
     expect(restored.authenticateMember(phone.accepted.memberToken)).toMatchObject({
       acceptedBy: 'phone',

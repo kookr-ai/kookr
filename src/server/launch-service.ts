@@ -9,6 +9,7 @@ import {
   resolveRoundRobinAgent,
 } from '../core/agent-types.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
+import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { LaunchDependency } from '../core/playbook.js';
 import {
   redactDiagnosticText,
@@ -45,6 +46,8 @@ export interface LaunchServiceDeps {
   taskStore: TaskStore;
   adapterRegistry: AdapterRegistry;
   lifecycleDeps: AgentLifecycleDeps;
+  /** Optional live session probe used to keep dedup from trusting stale inProgress records. */
+  terminalBackend?: Pick<TerminalBackend, 'isAlive'>;
   /** Live getter for max concurrent tasks. Falls back to static default if not provided. */
   getMaxActiveTasks?: () => number;
   /**
@@ -167,6 +170,64 @@ export function checkSubmission(
   return undefined;
 }
 
+function isSessionTerminal(session: Task['sessions'][number]): boolean {
+  return session.lastStatus === 'completed' || session.lastStatus === 'aborted';
+}
+
+function isRalphLoopActive(task: Task): boolean {
+  return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
+}
+
+async function hasLiveBackingSession(
+  task: Task,
+  terminalBackend: Pick<TerminalBackend, 'isAlive'>,
+): Promise<boolean> {
+  const sessions = task.sessions.filter((session) => !isSessionTerminal(session));
+  if (sessions.length === 0) return false;
+
+  for (const session of sessions) {
+    try {
+      if (await terminalBackend.isAlive(session.tmuxSession)) return true;
+    } catch {
+      // Treat backend probe failures like a missing session for dedup. The
+      // stale record will be reconciled below instead of blocking a retry.
+    }
+  }
+  return false;
+}
+
+function reconcileStaleDuplicate(taskStore: TaskStore, task: Task): void {
+  const current = taskStore.getTask(task.id);
+  if (!current || current.status !== 'inProgress') return;
+
+  for (const session of current.sessions) {
+    if (!isSessionTerminal(session)) {
+      taskStore.updateSession(current.id, session.tmuxSession, { lastStatus: 'completed' });
+    }
+  }
+
+  const updated = taskStore.getTask(current.id);
+  if (
+    updated?.status === 'inProgress'
+    && (updated.sessions.length === 0 || updated.sessions.every(isSessionTerminal))
+  ) {
+    taskStore.terminateTask(updated.id);
+  }
+}
+
+async function validateDuplicateCandidate(
+  deps: LaunchServiceDeps,
+  candidate: Task,
+): Promise<Task | undefined> {
+  if (candidate.status !== 'inProgress') return candidate;
+  if (isRalphLoopActive(candidate)) return candidate;
+  if (!deps.terminalBackend) return candidate;
+  if (await hasLiveBackingSession(candidate, deps.terminalBackend)) return candidate;
+
+  reconcileStaleDuplicate(deps.taskStore, candidate);
+  return undefined;
+}
+
 /**
  * Unified launch orchestration: create task, check concurrency, launch via
  * adapter, and run post-launch registration. Used by both the WS message
@@ -225,18 +286,26 @@ export async function launchTask(
   // Dedup: if an active task with the same prompt and canonical cwd exists,
   // return it idempotently
   if (!opts.disableDedup) {
-    const existing = checkSubmission(taskStore, effectivePrompt, agentType, opts.cwd);
-    if (existing) {
-      const canonicalCwd = canonicalizeCwd(opts.cwd);
-      console.log(`[dedup] Rejected duplicate prompt (existing task ${existing.id}, status=${existing.status}, cwd=${canonicalCwd})`);
-      await deps.interactionLog?.append({
-        type: 'submission_rejected_dedup',
-        existingTaskId: existing.id,
-        promptHash: hashPrompt(effectivePrompt),
-        canonicalCwd,
-        timestamp: nowISO(),
-      });
-      return { task: existing, queued: false, duplicate: true };
+    let staleDuplicate: Task | undefined;
+    let existing: Task | undefined;
+    while ((existing = checkSubmission(taskStore, effectivePrompt, agentType, opts.cwd))) {
+      const activeDuplicate = await validateDuplicateCandidate(deps, existing);
+      if (activeDuplicate) {
+        const canonicalCwd = canonicalizeCwd(opts.cwd);
+        console.log(`[dedup] Rejected duplicate prompt (existing task ${activeDuplicate.id}, status=${activeDuplicate.status}, cwd=${canonicalCwd})`);
+        await deps.interactionLog?.append({
+          type: 'submission_rejected_dedup',
+          existingTaskId: activeDuplicate.id,
+          promptHash: hashPrompt(effectivePrompt),
+          canonicalCwd,
+          timestamp: nowISO(),
+        });
+        return { task: activeDuplicate, queued: false, duplicate: true };
+      }
+      staleDuplicate = existing;
+    }
+    if (staleDuplicate) {
+      console.log(`[dedup] Ignored stale duplicate prompt (existing task ${staleDuplicate.id}, status=${staleDuplicate.status}, cwd=${canonicalizeCwd(opts.cwd)})`);
     }
   }
 

@@ -670,7 +670,6 @@ describe('relay invitations', () => {
   it('repairs legacy accepted member sessions with CSRF and device cookies', async () => {
     const nodeId = asNodeId('node-legacy');
     const store = new InvitationStore({
-      now: () => new Date('2026-05-17T00:00:00.000Z'),
       tokenBytes: 8,
     });
     const created = store.create({
