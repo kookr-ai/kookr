@@ -15,6 +15,7 @@ import {
   type FindingEvidenceReviewMode,
   type FindingEvidenceReviewServiceConfig,
 } from '../finding-evidence-review-service.js';
+import { ReviewLogStore } from '../review-log-store.js';
 import type { RouteDeps } from './shared.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
@@ -25,6 +26,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
   let findingEvidenceReviewService: FindingEvidenceReviewService | undefined;
   let findingEvidenceReviewConfig: FindingEvidenceReviewServiceConfig | undefined;
+  let findingEvidenceReviewLogStore: ReviewLogStore | undefined;
 
   app.get('/api/health', (c) => {
     const terminalBackend = deps.terminalBackend;
@@ -114,10 +116,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
     const { service: reviewService, config: reviewConfig } = getFindingEvidenceReviewService();
     const mode = body.mode ?? 'estimate_only';
-    if (mode !== 'estimate_only' && mode !== 'model_review') {
+    if (mode !== 'estimate_only' && mode !== 'model_review' && mode !== 'persisted_review') {
       return c.json({ error: 'invalid-mode' }, 400);
     }
-    if (mode === 'model_review' && reviewConfig.dailyCostCents <= 0) {
+    if (mode !== 'estimate_only' && reviewConfig.dailyCostCents <= 0) {
       return c.json({ error: 'finding-review-budget-required' }, 403);
     }
 
@@ -132,6 +134,22 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       }
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
+  });
+
+  app.get('/api/finding-evidence-review-log', async (c) => {
+    if (!isAuthorizedFindingReviewRequest(getRemoteAddress(c), c.req.header(REVIEW_ADMIN_TOKEN_HEADER))) {
+      return c.json({ error: 'finding-review-forbidden' }, 403);
+    }
+
+    const limitParam = c.req.query('limit');
+    const limit = limitParam ? Number.parseInt(limitParam, 10) : 100;
+    const read = await getFindingEvidenceReviewLogStore().readAll();
+    const boundedLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 1000) : 100;
+    return c.json({
+      schemaVersion: 'finding-evidence-review-log-read.v1',
+      records: read.records.slice(-boundedLimit),
+      diagnostics: read.diagnostics,
+    });
   });
 
   function getFindingEvidenceReviewService(): {
@@ -150,9 +168,17 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         },
         llmClient: deps.llmClient ?? null,
         config: findingEvidenceReviewConfig,
+        reviewLogStore: getFindingEvidenceReviewLogStore(),
       });
     }
     return { service: findingEvidenceReviewService, config: findingEvidenceReviewConfig };
+  }
+
+  function getFindingEvidenceReviewLogStore(): ReviewLogStore {
+    if (!findingEvidenceReviewLogStore) {
+      findingEvidenceReviewLogStore = ReviewLogStore.forKookrDir(deps.kookrDir);
+    }
+    return findingEvidenceReviewLogStore;
   }
 
   app.get('/api/circuit-breakers', (c) => {

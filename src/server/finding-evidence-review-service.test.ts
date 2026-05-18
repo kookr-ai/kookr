@@ -159,10 +159,61 @@ describe('FindingEvidenceReviewService', () => {
         attempt: expect.objectContaining({
           schemaVersion: 'finding-evidence-review-invalid-attempt.v1',
           candidateId: 'finding-1',
+          failureKind: 'malformed_json',
+          rawOutputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
           error: 'model output was not valid JSON',
         }),
       },
     ]);
+  });
+
+  test('persisted_review appends each valid review or invalid attempt to the review log', async () => {
+    const appendReview = vi.fn(async () => undefined);
+    const appendInvalidAttempt = vi.fn(async () => undefined);
+    const service = new FindingEvidenceReviewService({
+      candidateReader: reader([
+        candidate({ id: 'finding-1', updatedAt: '2026-05-18T10:01:00.000Z' }),
+        candidate({ id: 'finding-2', updatedAt: '2026-05-18T10:02:00.000Z' }),
+      ]),
+      llmClient: {
+        provider: 'fake-provider',
+        model: 'fake-model',
+        complete: vi.fn(async ({ userMessage }) => {
+          return userMessage.includes('"candidateId":"finding-2"')
+            ? JSON.stringify({
+              candidateId: 'finding-2',
+              verdict: 'likely_false_positive',
+              confidence: 'medium',
+              evidenceRefs: ['finding-2:observation:2'],
+              rationale: 'activity advanced',
+            })
+            : 'not-json';
+        }),
+      },
+      config: {
+        enabled: true,
+        maxCandidates: 5,
+        timeoutMs: 15_000,
+        dailyCostCents: 5,
+        hmacKey: HMAC_KEY,
+      },
+      reviewLogStore: { appendReview, appendInvalidAttempt },
+      now: () => new Date('2026-05-18T10:05:00.000Z'),
+    });
+
+    const response = await service.review({ mode: 'persisted_review', limit: 2 });
+
+    expect(response.reviewLog).toEqual({ appendedRecords: 2 });
+    expect(appendReview).toHaveBeenCalledWith(
+      expect.objectContaining({ candidateId: 'finding-2', verdict: 'likely_false_positive' }),
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+      new Date('2026-05-18T10:05:00.000Z'),
+    );
+    expect(appendInvalidAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ candidateId: 'finding-1', failureKind: 'malformed_json' }),
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+      new Date('2026-05-18T10:05:00.000Z'),
+    );
   });
 
   test('model_review refuses to run without positive daily budget', async () => {

@@ -1,21 +1,33 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import type { FindingEvidenceAuditRecord, FindingEvidenceObservation } from '../shared/contracts/anomalies.js';
 
 export const FINDING_EVIDENCE_REVIEW_INPUT_SCHEMA_VERSION = 'finding-evidence-review-input.v1';
 export const FINDING_EVIDENCE_REVIEW_SCHEMA_VERSION = 'finding-evidence-review.v1';
+export const FINDING_EVIDENCE_REVIEW_INVALID_ATTEMPT_SCHEMA_VERSION = 'finding-evidence-review-invalid-attempt.v1';
 export const FINDING_EVIDENCE_REVIEW_PROMPT_VERSION = 'finding-evidence-review-prompt.v1';
+export const FINDING_EVIDENCE_REVIEW_VERDICTS = ['supports_finding', 'timing_false_positive', 'likely_false_positive', 'unclear'] as const;
+export const FINDING_EVIDENCE_REVIEW_CONFIDENCES = ['low', 'medium', 'high'] as const;
+export const FINDING_EVIDENCE_REVIEW_FAILURE_KINDS = [
+  'empty_output',
+  'malformed_json',
+  'invalid_shape',
+  'candidate_mismatch',
+  'invalid_verdict',
+  'invalid_confidence',
+  'invalid_evidence_refs',
+  'invalid_semantics',
+  'invalid_rationale',
+] as const;
 
 export type FindingEvidenceReviewInputSchemaVersion = typeof FINDING_EVIDENCE_REVIEW_INPUT_SCHEMA_VERSION;
 export type FindingEvidenceReviewSchemaVersion = typeof FINDING_EVIDENCE_REVIEW_SCHEMA_VERSION;
 export type FindingEvidenceReviewPromptVersion = typeof FINDING_EVIDENCE_REVIEW_PROMPT_VERSION;
 
-export type FindingEvidenceReviewVerdict =
-  | 'supports_finding'
-  | 'timing_false_positive'
-  | 'likely_false_positive'
-  | 'unclear';
+export type FindingEvidenceReviewVerdict = typeof FINDING_EVIDENCE_REVIEW_VERDICTS[number];
 
-export type FindingEvidenceReviewConfidence = 'low' | 'medium' | 'high';
+export type FindingEvidenceReviewConfidence = typeof FINDING_EVIDENCE_REVIEW_CONFIDENCES[number];
+
+export type FindingEvidenceReviewFailureKind = typeof FINDING_EVIDENCE_REVIEW_FAILURE_KINDS[number];
 
 export interface FindingEvidenceReviewObservationInputV1 {
   observationId: string;
@@ -67,7 +79,7 @@ export interface FindingEvidenceReviewV1 {
 }
 
 export interface FindingEvidenceReviewInvalidAttemptV1 {
-  schemaVersion: 'finding-evidence-review-invalid-attempt.v1';
+  schemaVersion: typeof FINDING_EVIDENCE_REVIEW_INVALID_ATTEMPT_SCHEMA_VERSION;
   candidateId: string;
   attemptedAt: string;
   reviewer: {
@@ -75,6 +87,8 @@ export interface FindingEvidenceReviewInvalidAttemptV1 {
     model: string;
     promptVersion: FindingEvidenceReviewPromptVersion;
   };
+  failureKind: FindingEvidenceReviewFailureKind;
+  rawOutputHash: string;
   error: string;
 }
 
@@ -204,43 +218,46 @@ export function parseFindingEvidenceReviewOutputV1(
   now: Date = new Date(),
 ): FindingEvidenceReviewParseResult {
   const attemptedAt = now.toISOString();
-  const invalid = (error: string): FindingEvidenceReviewParseResult => ({
+  const rawOutputHash = hashReviewRawOutput(rawOutput);
+  const invalid = (failureKind: FindingEvidenceReviewFailureKind, error: string): FindingEvidenceReviewParseResult => ({
     status: 'invalid_attempt',
     attempt: {
-      schemaVersion: 'finding-evidence-review-invalid-attempt.v1',
+      schemaVersion: FINDING_EVIDENCE_REVIEW_INVALID_ATTEMPT_SCHEMA_VERSION,
       candidateId: input.candidateId,
       attemptedAt,
       reviewer: { ...reviewer, promptVersion: FINDING_EVIDENCE_REVIEW_PROMPT_VERSION },
-      error,
+      failureKind,
+      rawOutputHash,
+      error: sanitizeDiagnosticText(error),
     },
   });
 
-  if (!rawOutput || !rawOutput.trim()) return invalid('empty model output');
+  if (!rawOutput || !rawOutput.trim()) return invalid('empty_output', 'empty model output');
 
   let value: unknown;
   try {
     value = JSON.parse(rawOutput);
   } catch {
-    return invalid('model output was not valid JSON');
+    return invalid('malformed_json', 'model output was not valid JSON');
   }
 
-  if (!isRecord(value)) return invalid('model output was not a JSON object');
-  if (value.candidateId !== input.candidateId) return invalid('candidateId did not match review input');
-  if (!isFindingEvidenceReviewVerdict(value.verdict)) return invalid('verdict was not allowed');
-  if (!isFindingEvidenceReviewConfidence(value.confidence)) return invalid('confidence was not allowed');
+  if (!isRecord(value)) return invalid('invalid_shape', 'model output was not a JSON object');
+  if (value.candidateId !== input.candidateId) return invalid('candidate_mismatch', 'candidateId did not match review input');
+  if (!isFindingEvidenceReviewVerdict(value.verdict)) return invalid('invalid_verdict', 'verdict was not allowed');
+  if (!isFindingEvidenceReviewConfidence(value.confidence)) return invalid('invalid_confidence', 'confidence was not allowed');
   if (!Array.isArray(value.evidenceRefs) || value.evidenceRefs.length === 0 || !value.evidenceRefs.every((ref) => typeof ref === 'string')) {
-    return invalid('evidenceRefs must be a non-empty string array');
+    return invalid('invalid_evidence_refs', 'evidenceRefs must be a non-empty string array');
   }
 
   const allowedRefs = new Set(input.observations.map((observation) => observation.observationId));
   const badRef = value.evidenceRefs.find((ref) => typeof ref !== 'string' || !allowedRefs.has(ref));
-  if (badRef !== undefined) return invalid(`evidenceRefs contained unknown observation id ${String(badRef)}`);
+  if (badRef !== undefined) return invalid('invalid_evidence_refs', `evidenceRefs contained unknown observation id ${String(badRef)}`);
 
   if (value.verdict === 'timing_false_positive' && input.finding.auditVerdict !== 'transient_too_fast') {
-    return invalid('timing_false_positive is only valid for transient timing candidates');
+    return invalid('invalid_semantics', 'timing_false_positive is only valid for transient timing candidates');
   }
 
-  if (typeof value.rationale !== 'string' || !value.rationale.trim()) return invalid('rationale must be a non-empty string');
+  if (typeof value.rationale !== 'string' || !value.rationale.trim()) return invalid('invalid_rationale', 'rationale must be a non-empty string');
 
   return {
     status: 'valid',
@@ -306,7 +323,15 @@ function hmacString(value: string, hmacKey: Buffer): string {
   return createHmac('sha256', hmacKey).update(value).digest('hex');
 }
 
+function hashReviewRawOutput(value: string | null): string {
+  return createHash('sha256').update(value ?? '').digest('hex');
+}
+
 function sanitizeRationale(value: string): string {
+  return sanitizeDiagnosticText(value);
+}
+
+export function sanitizeDiagnosticText(value: string): string {
   return value
     .replace(/[\u0000-\u001F\u007F]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -329,12 +354,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isFindingEvidenceReviewVerdict(value: unknown): value is FindingEvidenceReviewVerdict {
-  return value === 'supports_finding'
-    || value === 'timing_false_positive'
-    || value === 'likely_false_positive'
-    || value === 'unclear';
+  return (FINDING_EVIDENCE_REVIEW_VERDICTS as readonly unknown[]).includes(value);
 }
 
 function isFindingEvidenceReviewConfidence(value: unknown): value is FindingEvidenceReviewConfidence {
-  return value === 'low' || value === 'medium' || value === 'high';
+  return (FINDING_EVIDENCE_REVIEW_CONFIDENCES as readonly unknown[]).includes(value);
 }

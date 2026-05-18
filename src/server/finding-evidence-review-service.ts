@@ -7,6 +7,7 @@ import {
   FINDING_EVIDENCE_REVIEW_PROMPT_VERSION,
   buildFindingEvidenceReviewInputV1,
   canonicalizeReviewInputV1,
+  computeReviewInputHashV1,
   estimateFindingEvidenceReviewTokens,
   parseFindingEvidenceReviewOutputV1,
   projectFindingEvidenceReviewDryRunCandidateV1,
@@ -15,8 +16,9 @@ import {
   type FindingEvidenceReviewInputV1,
   type FindingEvidenceReviewParseResult,
 } from '../core/finding-evidence-review.js';
+import type { ReviewLogStore } from './review-log-store.js';
 
-export type FindingEvidenceReviewMode = 'estimate_only' | 'model_review';
+export type FindingEvidenceReviewMode = 'estimate_only' | 'model_review' | 'persisted_review';
 
 export interface FindingEvidenceCandidateReader {
   listReviewCandidates(limit: number): FindingEvidenceAuditRecord[];
@@ -35,6 +37,7 @@ export interface FindingEvidenceReviewServiceDeps {
   candidateReader: FindingEvidenceCandidateReader;
   llmClient: LlmClient | null;
   config: FindingEvidenceReviewServiceConfig;
+  reviewLogStore?: Pick<ReviewLogStore, 'appendReview' | 'appendInvalidAttempt'>;
   now?: () => Date;
 }
 
@@ -53,6 +56,9 @@ export interface FindingEvidenceReviewResponseV1 {
     spentTodayCents: number;
     remainingTodayCents: number;
   };
+  reviewLog?: {
+    appendedRecords: number;
+  };
 }
 
 export class FindingEvidenceReviewServiceError extends Error {
@@ -62,7 +68,8 @@ export class FindingEvidenceReviewServiceError extends Error {
       | 'finding-review-llm-unavailable'
       | 'finding-review-budget-required'
       | 'finding-review-budget-exhausted'
-      | 'finding-review-invalid-mode',
+      | 'finding-review-invalid-mode'
+      | 'finding-review-log-unavailable',
     public readonly status: 400 | 403 | 404 | 429 | 503,
     message: string,
   ) {
@@ -81,8 +88,8 @@ export class FindingEvidenceReviewService {
 
   async review(request: FindingEvidenceReviewRequest): Promise<FindingEvidenceReviewResponseV1> {
     const mode = request.mode ?? 'estimate_only';
-    if (mode !== 'estimate_only' && mode !== 'model_review') {
-      throw new FindingEvidenceReviewServiceError('finding-review-invalid-mode', 400, 'mode must be estimate_only or model_review');
+    if (mode !== 'estimate_only' && mode !== 'model_review' && mode !== 'persisted_review') {
+      throw new FindingEvidenceReviewServiceError('finding-review-invalid-mode', 400, 'mode must be estimate_only, model_review, or persisted_review');
     }
     this.assertBaseGuards();
 
@@ -93,6 +100,7 @@ export class FindingEvidenceReviewService {
     );
     const builtInputs = records.map((record) => buildFindingEvidenceReviewInputV1(record, this.inputOptions()));
     const inputs = builtInputs.map((built) => built.input);
+    const inputHashes = inputs.map((input) => computeReviewInputHashV1(input, this.deps.config.hmacKey));
     const estimatedTokens = estimateFindingEvidenceReviewTokens(inputs);
     const estimatedCostCents = estimateReviewCostCents(estimatedTokens);
     const dryRun: FindingEvidenceReviewDryRunResponseV1 = {
@@ -111,8 +119,11 @@ export class FindingEvidenceReviewService {
       return this.response(mode, dryRun);
     }
 
+    if (mode === 'persisted_review' && !this.deps.reviewLogStore) {
+      throw new FindingEvidenceReviewServiceError('finding-review-log-unavailable', 503, 'persisted_review requires a review log store');
+    }
     if (this.deps.config.dailyCostCents <= 0) {
-      throw new FindingEvidenceReviewServiceError('finding-review-budget-required', 403, 'model_review requires a positive daily budget');
+      throw new FindingEvidenceReviewServiceError('finding-review-budget-required', 403, `${mode} requires a positive daily budget`);
     }
     this.resetDailySpendIfNeeded();
     if (this.spentTodayCents + estimatedCostCents > this.deps.config.dailyCostCents) {
@@ -121,7 +132,8 @@ export class FindingEvidenceReviewService {
     this.spentTodayCents += estimatedCostCents;
 
     const results: FindingEvidenceReviewParseResult[] = [];
-    for (const input of inputs) {
+    for (let index = 0; index < inputs.length; index += 1) {
+      const input = inputs[index]!;
       const raw = await this.deps.llmClient!.complete({
         maxTokens: DEFAULT_MODEL_REVIEW_MAX_TOKENS,
         system: REVIEW_SYSTEM_PROMPT,
@@ -135,15 +147,24 @@ export class FindingEvidenceReviewService {
         },
         timeoutMs: this.deps.config.timeoutMs,
       });
-      results.push(parseFindingEvidenceReviewOutputV1(
+      const parsed = parseFindingEvidenceReviewOutputV1(
         raw,
         input,
         { provider: this.deps.llmClient!.provider, model: this.deps.llmClient!.model },
         this.now(),
-      ));
+      );
+      results.push(parsed);
+      if (mode === 'persisted_review') {
+        const inputHash = inputHashes[index]!;
+        if (parsed.status === 'valid') {
+          await this.deps.reviewLogStore!.appendReview(parsed.review, inputHash, this.now());
+        } else {
+          await this.deps.reviewLogStore!.appendInvalidAttempt(parsed.attempt, inputHash, this.now());
+        }
+      }
     }
 
-    return this.response(mode, dryRun, results);
+    return this.response(mode, dryRun, results, mode === 'persisted_review' ? results.length : undefined);
   }
 
   private assertBaseGuards(): void {
@@ -172,6 +193,7 @@ export class FindingEvidenceReviewService {
     mode: FindingEvidenceReviewMode,
     dryRun: FindingEvidenceReviewDryRunResponseV1,
     results?: FindingEvidenceReviewParseResult[],
+    appendedRecords?: number,
   ): FindingEvidenceReviewResponseV1 {
     this.resetDailySpendIfNeeded();
     return {
@@ -184,6 +206,7 @@ export class FindingEvidenceReviewService {
         spentTodayCents: this.spentTodayCents,
         remainingTodayCents: Math.max(0, this.deps.config.dailyCostCents - this.spentTodayCents),
       },
+      ...(appendedRecords !== undefined ? { reviewLog: { appendedRecords } } : {}),
     };
   }
 

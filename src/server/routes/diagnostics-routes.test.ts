@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
@@ -246,7 +246,7 @@ describe('diagnostics routes', () => {
       const invalidMode = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
         method: 'POST',
         headers: { 'x-kookr-admin-token': 'admin-secret' },
-        body: JSON.stringify({ mode: 'persisted_review' }),
+        body: JSON.stringify({ mode: 'unexpected_mode' }),
       });
       expect(invalidMode.status).toBe(400);
       expect(await invalidMode.json()).toEqual({ error: 'invalid-mode' });
@@ -310,10 +310,91 @@ describe('diagnostics routes', () => {
           attempt: expect.objectContaining({
             schemaVersion: 'finding-evidence-review-invalid-attempt.v1',
             candidateId: 'finding-1',
+            failureKind: 'malformed_json',
+            rawOutputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
             error: 'model output was not valid JSON',
           }),
         },
       ]);
+    });
+
+    test('persisted_review appends valid reviews and invalid attempts to diagnostics JSONL', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+      process.env.KOOKR_FINDING_REVIEW_DAILY_COST_CENTS = '5';
+
+      const valid = await mkApp(reviewDeps(fakeLlm(JSON.stringify({
+        candidateId: 'finding-1',
+        verdict: 'likely_false_positive',
+        confidence: 'medium',
+        evidenceRefs: ['finding-1:observation:1'],
+        rationale: 'terminal activity continued after the finding',
+      })))).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+        body: JSON.stringify({ mode: 'persisted_review' }),
+      });
+      expect(valid.status).toBe(200);
+      expect(await valid.json()).toEqual(expect.objectContaining({
+        mode: 'persisted_review',
+        reviewLog: { appendedRecords: 1 },
+      }));
+
+      const invalid = await mkApp(reviewDeps(fakeLlm('not-json'))).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+        body: JSON.stringify({ mode: 'persisted_review' }),
+      });
+      expect(invalid.status).toBe(200);
+
+      type ReviewLogLine = {
+        kind: string;
+        inputHash: string;
+        review?: unknown;
+        attempt?: { failureKind: string; rawOutputHash: string };
+      };
+      const rawLog = readFileSync(join(tempDir, 'finding-evidence-reviews.jsonl'), 'utf8');
+      const lines = rawLog
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as ReviewLogLine);
+      expect(lines).toEqual([
+        expect.objectContaining({
+          kind: 'valid_review',
+          inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          review: expect.objectContaining({ verdict: 'likely_false_positive' }),
+        }),
+        expect.objectContaining({
+          kind: 'invalid_attempt',
+          inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          attempt: expect.objectContaining({
+            failureKind: 'malformed_json',
+            rawOutputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          }),
+        }),
+      ]);
+    });
+
+    test('review-log diagnostics route skips invalid lines without requiring runtime state', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+      writeFileSync(join(tempDir, 'finding-evidence-reviews.jsonl'), [
+        '{bad-json',
+        JSON.stringify({ schemaVersion: 'finding-evidence-review-log-record.v1', kind: 'invalid_attempt' }),
+      ].join('\n'));
+
+      const res = await mkApp(reviewDeps(null)).request('http://example.com/api/finding-evidence-review-log?limit=10', {
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'finding-evidence-review-log-read.v1',
+        records: [],
+        diagnostics: [
+          { lineNumber: 1, failureKind: 'malformed_json', message: 'line was not valid JSON' },
+          { lineNumber: 2, failureKind: 'invalid_record', message: 'line did not match finding evidence review log schema' },
+        ],
+      });
     });
   });
 
