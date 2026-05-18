@@ -677,7 +677,7 @@ describe('relay invitations', () => {
       nodeId,
       subject: { kind: 'task', nodeId, taskId: 'task-a' },
       grants: ['view', 'terminalView'],
-      ttlMs: 24 * 60 * 60 * 1000,
+      ttlMs: 365 * 24 * 60 * 60 * 1000,
     });
     const accepted = store.accept(created.token, 'legacy-viewer');
     if (!accepted.ok) throw new Error('expected accept');
