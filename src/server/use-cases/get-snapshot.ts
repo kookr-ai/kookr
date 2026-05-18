@@ -12,6 +12,7 @@ import type { CollaborationCapabilities, SpeechCapability } from '../../shared/c
 import { projectEventForClient } from '../event-projection.js';
 import type { AgentActivityMeta } from '../../core/types.js';
 import { buildGithubTaskOverlay } from './github-task-overlay.js';
+import type { FindingEvidenceAuditRecord } from '../../shared/contracts/anomalies.js';
 
 export interface SnapshotQueryDeps {
   monitor: Pick<Monitor, 'getSnapshot'>;
@@ -136,9 +137,31 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
     return {
       ...agent,
       events: agent.events.map(projectEventForClient),
+      ...(agent.findingEvidenceAudit
+        ? { findingEvidenceAudit: projectFindingEvidenceAuditForClient(agent.findingEvidenceAudit) }
+        : {}),
       ...(activityMeta ? { activityMeta } : {}),
     };
   });
+}
+
+function projectFindingEvidenceAuditForClient(record: FindingEvidenceAuditRecord): FindingEvidenceAuditRecord {
+  return {
+    ...record,
+    observations: record.observations.map((observation) => ({
+      sampledAt: observation.sampledAt,
+      ageMs: observation.ageMs,
+      source: observation.source,
+      anomalyStillPresent: observation.anomalyStillPresent,
+      lastEventType: observation.lastEventType,
+      eventCount: observation.eventCount,
+      ...(observation.lastEventSeq !== undefined ? { lastEventSeq: observation.lastEventSeq } : {}),
+      ...(observation.paneHash !== undefined ? { paneHash: observation.paneHash } : {}),
+      ...(observation.paneChangedSincePrevious !== undefined
+        ? { paneChangedSincePrevious: observation.paneChangedSincePrevious }
+        : {}),
+    })),
+  };
 }
 
 /**

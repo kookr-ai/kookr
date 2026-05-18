@@ -220,6 +220,42 @@ describe('Monitor', () => {
     expect(afterReads.fires.needs_input).toBe(1);
   });
 
+  test('active finding snapshot includes multi-sample evidence audit', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-18T10:00:00.000Z'));
+    try {
+      monitor.processEvents('agent-1', [makeStop('s1', 'Waiting')]);
+
+      vi.setSystemTime(new Date('2026-05-18T10:00:12.000Z'));
+      monitor.sampleFindingEvidence('agent-1', 'Claude is waiting for your input');
+
+      const agent = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+      expect(agent?.findingEvidenceAudit?.verdict).toBe('supports_finding');
+      expect(agent?.findingEvidenceAudit?.observations).toHaveLength(2);
+      expect(agent?.findingEvidenceAudit?.observations[1].paneHash).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('finding evidence audit records transient timing when activity clears finding quickly', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-18T10:00:00.000Z'));
+    try {
+      monitor.processEvents('agent-1', [makeStop('s1', 'Waiting')]);
+
+      vi.setSystemTime(new Date('2026-05-18T10:00:02.000Z'));
+      monitor.processEvents('agent-1', [makeToolUse('s1', 'Bash')]);
+
+      const [record] = monitor.getFindingEvidenceAuditRecords();
+      expect(record.verdict).toBe('transient_too_fast');
+      expect(record.status).toBe('resolved');
+      expect(queue.next()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('unchanged active anomaly does not record repeated fires', () => {
     monitor.processEvents('agent-1', [makeStop('s1', 'Waiting')]);
     monitor.processEvents('agent-1', [

@@ -203,6 +203,19 @@ The system SHALL exclude stale anomaly state from completed, cancelled, terminat
 
 **Evidence:** `src/core/monitor.test.ts` (terminal/Ralph session snapshot filtering), `src/frontend/store/finding-helpers.test.ts` (terminal active-finding filtering), `src/frontend/components/DetectionStatsPanel.test.ts` (startup-window rate formatting).
 
+### R2.11: Audit Finding Evidence Over Time [F2.11] — SHOULD — `done`
+
+The system SHOULD capture bounded evidence snapshots for surfaced supervisor findings so false positives and timing-sensitive alerts can be reviewed without guessing from source code alone.
+
+**Acceptance criteria:**
+- When a finding is surfaced, Kookr records an initial evidence audit with anomaly type, subtype, explanation, event count, latest event, and timestamp
+- Watchdog ticks append follow-up observations with terminal pane hash and a bounded pane excerpt when pane capture succeeds
+- Quick findings that clear inside the timing grace window are classified as `transient_too_fast`, not durable detector failures
+- Active findings with later terminal or event activity that no longer matches the blocking condition are classified as `possible_false_positive`
+- Evidence audit records are visible in raw snapshots and through `/api/finding-evidence-audit` for low-cost sampling or small-model review
+
+**Evidence:** `src/core/finding-evidence-audit.ts`, `src/core/monitor.ts`, `src/server/lifecycle-timers.ts`, `src/server/routes/diagnostics-routes.ts`, `src/core/finding-evidence-audit.test.ts`, `src/core/monitor.test.ts`.
+
 ---
 
 ## R3: The Loop — Respond & Advance

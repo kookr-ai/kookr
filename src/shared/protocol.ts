@@ -13,7 +13,14 @@ export {
   buildAgentSelectionOptions,
 } from './contracts/agent-types.js';
 export type { AgentEvent } from './contracts/agent-events.js';
-export type { AnomalySeverity, AnomalyType } from './contracts/anomalies.js';
+export type {
+  AnomalySeverity,
+  AnomalyType,
+  FindingEvidenceAuditRecord,
+  FindingEvidenceObservation,
+  FindingEvidenceObservationSource,
+  FindingEvidenceVerdict,
+} from './contracts/anomalies.js';
 export type {
   ActivityDisclosure,
   ActivityItem,

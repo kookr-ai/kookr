@@ -16,6 +16,10 @@ import {
   recordSuppression,
   type AnomalyDetectorConfig,
 } from './detection-stats.js';
+import {
+  FindingEvidenceAuditor,
+  type FindingEvidenceAuditRecord,
+} from './finding-evidence-audit.js';
 
 export interface AgentState {
   agentId: string;
@@ -55,6 +59,8 @@ export interface AgentState {
   /** Activity-panel disclosure counters; populated at snapshot time from
    *  {@link HookIngestion}. See rfc-activity-log-reliability §9. */
   activityMeta?: AgentActivityMeta;
+  /** Multi-sample evidence captured for the active supervisor finding. */
+  findingEvidenceAudit?: FindingEvidenceAuditRecord;
 }
 
 interface SessionSnapshotMeta {
@@ -100,6 +106,7 @@ export class Monitor {
   /** Monotonic per-agent event counts for self-diagnostic rate checks. */
   private _eventCounts = new Map<string, number>();
   private lastRecordedAnomalyFingerprint = new Map<string, string>();
+  private findingEvidenceAuditor = new FindingEvidenceAuditor();
   /**
    * Outstanding background subagents per parent agent. Each subagent tracked with
    * its Date.now() at SubagentStart so a lazy TTL eviction caps suppression
@@ -173,9 +180,11 @@ export class Monitor {
 
     if (anomaly) {
       this.attentionQueue.enqueue(agentId, anomaly);
+      this.findingEvidenceAuditor.observe(agentId, anomaly, capped, { source: 'event' });
     } else {
       // No anomaly — remove from queue if present
       this.attentionQueue.remove(agentId);
+      this.findingEvidenceAuditor.observe(agentId, null, capped, { source: 'event' });
     }
   }
 
@@ -234,7 +243,7 @@ export class Monitor {
   applyWatchdogVerdict(
     agentId: string,
     verdict: WatchdogVerdict,
-    options: { paneCaptureSucceeded: boolean },
+    options: { paneCaptureSucceeded: boolean; paneText?: string },
   ): boolean {
     const actionable = verdict.status === 'needs_input'
       || verdict.status === 'permission_blocked'
@@ -249,6 +258,10 @@ export class Monitor {
         return true;
       }
       this.attentionQueue.enqueue(agentId, anomaly);
+      this.findingEvidenceAuditor.observe(agentId, anomaly, this.agentEvents.get(agentId) ?? [], {
+        source: 'watchdog_tick',
+        paneText: options.paneText,
+      });
       return true;
     }
 
@@ -271,7 +284,29 @@ export class Monitor {
     if (!isWatchdogOwnedType) return false;
 
     this.attentionQueue.purge(agentId);
+    this.findingEvidenceAuditor.observe(agentId, null, this.agentEvents.get(agentId) ?? []);
     return true;
+  }
+
+  /**
+   * Capture a periodic evidence observation for the current finding. The
+   * watchdog owns pane capture, so lifecycle-timers calls this after each tick.
+   */
+  sampleFindingEvidence(agentId: string, paneText?: string, now: Date = new Date()): boolean {
+    const anomaly = this.getCurrentAnomaly(agentId);
+    return this.findingEvidenceAuditor.observe(agentId, anomaly, this.agentEvents.get(agentId) ?? [], {
+      source: 'watchdog_tick',
+      paneText,
+      now,
+    });
+  }
+
+  getFindingEvidenceAuditRecords(): FindingEvidenceAuditRecord[] {
+    return this.findingEvidenceAuditor.getRecords();
+  }
+
+  getFindingEvidenceReviewCandidates(limit?: number): FindingEvidenceAuditRecord[] {
+    return this.findingEvidenceAuditor.getReviewCandidates(limit);
   }
 
   /**
@@ -365,6 +400,7 @@ export class Monitor {
     this.agentEvents.delete(agentId);
     this._eventCounts.delete(agentId);
     this.lastRecordedAnomalyFingerprint.delete(agentId);
+    this.findingEvidenceAuditor.deleteAgent(agentId);
     this.attentionQueue.purge(agentId);
     this.flushAndDeleteSubagents(agentId);
     this.stoppedAgents.add(agentId);
@@ -542,6 +578,8 @@ export class Monitor {
         anomaly,
         turnState: this.deriveTurnStateForSnapshot(agentId, events),
       };
+      const findingEvidenceAudit = this.findingEvidenceAuditor.getActiveRecord(agentId);
+      if (findingEvidenceAudit) state.findingEvidenceAudit = findingEvidenceAudit;
 
       // Mark snoozed agents so the frontend can filter them from findings
       const snoozedUntil = this.attentionQueue.getSnoozedUntil(agentId);

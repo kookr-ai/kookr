@@ -69,6 +69,37 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/finding-evidence-audit
+  // ---------------------------------------------------------------------------
+  describe('GET /api/finding-evidence-audit', () => {
+    test('returns records and review candidates from the monitor', async () => {
+      const record = {
+        id: 'finding-1',
+        agentId: 'agent-1',
+        anomalyType: 'needs_input',
+        explanation: 'Waiting',
+        detectedAt: '2026-05-18T10:00:00.000Z',
+        updatedAt: '2026-05-18T10:00:05.000Z',
+        status: 'active',
+        verdict: 'supports_finding',
+        observations: [],
+        notes: [],
+      };
+      const monitor = {
+        getFindingEvidenceAuditRecords: () => [record],
+        getFindingEvidenceReviewCandidates: (limit: number) => [{ ...record, id: `candidate-${limit}` }],
+      };
+
+      const res = await mkApp({ monitor: monitor as never }).request('/api/finding-evidence-audit');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        records: [record],
+        reviewCandidates: [{ ...record, id: 'candidate-20' }],
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/circuit-breakers
   // ---------------------------------------------------------------------------
   describe('GET /api/circuit-breakers', () => {

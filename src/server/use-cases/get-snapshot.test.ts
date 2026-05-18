@@ -110,6 +110,43 @@ describe('snapshot use cases', () => {
     expect(raw[0].events[0]).toHaveProperty('toolResponse');
   });
 
+  it('projects finding evidence for client transport without raw pane excerpts', () => {
+    const agents = [{
+      agentId: 'a-1',
+      events: [],
+      anomaly: null,
+      findingEvidenceAudit: {
+        id: 'finding-1',
+        agentId: 'a-1',
+        anomalyType: 'needs_input',
+        explanation: 'Waiting',
+        detectedAt: '2026-05-18T10:00:00.000Z',
+        updatedAt: '2026-05-18T10:00:05.000Z',
+        status: 'active',
+        verdict: 'supports_finding',
+        observations: [{
+          sampledAt: '2026-05-18T10:00:05.000Z',
+          ageMs: 5_000,
+          source: 'watchdog_tick',
+          anomalyStillPresent: true,
+          lastEventType: 'stop',
+          eventCount: 1,
+          paneHash: 'abc123',
+          paneChangedSincePrevious: false,
+          paneExcerpt: 'raw terminal contents',
+        }],
+        notes: [],
+      },
+    }] as any;
+    const monitor = { getSnapshot: () => agents } as any;
+
+    const client = getSnapshotAgentsForClient({ monitor });
+    expect(client[0].findingEvidenceAudit?.observations[0]).not.toHaveProperty('paneExcerpt');
+
+    const raw = getSnapshotAgentsRaw({ monitor });
+    expect(raw[0].findingEvidenceAudit.observations[0]).toHaveProperty('paneExcerpt');
+  });
+
   it('projected snapshot of a pathological fixture stays under SNAPSHOT_SIZE_WARNING', () => {
     // Modeled on real prod observations (6 agents, 50 events/agent, ~10 KB per
     // tool_result toolResponse). Pre-fix this was ~1.3 MB; post-fix it must

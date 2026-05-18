@@ -1,7 +1,7 @@
 import type { AgentType } from './agent-types.js';
 import type { AgentEvent } from './agent-events.js';
 import type { AgentActivityMeta } from './hook-events.js';
-import type { Anomaly } from './anomalies.js';
+import type { Anomaly, FindingEvidenceAuditRecord } from './anomalies.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { RalphLoopState, TaskCompletionFeedback, TaskLaunchHealthSummary } from './task.js';
 import type { TaskStatus, TurnState } from './task-status.js';
@@ -44,4 +44,5 @@ export interface AgentState {
   completionFeedback?: TaskCompletionFeedback;
   ralphLoop?: RalphLoopState;
   activityMeta?: AgentActivityMeta;
+  findingEvidenceAudit?: FindingEvidenceAuditRecord;
 }
