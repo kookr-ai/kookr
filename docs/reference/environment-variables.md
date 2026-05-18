@@ -126,7 +126,7 @@ see `docs/reference/self-hosted-relay-runbook.md`.
 | --- | --- | --- | --- |
 | `KOOKR_HOSTED_RELAY_URL` | `https://share.kookr.dev` | HTTPS URL | Hosted relay URL shown as the default Settings pairing target when gates are met. |
 | `KOOKR_HOSTED_RELAY_ENABLED` | unset | `true`, `1`, or `yes` | Enables hosted relay as a product path candidate. Does not make it default unless ops gates are also met. |
-| `KOOKR_HOSTED_RELAY_OPS_GATES_MET` | unset | `true`, `1`, or `yes` | Marks deployment, TLS/domain, account/device auth, retention, rate-limit, emergency, and metrics gates as satisfied. |
+| `KOOKR_HOSTED_RELAY_OPS_GATES_MET` | unset | `true`, `1`, or `yes` | Marks deployment, TLS/domain, account/device auth, retention, rate-limit, emergency, metrics, tenant isolation, privacy notice, paging/escalation, synthetic probe, per-tenant kill switch, and metadata-only evidence gates as satisfied. |
 | `KOOKR_HOSTED_RELAY_MODE` / `KOOKR_RELAY_MODE` | `available` | `available`, `maintenance`, `emergencyDisabled` | Controls hosted relay availability. Maintenance and emergency modes refuse new pairings/shares without stopping local Kookr. |
 | `KOOKR_HOSTED_RELAY_OWNER` | unset | Text label | Deployment owner surfaced in hosted relay status. |
 | `KOOKR_HOSTED_RELAY_ENVIRONMENT` | unset | `local`, `staging`, `production`, or text label | Hosted relay environment label surfaced in status. |
@@ -134,6 +134,7 @@ see `docs/reference/self-hosted-relay-runbook.md`.
 | `KOOKR_HOSTED_RELAY_RETENTION_DAYS` | `30` | Positive integer days | Metadata retention window for hosted relay operations. |
 | `KOOKR_RELAY_ACCOUNT_TOKEN` | unset | Secret bearer token | Enables account-authenticated hosted node pairing through `/relay/account/nodes`. Never returned in status responses. |
 | `KOOKR_RELAY_ACCOUNT_ID` | `hosted-owner` | Account id string | Owner id assigned to nodes paired through account auth. |
+| `KOOKR_RELAY_INCIDENT_ESCALATION_URL` | unset | HTTPS URL or internal escalation target | Documents the paging/escalation target required before hosted relay terminal viewing is production-enabled. |
 | `KOOKR_RELAY_BIND_HOST` | `0.0.0.0` for this release | Hostname or IP address | Bind host for the relay binary. Self-hosted public deployments should set `127.0.0.1` and put Caddy in front. Non-loopback binds warn unless acknowledged. |
 | `KOOKR_RELAY_ALLOW_INSECURE_BIND` | unset | `1` | Acknowledges the current-release warning when intentionally binding the relay to a non-loopback host. |
 | `KOOKR_RELAY_TRUSTED_PROXY` | `1` when bound to loopback | `0` or `1` | Controls whether the relay trusts a loopback reverse proxy's `X-Forwarded-For` client IP for rate limits and lockouts. |

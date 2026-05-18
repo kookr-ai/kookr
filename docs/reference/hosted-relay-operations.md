@@ -101,6 +101,53 @@ accept path does not enumerate valid share IDs.
 Alerts are emitted for maintenance mode, emergency disable, rate-limit hits,
 stale heartbeat age, policy sync failures, and 5xx threshold crossings.
 
+## Terminal Viewing Production Gate
+
+Hosted relay terminal viewing is fail-closed. If `KOOKR_HOSTED_RELAY_ENABLED=1`
+but `KOOKR_HOSTED_RELAY_OPS_GATES_MET` is not set, terminal streams are
+rejected even when ordinary status reads still work.
+
+Before setting `KOOKR_HOSTED_RELAY_OPS_GATES_MET=1`, verify:
+
+- tenant isolation rejects cross-tenant terminal streams;
+- the public join page shows the live-only privacy notice;
+- paging or escalation is configured in `KOOKR_RELAY_INCIDENT_ESCALATION_URL`;
+- synthetic probe coverage includes invite, accept/refuse, terminal-view setup,
+  revocation, and rollback;
+- the per-tenant terminal kill switch tears down active streams without
+  disabling unrelated tenants;
+- logs and evidence exports contain metadata only, not terminal payloads or
+  plaintext invite content.
+
+Synthetic probe coverage is inspectable at `/relay/ops/synthetic-probes` and
+the loopback/admin path `/relay/admin/synthetic-probes`.
+
+Metadata evidence is exported from the loopback/admin-only
+`/relay/admin/metadata-audit` endpoint. Rows include correlation IDs,
+pseudonymous member/session IDs, byte counts, sequence ranges, policy versions,
+and revocation state. They must not include terminal payloads, raw member IDs,
+device IDs, invitation IDs, or plaintext invite content.
+
+Use the per-tenant kill switch during an incident:
+
+```bash
+curl --fail -sS \
+  -X POST \
+  -H "Authorization: Bearer $KOOKR_RELAY_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"tenant-incident"}' \
+  http://127.0.0.1:8080/relay/admin/tenants/<tenant-id>/terminal-viewing/disable
+```
+
+Re-enable after the incident is resolved:
+
+```bash
+curl --fail -sS \
+  -X POST \
+  -H "Authorization: Bearer $KOOKR_RELAY_ADMIN_TOKEN" \
+  http://127.0.0.1:8080/relay/admin/tenants/<tenant-id>/terminal-viewing/enable
+```
+
 ## Emergency Disable
 
 Emergency disable is intentionally relay-scoped. It prevents new hosted

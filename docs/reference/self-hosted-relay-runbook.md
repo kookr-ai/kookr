@@ -66,6 +66,22 @@ KOOKR_RELAY_STATE_DB_PATH=/var/lib/kookr-relay/relay.sqlite
 KOOKR_RELAY_ADMIN_TOKEN=<openssl rand -hex 32>
 ```
 
+Self-hosted relays normally do not need the hosted relay product gate. Only set
+the `KOOKR_HOSTED_RELAY_*` fields and `KOOKR_RELAY_INCIDENT_ESCALATION_URL`
+below when operating this deployment as a hosted/public relay for multiple
+tenants. After that hosted gate checklist passes, set the hosted relay fields. See
+`docs/reference/hosted-relay-operations.md` for the checklist, synthetic probes,
+per-tenant terminal kill switch, and metadata-only evidence export requirements:
+
+```bash
+KOOKR_HOSTED_RELAY_ENABLED=1
+KOOKR_HOSTED_RELAY_OPS_GATES_MET=1
+KOOKR_HOSTED_RELAY_OWNER=ops@example.com
+KOOKR_HOSTED_RELAY_ENVIRONMENT=production
+KOOKR_HOSTED_RELAY_TLS_EXPIRES_AT=2026-12-31T00:00:00.000Z
+KOOKR_RELAY_INCIDENT_ESCALATION_URL=https://pager.example.invalid/kookr-relay
+```
+
 Then start the relay:
 
 ```bash

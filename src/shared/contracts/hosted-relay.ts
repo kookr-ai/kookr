@@ -6,12 +6,18 @@ export type HostedRelayGate =
   | 'deploymentOwner'
   | 'environment'
   | 'tlsDomain'
+  | 'tenantIsolation'
   | 'accountDeviceAuth'
   | 'nodePairingAuth'
   | 'dataRetention'
   | 'rateLimitAbuse'
   | 'emergencyMaintenance'
-  | 'metricsAlerts';
+  | 'metricsAlerts'
+  | 'privacyNotice'
+  | 'syntheticProbes'
+  | 'perTenantKillSwitch'
+  | 'logEvidenceRedaction'
+  | 'incidentEscalation';
 
 export type HostedRelayGateStatus = Record<HostedRelayGate, boolean>;
 
@@ -19,12 +25,18 @@ export const HOSTED_RELAY_GATES: readonly HostedRelayGate[] = [
   'deploymentOwner',
   'environment',
   'tlsDomain',
+  'tenantIsolation',
   'accountDeviceAuth',
   'nodePairingAuth',
   'dataRetention',
   'rateLimitAbuse',
   'emergencyMaintenance',
   'metricsAlerts',
+  'privacyNotice',
+  'syntheticProbes',
+  'perTenantKillSwitch',
+  'logEvidenceRedaction',
+  'incidentEscalation',
 ];
 
 export function parseHostedRelayMode(value: string | undefined): HostedRelayMode {
@@ -89,6 +101,11 @@ export interface HostedRelayStatus {
   tlsExpiresAt?: string | null;
   dataRetentionDays?: number;
   guestLinkPosture?: GuestLinkPosture;
+  terminalViewing: {
+    enabled: boolean;
+    blockReason?: string;
+    disabledTenants: number;
+  };
 }
 
 export interface GuestLinkPosture {
@@ -158,3 +175,44 @@ export interface HostedRelayMetricsResponse {
   metrics: HostedRelayMetricSnapshot;
   alerts: HostedRelayAlert[];
 }
+
+export type HostedRelaySyntheticProbeName =
+  | 'invite'
+  | 'accept-refuse'
+  | 'terminal-view-setup'
+  | 'revocation'
+  | 'rollback';
+
+export interface HostedRelaySyntheticProbe {
+  name: HostedRelaySyntheticProbeName;
+  required: boolean;
+  description: string;
+}
+
+export const HOSTED_RELAY_SYNTHETIC_PROBES: readonly HostedRelaySyntheticProbe[] = [
+  {
+    name: 'invite',
+    required: true,
+    description: 'Create a guest invitation using a tenant-scoped node credential.',
+  },
+  {
+    name: 'accept-refuse',
+    required: true,
+    description: 'Exercise share-ticket accept and refusal paths without exposing plaintext invite content.',
+  },
+  {
+    name: 'terminal-view-setup',
+    required: true,
+    description: 'Request and approve live-only terminal viewing through scoped publication metadata.',
+  },
+  {
+    name: 'revocation',
+    required: true,
+    description: 'Revoke an approved terminal view and verify active streams close.',
+  },
+  {
+    name: 'rollback',
+    required: true,
+    description: 'Toggle the hosted relay kill switch and verify streams stop while metadata evidence remains exportable.',
+  },
+];

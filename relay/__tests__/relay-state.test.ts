@@ -338,12 +338,20 @@ describe('relay SQLite state', () => {
 
   it('returns 503 and marks health degraded after a Contact Share envelope state write failure', async () => {
     const stateStore = {
-      load: (): RelayStateSnapshot => ({ registrations: [], invitations: [], contactShareEnvelopes: [], quarantinedRows: 0 }),
+      load: (): RelayStateSnapshot => ({
+        registrations: [],
+        invitations: [],
+        contactShareEnvelopes: [],
+        terminalViewingDisabledTenants: [],
+        quarantinedRows: 0,
+      }),
       saveRegistration: (_registration: PersistedNodeRegistration): void => undefined,
       saveInvitation: (_invitation: InvitationRecord): void => undefined,
       saveContactShareEnvelope: (): void => {
         throw new Error('disk full');
       },
+      saveTerminalViewingDisabledTenant: (): void => undefined,
+      deleteTerminalViewingDisabledTenant: (): void => undefined,
       probe: (): boolean => true,
       close: (): void => undefined,
     };
@@ -403,12 +411,20 @@ describe('relay SQLite state', () => {
 
   it('returns 503 and marks health degraded after a state write failure', async () => {
     const stateStore = {
-      load: (): RelayStateSnapshot => ({ registrations: [], invitations: [], contactShareEnvelopes: [], quarantinedRows: 0 }),
+      load: (): RelayStateSnapshot => ({
+        registrations: [],
+        invitations: [],
+        contactShareEnvelopes: [],
+        terminalViewingDisabledTenants: [],
+        quarantinedRows: 0,
+      }),
       saveRegistration: (_registration: PersistedNodeRegistration): void => {
         throw new Error('disk full');
       },
       saveInvitation: (_invitation: InvitationRecord): void => undefined,
       saveContactShareEnvelope: (): void => undefined,
+      saveTerminalViewingDisabledTenant: (): void => undefined,
+      deleteTerminalViewingDisabledTenant: (): void => undefined,
       probe: (): boolean => true,
       close: (): void => undefined,
     };
@@ -441,13 +457,21 @@ describe('relay SQLite state', () => {
     let throwWrites = false;
     const rows = new Map<string, PersistedNodeRegistration>();
     const stateStore = {
-      load: (): RelayStateSnapshot => ({ registrations: [], invitations: [], contactShareEnvelopes: [], quarantinedRows: 0 }),
+      load: (): RelayStateSnapshot => ({
+        registrations: [],
+        invitations: [],
+        contactShareEnvelopes: [],
+        terminalViewingDisabledTenants: [],
+        quarantinedRows: 0,
+      }),
       saveRegistration: (registration: PersistedNodeRegistration): void => {
         if (throwWrites) throw new Error('readonly database');
         rows.set(registration.nodeId, registration);
       },
       saveInvitation: (_invitation: InvitationRecord): void => undefined,
       saveContactShareEnvelope: (): void => undefined,
+      saveTerminalViewingDisabledTenant: (): void => undefined,
+      deleteTerminalViewingDisabledTenant: (): void => undefined,
       probe: (): boolean => true,
       close: (): void => undefined,
     };

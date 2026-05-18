@@ -22,6 +22,7 @@ export interface RelayStateSnapshot {
   registrations: PersistedNodeRegistration[];
   invitations: InvitationRecord[];
   contactShareEnvelopes: ContactShareEnvelope[];
+  terminalViewingDisabledTenants: Array<{ tenantId: string; reason: string; disabledAt: string }>;
   quarantinedRows: number;
 }
 
@@ -43,6 +44,12 @@ interface InvitationRow {
 interface ContactShareEnvelopeRow {
   envelope_id: string;
   record_json: string;
+}
+
+interface TerminalViewingDisabledTenantRow {
+  tenant_id: string;
+  reason: string;
+  disabled_at: string;
 }
 
 function isNodeRegistration(value: unknown): value is PersistedNodeRegistration {
@@ -139,7 +146,22 @@ export class RelaySqliteStateStore {
       }
     }
 
-    return { registrations, invitations, contactShareEnvelopes, quarantinedRows };
+    const terminalViewingDisabledTenants: RelayStateSnapshot['terminalViewingDisabledTenants'] = [];
+    for (const row of this.db.prepare('SELECT tenant_id, reason, disabled_at FROM relay_terminal_viewing_disabled_tenants').all() as TerminalViewingDisabledTenantRow[]) {
+      if (row.tenant_id && row.reason && row.disabled_at) {
+        terminalViewingDisabledTenants.push({
+          tenantId: row.tenant_id,
+          reason: row.reason,
+          disabledAt: row.disabled_at,
+        });
+        continue;
+      }
+      quarantinedRows += 1;
+      this.quarantine('relay_terminal_viewing_disabled_tenants', row.tenant_id, JSON.stringify(row), 'invalid terminal viewing tenant row');
+      this.db.prepare('DELETE FROM relay_terminal_viewing_disabled_tenants WHERE tenant_id = ?').run(row.tenant_id);
+    }
+
+    return { registrations, invitations, contactShareEnvelopes, terminalViewingDisabledTenants, quarantinedRows };
   }
 
   saveRegistration(registration: PersistedNodeRegistration): void {
@@ -203,6 +225,21 @@ export class RelaySqliteStateStore {
     });
   }
 
+  saveTerminalViewingDisabledTenant(input: { tenantId: string; reason: string; disabledAt: string }): void {
+    this.db.prepare(`
+      INSERT INTO relay_terminal_viewing_disabled_tenants (tenant_id, reason, disabled_at, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(tenant_id) DO UPDATE SET
+        reason = excluded.reason,
+        disabled_at = excluded.disabled_at,
+        updated_at = excluded.updated_at
+    `).run(input.tenantId, input.reason, input.disabledAt, new Date().toISOString());
+  }
+
+  deleteTerminalViewingDisabledTenant(tenantId: string): void {
+    this.db.prepare('DELETE FROM relay_terminal_viewing_disabled_tenants WHERE tenant_id = ?').run(tenantId);
+  }
+
   probe(): boolean {
     try {
       this.db.prepare('SELECT 1').get();
@@ -250,6 +287,12 @@ export class RelaySqliteStateStore {
       );
       CREATE INDEX IF NOT EXISTS relay_contact_share_envelopes_recipient_idx
         ON relay_contact_share_envelopes (recipient_device_id, created_at);
+      CREATE TABLE IF NOT EXISTS relay_terminal_viewing_disabled_tenants (
+        tenant_id TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        disabled_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
   }
 
