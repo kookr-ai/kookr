@@ -539,6 +539,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDefaultAgentType,
     roundRobinCursor,
     interactionLog,
+    terminalBackend,
   };
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;

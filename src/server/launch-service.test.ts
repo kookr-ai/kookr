@@ -415,6 +415,116 @@ describe('launchTask', () => {
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
   });
 
+  it('bypasses and reconciles a stale inProgress duplicate whose session is gone', async () => {
+    const existing = store.createTask({ prompt: 'hello', cwd: '/tmp' });
+    store.addSession(existing.id, {
+      tmuxSession: 'kookr-stale',
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date(),
+      lastStatus: 'running',
+    });
+    const terminalBackend = {
+      isAlive: vi.fn().mockResolvedValue(false),
+    };
+
+    const result = await launchTask({ ...deps, terminalBackend }, { prompt: 'hello', cwd: '/tmp' });
+
+    expect(result.duplicate).toBeUndefined();
+    expect(result.task.id).not.toBe(existing.id);
+    expect(terminalBackend.isAlive).toHaveBeenCalledWith('kookr-stale');
+    expect(store.getTask(existing.id)!.status).toBe('terminated');
+    expect(store.getTask(existing.id)!.sessions[0].lastStatus).toBe('completed');
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('keeps dedup idempotent for an inProgress duplicate with a live session', async () => {
+    const existing = store.createTask({ prompt: 'hello', cwd: '/tmp' });
+    store.addSession(existing.id, {
+      tmuxSession: 'kookr-live',
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date(),
+      lastStatus: 'running',
+    });
+    const terminalBackend = {
+      isAlive: vi.fn().mockResolvedValue(true),
+    };
+
+    const result = await launchTask({ ...deps, terminalBackend }, { prompt: 'hello', cwd: '/tmp' });
+
+    expect(result.duplicate).toBe(true);
+    expect(result.task.id).toBe(existing.id);
+    expect(terminalBackend.isAlive).toHaveBeenCalledWith('kookr-live');
+    expect(store.getTask(existing.id)!.status).toBe('inProgress');
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('continues scanning after a stale duplicate and still dedups a later live match', async () => {
+    const stale = store.createTask({ prompt: 'hello', cwd: '/tmp' });
+    store.addSession(stale.id, {
+      tmuxSession: 'kookr-stale',
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date(),
+      lastStatus: 'running',
+    });
+    const live = store.createTask({ prompt: 'hello', cwd: '/tmp' });
+    store.addSession(live.id, {
+      tmuxSession: 'kookr-live',
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date(),
+      lastStatus: 'running',
+    });
+    const terminalBackend = {
+      isAlive: vi.fn(async (sessionId: string) => sessionId === 'kookr-live'),
+    };
+
+    const result = await launchTask({ ...deps, terminalBackend }, { prompt: 'hello', cwd: '/tmp' });
+
+    expect(result.duplicate).toBe(true);
+    expect(result.task.id).toBe(live.id);
+    expect(terminalBackend.isAlive).toHaveBeenCalledWith('kookr-stale');
+    expect(terminalBackend.isAlive).toHaveBeenCalledWith('kookr-live');
+    expect(store.getTask(stale.id)!.status).toBe('terminated');
+    expect(store.getTask(live.id)!.status).toBe('inProgress');
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it.each([['running' as const], ['paused' as const]])(
+    'keeps Ralph loop duplicate idempotent during a %s between-iteration gap',
+    async (loopStatus) => {
+      const existing = store.createTask({ prompt: 'hello', cwd: '/tmp' });
+      store.addSession(existing.id, {
+        tmuxSession: 'kookr-prior',
+        agentType: 'claude-code',
+        cwd: '/tmp',
+        createdAt: new Date(),
+        lastStatus: 'completed',
+      });
+      existing.ralphLoop = {
+        prompt: 'iterate',
+        iterationCap: 5,
+        currentIteration: 1,
+        status: loopStatus,
+        lastIterationStartedAt: 0,
+        cumulativeIterations: 1,
+      };
+      const terminalBackend = {
+        isAlive: vi.fn().mockResolvedValue(false),
+      };
+
+      const result = await launchTask({ ...deps, terminalBackend }, { prompt: 'hello', cwd: '/tmp' });
+
+      expect(result.duplicate).toBe(true);
+      expect(result.task.id).toBe(existing.id);
+      expect(terminalBackend.isAlive).not.toHaveBeenCalled();
+      expect(store.getTask(existing.id)!.status).toBe('inProgress');
+      expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    },
+  );
+
   it('allows re-launch after completing the original task', async () => {
     const first = await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
     // Transition: open -> inProgress -> completed
