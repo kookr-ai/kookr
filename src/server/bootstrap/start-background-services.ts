@@ -7,6 +7,7 @@ import { startLedgerWatcher } from '../ledger-watcher.js';
 import type { ScheduleRunner } from '../schedule-runner.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { ResourceStatusService } from '../resource-status-service.js';
+import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sampler.js';
 
 export interface BackgroundServicesDeps {
   ossAttemptStore: OssAttemptStore;
@@ -21,6 +22,7 @@ export interface BackgroundServicesDeps {
   scheduleRunner: ScheduleRunner;
   timerDeps: TimerDeps;
   resourceStatusService?: ResourceStatusService;
+  findingEvidenceReviewSampler?: Pick<FindingEvidenceReviewSampler, 'start' | 'stop'>;
 }
 
 export interface BackgroundServices {
@@ -53,12 +55,14 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
     timerHandles,
     startAfterListen(): void {
       deps.scheduleRunner.start();
+      deps.findingEvidenceReviewSampler?.start();
     },
     stop(): void {
       clearAllTimers(timerHandles);
       deps.scheduleRunner.stop();
       deps.githubScanner.stop();
       deps.resourceStatusService?.stop();
+      deps.findingEvidenceReviewSampler?.stop();
       ledgerWatcher.close();
     },
   };

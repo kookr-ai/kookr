@@ -61,6 +61,7 @@ describe('App project drawer launch cwd', () => {
   let root: Root;
 
   beforeEach(() => {
+    vi.useRealTimers();
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.clear();
@@ -101,6 +102,7 @@ describe('App project drawer launch cwd', () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await act(async () => {
       root.unmount();
     });

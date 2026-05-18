@@ -44,6 +44,16 @@ import { startBackgroundServices } from './bootstrap/start-background-services.j
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler } from './system-resource-sampler.js';
 import { createResourceStatusService } from './resource-status-service.js';
+import {
+  FindingEvidenceReviewQueueStore,
+  FindingEvidenceReviewSampler,
+  readFindingEvidenceReviewSamplerConfigFromEnv,
+} from './finding-evidence-review-sampler.js';
+import {
+  getOrCreateFindingEvidenceReviewHmacKey,
+  readFindingEvidenceReviewConfigFromEnv,
+} from './finding-evidence-review-service.js';
+import { ReviewLogStore } from './review-log-store.js';
 import { type OssSourceWatcherFs } from './oss-source-watcher.js';
 import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
 import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
@@ -1249,12 +1259,30 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   await relayConnection.startConfigured();
 
+  const findingEvidenceReviewEnabled = process.env.KOOKR_FINDING_REVIEW_ENABLED === 'true';
+  const findingEvidenceReviewHmacKey = findingEvidenceReviewEnabled
+    ? getOrCreateFindingEvidenceReviewHmacKey(kookrDir)
+    : Buffer.alloc(32, 0);
+  const findingEvidenceReviewLogStore = ReviewLogStore.forKookrDir(kookrDir);
+  const findingEvidenceReviewSampler = new FindingEvidenceReviewSampler({
+    candidateReader: {
+      listReviewCandidates: (limit) => monitor.getFindingEvidenceReviewCandidates(limit),
+    },
+    llmClient: llmClient ?? null,
+    serviceConfig: readFindingEvidenceReviewConfigFromEnv(process.env, findingEvidenceReviewHmacKey, buildInfo.commitHash),
+    samplerConfig: readFindingEvidenceReviewSamplerConfigFromEnv(process.env),
+    reviewLogStore: findingEvidenceReviewLogStore,
+    queueStore: FindingEvidenceReviewQueueStore.forKookrDir(kookrDir),
+  });
+
   const app = createRoutes({
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
     interactionLog,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, kookrDir, frontendDir, broadcastToAll,
     llmClient,
+    ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
+    findingEvidenceReviewSampler,
     remoteShare, relayConnection,
     shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
@@ -1397,6 +1425,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubPollingEnabled: currentSettings.githubPollingEnabled,
     scheduleRunner,
     resourceStatusService,
+    findingEvidenceReviewSampler,
     timerDeps: {
       monitor, taskStore, queue, adapter, adapterRegistry, tokenTracker, watchdog,
       hookWatcher, terminalBackend, hooksDir, tasksFile, serverCwd,

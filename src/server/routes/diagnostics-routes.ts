@@ -152,6 +152,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     });
   });
 
+  app.get('/api/finding-evidence-review-sampler', async (c) => {
+    if (!isAuthorizedFindingReviewRequest(getRemoteAddress(c), c.req.header(REVIEW_ADMIN_TOKEN_HEADER))) {
+      return c.json({ error: 'finding-review-forbidden' }, 403);
+    }
+    if (!deps.findingEvidenceReviewSampler) return c.json({ error: 'finding-review-sampler-unavailable' }, 503);
+    return c.json(await deps.findingEvidenceReviewSampler.getStatus());
+  });
+
   function getFindingEvidenceReviewService(): {
     service: FindingEvidenceReviewService;
     config: FindingEvidenceReviewServiceConfig;

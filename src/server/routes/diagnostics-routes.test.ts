@@ -396,6 +396,85 @@ describe('diagnostics routes', () => {
         ],
       });
     });
+
+    test('sampler diagnostics route exposes budget, queue, and provider status', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+      const sampler = {
+        getStatus: vi.fn(() => ({
+          schemaVersion: 'finding-evidence-review-sampler-status.v1',
+          enabled: false,
+          running: false,
+          providerAvailable: true,
+          lastRun: null,
+          nextRunAt: null,
+          queue: {
+            queued: 0,
+            in_progress: 0,
+            reviewed: 0,
+            failed_retryable: 0,
+            failed_terminal: 0,
+          },
+          budget: {
+            date: '2026-05-18',
+            dailyCostCents: 0,
+            spentCostCents: 0,
+            remainingCostCents: 0,
+            dailyTokenBudget: 20000,
+            spentTokens: 0,
+            remainingTokens: 20000,
+          },
+        })),
+      };
+
+      const res = await mkApp({
+        ...reviewDeps(null),
+        findingEvidenceReviewSampler: sampler,
+      }).request('http://example.com/api/finding-evidence-review-sampler', {
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        schemaVersion: 'finding-evidence-review-sampler-status.v1',
+        enabled: false,
+        providerAvailable: true,
+        queue: {
+          queued: 0,
+          in_progress: 0,
+          reviewed: 0,
+          failed_retryable: 0,
+          failed_terminal: 0,
+        },
+        budget: {
+          date: '2026-05-18',
+          dailyCostCents: 0,
+          spentCostCents: 0,
+          remainingCostCents: 0,
+          dailyTokenBudget: 20000,
+          spentTokens: 0,
+          remainingTokens: 20000,
+        },
+      }));
+      expect(sampler.getStatus).toHaveBeenCalled();
+    });
+
+    test('sampler diagnostics route rejects unauthorized non-loopback requests', async () => {
+      const res = await mkApp(reviewDeps(null)).request('http://example.com/api/finding-evidence-review-sampler');
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'finding-review-forbidden' });
+    });
+
+    test('sampler diagnostics route reports unavailable when no sampler is wired', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+
+      const res = await mkApp(reviewDeps(null)).request('http://example.com/api/finding-evidence-review-sampler', {
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'finding-review-sampler-unavailable' });
+    });
   });
 
   // ---------------------------------------------------------------------------
