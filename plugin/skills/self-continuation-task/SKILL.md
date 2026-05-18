@@ -57,6 +57,8 @@ Every task in the chain must carry these rules in its prompt:
 - Stop without spawning when no eligible unit remains or a configured cap is
   reached.
 - Include this same continuation contract in the successor prompt.
+- Include a uniqueness cursor in every successor prompt so Kookr's task
+  deduplication does not collapse distinct iterations into one task.
 
 The successor prompt must be self-contained. Assume task N+1 starts cold and
 cannot see task N's transcript.
@@ -75,6 +77,35 @@ PR closes issue N" is stronger than "N appears in attempts.log".
 
 Use an attempt cap for units that can fail repeatedly. The cap should be
 mechanical, stored in durable state, and checked before starting work.
+
+## Successor Prompt Uniqueness
+
+Kookr intentionally deduplicates task launches whose prompt content matches an
+already-known task. A self-continuation chain must therefore make every
+successor prompt content-distinct while still deriving behavior from durable
+state.
+
+Before spawning, re-read the source of truth and write a successor prompt that
+contains a concrete uniqueness cursor from that fresh state. Good cursors
+include:
+
+- Next unit ID: `Next unit: issue #109`.
+- Remaining queue snapshot: `Remaining eligible units: #109, #110, #111`.
+- Queue progress: `Completed count: 8; remaining count: 12`.
+- Source revision: Git SHA, queue file checksum, database row version, or API
+  cursor/ETag.
+- Parent/previous task ID when available, as supporting trace data.
+
+The cursor should change after each completed unit. Prefer state-derived
+content over a timestamp because it documents why this child is distinct and
+lets the next task verify the same state independently. A timestamp or UUID may
+be added as a last-resort launch nonce only when the durable source does not
+offer a stable cursor, but it must not replace the real selection rule.
+
+Do not spawn if the prompt you are about to write would have the same cursor as
+the current task's prompt. That means the source of truth did not advance, the
+next unit is already claimed, or the completion/blocker was not recorded
+durably enough.
 
 ## Handoff Procedure
 
@@ -120,10 +151,14 @@ Continuation contract:
 - If no eligible unit remains, stop and report completion.
 - If another eligible unit remains, spawn the next Kookr task with this same
   continuation contract using a hook-safe prompt file.
+- Make the successor prompt content-distinct by including the current
+  uniqueness cursor from durable state.
 
 Current source-of-truth details:
 - Repo/cwd: <absolute cwd or owner/name>.
 - Queue/query: <selector>.
+- Continuation cursor: <next unit id, remaining eligible ids/count, source
+  revision/checksum, and parent/previous task id if available>.
 - Attempt cap: <N>.
 - Completion evidence: <how to detect done>.
 - Verification commands: <commands>.
@@ -140,6 +175,8 @@ from the previous task's memory:
 - Done check: issue closed, or an open PR whose closing issue references include
   the issue.
 - In-progress check: existing branch/PR for the issue.
+- Successor cursor: include the next issue number and a remaining issue list or
+  count, for example `Next issue: #110; remaining issues: #110, #111, #112`.
 - Failure cap: durable per-issue attempt count only when there is no stronger
   completion signal.
 
@@ -153,5 +190,9 @@ their changes visible to later worktrees based on `main`.
 - Encoding "continue until it feels done" without a mechanical stop condition.
 - Selecting the next unit from conversation memory or a non-persisted TODO list.
 - Letting one task work multiple issues because setup is already warm.
+- Reusing a static successor prompt such as "Implement next issue" for every
+  child task.
+- Using only a timestamp to bypass deduplication when a durable queue cursor is
+  available.
 - Using inline `kookr-spawn "long prompt..."` from inside agent sessions.
 - Continuing when tests fail and the blocker has not been recorded.
