@@ -21,6 +21,7 @@ import type {
   TaskShareTicket,
   TaskShareSummary,
 } from '../remote/share-contract.js';
+import type { ContactShareEnvelope } from '../shared/contracts/contact-share.js';
 
 // Share TTL bounds. The relay re-validates with its own `NODE_SHARE_*`
 // constants (`relay/server.ts`) — the remote import boundary forbids sharing
@@ -63,6 +64,8 @@ export interface RelayShareClient {
   approveGrantRequest(invitationId: string, requestId: string): Promise<ResolveTaskShareGrantRequestApiResponse>;
   /** Deny a pending collaborator request for mutating grants. */
   denyGrantRequest(invitationId: string, requestId: string): Promise<ResolveTaskShareGrantRequestApiResponse>;
+  /** Store an encrypted Contact Share mailbox envelope through the node-authenticated relay path. */
+  sendContactShareEnvelope(envelope: ContactShareEnvelope): Promise<ContactShareEnvelope>;
 }
 
 export interface RelayShareClientOptions {
@@ -242,6 +245,14 @@ export function createRelayShareClient(opts: RelayShareClientOptions): RelayShar
         throw new RelayShareError('relay-bad-response', 502, 'relay deny response missing fields');
       }
       return { share: toSummary(parsed.invitation), request: parsed.request };
+    },
+
+    async sendContactShareEnvelope(envelope): Promise<ContactShareEnvelope> {
+      const parsed = await call('/relay/node/contact-share/envelopes', envelope) as { envelope?: ContactShareEnvelope };
+      if (!parsed.envelope) {
+        throw new RelayShareError('relay-bad-response', 502, 'relay contact-share response missing envelope');
+      }
+      return parsed.envelope;
     },
   };
 }

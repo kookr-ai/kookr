@@ -21,6 +21,7 @@ import { handleLaunchResult } from './launch-result.js';
 import { writeFeedbackBundle } from '../use-cases/write-feedback-bundle.js';
 import { requestTaskReflect } from '../use-cases/request-task-reflect.js';
 import type { Task, TaskCompletionFeedback } from '../../core/tasks.js';
+import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -93,6 +94,17 @@ export class LifecycleHandler {
   constructor(private readonly deps: LifecycleHandlerDeps) {}
 
   async handle(msg: LifecycleMessage): Promise<{ duplicate: boolean }> {
+    if ('taskId' in msg && typeof msg.taskId === 'string' && isSharedTaskId(msg.taskId)) {
+      this.deps.send({
+        type: 'alert',
+        agentId: '',
+        summary: 'Shared tasks are remote-owned',
+        details: 'Local task lifecycle mutations are disabled for Contact Share tasks.',
+        severity: 'warning',
+      });
+      return { duplicate: false };
+    }
+
     switch (msg.type) {
       case 'launch': {
         const excerpt = msg.prompt.slice(0, 40);

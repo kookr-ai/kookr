@@ -5,6 +5,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { RELAY_TRUSTED_ENV_NAME } from '../../remote/handshake.js';
+import type { ContactShareInboxItem, SharedTask } from '../../shared/contracts/contact-share.js';
 import { TaskShareModal } from './TaskShareModal.js';
 
 const TASK_ID = 'task-1';
@@ -167,12 +168,14 @@ describe('TaskShareModal', () => {
     expect(container.textContent).toContain('Send to Kookr contact');
     expect(container.textContent).toContain('Secure default');
     expect(container.textContent).toContain('Contact Share is the secure Kookr-to-Kookr path.');
+    expect(container.textContent).toContain('Encrypted inbox');
+    expect(container.textContent).toContain('Verified contacts');
+    expect(container.textContent).toContain('No pending Contact Share invitations.');
     expect(container.textContent).toContain('Shared');
     expect(container.textContent).toContain('From contact');
     expect(container.textContent).toContain('Remote node');
     expect(container.textContent).toContain('View only');
     expect(container.textContent).toContain('Public controls stay disabled');
-    expect(getButtonByText(container, 'Contacts coming next').disabled).toBe(true);
     expect(Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .some((button) => button.textContent?.trim() === 'Create guest link')).toBe(false);
     expect(container.textContent).not.toContain('Approve');
@@ -180,6 +183,152 @@ describe('TaskShareModal', () => {
     expect(container.textContent).not.toContain('Revoke');
     expect(container.textContent).not.toContain('Launch');
     expect(container.textContent).not.toContain('Send messages');
+  });
+
+  test('sends and decides Contact Share invitations through CSRF-protected APIs', async () => {
+    let inbox: ContactShareInboxItem[] = [
+      {
+        shareId: 'share-alice',
+        envelopeId: 'env-share-alice',
+        senderContactId: 'contact-jean',
+        senderDisplayName: 'Jean',
+        recipientDeviceId: 'local-device',
+        lifecycle: 'pending',
+        notificationTitle: 'Kookr task shared',
+        notificationBody: 'Jean shared a task in Kookr.',
+        redacted: true,
+        createdAt: '2026-05-18T10:00:00.000Z',
+        updatedAt: '2026-05-18T10:00:00.000Z',
+      },
+      {
+        shareId: 'share-bob',
+        envelopeId: 'env-share-bob',
+        senderContactId: 'contact-bob',
+        senderDisplayName: 'Bob',
+        recipientDeviceId: 'local-device',
+        lifecycle: 'pending',
+        notificationTitle: 'Kookr task shared',
+        notificationBody: 'Bob shared a task in Kookr.',
+        redacted: true,
+        createdAt: '2026-05-18T10:01:00.000Z',
+        updatedAt: '2026-05-18T10:01:00.000Z',
+      },
+    ];
+    let sharedTasks: SharedTask[] = [];
+    const fetchMock = vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-share' }) } as Response;
+      }
+      if (url === '/api/share/task' && !init) {
+        return { ok: true, json: async () => ({ shares: [] }) } as Response;
+      }
+      if (url === '/api/contact-share/contacts') {
+        return jsonResponse({
+          contacts: [{
+            contactId: 'contact-alice',
+            displayName: 'Alice',
+            verifiedFingerprint: 'fp-alice',
+            devices: [{ deviceId: 'alice-laptop', publicKey: 'pub-alice' }],
+            trustState: 'verified',
+          }],
+        });
+      }
+      if (url === '/api/contact-share/inbox') {
+        return jsonResponse({ inbox });
+      }
+      if (url === '/api/contact-share/shared-tasks') {
+        return jsonResponse({ sharedTasks });
+      }
+      if (url === '/api/contact-share/shares' && init?.method === 'POST') {
+        return jsonResponse({
+          envelope: {
+            schemaVersion: 'contact-share-envelope.v1',
+            envelopeId: 'env-1',
+            shareId: 'share-sent',
+            decisionVersion: 1,
+            senderContactId: 'local-owner',
+            recipientContactId: 'contact-alice',
+            recipientDeviceId: 'alice-laptop',
+            kind: 'share.invite',
+            createdAt: '2026-05-18T10:02:00.000Z',
+            ciphertext: 'sealed-box',
+            senderSignature: 'signature',
+          },
+          notification: { title: 'Kookr task shared', body: 'redacted', redacted: true },
+        }, { status: 201 });
+      }
+      if (url === '/api/contact-share/inbox/share-alice/accept' && init?.method === 'POST') {
+        inbox = inbox.filter((item) => item.shareId !== 'share-alice');
+        sharedTasks = [{
+          kind: 'shared-task',
+          sharedTaskId: 'shared:share-alice',
+          ownerContactId: 'contact-jean',
+          ownerDisplayName: 'Jean',
+          originNodeId: 'remote-node',
+          remoteTaskId: 'task-remote',
+          shareId: 'share-alice',
+          localDisplayLabel: 'Remote task',
+          lifecycle: 'accepted',
+          grants: ['view'],
+          source: 'contact-share',
+          remoteStatus: 'needsInput',
+          updatedAt: '2026-05-18T10:03:00.000Z',
+        }];
+        return jsonResponse({ sharedTask: sharedTasks[0] });
+      }
+      if (url === '/api/contact-share/inbox/share-bob/refuse' && init?.method === 'POST') {
+        inbox = inbox.filter((item) => item.shareId !== 'share-bob');
+        return jsonResponse({ ok: true });
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    root = renderModal(container);
+    await flush();
+
+    expect(container.textContent).toContain('Alice');
+    expect(container.textContent).toContain('2 pending');
+    await act(async () => {
+      getButton(container, 'Send Contact Share to Alice').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const sendCall = fetchMock.mock.calls.find(
+      ([url, init]) => url === '/api/contact-share/shares' && (init as RequestInit | undefined)?.method === 'POST',
+    );
+    expect(sendCall).toBeDefined();
+    expect((sendCall![1] as RequestInit).headers).toMatchObject({
+      'content-type': 'application/json',
+      'x-kookr-csrf': 'csrf-share',
+    });
+    const sentBody = JSON.parse((sendCall![1] as RequestInit).body as string) as Record<string, unknown>;
+    expect(sentBody).toEqual(expect.objectContaining({
+      taskId: 'task-1',
+      contactId: 'contact-alice',
+      recipientDeviceId: 'alice-laptop',
+    }));
+    expect(sentBody.ciphertext).toBeUndefined();
+    expect(sentBody.senderSignature).toBeUndefined();
+
+    await act(async () => {
+      getButton(container, 'Accept Contact Share invitation from Jean').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(container.textContent).toContain('1 accepted');
+
+    await act(async () => {
+      getButton(container, 'Refuse Contact Share invitation from Bob').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+    expect(container.textContent).toContain('0 pending');
+
+    for (const path of ['/api/contact-share/inbox/share-alice/accept', '/api/contact-share/inbox/share-bob/refuse']) {
+      const call = fetchMock.mock.calls.find(([url]) => url === path);
+      expect((call?.[1] as RequestInit | undefined)?.headers).toMatchObject({
+        'content-type': 'application/json',
+        'x-kookr-csrf': 'csrf-share',
+      });
+    }
   });
 
   test.each([

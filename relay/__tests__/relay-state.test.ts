@@ -235,6 +235,156 @@ describe('relay SQLite state', () => {
     await expect(accepted.json()).resolves.toEqual(expect.objectContaining({ nodeId: node.nodeId }));
   });
 
+  it('persists Contact Share envelopes as ciphertext-only mailbox records', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'kookr-relay-state-'));
+    const dbPath = join(tmp, 'relay.sqlite');
+    relay = createRelayServer({ adminToken: 'admin', stateDbPath: dbPath });
+    await listen(relay);
+    const sender = relay.registerNode({ displayName: 'sender', deviceId: 'sender-device' });
+    const recipient = relay.registerNode({ displayName: 'recipient', deviceId: 'recipient-device-a' });
+
+    const accepted = await fetch(`${relay.url()}/relay/node/contact-share/envelopes`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${sender.nodeToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        schemaVersion: 'contact-share-envelope.v1',
+        envelopeId: 'env-contact-1',
+        shareId: 'share-contact-1',
+        decisionVersion: 1,
+        senderContactId: 'contact-owner',
+        recipientContactId: 'contact-recipient',
+        recipientDeviceId: 'recipient-device-a',
+        kind: 'share.invite',
+        createdAt: '2026-05-18T10:00:00.000Z',
+        ciphertext: 'sealed-box-ciphertext',
+        senderSignature: 'signature',
+      }),
+    });
+    expect(accepted.status).toBe(201);
+
+    const rejected = await fetch(`${relay.url()}/relay/node/contact-share/envelopes`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${sender.nodeToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        schemaVersion: 'contact-share-envelope.v1',
+        envelopeId: 'env-contact-plaintext',
+        shareId: 'share-contact-1',
+        decisionVersion: 1,
+        senderContactId: 'contact-owner',
+        recipientContactId: 'contact-recipient',
+        recipientDeviceId: 'recipient-device-a',
+        kind: 'share.accept',
+        createdAt: '2026-05-18T10:01:00.000Z',
+        ciphertext: 'sealed-decision',
+        senderSignature: 'signature',
+        taskLabel: 'Plaintext task label must not persist',
+      }),
+    });
+    expect(rejected.status).toBe(400);
+
+    const rejectedNestedPlaintext = await fetch(`${relay.url()}/relay/node/contact-share/envelopes`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${sender.nodeToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        schemaVersion: 'contact-share-envelope.v1',
+        envelopeId: 'env-contact-nested-plaintext',
+        shareId: 'share-contact-1',
+        decisionVersion: 1,
+        senderContactId: 'contact-owner',
+        recipientContactId: 'contact-recipient',
+        recipientDeviceId: 'recipient-device-a',
+        kind: 'share.accept',
+        createdAt: '2026-05-18T10:02:00.000Z',
+        ciphertext: 'sealed-decision',
+        senderSignature: 'signature',
+        metadata: { taskLabel: 'Nested plaintext must not persist' },
+      }),
+    });
+    expect(rejectedNestedPlaintext.status).toBe(400);
+
+    await relay.close();
+    relay = null;
+
+    const inspect = new Database(dbPath, { readonly: true });
+    const rows = inspect.prepare('SELECT record_json FROM relay_contact_share_envelopes').all() as Array<{ record_json: string }>;
+    inspect.close();
+    expect(rows).toHaveLength(1);
+    const persisted = rows[0].record_json;
+    expect(persisted).toContain('sealed-box-ciphertext');
+    expect(persisted).not.toContain('Plaintext task label');
+    expect(persisted).not.toContain('Nested plaintext');
+    expect(persisted).not.toContain('Fix auth regression');
+    expect(persisted).not.toContain('acceptDetails');
+
+    relay = createRelayServer({ adminToken: 'admin', stateDbPath: dbPath });
+    await listen(relay);
+    const listedBySender = await fetch(`${relay.url()}/relay/node/contact-share/envelopes?recipientDeviceId=recipient-device-a`, {
+      headers: { authorization: `Bearer ${sender.nodeToken}` },
+    });
+    expect(listedBySender.status).toBe(403);
+
+    const listed = await fetch(`${relay.url()}/relay/node/contact-share/envelopes?recipientDeviceId=recipient-device-a`, {
+      headers: { authorization: `Bearer ${recipient.nodeToken}` },
+    });
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toEqual({
+      envelopes: [expect.objectContaining({
+        envelopeId: 'env-contact-1',
+        ciphertext: 'sealed-box-ciphertext',
+        recipientDeviceId: 'recipient-device-a',
+      })],
+    });
+  });
+
+  it('returns 503 and marks health degraded after a Contact Share envelope state write failure', async () => {
+    const stateStore = {
+      load: (): RelayStateSnapshot => ({ registrations: [], invitations: [], contactShareEnvelopes: [], quarantinedRows: 0 }),
+      saveRegistration: (_registration: PersistedNodeRegistration): void => undefined,
+      saveInvitation: (_invitation: InvitationRecord): void => undefined,
+      saveContactShareEnvelope: (): void => {
+        throw new Error('disk full');
+      },
+      probe: (): boolean => true,
+      close: (): void => undefined,
+    };
+    relay = createRelayServer({ adminToken: 'admin', stateStore });
+    await listen(relay);
+    const sender = relay.registerNode({ displayName: 'sender', deviceId: 'sender-device' });
+
+    const accepted = await fetch(`${relay.url()}/relay/node/contact-share/envelopes`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${sender.nodeToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        schemaVersion: 'contact-share-envelope.v1',
+        envelopeId: 'env-contact-1',
+        shareId: 'share-contact-1',
+        decisionVersion: 1,
+        senderContactId: 'contact-owner',
+        recipientContactId: 'contact-recipient',
+        recipientDeviceId: 'recipient-device-a',
+        kind: 'share.invite',
+        createdAt: '2026-05-18T10:00:00.000Z',
+        ciphertext: 'sealed-box-ciphertext',
+        senderSignature: 'signature',
+      }),
+    });
+    expect(accepted.status).toBe(503);
+    await expect(accepted.json()).resolves.toEqual({
+      error: 'relay-state-write-failed',
+      operation: 'saveContactShareEnvelope',
+    });
+
+    const health = await fetch(`${relay.url()}/health`);
+    await expect(health.json()).resolves.toMatchObject({
+      status: 'degraded',
+      dbReachable: false,
+      stateWriteFailure: {
+        operation: 'saveContactShareEnvelope',
+        message: 'disk full',
+      },
+    });
+  });
+
   it('fails hard when the state database cannot be opened', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'kookr-relay-state-'));
     expect(() => createRelayServer({ adminToken: 'admin', stateDbPath: tmp })).toThrow(/failed to open relay state database/);
@@ -253,11 +403,12 @@ describe('relay SQLite state', () => {
 
   it('returns 503 and marks health degraded after a state write failure', async () => {
     const stateStore = {
-      load: (): RelayStateSnapshot => ({ registrations: [], invitations: [], quarantinedRows: 0 }),
+      load: (): RelayStateSnapshot => ({ registrations: [], invitations: [], contactShareEnvelopes: [], quarantinedRows: 0 }),
       saveRegistration: (_registration: PersistedNodeRegistration): void => {
         throw new Error('disk full');
       },
       saveInvitation: (_invitation: InvitationRecord): void => undefined,
+      saveContactShareEnvelope: (): void => undefined,
       probe: (): boolean => true,
       close: (): void => undefined,
     };
@@ -290,12 +441,13 @@ describe('relay SQLite state', () => {
     let throwWrites = false;
     const rows = new Map<string, PersistedNodeRegistration>();
     const stateStore = {
-      load: (): RelayStateSnapshot => ({ registrations: [], invitations: [], quarantinedRows: 0 }),
+      load: (): RelayStateSnapshot => ({ registrations: [], invitations: [], contactShareEnvelopes: [], quarantinedRows: 0 }),
       saveRegistration: (registration: PersistedNodeRegistration): void => {
         if (throwWrites) throw new Error('readonly database');
         rows.set(registration.nodeId, registration);
       },
       saveInvitation: (_invitation: InvitationRecord): void => undefined,
+      saveContactShareEnvelope: (): void => undefined,
       probe: (): boolean => true,
       close: (): void => undefined,
     };

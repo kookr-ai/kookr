@@ -36,6 +36,7 @@ import type { WorktreeRegistry } from '../../adapters/git-worktree-registry.js';
 import type { RelayShareClient } from '../relay-share-client.js';
 import type { TaskShareService } from '../task-share-service.js';
 import type { RelayConnectionManager } from '../relay-connection-manager.js';
+import type { ContactShareReadModel } from '../../core/contact-share.js';
 
 /**
  * Phase A0 easy connection sharing config. The server always provides it;
@@ -150,6 +151,8 @@ export interface RouteDeps {
   hookHomeDir?: string;
   /** Phase A0 easy connection sharing config — see {@link RemoteShareDeps}. */
   remoteShare?: RemoteShareDeps;
+  /** Phase 1 Contact Share recipient inbox/read-model. Optional in tests. */
+  contactShare?: ContactShareReadModel;
   /** Phase B runtime relay connection manager. */
   relayConnection?: RelayConnectionManager;
 }

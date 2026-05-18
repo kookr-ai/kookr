@@ -13,6 +13,7 @@ import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js'
 import type { LaunchDependency } from '../../core/playbook.js';
 import type { Task } from '../../core/tasks.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
+import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 import type { RouteDeps } from './shared.js';
 
 /** Shape of the /api/agents/:id/edit-events/:toolUseId response.
@@ -53,6 +54,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
 
   app.patch('/api/tasks/:id/name', async (c) => {
     const id = c.req.param('id');
+    if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
     const task = taskStore.getTask(id);
     if (!task) return c.json({ error: 'Task not found' }, 404);
 
@@ -130,6 +132,7 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
 
   app.delete('/api/tasks/:id', async (c) => {
     const id = c.req.param('id');
+    if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
     const task = taskStore.getTask(id);
     if (!task) return c.json({ error: 'Task not found' }, 404);
 

@@ -772,6 +772,19 @@ describe('WebSocket MessageRouter', () => {
     ).rejects.toThrow('Task not found');
   });
 
+  test('lifecycle mutations on shared tasks are rejected before local task lookup', async () => {
+    const beforeTasks = taskStore.listTasks();
+
+    await router.handleMessage({ type: 'completeTask', taskId: 'shared:share-1' });
+
+    expect(taskStore.listTasks()).toEqual(beforeTasks);
+    expect(sentMessages).toContainEqual(expect.objectContaining({
+      type: 'alert',
+      summary: 'Shared tasks are remote-owned',
+      severity: 'warning',
+    }));
+  });
+
   test('completeTask skips already-completed sessions', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Fix bug', '/cwd');
