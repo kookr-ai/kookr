@@ -2600,6 +2600,99 @@ textarea::-webkit-resizer { background: transparent; }
   font-weight: 700;
 }
 
+.task-share-paths {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.task-share-path {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.task-share-path:hover,
+.task-share-path--active {
+  border-color: var(--blue);
+  color: var(--text-bright);
+}
+
+.task-share-path strong {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.task-share-policy-panel,
+.task-share-preview {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  padding: 12px;
+  margin-top: 12px;
+}
+
+.task-share-policy-panel {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.task-share-policy-panel p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+}
+
+.task-share-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-share-preview-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-share-marker {
+  border-radius: 3px;
+  background: rgba(96, 165, 250, 0.12);
+  color: var(--blue);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.4;
+  padding: 2px 6px;
+  text-transform: uppercase;
+}
+
+.task-share-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.task-share-preview-meta span {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 6px;
+}
+
 .task-share-link {
   margin-top: 12px;
 }
@@ -2737,9 +2830,14 @@ textarea::-webkit-resizer { background: transparent; }
   .task-share-row,
   .task-share-ticket,
   .task-share-actions,
-  .task-share-request {
+  .task-share-request,
+  .task-share-policy-panel {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .task-share-paths {
+    grid-template-columns: 1fr;
   }
 
   .task-share-ticket {

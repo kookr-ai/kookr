@@ -37,6 +37,7 @@ test.describe('Easy connection sharing local-only state', () => {
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText('Relay connection required');
     await expect(dialog).toContainText('Connect an issued relay node token in Settings');
-    await expect(dialog.getByRole('button', { name: 'Create share link' })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Create guest link', exact: true })).toHaveCount(0);
+    await expect(dialog.locator('.task-share-link input')).toHaveCount(0);
   });
 });

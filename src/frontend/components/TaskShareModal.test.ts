@@ -113,6 +113,15 @@ function getButtonByText(container: HTMLElement, text: string): HTMLButtonElemen
   return button;
 }
 
+async function selectGuestLink(container: HTMLElement) {
+  const guestPath = Array.from(container.querySelectorAll<HTMLButtonElement>('.task-share-path'))
+    .find((candidate) => candidate.textContent?.includes('Create guest link'));
+  expect(guestPath).toBeInstanceOf(HTMLButtonElement);
+  await act(async () => {
+    guestPath!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
 function getInputForLabel(container: HTMLElement, labelText: string): HTMLInputElement {
   const label = Array.from(container.querySelectorAll('label'))
     .find((candidate) => candidate.textContent?.includes(labelText));
@@ -140,6 +149,39 @@ describe('TaskShareModal', () => {
     document.body.innerHTML = '';
   });
 
+  test('defaults to Contact Share policy and keeps public mutation disabled', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-share' }) } as Response;
+      }
+      if (url === '/api/share/task' && !init) {
+        return { ok: true, json: async () => ({ shares: [] }) } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    }));
+    root = renderModal(container);
+    await flush();
+
+    const selectedPath = container.querySelector<HTMLButtonElement>('.task-share-path[aria-pressed="true"]');
+    expect(selectedPath?.textContent).toContain('Send to Kookr contact');
+    expect(container.textContent).toContain('Send to Kookr contact');
+    expect(container.textContent).toContain('Secure default');
+    expect(container.textContent).toContain('Contact Share is the secure Kookr-to-Kookr path.');
+    expect(container.textContent).toContain('Shared');
+    expect(container.textContent).toContain('From contact');
+    expect(container.textContent).toContain('Remote node');
+    expect(container.textContent).toContain('View only');
+    expect(container.textContent).toContain('Public controls stay disabled');
+    expect(getButtonByText(container, 'Contacts coming next').disabled).toBe(true);
+    expect(Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .some((button) => button.textContent?.trim() === 'Create guest link')).toBe(false);
+    expect(container.textContent).not.toContain('Approve');
+    expect(container.textContent).not.toContain('Deny');
+    expect(container.textContent).not.toContain('Revoke');
+    expect(container.textContent).not.toContain('Launch');
+    expect(container.textContent).not.toContain('Send messages');
+  });
+
   test.each([
     ['hosted-relay-maintenance', 'Hosted relay is in maintenance mode. Local Kookr remains available.'],
     ['hosted-relay-emergency-disabled', 'Hosted relay sharing is temporarily disabled. Local Kookr remains available.'],
@@ -162,9 +204,10 @@ describe('TaskShareModal', () => {
     }));
     root = renderModal(container);
     await flush();
+    await selectGuestLink(container);
 
     const create = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.trim() === 'Create share link');
+      .find((button) => button.textContent?.trim() === 'Create guest link');
     expect(create?.disabled).toBe(false);
     await act(async () => {
       create!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -174,7 +217,7 @@ describe('TaskShareModal', () => {
     expect(container.textContent).toContain(message);
   });
 
-  test('shows pending collaborator grant requests and sends owner approval', async () => {
+  test('keeps guest grant requests non-actionable', async () => {
     const fetchMock = vi.fn(async (url, init) => {
       if (url === '/api/share/csrf-token') {
         return { ok: true, json: async () => ({ csrfToken: 'csrf-share' }) } as Response;
@@ -203,64 +246,20 @@ describe('TaskShareModal', () => {
           }),
         } as Response;
       }
-      if (url === '/api/share/task/inv-1/grant-requests/grant-req-1/approve' && init?.method === 'POST') {
-        return {
-          ok: true,
-          json: async () => ({
-            share: {
-              invitationId: 'inv-1',
-              taskId: 'task-1',
-              createdAt: '2026-05-16T12:00:00.000Z',
-              expiresAt: new Date(Date.now() + 60_000).toISOString(),
-              state: 'viewerConnected',
-              connectedViewerCount: 1,
-              grants: ['view', 'terminalView', 'terminalInput'],
-              grantRequests: [{
-                requestId: 'grant-req-1',
-                invitationId: 'inv-1',
-                requestedGrants: ['terminalView', 'terminalInput'],
-                status: 'approved',
-                requestedAt: '2026-05-16T12:01:00.000Z',
-                resolvedAt: '2026-05-16T12:02:00.000Z',
-                resolution: 'approved',
-              }],
-            },
-            request: {
-              requestId: 'grant-req-1',
-              invitationId: 'inv-1',
-              requestedGrants: ['terminalView', 'terminalInput'],
-              status: 'approved',
-              requestedAt: '2026-05-16T12:01:00.000Z',
-              resolvedAt: '2026-05-16T12:02:00.000Z',
-              resolution: 'approved',
-            },
-          }),
-        } as Response;
-      }
       throw new Error(`unexpected fetch ${String(url)}`);
     });
     vi.stubGlobal('fetch', fetchMock);
     root = renderModal(container);
     await flush();
 
-    expect(container.textContent).toContain('Send messages');
-    expect(container.textContent).toContain('Alice requested terminal input');
-    const approve = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.trim() === 'Approve');
-    await act(async () => {
-      approve!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    await flush();
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/share/task/inv-1/grant-requests/grant-req-1/approve',
-      expect.objectContaining({
-        method: 'POST',
-        headers: { 'x-kookr-csrf': 'csrf-share' },
-      }),
-    );
-    expect(container.textContent).toContain('Approved grants');
-    expect(container.textContent).toContain('Send messages');
+    expect(container.textContent).toContain('Guest Link is lower assurance');
+    expect(container.textContent).toContain('Guest links stay view-only');
+    expect(container.textContent).toContain('One control request is waiting');
+    expect(container.textContent).not.toContain('Alice requested terminal input');
+    expect(container.textContent).not.toContain('Send messages');
+    expect(container.textContent).not.toContain('Approve');
+    expect(container.textContent).not.toContain('Deny');
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toBe(false);
   });
 
   test.each([
@@ -308,7 +307,7 @@ describe('TaskShareModal', () => {
     await flush();
 
     expect(container.textContent).toContain(label);
-    expect(container.textContent).toContain('Create a new share to invite another collaborator.');
+    expect(container.textContent).toContain('Create a new guest link to invite another viewer.');
     expect(container.textContent).not.toContain('Link expires in');
     expect(container.textContent).not.toContain('Display label');
     expect(container.textContent).not.toContain('Approved grants');
@@ -319,11 +318,11 @@ describe('TaskShareModal', () => {
 
     const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .map((button) => ({ text: button.textContent?.trim(), disabled: button.disabled }));
-    expect(buttons).toContainEqual({ text: 'Create new share', disabled: false });
+    expect(buttons).toContainEqual({ text: 'Create new guest link', disabled: false });
     expect(buttons.some((button) => button.text === 'Revoke')).toBe(false);
 
     const createNewShare = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.trim() === 'Create new share');
+      .find((button) => button.textContent?.trim() === 'Create new guest link');
     await act(async () => {
       createNewShare!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -332,7 +331,7 @@ describe('TaskShareModal', () => {
     expect(container.textContent).toContain('No active share');
     expect(container.textContent).toContain('Link expires in');
     expect(container.textContent).toContain('Display label');
-    expect(container.textContent).toContain('Create share link');
+    expect(container.textContent).toContain('Create guest link');
     expect(container.textContent).not.toContain('Approved grants');
     expect(container.textContent).not.toContain('Send messages');
     expect(container.textContent).not.toContain('Terminal sharing');
@@ -380,13 +379,13 @@ describe('TaskShareModal', () => {
     await flush();
 
     const createNewShare = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.trim() === 'Create new share');
+      .find((button) => button.textContent?.trim() === 'Create new guest link');
     await act(async () => {
       createNewShare!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
     expect(container.textContent).toContain('No active share');
-    expect(container.textContent).toContain('Create share link');
+    expect(container.textContent).toContain('Create guest link');
 
     const listFetchesBeforePoll = fetchMock.mock.calls
       .filter(([url, init]) => url === '/api/share/task' && !init).length;
@@ -399,7 +398,7 @@ describe('TaskShareModal', () => {
 
     expect(listFetchesAfterPoll).toBeGreaterThan(listFetchesBeforePoll);
     expect(container.textContent).toContain('No active share');
-    expect(container.textContent).toContain('Create share link');
+    expect(container.textContent).toContain('Create guest link');
     expect(container.textContent).not.toContain('Revoked');
     expect(container.textContent).not.toContain('Expired');
   });
@@ -445,7 +444,7 @@ describe('TaskShareModal', () => {
     await flush();
 
     const createNewShare = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.trim() === 'Create new share');
+      .find((button) => button.textContent?.trim() === 'Create new guest link');
     await act(async () => {
       createNewShare!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -456,7 +455,7 @@ describe('TaskShareModal', () => {
 
     expect(container.textContent).toContain('Second task');
     expect(container.textContent).toContain('Expired');
-    expect(container.textContent).toContain('Create new share');
+    expect(container.textContent).toContain('Create new guest link');
     expect(container.textContent).not.toContain('No active share');
   });
 
@@ -520,6 +519,7 @@ describe('TaskShareModal', () => {
     }));
     root = renderModal(container);
     await flush();
+    await selectGuestLink(container);
 
     const select = container.querySelector('select');
     expect(select).not.toBeNull();
@@ -561,6 +561,7 @@ describe('TaskShareModal', () => {
     vi.stubGlobal('fetch', fetchMock);
     root = renderModal(container);
     await flush();
+    await selectGuestLink(container);
 
     const select = container.querySelector('select')!;
     await act(async () => {
@@ -569,7 +570,7 @@ describe('TaskShareModal', () => {
     });
 
     const create = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.trim() === 'Create share link');
+      .find((button) => button.textContent?.trim() === 'Create guest link');
     await act(async () => {
       create!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -617,6 +618,7 @@ describe('TaskShareModal', () => {
     vi.stubGlobal('fetch', fetchMock);
     root = renderModal(container);
     await flush();
+    await selectGuestLink(container);
 
     const select = container.querySelector('select')!;
     expect(Array.from(select.options).map((option) => option.textContent)).toContain('31 days');
@@ -633,7 +635,7 @@ describe('TaskShareModal', () => {
     expect(container.textContent).toContain('This share can expose the display label');
 
     const create = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.trim() === 'Create share link');
+      .find((button) => button.textContent?.trim() === 'Create guest link');
     await act(async () => {
       create!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -681,11 +683,12 @@ describe('TaskShareModal', () => {
     vi.stubGlobal('fetch', fetchMock);
     root = renderModal(container);
     await flush();
+    await selectGuestLink(container);
 
     // No interaction with the duration <select> — Create must still send the
     // 10-minute default, not a stale or hardcoded value.
     const create = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.trim() === 'Create share link');
+      .find((button) => button.textContent?.trim() === 'Create guest link');
     await act(async () => {
       create!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -707,14 +710,14 @@ describe('TaskShareModal', () => {
     stubCopyShareFetch();
     root = renderModal(container);
     await flush();
+    await selectGuestLink(container);
 
     await act(async () => {
-      getButtonByText(container, 'Create share link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      getButtonByText(container, 'Create guest link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
 
-    expect(container.textContent).not.toContain('Create share link');
-    expect(getButtonByText(container, 'Copy share link').disabled).toBe(false);
+    expect(getButtonByText(container, 'Copy guest link').disabled).toBe(false);
     expect(getInputForLabel(container, 'Share ID').value).toBe(SHARE_ID);
     const passwordInput = getInputForLabel(container, 'Password');
     expect(passwordInput.value).toBe(PASSWORD);
@@ -730,8 +733,8 @@ describe('TaskShareModal', () => {
     expect(ariaLabels).toEqual(expect.arrayContaining([
       'Copy Share ID',
       'Copy password',
-      'Copy share link',
-      'Copy share link from field',
+      'Copy guest link',
+      'Copy guest link from field',
       'Hide password',
     ]));
     expect(ariaLabels.join('\n')).not.toContain(SHARE_ID);
@@ -744,10 +747,10 @@ describe('TaskShareModal', () => {
       getButton(container, 'Copy password').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await act(async () => {
-      getButton(container, 'Copy share link from field').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      getButton(container, 'Copy guest link from field').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await act(async () => {
-      getButton(container, 'Copy share link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      getButton(container, 'Copy guest link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
     expect(writeText).toHaveBeenNthCalledWith(1, SHARE_ID);
@@ -763,9 +766,10 @@ describe('TaskShareModal', () => {
     const shareFetch = stubCopyShareFetch();
     root = renderModal(container);
     await flush();
+    await selectGuestLink(container);
 
     await act(async () => {
-      getButtonByText(container, 'Create share link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      getButtonByText(container, 'Create guest link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
     expect(getInputForLabel(container, 'Password').value).toBe(PASSWORD);
@@ -776,9 +780,9 @@ describe('TaskShareModal', () => {
     });
     await flush();
 
-    expect(container.textContent).not.toContain('Copy share link');
+    expect(container.textContent).not.toContain('Copy guest link');
     expect(container.querySelector('[aria-label="Copy password"]')).toBeNull();
-    expect(getButtonByText(container, 'Create new share').disabled).toBe(false);
+    expect(getButtonByText(container, 'Create new guest link').disabled).toBe(false);
   });
 
   test('reports fallback clipboard failures instead of marking a credential copied', async () => {
@@ -790,9 +794,10 @@ describe('TaskShareModal', () => {
     stubCopyShareFetch();
     root = renderModal(container);
     await flush();
+    await selectGuestLink(container);
 
     await act(async () => {
-      getButtonByText(container, 'Create share link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      getButtonByText(container, 'Create guest link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await flush();
     await act(async () => {
