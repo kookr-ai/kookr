@@ -5,9 +5,10 @@ import { basename, dirname, join } from 'node:path';
 import type { RelayHello, RemoteFeature } from './handshake.js';
 import type { CommandEnvelope, CommandResult } from './command-journal.js';
 import type { RemoteControlEvent } from './control-events.js';
-import type { NodeEpoch, NodeId } from './ids.js';
+import type { NodeEpoch, NodeId, SessionEpoch, SessionId } from './ids.js';
 import type { PolicySyncProtocolMessage } from './policy-sync.js';
-import type { TerminalStreamEvent } from './stream-events.js';
+import { isTerminalPublicationPrincipal, type TerminalPublicationPrincipal, type TerminalStreamEvent } from './stream-events.js';
+import type { TerminalDemandProof } from './terminal-publication-gate.js';
 
 import type { WebSocket } from 'ws';
 
@@ -41,6 +42,7 @@ export interface RemoteNodeClientOptions {
   wsImporter?: () => Promise<typeof import('ws')>;
   onCommand?: (command: CommandEnvelope) => Promise<CommandResult>;
   onPolicyMessage?: (message: PolicySyncProtocolMessage) => Promise<void> | void;
+  onTerminalDemandProof?: (message: TerminalPublicationDemandMessage) => Promise<void> | void;
 }
 
 export interface RemoteNodeClient {
@@ -50,6 +52,15 @@ export interface RemoteNodeClient {
   publish(event: RemoteControlEvent | TerminalStreamEvent): boolean;
   setCommandHandler(handler: ((command: CommandEnvelope) => Promise<CommandResult>) | null): void;
   setConnectionObserver(handler: ((state: 'connected' | 'disconnected') => void) | null): void;
+}
+
+export interface TerminalPublicationDemandMessage {
+  type: 'terminal.publicationDemand.v1';
+  nodeId: NodeId;
+  principal: TerminalPublicationPrincipal;
+  sessionId: SessionId;
+  sessionEpoch: SessionEpoch;
+  proof: TerminalDemandProof;
 }
 
 interface NodeIdentity {
@@ -207,6 +218,26 @@ function isPolicySyncProtocolMessage(value: unknown): value is PolicySyncProtoco
     && typeof msg.policyVersion === 'number';
 }
 
+function isTerminalPublicationDemandMessage(value: unknown): value is TerminalPublicationDemandMessage {
+  const msg = value as Partial<TerminalPublicationDemandMessage>;
+  const proof = msg.proof as { kind?: unknown; expiresAt?: unknown; heartbeatKeyId?: unknown } | undefined;
+  return typeof value === 'object'
+    && value !== null
+    && msg.type === 'terminal.publicationDemand.v1'
+    && typeof msg.nodeId === 'string'
+    && typeof msg.sessionId === 'string'
+    && typeof msg.sessionEpoch === 'string'
+    && isTerminalPublicationPrincipal(msg.principal)
+    && typeof proof === 'object'
+    && proof !== null
+    && typeof proof.expiresAt === 'string'
+    && Number.isFinite(Date.parse(proof.expiresAt))
+    && (
+      (proof.kind === 'guest-relay-presence')
+      || (proof.kind === 'recipient-signed-heartbeat' && typeof proof.heartbeatKeyId === 'string')
+    );
+}
+
 export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Promise<RemoteNodeClient> {
   const {
     isRelayHello,
@@ -282,7 +313,7 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
       const terminalInputKillSwitch = parseTerminalInputKillSwitch(process.env.KOOKR_RELAY_FEATURES);
       const disabled = new Set<RemoteFeature>(terminalInputKillSwitch.disabled ? ['terminal-input'] : []);
       const trustedFeatures: RemoteFeature[] = process.env.KOOKR_RELAY_TRUSTED === 'true'
-        ? ['terminal-stream', 'terminal-input']
+        ? ['terminal-stream', 'terminal-publication-gate.v1', 'terminal-input']
         : [];
       const supportedFeatures = [...PHASE1_SUPPORTED_FEATURES, ...trustedFeatures]
         .filter((feature) => !disabled.has(feature));
@@ -317,6 +348,15 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
         status.features.disabled = [...(parsed.disabledFeatures ?? [])];
         if (parsed.outcome === 'refused') {
           next.close(1008, parsed.refusalReason ?? 'refused');
+          return;
+        }
+        if (
+          process.env.KOOKR_RELAY_TRUSTED === 'true'
+          && !parsed.enabledFeatures.includes('scoped-terminal-delivery.v1')
+        ) {
+          status.relayConnected = false;
+          status.connectionState = 'backing-off';
+          next.close(1008, 'relay lacks scoped terminal delivery');
           return;
         }
         reconnectAttempt = 0;
@@ -362,6 +402,12 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
             logger.warn(`[remote-node] policy message handler failed: ${err instanceof Error ? err.message : String(err)}`);
           }
         })();
+      }
+      if (isTerminalPublicationDemandMessage(parsed)) {
+        if (parsed.nodeId !== status.nodeId) return;
+        void Promise.resolve(opts.onTerminalDemandProof?.(parsed)).catch((err) => {
+          logger.warn(`[remote-node] terminal demand handler failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
       }
     });
 

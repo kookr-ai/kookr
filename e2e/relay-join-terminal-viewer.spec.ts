@@ -66,6 +66,7 @@ async function connectNode(
       'policy-sync',
       'terminal-stream',
       'terminal-input',
+      'terminal-publication-gate.v1',
     ] satisfies RemoteFeature[],
   })));
   await waitFor(() => messages.some((msg) => (msg as RelayHello).type === 'relay.hello'));
@@ -137,6 +138,15 @@ function sendTerminalBytes(ws: WebSocket, nodeId: string, seq: number, text: str
       encoding: 'base64',
       data: Buffer.from(text).toString('base64'),
       byteLength: Buffer.byteLength(text),
+    },
+    publication: {
+      publicationScopeId: 'test-terminal-publication',
+      principal: {
+        kind: 'contact-device',
+        contactId: 'contact-test',
+        deviceId: 'device-test',
+      },
+      policyVersion: 1,
     },
   }));
 }

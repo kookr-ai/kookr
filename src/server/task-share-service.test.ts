@@ -4,11 +4,11 @@ import { AttentionQueue } from '../core/attention-queue.js';
 import { TaskStore } from '../core/tasks.js';
 import type { Anomaly } from '../core/types.js';
 import type { RemoteControlEvent } from '../remote/control-events.js';
-import { asGrantId, asNodeEpoch, asNodeId, asPolicyVersion, asServerRevision } from '../remote/ids.js';
+import { asGrantId, asNodeEpoch, asNodeId, asPolicyVersion, asSeq, asServerRevision, asSessionEpoch, asSessionId } from '../remote/ids.js';
 import { RemotePolicyCache } from '../remote/policy-cache.js';
 import type { RemoteTaskProjectionEnvelopeV1, TaskShareSummary } from '../remote/share-contract.js';
 import type { RelayShareClient } from './relay-share-client.js';
-import { TaskShareService } from './task-share-service.js';
+import { TaskShareService, type TaskShareServiceOptions } from './task-share-service.js';
 
 function share(overrides: Partial<TaskShareSummary> = {}): TaskShareSummary {
   return {
@@ -41,6 +41,44 @@ function clientFor(createdShare: TaskShareSummary): RelayShareClient {
     listTaskShares: async () => [createdShare],
     approveGrantRequest: async () => ({ share: { ...createdShare, grants: ['view', 'terminalInput'] }, request: grantRequest }),
     denyGrantRequest: async () => ({ share: createdShare, request: { ...grantRequest, status: 'denied', resolution: 'denied' } }),
+  };
+}
+
+function terminalPublisher(opts: {
+  cursor?: ReturnType<NonNullable<TaskShareServiceOptions['terminalPublisher']>['currentCursor']>;
+  installOk?: boolean;
+} = {}): {
+  publisher: NonNullable<TaskShareServiceOptions['terminalPublisher']>;
+  installed: Array<Parameters<NonNullable<TaskShareServiceOptions['terminalPublisher']>['installPublicationRule']>[0]>;
+  demands: Array<Parameters<NonNullable<TaskShareServiceOptions['terminalPublisher']>['recordDemandProof']>[0]>;
+  revoked: string[];
+} {
+  const installed: Array<Parameters<NonNullable<TaskShareServiceOptions['terminalPublisher']>['installPublicationRule']>[0]> = [];
+  const demands: Array<Parameters<NonNullable<TaskShareServiceOptions['terminalPublisher']>['recordDemandProof']>[0]> = [];
+  const revoked: string[] = [];
+  const cursor = opts.cursor === undefined
+    ? { sessionEpoch: asSessionEpoch('3'), lastSeq: 12 }
+    : opts.cursor;
+  return {
+    installed,
+    revoked,
+    publisher: {
+      currentCursor: () => cursor,
+      installPublicationRule: (rule) => {
+        installed.push(rule);
+        return opts.installOk === false
+          ? { ok: false, reason: 'session-changed' }
+          : { ok: true, rule: { ...rule, minSeqExclusive: asSeq(cursor?.lastSeq ?? 0) } };
+      },
+      recordDemandProof: (proof) => {
+        demands.push(proof);
+        return opts.installOk !== false;
+      },
+      revokePublicationScope: (publicationScopeId) => {
+        revoked.push(publicationScopeId);
+      },
+    },
+    demands,
   };
 }
 
@@ -315,8 +353,14 @@ describe('TaskShareService', () => {
       grants: ['view', 'terminalInput'],
       grantRequests: [grantRequest],
       policyVersion: asPolicyVersion(2),
+      memberSessions: [{
+        memberId: 'member-1',
+        deviceId: 'device-a',
+        createdAt: '2026-05-17T00:00:00.000Z',
+      }],
     });
     const events: unknown[] = [];
+    const terminal = terminalPublisher();
     const client: RelayShareClient = {
       createTaskShare: async () => ({ share: baseShare, joinUrl: 'http://relay/join#inviteToken=tok' }),
       revokeTaskShare: async () => ({ share: { ...baseShare, state: 'revoked', revokedAt: new Date().toISOString() }, alreadyRevoked: false }),
@@ -333,6 +377,7 @@ describe('TaskShareService', () => {
         events.push(event);
         return true;
       },
+      terminalPublisher: terminal.publisher,
     });
 
     await service.approveGrantRequest('inv-1', 'grant-req-1');
@@ -353,10 +398,209 @@ describe('TaskShareService', () => {
             primarySharedSession: expect.objectContaining({
               sessionAlias: 'primary',
               sessionId: 'agent-1',
+              sessionEpoch: asSessionEpoch('3'),
             }),
           }),
         }),
       }),
+    ]);
+    expect(terminal.installed).toHaveLength(0);
+
+    expect(service.recordTerminalPublicationDemand({
+      principal: {
+        kind: 'guest-member',
+        invitationId: 'inv-1',
+        memberSessionId: 'member-1',
+        deviceId: 'device-a',
+      },
+      sessionId: asSessionId('agent-1'),
+      sessionEpoch: asSessionEpoch('3'),
+      proof: { kind: 'guest-relay-presence', expiresAt: '2026-05-17T00:00:05.000Z' },
+    })).toBe(true);
+    expect(terminal.installed).toEqual([
+      expect.objectContaining({
+        publicationScopeId: 'guest-member:inv-1:member-1:device-a:agent-1:3',
+        principal: {
+          kind: 'guest-member',
+          invitationId: 'inv-1',
+          memberSessionId: 'member-1',
+          deviceId: 'device-a',
+        },
+        sessionId: 'agent-1',
+        sessionEpoch: asSessionEpoch('3'),
+        policyVersion: asPolicyVersion(2),
+      }),
+    ]);
+    expect(terminal.demands).toEqual([
+      expect.objectContaining({
+        principal: {
+          kind: 'guest-member',
+          invitationId: 'inv-1',
+          memberSessionId: 'member-1',
+          deviceId: 'device-a',
+        },
+      }),
+    ]);
+  });
+
+  it('does not publish a session projection when publication rules cannot be installed', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('task', '/tmp');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      createdAt: new Date('2026-05-17T00:00:00.000Z'),
+      cwd: '/tmp',
+      status: 'running',
+    });
+    const approvedShare = share({
+      taskId: task.id,
+      grants: ['view', 'terminalInput'],
+      grantRequests: [grantRequest],
+      memberId: 'member-1',
+      memberDeviceId: 'device-a',
+    });
+    const events: unknown[] = [];
+    const terminal = terminalPublisher({ cursor: null });
+    const service = new TaskShareService({
+      client: {
+        ...clientFor(approvedShare),
+        approveGrantRequest: async () => ({ share: approvedShare, request: grantRequest }),
+      },
+      taskStore,
+      getNodeIdentity: () => ({ nodeId: asNodeId('kookr-node-test'), nodeEpoch: asNodeEpoch('1') }),
+      nextServerRevision: () => asServerRevision(events.length + 1),
+      publish: (event) => {
+        events.push(event);
+        return true;
+      },
+      terminalPublisher: terminal.publisher,
+    });
+
+    await service.approveGrantRequest('inv-1', 'grant-req-1');
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({ type: 'remote.taskProjection.v1' }),
+      }),
+    ]);
+    expect(terminal.installed).toHaveLength(0);
+  });
+
+  it('installs a publication rule only for the demanded approved member session', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('task', '/tmp');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      createdAt: new Date('2026-05-17T00:00:00.000Z'),
+      cwd: '/tmp',
+      status: 'running',
+    });
+    const approvedShare = share({
+      taskId: task.id,
+      grants: ['view', 'terminalView'],
+      grantRequests: [{
+        ...grantRequest,
+        requestedGrants: ['terminalView'],
+        requestedBy: 'member-1',
+      }],
+      memberSessions: [
+        { memberId: 'member-1', deviceId: 'device-a', createdAt: '2026-05-17T00:00:00.000Z' },
+        { memberId: 'member-2', deviceId: 'device-b', createdAt: '2026-05-17T00:00:01.000Z' },
+      ],
+    });
+    const events: unknown[] = [];
+    const terminal = terminalPublisher();
+    const service = new TaskShareService({
+      client: clientFor(approvedShare),
+      taskStore,
+      getNodeIdentity: () => ({ nodeId: asNodeId('kookr-node-test'), nodeEpoch: asNodeEpoch('1') }),
+      nextServerRevision: () => asServerRevision(events.length + 1),
+      publish: (event) => {
+        events.push(event);
+        return true;
+      },
+      terminalPublisher: terminal.publisher,
+    });
+
+    await service.createTaskShare({ taskId: task.id, ttlMs: 60_000 });
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({ type: 'remote.taskProjection.v1' }),
+      }),
+      expect.objectContaining({
+        payload: expect.objectContaining({ type: 'remote.shareSessionProjection.v1' }),
+      }),
+    ]);
+    expect(service.recordTerminalPublicationDemand({
+      principal: { kind: 'guest-member', invitationId: 'inv-1', memberSessionId: 'member-1', deviceId: 'device-a' },
+      sessionId: asSessionId('agent-1'),
+      sessionEpoch: asSessionEpoch('3'),
+      proof: { kind: 'guest-relay-presence', expiresAt: '2026-05-17T00:00:05.000Z' },
+    })).toBe(true);
+    expect(service.recordTerminalPublicationDemand({
+      principal: { kind: 'guest-member', invitationId: 'inv-1', memberSessionId: 'member-2', deviceId: 'device-b' },
+      sessionId: asSessionId('agent-1'),
+      sessionEpoch: asSessionEpoch('3'),
+      proof: { kind: 'guest-relay-presence', expiresAt: '2026-05-17T00:00:05.000Z' },
+    })).toBe(false);
+    expect(terminal.installed.map((rule) => rule.principal)).toEqual([
+      { kind: 'guest-member', invitationId: 'inv-1', memberSessionId: 'member-1', deviceId: 'device-a' },
+    ]);
+  });
+
+  it('revokes installed terminal publication scopes when a share is revoked', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('task', '/tmp');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      createdAt: new Date('2026-05-17T00:00:00.000Z'),
+      cwd: '/tmp',
+      status: 'running',
+    });
+    const createdShare = share({
+      taskId: task.id,
+      grants: ['view', 'terminalView'],
+      grantRequests: [
+        { ...grantRequest, requestedGrants: ['terminalView'], requestedBy: 'member-1' },
+        { ...grantRequest, requestId: 'grant-req-2', requestedGrants: ['terminalView'], requestedBy: 'member-2' },
+      ],
+      memberSessions: [
+        { memberId: 'member-1', deviceId: 'device-a', createdAt: '2026-05-17T00:00:00.000Z' },
+        { memberId: 'member-2', deviceId: 'device-b', createdAt: '2026-05-17T00:00:01.000Z' },
+      ],
+    });
+    const terminal = terminalPublisher();
+    const service = new TaskShareService({
+      client: clientFor(createdShare),
+      taskStore,
+      getNodeIdentity: () => ({ nodeId: asNodeId('kookr-node-test'), nodeEpoch: asNodeEpoch('1') }),
+      nextServerRevision: () => asServerRevision(1),
+      publish: () => true,
+      terminalPublisher: terminal.publisher,
+    });
+
+    await service.createTaskShare({ taskId: task.id, ttlMs: 60_000 });
+    expect(service.recordTerminalPublicationDemand({
+      principal: { kind: 'guest-member', invitationId: 'inv-1', memberSessionId: 'member-1', deviceId: 'device-a' },
+      sessionId: asSessionId('agent-1'),
+      sessionEpoch: asSessionEpoch('3'),
+      proof: { kind: 'guest-relay-presence', expiresAt: '2026-05-17T00:00:05.000Z' },
+    })).toBe(true);
+    expect(service.recordTerminalPublicationDemand({
+      principal: { kind: 'guest-member', invitationId: 'inv-1', memberSessionId: 'member-2', deviceId: 'device-b' },
+      sessionId: asSessionId('agent-1'),
+      sessionEpoch: asSessionEpoch('3'),
+      proof: { kind: 'guest-relay-presence', expiresAt: '2026-05-17T00:00:05.000Z' },
+    })).toBe(true);
+    await service.revokeTaskShare('inv-1');
+
+    expect(terminal.revoked).toEqual([
+      'guest-member:inv-1:member-1:device-a:agent-1:3',
+      'guest-member:inv-1:member-2:device-b:agent-1:3',
     ]);
   });
 

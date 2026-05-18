@@ -1,9 +1,12 @@
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { RemoteControlEvent } from '../remote/control-events.js';
-import type { NodeEpoch, NodeId, PolicyVersion, ServerRevision, SessionId } from '../remote/ids.js';
+import type { NodeEpoch, NodeId, PolicyVersion, ServerRevision, SessionEpoch, SessionId } from '../remote/ids.js';
+import type { TerminalDemandProof } from '../remote/terminal-publication-gate.js';
 import type { ShareSubject } from '../remote/policy-sync.js';
 import type { RemotePolicyCache } from '../remote/policy-cache.js';
+import type { SessionStreamPublisher } from '../remote/session-stream-publisher.js';
+import type { TerminalPublicationPrincipal } from '../remote/stream-events.js';
 import type {
   RemoteTaskProjectionEnvelopeV1,
   RemoteTaskProjectionV1,
@@ -28,6 +31,7 @@ export interface TaskShareServiceOptions {
   nextServerRevision: () => ServerRevision;
   publish: PublishRemoteEvent;
   diagnoseTerminalSharing?: (share: TaskShareSummary) => TaskShareSummary['terminalSharing'];
+  terminalPublisher?: Pick<SessionStreamPublisher, 'currentCursor' | 'installPublicationRule' | 'recordDemandProof' | 'revokePublicationScope'>;
 }
 
 export class TaskShareService {
@@ -39,9 +43,11 @@ export class TaskShareService {
   private readonly nextServerRevision: TaskShareServiceOptions['nextServerRevision'];
   private readonly publish: PublishRemoteEvent;
   private readonly diagnoseTerminalSharing?: TaskShareServiceOptions['diagnoseTerminalSharing'];
+  private readonly terminalPublisher?: TaskShareServiceOptions['terminalPublisher'];
   private readonly shares = new Map<string, TaskShareSummary>();
   private readonly pendingRevokeInvitationIds = new Set<string>();
   private readonly lastPublishedProjectionKeys = new Map<string, string>();
+  private readonly terminalPublicationScopesByInvitation = new Map<string, Set<string>>();
 
   constructor(opts: TaskShareServiceOptions) {
     this.client = opts.client;
@@ -52,6 +58,7 @@ export class TaskShareService {
     this.nextServerRevision = opts.nextServerRevision;
     this.publish = opts.publish;
     this.diagnoseTerminalSharing = opts.diagnoseTerminalSharing;
+    this.terminalPublisher = opts.terminalPublisher;
   }
 
   async createTaskShare(input: { taskId: string; ttlMs: number; displayLabel?: string }): Promise<{ share: TaskShareSummary; joinUrl: string; shareTicket?: TaskShareTicket }> {
@@ -71,6 +78,7 @@ export class TaskShareService {
     const existing = this.shares.get(invitationId);
     const localRevokedAt = new Date().toISOString();
     this.pendingRevokeInvitationIds.add(invitationId);
+    if (existing) this.revokeTerminalPublicationForShare(existing);
     if (existing) {
       this.shares.set(invitationId, {
         ...existing,
@@ -125,6 +133,45 @@ export class TaskShareService {
     }
   }
 
+  recordTerminalPublicationDemand(input: {
+    principal: TerminalPublicationPrincipal;
+    sessionId: SessionId;
+    sessionEpoch: SessionEpoch;
+    proof: TerminalDemandProof;
+  }): boolean {
+    if (!this.terminalPublisher || input.principal.kind !== 'guest-member') return false;
+    const remembered = this.shares.get(input.principal.invitationId);
+    if (!remembered) return false;
+    const share = this.withLocalState(this.shareWithoutDiagnostics(remembered));
+    if (!this.shareAllowsTerminalPublicationDemand(share, input.principal)) return false;
+    const task = this.taskStore.getTask(share.taskId);
+    const session = task?.sessions[0];
+    if (!session || session.tmuxSession !== input.sessionId) return false;
+    const cursor = this.terminalPublisher.currentCursor(input.sessionId);
+    if (!cursor || cursor.sessionEpoch !== input.sessionEpoch) return false;
+
+    const publicationScopeId = this.publicationScopeId(
+      share.invitationId,
+      input.principal,
+      input.sessionId,
+      input.sessionEpoch,
+    );
+    const installed = this.terminalPublisher.installPublicationRule({
+      publicationScopeId,
+      principal: input.principal,
+      sessionId: input.sessionId,
+      sessionEpoch: input.sessionEpoch,
+      approvedAt: new Date().toISOString(),
+      policyVersion: share.policyVersion ?? (0 as PolicyVersion),
+      expiresAt: share.expiresAt,
+    });
+    if (!installed.ok) return false;
+    const scopes = this.terminalPublicationScopesByInvitation.get(share.invitationId) ?? new Set<string>();
+    scopes.add(publicationScopeId);
+    this.terminalPublicationScopesByInvitation.set(share.invitationId, scopes);
+    return this.terminalPublisher.recordDemandProof(input);
+  }
+
   private remember(share: TaskShareSummary): TaskShareSummary {
     const local = this.shares.get(share.invitationId);
     const remembered = this.withLocalState({
@@ -158,17 +205,28 @@ export class TaskShareService {
     const effective = this.withLocalState(this.shareWithoutDiagnostics(share));
     if (this.pendingRevokeInvitationIds.has(share.invitationId)) {
       this.lastPublishedProjectionKeys.delete(effective.invitationId);
+      this.revokeTerminalPublicationForShare(effective);
       return false;
     }
     if (effective.state === 'revoked' || effective.state === 'expired' || effective.state === 'revokePending') {
       this.lastPublishedProjectionKeys.delete(effective.invitationId);
+      this.revokeTerminalPublicationForShare(effective);
       return false;
     }
     const identity = this.getNodeIdentity();
-    if (!identity) return false;
+    if (!identity) {
+      this.revokeTerminalPublicationForShare(effective);
+      return false;
+    }
     const task = this.taskStore.getTask(effective.taskId);
-    if (!task) return false;
-    if (!this.grantAllowsProjection(identity.nodeId, effective.taskId)) return false;
+    if (!task) {
+      this.revokeTerminalPublicationForShare(effective);
+      return false;
+    }
+    if (!this.grantAllowsProjection(identity.nodeId, effective.taskId)) {
+      this.revokeTerminalPublicationForShare(effective);
+      return false;
+    }
 
     const projection = projectTaskForRemoteShare(task, { nodeId: identity.nodeId, queue: this.queue });
     const projectionKey = projectionDedupeKey(projection);
@@ -200,9 +258,27 @@ export class TaskShareService {
     identity: { nodeId: NodeId; nodeEpoch: NodeEpoch },
     task: NonNullable<ReturnType<TaskStore['getTask']>>,
   ): boolean {
-    if (!grantsAllowTerminalView(share.grants)) return false;
+    if (!grantsAllowTerminalView(share.grants)) {
+      this.revokeTerminalPublicationForShare(share);
+      return false;
+    }
     const session = task.sessions[0];
-    if (!session) return false;
+    if (!session) {
+      this.revokeTerminalPublicationForShare(share);
+      return false;
+    }
+    // Fail closed: do not advertise a live terminal session unless the node
+    // has an active publisher cursor bound to the immutable session epoch.
+    if (!this.terminalPublisher) {
+      this.revokeTerminalPublicationForShare(share);
+      return false;
+    }
+    const cursor = this.terminalPublisher.currentCursor(session.tmuxSession);
+    if (!cursor) {
+      this.revokeTerminalPublicationForShare(share);
+      return false;
+    }
+    const sessionEpoch = cursor.sessionEpoch;
     return this.publish({
       nodeId: identity.nodeId,
       nodeEpoch: identity.nodeEpoch,
@@ -224,11 +300,33 @@ export class TaskShareService {
           primarySharedSession: {
             sessionAlias: 'primary',
             sessionId: session.tmuxSession as SessionId,
+            sessionEpoch,
             lastActivityAt: task.updatedAt.toISOString(),
           },
         },
       },
     });
+  }
+
+  private revokeTerminalPublicationForShare(share: TaskShareSummary): void {
+    this.revokeTerminalPublicationScopes(share.invitationId);
+  }
+
+  private revokeTerminalPublicationScopes(invitationId: string): void {
+    if (!this.terminalPublisher) return;
+    const scopes = this.terminalPublicationScopesByInvitation.get(invitationId);
+    if (!scopes) return;
+    for (const scopeId of scopes) this.terminalPublisher.revokePublicationScope(scopeId);
+    this.terminalPublicationScopesByInvitation.delete(invitationId);
+  }
+
+  private publicationScopeId(
+    invitationId: string,
+    principal: Extract<TerminalPublicationPrincipal, { kind: 'guest-member' }>,
+    sessionId: SessionId,
+    sessionEpoch: SessionEpoch,
+  ): string {
+    return `guest-member:${invitationId}:${principal.memberSessionId}:${principal.deviceId}:${sessionId}:${sessionEpoch}`;
   }
 
   private grantAllowsProjection(nodeId: NodeId, taskId: string): boolean {
@@ -243,6 +341,29 @@ export class TaskShareService {
       && !this.remotePolicyCache?.hasTombstone(grant.grantId)
       && (!grant.expiresAt || Date.parse(grant.expiresAt) > Date.now())
     ));
+  }
+
+  private shareAllowsTerminalPublicationDemand(share: TaskShareSummary, principal: TerminalPublicationPrincipal): boolean {
+    if (principal.kind !== 'guest-member') return false;
+    if (share.invitationId !== principal.invitationId) return false;
+    if (share.state === 'revoked' || share.state === 'expired' || share.state === 'revokePending') return false;
+    if (!grantsAllowTerminalView(share.grants)) return false;
+    const sessions = share.memberSessions ?? [];
+    if (sessions.length === 0) {
+      return share.memberId === principal.memberSessionId
+        && share.memberDeviceId === principal.deviceId;
+    }
+    const matchingSession = sessions.some((session) => (
+      session.memberId === principal.memberSessionId
+      && session.deviceId === principal.deviceId
+    ));
+    if (!matchingSession) return false;
+    const approvedTerminalRequest = share.grantRequests.some((request) => (
+      request.status === 'approved'
+      && request.requestedBy === principal.memberSessionId
+      && request.requestedGrants.some((grant) => grant === 'terminalView' || grant === 'terminalInput')
+    ));
+    return approvedTerminalRequest || sessions.length === 1;
   }
 }
 

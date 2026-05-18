@@ -1161,6 +1161,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           taskShareService?.publishActiveTaskProjections();
         }
       },
+      onTerminalDemandProof: (message) => {
+        const handledByShare = taskShareService?.recordTerminalPublicationDemand(message) ?? false;
+        if (handledByShare) return;
+        sessionStreamPublisher?.recordDemandProof({
+          principal: message.principal,
+          sessionId: message.sessionId,
+          sessionEpoch: message.sessionEpoch,
+          proof: message.proof,
+        });
+      },
     });
     remoteNodeClient = nodeClient;
     commandJournal = await CommandJournal.open({
@@ -1181,6 +1191,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       if (state === 'disconnected') controllerLeaseManager?.handleRelayDisconnect();
       else controllerLeaseManager?.handleRelayReconnect();
     });
+    const { createSessionStreamPublisher } = await import('../remote/session-stream-publisher.js');
+    sessionStreamPublisher = createSessionStreamPublisher({
+      terminalBackend,
+      remoteNodeClient: nodeClient,
+    });
+    await sessionStreamPublisher.start();
     if (remoteTerminalInputFeatureEnabled({ ...process.env, KOOKR_RELAY_URL: credentials.relayUrl })) {
       const { createRemoteInputAdapter } = await import('./remote-input-adapter.js');
       remoteInputAdapter = await createRemoteInputAdapter({
@@ -1212,17 +1228,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       }),
       nextServerRevision: nextRemoteShareRevision,
       publish: (event) => nodeClient.publish(event),
+      terminalPublisher: sessionStreamPublisher,
       diagnoseTerminalSharing: (share) => shareDiagnostics.diagnoseTerminalSharing(share),
     });
     remoteShare.client = relayShareClient;
     remoteShare.service = taskShareService;
-
-    const { createSessionStreamPublisher } = await import('../remote/session-stream-publisher.js');
-    sessionStreamPublisher = createSessionStreamPublisher({
-      terminalBackend,
-      remoteNodeClient: nodeClient,
-    });
-    await sessionStreamPublisher.start();
     await configureRemoteCommandHandler();
 
     return {

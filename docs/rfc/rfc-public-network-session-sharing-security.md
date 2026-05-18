@@ -224,7 +224,7 @@ Properties:
     display, local terminal input, and local permission approval follow today's
     paths without relay posture checks or additional files.
 22. **R22. Mixed-version fail-closed.** Relay refuses terminal viewing for
-    nodes that do not advertise `terminalPublicationGate.v1`; nodes refuse
+    nodes that do not advertise `terminal-publication-gate.v1`; nodes refuse
     terminal publication when the relay does not advertise compatible
     scoped-delivery support.
 23. **R23. Rollback bounded.** Operators can disable terminal viewing within a
@@ -320,7 +320,7 @@ Assets:
 | T7 | Malicious relay fabricates approval | Node installs publication rules only from local owner approval ledger or owner-signed approval event, not relay policy alone. |
 | T8 | Viewer disconnects but relay keeps receiving bytes | Demand-driven publication stops when no authorized viewer remains. |
 | T9 | Public relay misconfigured | Posture/verifier fail closed; node disables terminal publication. |
-| T10 | Mixed-version node publishes globally | Relay rejects terminal bytes from nodes without `terminalPublicationGate.v1`; rollout is reject-by-default. |
+| T10 | Mixed-version node publishes globally | Relay rejects terminal bytes from nodes without `terminal-publication-gate.v1`; rollout is reject-by-default. |
 | T11 | Public mutation sneaks through relay | Mutation rejected at both relay and node. |
 | T12 | Guest browser E2EE overclaimed | Guest Link is documented as lower assurance because relay-served JS can be malicious unless a future signed/static guest client ships. |
 | T13 | Relay fabricates viewer presence after approval | Contact Share demand requires recipient-device signed heartbeats consumed by the owner node. |
@@ -654,7 +654,7 @@ mutation messages are rejected at both relay and node.
 15. **Revocation fail-closed.** Persistence failure during revoke disables
     public terminal publication.
 16. **Mixed-version fail-closed.** Relay rejects terminal bytes from nodes
-    without `terminalPublicationGate.v1`; nodes refuse relays without scoped
+    without `terminal-publication-gate.v1`; nodes refuse relays without scoped
     delivery support.
 17. **Mutation denial.** Public mutation frames forwarded by a malicious relay
     are rejected by the node.
@@ -691,7 +691,7 @@ mutation messages are rejected at both relay and node.
 
 ### Phase 3 - Node Publication Gate
 
-- Add `terminalPublicationGate.v1`.
+- Add `terminal-publication-gate.v1`.
 - Add scoped publication rules, owner approval ledger, watermarks, and
   demand-driven publication with contact-device signed heartbeats.
 - Add mixed-version fail-closed rollout: relay reject-by-default first, then

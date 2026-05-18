@@ -1,4 +1,4 @@
-import type { NodeEpoch, NodeId, Seq, SessionEpoch, SessionId } from './ids.js';
+import type { NodeEpoch, NodeId, PolicyVersion, Seq, SessionEpoch, SessionId } from './ids.js';
 
 export type TerminalStreamEventKind =
   | 'terminal.bytes'
@@ -8,6 +8,16 @@ export interface TerminalBytesPayload {
   encoding: 'base64';
   data: string;
   byteLength: number;
+}
+
+export type TerminalPublicationPrincipal =
+  | { kind: 'contact-device'; contactId: string; deviceId: string }
+  | { kind: 'guest-member'; invitationId: string; memberSessionId: string; deviceId: string };
+
+export interface TerminalPublicationMetadata {
+  publicationScopeId: string;
+  principal: TerminalPublicationPrincipal;
+  policyVersion: PolicyVersion;
 }
 
 export interface TerminalReplayGapPayload {
@@ -25,6 +35,7 @@ export interface TerminalStreamEventBase<K extends TerminalStreamEventKind, P> {
   ts: string;
   kind: K;
   payload: P;
+  publication?: TerminalPublicationMetadata;
 }
 
 export type TerminalBytesEvent = TerminalStreamEventBase<'terminal.bytes', TerminalBytesPayload>;
@@ -33,6 +44,25 @@ export type TerminalReplayGapEvent = TerminalStreamEventBase<'terminal.replay-ga
 export type TerminalStreamEvent =
   | TerminalBytesEvent
   | TerminalReplayGapEvent;
+
+export function isTerminalPublicationPrincipal(value: unknown): value is TerminalPublicationPrincipal {
+  const principal = value as Partial<TerminalPublicationPrincipal>;
+  return typeof value === 'object'
+    && value !== null
+    && (
+      (
+        principal.kind === 'contact-device'
+        && typeof (principal as { contactId?: unknown }).contactId === 'string'
+        && typeof (principal as { deviceId?: unknown }).deviceId === 'string'
+      )
+      || (
+        principal.kind === 'guest-member'
+        && typeof (principal as { invitationId?: unknown }).invitationId === 'string'
+        && typeof (principal as { memberSessionId?: unknown }).memberSessionId === 'string'
+        && typeof (principal as { deviceId?: unknown }).deviceId === 'string'
+      )
+    );
+}
 
 export function isTerminalStreamEvent(value: unknown): value is TerminalStreamEvent {
   const msg = value as Partial<TerminalStreamEvent>;
@@ -54,11 +84,20 @@ export function isTerminalStreamEvent(value: unknown): value is TerminalStreamEv
 
   if (msg.kind === 'terminal.bytes') {
     const payload = msg.payload as Partial<TerminalBytesPayload>;
+    const publication = msg.publication as Partial<TerminalPublicationMetadata> | undefined;
     return payload.encoding === 'base64'
       && typeof payload.data === 'string'
       && typeof payload.byteLength === 'number'
       && Number.isInteger(payload.byteLength)
-      && payload.byteLength >= 0;
+      && payload.byteLength >= 0
+      && (
+        publication === undefined
+        || (
+          typeof publication.publicationScopeId === 'string'
+          && typeof publication.policyVersion === 'number'
+          && isTerminalPublicationPrincipal(publication.principal)
+        )
+      );
   }
 
   if (msg.kind === 'terminal.replay-gap') {

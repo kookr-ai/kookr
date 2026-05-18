@@ -95,6 +95,16 @@ function toSummary(view: RelayNodeInvitationView): TaskShareSummary {
     connectedViewerCount,
     ...(view.revokedAt ? { revokedAt: view.revokedAt } : {}),
     ...(view.acceptedAt ? { acceptedAt: view.acceptedAt } : {}),
+    ...(view.memberId ? { memberId: view.memberId } : {}),
+    ...(view.memberDeviceId ? { memberDeviceId: view.memberDeviceId } : {}),
+    ...(view.memberSessions ? {
+      memberSessions: view.memberSessions.map((session) => ({
+        memberId: session.memberId,
+        deviceId: session.deviceId,
+        createdAt: session.createdAt,
+        ...(session.acceptedBy ? { acceptedBy: session.acceptedBy } : {}),
+      })),
+    } : {}),
     ...(view.shareId ? { shareId: view.shareId } : {}),
     ...(typeof view.failedAcceptCount === 'number' ? { failedAcceptCount: view.failedAcceptCount } : {}),
     ...(view.lockedUntil ? { lockedUntil: view.lockedUntil } : {}),
