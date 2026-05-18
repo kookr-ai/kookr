@@ -2,7 +2,6 @@ import type { Context, Hono } from 'hono';
 import { randomBytes, randomUUID } from 'node:crypto';
 
 import { ContactShareReadModel } from '../../core/contact-share.js';
-import { asNodeId } from '../../remote/ids.js';
 import type {
   AcceptContactShareApiResponse,
   ContactShareEnvelope,
@@ -54,6 +53,10 @@ function parseContact(value: unknown): KookrContact | null {
 
 function opaqueContactShareSecret(prefix: 'sealed' | 'sig'): string {
   return `${prefix}:${randomBytes(48).toString('base64url')}`;
+}
+
+function asContactShareNodeId(value: string): DecryptedContactShareInvite['originNodeId'] {
+  return value as DecryptedContactShareInvite['originNodeId'];
 }
 
 export function registerContactShareRoutes(app: Hono, deps: RouteDeps): void {
@@ -172,7 +175,7 @@ export function registerContactShareRoutes(app: Hono, deps: RouteDeps): void {
       ownerContactId: body.ownerContactId,
       ownerDisplayName: body.ownerDisplayName,
       ...(typeof body.ownerNodeLabel === 'string' ? { ownerNodeLabel: body.ownerNodeLabel } : {}),
-      originNodeId: typeof body.originNodeId === 'string' ? asNodeId(body.originNodeId) : asNodeId('remote-node'),
+      originNodeId: typeof body.originNodeId === 'string' ? asContactShareNodeId(body.originNodeId) : asContactShareNodeId('remote-node'),
       remoteTaskId: body.remoteTaskId,
       taskLabel: sanitizeRemoteTaskLabel(body.taskLabel, body.remoteTaskId),
       grants: body.grants,
