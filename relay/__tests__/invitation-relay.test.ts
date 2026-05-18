@@ -1375,6 +1375,7 @@ describe('relay invitations', () => {
       'control.state-delta',
       'policy-sync',
       'terminal-stream',
+      'terminal-publication-gate.v1',
     ]);
     sockets.push(nodeConn.ws);
     const created = relay.createInvitation({
@@ -1393,6 +1394,16 @@ describe('relay invitations', () => {
       seq: 1,
       ts: new Date().toISOString(),
       kind: 'terminal.bytes',
+      publication: {
+        publicationScopeId: 'scope-projected-viewer',
+        principal: {
+          kind: 'guest-member',
+          invitationId: accepted.accepted.invitation.invitationId,
+          memberSessionId: accepted.accepted.invitation.memberId ?? 'member-unknown',
+          deviceId: accepted.accepted.deviceId,
+        },
+        policyVersion: accepted.accepted.invitation.policyVersion,
+      },
       payload: {
         encoding: 'base64',
         data: Buffer.from('SECRET_TERMINAL_BYTES').toString('base64'),
@@ -1430,6 +1441,7 @@ describe('relay invitations', () => {
       'control.state-delta',
       'policy-sync',
       'terminal-stream',
+      'terminal-publication-gate.v1',
     ]);
     ackPolicyMessages(nodeConn.ws, node.nodeId);
     sockets.push(nodeConn.ws);
@@ -1455,6 +1467,16 @@ describe('relay invitations', () => {
       seq: 1,
       ts: new Date().toISOString(),
       kind: 'terminal.bytes',
+      publication: {
+        publicationScopeId: 'scope-projected-terminal-view',
+        principal: {
+          kind: 'guest-member',
+          invitationId: accepted.accepted.invitation.invitationId,
+          memberSessionId: accepted.accepted.invitation.memberId ?? 'member-unknown',
+          deviceId: accepted.accepted.deviceId,
+        },
+        policyVersion: accepted.accepted.invitation.policyVersion,
+      },
       payload: {
         encoding: 'base64',
         data: Buffer.from('VISIBLE_TERMINAL_BYTES').toString('base64'),
@@ -1469,7 +1491,7 @@ describe('relay invitations', () => {
     rawStateUrl.searchParams.set('terminalSessionEpoch', '1');
     rawStateUrl.searchParams.set('afterSeq', '0');
     const rawRes = await fetch(rawStateUrl, {
-      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}; kookr_relay_device_id=${accepted.accepted.deviceId}` },
     });
     expect(rawRes.status).toBe(403);
     await expect(rawRes.json()).resolves.toEqual({ error: 'projection-required' });
@@ -1480,7 +1502,7 @@ describe('relay invitations', () => {
     projectedStateUrl.searchParams.set('sessionAlias', 'primary');
     projectedStateUrl.searchParams.set('afterSeq', '0');
     const projectedRes = await fetch(projectedStateUrl, {
-      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}; kookr_relay_device_id=${accepted.accepted.deviceId}` },
     });
     expect(projectedRes.status).toBe(200);
     const body = await projectedRes.json() as { terminalEvents: unknown[] };
@@ -1509,6 +1531,199 @@ describe('relay invitations', () => {
     }));
   });
 
+  it('does not replay scoped terminal bytes to another terminal-capable member', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken, [
+      'control.snapshot',
+      'control.state-delta',
+      'policy-sync',
+      'terminal-stream',
+      'terminal-publication-gate.v1',
+    ]);
+    ackPolicyMessages(nodeConn.ws, node.nodeId);
+    sockets.push(nodeConn.ws);
+    const firstCreated = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'session', nodeId: node.nodeId, sessionId: 'session-1' },
+      grants: ['view', 'terminalInput'],
+    });
+    const secondCreated = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'session', nodeId: node.nodeId, sessionId: 'session-1' },
+      grants: ['view', 'terminalInput'],
+    });
+    const accepted = relay.acceptInvitation(firstCreated.token, 'viewer-one');
+    const secondAccepted = relay.acceptInvitation(secondCreated.token, 'viewer-two');
+    if (!accepted.ok || !secondAccepted.ok) throw new Error('expected accepts');
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+
+    const liveUrl = new URL('/relay/client', relay.url());
+    liveUrl.protocol = 'ws:';
+    liveUrl.searchParams.set('nodeId', node.nodeId);
+    liveUrl.searchParams.set('terminalSessionId', 'session-1');
+    liveUrl.searchParams.set('terminalSessionEpoch', '1');
+    const firstLiveUrl = new URL(liveUrl);
+    firstLiveUrl.searchParams.set('wsNonce', await memberWebSocketNonce(relay, accepted.accepted.memberToken, accepted.accepted.deviceId));
+    const secondLiveUrl = new URL(liveUrl);
+    secondLiveUrl.searchParams.set('wsNonce', await memberWebSocketNonce(relay, secondAccepted.accepted.memberToken, secondAccepted.accepted.deviceId));
+    const firstLive = new WebSocket(firstLiveUrl, {
+      headers: {
+        origin: relay.url(),
+        cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}; kookr_relay_device_id=${accepted.accepted.deviceId}`,
+      },
+    });
+    const secondLive = new WebSocket(secondLiveUrl, {
+      headers: {
+        origin: relay.url(),
+        cookie: `kookr_relay_member_token=${secondAccepted.accepted.memberToken}; kookr_relay_device_id=${secondAccepted.accepted.deviceId}`,
+      },
+    });
+    const firstLiveMessages: unknown[] = [];
+    const secondLiveMessages: unknown[] = [];
+    firstLive.on('message', (data) => firstLiveMessages.push(JSON.parse(data.toString()) as unknown));
+    secondLive.on('message', (data) => secondLiveMessages.push(JSON.parse(data.toString()) as unknown));
+    sockets.push(firstLive, secondLive);
+    await Promise.all([once(firstLive, 'open'), once(secondLive, 'open')]);
+    const memberOnePublication = {
+      publicationScopeId: 'scope-member-one-only',
+      principal: {
+        kind: 'guest-member',
+        invitationId: accepted.accepted.invitation.invitationId,
+        memberSessionId: accepted.accepted.invitation.memberId ?? 'member-unknown',
+        deviceId: accepted.accepted.deviceId,
+      },
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    };
+    const memberTwoPublication = {
+      publicationScopeId: 'scope-member-two-only',
+      principal: {
+        kind: 'guest-member',
+        invitationId: secondAccepted.accepted.invitation.invitationId,
+        memberSessionId: secondAccepted.accepted.invitation.memberId ?? 'member-unknown',
+        deviceId: secondAccepted.accepted.deviceId,
+      },
+      policyVersion: secondAccepted.accepted.invitation.policyVersion,
+    };
+
+    nodeConn.ws.send(JSON.stringify({
+      nodeId: node.nodeId,
+      nodeEpoch: asNodeEpoch('1'),
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      seq: 1,
+      ts: new Date().toISOString(),
+      kind: 'terminal.bytes',
+      publication: memberOnePublication,
+      payload: {
+        encoding: 'base64',
+        data: Buffer.from('MEMBER_ONE_BYTES').toString('base64'),
+        byteLength: Buffer.byteLength('MEMBER_ONE_BYTES'),
+      },
+    }));
+    await waitFor(() => firstLiveMessages.some((msg) => (msg as { kind?: string }).kind === 'terminal.bytes'));
+    await sleep(50);
+    expect(firstLiveMessages).toContainEqual(expect.objectContaining({
+      kind: 'terminal.bytes',
+      publication: memberOnePublication,
+      payload: expect.objectContaining({
+        data: Buffer.from('MEMBER_ONE_BYTES').toString('base64'),
+      }),
+    }));
+    expect(secondLiveMessages).not.toContainEqual(expect.objectContaining({ kind: 'terminal.bytes' }));
+
+    nodeConn.ws.send(JSON.stringify({
+      nodeId: node.nodeId,
+      nodeEpoch: asNodeEpoch('1'),
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      seq: 2,
+      ts: new Date().toISOString(),
+      kind: 'terminal.bytes',
+      publication: memberTwoPublication,
+      payload: {
+        encoding: 'base64',
+        data: Buffer.from('MEMBER_TWO_BYTES').toString('base64'),
+        byteLength: Buffer.byteLength('MEMBER_TWO_BYTES'),
+      },
+    }));
+    await waitFor(() => secondLiveMessages.some((msg) => (msg as { kind?: string }).kind === 'terminal.bytes'));
+    await sleep(50);
+    expect(secondLiveMessages).toContainEqual(expect.objectContaining({
+      kind: 'terminal.bytes',
+      publication: memberTwoPublication,
+      payload: expect.objectContaining({
+        data: Buffer.from('MEMBER_TWO_BYTES').toString('base64'),
+      }),
+    }));
+    expect(firstLiveMessages).not.toContainEqual(expect.objectContaining({
+      kind: 'terminal.bytes',
+      payload: expect.objectContaining({
+        data: Buffer.from('MEMBER_TWO_BYTES').toString('base64'),
+      }),
+    }));
+
+    const stateUrl = new URL('/relay/dashboard/state', relay.url());
+    stateUrl.searchParams.set('nodeId', node.nodeId);
+    stateUrl.searchParams.set('terminalSessionId', 'session-1');
+    stateUrl.searchParams.set('terminalSessionEpoch', '1');
+    stateUrl.searchParams.set('afterSeq', '0');
+    const firstRes = await fetch(stateUrl, {
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}; kookr_relay_device_id=${accepted.accepted.deviceId}` },
+    });
+    expect(firstRes.status).toBe(200);
+    const firstBody = await firstRes.json() as { terminalEvents: unknown[] };
+    expect(firstBody.terminalEvents).toContainEqual(expect.objectContaining({
+      kind: 'terminal.bytes',
+      publication: memberOnePublication,
+      payload: expect.objectContaining({
+        data: Buffer.from('MEMBER_ONE_BYTES').toString('base64'),
+      }),
+    }));
+    expect(firstBody.terminalEvents).not.toContainEqual(expect.objectContaining({
+      kind: 'terminal.bytes',
+      payload: expect.objectContaining({
+        data: Buffer.from('MEMBER_TWO_BYTES').toString('base64'),
+      }),
+    }));
+
+    const secondRes = await fetch(stateUrl, {
+      headers: { cookie: `kookr_relay_member_token=${secondAccepted.accepted.memberToken}; kookr_relay_device_id=${secondAccepted.accepted.deviceId}` },
+    });
+    expect(secondRes.status).toBe(200);
+    const secondBody = await secondRes.json() as { terminalEvents: unknown[] };
+    expect(secondBody.terminalEvents).toContainEqual(expect.objectContaining({
+      kind: 'terminal.bytes',
+      publication: memberTwoPublication,
+      payload: expect.objectContaining({
+        data: Buffer.from('MEMBER_TWO_BYTES').toString('base64'),
+      }),
+    }));
+    expect(secondBody.terminalEvents).not.toContainEqual(expect.objectContaining({
+      kind: 'terminal.bytes',
+      payload: expect.objectContaining({
+        data: Buffer.from('MEMBER_ONE_BYTES').toString('base64'),
+      }),
+    }));
+
+    const secondMember = await connectMember(relay, node.nodeId, secondAccepted.accepted.memberToken, {
+      deviceId: secondAccepted.accepted.deviceId,
+    });
+    sockets.push(secondMember.ws);
+    secondMember.ws.send(JSON.stringify({
+      type: 'terminal.replay.request',
+      payload: { sessionId: 'session-1', sessionEpoch: '1', afterSeq: 0 },
+    }));
+    await sleep(50);
+    expect(secondMember.messages).not.toContainEqual(expect.objectContaining({
+      kind: 'terminal.bytes',
+      payload: expect.objectContaining({
+        data: Buffer.from('MEMBER_ONE_BYTES').toString('base64'),
+      }),
+    }));
+  });
+
   it('blocks projected terminal stream and input over public insecure transport while allowing loopback HTTP', async () => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin', trustedProxy: true });
     await listen(relay);
@@ -1518,6 +1733,7 @@ describe('relay invitations', () => {
       'control.state-delta',
       'policy-sync',
       'terminal-stream',
+      'terminal-publication-gate.v1',
       'terminal-input',
     ]);
     ackPolicyMessages(nodeConn.ws, node.nodeId);
@@ -1658,6 +1874,7 @@ describe('relay invitations', () => {
       'control.state-delta',
       'policy-sync',
       'terminal-stream',
+      'terminal-publication-gate.v1',
       'terminal-input',
     ]);
     ackPolicyMessages(nodeConn.ws, node.nodeId);
@@ -1679,6 +1896,16 @@ describe('relay invitations', () => {
       seq: 1,
       ts: new Date().toISOString(),
       kind: 'terminal.bytes',
+      publication: {
+        publicationScopeId: 'scope-session-operator',
+        principal: {
+          kind: 'guest-member',
+          invitationId: accepted.accepted.invitation.invitationId,
+          memberSessionId: accepted.accepted.invitation.memberId ?? 'member-unknown',
+          deviceId: accepted.accepted.deviceId,
+        },
+        policyVersion: accepted.accepted.invitation.policyVersion,
+      },
       payload: {
         encoding: 'base64',
         data: Buffer.from('SESSION_ONE_BYTES').toString('base64'),
@@ -1693,7 +1920,7 @@ describe('relay invitations', () => {
     matchingStateUrl.searchParams.set('terminalSessionEpoch', '1');
     matchingStateUrl.searchParams.set('afterSeq', '0');
     const matchingRes = await fetch(matchingStateUrl, {
-      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}; kookr_relay_device_id=${accepted.accepted.deviceId}` },
     });
     expect(matchingRes.status).toBe(200);
     const matchingBody = await matchingRes.json() as { terminalEvents: unknown[] };
@@ -1710,7 +1937,7 @@ describe('relay invitations', () => {
     mismatchedStateUrl.searchParams.set('terminalSessionEpoch', '1');
     mismatchedStateUrl.searchParams.set('afterSeq', '0');
     const mismatchedRes = await fetch(mismatchedStateUrl, {
-      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}` },
+      headers: { cookie: `kookr_relay_member_token=${accepted.accepted.memberToken}; kookr_relay_device_id=${accepted.accepted.deviceId}` },
     });
     expect(mismatchedRes.status).toBe(403);
     await expect(mismatchedRes.json()).resolves.toEqual({ error: 'projection-required' });

@@ -8,6 +8,8 @@ export type RemoteFeature =
   | 'control.state-delta'
   | 'policy-sync'
   | 'terminal-stream'
+  | 'terminal-publication-gate.v1'
+  | 'scoped-terminal-delivery.v1'
   | 'terminal-input'
   | 'launch'
   | 'preset-reply'
@@ -23,6 +25,7 @@ export const PHASE1_SUPPORTED_FEATURES: readonly RemoteFeature[] = [
 export const REMOTE_FEATURES: readonly RemoteFeature[] = [
   ...PHASE1_SUPPORTED_FEATURES,
   'terminal-stream',
+  'terminal-publication-gate.v1',
   'terminal-input',
   'launch',
   'preset-reply',

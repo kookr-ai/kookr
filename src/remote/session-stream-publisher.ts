@@ -2,8 +2,9 @@ import { Buffer } from 'node:buffer';
 
 import type { TerminalBackend, SessionId as BackendSessionId } from '../adapters/terminal-backend.js';
 import type { RemoteNodeClient } from './node-client.js';
-import type { SessionEpoch, SessionId } from './ids.js';
+import type { Seq, SessionEpoch, SessionId } from './ids.js';
 import type { TerminalBytesEvent } from './stream-events.js';
+import { TerminalPublicationGate, type TerminalPublicationRule, type TerminalPublicationInstallResult } from './terminal-publication-gate.js';
 
 export interface SessionStreamPublisherOptions {
   terminalBackend: Pick<TerminalBackend, 'listSessions' | 'onData'>;
@@ -12,6 +13,7 @@ export interface SessionStreamPublisherOptions {
   syncIntervalMs?: number;
   now?: () => Date;
   logger?: Pick<typeof console, 'warn'>;
+  publicationGate?: TerminalPublicationGate;
 }
 
 interface SessionStreamState {
@@ -26,6 +28,9 @@ export interface SessionStreamPublisher {
   stop(): void;
   syncSessions(): Promise<void>;
   currentCursor(sessionId: string): { sessionEpoch: SessionEpoch; lastSeq: number } | null;
+  installPublicationRule(rule: Omit<TerminalPublicationRule, 'minSeqExclusive'>): TerminalPublicationInstallResult;
+  recordDemandProof(input: Parameters<TerminalPublicationGate['recordDemandProof']>[0]): boolean;
+  revokePublicationScope(publicationScopeId: string): void;
   readonly trusted: boolean;
 }
 
@@ -47,6 +52,7 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
   const syncIntervalMs = opts.syncIntervalMs ?? DEFAULT_SYNC_INTERVAL_MS;
   const now = opts.now ?? (() => new Date());
   const logger = opts.logger ?? console;
+  const publicationGate = opts.publicationGate ?? new TerminalPublicationGate(now);
   const states = new Map<BackendSessionId, SessionStreamState>();
   const lastEpochBySession = new Map<BackendSessionId, number>();
   const trusted = isRelayTerminalStreamingTrusted(opts.env);
@@ -54,12 +60,14 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
   let stopped = false;
 
   const publishBytes = (state: SessionStreamState, data: Uint8Array): void => {
+    const seq = state.nextSeq as Seq;
+    state.nextSeq += 1;
     const event: TerminalBytesEvent = {
       nodeId: opts.remoteNodeClient.status.nodeId,
       nodeEpoch: opts.remoteNodeClient.status.nodeEpoch,
       sessionId: state.sessionId,
       sessionEpoch: state.sessionEpoch,
-      seq: state.nextSeq as TerminalBytesEvent['seq'],
+      seq,
       ts: now().toISOString(),
       kind: 'terminal.bytes',
       payload: {
@@ -68,8 +76,9 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
         byteLength: data.byteLength,
       },
     };
-    state.nextSeq += 1;
-    opts.remoteNodeClient.publish(event);
+    for (const publication of publicationGate.metadataForEvent(event)) {
+      opts.remoteNodeClient.publish({ ...event, publication });
+    }
   };
 
   const subscribe = (id: BackendSessionId): void => {
@@ -136,6 +145,18 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
         sessionEpoch: state.sessionEpoch,
         lastSeq: Math.max(0, state.nextSeq - 1),
       };
+    },
+    installPublicationRule(rule): TerminalPublicationInstallResult {
+      return publicationGate.installRule(
+        { ...rule, minSeqExclusive: 0 as Seq },
+        publisher.currentCursor(rule.sessionId) as { sessionEpoch: SessionEpoch; lastSeq: Seq } | null,
+      );
+    },
+    recordDemandProof(input: Parameters<TerminalPublicationGate['recordDemandProof']>[0]): boolean {
+      return publicationGate.recordDemandProof(input);
+    },
+    revokePublicationScope(publicationScopeId: string): void {
+      publicationGate.revokeScope(publicationScopeId);
     },
   };
 

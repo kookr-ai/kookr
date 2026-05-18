@@ -27,7 +27,7 @@ async function connectNode(
     nodeEpoch: asNodeEpoch(opts.nodeEpoch ?? '1'),
     softwareVersion: 'test',
     supportedFeatures: opts.terminalStream !== false
-      ? [...PHASE1_SUPPORTED_FEATURES, 'terminal-stream'] satisfies RemoteFeature[]
+      ? [...PHASE1_SUPPORTED_FEATURES, 'terminal-stream', 'terminal-publication-gate.v1'] satisfies RemoteFeature[]
       : PHASE1_SUPPORTED_FEATURES,
   })));
   await new Promise<void>((resolve, reject) => {
@@ -58,7 +58,7 @@ async function connectClient(relayUrl: string, nodeId: string, params: Record<st
   return { ws, messages };
 }
 
-function terminalBytes(nodeId: string, seq: number, text: string, opts: { nodeEpoch?: string } = {}): TerminalStreamEvent {
+function terminalBytes(nodeId: string, seq: number, text: string, opts: { nodeEpoch?: string; publicationScopeId?: string } = {}): TerminalStreamEvent {
   return {
     nodeId: nodeId as TerminalStreamEvent['nodeId'],
     nodeEpoch: asNodeEpoch(opts.nodeEpoch ?? '1'),
@@ -71,6 +71,11 @@ function terminalBytes(nodeId: string, seq: number, text: string, opts: { nodeEp
       encoding: 'base64',
       data: Buffer.from(text).toString('base64'),
       byteLength: Buffer.byteLength(text),
+    },
+    publication: {
+      publicationScopeId: opts.publicationScopeId ?? 'scope-test',
+      principal: { kind: 'guest-member', invitationId: 'inv-1', memberSessionId: 'member-1', deviceId: 'device-1' },
+      policyVersion: 1 as TerminalStreamEvent['publication']['policyVersion'],
     },
   };
 }
@@ -153,6 +158,56 @@ describe('relay terminal stream fanout', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(client.messages).not.toContainEqual(expect.objectContaining({ kind: 'terminal.bytes' }));
+  });
+
+  it('rejects terminal bytes from nodes without terminal-publication-gate.v1', async () => {
+    relay = createRelayServer({ allowInsecureClients: true });
+    await listen(relay);
+    const node = relay.registerNode();
+    const wsUrl = new URL('/relay/node', relay.url());
+    wsUrl.protocol = 'ws:';
+    const nodeWs = new WebSocket(wsUrl, { headers: { authorization: `Bearer ${node.nodeToken}` } });
+    sockets.push(nodeWs);
+    await once(nodeWs, 'open');
+    nodeWs.send(JSON.stringify(makeNodeHello({
+      nodeId: node.nodeId as ReturnType<typeof makeNodeHello>['nodeId'],
+      nodeEpoch: asNodeEpoch('1'),
+      softwareVersion: 'test',
+      supportedFeatures: [...PHASE1_SUPPORTED_FEATURES, 'terminal-stream'] satisfies RemoteFeature[],
+    })));
+    await waitFor(() => nodeWs.readyState === nodeWs.OPEN);
+    const legacyBytes = terminalBytes(node.nodeId, 1, 'legacy') as TerminalStreamEvent;
+    delete legacyBytes.publication;
+    nodeWs.send(JSON.stringify(legacyBytes));
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('timed out waiting for gate close')), 1_000);
+      nodeWs.on('close', (_code, reason) => {
+        clearTimeout(timeout);
+        expect(reason.toString()).toContain('terminal publication gate required');
+        resolve();
+      });
+    });
+  });
+
+  it('rejects negotiated terminal bytes when publication metadata is missing', async () => {
+    relay = createRelayServer({ allowInsecureClients: true });
+    await listen(relay);
+    const node = relay.registerNode();
+    const nodeWs = await connectNode(relay.url(), node.nodeId, node.nodeToken);
+    sockets.push(nodeWs);
+    const legacyBytes = terminalBytes(node.nodeId, 1, 'metadata-missing') as TerminalStreamEvent;
+    delete legacyBytes.publication;
+    nodeWs.send(JSON.stringify(legacyBytes));
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('timed out waiting for gate close')), 1_000);
+      nodeWs.on('close', (_code, reason) => {
+        clearTimeout(timeout);
+        expect(reason.toString()).toContain('terminal publication gate required');
+        resolve();
+      });
+    });
   });
 
   it('scopes replay by node epoch and applies afterSeq to dashboard state', async () => {

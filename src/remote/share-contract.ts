@@ -39,6 +39,13 @@ export interface TaskShareGrantRequest {
   resolution?: 'approved' | 'denied';
 }
 
+export interface RelayNodeMemberSessionView {
+  memberId: string;
+  deviceId: string;
+  createdAt: string;
+  acceptedBy?: string;
+}
+
 /** A0 shares one subject only: a single task on the current node. */
 export interface TaskShareSubject {
   kind: 'task';
@@ -74,6 +81,9 @@ export interface RelayNodeInvitationView {
   expiresAt: string;
   revokedAt?: string;
   acceptedAt?: string;
+  memberId?: string;
+  memberDeviceId?: string;
+  memberSessions?: RelayNodeMemberSessionView[];
   connectedViewerCount?: number;
   shareId?: string;
   failedAcceptCount?: number;
@@ -201,6 +211,9 @@ export interface TaskShareSummary {
   connectedViewerCount: number;
   revokedAt?: string;
   acceptedAt?: string;
+  memberId?: string;
+  memberDeviceId?: string;
+  memberSessions?: RelayNodeMemberSessionView[];
   revokePendingAt?: string;
   shareId?: string;
   failedAcceptCount?: number;

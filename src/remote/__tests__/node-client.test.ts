@@ -6,6 +6,7 @@ import { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { makeRelayHello, type NodeHello } from '../handshake.js';
+import { asSessionEpoch, asSessionId } from '../ids.js';
 import { createRemoteNodeClient, type RemoteNodeClient } from '../node-client.js';
 
 async function listen(wss: WebSocketServer): Promise<number> {
@@ -15,6 +16,21 @@ async function listen(wss: WebSocketServer): Promise<number> {
       if (!address || typeof address === 'string') throw new Error('unexpected address');
       resolve(address.port);
     });
+  });
+}
+
+async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (predicate()) {
+        clearInterval(timer);
+        resolve();
+      } else if (Date.now() - started > 2_000) {
+        clearInterval(timer);
+        reject(new Error(message));
+      }
+    }, 10);
   });
 }
 
@@ -39,7 +55,7 @@ describe('RemoteNodeClient', () => {
         ws.send(JSON.stringify(makeRelayHello({
           outcome: 'accepted',
           acceptedVersion: 1,
-          enabledFeatures: observedHello.supportedFeatures,
+          enabledFeatures: [...observedHello.supportedFeatures, 'scoped-terminal-delivery.v1'],
         })));
       });
     });
@@ -106,6 +122,135 @@ describe('RemoteNodeClient', () => {
     expect(constructed).toBe(0);
   });
 
+  it('refuses trusted relay terminal mode when the relay lacks scoped delivery', async () => {
+    const previousTrusted = process.env.KOOKR_RELAY_TRUSTED;
+    process.env.KOOKR_RELAY_TRUSTED = 'true';
+    try {
+      const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-node-client-scoped-delivery-'));
+      let observedHello: NodeHello | null = null;
+      wss = new WebSocketServer({ port: 0, host: '127.0.0.1', path: '/relay/node' });
+      wss.on('connection', (ws) => {
+        ws.once('message', (data) => {
+          observedHello = JSON.parse(data.toString()) as NodeHello;
+          ws.send(JSON.stringify(makeRelayHello({
+            outcome: 'accepted',
+            acceptedVersion: 1,
+            enabledFeatures: observedHello.supportedFeatures.filter((feature) => feature !== 'scoped-terminal-delivery.v1'),
+          })));
+        });
+      });
+      const port = await listen(wss);
+
+      client = await createRemoteNodeClient({
+        relayUrl: `http://127.0.0.1:${port}`,
+        token: 'token',
+        kookrDir,
+        softwareVersion: 'test',
+        reconnectBaseMs: 10_000,
+      });
+      client.start();
+
+      await new Promise<void>((resolve, reject) => {
+        const started = Date.now();
+        const timer = setInterval(() => {
+          if (client?.status.connectionState === 'backing-off') {
+            clearInterval(timer);
+            resolve();
+          } else if (Date.now() - started > 2_000) {
+            clearInterval(timer);
+            reject(new Error('timed out waiting for scoped delivery refusal'));
+          }
+        }, 10);
+      });
+
+      expect(observedHello?.supportedFeatures).toContain('terminal-publication-gate.v1');
+    expect(client.status.relayConnected).toBe(false);
+    } finally {
+      if (previousTrusted === undefined) delete process.env.KOOKR_RELAY_TRUSTED;
+      else process.env.KOOKR_RELAY_TRUSTED = previousTrusted;
+    }
+  });
+
+  it('delivers valid terminal publication demand messages to the handler', async () => {
+    const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-node-client-demand-'));
+    let observedHello: NodeHello | null = null;
+    const demands: unknown[] = [];
+    wss = new WebSocketServer({ port: 0, host: '127.0.0.1', path: '/relay/node' });
+    wss.on('connection', (ws) => {
+      ws.once('message', (data) => {
+        observedHello = JSON.parse(data.toString()) as NodeHello;
+        ws.send(JSON.stringify(makeRelayHello({
+          outcome: 'accepted',
+          acceptedVersion: 1,
+          enabledFeatures: [...observedHello.supportedFeatures, 'scoped-terminal-delivery.v1'],
+        })));
+        ws.send(JSON.stringify({
+          type: 'terminal.publicationDemand.v1',
+          nodeId: observedHello.nodeId,
+          principal: {
+            kind: 'guest-member',
+            invitationId: 'inv-1',
+            memberSessionId: 'member-1',
+            deviceId: 'device-a',
+          },
+          sessionId: 'session-1',
+          sessionEpoch: '4',
+          proof: {
+            kind: 'guest-relay-presence',
+            expiresAt: '2026-05-18T00:00:05.000Z',
+          },
+        }));
+        ws.send(JSON.stringify({
+          type: 'terminal.publicationDemand.v1',
+          nodeId: observedHello.nodeId,
+          principal: {
+            kind: 'guest-member',
+            invitationId: 'inv-1',
+            memberSessionId: 'member-1',
+            deviceId: 'device-a',
+          },
+          sessionId: 'session-1',
+          sessionEpoch: '4',
+          proof: {
+            kind: 'guest-relay-presence',
+            expiresAt: 'not-a-date',
+          },
+        }));
+      });
+    });
+    const port = await listen(wss);
+
+    client = await createRemoteNodeClient({
+      relayUrl: `http://127.0.0.1:${port}`,
+      token: 'token',
+      kookrDir,
+      softwareVersion: 'test',
+      reconnectBaseMs: 10_000,
+      onTerminalDemandProof: (message) => {
+        demands.push(message);
+      },
+    });
+    client.start();
+
+    await waitFor(() => demands.length === 1, 'timed out waiting for terminal publication demand');
+
+    expect(demands).toEqual([
+      expect.objectContaining({
+        type: 'terminal.publicationDemand.v1',
+        nodeId: observedHello?.nodeId,
+        principal: {
+          kind: 'guest-member',
+          invitationId: 'inv-1',
+          memberSessionId: 'member-1',
+          deviceId: 'device-a',
+        },
+        sessionId: asSessionId('session-1'),
+        sessionEpoch: asSessionEpoch('4'),
+        proof: { kind: 'guest-relay-presence', expiresAt: '2026-05-18T00:00:05.000Z' },
+      }),
+    ]);
+  });
+
   it('delivers policy messages to the handler and acknowledges them', async () => {
     const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-node-client-policy-'));
     const policyMessages: unknown[] = [];
@@ -117,7 +262,7 @@ describe('RemoteNodeClient', () => {
         ws.send(JSON.stringify(makeRelayHello({
           outcome: 'accepted',
           acceptedVersion: 1,
-          enabledFeatures: hello.supportedFeatures,
+          enabledFeatures: [...hello.supportedFeatures, 'scoped-terminal-delivery.v1'],
         })));
         ws.on('message', (ack) => {
           acks.push(JSON.parse(ack.toString()) as unknown);
