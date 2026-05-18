@@ -203,7 +203,7 @@ The system SHALL exclude stale anomaly state from completed, cancelled, terminat
 
 **Evidence:** `src/core/monitor.test.ts` (terminal/Ralph session snapshot filtering), `src/frontend/store/finding-helpers.test.ts` (terminal active-finding filtering), `src/frontend/components/DetectionStatsPanel.test.ts` (startup-window rate formatting).
 
-### R2.11: Audit Finding Evidence Over Time [F2.11] — SHOULD — `done`
+### R2.11: Audit Finding Evidence Over Time [F2.10] — SHOULD — `done`
 
 The system SHOULD capture bounded evidence snapshots for surfaced supervisor findings so false positives and timing-sensitive alerts can be reviewed without guessing from source code alone.
 
@@ -215,6 +215,19 @@ The system SHOULD capture bounded evidence snapshots for surfaced supervisor fin
 - Evidence audit records are visible in raw snapshots and through `/api/finding-evidence-audit` for low-cost sampling or small-model review
 
 **Evidence:** `src/core/finding-evidence-audit.ts`, `src/core/monitor.ts`, `src/server/lifecycle-timers.ts`, `src/server/routes/diagnostics-routes.ts`, `src/core/finding-evidence-audit.test.ts`, `src/core/monitor.test.ts`.
+
+### R2.12: Persist Finding Evidence Review Diagnostics [F2.11] — SHOULD — `done`
+
+The system SHOULD persist manual finding-evidence review outcomes in an append-only diagnostics log that is separate from runtime task state.
+
+**Acceptance criteria:**
+- Deleting the review log does not affect runtime supervision or startup recovery
+- Valid reviews and invalid model attempts are appended as JSONL records under the Kookr state directory
+- Malformed or partial log lines are skipped when reading diagnostics
+- Invalid attempts are stored as non-verdict records with failure kind, raw output hash, reviewer metadata, prompt version, and input hash
+- Model-generated diagnostic text is capped before it is stored or returned
+
+**Evidence:** `src/server/review-log-store.ts`, `src/server/finding-evidence-review-service.ts`, `src/server/routes/diagnostics-routes.ts`, `src/server/review-log-store.test.ts`, `src/server/finding-evidence-review-service.test.ts`, `src/server/routes/diagnostics-routes.test.ts`.
 
 ---
 

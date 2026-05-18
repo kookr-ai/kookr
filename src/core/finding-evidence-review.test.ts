@@ -167,9 +167,45 @@ describe('finding evidence review core', () => {
       attempt: expect.objectContaining({
         schemaVersion: 'finding-evidence-review-invalid-attempt.v1',
         candidateId: 'finding-1',
+        failureKind: 'invalid_evidence_refs',
+        rawOutputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         error: 'evidenceRefs contained unknown observation id missing-observation',
       }),
     });
+  });
+
+  test('caps model-controlled invalid-attempt diagnostics before returning them', () => {
+    const input = buildFindingEvidenceReviewInputV1(record(), { hmacKey: HMAC_KEY }).input;
+    const result = parseFindingEvidenceReviewOutputV1(JSON.stringify({
+      candidateId: 'finding-1',
+      verdict: 'likely_false_positive',
+      confidence: 'high',
+      evidenceRefs: [`bad-ref\n${'x'.repeat(1000)}`],
+      rationale: 'bad ref',
+    }), input, { provider: 'fake', model: 'reviewer' });
+
+    expect(result.status).toBe('invalid_attempt');
+    if (result.status === 'invalid_attempt') {
+      expect(result.attempt.error).toHaveLength(600);
+      expect(result.attempt.error).not.toContain('\n');
+    }
+  });
+
+  test('caps model rationale text and strips control characters', () => {
+    const input = buildFindingEvidenceReviewInputV1(record(), { hmacKey: HMAC_KEY }).input;
+    const result = parseFindingEvidenceReviewOutputV1(JSON.stringify({
+      candidateId: 'finding-1',
+      verdict: 'likely_false_positive',
+      confidence: 'high',
+      evidenceRefs: ['finding-1:observation:2'],
+      rationale: `line one\n${'x'.repeat(800)}`,
+    }), input, { provider: 'fake', model: 'reviewer' });
+
+    expect(result.status).toBe('valid');
+    if (result.status === 'valid') {
+      expect(result.review.rationale).toHaveLength(600);
+      expect(result.review.rationale).not.toContain('\n');
+    }
   });
 
   test('timing false positive verdict is only accepted for transient timing candidates', () => {
