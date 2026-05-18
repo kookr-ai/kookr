@@ -161,7 +161,7 @@ test.describe('relay join terminal viewer', () => {
     relay = null;
   });
 
-  test('streams projected terminal output on desktop and mobile layouts', async ({ page }) => {
+  test('keeps Guest Link terminal output disabled on desktop and mobile layouts', async ({ page }) => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
@@ -185,13 +185,19 @@ test.describe('relay join terminal viewer', () => {
     publishSessionProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: accepted.invitationId, policyVersion: accepted.policyVersion });
     sendTerminalBytes(nodeConn.ws, node.nodeId, 1, 'DESKTOP_TERMINAL_STREAM');
 
-    await expect(page.getByLabel('Shared terminal')).toBeVisible();
-    await expect(page.locator('#terminal')).toContainText('DESKTOP_TERMINAL_STREAM', { timeout: 10_000 });
+    await expect(page.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('#terminal-banner')).toContainText(
+      'Guest Links are view-only and do not support terminal viewing.',
+      { timeout: 10_000 },
+    );
+    await expect(page.getByLabel('Shared terminal')).toBeHidden();
+    await expect(page.locator('#terminal')).not.toContainText('DESKTOP_TERMINAL_STREAM');
     await expect(page.getByLabel('Terminal input message')).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Send Enter' })).toBeDisabled();
 
     await page.setViewportSize({ width: 390, height: 420 });
-    await expect(page.getByLabel('Shared terminal')).toBeVisible();
+    await expect(page.getByLabel('Shared task projection')).toBeVisible();
+    await expect(page.getByLabel('Shared terminal')).toBeHidden();
     const noOverlap = await page.evaluate(() => {
       const terminal = document.getElementById('terminal-shell')!.getBoundingClientRect();
       const composer = document.getElementById('terminal-composer')!.getBoundingClientRect();
@@ -200,7 +206,7 @@ test.describe('relay join terminal viewer', () => {
     expect(noOverlap).toBe(true);
   });
 
-  test('shows replay-gap and stale-projection states with input disabled', async ({ page }) => {
+  test('keeps replay-gap and stale-projection terminal states hidden for Guest Links', async ({ page }) => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin', terminalReplayMaxEvents: 1 });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
@@ -222,12 +228,22 @@ test.describe('relay join terminal viewer', () => {
     await waitFor(() => Boolean(relay!.invitations()[0]?.acceptedAt));
     const accepted = relay.invitations()[0]!;
     await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    publishTaskProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: accepted.invitationId });
     publishSessionProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: accepted.invitationId, policyVersion: accepted.policyVersion });
 
-    await expect(page.locator('#terminal-banner')).toContainText('Terminal replay gap detected', { timeout: 10_000 });
+    await expect(page.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('#terminal-banner')).toContainText(
+      'Guest Links are view-only and do not support terminal viewing.',
+      { timeout: 10_000 },
+    );
+    await expect(page.locator('#terminal')).not.toContainText('tail');
     await expect(page.getByLabel('Terminal input message')).toBeDisabled();
     sendTerminalBytes(nodeConn.ws, node.nodeId, 3, 'fresh');
-    await expect(page.locator('#terminal-banner')).toBeHidden({ timeout: 10_000 });
+    await expect(page.locator('#terminal-banner')).toContainText(
+      'Guest Links are view-only and do not support terminal viewing.',
+      { timeout: 10_000 },
+    );
+    await expect(page.locator('#terminal')).not.toContainText('fresh');
 
     publishSessionProjection(nodeConn.ws, {
       nodeId: node.nodeId,
@@ -235,11 +251,15 @@ test.describe('relay join terminal viewer', () => {
       policyVersion: accepted.policyVersion,
       version: 2,
     });
-    await expect(page.locator('#terminal-banner')).toContainText('Terminal projection changed', { timeout: 10_000 });
+    await expect(page.locator('#terminal-banner')).toContainText(
+      'Guest Links are view-only and do not support terminal viewing.',
+      { timeout: 10_000 },
+    );
+    await expect(page.getByLabel('Shared terminal')).toBeHidden();
     await expect(page.getByRole('button', { name: 'Send Enter' })).toBeDisabled();
   });
 
-  test('submits approved semantic terminal input through the controller lease', async ({ page }) => {
+  test('keeps Guest Link terminal input disabled even with persisted terminal grants', async ({ page }) => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
@@ -274,48 +294,22 @@ test.describe('relay join terminal viewer', () => {
     publishSessionProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: accepted.invitationId, policyVersion: accepted.policyVersion });
     sendTerminalBytes(nodeConn.ws, node.nodeId, 1, 'INPUT_READY');
 
-    await expect(page.getByLabel('Terminal input message')).toBeEnabled({ timeout: 10_000 });
-    await page.getByLabel('Terminal input message').fill('hello from browser');
-    await page.getByRole('button', { name: 'Send Enter' }).click();
-    await expect(page.locator('#status')).toContainText('Terminal input', { timeout: 10_000 });
-    await waitFor(() => nodeConn.messages.some((msg) => (
+    await expect(page.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('#terminal-banner')).toContainText(
+      'Guest Links are view-only and do not support terminal viewing.',
+      { timeout: 10_000 },
+    );
+    await expect(page.getByLabel('Shared terminal')).toBeHidden();
+    await expect(page.locator('#terminal')).not.toContainText('INPUT_READY');
+    await expect(page.getByLabel('Terminal input message')).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Send Enter' })).toBeDisabled();
+    expect(nodeConn.messages.some((msg) => (
       (msg as { type?: string; action?: string; payload?: { text?: string } }).type === 'remote.command'
       && (msg as { action?: string }).action === 'submitMessage'
-      && (msg as { payload?: { text?: string } }).payload?.text === 'hello from browser'
-    )));
-    const submitCommand = nodeConn.messages.find((msg) => (
-      (msg as { type?: string; action?: string; payload?: { text?: string } }).type === 'remote.command'
-      && (msg as { action?: string }).action === 'submitMessage'
-    )) as {
-      leaseId?: string;
-      projectionId?: string;
-      sessionAlias?: string;
-      payload?: {
-        type?: string;
-        sessionId?: string;
-        sessionEpoch?: string;
-        leaseId?: string;
-        text?: string;
-        appendNewline?: boolean;
-      };
-    } | undefined;
-    const activeLease = relay.invitations()[0]?.controllerLease;
-    expect(submitCommand).toMatchObject({
-      leaseId: activeLease?.leaseId,
-      projectionId: 'proj-primary',
-      sessionAlias: 'primary',
-      payload: {
-        type: 'submit-message',
-        sessionId: 'session-1',
-        sessionEpoch: '1',
-        leaseId: activeLease?.leaseId,
-        text: 'hello from browser',
-        appendNewline: true,
-      },
-    });
+    ))).toBe(false);
   });
 
-  test('resumes approved terminal access after refresh and browser restart with approval notification affordance', async ({ page }) => {
+  test('keeps Guest Link terminal approval hidden across refresh and browser restart', async ({ page }) => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
@@ -344,37 +338,41 @@ test.describe('relay join terminal viewer', () => {
 
     await joinShare(page, joinUrl);
     await waitFor(() => Boolean(relay!.invitations()[0]?.acceptedAt));
-    await expect(page.getByRole('button', { name: 'Request terminal input' })).toBeVisible({ timeout: 10_000 });
-    await page.getByRole('button', { name: 'Request terminal input' }).click();
-    await expect(page.getByRole('button', { name: 'Notify me when approved' })).toBeVisible();
-    await expect(page.getByText('Polling for approval.')).toBeVisible();
-
     const accepted = relay.invitations()[0]!;
-    const pending = accepted.grantRequests?.find((request) => request.status === 'pending');
-    expect(pending?.requestId).toBeTruthy();
-    const approve = await fetch(
-      `${relay.url()}/relay/node/invitations/${encodeURIComponent(accepted.invitationId)}/grant-requests/${encodeURIComponent(pending!.requestId)}/approve`,
-      { method: 'POST', headers: { authorization: `Bearer ${node.nodeToken}` } },
-    );
-    expect(approve.status).toBe(200);
     await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
-    const approved = relay.invitations()[0]!;
-    publishTaskProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: approved.invitationId });
-    publishSessionProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: approved.invitationId, policyVersion: approved.policyVersion });
+    publishTaskProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: accepted.invitationId });
+    publishSessionProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: accepted.invitationId, policyVersion: accepted.policyVersion });
     sendTerminalBytes(nodeConn.ws, node.nodeId, 1, 'MOBILE_RESUME_READY');
 
-    await expect(page.getByLabel('Terminal input message')).toBeEnabled({ timeout: 10_000 });
-    await expect(page.locator('#terminal')).toContainText('MOBILE_RESUME_READY', { timeout: 10_000 });
+    await expect(page.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole('button', { name: 'Request terminal input' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Notify me when approved' })).toHaveCount(0);
+    await expect(page.locator('#terminal-banner')).toContainText(
+      'Guest Links are view-only and do not support terminal viewing.',
+      { timeout: 10_000 },
+    );
+    await expect(page.locator('#terminal')).not.toContainText('MOBILE_RESUME_READY');
+    expect(relay.invitations()[0]?.grantRequests ?? []).toHaveLength(0);
 
     await page.reload();
-    await expect(page.getByLabel('Terminal input message')).toBeEnabled({ timeout: 10_000 });
-    await expect(page.locator('#terminal')).toContainText('MOBILE_RESUME_READY', { timeout: 10_000 });
+    await expect(page.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole('button', { name: 'Request terminal input' })).toHaveCount(0);
+    await expect(page.locator('#terminal-banner')).toContainText(
+      'Guest Links are view-only and do not support terminal viewing.',
+      { timeout: 10_000 },
+    );
+    await expect(page.locator('#terminal')).not.toContainText('MOBILE_RESUME_READY');
 
     const restartedPage = await page.context().newPage();
     await restartedPage.setViewportSize({ width: 390, height: 520 });
     await restartedPage.goto(`${relay.url()}/relay/join`);
-    await expect(restartedPage.getByLabel('Terminal input message')).toBeEnabled({ timeout: 10_000 });
-    await expect(restartedPage.locator('#terminal')).toContainText('MOBILE_RESUME_READY', { timeout: 10_000 });
+    await expect(restartedPage.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
+    await expect(restartedPage.getByRole('button', { name: 'Request terminal input' })).toHaveCount(0);
+    await expect(restartedPage.locator('#terminal-banner')).toContainText(
+      'Guest Links are view-only and do not support terminal viewing.',
+      { timeout: 10_000 },
+    );
+    await expect(restartedPage.locator('#terminal')).not.toContainText('MOBILE_RESUME_READY');
     const noOverlap = await restartedPage.evaluate(() => {
       const terminal = document.getElementById('terminal-shell')!.getBoundingClientRect();
       const composer = document.getElementById('terminal-composer')!.getBoundingClientRect();

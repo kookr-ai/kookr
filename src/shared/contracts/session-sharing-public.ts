@@ -10,6 +10,7 @@ export type MemberBlockedReason =
   | 'node.offline'
   | 'node.featureUnavailable'
   | 'node.untrusted'
+  | 'guest.terminalDisabled'
   | 'transport.insecure';
 
 export type MemberTerminalSharingStatus =

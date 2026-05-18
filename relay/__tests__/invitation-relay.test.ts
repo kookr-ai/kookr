@@ -496,7 +496,7 @@ describe('relay invitations', () => {
     expect(JSON.stringify(body)).not.toContain('tokenHash');
   });
 
-  it('requires CSRF for member terminal grant mutations', async () => {
+  it('requires CSRF and blocks Guest Link terminal grant mutations', async () => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
@@ -504,6 +504,7 @@ describe('relay invitations', () => {
       nodeId: node.nodeId,
       subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
       grants: ['view'],
+      shareTicket: true,
     });
     const accepted = relay.acceptInvitation(created.token, 'alice');
     if (!accepted.ok) throw new Error('expected accept');
@@ -565,7 +566,43 @@ describe('relay invitations', () => {
       },
       body: mutationBody,
     });
-    expect(withCsrf.status).toBe(201);
+    expect(withCsrf.status).toBe(403);
+    await expect(withCsrf.json()).resolves.toEqual({ error: 'guest-terminal-disabled' });
+  });
+
+  it('keeps non-Guest task-share terminal grant requests available', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'alice');
+    if (!accepted.ok) throw new Error('expected accept');
+
+    const res = await fetch(`${relay.url()}/relay/member/grant-requests`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: [
+          `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+          `kookr_relay_csrf_token=${accepted.accepted.csrfToken}`,
+          `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+        ].join('; '),
+        'x-kookr-csrf-token': accepted.accepted.csrfToken,
+      },
+      body: JSON.stringify({ nodeId: node.nodeId, grants: ['terminalInput'] }),
+    });
+
+    expect(res.status).toBe(201);
+    await expect(res.json()).resolves.toEqual(expect.objectContaining({
+      request: expect.objectContaining({
+        requestedGrants: ['terminalView', 'terminalInput'],
+        status: 'pending',
+      }),
+    }));
   });
 
   it('rejects cross-origin and nonce-less member WebSocket attempts', async () => {
@@ -667,6 +704,62 @@ describe('relay invitations', () => {
     }));
   });
 
+  it('rejects expired nonces, oversized payloads, and unknown member WebSocket messages', async () => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin', memberWebSocketNonceTtlMs: 1 });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const created = relay.createInvitation({ nodeId: node.nodeId, grants: ['view'] });
+    const accepted = relay.acceptInvitation(created.token, 'alice');
+    if (!accepted.ok) throw new Error('expected accept');
+
+    const expiredNonce = await memberWebSocketNonce(relay, accepted.accepted.memberToken, accepted.accepted.deviceId);
+    await sleep(5);
+    const expiredUrl = new URL('/relay/client', relay.url());
+    expiredUrl.protocol = 'ws:';
+    expiredUrl.searchParams.set('nodeId', node.nodeId);
+    expiredUrl.searchParams.set('wsNonce', expiredNonce);
+    const expired = new WebSocket(expiredUrl, {
+      headers: {
+        origin: relay.url(),
+        cookie: [
+          `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+          `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+        ].join('; '),
+      },
+    });
+    await new Promise<void>((resolve, reject) => {
+      expired.once('open', () => {
+        expired.close();
+        reject(new Error('expired nonce unexpectedly connected'));
+      });
+      expired.once('unexpected-response', (_req, res) => {
+        expect(res.statusCode).toBe(403);
+        resolve();
+      });
+      expired.once('error', reject);
+    });
+
+    await relay.close();
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const freshNode = relay.registerNode({ displayName: 'desktop' });
+    const freshCreated = relay.createInvitation({ nodeId: freshNode.nodeId, grants: ['view'] });
+    const freshAccepted = relay.acceptInvitation(freshCreated.token, 'alice');
+    if (!freshAccepted.ok) throw new Error('expected accept');
+
+    const unknown = await connectMember(relay, freshNode.nodeId, freshAccepted.accepted.memberToken);
+    sockets.push(unknown.ws);
+    expect(unknown.ws.extensions).toBe('');
+    unknown.ws.send(JSON.stringify({ type: 'guest.mutation.v1' }));
+    await expect(unknown.closed).resolves.toEqual([1008, 'unknown message type']);
+
+    const oversized = await connectMember(relay, freshNode.nodeId, freshAccepted.accepted.memberToken);
+    sockets.push(oversized.ws);
+    oversized.ws.send(JSON.stringify({ type: 'remote.command', payload: 'x'.repeat(20 * 1024) }));
+    const [code] = await oversized.closed;
+    expect(code).toBe(1009);
+  });
+
   it('repairs legacy accepted member sessions with CSRF and device cookies', async () => {
     const nodeId = asNodeId('node-legacy');
     const store = new InvitationStore({
@@ -752,7 +845,7 @@ describe('relay invitations', () => {
     sockets.push(nodeConn.ws);
     const created = relay.createInvitation({
       nodeId: node.nodeId,
-      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      subject: { kind: 'session', nodeId: node.nodeId, sessionId: 'session-1' },
       grants: ['view', 'terminalInput'],
       shareTicket: true,
     });
@@ -883,24 +976,9 @@ describe('relay invitations', () => {
       nodeId: node.nodeId,
       subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
       grants: ['view', 'terminalInput'],
-      shareTicket: true,
     });
-    if (!created.shareTicket) throw new Error('expected share ticket');
     const accepted = relay.acceptInvitation(created.token, 'Laptop');
     if (!accepted.ok) throw new Error('expected accept');
-    const phoneAccept = await fetch(`${relay.url()}/relay/share-tickets/accept`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        shareId: created.shareTicket.shareId,
-        password: created.shareTicket.password,
-        displayName: 'Phone',
-      }),
-    });
-    expect(phoneAccept.status).toBe(200);
-    const phoneMemberToken = responseCookieValue(phoneAccept, 'kookr_relay_member_token');
-    const phoneCsrfToken = responseCookieValue(phoneAccept, 'kookr_relay_csrf_token');
-    const phoneDeviceId = responseCookieValue(phoneAccept, 'kookr_relay_device_id');
     await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
     publishSessionProjection(nodeConn.ws, {
       nodeId: node.nodeId,
@@ -1021,31 +1099,6 @@ describe('relay invitations', () => {
       }));
       expect(nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === mismatch.commandId)).toBe(false);
     }
-
-    const phoneMember = await connectMember(relay, node.nodeId, phoneMemberToken, {
-      csrfToken: phoneCsrfToken,
-      deviceId: phoneDeviceId,
-    });
-    sockets.push(phoneMember.ws);
-    phoneMember.ws.send(JSON.stringify({
-      type: 'remote.command',
-      commandId: 'cmd-retry-wrong-device',
-      action: 'submitMessage',
-      projectionId: 'proj-primary',
-      sessionAlias: 'primary',
-      leaseId: leaseBody.lease.leaseId,
-      projectionVersion: 1,
-      policyVersion: accepted.accepted.invitation.policyVersion,
-      retryToken: await issueRetryToken(),
-      payload: originalPayload,
-    }));
-    await waitFor(() => phoneMember.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-retry-wrong-device'));
-    expect(phoneMember.messages).toContainEqual(expect.objectContaining({
-      commandId: 'cmd-retry-wrong-device',
-      outcome: 'rejected-pre-audit',
-      reason: 'retry-token-mismatch',
-    }));
-    expect(nodeConn.messages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-retry-wrong-device')).toBe(false);
 
     member.ws.send(JSON.stringify({
       type: 'remote.command',

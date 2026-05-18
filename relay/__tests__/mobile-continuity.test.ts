@@ -65,7 +65,7 @@ async function connectNode(relay: ReturnType<typeof createRelayServer>, nodeId: 
 }
 
 describe('relay member continuity and approval notifications', () => {
-  it('registers a member approval notification and sends a redacted push when the owner approves', async () => {
+  it('registers member approval notifications while Guest Link terminal approval is disabled', async () => {
     const sent: string[] = [];
     const relay = createRelayServer({
       adminToken: 'admin',
@@ -110,8 +110,8 @@ describe('relay member continuity and approval notifications', () => {
         },
         body: JSON.stringify({ nodeId: node.nodeId, grants: ['terminalInput'] }),
       });
-      expect(request.status).toBe(201);
-      const requestBody = await request.json() as { request: { requestId: string } };
+      expect(request.status).toBe(403);
+      await expect(request.json()).resolves.toEqual({ error: 'guest-terminal-disabled' });
 
       const subscription = await fetch(`${relay.url()}/relay/member/approval-notifications`, {
         method: 'POST',
@@ -129,21 +129,7 @@ describe('relay member continuity and approval notifications', () => {
         }),
       });
       expect(subscription.status).toBe(201);
-
-      const approve = await fetch(
-        `${relay.url()}/relay/node/invitations/${encodeURIComponent(created.invitation.invitationId)}/grant-requests/${encodeURIComponent(requestBody.request.requestId)}/approve`,
-        { method: 'POST', headers: { authorization: `Bearer ${node.nodeToken}` } },
-      );
-      expect(approve.status).toBe(200);
-      expect(sent).toHaveLength(1);
-      const payload = JSON.parse(sent[0]) as Record<string, unknown>;
-      expect(payload).toEqual(expect.objectContaining({
-        redactor: 'redactor.v1',
-        nodeDisplayName: 'Owner desktop',
-        taskShortLabel: 'Shared task label',
-        alertKind: 'approval-updated',
-      }));
-      expect(JSON.stringify(payload)).not.toContain(created.shareTicket!.password);
+      expect(sent).toHaveLength(0);
     } finally {
       nodeWs.close();
       await relay.close();

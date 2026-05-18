@@ -88,6 +88,29 @@ export interface HostedRelayStatus {
   environment?: string;
   tlsExpiresAt?: string | null;
   dataRetentionDays?: number;
+  guestLinkPosture?: GuestLinkPosture;
+}
+
+export interface GuestLinkPosture {
+  checkedAt: string;
+  publicOrigin: {
+    url: string;
+    https: boolean;
+  };
+  securityHeaders: {
+    cacheControlNoStore: boolean;
+    referrerPolicyNoReferrer: boolean;
+    contentTypeNosniff: boolean;
+    frameAncestorsDenied: boolean;
+  };
+  webSocket: {
+    originRequired: boolean;
+    memberNonceRequired: boolean;
+    nonceTtlMs: number;
+    maxPayloadBytes: number;
+    compression: 'disabled';
+    unknownMessageCloses: boolean;
+  };
 }
 
 export interface HostedRelayPairRequest {

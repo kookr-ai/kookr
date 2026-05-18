@@ -867,6 +867,12 @@ describe('TaskShareModal', () => {
     await flush();
 
     expect(getButtonByText(container, 'Copy guest link').disabled).toBe(false);
+    expect(container.querySelector('.task-share-disabled')?.textContent).toContain(
+      'Guest Link is lower assuranceIt is anonymous, view-only, and does not verify a Kookr identity.',
+    );
+    expect(container.querySelector('.task-share-link small')?.textContent).toBe(
+      'Guest Link is lower assurance: it is anonymous, view-only, and does not verify a Kookr identity. Secret is in the URL fragment.',
+    );
     expect(getInputForLabel(container, 'Share ID').value).toBe(SHARE_ID);
     const passwordInput = getInputForLabel(container, 'Password');
     expect(passwordInput.value).toBe(PASSWORD);
@@ -902,6 +908,7 @@ describe('TaskShareModal', () => {
       getButton(container, 'Copy guest link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
+    expect(container.textContent).toContain('Guest Link copied. Guest Link is lower assurance: it is anonymous, view-only, and does not verify a Kookr identity.');
     expect(writeText).toHaveBeenNthCalledWith(1, SHARE_ID);
     expect(writeText).toHaveBeenNthCalledWith(2, PASSWORD);
     expect(writeText).toHaveBeenNthCalledWith(3, JOIN_URL);
