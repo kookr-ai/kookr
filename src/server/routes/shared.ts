@@ -37,6 +37,7 @@ import type { RelayShareClient } from '../relay-share-client.js';
 import type { TaskShareService } from '../task-share-service.js';
 import type { RelayConnectionManager } from '../relay-connection-manager.js';
 import type { ContactShareReadModel } from '../../core/contact-share.js';
+import type { LlmClient } from '../../core/llm-client.js';
 
 /**
  * Phase A0 easy connection sharing config. The server always provides it;
@@ -155,4 +156,8 @@ export interface RouteDeps {
   contactShare?: ContactShareReadModel;
   /** Phase B runtime relay connection manager. */
   relayConnection?: RelayConnectionManager;
+  /** Shared LLM client used by optional AI-assisted diagnostics routes. */
+  llmClient?: LlmClient | null;
+  /** Test seam for deterministic finding-evidence review input hashes. */
+  findingEvidenceReviewHmacKey?: Buffer;
 }

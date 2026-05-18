@@ -9,6 +9,7 @@ import { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import { GitHubStateStore } from '../../core/github-state-store.js';
 import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
 import type { RouteDeps } from './shared.js';
+import type { LlmClient } from '../../core/llm-client.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
   const app = new Hono();
@@ -16,15 +17,31 @@ function mkApp(deps: Partial<RouteDeps>): Hono {
   return app;
 }
 
+function fakeLlm(output: string | null): LlmClient {
+  return {
+    provider: 'fake-provider',
+    model: 'fake-model',
+    complete: vi.fn(async () => output),
+  };
+}
+
 describe('diagnostics routes', () => {
   let tempDir: string;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'diag-routes-test-'));
+    delete process.env.KOOKR_FINDING_REVIEW_ENABLED;
+    delete process.env.KOOKR_FINDING_REVIEW_DAILY_COST_CENTS;
+    delete process.env.KOOKR_FINDING_REVIEW_TOKEN;
+    delete process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN;
   });
 
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
+    delete process.env.KOOKR_FINDING_REVIEW_ENABLED;
+    delete process.env.KOOKR_FINDING_REVIEW_DAILY_COST_CENTS;
+    delete process.env.KOOKR_FINDING_REVIEW_TOKEN;
+    delete process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN;
   });
 
   // ---------------------------------------------------------------------------
@@ -96,6 +113,207 @@ describe('diagnostics routes', () => {
         records: [record],
         reviewCandidates: [{ ...record, id: 'candidate-20' }],
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // POST /api/finding-evidence-review
+  // ---------------------------------------------------------------------------
+  describe('POST /api/finding-evidence-review', () => {
+    function reviewRecord() {
+      return {
+        id: 'finding-1',
+        agentId: 'agent-1',
+        anomalyType: 'needs_input',
+        explanation: 'Raw explanation must stay private',
+        detectedAt: '2026-05-18T10:00:00.000Z',
+        updatedAt: '2026-05-18T10:00:12.000Z',
+        status: 'active',
+        verdict: 'possible_false_positive',
+        observations: [
+          {
+            sampledAt: '2026-05-18T10:00:12.000Z',
+            ageMs: 12_000,
+            source: 'watchdog_tick',
+            anomalyStillPresent: true,
+            lastEventType: 'tool_use',
+            eventCount: 5,
+            paneExcerpt: 'Raw terminal text must stay private',
+          },
+        ],
+        notes: ['private note'],
+      };
+    }
+
+    function reviewDeps(llmClient: LlmClient | null = fakeLlm(null)): Partial<RouteDeps> {
+      const monitor = {
+        getFindingEvidenceReviewCandidates: () => [reviewRecord()],
+        getFindingEvidenceAuditRecords: () => [reviewRecord()],
+      };
+      return {
+        monitor: monitor as never,
+        llmClient,
+        kookrDir: tempDir,
+        findingEvidenceReviewHmacKey: Buffer.from('0123456789abcdef0123456789abcdef'),
+        buildInfo: {
+          commitHash: 'abc123',
+          commitShort: 'abc123',
+          branch: 'test',
+          buildTimestamp: '',
+          version: 'test',
+        },
+      };
+    }
+
+    test('fails closed when the feature flag is disabled', async () => {
+      const res = await mkApp(reviewDeps()).request('http://127.0.0.1/api/finding-evidence-review', {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'finding-review-disabled' });
+    });
+
+    test('requires an LLM provider even for estimate_only', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      const res = await mkApp(reviewDeps(null)).request('http://127.0.0.1/api/finding-evidence-review', {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'finding-review-llm-unavailable' });
+    });
+
+    test('rejects non-loopback requests and ignores forwarded loopback headers', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      const res = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: { 'x-forwarded-for': '127.0.0.1' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'finding-review-forbidden' });
+    });
+
+    test('allows a configured admin token on a non-loopback request', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+      const res = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.mode).toBe('estimate_only');
+    });
+
+    test('rejects missing or wrong review CSRF token when configured', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+      process.env.KOOKR_FINDING_REVIEW_TOKEN = 'csrf-secret';
+
+      const missing = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+      });
+      expect(missing.status).toBe(403);
+      expect(await missing.json()).toEqual({ error: 'invalid-finding-review-token' });
+
+      const wrong = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: {
+          'x-kookr-admin-token': 'admin-secret',
+          'x-kookr-finding-review-token': 'wrong',
+        },
+      });
+      expect(wrong.status).toBe(403);
+      expect(await wrong.json()).toEqual({ error: 'invalid-finding-review-token' });
+    });
+
+    test('rejects malformed JSON and invalid mode before service execution', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+
+      const invalidJson = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+        body: '{',
+      });
+      expect(invalidJson.status).toBe(400);
+      expect(await invalidJson.json()).toEqual({ error: 'invalid-json' });
+
+      const invalidMode = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+        body: JSON.stringify({ mode: 'persisted_review' }),
+      });
+      expect(invalidMode.status).toBe(400);
+      expect(await invalidMode.json()).toEqual({ error: 'invalid-mode' });
+    });
+
+    test('estimate_only returns safe projection by default', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+      const res = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.mode).toBe('estimate_only');
+      expect(body.dryRun.candidates).toEqual([
+        expect.objectContaining({
+          candidateId: 'finding-1',
+          anomalyType: 'needs_input',
+          auditVerdict: 'possible_false_positive',
+          inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      ]);
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toContain('Raw explanation');
+      expect(serialized).not.toContain('Raw terminal text');
+      expect(serialized).not.toContain('explanationHash');
+    });
+
+    test('model_review requires positive budget before model call', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+      const model = fakeLlm(JSON.stringify({}));
+      const res = await mkApp(reviewDeps(model)).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+        body: JSON.stringify({ mode: 'model_review' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'finding-review-budget-required' });
+      expect(model.complete).not.toHaveBeenCalled();
+    });
+
+    test('invalid model output returns invalid-attempt result', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+      process.env.KOOKR_FINDING_REVIEW_DAILY_COST_CENTS = '5';
+      const res = await mkApp(reviewDeps(fakeLlm('not-json'))).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+        body: JSON.stringify({ mode: 'model_review' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.results).toEqual([
+        {
+          status: 'invalid_attempt',
+          attempt: expect.objectContaining({
+            schemaVersion: 'finding-evidence-review-invalid-attempt.v1',
+            candidateId: 'finding-1',
+            error: 'model output was not valid JSON',
+          }),
+        },
+      ]);
     });
   });
 
