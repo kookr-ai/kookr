@@ -12,6 +12,7 @@ import { registerTaskRoutes } from './routes/task-routes.js';
 import { registerRalphRoutes } from './ralph/routes.js';
 import { registerOssAttemptRoutes } from './routes/oss-attempts-routes.js';
 import { registerShareRoutes } from './routes/share-routes.js';
+import { registerContactShareRoutes } from './routes/contact-share-routes.js';
 import { registerRelayConnectionRoutes } from './routes/relay-connection-routes.js';
 import { registerSessionSharingRecoveryRoutes } from './routes/session-sharing-recovery-routes.js';
 import type { RouteDeps } from './routes/shared.js';
@@ -29,6 +30,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerOssAttemptRoutes(app, deps);
   registerScheduleRoutes(app, deps);
   registerDeployRoutes(app, deps);
+  registerContactShareRoutes(app, deps);
   registerShareRoutes(app, deps);
   registerRelayConnectionRoutes(app, deps);
   registerSessionSharingRecoveryRoutes(app, deps);

@@ -31,6 +31,8 @@ import { isTerminalStreamEvent, type TerminalReplayGapEvent, type TerminalStream
 import { isPushAlertDeltaPayload, makeRedactedPushPayload } from '../src/remote/push.js';
 import type { RelayNodeCredentialStatusResponse } from '../src/shared/contracts/relay-connection.js';
 import type { MemberShareStateResponse } from '../src/shared/contracts/session-sharing-public.js';
+import type { ContactShareEnvelope } from '../src/shared/contracts/contact-share.js';
+import { isContactShareEnvelope } from '../src/shared/contracts/contact-share.js';
 import type {
   RemoteTaskProjectionEnvelopeV1,
   RemoteTaskProjectionV1,
@@ -47,6 +49,7 @@ import { createPushFanout, type PushDeliveryOutcome, type PushFanout, type PushS
 import { createPushSubscriptionStore, isPushSubscription, type PushSubscriptionStore, type StoredPushSubscription } from './src/push/subscriptions.js';
 import { createVapidKeyStore, type VapidKeyStore } from './src/push/vapid.js';
 import { RelaySqliteStateStore, type PersistedNodeRegistration } from './src/state/sqlite.js';
+import { InMemoryContactShareEnvelopeStore } from './src/contact-share/envelopes.js';
 
 interface NodeRegistration extends PersistedNodeRegistration {}
 
@@ -143,7 +146,7 @@ export interface RelayServerOptions {
   streamBackpressureBytes?: number;
   terminalReplayMaxEvents?: number;
   stateDbPath?: string | null;
-  stateStore?: Pick<RelaySqliteStateStore, 'load' | 'saveRegistration' | 'saveInvitation' | 'probe' | 'close'>;
+  stateStore?: Pick<RelaySqliteStateStore, 'load' | 'saveRegistration' | 'saveInvitation' | 'saveContactShareEnvelope' | 'probe' | 'close'>;
   stateProbe?: () => boolean;
   bindHost?: string;
   trustedProxy?: boolean;
@@ -181,7 +184,7 @@ interface HostedRelayRuntimeOptions {
 export interface RelayServerHandle {
   httpServer: Server;
   url(): string;
-  registerNode(opts?: { displayName?: string; ownerId?: string }): { nodeId: NodeId; nodeToken: string };
+  registerNode(opts?: { displayName?: string; ownerId?: string; deviceId?: string }): { nodeId: NodeId; nodeToken: string };
   createInvitation(opts: { nodeId: NodeId; subject?: ShareSubject; grants: ShareGrant[]; ttlMs?: number; shareTicket?: boolean; displayLabel?: string }): { invitation: InvitationRecord; token: string; shareTicket?: RelayShareTicketSecret };
   acceptInvitation(token: string, acceptedBy?: string): ReturnType<InvitationStore['accept']>;
   revokeInvitation(invitationId: string): ReturnType<InvitationStore['revoke']>;
@@ -861,11 +864,17 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const stateLoadedStartedAt = Date.now();
   const stateDbPath = opts.stateDbPath ?? process.env.KOOKR_RELAY_STATE_DB_PATH ?? null;
   const stateStore = opts.stateStore ?? (stateDbPath ? new RelaySqliteStateStore(stateDbPath) : null);
-  const stateSnapshot = stateStore?.load() ?? { registrations: [], invitations: [], quarantinedRows: 0 };
+  const stateSnapshot = stateStore?.load() ?? {
+    registrations: [],
+    invitations: [],
+    contactShareEnvelopes: [],
+    quarantinedRows: 0,
+  };
   if (stateStore) {
     console.log(JSON.stringify({
       event: 'relay.state.loaded',
       invitations: stateSnapshot.invitations.length,
+      contactShareEnvelopes: stateSnapshot.contactShareEnvelopes.length,
       registrations: stateSnapshot.registrations.length,
       lockouts: stateSnapshot.invitations.filter((invitation) => Boolean(invitation.lockedUntil)).length,
       quarantinedRows: stateSnapshot.quarantinedRows,
@@ -926,6 +935,10 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       }
     },
   });
+  const contactShareEnvelopes = new InMemoryContactShareEnvelopeStore();
+  for (const envelope of stateSnapshot.contactShareEnvelopes) {
+    contactShareEnvelopes.put(envelope);
+  }
   const streamMetrics = { clientDropped: { backpressure: 0 } };
   const streamBackpressureBytes = opts.streamBackpressureBytes ?? 1_000_000;
   const terminalReplayMaxEvents = opts.terminalReplayMaxEvents ?? 512;
@@ -978,6 +991,21 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         at: new Date().toISOString(),
       };
       throw new RelayStateWriteError('saveRegistration', err);
+    }
+  };
+
+  const persistContactShareEnvelope = (envelope: ContactShareEnvelope): void => {
+    if (closing) return;
+    if (!stateStore) return;
+    try {
+      stateStore.saveContactShareEnvelope(envelope);
+    } catch (err) {
+      stateWriteFailure = {
+        operation: 'saveContactShareEnvelope',
+        message: err instanceof Error ? err.message : String(err),
+        at: new Date().toISOString(),
+      };
+      throw new RelayStateWriteError('saveContactShareEnvelope', err);
     }
   };
 
@@ -1632,6 +1660,42 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         }
         const deviceId = decodeURIComponent(url.pathname.slice('/relay/push/subscriptions/'.length));
         sendJson(res, 200, { removed: pushSubscriptions.remove(deviceId) });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/relay/node/contact-share/envelopes') {
+        const registration = authenticateNode(req);
+        if (!registration) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const body = await readJson(req);
+        if (!isContactShareEnvelope(body)) {
+          sendJson(res, 400, { error: 'invalid contact share envelope' });
+          return;
+        }
+        const stored = contactShareEnvelopes.put(body);
+        persistContactShareEnvelope(stored);
+        sendJson(res, 201, { envelope: stored });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/relay/node/contact-share/envelopes') {
+        const registration = authenticateNode(req);
+        if (!registration) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const recipientDeviceId = url.searchParams.get('recipientDeviceId');
+        if (!recipientDeviceId) {
+          sendJson(res, 400, { error: 'recipientDeviceId is required' });
+          return;
+        }
+        if (!registration.deviceId || registration.deviceId !== recipientDeviceId) {
+          sendJson(res, 403, { error: 'recipient-device-mismatch' });
+          return;
+        }
+        sendJson(res, 200, {
+          envelopes: contactShareEnvelopes.listForDevice(recipientDeviceId),
+        });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/relay/admin/push/vapid/rotate') {

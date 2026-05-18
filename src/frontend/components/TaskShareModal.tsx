@@ -8,6 +8,14 @@ import type {
   TaskShareOwnerState,
   TaskShareSummary,
 } from '../../remote/share-contract.js';
+import type {
+  ContactShareInboxItem,
+  KookrContact,
+  ListContactShareContactsApiResponse,
+  ListContactShareInboxApiResponse,
+  ListSharedTasksApiResponse,
+  SharedTask,
+} from '../../shared/contracts/contact-share.js';
 
 const SHARE_CSRF_HEADER = 'x-kookr-csrf';
 
@@ -189,6 +197,9 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
   const [copiedSecret, setCopiedSecret] = useState<CopiedShareSecret | null>(null);
   const [passwordRevealed, setPasswordRevealed] = useState(false);
   const [sharePath, setSharePath] = useState<SharePath>('contact');
+  const [contacts, setContacts] = useState<KookrContact[]>([]);
+  const [inbox, setInbox] = useState<ContactShareInboxItem[]>([]);
+  const [sharedTasks, setSharedTasks] = useState<SharedTask[]>([]);
   const sharesRef = useRef<TaskShareSummary[]>([]);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -222,6 +233,8 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
   const longLivedShare = ttlMs > ONE_DAY_MS;
   const longLivedWarningId = 'task-share-long-lived-warning';
   const guestPathSelected = sharePath === 'guest';
+  const verifiedContacts = contacts.filter((contact) => contact.trustState === 'verified');
+  const pendingInbox = inbox.filter((item) => item.lifecycle === 'pending');
   const pendingGrantRequestCount = displayedShare?.grantRequests.filter((request) => request.status === 'pending').length ?? 0;
 
   function commitShares(nextShares: TaskShareSummary[]) {
@@ -247,6 +260,26 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
     }
     commitShares(body.shares);
     setStatus('ready');
+  }
+
+  async function loadContactShare() {
+    const [contactsRes, inboxRes, sharedTasksRes] = await Promise.all([
+      fetch('/api/contact-share/contacts'),
+      fetch('/api/contact-share/inbox'),
+      fetch('/api/contact-share/shared-tasks'),
+    ]);
+    if (contactsRes.ok) {
+      const body = await contactsRes.json() as Partial<ListContactShareContactsApiResponse>;
+      setContacts(Array.isArray(body.contacts) ? body.contacts : []);
+    }
+    if (inboxRes.ok) {
+      const body = await inboxRes.json() as Partial<ListContactShareInboxApiResponse>;
+      setInbox(Array.isArray(body.inbox) ? body.inbox : []);
+    }
+    if (sharedTasksRes.ok) {
+      const body = await sharedTasksRes.json() as Partial<ListSharedTasksApiResponse>;
+      setSharedTasks(Array.isArray(body.sharedTasks) ? body.sharedTasks : []);
+    }
   }
 
   useEffect(() => {
@@ -285,6 +318,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
         }
         setCsrfToken(tokenBody.csrfToken);
         await loadShares();
+        await loadContactShare().catch(() => undefined);
       } catch {
         if (!cancelled) {
           setStatus('error');
@@ -411,6 +445,55 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
     }
   }
 
+  async function sendContactShare(contact: KookrContact) {
+    const device = contact.devices[0];
+    if (!device || !csrfToken || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/contact-share/shares', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [SHARE_CSRF_HEADER]: csrfToken,
+        },
+        body: JSON.stringify({
+          taskId,
+          contactId: contact.contactId,
+          recipientDeviceId: device.deviceId,
+        }),
+      });
+      if (!res.ok) throw new Error(`contact-share-${res.status}`);
+      await loadContactShare().catch(() => undefined);
+    } catch {
+      setError('Contact Share invitation was not sent.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function decideInboxShare(shareId: string, decision: 'accept' | 'refuse') {
+    if (!csrfToken || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/contact-share/inbox/${encodeURIComponent(shareId)}/${decision}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [SHARE_CSRF_HEADER]: csrfToken,
+        },
+        body: JSON.stringify({ recipientDeviceId: 'local-device' }),
+      });
+      if (!res.ok) throw new Error(`contact-share-${decision}-${res.status}`);
+      await loadContactShare();
+    } catch {
+      setError(decision === 'accept' ? 'Contact Share was not accepted.' : 'Contact Share was not refused.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function revokeShare(invitationId: string) {
     if (!csrfToken || busy) return;
     setBusy(true);
@@ -529,13 +612,74 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
               <div>
                 <strong>Contact Share is the secure Kookr-to-Kookr path.</strong>
                 <p>
-                  It will notify a verified contact inside Kookr, let them accept or refuse,
-                  and show the task as a shared remote task after Phase 1 lands.
+                  It notifies a verified contact inside Kookr, lets them accept or refuse,
+                  and shows accepted shares as remote-owned shared tasks.
                 </p>
               </div>
-              <button type="button" className="btn-primary" disabled>
-                Contacts coming next
-              </button>
+              <span className="task-share-marker">Encrypted inbox</span>
+            </section>
+
+            <section className="task-share-contact-list" aria-label="Verified contacts">
+              <div className="task-share-row">
+                <span>Verified contacts</span>
+                <strong>{verifiedContacts.length}</strong>
+              </div>
+              {verifiedContacts.length === 0 ? (
+                <p className="task-share-muted">Pair a verified contact before sending a Contact Share.</p>
+              ) : verifiedContacts.map((contact) => (
+                <div key={contact.contactId} className="task-share-contact-row">
+                  <div>
+                    <strong>{contact.displayName}</strong>
+                    <span>{contact.devices.length} device{contact.devices.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    aria-label={`Send Contact Share to ${contact.displayName}`}
+                    disabled={busy}
+                    onClick={() => void sendContactShare(contact)}
+                  >
+                    Send
+                  </button>
+                </div>
+              ))}
+            </section>
+
+            <section className="task-share-inbox" aria-label="Contact Share inbox">
+              <div className="task-share-row">
+                <span>Inbox</span>
+                <strong>{pendingInbox.length} pending</strong>
+              </div>
+              {pendingInbox.length === 0 ? (
+                <p className="task-share-muted">No pending Contact Share invitations.</p>
+              ) : pendingInbox.map((item) => (
+                <div key={item.shareId} className="task-share-inbox-row">
+                  <div>
+                    <strong>{item.notificationTitle}</strong>
+                    <span>{item.notificationBody}</span>
+                  </div>
+                  <div className="task-share-field-actions">
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      aria-label={`Accept Contact Share invitation from ${item.senderDisplayName}`}
+                      disabled={busy}
+                      onClick={() => void decideInboxShare(item.shareId, 'accept')}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      aria-label={`Refuse Contact Share invitation from ${item.senderDisplayName}`}
+                      disabled={busy}
+                      onClick={() => void decideInboxShare(item.shareId, 'refuse')}
+                    >
+                      Refuse
+                    </button>
+                  </div>
+                </div>
+              ))}
             </section>
 
             <section className="task-share-preview" aria-label="Shared task visual model">
@@ -547,6 +691,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
                 <span>From contact</span>
                 <span>Remote node</span>
                 <span>View only</span>
+                {sharedTasks.length > 0 && <span>{sharedTasks.length} accepted</span>}
               </div>
             </section>
 

@@ -4,6 +4,8 @@ import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 
 import { asNodeId, type NodeId } from '../../../src/remote/ids.js';
+import type { ContactShareEnvelope } from '../../../src/shared/contracts/contact-share.js';
+import { isContactShareEnvelope } from '../../../src/shared/contracts/contact-share.js';
 import { isInvitationRecord, type InvitationRecord } from '../invitations/store.js';
 
 export interface PersistedNodeRegistration {
@@ -19,6 +21,7 @@ export interface PersistedNodeRegistration {
 export interface RelayStateSnapshot {
   registrations: PersistedNodeRegistration[];
   invitations: InvitationRecord[];
+  contactShareEnvelopes: ContactShareEnvelope[];
   quarantinedRows: number;
 }
 
@@ -34,6 +37,11 @@ interface RegistrationRow {
 
 interface InvitationRow {
   invitation_id: string;
+  record_json: string;
+}
+
+interface ContactShareEnvelopeRow {
+  envelope_id: string;
   record_json: string;
 }
 
@@ -111,7 +119,27 @@ export class RelaySqliteStateStore {
         this.db.prepare('DELETE FROM relay_invitations WHERE invitation_id = ?').run(row.invitation_id);
       }
     }
-    return { registrations, invitations, quarantinedRows };
+    const contactShareEnvelopes: ContactShareEnvelope[] = [];
+    for (const row of this.db.prepare('SELECT envelope_id, record_json FROM relay_contact_share_envelopes').all() as ContactShareEnvelopeRow[]) {
+      try {
+        const parsed = JSON.parse(row.record_json) as unknown;
+        if (!isContactShareEnvelope(parsed) || parsed.envelopeId !== row.envelope_id) {
+          throw new Error('invalid contact share envelope row');
+        }
+        contactShareEnvelopes.push(parsed);
+      } catch (err) {
+        quarantinedRows += 1;
+        this.quarantine(
+          'relay_contact_share_envelopes',
+          row.envelope_id,
+          row.record_json,
+          err instanceof Error ? err.message : String(err),
+        );
+        this.db.prepare('DELETE FROM relay_contact_share_envelopes WHERE envelope_id = ?').run(row.envelope_id);
+      }
+    }
+
+    return { registrations, invitations, contactShareEnvelopes, quarantinedRows };
   }
 
   saveRegistration(registration: PersistedNodeRegistration): void {
@@ -147,6 +175,32 @@ export class RelaySqliteStateStore {
         record_json = excluded.record_json,
         updated_at = excluded.updated_at
     `).run(invitation.invitationId, JSON.stringify(invitation), new Date().toISOString());
+  }
+
+  saveContactShareEnvelope(envelope: ContactShareEnvelope): void {
+    if (!isContactShareEnvelope(envelope)) {
+      throw new Error('invalid contact share envelope');
+    }
+    this.db.prepare(`
+      INSERT INTO relay_contact_share_envelopes (
+        envelope_id, share_id, recipient_device_id, created_at, record_json, updated_at
+      ) VALUES (
+        @envelopeId, @shareId, @recipientDeviceId, @createdAt, @recordJson, @updatedAt
+      )
+      ON CONFLICT(envelope_id) DO UPDATE SET
+        share_id = excluded.share_id,
+        recipient_device_id = excluded.recipient_device_id,
+        created_at = excluded.created_at,
+        record_json = excluded.record_json,
+        updated_at = excluded.updated_at
+    `).run({
+      envelopeId: envelope.envelopeId,
+      shareId: envelope.shareId,
+      recipientDeviceId: envelope.recipientDeviceId,
+      createdAt: envelope.createdAt,
+      recordJson: JSON.stringify(envelope),
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   probe(): boolean {
@@ -186,6 +240,16 @@ export class RelaySqliteStateStore {
         error TEXT NOT NULL,
         quarantined_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS relay_contact_share_envelopes (
+        envelope_id TEXT PRIMARY KEY,
+        share_id TEXT NOT NULL,
+        recipient_device_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        record_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS relay_contact_share_envelopes_recipient_idx
+        ON relay_contact_share_envelopes (recipient_device_id, created_at);
     `);
   }
 
