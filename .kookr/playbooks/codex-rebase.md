@@ -1,38 +1,52 @@
 ---
-name: Codex CLI Daily Upstream Rebase
-description: Sync the fork's feat/claude-compat branch with the latest openai/codex main, rebuild the binary, and report any conflicts that need human attention
+name: Codex CLI Daily Upstream Sync
+description: Merge the latest openai/codex main into the fork's feat/claude-compat branch through a sync PR, rebuild the binary, and report conflicts that need human attention
 cwd: $HOME/git/codex
 checklist:
   - Working tree was clean before starting (or stopped early with a clear message)
-  - Fetched upstream/main and checked for new commits
-  - If no new upstream commits, stopped early with "no upstream changes" (success)
-  - Tagged the pre-rebase tip with pre-rebase-{YYYY-MM-DD}
-  - Rebased feat/claude-compat onto upstream/main (Tier 1/2 conflicts auto-resolved, Tier 3 aborted with report)
+  - Fetched origin and upstream/main
+  - If upstream/main is already contained in origin/feat/claude-compat, stopped early with "no upstream changes" (success)
+  - Created a fresh sync worktree from origin/feat/claude-compat
+  - Merged upstream/main into the sync branch with a normal merge commit
+  - Tier 1/2 conflicts auto-resolved, Tier 3 conflicts aborted with report
   - HOOK_EVENT_NAMES* arrays in hooks/src/lib.rs reconciled against matcher_pattern_for_event
-  - cargo check --workspace passes (mechanical fork-extension fallout patched if it fired)
+  - cargo check --workspace passes
   - cargo test -p codex-core-skills -p codex-hooks passes
-  - Any post-rebase fix-ups amended onto the rebase tip (no separate "chore: rebase fixups" commits)
-  - Release binary built (path resolved via `cargo metadata … | jq -r .target_directory`)
+  - cargo test -p codex-cli --test version passes
+  - Pushed sync branch to origin and opened a PR into feat/claude-compat
+  - PR was merged with a normal merge commit, never squash or rebase merge
+  - Local feat/claude-compat was fast-forwarded from origin/feat/claude-compat after PR merge
+  - Release binary built from the final local feat/claude-compat tip
   - Binary installed at $HOME/bin/codex
-  - codex --version shows a +kookr.<sha> stamp matching the rebased tip
-  - Pushed feat/claude-compat to origin with --force-with-lease
-  - Final report includes a conflict-resolution log (tier | file | fork-commit | decision) — even if empty
+  - codex --version shows a +kookr.<sha> stamp matching the final feat/claude-compat tip
+  - Final report includes PR URL, merge commit, conflict-resolution log, tests, and binary stamp
 ---
 
 ## Objective
 
-Keep the Codex fork's `feat/claude-compat` branch rebased on the latest `openai/codex` main. This is a daily catch-up so each rebase only spans a small upstream delta (typically 2–10 commits) instead of letting drift accumulate into a multi-hour cleanup. **No new functionality is added — this task only forwards the existing fork patches onto a newer base.**
+Keep the Codex fork's `feat/claude-compat` branch synchronized with the latest
+`openai/codex` main without rewriting `feat/claude-compat`.
+
+This daily catch-up merges upstream into a short-lived sync branch, verifies it,
+opens a PR into `feat/claude-compat`, merges that PR with a normal merge commit,
+then fast-forwards the local `feat/claude-compat` checkout from `origin`.
+
+**No new functionality is added.** This task only brings existing fork work
+forward onto a newer upstream base through an auditable merge PR.
 
 ## Context
 
-- **Fork**: `jeanibarz/codex` — sibling checkout at `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}` with `origin = jeanibarz/codex` and `upstream = openai/codex`.
-- **Branch**: `feat/claude-compat` is the persistent fork branch; never push to `main`.
+- **Fork**: `jeanibarz/codex` — checkout at `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}` with `origin = jeanibarz/codex` and `upstream = openai/codex`.
+- **Branch**: `feat/claude-compat` is the persistent fork integration branch; never push to `main`.
+- **Operational mode**: do not rebase or force-push `feat/claude-compat`. Keep local and remote aligned with normal fast-forward pulls after the sync PR is merged.
 - **Rust toolchain**: pinned at 1.93.0 in `codex-rs/rust-toolchain.toml`. Available at `~/.rustup/toolchains/1.93.0-x86_64-unknown-linux-gnu/bin/`.
 - **WSL quirk**: `cargo` via `/snap/bin/cargo` fails because `/run/user/1000` is not writable. Always export `XDG_RUNTIME_DIR=/tmp` and put the rustup toolchain bin first on `PATH`.
 - **Kookr integration**: the binary at `${KOOKR_CODEX_BIN:-$HOME/bin/codex}` is what Kookr spawns when the user runs Codex CLI tasks. Build version format is `0.125.0-alpha.3+kookr.<short-sha>` (or `.dirty` if the worktree is dirty at build time).
 - **Skill reference**: see `~/git/kookr-prod/.claude/skills/codex-claude-compatibility/SKILL.md` for the broader fork operating model.
 
-## Setup (every phase below assumes these env vars)
+## Setup
+
+Every phase assumes these environment variables:
 
 ```bash
 export XDG_RUNTIME_DIR=/tmp
@@ -45,267 +59,406 @@ export KOOKR_CODEX_BIN="${KOOKR_CODEX_BIN:-$HOME/bin/codex}"
 cd "$KOOKR_CODEX_CHECKOUT"
 ```
 
+Keep Git `rerere` enabled in the local repository used for this workflow:
+
+```bash
+git config --local rerere.enabled true
+git config --local rerere.autoupdate false
+```
+
+Use repo-local config, not user-global config. Keep `rerere.autoupdate=false`:
+rerere may write a known resolution into the working tree, but the operator must
+inspect the diff and stage files explicitly.
+
 ## Phase 1: Pre-flight
 
-1. Confirm the working tree is clean and the current branch is a known state:
+1. Confirm the main checkout has no tracked work in progress:
 
    ```bash
+   cd "$KOOKR_CODEX_CHECKOUT"
    git status --porcelain
    git rev-parse --abbrev-ref HEAD
    ```
 
-   **Tracked-file dirtiness** (lines starting with `M `, ` M`, `A `, `D `, `R `, etc.) means the user has work in progress: **stop**. Do not stash, do not commit, do not discard. Report what files are dirty and exit.
+   **Tracked-file dirtiness** (lines starting with `M `, ` M`, `A `, `D `,
+   `R `, etc.) means the user has work in progress: **stop**. Do not stash,
+   commit, reset, or discard it. Report the dirty tracked files and exit.
 
-   **Pure-untracked tool artifacts** (lines starting with `??` for known-safe paths like `graphify-out/`, `target/`, `*.png`, scratch dirs) are not real dirtiness — they're tool output. For these, add the offending paths to `.git/info/exclude` (local-only, doesn't pollute tracked `.gitignore`) and continue. One-liner:
+   Pure untracked tool artifacts (`?? graphify-out/`, `?? target/`, `?? *.png`,
+   scratch dirs) are not real dirtiness. Review untracked paths first, then add
+   only known-safe artifact paths to `.git/info/exclude` and continue:
 
    ```bash
-   for p in $(git status --porcelain | awk '/^\?\? /{print $2}'); do
-       grep -qxF "$p" .git/info/exclude || echo "$p" >> .git/info/exclude
-   done
-   git status --porcelain   # must now be empty before continuing
+   unknown_untracked=0
+   while IFS= read -r p; do
+       case "$p" in
+           graphify-out/|*/target/|target/|*.png|*.jpg|*.jpeg|*.gif|*.webp|scratch/|tmp/)
+               grep -qxF "$p" .git/info/exclude || echo "$p" >> .git/info/exclude
+               ;;
+           *)
+               echo "untracked path requires manual review: $p"
+               unknown_untracked=1
+               ;;
+       esac
+   done < <(git status --porcelain | awk '/^\?\? /{print substr($0, 4)}')
+   if [ "$unknown_untracked" -ne 0 ]; then
+       exit 1
+   fi
+   git status --porcelain
    ```
 
-   If after the exclude there are *still* untracked entries that look unfamiliar (config files, source files, anything that could be in-flight work), stop and report — don't auto-exclude unknown content.
+   If any untracked entries look like source, config, or user work, stop and
+   report them.
 
-2. Make sure local `feat/claude-compat` is checked out and synced with `origin`:
+2. Fetch current refs:
 
    ```bash
-   git checkout feat/claude-compat
    git fetch origin
-   git status -sb
-   ```
-
-   If local is ahead of `origin/feat/claude-compat`, that is fine (we'll force-push after the rebase). If local is *behind* origin, fast-forward first:
-
-   ```bash
-   git pull --ff-only origin feat/claude-compat
-   ```
-
-   If pull is not fast-forward, **stop and report**: someone else has rewritten the remote and a manual merge is needed.
-
-3. Fetch upstream:
-
-   ```bash
    git fetch upstream
    ```
 
-## Phase 2: Idempotency check — skip if there is nothing to do
+3. Ensure the local branch can later fast-forward to the remote integration branch.
+
+   If `feat/claude-compat` is currently checked out and is behind
+   `origin/feat/claude-compat`, fast-forward it now:
+
+   ```bash
+   git checkout feat/claude-compat
+   git pull --ff-only origin feat/claude-compat
+   ```
+
+   If the fast-forward fails, stop and report. Do not reset automatically unless
+   the user explicitly approves losing the old local branch tip.
+
+## Phase 2: Idempotency and recovery check
+
+Skip the PR workflow if upstream is already contained in the fork branch and the
+installed binary already matches the integration branch:
 
 ```bash
-NEW_COMMITS=$(git log --oneline feat/claude-compat..upstream/main | wc -l)
-echo "new upstream commits: $NEW_COMMITS"
+if git merge-base --is-ancestor upstream/main origin/feat/claude-compat; then
+    FINAL_SHA=$(git rev-parse --short=9 origin/feat/claude-compat)
+    INSTALLED_VERSION=$("$KOOKR_CODEX_BIN" --version 2>/dev/null || true)
+    if printf '%s\n' "$INSTALLED_VERSION" | grep -q "+kookr.$FINAL_SHA"; then
+        echo "feat/claude-compat already contains upstream/main and installed binary matches — no upstream changes today"
+        exit 0
+    fi
+    echo "feat/claude-compat already contains upstream/main, but installed binary is missing or stale"
+    echo "expected +kookr.$FINAL_SHA, got: ${INSTALLED_VERSION:-<none>}"
+    echo "skip Phases 3-5 and run Phase 6 to rebuild/install from the current integration branch"
+    RECOVER_INSTALL_ONLY=1
+else
+    RECOVER_INSTALL_ONLY=0
+    NEW_COMMITS=$(git rev-list --count origin/feat/claude-compat..upstream/main)
+    echo "new upstream commits not yet contained in feat/claude-compat: $NEW_COMMITS"
+fi
 ```
 
-- If `NEW_COMMITS == 0`: **success path, no work needed.** Report "feat/claude-compat is already at upstream/main tip — no rebase needed today" and exit. Do **not** run cargo, do **not** rebuild, do **not** push. This is the most common outcome on a quiet upstream day.
-- If `NEW_COMMITS > 0`: continue to Phase 3.
+If `RECOVER_INSTALL_ONLY=1`, skip Phases 3-5 and run Phase 6. Do not open a PR.
 
-## Phase 3: Tag a backup, then rebase
+If `RECOVER_INSTALL_ONLY=0`, continue to Phase 3.
 
-1. Tag the current tip so we can recover if the rebase goes sideways:
+## Phase 3: Create the sync worktree and merge upstream
+
+1. Create a dated sync branch from the remote integration branch:
 
    ```bash
-   TAG="pre-rebase-$(date -u +%Y-%m-%d)"
-   git tag -f "$TAG" feat/claude-compat
+   DATE=$(date -u +%Y-%m-%d)
+   DATE_COMPACT=$(date -u +%Y%m%d)
+   SYNC_BRANCH="sync/upstream-main-$DATE_COMPACT"
+   SYNC_WORKTREE="../codex-sync-upstream-$DATE_COMPACT"
+   TAG="pre-sync-$DATE"
+   BASE_SHA=$(git rev-parse origin/feat/claude-compat)
+
+   git tag -f "$TAG" origin/feat/claude-compat
    echo "backup tag: $TAG -> $(git rev-parse "$TAG")"
+   echo "base sha: $BASE_SHA"
+
+   git worktree add "$SYNC_WORKTREE" -b "$SYNC_BRANCH" origin/feat/claude-compat
+   cd "$SYNC_WORKTREE"
+   git config --local rerere.enabled true
+   git config --local rerere.autoupdate false
    ```
 
-2. Rebase onto the new upstream tip:
+   If the branch or worktree already exists from a same-day retry, inspect it
+   before reusing it. Reuse is allowed only if the worktree is clean and the
+   existing sync branch already contains the captured base SHA:
 
    ```bash
-   git rebase upstream/main 2>&1 | tail -20
+   git merge-base --is-ancestor "$BASE_SHA" HEAD
    ```
 
-3. **If the rebase reports conflicts**: classify each conflict region and resolve per the tiered policy below. Append one line to the in-memory conflict-resolution log for every conflict (emitted in the Phase 7 report). After resolving, `git add` the file(s) and `GIT_EDITOR=true git rebase --continue`.
+   If that check fails, the base branch moved since the sync branch was created.
+   Stop and report. Do not merge the PR until the sync branch has merged the
+   current `origin/feat/claude-compat` base and Phase 4 verification has run
+   again. Do not delete worktrees or branches blindly.
+
+2. Merge upstream with a normal merge commit:
+
+   ```bash
+   git merge --no-ff upstream/main
+   ```
+
+3. If the merge reports conflicts, classify each conflict region and resolve per
+   the tiered policy below. Append one line to the in-memory conflict-resolution
+   log for every conflict, including rerere-assisted resolutions.
+
+   After all authorized Tier 1/2 resolutions:
+
+   ```bash
+   git diff
+   git add <resolved-files>
+   GIT_EDITOR=true git commit
+   ```
+
+   If the merge has multiple conflicted files, resolve all authorized Tier 1/2
+   files, then commit once.
 
    **Tier 1 — auto-resolve. Disjoint additive collisions in the same hunk.**
-   - Both sides add different `use ...` imports → keep both.
-   - Both sides add disjoint helper functions / struct impls / consts in the same area → keep both.
-   - Both sides add disjoint test functions inside one `#[tokio::test]`-anchored block → reconstruct as sequential tests, each with its own `#[tokio::test]` annotation and its own closing brace.
-   - Upstream extends a constant array (e.g. `HOOK_EVENT_NAMES`) and the fork side has unrelated re-exports in the same hunk → keep both, with the array first then the re-exports.
+   - Both sides add different `use ...` imports: keep both.
+   - Both sides add disjoint helper functions, struct impls, consts, or tests in
+     the same area: keep both.
+   - Both sides add disjoint test functions inside one `#[tokio::test]`-anchored
+     block: reconstruct as sequential tests, each with its own annotation and
+     closing brace.
+   - Upstream extends a constant array such as `HOOK_EVENT_NAMES` and the fork
+     side has unrelated re-exports in the same hunk: keep both, with the array
+     first then the re-exports.
 
-   **Tier 2 — auto-resolve, log a one-line rationale. One side is the new upstream API, the other is the older form the fork patched.**
-   - Constructor signature change (e.g. `EnvironmentManager::new(...).await` upstream vs `EnvironmentManager::new(...)` sync fork) → take upstream's new signature, layer fork-specific data captures (e.g. `let settings_file = ...;`) on top of it.
-   - Fork-redundant code (upstream now provides what the fork used to add — e.g. `auth_manager` defined earlier in the same function before the conflict region) → drop the fork's redundant redefinition. Verify by greping the file for the symbol *outside* the conflict region before deleting.
+   **Tier 2 — auto-resolve, log a one-line rationale. One side is the new upstream
+   API, the other is the older form the fork patched.**
+   - Constructor signature change: take upstream's new signature and layer
+     fork-specific captures or parameters on top.
+   - Fork-redundant code: if upstream now provides what the fork previously added,
+     drop the fork's redundant redefinition after grepping for the symbol outside
+     the conflict region.
 
    **Tier 3 — abort and report. Genuinely semantic divergence.**
-   - Same logic reimplemented differently on both sides (not disjoint, not a signature rename).
-   - Upstream removes a symbol the fork actively extends, OR upstream renames a field/function the fork uses → cannot pick a side automatically.
-   - Conflict region is more than ~50 lines per side, OR more than 3 hunks in a single file.
-   - `git rebase --abort`, then report each conflict (file, fork commit SHA, classification reason) and exit. The user resolves manually OR escalates to a subagent merge draft (see "Tier 3 escalation pattern" below).
+   - Same logic reimplemented differently on both sides.
+   - Upstream removes or renames a symbol the fork actively extends or calls.
+   - Conflict region is more than roughly 50 lines per side.
+   - More than 3 hunks conflict in one file.
 
-   **Source of truth for hooks-crate conflicts**: when extending `HOOK_EVENT_NAMES` / `HOOK_EVENT_NAMES_WITH_MATCHERS` arrays, the canonical event list is the `match` arms in `codex-rs/hooks/src/events/common.rs::matcher_pattern_for_event`. Events whose arm returns `matcher` go in `HOOK_EVENT_NAMES_WITH_MATCHERS`; all variants go in `HOOK_EVENT_NAMES`.
-
-4. **If the rebase succeeds** (with no conflicts, or after Tier 1/2 auto-resolution): continue. Tier 3 abort exits here.
-
-### Tier 3 escalation pattern (subagent-drafted candidate merge)
-
-When Tier 3 fires and the user has approved escalation (don't do this unprompted — it costs a subagent run), spawn a `general-purpose` subagent to draft a hand-merged candidate. The agent produces full files at `/tmp/codex-merge-<commit-short-sha>/<filename>` plus a `RATIONALE.md`. On the next rebase pass, the user resolves the same Tier 3 conflict by `cp`ing the candidate files in instead of resolving from scratch.
-
-**Subagent briefing template**: include all THREE sources of truth (pre-rebase fork file, upstream/main file, the fork commit's diff via `git show`) and the EXACT semantic intent of the merge ("keep fork's refactor; honor upstream's new guard; preserve upstream's new helper; thread X through Y"). Tell the agent NOT to run cargo (cargo state is per-worktree and the agent shouldn't pollute), NOT to modify the working tree of `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}`, and to deliver candidate files + rationale to `/tmp/codex-merge-<commit>/`. See the conversation history of the 2026-04-30 rebase (PR #31 / commit `42a54090a8`) for a worked example briefing.
-
-**Re-applying the candidate**: when the rebase reaches the same conflict next pass, `cp /tmp/codex-merge-<commit>/<file> codex-rs/<file>` for each file, `git add` them, then `git rebase --continue`. The candidate often produces compile errors that surface in Phase 4 — those are typically mechanical fallout (signature drift) and patch-and-amend per the broadened classification in Phase 4.
-
-### Known recurring conflict points
-
-These surfaces conflict on most rebase days because the fork extends arrays/imports/functions upstream keeps modifying. Resolutions tend to be the same week after week — apply them without re-deriving.
-
-- `codex-rs/hooks/src/lib.rs` (commit `043ca19fa9 wip: rebase phase 2`) — Tier 1. Auto-merge collides fork's `events::notification::*` re-exports against an empty HEAD section. Keep both. Verify HOOK_EVENT_NAMES arrays still match `matcher_pattern_for_event` (Phase 4 step 1).
-- `codex-rs/hooks/src/registry.rs` (commit `753facd759` FileChanged) — Tier 1. Disjoint imports: HEAD adds `engine::HookListEntry`, fork adds `events::file_changed::*`. Keep both.
-- `codex-rs/linux-sandbox/src/bwrap.rs` (commit `d28cefbeae phase 4`) — was Tier 2 on 2026-04-30 (took upstream's `synthetic_mount_targets` mechanism, dropped fork's `return Ok(())` defensive block). Should NOT recur unless the fork re-introduces its bwrap workaround. If it does conflict again, classify fresh.
-- `codex-rs/core-plugins/src/loader.rs` + `codex-rs/core/src/plugins/manager_tests.rs` (commit `42a54090a8` PR #31) — **persistent Tier 3**. The fork's `load_plugin_from_root` extraction interacts with whatever upstream is iterating on in `load_plugin`. Either pre-stage a candidate at `/tmp/codex-merge-31/` (re-runnable from the 2026-04-30 conversation log briefing) or escalate fresh. **Long-term fix**: see "Occasional maintenance" below.
-
-## Phase 4: Verify the workspace compiles, reconcile fork-extension surfaces, and run fork-critical tests
-
-**Amend convention (applies to every fix-up in this phase)**: any compile fix or array reconciliation needed to make the rebase land cleanly is staged and amended onto the LAST fork commit (the rebase tip) — not committed as a separate "chore: rebase fixups" commit. This keeps the fork commit count stable so day-over-day rebase mechanics stay predictable. After staging the fix-ups: `git commit --amend --no-edit`.
-
-1. **Reconcile HOOK_EVENT_NAMES with matcher_pattern_for_event** (proactive sync; upstream may have added new events that the fork's arrays don't list yet):
-
-   The canonical fork event taxonomy is encoded in the `match` arms of `codex-rs/hooks/src/events/common.rs::matcher_pattern_for_event`. The two arrays in `codex-rs/hooks/src/lib.rs` must mirror it:
-   - `HOOK_EVENT_NAMES`: every variant (both arms of the match).
-   - `HOOK_EVENT_NAMES_WITH_MATCHERS`: only variants whose arm returns `matcher` (i.e. dispatches against a tool / source / path matcher).
-
-   Read both arms of `matcher_pattern_for_event`, derive both arrays, and diff against the current `lib.rs` content. If the arrays diverge, edit `lib.rs` and stage for amending in step 4 below.
-
-2. `cargo check --workspace`:
+   For Tier 3:
 
    ```bash
-   cd "${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}/codex-rs"
+   git merge --abort
+   ```
+
+   Report the file, upstream commit range, classification reason, and the backup
+   tag. Do not open a PR.
+
+   **Source of truth for hooks-crate conflicts**: when extending
+   `HOOK_EVENT_NAMES` / `HOOK_EVENT_NAMES_WITH_MATCHERS`, the canonical event list
+   is `codex-rs/hooks/src/events/common.rs::matcher_pattern_for_event`. Events
+   whose arm returns `matcher` go in `HOOK_EVENT_NAMES_WITH_MATCHERS`; all
+   variants go in `HOOK_EVENT_NAMES`.
+
+## Phase 4: Verify and add sync fix-ups
+
+Post-merge compile or array reconciliation fixes are normal commits on the sync
+branch. Do not amend fork commits and do not rewrite `feat/claude-compat`.
+
+1. Reconcile hook event arrays against `matcher_pattern_for_event`.
+
+   `codex-rs/hooks/src/lib.rs` must mirror the match arms in
+   `codex-rs/hooks/src/events/common.rs::matcher_pattern_for_event`:
+
+   - `HOOK_EVENT_NAMES`: every variant.
+   - `HOOK_EVENT_NAMES_WITH_MATCHERS`: only variants whose arm returns `matcher`.
+
+   If arrays diverge, edit `codex-rs/hooks/src/lib.rs`, stage the change, and
+   commit it on the sync branch.
+
+2. Run workspace check:
+
+   ```bash
+   cd "$SYNC_WORKTREE/codex-rs"
    cargo check --workspace --offline 2>&1 | tail -30
    ```
 
-   **If it fails, classify the error before rolling back:**
+   If it fails, classify the error before rolling back.
 
-   - **Mechanical fork-extension fallout** — any of these patterns:
-     1. **Missing field in upstream-new crate's literal**: `missing field X in initializer of Y` where Y is a `Config` / `HooksConfig` / similar fork-extended struct, AND the failing literal is in a crate that didn't exist on the pre-rebase branch (confirm with `git log --diff-filter=A pre-rebase-$(date -u +%Y-%m-%d).. -- <crate-path>`). Add the missing field with the fork's default value (e.g. `Config.settings_file: None`).
-     2. **Missing field at fork-extension callsite of an upstream-extended struct**: same `missing field X` error, but in a *fork-modified* file (e.g. `hooks/src/engine/discovery.rs`). Upstream added a field to a struct (e.g. `HookHandlerSource.plugin_id`) and the fork's older callsite didn't pass it. Add the field with the fork-side default (typically `None` for `Option<T>`, `false` for `bool`, `Vec::new()` for collections).
-     3. **Function-signature drift at fork callsite**: `this function takes N arguments but M were supplied` — upstream added a parameter to a function (e.g. `append_hook_events` gained `&mut Vec<HookListEntry>` as 2nd arg) and the fork's older callsite is one arg short. Insert the missing arg, sourcing it from the surrounding context (e.g. `&mut result.hook_entries` if the field exists on the local struct). The error message itself usually shows where to wire it from.
-     4. **Cargo.lock version normalization**: `cargo check` rewrites placeholder `0.0.0` versions for crates that upstream just renamed/added. Always expected — stage and amend.
+   **Mechanical fork-extension fallout** may be patched on the sync branch:
+   - Missing field in an upstream-new crate's literal where the struct is
+     fork-extended. Add the fork default, such as `settings_file: None`.
+   - Missing field at a fork-extension callsite of an upstream-extended struct.
+     Add the upstream field with the appropriate default.
+   - Function-signature drift at a fork callsite. Insert the new upstream
+     argument from surrounding context.
+   - Cargo.lock version normalization from placeholder `0.0.0` to workspace
+     versions.
 
-     For all four: patch the fix and re-run `cargo check`. Stage the fix for amending in step 4. If `cargo check` is now clean, continue.
-
-   - **Real regression** — anything else (type errors in fork code, missing methods on fork-extended traits, removed upstream symbols the fork still calls, removed types the fork imports, fork code calling a renamed function, etc.). Roll back: `git rebase --onto "$TAG" upstream/main feat/claude-compat`. Report the failing crate and the first error message. Exit.
-
-3. **Cargo.lock normalization is expected.** When upstream adds new crates, `cargo check` rewrites placeholder `0.0.0` versions in `Cargo.lock` to the workspace version. Don't be surprised by `Cargo.lock` showing as dirty after step 2 — stage it for amending in step 4.
-
-4. **Amend the rebase tip with all step-1/step-2/step-3 fix-ups**:
+   For mechanical fallout: patch, rerun `cargo check`, then commit the fix-up on
+   the sync branch with a clear message such as:
 
    ```bash
-   git status --short                # confirm only the expected files are dirty
-   git add <files>                   # only the fix-up files, not anything unexpected
-   git commit --amend --no-edit
+   git add <files>
+   git commit -m "fix(sync): reconcile upstream merge fallout"
    ```
 
-   If `git status` shows files you did not touch in this phase, **stop and report** — don't amend unknown changes.
+   **Real regression** means removed upstream symbols the fork still calls, type
+   errors in fork logic, missing methods on fork-extended traits, or anything not
+   covered above. For real regressions, stop and report. Do not open a PR.
 
-5. Fork-critical unit tests (hook events + skill loader + version test):
+3. Run fork-critical tests:
 
    ```bash
    cargo test --offline -p codex-core-skills -p codex-hooks 2>&1 | tail -10
    cargo test --offline -p codex-cli --test version 2>&1 | tail -5
    ```
 
-   If any test fails: roll back to `$TAG` (same recovery as the real-regression cargo check failure) and report which test failed. Test failures here are not "mechanical fallout" — they signal the fork's behavior diverged from upstream's expectations.
+   If any test fails, stop and report. Do not merge the PR.
 
-## Phase 5: Build and install the release binary
-
-1. Build:
+4. Verify the release build before the sync PR is merged:
 
    ```bash
    cargo build --offline --release -p codex-cli --bin codex 2>&1 | tail -5
    ```
 
-   This typically takes 8–15 minutes (longer than 12 if upstream invalidated significant incremental cache). If the build fails, report the error, leave the branch as-is (do not push), and exit.
+   If the release build fails, stop and report. Do not merge the PR. This keeps
+   `feat/claude-compat` from advancing to a commit that cannot produce the Kookr
+   runtime binary.
 
-2. Install. The cargo target dir is set in `codex-rs/.cargo/config.toml` (`build.target-dir = "/mnt/d/cargo-cache/target"`), NOT in `$CARGO_TARGET_DIR`. **Always ask cargo where it put the binary** rather than guessing — `cargo metadata` is the source of truth and respects all four override channels (config.toml, env var, workspace default, command-line). Resolve defensively:
+## Phase 5: Open and merge the sync PR
+
+1. Push the sync branch:
 
    ```bash
-   TARGET_DIR=$(cargo metadata --format-version=1 --no-deps --offline 2>/dev/null | jq -r .target_directory)
-   BIN="$TARGET_DIR/release/codex"
-   if [ ! -x "$BIN" ]; then
-       echo "FAIL: codex binary not found at $BIN"
-       echo "  cargo reported target_directory: $TARGET_DIR"
-       echo "  CARGO_TARGET_DIR env: ${CARGO_TARGET_DIR:-<unset>}"
-       echo "  Did the build actually finish? Re-check the build log."
+   git push -u origin "$SYNC_BRANCH"
+   ```
+
+   This is a normal push of a short-lived sync branch. Do not force-push
+   `feat/claude-compat`.
+
+2. Create or reuse a PR into `feat/claude-compat`:
+
+   ```bash
+   PR_URL=$(gh pr list \
+       --base feat/claude-compat \
+       --head "$SYNC_BRANCH" \
+       --state open \
+       --json url \
+       --jq '.[0].url')
+   if [ -z "$PR_URL" ]; then
+       PR_URL=$(gh pr create \
+           --base feat/claude-compat \
+           --head "$SYNC_BRANCH" \
+           --title "sync: merge upstream/main into feat/claude-compat ($DATE)" \
+           --body "Daily upstream sync. Merges openai/codex upstream/main into feat/claude-compat with a normal merge commit. Verification: cargo check --workspace --offline; cargo test --offline -p codex-core-skills -p codex-hooks; cargo test --offline -p codex-cli --test version; cargo build --offline --release -p codex-cli --bin codex.")
+   fi
+   echo "$PR_URL"
+   ```
+
+3. Merge the PR only after local verification has passed.
+
+   Use a normal merge commit. Never squash merge and never rebase merge this PR:
+
+   ```bash
+   git fetch origin
+   CURRENT_BASE_SHA=$(git rev-parse origin/feat/claude-compat)
+   if [ "$CURRENT_BASE_SHA" != "$BASE_SHA" ]; then
+       echo "origin/feat/claude-compat moved from $BASE_SHA to $CURRENT_BASE_SHA"
+       echo "merge origin/feat/claude-compat into $SYNC_BRANCH, rerun Phase 4 verification, then retry Phase 5"
        exit 1
    fi
-   install -m 755 "$BIN" "$KOOKR_CODEX_BIN"
+   gh pr merge "$PR_URL" --merge --delete-branch
    ```
 
-3. Sanity-check:
+   This base-SHA guard prevents GitHub from creating a final merge commit from a
+   different integration-branch tree than the one verified locally.
 
-   ```bash
-   "$KOOKR_CODEX_BIN" --version
-   ```
+   If GitHub refuses to merge because checks, permissions, or branch protection
+   block it, stop and report the PR URL. Do not bypass protections.
 
-   The output must be `codex-cli 0.125.0-alpha.3+kookr.<short-sha>`. Verify the `<short-sha>` matches:
+## Phase 6: Fast-forward local feat/claude-compat and build the deployed binary
 
-   ```bash
-   git rev-parse --short=9 feat/claude-compat
-   ```
+After the PR is merged, or when Phase 2 enters install-only recovery, update the
+main checkout by fast-forward only:
 
-   If the SHAs do not match, the build picked up a stale binary path. Report the mismatch and stop before pushing.
+```bash
+cd "$KOOKR_CODEX_CHECKOUT"
+git fetch origin
+git checkout feat/claude-compat
+git pull --ff-only origin feat/claude-compat
+```
 
-## Phase 6: Force-push to origin
+If this cannot fast-forward, stop and report. Do not reset automatically.
 
-1. Capture the expected origin SHA so `--force-with-lease` is precise (cheaper than the bare flag):
+Build and install from this final local `feat/claude-compat` tip, not from the
+pre-merge sync branch, so the version stamp matches the branch Kookr uses:
 
-   ```bash
-   ORIGIN_SHA=$(git rev-parse origin/feat/claude-compat)
-   git push --force-with-lease="feat/claude-compat:$ORIGIN_SHA" origin feat/claude-compat 2>&1 | tail -5
-   ```
+```bash
+cd "$KOOKR_CODEX_CHECKOUT/codex-rs"
+cargo build --offline --release -p codex-cli --bin codex 2>&1 | tail -5
+```
 
-   `--force-with-lease` (with explicit expected SHA) protects against an unexpected concurrent push to the remote. If it rejects, report and stop — do **not** retry with a plain `--force`.
+Resolve the release binary path through Cargo metadata:
+
+```bash
+TARGET_DIR=$(cargo metadata --format-version=1 --no-deps --offline 2>/dev/null | jq -r .target_directory)
+BIN="$TARGET_DIR/release/codex"
+if [ ! -x "$BIN" ]; then
+    echo "FAIL: codex binary not found at $BIN"
+    echo "  cargo reported target_directory: $TARGET_DIR"
+    echo "  CARGO_TARGET_DIR env: ${CARGO_TARGET_DIR:-<unset>}"
+    echo "  Did the build actually finish? Re-check the build log."
+    exit 1
+fi
+install -m 755 "$BIN" "$KOOKR_CODEX_BIN"
+```
+
+Sanity-check the installed binary:
+
+```bash
+"$KOOKR_CODEX_BIN" --version
+git rev-parse --short=9 feat/claude-compat
+```
+
+The `+kookr.<sha>` suffix must match the final `feat/claude-compat` short SHA.
+If it does not match, report the mismatch and stop.
 
 ## Phase 7: Report
 
 State clearly in the final summary:
 
-- The starting tip SHA (the backup-tag commit) and the new tip SHA.
-- How many upstream commits were absorbed and how many fork commits were replayed.
-- **Conflict-resolution log** — required even when there were zero conflicts (state "no conflicts" then). Format: a small table or list with one row per resolved conflict:
-
-  ```
-  Tier | File                              | Fork commit | Decision
-  -----|-----------------------------------|-------------|--------------------------------------------
-  1    | codex-rs/hooks/src/lib.rs         | cfb7791fb3  | kept upstream HOOK_EVENT_NAMES + fork notification re-exports
-  2    | codex-rs/app-server/src/lib.rs    | 973cb9ce95  | took upstream's async EnvironmentManager::new + fork's settings_file capture
-  ...
-  ```
-
-- **Post-rebase fix-ups amended onto the tip**, if any (e.g. `Config.settings_file: None` added to upstream-new sample crate; HOOK_EVENT_NAMES synced; Cargo.lock version normalization).
-- Test results (counts: passed / failed / ignored for each crate).
-- The new `+kookr.<sha>` version stamp.
-- That the binary is installed at `${KOOKR_CODEX_BIN:-$HOME/bin/codex}` but the production Kookr instance has **not** been auto-restarted — the user must run `pnpm prod:update` (or `pnpm prod:restart`) themselves to pick up the new binary in their running dashboard.
+- Starting `origin/feat/claude-compat` SHA and final merged SHA.
+- How many upstream commits were absorbed.
+- Sync branch name and PR URL.
+- Base SHA verified before PR merge.
+- Merge commit SHA.
+- Conflict-resolution log, required even when there were zero conflicts.
+- Post-merge fix-up commits, if any.
+- Test results with passed / failed / ignored counts.
+- Installed binary version stamp.
+- Whether the run performed a full sync PR or install-only recovery.
+- That the binary is installed at `${KOOKR_CODEX_BIN:-$HOME/bin/codex}`.
+- That the production Kookr instance has **not** been auto-restarted; the user
+  must run `pnpm prod:update` or `pnpm prod:restart` themselves to pick up the
+  new binary in the running dashboard.
 
 ## Idempotency rules
 
-- The Phase 2 short-circuit makes a same-day rerun a no-op (most common outcome).
-- The pre-rebase tag uses today's UTC date, so reruns on the same day overwrite the tag (`git tag -f`) rather than accumulating tags.
-- Never delete tags from earlier days — they are the recovery path if something the rebase shipped is later found broken.
-- The force-push uses `--force-with-lease=feat/claude-compat:<expected-origin-sha>`, so concurrent fork pushes from elsewhere will be detected instead of overwritten.
+- If `upstream/main` is already an ancestor of `origin/feat/claude-compat` and
+  the installed binary matches that branch, the run is a no-op.
+- If `upstream/main` is already contained but the installed binary is stale or
+  missing, the run skips the PR workflow and performs install-only recovery.
+- Same-day retries reuse or report the dated sync branch/worktree rather than
+  deleting them blindly.
+- The persistent branch is never force-pushed.
+- The local main checkout is updated only by `git pull --ff-only` after the PR is
+  merged.
 
-## Occasional maintenance (NOT part of the daily playbook)
+## Anti-patterns
 
-The daily rebase friction is dominated by the fork's eight `wip: rebase phase N` commits (`e47fa41004`, `043ca19fa9`, `ed70096187`, `d28cefbeae`, `003540deda`, `453d689199`, `e3cb465fb6`, `5f34f29b73`). They were authored as ad-hoc rebase fixups months ago and never squashed; each rebase day they re-conflict against newer upstream code in the same regions. **A one-time cleanup that squashes them into 5–7 logical fork commits would substantially reduce daily friction**.
-
-Suggested squash plan (rough — refine before executing):
-- All "phase N" commits that touch `hooks/` → squash into one `feat(hooks): add 4 new events + FileChanged + matcher reconciliation`.
-- All commits that touch `cli/main.rs` `--settings` plumbing → squash into one `feat(cli): add --settings FILE flag, propagated to hook discovery`.
-- All commits that touch `core-plugins/` Claude marketplace + Claude plugin loading → squash into one `feat(core-plugins): support Claude marketplace manifests + enabled plugin roots`.
-- Drop the bwrap workaround entirely (commit `d28cefbeae`'s bwrap chunk became redundant on 2026-04-30 when upstream PR #19852 landed; the daily playbook's Tier 2 already drops the chunk every replay).
-
-This is a ONE-TIME rewrite of `feat/claude-compat` — high-friction (force-push of a fully-rewritten history), but it pays back across every future rebase. Don't do this from inside the daily playbook; it's a separate, deliberate, tagged operation.
-
-## Anti-patterns — do not do these
-
-- **Do not** auto-resolve Tier 3 (semantic) conflicts. Tier 1/2 are authorized; Tier 3 must abort and report. When in doubt about classification, treat as Tier 3.
-- **Do not** create a separate "chore: rebase fixups" or "fix: post-rebase" commit. Rebase-induced compile fixes and array reconciliations are amended onto the rebase tip via `git commit --amend --no-edit`. The fork commit count must stay stable across rebases.
-- **Do not** roll the branch back on a `cargo check` failure without first classifying the error. Mechanical fork-extension fallout (missing fields in upstream-new crates' literals) is patchable; only real regressions warrant a roll-back.
-- **Do not** modify any file outside `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}` — no Kookr code, no scripts, no docs.
-- **Do not** create a Kookr child task for the rebuild — this playbook is the rebuild.
-- **Do not** push to `main` or to upstream. The only valid push target is `origin/feat/claude-compat`.
-- **Do not** delete the backup tags created on previous days, even if disk pressure suggests it. The tags are the recovery path.
-- **Do not** restart the Kookr production instance (no `pnpm prod:update`, no `pnpm prod:restart`). The deployed binary at `${KOOKR_CODEX_BIN:-$HOME/bin/codex}` is updated, but Kookr itself uses whatever it cached at start-up; deciding when to restart is the user's call.
-- **Do not** retry a `--force-with-lease` rejection by switching to plain `--force`. A rejection means someone else pushed; investigate before overwriting.
-- **Do not** assume the binary is at `codex-rs/target/release/codex`. Always resolve via `cargo metadata --format-version=1 --no-deps --offline | jq -r .target_directory`. The repo's `codex-rs/.cargo/config.toml` sets `build.target-dir = "/mnt/d/cargo-cache/target"`, which `${CARGO_TARGET_DIR:-…}` does NOT see — `CARGO_TARGET_DIR` env-var fallback is wrong here.
-- **Do not** amend unknown working-tree changes onto the rebase tip. Before `git commit --amend`, `git status --short` must show only the files you intentionally edited in Phase 4. Unexpected files mean an upstream change you didn't account for — stop and report.
+- Do not rebase `feat/claude-compat`.
+- Do not force-push `feat/claude-compat`.
+- Do not squash merge or rebase merge the sync PR.
+- Do not merge the sync PR before the release build passes on the sync branch.
+- Do not build/install from the sync branch after the PR has been merged; build
+  from the final local `feat/claude-compat` tip so the version stamp matches.
+- Do not auto-resolve Tier 3 conflicts.
+- Do not amend fork commits as part of the sync.
+- Do not reset the main checkout unless the user explicitly approves it.
+- Do not push to `main` or to `upstream`.
+- Do not restart the Kookr production instance.
