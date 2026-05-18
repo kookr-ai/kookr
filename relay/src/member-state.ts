@@ -1,6 +1,6 @@
 import type { NodeHello } from '../../src/remote/handshake.js';
 import type { MemberBlockedReason, MemberShareState, MemberTerminalSharingStatus } from '../../src/shared/contracts/session-sharing-public.js';
-import type { InvitationRecord } from './invitations/store.js';
+import { isGuestLinkTaskShare, type InvitationRecord } from './invitations/store.js';
 
 export interface MemberNodeState {
   displayName?: string;
@@ -29,6 +29,8 @@ export function memberBlockedMessage(reason: MemberBlockedReason): string {
       return 'Terminal sharing is not available for this session.';
     case 'node.untrusted':
       return 'The owner has not enabled terminal sharing on this node.';
+    case 'guest.terminalDisabled':
+      return 'Guest Links are view-only and do not support terminal viewing.';
     case 'transport.insecure':
       return 'Terminal sharing requires HTTPS for public links.';
   }
@@ -46,7 +48,8 @@ export function buildMemberShareState(input: {
   const expired = Date.parse(invitation.expiresAt) <= now.getTime();
   const nodeNextRetryAt = input.node.connected ? undefined : new Date(now.getTime() + 5_000).toISOString();
   const terminal = buildTerminalStatus({ invitation, node: input.node, expired, nextRetryAt: nodeNextRetryAt });
-  const controllerLease = controllerLeaseState(invitation, input.deviceId, now);
+  const guestLink = isGuestLinkTaskShare(invitation);
+  const controllerLease = guestLink ? { state: 'available' as const } : controllerLeaseState(invitation, input.deviceId, now);
   return {
     schemaVersion: 'member-share-state.v1',
     invitationId: invitation.invitationId,
@@ -58,13 +61,15 @@ export function buildMemberShareState(input: {
     },
     grants: invitation.grants.filter((grant): grant is MemberShareState['grants'][number] => (
       grant === 'view'
-      || grant === 'terminalView'
-      || grant === 'terminalInput'
-      || grant === 'launch'
-      || grant === 'stop'
-      || grant === 'permissionApprove'
+      || (!guestLink && (
+        grant === 'terminalView'
+        || grant === 'terminalInput'
+        || grant === 'launch'
+        || grant === 'stop'
+        || grant === 'permissionApprove'
+      ))
     )),
-    grantRequests: (invitation.grantRequests ?? []).map((request) => ({
+    grantRequests: guestLink ? [] : (invitation.grantRequests ?? []).map((request) => ({
       requestId: request.requestId,
       invitationId: request.invitationId,
       requestedGrants: [...request.requestedGrants],
@@ -122,6 +127,7 @@ function buildTerminalStatus(input: {
 }): MemberTerminalSharingStatus {
   if (input.invitation.revokedAt) return { state: 'revoked' };
   if (input.expired) return { state: 'expired' };
+  if (isGuestLinkTaskShare(input.invitation)) return blocked('guest.terminalDisabled', input.nextRetryAt);
   const hasTerminalInput = input.invitation.grants.includes('terminalInput');
   const hasTerminalView = input.invitation.grants.includes('terminalView') || hasTerminalInput;
   if (hasTerminalView || hasTerminalInput) {

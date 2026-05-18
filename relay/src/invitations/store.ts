@@ -291,6 +291,12 @@ export function isInvitationRecord(value: unknown): value is InvitationRecord {
     && (invitation.grantRequests === undefined || Array.isArray(invitation.grantRequests));
 }
 
+export function isGuestLinkTaskShare(invitation: InvitationRecord): boolean {
+  return invitation.subject.kind === 'task'
+    && invitation.grants.includes('view')
+    && (Boolean(invitation.shareId) || Boolean(invitation.passwordVerifier) || Boolean(invitation.redactedShareLabel));
+}
+
 export class InvitationStore {
   private readonly invitations = new Map<string, InvitationRecord>();
   private readonly invitationTokenIndex = new Map<string, string>();

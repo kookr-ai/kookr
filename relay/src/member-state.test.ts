@@ -28,6 +28,43 @@ describe('buildMemberShareState', () => {
     expect(memberBlockedMessage('transport.insecure')).toBe('Terminal sharing requires HTTPS for public links.');
   });
 
+  it('keeps anonymous guest links terminal-disabled without surfacing request state', () => {
+    const state = buildMemberShareState({
+      invitation: invitation({
+        shareId: '123-456',
+        passwordVerifier: 'scrypt:fixture',
+        redactedShareLabel: '123-***',
+        controllerLease: {
+          leaseId: 'lease-secret',
+          deviceId: 'device-other',
+          holderLabel: 'Owner terminal',
+          acquiredAt: '2026-05-17T00:03:00.000Z',
+          expiresAt: '2026-05-17T00:10:00.000Z',
+        },
+        grantRequests: [{
+          requestId: 'grant-req-1',
+          invitationId: 'inv-1',
+          requestedGrants: ['terminalView', 'terminalInput'],
+          status: 'pending',
+          requestedAt: '2026-05-17T00:03:00.000Z',
+          requestedBy: 'guest-user',
+          comment: 'Please enable terminal viewing',
+        }],
+      }),
+      node: { connected: true, policySyncStatus: 'acked' },
+      now: new Date('2026-05-17T00:04:00.000Z'),
+    });
+
+    expect(state.terminal).toEqual({
+      state: 'blocked',
+      reason: 'guest.terminalDisabled',
+      message: 'Guest Links are view-only and do not support terminal viewing.',
+    });
+    expect(state.grantRequests).toEqual([]);
+    expect(state.controllerLease).toEqual({ state: 'available' });
+    expect(JSON.stringify(state)).not.toContain('Owner terminal');
+  });
+
   it('redacts owner-only fields and reports missing terminal trust', () => {
     const state = buildMemberShareState({
       invitation: invitation({ grants: ['view', 'terminalView', 'terminalInput'] }),

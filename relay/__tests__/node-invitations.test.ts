@@ -1,11 +1,14 @@
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 
 import WebSocket from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRelayServer, type RelayServerHandle } from '../server.js';
 import { makeNodeHello, type RelayHello } from '../../src/remote/handshake.js';
-import { asNodeEpoch } from '../../src/remote/ids.js';
+import { asGrantId, asNodeEpoch, asNodeId, asPolicyVersion } from '../../src/remote/ids.js';
+import type { InvitationRecord } from '../src/invitations/store.js';
+import type { PersistedNodeRegistration, RelayStateSnapshot } from '../src/state/sqlite.js';
 
 let openHandle: RelayServerHandle | null = null;
 const sockets: WebSocket[] = [];
@@ -53,6 +56,10 @@ function nodeHeaders(token: string): Record<string, string> {
   return { 'content-type': 'application/json', authorization: `Bearer ${token}` };
 }
 
+function tokenHash(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
 function cookieHeaderFromSetCookie(setCookie: string): string {
   return setCookie
     .split(/,\s*(?=kookr_relay_)/)
@@ -84,41 +91,6 @@ async function connectMember(relay: RelayServerHandle, nodeId: string, memberTok
   sockets.push(ws);
   await once(ws, 'open');
   return ws;
-}
-
-async function acquireMemberControllerLease(
-  relay: RelayServerHandle,
-  nodeId: string,
-  cookie: string,
-  opts: { projectionVersion?: number; policyVersion?: number } = {},
-): Promise<{ leaseId: string }> {
-  const stateRes = await fetch(new URL('/relay/member/share-state', relay.url()), { headers: { cookie } });
-  expect(stateRes.status).toBe(200);
-  const state = await stateRes.json() as { security?: { csrfToken?: string; deviceId?: string } };
-  const csrfToken = state.security?.csrfToken ?? cookieValue(cookie, 'kookr_relay_csrf_token');
-  const deviceId = state.security?.deviceId ?? cookieValue(cookie, 'kookr_relay_device_id');
-  const res = await fetch(new URL('/relay/member/controller-lease', relay.url()), {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      cookie: [
-        `kookr_relay_member_token=${cookieValue(cookie, 'kookr_relay_member_token')}`,
-        `kookr_relay_csrf_token=${csrfToken}`,
-        `kookr_relay_device_id=${deviceId}`,
-      ].join('; '),
-      'x-kookr-csrf-token': csrfToken,
-    },
-    body: JSON.stringify({
-      nodeId,
-      holderLabel: 'test device',
-      ...(opts.projectionVersion !== undefined ? { projectionId: 'proj-primary', sessionAlias: 'primary' } : {}),
-      ...(opts.projectionVersion !== undefined ? { projectionVersion: opts.projectionVersion } : {}),
-      ...(opts.policyVersion !== undefined ? { policyVersion: opts.policyVersion } : {}),
-    }),
-  });
-  expect(res.status).toBe(200);
-  const body = await res.json() as { lease: { leaseId: string } };
-  return body.lease;
 }
 
 async function connectNode(relay: RelayServerHandle, nodeId: string, token: string): Promise<WebSocket> {
@@ -344,6 +316,7 @@ describe('relay node-scoped task-share endpoints', () => {
         deploymentOwner: 'ops@example.com',
         environment: 'production',
         tlsExpiresAt: '2026-08-01T00:00:00.000Z',
+        relayUrl: 'https://relay.example.test',
       },
     });
     openHandle = relay;
@@ -353,13 +326,33 @@ describe('relay node-scoped task-share endpoints', () => {
 
     const ops = await fetch(new URL('/relay/ops/status', relay.url()));
     expect(ops.status).toBe(200);
-    expect(await ops.json()).toMatchObject({
+    const opsBody = await ops.json() as { guestLinkPosture?: { checkedAt?: string } };
+    expect(opsBody).toMatchObject({
       configured: true,
       mode: 'available',
       deploymentOwner: 'ops@example.com',
       environment: 'production',
       tlsExpiresAt: '2026-08-01T00:00:00.000Z',
+      guestLinkPosture: {
+        checkedAt: expect.any(String),
+        publicOrigin: { url: 'https://relay.example.test', https: true },
+        securityHeaders: {
+          cacheControlNoStore: true,
+          referrerPolicyNoReferrer: true,
+          contentTypeNosniff: true,
+          frameAncestorsDenied: true,
+        },
+        webSocket: {
+          originRequired: true,
+          memberNonceRequired: true,
+          nonceTtlMs: 60_000,
+          compression: 'disabled',
+          unknownMessageCloses: true,
+          maxPayloadBytes: 16 * 1024,
+        },
+      },
     });
+    expect(Number.isNaN(Date.parse(opsBody.guestLinkPosture?.checkedAt ?? ''))).toBe(false);
 
     const created = await fetch(new URL('/relay/node/invitations', relay.url()), {
       method: 'POST',
@@ -450,6 +443,10 @@ describe('relay node-scoped task-share endpoints', () => {
 
     expect(res.status).toBe(201);
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
     const body = await res.json() as { invitation: Record<string, unknown>; token: string; shareTicket?: Record<string, unknown> };
     expect(body.token).toMatch(/^kookr_inv_v1_/);
     expect(body.shareTicket).toMatchObject({
@@ -975,7 +972,7 @@ describe('relay node-scoped task-share endpoints', () => {
     await expect(joinPage.text()).resolves.toContain("The shared task's machine is currently offline.");
   });
 
-  it('requires owner approval before member task shares gain mutating grants', async () => {
+  it('keeps node-created Guest Links terminal-disabled in Phase 2', async () => {
     const relay = await startRelay();
     const { nodeId, nodeToken } = relay.registerNode();
     const nodeWs = await connectNode(relay, nodeId, nodeToken);
@@ -1020,6 +1017,20 @@ describe('relay node-scoped task-share endpoints', () => {
     }));
     expect(nodeMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-before-approval')).toBe(false);
 
+    const stateRes = await fetch(new URL('/relay/member/share-state', relay.url()), {
+      headers: { cookie },
+    });
+    expect(stateRes.status).toBe(200);
+    await expect(stateRes.json()).resolves.toEqual(expect.objectContaining({
+      state: expect.objectContaining({
+        terminal: {
+          state: 'blocked',
+          reason: 'guest.terminalDisabled',
+          message: 'Guest Links are view-only and do not support terminal viewing.',
+        },
+      }),
+    }));
+
     const requestRes = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie, 'x-kookr-csrf-token': csrfToken },
@@ -1029,69 +1040,20 @@ describe('relay node-scoped task-share endpoints', () => {
         comment: 'Alice\u202e wants control\n<script>alert(1)</script>',
       }),
     });
-    expect(requestRes.status).toBe(201);
-    const requested = await requestRes.json() as { request: { requestId: string; comment?: string; requestedGrants: string[] } };
-    expect(requested.request.requestedGrants).toEqual(['terminalView', 'terminalInput']);
-    expect(requested.request.comment).toBe('Alice wants control<script>alert(1)</script>');
-
-    const approvedRes = await fetch(new URL(`/relay/node/invitations/${created.invitation.invitationId}/grant-requests/${requested.request.requestId}/approve`, relay.url()), {
-      method: 'POST',
-      headers: nodeHeaders(nodeToken),
-    });
-    expect(approvedRes.status).toBe(200);
-    expect(await approvedRes.json()).toEqual(expect.objectContaining({
-      request: expect.objectContaining({ status: 'approved', resolution: 'approved' }),
-      invitation: expect.objectContaining({ grants: ['view', 'terminalView', 'terminalInput'] }),
-    }));
-    await waitFor(() => nodeMessages.some((msg) => (
+    expect(requestRes.status).toBe(403);
+    await expect(requestRes.json()).resolves.toEqual({ error: 'guest-terminal-disabled' });
+    expect(nodeMessages.some((msg) => (
       (msg as { type?: string; upserts?: Array<{ grants?: string[] }> }).type === 'policy.delta'
       && (msg as { upserts?: Array<{ grants?: string[] }> }).upserts?.some((grant) => grant.grants?.includes('terminalInput'))
-    )));
-    await waitFor(() => relay.nodeStatuses()[0]?.policySyncStatus === 'acked');
-    publishSessionProjection(nodeWs, { nodeId, invitationId: created.invitation.invitationId, policyVersion: 2 });
-    const lease = await acquireMemberControllerLease(relay, nodeId, cookie, { projectionVersion: 1, policyVersion: 2 });
+    ))).toBe(false);
 
-    member.send(JSON.stringify({
-      type: 'remote.command',
-      commandId: 'cmd-after-approval-raw-session',
-      nodeId,
-      nodeEpoch: '1',
-      sessionId: 'session-1',
-      sessionEpoch: '1',
-      idempotencyKey: 'idem-after-raw',
-      action: 'submitMessage',
-    }));
-    await waitFor(() => memberMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-after-approval-raw-session'));
-    expect(memberMessages).toContainEqual(expect.objectContaining({
-      commandId: 'cmd-after-approval-raw-session',
-      outcome: 'rejected-pre-audit',
-      reason: 'projection-required',
-    }));
-    expect(nodeMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-after-approval-raw-session')).toBe(false);
-
-    member.send(JSON.stringify({
-      type: 'remote.command',
-      commandId: 'cmd-after-approval',
-      nodeId,
-      nodeEpoch: '1',
-      sessionId: 'session-1',
-      sessionEpoch: '1',
-      projectionId: 'proj-primary',
-      sessionAlias: 'primary',
-      projectionVersion: 1,
-      policyVersion: 2,
-      idempotencyKey: 'idem-after',
-      leaseId: lease.leaseId,
-      action: 'submitMessage',
-      payload: { text: 'hello' },
-    }));
-    await waitFor(() => nodeMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-after-approval'));
-    expect(nodeMessages).toContainEqual(expect.objectContaining({
-      type: 'remote.command',
-      commandId: 'cmd-after-approval',
-      grantId: expect.stringMatching(/^grant-/),
-      actorId: expect.stringContaining('Alice'),
-    }));
+    const permissionRequestRes = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie, 'x-kookr-csrf-token': csrfToken },
+      body: JSON.stringify({ nodeId, grants: ['permissionApprove'] }),
+    });
+    expect(permissionRequestRes.status).toBe(403);
+    await expect(permissionRequestRes.json()).resolves.toEqual({ error: 'guest-link-view-only' });
 
     const revoked = await fetch(new URL(`/relay/node/invitations/${created.invitation.invitationId}/revoke`, relay.url()), {
       method: 'POST',
@@ -1106,7 +1068,156 @@ describe('relay node-scoped task-share endpoints', () => {
     expect(revokedRequest.status).toBe(401);
   });
 
-  it('cooldowns duplicate terminal-input requests after owner denial', async () => {
+  it('blocks owner approval of persisted Guest Link grant requests', async () => {
+    const nodeToken = 'kookr_tok_v1_legacy_node_secret';
+    const memberToken = 'kookr_mem_v1_legacy_member_secret';
+    const nodeId = asNodeId('kookr-node-legacy');
+    const registration: PersistedNodeRegistration = {
+      nodeId,
+      ownerId: 'owner',
+      displayName: 'Legacy desktop',
+      tokenHash: tokenHash(nodeToken),
+      createdAt: '2026-05-18T00:00:00.000Z',
+    };
+    const invitation: InvitationRecord = {
+      invitationId: 'inv-legacy-terminal',
+      nodeId,
+      subject: { kind: 'task', nodeId, taskId: 'task-1' },
+      grants: ['view', 'terminalView', 'terminalInput'],
+      grantId: asGrantId('grant-legacy-terminal'),
+      tokenHash: 'legacy-invitation-token-hash',
+      createdAt: '2026-05-18T00:00:00.000Z',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      shareId: '123-456',
+      passwordVerifier: 'scrypt:fixture',
+      redactedShareLabel: '123-***',
+      acceptedAt: '2026-05-18T00:01:00.000Z',
+      acceptedBy: 'legacy guest',
+      memberTokenHash: tokenHash(memberToken),
+      memberId: 'member-legacy',
+      memberDeviceId: 'device-legacy',
+      policyVersion: asPolicyVersion(1),
+      grantRequests: [{
+        requestId: 'grant-req-terminal',
+        invitationId: 'inv-legacy-terminal',
+        requestedGrants: ['terminalView', 'terminalInput'],
+        status: 'pending',
+        requestedAt: '2026-05-18T00:02:00.000Z',
+      }],
+    };
+    let saveInvitationCalled = false;
+    const relay = await startRelay({
+      stateStore: {
+        load: (): RelayStateSnapshot => ({
+          registrations: [registration],
+          invitations: [invitation],
+          contactShareEnvelopes: [],
+          quarantinedRows: 0,
+        }),
+        saveRegistration: () => undefined,
+        saveInvitation: () => { saveInvitationCalled = true; },
+        saveContactShareEnvelope: () => undefined,
+        probe: () => true,
+        close: () => undefined,
+      },
+    });
+    const nodeUrl = new URL('/relay/node', relay.url());
+    nodeUrl.protocol = 'ws:';
+    const nodeWs = new WebSocket(nodeUrl, { headers: { authorization: `Bearer ${nodeToken}` } });
+    sockets.push(nodeWs);
+    const nodeMessages: unknown[] = [];
+    nodeWs.on('message', (data) => nodeMessages.push(JSON.parse(data.toString()) as unknown));
+    await once(nodeWs, 'open');
+    nodeWs.send(JSON.stringify(makeNodeHello({
+      nodeId,
+      nodeEpoch: asNodeEpoch('1'),
+      softwareVersion: 'test',
+    })));
+    await waitFor(() => nodeMessages.some((msg) => (msg as { type?: string }).type === 'relay.hello'));
+    await waitFor(() => nodeMessages.some((msg) => (msg as { type?: string }).type === 'policy.sync'));
+    const policySync = nodeMessages.find((msg) => (msg as { type?: string }).type === 'policy.sync') as {
+      grants?: Array<{ grants?: string[] }>;
+    };
+    expect(policySync.grants).toEqual([expect.objectContaining({ grants: ['view'] })]);
+
+    const nodeListRes = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      headers: nodeHeaders(nodeToken),
+    });
+    expect(nodeListRes.status).toBe(200);
+    await expect(nodeListRes.json()).resolves.toEqual({
+      invitations: [expect.objectContaining({
+        invitationId: 'inv-legacy-terminal',
+        grants: ['view'],
+        grantRequests: [],
+      })],
+    });
+    const nodeDetailRes = await fetch(new URL('/relay/node/invitations/inv-legacy-terminal', relay.url()), {
+      headers: nodeHeaders(nodeToken),
+    });
+    expect(nodeDetailRes.status).toBe(200);
+    const nodeDetailBody = await nodeDetailRes.json();
+    expect(nodeDetailBody).toEqual(expect.objectContaining({
+      invitation: expect.objectContaining({
+        invitationId: 'inv-legacy-terminal',
+        grants: ['view'],
+        grantRequests: [],
+      }),
+    }));
+    expect(JSON.stringify(nodeDetailBody)).not.toContain('legacy-invitation-token-hash');
+    expect(JSON.stringify(nodeDetailBody)).not.toContain('legacy-member-token-hash');
+    expect(JSON.stringify(nodeDetailBody)).not.toContain('grant-legacy-terminal');
+
+    const approveRes = await fetch(
+      new URL('/relay/node/invitations/inv-legacy-terminal/grant-requests/grant-req-terminal/approve', relay.url()),
+      { method: 'POST', headers: nodeHeaders(nodeToken) },
+    );
+
+    expect(approveRes.status).toBe(403);
+    await expect(approveRes.json()).resolves.toEqual({ error: 'guest-terminal-disabled' });
+    expect(saveInvitationCalled).toBe(false);
+    expect(nodeMessages.some((msg) => (
+      (msg as { type?: string; upserts?: Array<{ grants?: string[] }> }).type === 'policy.delta'
+      && (msg as { upserts?: Array<{ grants?: string[] }> }).upserts?.some((grant) => grant.grants?.includes('terminalInput'))
+    ))).toBe(false);
+
+    const cookie = `kookr_relay_member_token=${memberToken}; kookr_relay_device_id=device-legacy`;
+    const stateRes = await fetch(new URL('/relay/member/share-state', relay.url()), { headers: { cookie } });
+    expect(stateRes.status).toBe(200);
+    await expect(stateRes.json()).resolves.toEqual(expect.objectContaining({
+      state: expect.objectContaining({
+        grants: ['view'],
+        grantRequests: [],
+        terminal: {
+          state: 'blocked',
+          reason: 'guest.terminalDisabled',
+          message: 'Guest Links are view-only and do not support terminal viewing.',
+        },
+      }),
+    }));
+
+    const member = await connectMember(relay, nodeId, memberToken, cookie);
+    const memberMessages: unknown[] = [];
+    member.on('message', (data) => memberMessages.push(JSON.parse(data.toString()) as unknown));
+    member.send(JSON.stringify({
+      type: 'remote.command',
+      commandId: 'cmd-legacy-terminal-grant',
+      nodeId,
+      nodeEpoch: '1',
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      idempotencyKey: 'idem-legacy-terminal-grant',
+      action: 'submitMessage',
+    }));
+    await waitFor(() => memberMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-legacy-terminal-grant'));
+    expect(memberMessages).toContainEqual(expect.objectContaining({
+      commandId: 'cmd-legacy-terminal-grant',
+      outcome: 'rejected-pre-audit',
+      reason: 'missing terminalInput grant',
+    }));
+    expect(nodeMessages.some((msg) => (msg as { commandId?: string }).commandId === 'cmd-legacy-terminal-grant')).toBe(false);
+  });
+
+  it('blocks duplicate terminal-input requests before owner denial cooldowns apply', async () => {
     const relay = await startRelay();
     const { nodeId, nodeToken } = relay.registerNode();
     const createdRes = await fetch(new URL('/relay/node/invitations', relay.url()), {
@@ -1130,24 +1241,15 @@ describe('relay node-scoped task-share endpoints', () => {
       headers: { 'content-type': 'application/json', cookie, 'x-kookr-csrf-token': csrfToken },
       body: JSON.stringify({ nodeId, grants: ['terminalInput'] }),
     });
-    expect(requestRes.status).toBe(201);
-    const requested = await requestRes.json() as { request: { requestId: string } };
-
-    const deniedRes = await fetch(new URL(`/relay/node/invitations/${created.invitation.invitationId}/grant-requests/${requested.request.requestId}/deny`, relay.url()), {
-      method: 'POST',
-      headers: nodeHeaders(nodeToken),
-    });
-    expect(deniedRes.status).toBe(200);
+    expect(requestRes.status).toBe(403);
+    await expect(requestRes.json()).resolves.toEqual({ error: 'guest-terminal-disabled' });
 
     const retryRes = await fetch(new URL('/relay/member/grant-requests', relay.url()), {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie, 'x-kookr-csrf-token': csrfToken },
       body: JSON.stringify({ nodeId, grants: ['terminalInput'] }),
     });
-    expect(retryRes.status).toBe(429);
-    await expect(retryRes.json()).resolves.toEqual(expect.objectContaining({
-      error: 'denied-cooldown',
-      retryAt: expect.any(String),
-    }));
+    expect(retryRes.status).toBe(403);
+    await expect(retryRes.json()).resolves.toEqual({ error: 'guest-terminal-disabled' });
   });
 });

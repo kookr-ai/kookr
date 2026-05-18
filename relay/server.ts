@@ -18,6 +18,7 @@ import {
   type HostedRelayMetricsResponse,
   type HostedRelayMode,
   type HostedRelayNodeCredentialResponse,
+  type GuestLinkPosture,
   type HostedRelayStatus,
 } from '../src/shared/contracts/hosted-relay.js';
 import { isNodeHello, makeRelayHello, REMOTE_PROTOCOL_VERSION, type NodeHello } from '../src/remote/handshake.js';
@@ -43,7 +44,7 @@ import type {
   TaskShareGrant,
   TaskShareMutableGrant,
 } from '../src/remote/share-contract.js';
-import { InvitationStore, type InvitationRecord } from './src/invitations/store.js';
+import { InvitationStore, isGuestLinkTaskShare, type InvitationRecord } from './src/invitations/store.js';
 import { buildMemberShareState, type MemberNodeState } from './src/member-state.js';
 import { createPushFanout, type PushDeliveryOutcome, type PushFanout, type PushSender } from './src/push/fanout.js';
 import { createPushSubscriptionStore, isPushSubscription, type PushSubscriptionStore, type StoredPushSubscription } from './src/push/subscriptions.js';
@@ -152,6 +153,7 @@ export interface RelayServerOptions {
   trustedProxy?: boolean;
   shareMaxTtlMs?: number;
   policyAckTimeoutMs?: number;
+  memberWebSocketNonceTtlMs?: number;
 }
 
 type PolicySyncState = 'notSent' | 'sentAwaitingAck' | 'acked' | 'stale' | 'timedOut' | 'failed';
@@ -311,14 +313,33 @@ function readJson(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-// Every relay response withholds the Referer header so an invite/member
-// token that lands in a URL fragment can never leak to a third party via a
-// cross-origin navigation or sub-resource request. RFC: Phase A0.
-const RELAY_SECURITY_HEADERS = { 'referrer-policy': 'no-referrer' } as const;
+// Public relay pages carry the same defensive headers as JSON responses:
+// no cache for invite/member state, no referrer leakage, no framing, and a
+// narrow CSP. Inline script/style remain allowed because /relay/join is a
+// self-contained HTML document served without the dashboard asset pipeline.
+const RELAY_SECURITY_HEADERS = {
+  'cache-control': 'no-store',
+  'content-security-policy': [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "connect-src 'self' ws: wss:",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+  ].join('; '),
+  'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+  'referrer-policy': 'no-referrer',
+  'x-content-type-options': 'nosniff',
+  'x-frame-options': 'DENY',
+} as const;
 const RELAY_MEMBER_COOKIE = 'kookr_relay_member_token';
 const RELAY_MEMBER_CSRF_COOKIE = 'kookr_relay_csrf_token';
 const RELAY_MEMBER_DEVICE_COOKIE = 'kookr_relay_device_id';
 const MEMBER_WS_NONCE_TTL_MS = 60_000;
+const MEMBER_WS_MAX_PAYLOAD_BYTES = 16 * 1024;
 const MEMBER_RETRY_TOKEN_TTL_MS = 30_000;
 
 function sendJson(res: ServerResponse, status: number, payload: unknown, headers: Record<string, string | string[]> = {}): void {
@@ -570,6 +591,36 @@ function hostedRelayStatus(
   };
 }
 
+function guestLinkPosture(hosted: HostedRelayRuntimeOptions, nonceTtlMs: number): GuestLinkPosture {
+  let https = false;
+  try {
+    https = new URL(hosted.relayUrl).protocol === 'https:';
+  } catch {
+    https = false;
+  }
+  return {
+    checkedAt: new Date().toISOString(),
+    publicOrigin: {
+      url: hosted.relayUrl,
+      https,
+    },
+    securityHeaders: {
+      cacheControlNoStore: RELAY_SECURITY_HEADERS['cache-control'] === 'no-store',
+      referrerPolicyNoReferrer: RELAY_SECURITY_HEADERS['referrer-policy'] === 'no-referrer',
+      contentTypeNosniff: RELAY_SECURITY_HEADERS['x-content-type-options'] === 'nosniff',
+      frameAncestorsDenied: RELAY_SECURITY_HEADERS['content-security-policy'].includes("frame-ancestors 'none'"),
+    },
+    webSocket: {
+      originRequired: true,
+      memberNonceRequired: true,
+      nonceTtlMs,
+      maxPayloadBytes: MEMBER_WS_MAX_PAYLOAD_BYTES,
+      compression: 'disabled',
+      unknownMessageCloses: true,
+    },
+  };
+}
+
 function createWindowLimiter(windowMs: number) {
   const windows = new Map<string, { startedAt: number; count: number }>();
   return (key: string, limit: number): boolean => {
@@ -643,11 +694,12 @@ function isNodeTaskShare(
  * the `taskId` ternary is unreachable and only satisfies union narrowing.
  */
 function toNodeInvitationView(invitation: InvitationRecord, connectedViewerCount = 0): RelayNodeInvitationView {
+  const guestLink = isGuestLinkTaskShare(invitation);
   return {
     invitationId: invitation.invitationId,
     nodeId: invitation.nodeId,
     taskId: invitation.subject.kind === 'task' ? invitation.subject.taskId : '',
-    grants: invitation.grants.filter(isTaskShareGrant),
+    grants: guestLink ? ['view'] : invitation.grants.filter(isTaskShareGrant),
     createdAt: invitation.createdAt,
     expiresAt: invitation.expiresAt,
     policyVersion: invitation.policyVersion,
@@ -658,7 +710,7 @@ function toNodeInvitationView(invitation: InvitationRecord, connectedViewerCount
     ...(typeof invitation.failedAcceptCount === 'number' ? { failedAcceptCount: invitation.failedAcceptCount } : {}),
     ...(invitation.lockedUntil ? { lockedUntil: invitation.lockedUntil } : {}),
     ...(invitation.redactedShareLabel ? { redactedShareLabel: invitation.redactedShareLabel } : {}),
-    grantRequests: (invitation.grantRequests ?? []).map((request) => ({
+    grantRequests: guestLink ? [] : (invitation.grantRequests ?? []).map((request) => ({
       ...request,
       requestedGrants: [...request.requestedGrants],
     })),
@@ -723,6 +775,14 @@ function parseGrantRequestBody(body: { grants?: unknown; comment?: unknown }): {
     grants: requestedGrants,
     ...(typeof body.comment === 'string' ? { comment: body.comment } : {}),
   };
+}
+
+function includesTerminalGrant(grants: readonly ShareGrant[]): boolean {
+  return grants.includes('terminalView') || grants.includes('terminalInput');
+}
+
+function guestLinkGrantBlockError(grants: readonly ShareGrant[]): 'guest-terminal-disabled' | 'guest-link-view-only' {
+  return includesTerminalGrant(grants) ? 'guest-terminal-disabled' : 'guest-link-view-only';
 }
 
 function grantRequestStatus(reason: string): 400 | 404 | 409 | 429 {
@@ -831,6 +891,7 @@ function authAllows(auth: RelayClientAuth, grant: KnownGrant | null, invitationS
   if (auth.invitationId && invitationStore) {
     const invitation = invitationStore.list().find((candidate) => candidate.invitationId === auth.invitationId);
     if (!invitation || invitation.revokedAt || Date.parse(invitation.expiresAt) <= Date.now()) return false;
+    if (isGuestLinkTaskShare(invitation) && grant !== 'view') return false;
     grants = invitation.grants;
   }
   if (grant === 'terminalInput') return grants.includes('terminalInput');
@@ -885,6 +946,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const trustedProxy = opts.trustedProxy ?? (
     process.env.KOOKR_RELAY_TRUSTED_PROXY === '0' ? false : isLoopbackHost(bindHost)
   );
+  const memberWebSocketNonceTtlMs = opts.memberWebSocketNonceTtlMs ?? MEMBER_WS_NONCE_TTL_MS;
   if (!isLoopbackHost(bindHost) && process.env.KOOKR_RELAY_ALLOW_INSECURE_BIND !== '1') {
     console.warn(JSON.stringify({
       event: 'relay.insecure_bind_warning',
@@ -1044,7 +1106,10 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     return { nodeId, nodeToken };
   };
 
-  const currentHostedStatus = (): HostedRelayStatus => hostedRelayStatus(hosted, Boolean(accountToken));
+  const currentHostedStatus = (): HostedRelayStatus => ({
+    ...hostedRelayStatus(hosted, Boolean(accountToken)),
+    guestLinkPosture: guestLinkPosture(hosted, memberWebSocketNonceTtlMs),
+  });
 
   const hostedBlocksNewShares = (): string | null => {
     if (!hosted.enabled) return null;
@@ -1220,18 +1285,20 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const sendPolicyDelta = (nodeId: NodeId, grant: PolicyGrantRecord): void => {
     const ws = nodeSockets.get(nodeId);
     if (!ws || ws.readyState !== ws.OPEN) return;
+    const invitation = invitations.list().find((candidate) => candidate.grantId === grant.grantId);
+    const safeGrant = invitation && isGuestLinkTaskShare(invitation) ? { ...grant, grants: ['view'] } : grant;
     try {
-      setPolicySent(nodeId, grant.policyVersion, [grant.grantId]);
+      setPolicySent(nodeId, safeGrant.policyVersion, [safeGrant.grantId]);
       ws.send(JSON.stringify({
         type: 'policy.delta',
         nodeId,
-        policyVersion: grant.policyVersion,
-        upserts: [grant],
+        policyVersion: safeGrant.policyVersion,
+        upserts: [safeGrant],
         revokes: [],
       }));
       broadcastMemberShareState(nodeId);
     } catch (err) {
-      setPolicyFailed(nodeId, grant.policyVersion, [grant.grantId], err instanceof Error ? err.message : String(err));
+      setPolicyFailed(nodeId, safeGrant.policyVersion, [safeGrant.grantId], err instanceof Error ? err.message : String(err));
       relayMetrics.policySyncFailures += 1;
       broadcastMemberShareState(nodeId);
     }
@@ -1239,7 +1306,10 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
 
   const sendPolicySync = (nodeId: NodeId, ws: WebSocket): void => {
     if (ws.readyState !== ws.OPEN) return;
-    const grants = invitations.activePolicyGrantsForNode(nodeId);
+    const grants = invitations.activePolicyGrantsForNode(nodeId).map((grant) => {
+      const invitation = invitations.list().find((candidate) => candidate.grantId === grant.grantId);
+      return invitation && isGuestLinkTaskShare(invitation) ? { ...grant, grants: ['view'] } : grant;
+    });
     const revokedGrantIds = invitations.revokedGrantIdsForNode(nodeId);
     setPolicySent(nodeId, invitations.currentPolicyVersion(), [
       ...grants.map((grant) => grant.grantId),
@@ -1345,7 +1415,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     memberWebSocketNonces.set(tokenHash(nonce), {
       invitationId,
       deviceId,
-      expiresAt: now + MEMBER_WS_NONCE_TTL_MS,
+      expiresAt: now + memberWebSocketNonceTtlMs,
     });
     return nonce;
   };
@@ -2045,6 +2115,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 400, { error: parsed.error });
           return;
         }
+        const invitation = invitations.list().find((candidate) => candidate.invitationId === auth.invitationId);
+        if (invitation && isGuestLinkTaskShare(invitation)) {
+          incrementSecurityEvent();
+          sendJson(res, 403, { error: guestLinkGrantBlockError(parsed.grants) });
+          return;
+        }
         const requested = invitations.requestGrants({
           invitationId: auth.invitationId,
           requestedGrants: parsed.grants,
@@ -2420,6 +2496,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 404, { error: 'not-found' });
           return;
         }
+        const existingRequest = existing.grantRequests?.find((request) => request.requestId === requestId);
+        if (resolution === 'approve' && existingRequest && isGuestLinkTaskShare(existing)) {
+          incrementSecurityEvent();
+          sendJson(res, 403, { error: guestLinkGrantBlockError(existingRequest.requestedGrants) });
+          return;
+        }
         const resolved = invitations.resolveGrantRequest({
           invitationId,
           requestId,
@@ -2462,8 +2544,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     }
   });
 
-  const nodeWss = new WebSocketServer({ noServer: true });
-  const clientWss = new WebSocketServer({ noServer: true });
+  const nodeWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  const clientWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: MEMBER_WS_MAX_PAYLOAD_BYTES });
 
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -2766,6 +2848,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (!invitation || invitation.nodeId !== nodeId || invitation.grantId !== auth.grantId) return false;
     if (invitation.revokedAt || Date.parse(invitation.expiresAt) <= Date.now()) return false;
     if (!isNodeTaskShare(invitation)) return false;
+    if (isGuestLinkTaskShare(invitation)) return false;
     if (!grantsAllowTerminalView(invitation.grants)) return false;
     if (envelope.projection.nodeId !== nodeId) return false;
     if (envelope.projection.nodeInstanceId !== String(nodeHello.get(nodeId)?.nodeEpoch ?? '')) return false;
@@ -3094,6 +3177,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   }
 
   clientWss.on('connection', (ws: WebSocket, _req: IncomingMessage, subscribedNodeId: NodeId, auth: RelayClientAuth) => {
+    ws.on('error', () => undefined);
     const url = new URL(_req.url ?? '/', 'http://127.0.0.1');
     const terminalInputTransportAllowed = terminalTransportAllowed(_req, { trustedProxy });
     const relayClientId = `relay-client-${randomUUID()}`;
@@ -3201,7 +3285,11 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         }
         return;
       }
-      if (command.type !== 'remote.command') return;
+      if (command.type !== 'remote.command') {
+        incrementSecurityEvent();
+        ws.close(1008, 'unknown message type');
+        return;
+      }
       if (typeof command.nodeId === 'string' && command.nodeId !== subscribedNodeId) {
         ws.close(1008, 'command node mismatch');
         return;
@@ -3916,7 +4004,7 @@ function relayJoinHtml(): string {
 <main>
   <section class="panel">
     <h1>Shared Kookr task</h1>
-    <p class="muted">Shared task access as an unverified guest.</p>
+    <p class="muted">Shared task access as an unverified guest. Guest Link is lower assurance: it is anonymous, view-only, and does not verify a Kookr identity.</p>
     <form id="join-form">
       <div id="ticket-fields">
         <label>

@@ -710,8 +710,8 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
             <div className="task-share-disabled" role="status">
               <strong>Guest Link is lower assurance</strong>
               <p>
-                Use this for people without Kookr installed. It is anonymous,
-                browser-compatible, and view-only by default.
+                It is anonymous, view-only, and does not verify a Kookr
+                identity.
               </p>
             </div>
 
@@ -870,7 +870,9 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
                     </button>
                   </div>
                   <small className={fragmentSafe ? 'task-share-muted' : 'task-share-error'}>
-                    {fragmentSafe ? 'Secret is in the URL fragment.' : 'Share URL is not fragment-only.'}
+                    {fragmentSafe
+                      ? 'Guest Link is lower assurance: it is anonymous, view-only, and does not verify a Kookr identity. Secret is in the URL fragment.'
+                      : 'Share URL is not fragment-only.'}
                   </small>
                 </div>
               </>
@@ -906,7 +908,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
 
             {hasCopyableCredentials && (
               <div className="task-share-copy-status" aria-live="polite">
-                {copiedSecret === 'share-link' && 'Guest link copied.'}
+                {copiedSecret === 'share-link' && 'Guest Link copied. Guest Link is lower assurance: it is anonymous, view-only, and does not verify a Kookr identity.'}
                 {copiedSecret === 'share-id' && 'Share ID copied.'}
                 {copiedSecret === 'password' && 'Password copied.'}
               </div>

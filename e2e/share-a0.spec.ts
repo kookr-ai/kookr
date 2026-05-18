@@ -142,35 +142,29 @@ test.describe('Easy connection sharing Phase A0', () => {
     await collaboratorPage.getByRole('button', { name: 'Join' }).click();
 
     await expect(collaboratorPage.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
-    await expect(collaboratorPage.getByRole('button', { name: 'Request terminal input' })).toBeEnabled({ timeout: 10_000 });
+    await expect(collaboratorPage.locator('#terminal-banner')).toContainText(
+      'Guest Links are view-only and do not support terminal viewing.',
+      { timeout: 10_000 },
+    );
+    await expect(collaboratorPage.getByRole('button', { name: 'Request terminal input' })).toHaveCount(0);
     await expect(collaboratorPage.getByLabel('Terminal input message')).toBeDisabled();
 
-    const keysBeforeApprovalRequest = await getKeysReceived(request, tmuxName);
-    await collaboratorPage.getByRole('button', { name: 'Request terminal input' }).click();
-    await expect(collaboratorPage.getByLabel('Terminal sharing status')).toContainText('Waiting for owner approval.');
+    const keysAfterJoin = await getKeysReceived(request, tmuxName);
     const terminalInput = collaboratorPage.getByLabel('Terminal input message');
     await expect(terminalInput).toBeDisabled();
-    expect(await getKeysReceived(request, tmuxName)).toEqual(keysBeforeApprovalRequest);
-    const reloadSentinel = await collaboratorPage.evaluate(() => {
-      const value = crypto.randomUUID();
-      (window as Window & { __kookrApprovalSentinel?: string }).__kookrApprovalSentinel = value;
-      return value;
-    });
+    expect(await getKeysReceived(request, tmuxName)).toEqual(keysAfterJoin);
 
     const dialog = page.getByRole('dialog', { name: 'Share this task' });
     await expect(dialog.locator('.task-share-state')).toContainText('Viewer connected', { timeout: 10_000 });
-    await expect(dialog.getByText('Guest links stay view-only')).toBeVisible({ timeout: 10_000 });
-    await expect(dialog.getByText('One control request is waiting')).toBeVisible();
+    await expect(dialog.getByText('Guest links stay view-only')).toHaveCount(0);
+    await expect(dialog.getByText('One control request is waiting')).toHaveCount(0);
     await expect(dialog.getByLabel('Collaborator grant requests')).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: 'Approve' })).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: 'Deny' })).toHaveCount(0);
     await expect(collaboratorPage.getByText('Terminal input approved')).toHaveCount(0);
     await expect(terminalInput).toBeDisabled();
-    await expect.poll(() => collaboratorPage.evaluate(() => (
-      (window as Window & { __kookrApprovalSentinel?: string }).__kookrApprovalSentinel
-    ))).toBe(reloadSentinel);
 
-    expect(await getKeysReceived(request, tmuxName)).toEqual(keysBeforeApprovalRequest);
+    expect(await getKeysReceived(request, tmuxName)).toEqual(keysAfterJoin);
 
     expect(requestedUrls.some((url) => url.includes('inviteToken=') || url.includes('password=') || url.includes('memberToken='))).toBe(false);
 
