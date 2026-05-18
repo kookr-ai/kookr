@@ -1,4 +1,5 @@
 import { once } from 'node:events';
+import { createDecipheriv, generateKeyPairSync, privateDecrypt } from 'node:crypto';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
 import { createSessionStreamPublisher } from '../session-stream-publisher.js';
 import { asNodeEpoch, asNodeId, asPolicyVersion, asSessionEpoch, asSessionId } from '../ids.js';
-import type { TerminalStreamEvent } from '../stream-events.js';
+import type { TerminalBytesPayload, TerminalPublicationMetadata, TerminalStreamEvent } from '../stream-events.js';
 import { createRemoteNodeClient } from '../node-client.js';
 import { createRelayServer } from '../../../relay/server.js';
 
@@ -235,6 +236,60 @@ describe('SessionStreamPublisher', () => {
       await relay.close();
     }
   });
+
+  it('encrypts contact-device terminal frames so only the recipient device key decrypts them', async () => {
+    const recipient = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const wrongRecipient = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const recipientPublicKey = recipient.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const recipientPrivateKey = recipient.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const wrongPrivateKey = wrongRecipient.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 's1', command: 'agent', args: [] });
+    const events: TerminalStreamEvent[] = [];
+    const publisher = createSessionStreamPublisher({
+      terminalBackend: backend,
+      remoteNodeClient: makeRemoteClient(events),
+      env: { KOOKR_RELAY_TRUSTED: 'true' },
+    });
+    await publisher.start();
+    expect(publisher.installPublicationRule({
+      publicationScopeId: 'scope-contact',
+      principal: { kind: 'contact-device', contactId: 'contact-1', deviceId: 'device-1' },
+      sessionId: asSessionId('s1'),
+      sessionEpoch: asSessionEpoch('1'),
+      approvedAt: new Date().toISOString(),
+      policyVersion: asPolicyVersion(1),
+      streamEncryption: {
+        kind: 'contact-e2ee',
+        recipientDeviceId: 'device-1',
+        recipientPublicKey,
+        streamKeyId: 'stream-key-1',
+      },
+    })).toEqual(expect.objectContaining({ ok: true }));
+    publisher.recordDemandProof({
+      principal: { kind: 'contact-device', contactId: 'contact-1', deviceId: 'device-1' },
+      sessionId: asSessionId('s1'),
+      sessionEpoch: asSessionEpoch('1'),
+      proof: { kind: 'recipient-signed-heartbeat', heartbeatKeyId: 'heartbeat-1', expiresAt: new Date(Date.now() + 60_000).toISOString() },
+    });
+
+    backend.emit('s1', 'CONTACT_SECRET_OUTPUT');
+
+    expect(events).toHaveLength(1);
+    const event = events[0];
+    expect(Buffer.from(event.payload.data, 'base64').toString('utf8')).not.toContain('CONTACT_SECRET_OUTPUT');
+    expect(event.publication?.streamEncryption).toEqual(expect.objectContaining({
+      kind: 'contact-e2ee',
+      recipientDeviceId: 'device-1',
+      streamKeyId: 'stream-key-1',
+      alg: 'RSA-OAEP-SHA256+A256GCM',
+    }));
+    const aad = `${event.nodeId}:${event.sessionId}:${event.sessionEpoch}:${event.seq}`;
+    expect(decryptContactTerminalPayload(event.payload, event.publication?.streamEncryption, recipientPrivateKey, aad).toString('utf8'))
+      .toBe('CONTACT_SECRET_OUTPUT');
+    expect(() => decryptContactTerminalPayload(event.payload, event.publication?.streamEncryption, wrongPrivateKey, aad)).toThrow();
+    publisher.stop();
+  });
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -250,4 +305,23 @@ async function waitFor(predicate: () => boolean): Promise<void> {
       }
     }, 10);
   });
+}
+
+function decryptContactTerminalPayload(
+  payload: TerminalBytesPayload,
+  streamEncryption: TerminalPublicationMetadata['streamEncryption'],
+  recipientPrivateKey: string,
+  aad?: string,
+): Buffer {
+  if (!streamEncryption || streamEncryption.kind !== 'contact-e2ee') {
+    throw new Error('contact terminal frame encryption metadata required');
+  }
+  const key = privateDecrypt(
+    { key: recipientPrivateKey, oaepHash: 'sha256' },
+    Buffer.from(streamEncryption.wrappedKey, 'base64'),
+  );
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(streamEncryption.iv, 'base64'));
+  if (aad) decipher.setAAD(Buffer.from(aad, 'utf8'));
+  decipher.setAuthTag(Buffer.from(streamEncryption.tag, 'base64'));
+  return Buffer.concat([decipher.update(Buffer.from(payload.data, 'base64')), decipher.final()]);
 }

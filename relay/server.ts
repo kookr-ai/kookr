@@ -24,11 +24,11 @@ import {
 import { isNodeHello, makeRelayHello, REMOTE_PROTOCOL_VERSION, type NodeHello } from '../src/remote/handshake.js';
 import type { CommandOutcome, CommandResult, RemoteCommandAction } from '../src/remote/command-journal.js';
 import { isRemoteControlEvent, type RemoteControlEvent } from '../src/remote/control-events.js';
-import { asGrantId, asNodeId, asPolicyVersion, asSeq, asSessionEpoch, asSessionId, type GrantId, type NodeEpoch, type NodeId, type PolicyVersion, type Seq, type SessionEpoch, type SessionId } from '../src/remote/ids.js';
+import { asGrantId, asNodeId, asPolicyVersion, asSessionEpoch, asSessionId, type GrantId, type NodeId, type PolicyVersion, type Seq, type SessionEpoch, type SessionId } from '../src/remote/ids.js';
 import type { KnownGrant, PolicyGrantRecord, PolicyRevokeMessage, ShareGrant, ShareSubject } from '../src/remote/policy-sync.js';
 import { grantForRemoteCommandAction, isKnownGrant } from '../src/remote/grants.js';
 import { payloadHash } from '../src/remote/retry-token.js';
-import { isTerminalStreamEvent, type TerminalPublicationPrincipal, type TerminalReplayGapEvent, type TerminalStreamEvent } from '../src/remote/stream-events.js';
+import { isTerminalStreamEvent, type TerminalPublicationPrincipal, type TerminalStreamEvent } from '../src/remote/stream-events.js';
 import { isPushAlertDeltaPayload, makeRedactedPushPayload } from '../src/remote/push.js';
 import type { RelayNodeCredentialStatusResponse } from '../src/shared/contracts/relay-connection.js';
 import type { MemberShareStateResponse } from '../src/shared/contracts/session-sharing-public.js';
@@ -88,12 +88,23 @@ interface PresenceMember {
 
 export interface RelayMetadataAuditRow {
   type: 'relay.metadata-audit';
-  commandId: string;
+  commandId?: string;
+  correlationId?: string;
   nodeId: NodeId;
+  relayId?: string;
   action?: RemoteCommandAction;
   outcome: CommandOutcome | 'forwarded';
   timestamp: string;
   reason?: string;
+  publicationScopeId?: string;
+  principalKind?: TerminalPublicationPrincipal['kind'];
+  pseudonymousMemberId?: string;
+  pseudonymousSessionId?: string;
+  policyVersion?: PolicyVersion;
+  byteCount?: number;
+  seqFrom?: Seq;
+  seqTo?: Seq;
+  revocationAckState?: 'not-revoked' | 'revoked' | 'unknown';
 }
 
 interface PendingCommandRecipient {
@@ -146,7 +157,6 @@ export interface RelayServerOptions {
   pushSender?: PushSender;
   pushSubject?: string;
   streamBackpressureBytes?: number;
-  terminalReplayMaxEvents?: number;
   stateDbPath?: string | null;
   stateStore?: Pick<RelaySqliteStateStore, 'load' | 'saveRegistration' | 'saveInvitation' | 'saveContactShareEnvelope' | 'probe' | 'close'>;
   stateProbe?: () => boolean;
@@ -459,17 +469,6 @@ function isAuthorizedClient(req: IncomingMessage, opts: RelayServerOptions, url?
   return isAuthorizedAdmin(req, opts.adminToken);
 }
 
-function streamKey(nodeEpoch: NodeEpoch, sessionId: SessionId, sessionEpoch: SessionEpoch): string {
-  return `${nodeEpoch}:${sessionId}:${sessionEpoch}`;
-}
-
-function parseSeq(value: string | null): Seq | null {
-  if (value === null || value.trim() === '') return null;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed < 0) return null;
-  return asSeq(parsed);
-}
-
 function parseTerminalSubscription(url: URL): RelayClientSubscription['terminal'] | undefined {
   const projectionId = url.searchParams.get('projectionId');
   const sessionAlias = url.searchParams.get('sessionAlias');
@@ -703,7 +702,9 @@ function toNodeInvitationView(invitation: InvitationRecord, connectedViewerCount
     invitationId: invitation.invitationId,
     nodeId: invitation.nodeId,
     taskId: invitation.subject.kind === 'task' ? invitation.subject.taskId : '',
-    grants: guestLink ? ['view'] : invitation.grants.filter(isTaskShareGrant),
+    grants: guestLink
+      ? guestLinkPolicyGrants(invitation, invitation.grants).filter((grant): grant is TaskShareGrant => grant === 'view' || grant === 'terminalView')
+      : invitation.grants.filter(isTaskShareGrant),
     createdAt: invitation.createdAt,
     expiresAt: invitation.expiresAt,
     policyVersion: invitation.policyVersion,
@@ -724,10 +725,12 @@ function toNodeInvitationView(invitation: InvitationRecord, connectedViewerCount
     ...(typeof invitation.failedAcceptCount === 'number' ? { failedAcceptCount: invitation.failedAcceptCount } : {}),
     ...(invitation.lockedUntil ? { lockedUntil: invitation.lockedUntil } : {}),
     ...(invitation.redactedShareLabel ? { redactedShareLabel: invitation.redactedShareLabel } : {}),
-    grantRequests: guestLink ? [] : (invitation.grantRequests ?? []).map((request) => ({
-      ...request,
-      requestedGrants: [...request.requestedGrants],
-    })),
+    grantRequests: (invitation.grantRequests ?? [])
+      .filter((request) => !guestLink || isGuestTerminalViewOnlyGrantSet(request.requestedGrants))
+      .map((request) => ({
+        ...request,
+        requestedGrants: [...request.requestedGrants],
+      })),
   };
 }
 
@@ -797,6 +800,19 @@ function includesTerminalGrant(grants: readonly ShareGrant[]): boolean {
 
 function guestLinkGrantBlockError(grants: readonly ShareGrant[]): 'guest-terminal-disabled' | 'guest-link-view-only' {
   return includesTerminalGrant(grants) ? 'guest-terminal-disabled' : 'guest-link-view-only';
+}
+
+function isGuestTerminalViewOnlyGrantSet(grants: readonly ShareGrant[]): boolean {
+  return grants.length > 0 && grants.every((grant) => grant === 'terminalView');
+}
+
+function guestLinkPolicyGrants(invitation: InvitationRecord, grants: readonly ShareGrant[]): ShareGrant[] {
+  const out: ShareGrant[] = grants.includes('view') ? ['view'] : [];
+  const approvedTerminalView = (invitation.grantRequests ?? []).some((request) => (
+    request.status === 'approved' && isGuestTerminalViewOnlyGrantSet(request.requestedGrants)
+  ));
+  if (approvedTerminalView && grants.includes('terminalView')) out.push('terminalView');
+  return out;
 }
 
 function grantRequestStatus(reason: string): 400 | 404 | 409 | 429 {
@@ -905,7 +921,7 @@ function authAllows(auth: RelayClientAuth, grant: KnownGrant | null, invitationS
   if (auth.invitationId && invitationStore) {
     const invitation = invitationStore.list().find((candidate) => candidate.invitationId === auth.invitationId);
     if (!invitation || invitation.revokedAt || Date.parse(invitation.expiresAt) <= Date.now()) return false;
-    if (isGuestLinkTaskShare(invitation) && grant !== 'view') return false;
+    if (isGuestLinkTaskShare(invitation) && grant !== 'view' && grant !== 'terminalView') return false;
     grants = invitation.grants;
   }
   if (grant === 'terminalInput') return grants.includes('terminalInput');
@@ -914,6 +930,12 @@ function authAllows(auth: RelayClientAuth, grant: KnownGrant | null, invitationS
 }
 
 function authAllowsTerminalStream(auth: RelayClientAuth, invitationStore?: InvitationStore): boolean {
+  if (auth.kind === 'member' && auth.invitationId && invitationStore) {
+    const invitation = invitationStore.list().find((candidate) => candidate.invitationId === auth.invitationId);
+    if (invitation && isGuestLinkTaskShare(invitation)) {
+      return authAllows(auth, 'terminalView', invitationStore) && guestSessionHasApprovedTerminalView(invitation, auth);
+    }
+  }
   return authAllows(auth, 'terminalView', invitationStore);
 }
 
@@ -945,6 +967,25 @@ function terminalPublicationMatchesAuth(principal: TerminalPublicationPrincipal 
   return auth.invitationId === principal.invitationId
     && auth.deviceId === principal.deviceId
     && (auth.memberId ?? auth.actorId) === principal.memberSessionId;
+}
+
+function guestSessionHasApprovedTerminalView(invitation: InvitationRecord, auth: RelayClientAuth): boolean {
+  if (auth.kind !== 'member' || !isGuestLinkTaskShare(invitation)) return false;
+  const memberSessionId = auth.memberId ?? auth.actorId;
+  return (invitation.grantRequests ?? []).some((request) => (
+    request.status === 'approved'
+    && request.requestedBy === memberSessionId
+    && isGuestTerminalViewOnlyGrantSet(request.requestedGrants)
+  ));
+}
+
+function memberScopedInvitationForAuth(invitation: InvitationRecord, auth: RelayClientAuth): InvitationRecord {
+  if (auth.kind !== 'member') return invitation;
+  return {
+    ...invitation,
+    memberId: auth.memberId ?? invitation.memberId ?? auth.actorId,
+    ...(auth.deviceId ? { memberDeviceId: auth.deviceId } : {}),
+  };
 }
 
 export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHandle {
@@ -989,7 +1030,6 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const commandRecipients = new Map<string, PendingCommandRecipient>();
   const presence = new Map<NodeId, Map<string, PresenceMember>>();
   const replay = new Map<NodeId, RemoteControlEvent[]>();
-  const terminalReplay = new Map<NodeId, Map<string, TerminalStreamEvent[]>>();
   const shareSessionProjections = new Map<string, ShareSessionProjectionEnvelopeV1>();
   const memberWebSocketNonces = new Map<string, MemberWebSocketNonce>();
   const memberRetryTokens = new Map<string, MemberRetryTokenBinding>();
@@ -1029,7 +1069,6 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   }
   const streamMetrics = { clientDropped: { backpressure: 0 } };
   const streamBackpressureBytes = opts.streamBackpressureBytes ?? 1_000_000;
-  const terminalReplayMaxEvents = opts.terminalReplayMaxEvents ?? 512;
   const policyAckTimeoutMs = opts.policyAckTimeoutMs ?? 5_000;
   const vapidKeys: VapidKeyStore = createVapidKeyStore();
   const pushSubscriptions: PushSubscriptionStore = createPushSubscriptionStore();
@@ -1312,7 +1351,9 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const ws = nodeSockets.get(nodeId);
     if (!ws || ws.readyState !== ws.OPEN) return;
     const invitation = invitations.list().find((candidate) => candidate.grantId === grant.grantId);
-    const safeGrant = invitation && isGuestLinkTaskShare(invitation) ? { ...grant, grants: ['view'] } : grant;
+    const safeGrant = invitation && isGuestLinkTaskShare(invitation)
+      ? { ...grant, grants: guestLinkPolicyGrants(invitation, grant.grants) }
+      : grant;
     try {
       setPolicySent(nodeId, safeGrant.policyVersion, [safeGrant.grantId]);
       ws.send(JSON.stringify({
@@ -1334,7 +1375,9 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (ws.readyState !== ws.OPEN) return;
     const grants = invitations.activePolicyGrantsForNode(nodeId).map((grant) => {
       const invitation = invitations.list().find((candidate) => candidate.grantId === grant.grantId);
-      return invitation && isGuestLinkTaskShare(invitation) ? { ...grant, grants: ['view'] } : grant;
+      return invitation && isGuestLinkTaskShare(invitation)
+        ? { ...grant, grants: guestLinkPolicyGrants(invitation, grant.grants) }
+        : grant;
     });
     const revokedGrantIds = invitations.revokedGrantIdsForNode(nodeId);
     setPolicySent(nodeId, invitations.currentPolicyVersion(), [
@@ -1683,10 +1726,6 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 403, { error: resolvedTerminal.error });
           return;
         }
-        const afterSeq = parseSeq(url.searchParams.get('afterSeq')) ?? asSeq(0);
-        const terminalEvents = resolvedTerminal
-          ? collectTerminalReplayEvents(asNodeId(nodeId), resolvedTerminal.sessionId, resolvedTerminal.sessionEpoch, afterSeq, auth)
-          : [];
         const requestedNodeId = asNodeId(nodeId);
         const registration = registrations.get(requestedNodeId);
         const connected = nodeSockets.has(requestedNodeId);
@@ -1703,7 +1742,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
               .filter((event) => canSendEventToAuth(requestedNodeId, auth, event))
               .map((event) => eventForAuth(auth, event))
             : [],
-          terminalEvents,
+          terminalEvents: [],
           members: [...(presence.get(asNodeId(nodeId))?.values() ?? [])],
         });
         return;
@@ -2142,7 +2181,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           return;
         }
         const invitation = invitations.list().find((candidate) => candidate.invitationId === auth.invitationId);
-        if (invitation && isGuestLinkTaskShare(invitation)) {
+        if (invitation && isGuestLinkTaskShare(invitation) && !isGuestTerminalViewOnlyGrantSet(parsed.grants)) {
           incrementSecurityEvent();
           sendJson(res, 403, { error: guestLinkGrantBlockError(parsed.grants) });
           return;
@@ -2523,7 +2562,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           return;
         }
         const existingRequest = existing.grantRequests?.find((request) => request.requestId === requestId);
-        if (resolution === 'approve' && existingRequest && isGuestLinkTaskShare(existing)) {
+        if (
+          resolution === 'approve'
+          && existingRequest
+          && isGuestLinkTaskShare(existing)
+          && !isGuestTerminalViewOnlyGrantSet(existingRequest.requestedGrants)
+        ) {
           incrementSecurityEvent();
           sendJson(res, 403, { error: guestLinkGrantBlockError(existingRequest.requestedGrants) });
           return;
@@ -2881,7 +2925,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (!invitation || invitation.nodeId !== nodeId || invitation.grantId !== auth.grantId) return false;
     if (invitation.revokedAt || Date.parse(invitation.expiresAt) <= Date.now()) return false;
     if (!isNodeTaskShare(invitation)) return false;
-    if (isGuestLinkTaskShare(invitation)) return false;
+    if (isGuestLinkTaskShare(invitation) && !guestSessionHasApprovedTerminalView(invitation, auth)) return false;
     if (!grantsAllowTerminalView(invitation.grants)) return false;
     if (envelope.projection.nodeId !== nodeId) return false;
     if (envelope.projection.nodeInstanceId !== String(nodeHello.get(nodeId)?.nodeEpoch ?? '')) return false;
@@ -3064,7 +3108,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       if (!invitation || !node) continue;
       if (sub.ws.readyState === sub.ws.OPEN) {
         const state = memberShareStateForTransport(
-          { state: buildMemberShareState({ invitation, node, deviceId: sub.auth.deviceId }) },
+          { state: buildMemberShareState({ invitation: memberScopedInvitationForAuth(invitation, sub.auth), node, deviceId: sub.auth.deviceId }) },
           sub.terminalTransportAllowed ?? true,
         );
         sub.ws.send(JSON.stringify({
@@ -3072,88 +3116,6 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           state: state.state,
         }));
       }
-    }
-  }
-
-  function appendTerminalReplay(event: TerminalStreamEvent): void {
-    if (event.kind === 'terminal.replay-gap') return;
-    let bySession = terminalReplay.get(event.nodeId);
-    if (!bySession) {
-      bySession = new Map();
-      terminalReplay.set(event.nodeId, bySession);
-    }
-    const key = streamKey(event.nodeEpoch, event.sessionId, event.sessionEpoch);
-    const events = bySession.get(key) ?? [];
-    events.push(event);
-    bySession.set(key, events.slice(-terminalReplayMaxEvents));
-  }
-
-  function makeTerminalGapEvent(opts: {
-    nodeId: NodeId;
-    nodeEpoch: NodeEpoch;
-    sessionId: SessionId;
-    sessionEpoch: SessionEpoch;
-    fromSeq: Seq;
-    toSeq: Seq;
-    reason: TerminalReplayGapEvent['payload']['reason'];
-  }): TerminalReplayGapEvent {
-    return {
-      nodeId: opts.nodeId,
-      nodeEpoch: opts.nodeEpoch,
-      sessionId: opts.sessionId,
-      sessionEpoch: opts.sessionEpoch,
-      seq: opts.toSeq,
-      ts: new Date().toISOString(),
-      kind: 'terminal.replay-gap',
-      payload: {
-        fromSeq: opts.fromSeq,
-        toSeq: opts.toSeq,
-        reason: opts.reason,
-      },
-    };
-  }
-
-  function collectTerminalReplayEvents(
-    nodeId: NodeId,
-    sessionId: SessionId,
-    sessionEpoch: SessionEpoch,
-    afterSeq: Seq,
-    auth?: RelayClientAuth,
-  ): TerminalStreamEvent[] {
-    const hello = nodeHello.get(nodeId);
-    if (!hello) return [];
-    const events = terminalReplay.get(nodeId)?.get(streamKey(hello.nodeEpoch, sessionId, sessionEpoch)) ?? [];
-    const selected = events.filter((event) => (
-      event.seq > afterSeq
-      && (!auth || terminalStreamEventAllowedForAuth(event, auth))
-    ));
-    const oldest = events[0]?.seq;
-    const out: TerminalStreamEvent[] = [];
-    if (hello && oldest !== undefined && afterSeq < asSeq(Number(oldest) - 1)) {
-      out.push(makeTerminalGapEvent({
-        nodeId,
-        nodeEpoch: hello.nodeEpoch,
-        sessionId,
-        sessionEpoch,
-        fromSeq: asSeq(Number(afterSeq) + 1),
-        toSeq: asSeq(Number(oldest) - 1),
-        reason: 'replay-buffer-miss',
-      }));
-    }
-    out.push(...selected);
-    return out;
-  }
-
-  function replayTerminalEvents(
-    ws: WebSocket,
-    nodeId: NodeId,
-    sessionId: SessionId,
-    sessionEpoch: SessionEpoch,
-    afterSeq: Seq,
-    auth?: RelayClientAuth,
-  ): void {
-    for (const event of collectTerminalReplayEvents(nodeId, sessionId, sessionEpoch, afterSeq, auth)) {
-      safeSendStream(ws, event);
     }
   }
 
@@ -3168,7 +3130,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   }
 
   function routeTerminalStreamEvent(event: TerminalStreamEvent): void {
-    appendTerminalReplay(event);
+    appendTerminalPublicationAudit(event);
     const subscribed = subscribers.get(event.nodeId);
     if (!subscribed) return;
     for (const sub of [...subscribed]) {
@@ -3191,6 +3153,35 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
 
   function appendMetadataAudit(row: RelayMetadataAuditRow): void {
     metadataAudit.push(row);
+  }
+
+  function appendTerminalPublicationAudit(event: TerminalStreamEvent): void {
+    if (event.kind !== 'terminal.bytes' || !event.publication) return;
+    const principal = event.publication.principal;
+    appendMetadataAudit({
+      type: 'relay.metadata-audit',
+      correlationId: createHash('sha256')
+        .update(`${event.nodeId}:${event.nodeEpoch}:${event.sessionId}:${event.sessionEpoch}:${event.seq}:${event.publication.publicationScopeId}`)
+        .digest('hex')
+        .slice(0, 24),
+      nodeId: event.nodeId,
+      relayId: accountId,
+      outcome: 'forwarded',
+      timestamp: new Date().toISOString(),
+      publicationScopeId: event.publication.publicationScopeId,
+      principalKind: principal.kind,
+      pseudonymousMemberId: pseudonymousAuditId(principal.kind === 'guest-member' ? principal.memberSessionId : principal.contactId),
+      pseudonymousSessionId: pseudonymousAuditId(`${event.sessionId}:${event.sessionEpoch}`),
+      policyVersion: event.publication.policyVersion,
+      byteCount: event.payload.byteLength,
+      seqFrom: event.seq,
+      seqTo: event.seq,
+      revocationAckState: 'not-revoked',
+    });
+  }
+
+  function pseudonymousAuditId(value: string): string {
+    return createHash('sha256').update(`relay-audit:${value}`).digest('hex').slice(0, 24);
   }
 
   function routeCommandResult(nodeId: NodeId, result: CommandResult): void {
@@ -3276,26 +3267,13 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       if (!canSendEventToSubscriber(subscribedNodeId, subscription, event)) continue;
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(eventForAuth(auth, event)));
     }
-    const requestedSessionId = url.searchParams.get('terminalSessionId');
-    const requestedSessionEpoch = url.searchParams.get('terminalSessionEpoch');
-    const requestedAfterSeq = parseSeq(url.searchParams.get('afterSeq'));
-    if (subscription.terminal && requestedAfterSeq !== null) {
-      replayTerminalEvents(
-        ws,
-        subscribedNodeId,
-        subscription.terminal.sessionId,
-        subscription.terminal.sessionEpoch,
-        requestedAfterSeq,
-        auth,
-      );
-    }
     recordPresence(subscribedNodeId, relayClientId, auth);
     if (auth.kind === 'member' && auth.invitationId) {
       const invitation = invitations.list().find((candidate) => candidate.invitationId === auth.invitationId);
       const node = memberNodeState(subscribedNodeId);
       if (invitation && node && ws.readyState === ws.OPEN) {
         const state = memberShareStateForTransport(
-          { state: buildMemberShareState({ invitation, node, deviceId: auth.deviceId }) },
+          { state: buildMemberShareState({ invitation: memberScopedInvitationForAuth(invitation, auth), node, deviceId: auth.deviceId }) },
           terminalInputTransportAllowed,
         );
         ws.send(JSON.stringify({
@@ -3323,11 +3301,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sessionEpoch?: unknown;
           projectionId?: unknown;
           sessionAlias?: unknown;
-          afterSeq?: unknown;
         };
-        const afterSeq = typeof payload?.afterSeq === 'number' && Number.isInteger(payload.afterSeq)
-          ? payload.afterSeq
-          : null;
         const requestedTerminal = auth.kind === 'owner'
           ? (
               typeof payload?.sessionId === 'string' && typeof payload.sessionEpoch === 'string'
@@ -3343,20 +3317,6 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         if (requestedTerminal && 'error' in requestedTerminal) {
           ws.close(1008, requestedTerminal.error);
           return;
-        }
-        if (
-          requestedTerminal
-          && afterSeq !== null
-          && afterSeq >= 0
-        ) {
-          replayTerminalEvents(
-            ws,
-            subscribedNodeId,
-            requestedTerminal.sessionId,
-            requestedTerminal.sessionEpoch,
-            asSeq(afterSeq),
-            auth,
-          );
         }
         return;
       }
@@ -4135,8 +4095,8 @@ function relayJoinHtml(): string {
       </div>
     </section>
     <section id="grant-request" class="request" hidden aria-label="Collaborator grant request">
-      <p id="grant-request-copy" class="muted">Terminal input requires owner approval.</p>
-      <button id="request-control" type="button">Request terminal input</button>
+      <p id="grant-request-copy" class="muted">Terminal viewing requires owner approval.</p>
+      <button id="request-control" type="button">Request terminal viewing</button>
     </section>
     <section id="approval-watch" class="approval-watch" hidden aria-label="Approval notification">
       <div class="row">
@@ -4686,7 +4646,10 @@ async function connectTerminalStream() {
   };
   nextTerminalWs.onmessage = (msg) => {
     if (terminalWs !== nextTerminalWs) return;
-    try { ingest(JSON.parse(msg.data)); } catch {}
+    try {
+      const parsed = JSON.parse(msg.data);
+      if (parsed && typeof parsed === 'object' && String(parsed.kind || '').startsWith('terminal.')) ingest(parsed);
+    } catch {}
   };
 }
 
@@ -4752,10 +4715,10 @@ function renderMemberShareState(memberState) {
     resetTerminalStream('');
   } else if (terminal.state === 'denied') {
     terminalStatusTitleEl.textContent = 'Terminal request denied';
-    terminalStatusCopyEl.textContent = 'The owner denied terminal input for this share.';
+    terminalStatusCopyEl.textContent = 'The owner denied terminal viewing for this share.';
     stopStatePolling();
     grantRequestEl.hidden = false;
-    grantRequestCopyEl.textContent = 'You can send another terminal input request after the cooldown.';
+    grantRequestCopyEl.textContent = 'You can send another terminal viewing request after the cooldown.';
     resetTerminalStream('Terminal access is denied for this share.');
   } else if (terminal.state === 'revoked') {
     terminalStatusTitleEl.textContent = 'Share revoked';
@@ -4768,13 +4731,13 @@ function renderMemberShareState(memberState) {
     stopStatePolling();
     resetTerminalStream('This share expired.');
   } else {
-    terminalStatusTitleEl.textContent = terminal.reason === 'policy.grantRequired' ? 'Terminal input not approved' : 'Terminal sharing unavailable';
+    terminalStatusTitleEl.textContent = terminal.reason === 'policy.grantRequired' ? 'Terminal viewing not approved' : 'Terminal sharing unavailable';
     terminalStatusCopyEl.textContent = terminal.message || 'Terminal sharing is not available for this session.';
     resetTerminalStream(terminal.message || 'Terminal sharing is not available for this session.');
     if (terminal.reason === 'policy.grantRequired') {
       stopStatePolling();
       grantRequestEl.hidden = false;
-      grantRequestCopyEl.textContent = 'Terminal input requires owner approval.';
+      grantRequestCopyEl.textContent = 'Terminal viewing requires owner approval.';
     } else if (terminal.reason === 'node.offline' || terminal.reason === 'policy.syncPending' || terminal.reason === 'policy.syncTimedOut' || terminal.reason === 'policy.syncStale' || terminal.reason === 'policy.syncFailed') {
       startStatePolling('Polling for share status.');
     } else {
@@ -4940,12 +4903,12 @@ requestControlEl.addEventListener('click', async () => {
     credentials: 'include',
     body: JSON.stringify({
       nodeId,
-      grants: ['terminalView', 'terminalInput'],
-      comment: sanitizeDisplayName(nameEl.value) + ' requested terminal viewing and input',
+      grants: ['terminalView'],
+      comment: sanitizeDisplayName(nameEl.value) + ' requested terminal viewing',
     }),
   });
   if (!res.ok) {
-    setStatus('Control request failed or expired.', true);
+    setStatus('Terminal viewing request failed or expired.', true);
     requestControlEl.disabled = false;
     return;
   }

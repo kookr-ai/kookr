@@ -28,7 +28,7 @@ describe('buildMemberShareState', () => {
     expect(memberBlockedMessage('transport.insecure')).toBe('Terminal sharing requires HTTPS for public links.');
   });
 
-  it('keeps anonymous guest links terminal-disabled without surfacing request state', () => {
+  it('keeps anonymous guest terminal viewing blocked until this browser session is approved', () => {
     const state = buildMemberShareState({
       invitation: invitation({
         shareId: '123-456',
@@ -57,12 +57,56 @@ describe('buildMemberShareState', () => {
 
     expect(state.terminal).toEqual({
       state: 'blocked',
-      reason: 'guest.terminalDisabled',
-      message: 'Guest Links are view-only and do not support terminal viewing.',
+      reason: 'policy.grantRequired',
+      message: 'Terminal viewing requires owner approval.',
     });
     expect(state.grantRequests).toEqual([]);
     expect(state.controllerLease).toEqual({ state: 'available' });
     expect(JSON.stringify(state)).not.toContain('Owner terminal');
+  });
+
+  it('exposes approved guest terminal viewing only for the requesting member session', () => {
+    const approved = invitation({
+      shareId: '123-456',
+      grants: ['view', 'terminalView'],
+      grantRequests: [{
+        requestId: 'grant-req-1',
+        invitationId: 'inv-1',
+        requestedGrants: ['terminalView'],
+        status: 'approved',
+        requestedAt: '2026-05-17T00:03:00.000Z',
+        resolvedAt: '2026-05-17T00:04:00.000Z',
+        resolution: 'approved',
+        requestedBy: 'member-secret',
+      }],
+    });
+    const node = {
+      connected: true,
+      hello: {
+        type: 'node.hello' as const,
+        nodeId: asNodeId('node-1'),
+        nodeEpoch: asNodeEpoch('1'),
+        protocolVersion: 1,
+        supportedFeatures: ['policy-sync', 'terminal-stream'] as const,
+        softwareVersion: 'test',
+      },
+      policySyncStatus: 'acked' as const,
+    };
+
+    expect(buildMemberShareState({
+      invitation: approved,
+      node,
+      now: new Date('2026-05-17T00:05:00.000Z'),
+    }).terminal).toEqual({ state: 'viewOnly' });
+    expect(buildMemberShareState({
+      invitation: { ...approved, memberId: 'member-other' },
+      node,
+      now: new Date('2026-05-17T00:05:00.000Z'),
+    }).terminal).toEqual({
+      state: 'blocked',
+      reason: 'policy.grantRequired',
+      message: 'Terminal viewing requires owner approval.',
+    });
   });
 
   it('redacts owner-only fields and reports missing terminal trust', () => {

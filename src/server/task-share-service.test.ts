@@ -29,6 +29,7 @@ const grantRequest = {
   invitationId: 'inv-1',
   requestedGrants: ['terminalInput' as const],
   status: 'approved' as const,
+  requestedBy: 'member-1',
   requestedAt: new Date().toISOString(),
   resolvedAt: new Date().toISOString(),
   resolution: 'approved' as const,
@@ -429,6 +430,10 @@ describe('TaskShareService', () => {
         sessionId: 'agent-1',
         sessionEpoch: asSessionEpoch('3'),
         policyVersion: asPolicyVersion(2),
+        streamEncryption: {
+          kind: 'guest-transport',
+          memberSessionId: 'member-1',
+        },
       }),
     ]);
     expect(terminal.demands).toEqual([

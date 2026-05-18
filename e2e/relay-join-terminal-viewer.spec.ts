@@ -151,6 +151,42 @@ function sendTerminalBytes(ws: WebSocket, nodeId: string, seq: number, text: str
   }));
 }
 
+function sendGuestTerminalBytes(ws: WebSocket, opts: {
+  nodeId: string;
+  invitationId: string;
+  memberSessionId: string;
+  deviceId: string;
+  policyVersion: number;
+  seq: number;
+  text: string;
+}): void {
+  ws.send(JSON.stringify({
+    nodeId: opts.nodeId,
+    nodeEpoch: '1',
+    sessionId: 'session-1',
+    sessionEpoch: '1',
+    seq: opts.seq,
+    ts: new Date().toISOString(),
+    kind: 'terminal.bytes',
+    payload: {
+      encoding: 'base64',
+      data: Buffer.from(opts.text).toString('base64'),
+      byteLength: Buffer.byteLength(opts.text),
+    },
+    publication: {
+      publicationScopeId: 'test-guest-terminal-publication',
+      principal: {
+        kind: 'guest-member',
+        invitationId: opts.invitationId,
+        memberSessionId: opts.memberSessionId,
+        deviceId: opts.deviceId,
+      },
+      policyVersion: opts.policyVersion,
+      streamEncryption: { kind: 'guest-transport', memberSessionId: opts.memberSessionId },
+    },
+  }));
+}
+
 async function joinShare(page: Page, joinUrl: string): Promise<void> {
   await page.goto(joinUrl);
   await expect(page.getByLabel('Share ID')).toHaveValue(/^\d{3}-\d{3}$/);
@@ -171,7 +207,7 @@ test.describe('relay join terminal viewer', () => {
     relay = null;
   });
 
-  test('keeps Guest Link terminal output disabled on desktop and mobile layouts', async ({ page }) => {
+  test('keeps Guest Link terminal output blocked until owner approval on desktop and mobile layouts', async ({ page }) => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
@@ -197,7 +233,7 @@ test.describe('relay join terminal viewer', () => {
 
     await expect(page.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
     await expect(page.locator('#terminal-banner')).toContainText(
-      'Guest Links are view-only and do not support terminal viewing.',
+      'Terminal viewing requires owner approval.',
       { timeout: 10_000 },
     );
     await expect(page.getByLabel('Shared terminal')).toBeHidden();
@@ -216,8 +252,8 @@ test.describe('relay join terminal viewer', () => {
     expect(noOverlap).toBe(true);
   });
 
-  test('keeps replay-gap and stale-projection terminal states hidden for Guest Links', async ({ page }) => {
-    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin', terminalReplayMaxEvents: 1 });
+  test('keeps replay-gap and stale-projection terminal states hidden before Guest Link approval', async ({ page }) => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
     const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken);
@@ -243,14 +279,14 @@ test.describe('relay join terminal viewer', () => {
 
     await expect(page.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
     await expect(page.locator('#terminal-banner')).toContainText(
-      'Guest Links are view-only and do not support terminal viewing.',
+      'Terminal viewing requires owner approval.',
       { timeout: 10_000 },
     );
     await expect(page.locator('#terminal')).not.toContainText('tail');
     await expect(page.getByLabel('Terminal input message')).toBeDisabled();
     sendTerminalBytes(nodeConn.ws, node.nodeId, 3, 'fresh');
     await expect(page.locator('#terminal-banner')).toContainText(
-      'Guest Links are view-only and do not support terminal viewing.',
+      'Terminal viewing requires owner approval.',
       { timeout: 10_000 },
     );
     await expect(page.locator('#terminal')).not.toContainText('fresh');
@@ -262,14 +298,14 @@ test.describe('relay join terminal viewer', () => {
       version: 2,
     });
     await expect(page.locator('#terminal-banner')).toContainText(
-      'Guest Links are view-only and do not support terminal viewing.',
+      'Terminal viewing requires owner approval.',
       { timeout: 10_000 },
     );
     await expect(page.getByLabel('Shared terminal')).toBeHidden();
     await expect(page.getByRole('button', { name: 'Send Enter' })).toBeDisabled();
   });
 
-  test('keeps Guest Link terminal input disabled even with persisted terminal grants', async ({ page }) => {
+  test('keeps Guest Link terminal input disabled with view-only approval', async ({ page }) => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
@@ -306,7 +342,7 @@ test.describe('relay join terminal viewer', () => {
 
     await expect(page.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
     await expect(page.locator('#terminal-banner')).toContainText(
-      'Guest Links are view-only and do not support terminal viewing.',
+      'Terminal viewing requires owner approval.',
       { timeout: 10_000 },
     );
     await expect(page.getByLabel('Shared terminal')).toBeHidden();
@@ -319,7 +355,89 @@ test.describe('relay join terminal viewer', () => {
     ))).toBe(false);
   });
 
-  test('keeps Guest Link terminal approval hidden across refresh and browser restart', async ({ page }) => {
+  test('shows approved Guest Link terminal viewing without replaying pre-approval bytes', async ({ page }) => {
+    relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
+    await listen(relay);
+    const node = relay.registerNode({ displayName: 'desktop' });
+    const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken);
+    sockets.push(nodeConn.ws);
+
+    const created = relay.createInvitation({
+      nodeId: node.nodeId,
+      subject: { kind: 'task', nodeId: node.nodeId, taskId: 'task-a' },
+      grants: ['view'],
+      shareTicket: true,
+    });
+    if (!created.shareTicket) throw new Error('expected share ticket');
+    const joinUrl = `${relay.url()}/relay/join/${encodeURIComponent(created.shareTicket.shareId)}#password=${encodeURIComponent(created.shareTicket.password)}`;
+
+    await joinShare(page, joinUrl);
+    await waitFor(() => Boolean(relay!.invitations()[0]?.acceptedAt));
+    let accepted = relay.invitations()[0]!;
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    publishTaskProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: accepted.invitationId });
+    publishSessionProjection(nodeConn.ws, { nodeId: node.nodeId, invitationId: accepted.invitationId, policyVersion: accepted.policyVersion });
+    sendGuestTerminalBytes(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: accepted.invitationId,
+      memberSessionId: accepted.memberId ?? 'member-unknown',
+      deviceId: accepted.memberDeviceId ?? 'device-unknown',
+      policyVersion: accepted.policyVersion,
+      seq: 1,
+      text: 'PRE_APPROVAL_SECRET',
+    });
+
+    await expect(page.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('#terminal-banner')).toContainText('Terminal viewing requires owner approval.');
+    await expect(page.locator('#terminal')).not.toContainText('PRE_APPROVAL_SECRET');
+    await page.getByRole('button', { name: 'Request terminal viewing' }).click();
+    await expect(page.locator('#terminal-status-title')).toContainText('Terminal request pending');
+    await waitFor(() => (relay!.invitations()[0]?.grantRequests ?? []).some((request) => request.status === 'pending'));
+
+    const pendingRequest = relay.invitations()[0]!.grantRequests![0]!;
+    const approve = await fetch(
+      `${relay.url()}/relay/node/invitations/${encodeURIComponent(accepted.invitationId)}/grant-requests/${encodeURIComponent(pendingRequest.requestId)}/approve`,
+      { method: 'POST', headers: { authorization: `Bearer ${node.nodeToken}` } },
+    );
+    expect(approve.status).toBe(200);
+    await waitFor(() => relay!.nodeStatuses()[0]?.policySyncStatus === 'acked');
+    accepted = relay.invitations()[0]!;
+    expect(accepted.memberId).toBeTruthy();
+    expect(accepted.memberDeviceId).toBeTruthy();
+    const memberSessionId = accepted.memberId!;
+    const deviceId = accepted.memberDeviceId!;
+    publishSessionProjection(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: accepted.invitationId,
+      policyVersion: accepted.policyVersion,
+      version: 2,
+    });
+
+    await expect(page.locator('#terminal-status-title')).toContainText('Terminal viewing approved', { timeout: 10_000 });
+    await expect(page.getByLabel('Shared terminal')).toBeVisible();
+    await expect(page.getByLabel('Terminal input message')).toBeDisabled();
+    await waitFor(() => nodeConn.messages.some((msg) => (
+      (msg as { type?: string; sessionId?: string; sessionEpoch?: string; principal?: { memberSessionId?: string; deviceId?: string } }).type === 'terminal.publicationDemand.v1'
+      && (msg as { sessionId?: string }).sessionId === 'session-1'
+      && (msg as { sessionEpoch?: string }).sessionEpoch === '1'
+      && (msg as { principal?: { memberSessionId?: string; deviceId?: string } }).principal?.memberSessionId === memberSessionId
+      && (msg as { principal?: { memberSessionId?: string; deviceId?: string } }).principal?.deviceId === deviceId
+    )), 10_000);
+    sendGuestTerminalBytes(nodeConn.ws, {
+      nodeId: node.nodeId,
+      invitationId: accepted.invitationId,
+      memberSessionId,
+      deviceId,
+      policyVersion: accepted.policyVersion,
+      seq: 2,
+      text: '\r\nAPPROVED_LIVE_BYTES\r\n',
+    });
+
+    await expect(page.locator('#terminal')).toContainText('APPROVED_LIVE_BYTES', { timeout: 10_000 });
+    await expect(page.locator('#terminal')).not.toContainText('PRE_APPROVAL_SECRET');
+  });
+
+  test('keeps Guest Link terminal viewing blocked across refresh before approval', async ({ page }) => {
     relay = createRelayServer({ allowInsecureClients: false, adminToken: 'admin' });
     await listen(relay);
     const node = relay.registerNode({ displayName: 'desktop' });
@@ -355,10 +473,10 @@ test.describe('relay join terminal viewer', () => {
     sendTerminalBytes(nodeConn.ws, node.nodeId, 1, 'MOBILE_RESUME_READY');
 
     await expect(page.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByRole('button', { name: 'Request terminal input' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Request terminal viewing' })).toHaveCount(1);
     await expect(page.getByRole('button', { name: 'Notify me when approved' })).toHaveCount(0);
     await expect(page.locator('#terminal-banner')).toContainText(
-      'Guest Links are view-only and do not support terminal viewing.',
+      'Terminal viewing requires owner approval.',
       { timeout: 10_000 },
     );
     await expect(page.locator('#terminal')).not.toContainText('MOBILE_RESUME_READY');
@@ -366,9 +484,9 @@ test.describe('relay join terminal viewer', () => {
 
     await page.reload();
     await expect(page.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByRole('button', { name: 'Request terminal input' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Request terminal viewing' })).toHaveCount(1);
     await expect(page.locator('#terminal-banner')).toContainText(
-      'Guest Links are view-only and do not support terminal viewing.',
+      'Terminal viewing requires owner approval.',
       { timeout: 10_000 },
     );
     await expect(page.locator('#terminal')).not.toContainText('MOBILE_RESUME_READY');
@@ -377,9 +495,9 @@ test.describe('relay join terminal viewer', () => {
     await restartedPage.setViewportSize({ width: 390, height: 520 });
     await restartedPage.goto(`${relay.url()}/relay/join`);
     await expect(restartedPage.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
-    await expect(restartedPage.getByRole('button', { name: 'Request terminal input' })).toHaveCount(0);
+    await expect(restartedPage.getByRole('button', { name: 'Request terminal viewing' })).toHaveCount(1);
     await expect(restartedPage.locator('#terminal-banner')).toContainText(
-      'Guest Links are view-only and do not support terminal viewing.',
+      'Terminal viewing requires owner approval.',
       { timeout: 10_000 },
     );
     await expect(restartedPage.locator('#terminal')).not.toContainText('MOBILE_RESUME_READY');

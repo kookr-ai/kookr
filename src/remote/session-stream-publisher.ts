@@ -5,6 +5,7 @@ import type { RemoteNodeClient } from './node-client.js';
 import type { Seq, SessionEpoch, SessionId } from './ids.js';
 import type { TerminalBytesEvent } from './stream-events.js';
 import { TerminalPublicationGate, type TerminalPublicationRule, type TerminalPublicationInstallResult } from './terminal-publication-gate.js';
+import { encryptContactTerminalPayload } from './terminal-frame-crypto.js';
 
 export interface SessionStreamPublisherOptions {
   terminalBackend: Pick<TerminalBackend, 'listSessions' | 'onData'>;
@@ -77,7 +78,34 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
       },
     };
     for (const publication of publicationGate.metadataForEvent(event)) {
-      opts.remoteNodeClient.publish({ ...event, publication });
+      if (publication.streamEncryption?.kind === 'contact-e2ee') {
+        const encrypted = encryptContactTerminalPayload(event.payload, {
+          recipientDeviceId: publication.streamEncryption.recipientDeviceId,
+          recipientPublicKey: publication.streamEncryption.recipientPublicKey,
+          streamKeyId: publication.streamEncryption.streamKeyId,
+          aad: `${event.nodeId}:${event.sessionId}:${event.sessionEpoch}:${event.seq}`,
+        });
+        opts.remoteNodeClient.publish({
+          ...event,
+          payload: encrypted.payload,
+          publication: {
+            publicationScopeId: publication.publicationScopeId,
+            principal: publication.principal,
+            policyVersion: publication.policyVersion,
+            streamEncryption: encrypted.streamEncryption,
+          },
+        });
+        continue;
+      }
+      opts.remoteNodeClient.publish({
+        ...event,
+        publication: {
+          publicationScopeId: publication.publicationScopeId,
+          principal: publication.principal,
+          policyVersion: publication.policyVersion,
+          ...(publication.streamEncryption ? { streamEncryption: publication.streamEncryption } : {}),
+        },
+      });
     }
   };
 

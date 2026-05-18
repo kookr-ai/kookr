@@ -972,7 +972,7 @@ describe('relay node-scoped task-share endpoints', () => {
     await expect(joinPage.text()).resolves.toContain("The shared task's machine is currently offline.");
   });
 
-  it('keeps node-created Guest Links terminal-disabled in Phase 2', async () => {
+  it('blocks terminal input and control escalation for node-created Guest Links', async () => {
     const relay = await startRelay();
     const { nodeId, nodeToken } = relay.registerNode();
     const nodeWs = await connectNode(relay, nodeId, nodeToken);
@@ -1025,8 +1025,8 @@ describe('relay node-scoped task-share endpoints', () => {
       state: expect.objectContaining({
         terminal: {
           state: 'blocked',
-          reason: 'guest.terminalDisabled',
-          message: 'Guest Links are view-only and do not support terminal viewing.',
+          reason: 'policy.grantRequired',
+          message: 'Terminal viewing requires owner approval.',
         },
       }),
     }));
@@ -1189,8 +1189,8 @@ describe('relay node-scoped task-share endpoints', () => {
         grantRequests: [],
         terminal: {
           state: 'blocked',
-          reason: 'guest.terminalDisabled',
-          message: 'Guest Links are view-only and do not support terminal viewing.',
+          reason: 'policy.grantRequired',
+          message: 'Terminal viewing requires owner approval.',
         },
       }),
     }));

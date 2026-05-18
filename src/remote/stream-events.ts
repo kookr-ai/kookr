@@ -18,6 +18,17 @@ export interface TerminalPublicationMetadata {
   publicationScopeId: string;
   principal: TerminalPublicationPrincipal;
   policyVersion: PolicyVersion;
+  streamEncryption?:
+    | {
+      kind: 'contact-e2ee';
+      recipientDeviceId: string;
+      streamKeyId: string;
+      alg: 'RSA-OAEP-SHA256+A256GCM';
+      wrappedKey: string;
+      iv: string;
+      tag: string;
+    }
+    | { kind: 'guest-transport'; memberSessionId: string };
 }
 
 export interface TerminalReplayGapPayload {

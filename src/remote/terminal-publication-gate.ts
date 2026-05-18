@@ -13,6 +13,9 @@ export interface TerminalPublicationRule {
   approvedAt: string;
   policyVersion: PolicyVersion;
   minSeqExclusive: Seq;
+  streamEncryption?:
+    | { kind: 'contact-e2ee'; recipientDeviceId: string; recipientPublicKey: string; streamKeyId: string }
+    | { kind: 'guest-transport'; memberSessionId: string };
   demandProof?: TerminalDemandProof;
   expiresAt?: string;
 }
@@ -20,6 +23,10 @@ export interface TerminalPublicationRule {
 export type TerminalPublicationInstallResult =
   | { ok: true; rule: TerminalPublicationRule }
   | { ok: false; reason: 'session-changed' | 'invalid-scope' };
+
+type TerminalPublicationCandidate = Omit<TerminalPublicationMetadata, 'streamEncryption'> & {
+  streamEncryption?: TerminalPublicationRule['streamEncryption'];
+};
 
 export class TerminalPublicationGate {
   private readonly rules = new Map<string, TerminalPublicationRule>();
@@ -65,9 +72,9 @@ export class TerminalPublicationGate {
     return updated;
   }
 
-  metadataForEvent(event: TerminalBytesEvent): TerminalPublicationMetadata[] {
+  metadataForEvent(event: TerminalBytesEvent): TerminalPublicationCandidate[] {
     const nowMs = this.now().getTime();
-    const out: TerminalPublicationMetadata[] = [];
+    const out: TerminalPublicationCandidate[] = [];
     for (const rule of this.rules.values()) {
       if (rule.sessionId !== event.sessionId || rule.sessionEpoch !== event.sessionEpoch) continue;
       if (Number(event.seq) <= Number(rule.minSeqExclusive)) continue;
@@ -79,6 +86,7 @@ export class TerminalPublicationGate {
         publicationScopeId: rule.publicationScopeId,
         principal: rule.principal,
         policyVersion: rule.policyVersion,
+        ...(rule.streamEncryption ? { streamEncryption: rule.streamEncryption } : {}),
       });
     }
     return out;

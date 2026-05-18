@@ -163,6 +163,7 @@ export class TaskShareService {
       sessionEpoch: input.sessionEpoch,
       approvedAt: new Date().toISOString(),
       policyVersion: share.policyVersion ?? (0 as PolicyVersion),
+      streamEncryption: { kind: 'guest-transport', memberSessionId: input.principal.memberSessionId },
       expiresAt: share.expiresAt,
     });
     if (!installed.ok) return false;
@@ -363,7 +364,7 @@ export class TaskShareService {
       && request.requestedBy === principal.memberSessionId
       && request.requestedGrants.some((grant) => grant === 'terminalView' || grant === 'terminalInput')
     ));
-    return approvedTerminalRequest || sessions.length === 1;
+    return approvedTerminalRequest;
   }
 }
 
