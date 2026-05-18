@@ -2,8 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CreateTaskShareApiResponse,
   ListTaskSharesApiResponse,
-  ResolveTaskShareGrantRequestApiResponse,
-  TaskShareGrantRequest,
   TaskShareMutableGrant,
   RevokeTaskShareApiResponse,
   TaskShareTicket,
@@ -35,6 +33,7 @@ const FOCUSABLE_SELECTOR = [
 
 type ShareModalStatus = 'idle' | 'loading' | 'ready' | 'disabled' | 'error';
 type CopiedShareSecret = 'share-link' | 'share-id' | 'password';
+type SharePath = 'contact' | 'guest';
 
 interface Props {
   taskId: string;
@@ -138,7 +137,7 @@ function shareCreateErrorMessage(errorCode: string | undefined): string {
     case 'rate-limit-exceeded':
       return 'Share creation is temporarily rate-limited.';
     default:
-      return 'Share link was not created.';
+      return 'Guest link was not created.';
   }
 }
 
@@ -189,6 +188,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
   const [newShareMode, setNewShareMode] = useState(false);
   const [copiedSecret, setCopiedSecret] = useState<CopiedShareSecret | null>(null);
   const [passwordRevealed, setPasswordRevealed] = useState(false);
+  const [sharePath, setSharePath] = useState<SharePath>('contact');
   const sharesRef = useRef<TaskShareSummary[]>([]);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -221,6 +221,8 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
   const durationOptions = SHARE_DURATIONS.filter((option) => option.ms <= shareMaxTtlMs);
   const longLivedShare = ttlMs > ONE_DAY_MS;
   const longLivedWarningId = 'task-share-long-lived-warning';
+  const guestPathSelected = sharePath === 'guest';
+  const pendingGrantRequestCount = displayedShare?.grantRequests.filter((request) => request.status === 'pending').length ?? 0;
 
   function commitShares(nextShares: TaskShareSummary[]) {
     sharesRef.current = nextShares;
@@ -251,7 +253,13 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
     if (!open) return;
     setNewShareMode(false);
     setGeneratedJoinUrl(null);
+    setSharePath('contact');
   }, [open, taskId]);
+
+  useEffect(() => {
+    if (!open || !latestShare) return;
+    setSharePath('guest');
+  }, [open, taskId, latestShare?.invitationId]);
 
   useEffect(() => {
     if (!open) return;
@@ -397,7 +405,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
       commitShares(replaceShare(sharesRef.current, body.share));
       setStatus('ready');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Share link was not created.');
+      setError(err instanceof Error ? err.message : 'Guest link was not created.');
     } finally {
       setBusy(false);
     }
@@ -422,28 +430,6 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
     } catch {
       setError('Revoke did not complete. Local access is marked revoke-pending until retry succeeds.');
       await loadShares().catch(() => undefined);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function resolveGrantRequest(invitationId: string, requestId: string, decision: 'approve' | 'deny') {
-    if (!csrfToken || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/share/task/${encodeURIComponent(invitationId)}/grant-requests/${encodeURIComponent(requestId)}/${decision}`,
-        {
-          method: 'POST',
-          headers: { [SHARE_CSRF_HEADER]: csrfToken },
-        },
-      );
-      if (!res.ok) throw new Error(`grant-request-${decision}-${res.status}`);
-      const body = await res.json() as ResolveTaskShareGrantRequestApiResponse;
-      commitShares(replaceShare(sharesRef.current, body.share));
-    } catch {
-      setError(decision === 'approve' ? 'Grant request was not approved.' : 'Grant request was not denied.');
     } finally {
       setBusy(false);
     }
@@ -497,8 +483,29 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
         </div>
 
         <div className="task-share-subject">
-          <span>View-only access</span>
+          <span>Task</span>
           <strong>{taskLabel}</strong>
+        </div>
+
+        <div className="task-share-paths" role="group" aria-label="Share path">
+          <button
+            type="button"
+            aria-pressed={sharePath === 'contact'}
+            className={`task-share-path${sharePath === 'contact' ? ' task-share-path--active' : ''}`}
+            onClick={() => setSharePath('contact')}
+          >
+            <span>Send to Kookr contact</span>
+            <strong>Secure default</strong>
+          </button>
+          <button
+            type="button"
+            aria-pressed={sharePath === 'guest'}
+            className={`task-share-path${sharePath === 'guest' ? ' task-share-path--active' : ''}`}
+            onClick={() => setSharePath('guest')}
+          >
+            <span>Create guest link</span>
+            <strong>Browser fallback</strong>
+          </button>
         </div>
 
         {status === 'loading' && <p className="task-share-muted">Loading share status...</p>}
@@ -516,8 +523,53 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
           <div className="task-share-error" role="alert">{error ?? 'Share status is unavailable.'}</div>
         )}
 
-        {status === 'ready' && (
+        {status === 'ready' && sharePath === 'contact' && (
           <>
+            <section className="task-share-policy-panel" aria-label="Contact Share policy">
+              <div>
+                <strong>Contact Share is the secure Kookr-to-Kookr path.</strong>
+                <p>
+                  It will notify a verified contact inside Kookr, let them accept or refuse,
+                  and show the task as a shared remote task after Phase 1 lands.
+                </p>
+              </div>
+              <button type="button" className="btn-primary" disabled>
+                Contacts coming next
+              </button>
+            </section>
+
+            <section className="task-share-preview" aria-label="Shared task visual model">
+              <div className="task-share-preview-title">
+                <span className="task-share-marker">Shared</span>
+                <strong>{taskLabel}</strong>
+              </div>
+              <div className="task-share-preview-meta">
+                <span>From contact</span>
+                <span>Remote node</span>
+                <span>View only</span>
+              </div>
+            </section>
+
+            <div className="task-share-disabled" role="status">
+              <strong>Public controls stay disabled</strong>
+              <p>
+                Terminal input, permission approval, launch, stop, and collaborator
+                actions remain unavailable for public shares.
+              </p>
+            </div>
+          </>
+        )}
+
+        {status === 'ready' && guestPathSelected && (
+          <>
+            <div className="task-share-disabled" role="status">
+              <strong>Guest Link is lower assurance</strong>
+              <p>
+                Use this for people without Kookr installed. It is anonymous,
+                browser-compatible, and view-only by default.
+              </p>
+            </div>
+
             {activeShare ? (
               <div className="task-share-row">
                 <span>Expires</span>
@@ -541,7 +593,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
 
             {terminalShare && (
               <p className="task-share-muted">
-                This share is no longer active. Create a new share to invite another collaborator.
+                This guest link is no longer active. Create a new guest link to invite another viewer.
               </p>
             )}
 
@@ -595,36 +647,13 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
               </section>
             )}
 
-            {displayedShare && !terminalShare && displayedShare.grantRequests.some((request) => request.status === 'pending') && (
-              <div className="task-share-requests" aria-label="Collaborator grant requests">
-                {displayedShare.grantRequests
-                  .filter((request): request is TaskShareGrantRequest & { status: 'pending' } => request.status === 'pending')
-                  .map((request) => (
-                    <div className="task-share-request" key={request.requestId}>
-                      <div>
-                        <strong>{request.requestedGrants.map(grantLabel).join(', ')}</strong>
-                        {request.comment && <p>{request.comment}</p>}
-                      </div>
-                      <div className="task-share-actions">
-                        <button
-                          type="button"
-                          className="btn-primary"
-                          disabled={busy}
-                          onClick={() => resolveGrantRequest(displayedShare.invitationId, request.requestId, 'approve')}
-                        >
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          disabled={busy}
-                          onClick={() => resolveGrantRequest(displayedShare.invitationId, request.requestId, 'deny')}
-                        >
-                          Deny
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+            {displayedShare && !terminalShare && pendingGrantRequestCount > 0 && (
+              <div className="task-share-disabled" role="status">
+                <strong>Guest links stay view-only</strong>
+                <p>
+                  {pendingGrantRequestCount === 1 ? 'One control request is' : `${pendingGrantRequestCount} control requests are`}
+                  {' '}waiting, but public guest links cannot approve terminal or task controls.
+                </p>
               </div>
             )}
 
@@ -678,7 +707,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
                   </div>
                 )}
                 <div className="task-share-link task-share-field">
-                  <label htmlFor="task-share-link-input">Share link</label>
+                  <label htmlFor="task-share-link-input">Guest link</label>
                   <div className="task-share-input-row">
                     <input
                       id="task-share-link-input"
@@ -689,7 +718,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
                     <button
                       type="button"
                       className="btn-secondary task-share-copy"
-                      aria-label="Copy share link from field"
+                      aria-label="Copy guest link from field"
                       onClick={() => void copyShareSecret('share-link', joinUrl)}
                     >
                       {copiedSecret === 'share-link' ? 'Copied' : 'Copy'}
@@ -707,15 +736,15 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
                 <button
                   type="button"
                   className="btn-primary"
-                  aria-label="Copy share link"
+                  aria-label="Copy guest link"
                   onClick={() => void copyShareSecret('share-link', joinUrl)}
                   disabled={busy}
                 >
-                  {copiedSecret === 'share-link' ? 'Copied' : 'Copy share link'}
+                  {copiedSecret === 'share-link' ? 'Copied' : 'Copy guest link'}
                 </button>
               ) : (
                 <button type="button" className="btn-primary" onClick={handleCreateAction} disabled={busy || Boolean(activeShare)}>
-                  {terminalShare ? 'Create new share' : activeShare ? 'Share link active' : 'Create share link'}
+                  {terminalShare ? 'Create new guest link' : activeShare ? 'Guest link active' : 'Create guest link'}
                 </button>
               )}
               {displayedShare && !terminalShare && (
@@ -732,7 +761,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
 
             {hasCopyableCredentials && (
               <div className="task-share-copy-status" aria-live="polite">
-                {copiedSecret === 'share-link' && 'Share link copied.'}
+                {copiedSecret === 'share-link' && 'Guest link copied.'}
                 {copiedSecret === 'share-id' && 'Share ID copied.'}
                 {copiedSecret === 'password' && 'Password copied.'}
               </div>
