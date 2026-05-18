@@ -83,7 +83,8 @@ test.describe('Easy connection sharing Phase B1 relay pairing', () => {
 
     const dialog = page.getByRole('dialog', { name: 'Share this task' });
     await expect(dialog).toBeVisible();
-    await dialog.getByRole('button', { name: 'Create share link' }).click();
+    await dialog.locator('.task-share-path', { hasText: 'Create guest link' }).click();
+    await dialog.getByRole('button', { name: 'Create guest link', exact: true }).click();
     const linkInput = dialog.locator('.task-share-link input');
     await expect(linkInput).toBeVisible();
     const joinUrl = await linkInput.inputValue();

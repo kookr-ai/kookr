@@ -51,8 +51,10 @@ async function createShareFromDashboard(page: Page): Promise<string> {
   await page.getByTestId('task-share-button').click();
   const dialog = page.getByRole('dialog', { name: 'Share this task' });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText('View-only access')).toBeVisible();
-  await dialog.getByRole('button', { name: 'Create share link' }).click();
+  await expect(dialog).toContainText('Contact Share is the secure Kookr-to-Kookr path.');
+  await dialog.locator('.task-share-path', { hasText: 'Create guest link' }).click();
+  await expect(dialog).toContainText('Guest Link is lower assurance');
+  await dialog.getByRole('button', { name: 'Create guest link', exact: true }).click();
   const shareIdInput = dialog.getByRole('textbox', { name: 'Share ID' });
   const passwordInput = dialog.locator('.task-share-ticket label', { hasText: 'Password' }).locator('input');
   await expect(shareIdInput).toBeVisible();
@@ -67,7 +69,7 @@ async function createShareFromDashboard(page: Page): Promise<string> {
   expect(parsed.search).toBe('');
   expect(parsed.hash).toContain('password=');
   expect(joinUrl).not.toContain('?password');
-  await expect(dialog.getByRole('status')).toContainText('Waiting for viewer');
+  await expect(dialog.locator('.task-share-state')).toContainText('Waiting for viewer');
   return joinUrl;
 }
 
@@ -105,10 +107,10 @@ test.describe('Easy connection sharing Phase A0', () => {
     expect(requestedUrls.some((url) => url.includes('inviteToken=') || url.includes('password=') || url.includes('memberToken='))).toBe(false);
 
     const dialog = page.getByRole('dialog', { name: 'Share this task' });
-    await expect(dialog.getByRole('status')).toContainText('Viewer connected', { timeout: 10_000 });
+    await expect(dialog.locator('.task-share-state')).toContainText('Viewer connected', { timeout: 10_000 });
     await dialog.getByRole('button', { name: 'Revoke' }).click();
-    await expect(dialog.getByRole('status')).toContainText('Revoked', { timeout: 10_000 });
-    await expect(dialog.getByRole('button', { name: 'Create new share' })).toBeVisible();
+    await expect(dialog.locator('.task-share-state')).toContainText('Revoked', { timeout: 10_000 });
+    await expect(dialog.getByRole('button', { name: 'Create new guest link' })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Revoke' })).toHaveCount(0);
     await expect(dialog.getByText('Link expires in')).toHaveCount(0);
     await expect(dialog.getByText('Display label')).toHaveCount(0);
@@ -116,12 +118,12 @@ test.describe('Easy connection sharing Phase A0', () => {
     await expect(dialog.getByText('Terminal sharing')).toHaveCount(0);
     await expect(dialog.getByRole('textbox', { name: 'Share ID' })).toHaveCount(0);
     await expect(dialog.getByRole('textbox', { name: 'Password' })).toHaveCount(0);
-    await expect(collaboratorPage.getByRole('status')).toContainText('Disconnected', { timeout: 10_000 });
+    await expect(collaboratorPage.locator('#status')).toContainText('Disconnected', { timeout: 10_000 });
 
     await collaborator.close();
   });
 
-  test('owner approval unlocks collaborator terminal input without reloading the join page', async ({ page, request, browser }) => {
+  test('guest terminal input requests remain non-actionable for owners', async ({ page, request, browser }) => {
     await createTask(request);
     const tmuxName = await getLatestTmuxName(request);
     await selectTask(page);
@@ -143,11 +145,11 @@ test.describe('Easy connection sharing Phase A0', () => {
     await expect(collaboratorPage.getByRole('button', { name: 'Request terminal input' })).toBeEnabled({ timeout: 10_000 });
     await expect(collaboratorPage.getByLabel('Terminal input message')).toBeDisabled();
 
-    const message = 'approved terminal input from dashboard flow';
     const keysBeforeApprovalRequest = await getKeysReceived(request, tmuxName);
     await collaboratorPage.getByRole('button', { name: 'Request terminal input' }).click();
     await expect(collaboratorPage.getByLabel('Terminal sharing status')).toContainText('Waiting for owner approval.');
-    await expect(collaboratorPage.getByLabel('Terminal input message')).toBeDisabled();
+    const terminalInput = collaboratorPage.getByLabel('Terminal input message');
+    await expect(terminalInput).toBeDisabled();
     expect(await getKeysReceived(request, tmuxName)).toEqual(keysBeforeApprovalRequest);
     const reloadSentinel = await collaboratorPage.evaluate(() => {
       const value = crypto.randomUUID();
@@ -156,32 +158,25 @@ test.describe('Easy connection sharing Phase A0', () => {
     });
 
     const dialog = page.getByRole('dialog', { name: 'Share this task' });
-    await expect(dialog.getByRole('status')).toContainText('Viewer connected', { timeout: 10_000 });
-    const requestPanel = dialog.getByLabel('Collaborator grant requests');
-    await expect(requestPanel).toContainText('Watch terminal, Send messages', { timeout: 10_000 });
-    await requestPanel.getByRole('button', { name: 'Approve' }).click();
-    await expect(dialog.getByLabel('Approved collaborator grants')).toContainText('Watch terminal, Send messages', { timeout: 10_000 });
-
-    await expect(collaboratorPage.getByText('Terminal input approved')).toBeVisible({ timeout: 10_000 });
-    await expect(collaboratorPage.getByLabel('Shared terminal')).toBeVisible();
-    const terminalInput = collaboratorPage.getByLabel('Terminal input message');
-    await expect(terminalInput).toBeEnabled({ timeout: 10_000 });
+    await expect(dialog.locator('.task-share-state')).toContainText('Viewer connected', { timeout: 10_000 });
+    await expect(dialog.getByText('Guest links stay view-only')).toBeVisible({ timeout: 10_000 });
+    await expect(dialog.getByText('One control request is waiting')).toBeVisible();
+    await expect(dialog.getByLabel('Collaborator grant requests')).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Approve' })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Deny' })).toHaveCount(0);
+    await expect(collaboratorPage.getByText('Terminal input approved')).toHaveCount(0);
+    await expect(terminalInput).toBeDisabled();
     await expect.poll(() => collaboratorPage.evaluate(() => (
       (window as Window & { __kookrApprovalSentinel?: string }).__kookrApprovalSentinel
     ))).toBe(reloadSentinel);
 
-    await terminalInput.fill(message);
-    await collaboratorPage.getByRole('button', { name: 'Send Enter' }).click();
-    await expect(collaboratorPage.getByRole('status')).toContainText(/Terminal input (sent|accepted)/, { timeout: 10_000 });
-    await expect(async () => {
-      expect(await getKeysReceived(request, tmuxName)).toContain(message);
-    }).toPass({ timeout: 5_000 });
+    expect(await getKeysReceived(request, tmuxName)).toEqual(keysBeforeApprovalRequest);
 
     expect(requestedUrls.some((url) => url.includes('inviteToken=') || url.includes('password=') || url.includes('memberToken='))).toBe(false);
 
     await dialog.getByRole('button', { name: 'Revoke' }).click();
-    await expect(dialog.getByRole('status')).toContainText('Revoked', { timeout: 10_000 });
-    await expect(collaboratorPage.getByRole('status')).toContainText('Disconnected', { timeout: 10_000 });
+    await expect(dialog.locator('.task-share-state')).toContainText('Revoked', { timeout: 10_000 });
+    await expect(collaboratorPage.locator('#status')).toContainText('Disconnected', { timeout: 10_000 });
     await expect(terminalInput).toBeDisabled();
 
     await collaborator.close();

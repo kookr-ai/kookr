@@ -38,7 +38,8 @@ test.describe('Easy connection sharing Phase B stored relay startup', () => {
 
     const dialog = page.getByRole('dialog', { name: 'Share this task' });
     await expect(dialog).toBeVisible();
-    await dialog.getByRole('button', { name: 'Create share link' }).click();
+    await dialog.locator('.task-share-path', { hasText: 'Create guest link' }).click();
+    await dialog.getByRole('button', { name: 'Create guest link', exact: true }).click();
     const linkInput = dialog.locator('.task-share-link input');
     await expect(linkInput).toBeVisible();
     const joinUrl = await linkInput.inputValue();
@@ -47,6 +48,6 @@ test.describe('Easy connection sharing Phase B stored relay startup', () => {
     expect(parsed.search).toBe('');
     expect(parsed.hash).toContain('password=');
     expect(joinUrl).not.toContain('?password');
-    await expect(dialog.getByRole('status')).toContainText('Waiting for viewer');
+    await expect(dialog.locator('.task-share-state')).toContainText('Waiting for viewer');
   });
 });
