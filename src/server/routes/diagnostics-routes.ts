@@ -1,4 +1,5 @@
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
+import { getConnInfo } from '@hono/node-server/conninfo';
 import { readInteractionLog } from '../../core/interaction-log.js';
 import { readTelemetryLog } from '../../core/telemetry.js';
 import { analyzeSession } from '../../core/friction-analyzer.js';
@@ -6,12 +7,24 @@ import { getDetectionStats } from '../../core/detection-stats.js';
 import { generateReportFromFile, formatReport } from '../../core/shadow-report.js';
 import { getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
 import { buildReflectionRecommendationResponse } from '../reflection-task.js';
+import {
+  FindingEvidenceReviewService,
+  FindingEvidenceReviewServiceError,
+  getOrCreateFindingEvidenceReviewHmacKey,
+  readFindingEvidenceReviewConfigFromEnv,
+  type FindingEvidenceReviewMode,
+  type FindingEvidenceReviewServiceConfig,
+} from '../finding-evidence-review-service.js';
 import type { RouteDeps } from './shared.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
+const REVIEW_CSRF_HEADER = 'x-kookr-finding-review-token';
 
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
+  let findingEvidenceReviewService: FindingEvidenceReviewService | undefined;
+  let findingEvidenceReviewConfig: FindingEvidenceReviewServiceConfig | undefined;
 
   app.get('/api/health', (c) => {
     const terminalBackend = deps.terminalBackend;
@@ -77,6 +90,70 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     records: deps.monitor.getFindingEvidenceAuditRecords(),
     reviewCandidates: deps.monitor.getFindingEvidenceReviewCandidates(20),
   }));
+
+  app.post('/api/finding-evidence-review', async (c) => {
+    if (process.env.KOOKR_FINDING_REVIEW_ENABLED !== 'true') return c.json({ error: 'finding-review-disabled' }, 404);
+    if (!deps.llmClient) return c.json({ error: 'finding-review-llm-unavailable' }, 503);
+    if (!isAuthorizedFindingReviewRequest(getRemoteAddress(c), c.req.header(REVIEW_ADMIN_TOKEN_HEADER))) {
+      return c.json({ error: 'finding-review-forbidden' }, 403);
+    }
+    const requiredToken = process.env.KOOKR_FINDING_REVIEW_TOKEN?.trim();
+    if (requiredToken && c.req.header(REVIEW_CSRF_HEADER) !== requiredToken) {
+      return c.json({ error: 'invalid-finding-review-token' }, 403);
+    }
+
+    let body: { mode?: unknown; limit?: unknown } = {};
+    const text = await c.req.text();
+    if (text.trim()) {
+      try {
+        body = JSON.parse(text) as { mode?: unknown; limit?: unknown };
+      } catch {
+        return c.json({ error: 'invalid-json' }, 400);
+      }
+    }
+
+    const { service: reviewService, config: reviewConfig } = getFindingEvidenceReviewService();
+    const mode = body.mode ?? 'estimate_only';
+    if (mode !== 'estimate_only' && mode !== 'model_review') {
+      return c.json({ error: 'invalid-mode' }, 400);
+    }
+    if (mode === 'model_review' && reviewConfig.dailyCostCents <= 0) {
+      return c.json({ error: 'finding-review-budget-required' }, 403);
+    }
+
+    try {
+      return c.json(await reviewService.review({
+        mode: mode as FindingEvidenceReviewMode,
+        limit: typeof body.limit === 'number' ? body.limit : undefined,
+      }));
+    } catch (err) {
+      if (err instanceof FindingEvidenceReviewServiceError) {
+        return c.json({ error: err.code, message: err.message }, err.status);
+      }
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  function getFindingEvidenceReviewService(): {
+    service: FindingEvidenceReviewService;
+    config: FindingEvidenceReviewServiceConfig;
+  } {
+    if (!findingEvidenceReviewService || !findingEvidenceReviewConfig) {
+      findingEvidenceReviewConfig = readFindingEvidenceReviewConfigFromEnv(
+        process.env,
+        deps.findingEvidenceReviewHmacKey ?? (deps.kookrDir ? getOrCreateFindingEvidenceReviewHmacKey(deps.kookrDir) : Buffer.alloc(32, 0)),
+        buildInfo?.commitHash,
+      );
+      findingEvidenceReviewService = new FindingEvidenceReviewService({
+        candidateReader: {
+          listReviewCandidates: (limit) => deps.monitor.getFindingEvidenceReviewCandidates(limit),
+        },
+        llmClient: deps.llmClient ?? null,
+        config: findingEvidenceReviewConfig,
+      });
+    }
+    return { service: findingEvidenceReviewService, config: findingEvidenceReviewConfig };
+  }
 
   app.get('/api/circuit-breakers', (c) => {
     if (!deps.circuitBreakerRegistry) return c.json([]);
@@ -238,4 +315,27 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       return c.json({ error: message, sessionId }, 404);
     }
   });
+}
+
+function isAuthorizedFindingReviewRequest(remoteAddress: string | undefined, adminTokenHeader: string | undefined): boolean {
+  const configuredAdminToken = process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN?.trim();
+  if (configuredAdminToken && adminTokenHeader === configuredAdminToken) return true;
+  return remoteAddress !== undefined && isLoopbackAddress(remoteAddress);
+}
+
+function getRemoteAddress(c: Context): string | undefined {
+  try {
+    return getConnInfo(c).remote.address;
+  } catch {
+    return undefined;
+  }
+}
+
+function isLoopbackAddress(address: string): boolean {
+  const normalized = address.toLowerCase();
+  return normalized === '::1'
+    || normalized === '0:0:0:0:0:0:0:1'
+    || normalized === '::ffff:127.0.0.1'
+    || normalized === '127.0.0.1'
+    || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized);
 }
