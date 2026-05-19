@@ -1288,13 +1288,13 @@ describe('relay invitations', () => {
     const nodeConn = await connectNode(relay, node.nodeId, node.nodeToken);
     ackPolicyMessages(nodeConn.ws, node.nodeId);
     sockets.push(nodeConn.ws);
-    const created = relay.createInvitation({ nodeId: node.nodeId, grants: ['view'], ttlMs: 20 });
+    const created = relay.createInvitation({ nodeId: node.nodeId, grants: ['view'], ttlMs: 200 });
     const accepted = relay.acceptInvitation(created.token, 'alice');
     if (!accepted.ok) throw new Error('expected accept');
     const member = await connectMember(relay, node.nodeId, accepted.accepted.memberToken);
     sockets.push(member.ws);
 
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise((resolve) => setTimeout(resolve, 250));
     nodeConn.ws.send(JSON.stringify({
       nodeId: node.nodeId,
       nodeEpoch: asNodeEpoch('1'),
