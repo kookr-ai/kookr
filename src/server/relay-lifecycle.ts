@@ -422,8 +422,8 @@ export async function startRelay(opts: RelayLifecycleOptions = {}): Promise<stri
     detached: true,
     stdio: ['ignore', logStream, logStream],
     env: {
-      ...loadDotEnv(config.envFilePath),
       ...process.env,
+      ...loadDotEnv(config.envFilePath),
       ...(opts.env ?? {}),
       PORT: String(config.port),
       KOOKR_RELAY_BIND_HOST: config.bindHost,
@@ -547,7 +547,7 @@ function resolveRuntimeConfig(opts: RelayLifecycleOptions): RuntimeConfig {
   const cwd = resolve(opts.cwd ?? process.cwd());
   const baseEnv = opts.env ?? process.env;
   const configuredEnvFilePath = baseEnv.KOOKR_RELAY_ENV_FILE ? resolve(baseEnv.KOOKR_RELAY_ENV_FILE) : join(cwd, '.env');
-  const env = { ...loadDotEnv(configuredEnvFilePath), ...process.env, ...(opts.env ?? {}) };
+  const env = { ...process.env, ...loadDotEnv(configuredEnvFilePath), ...(opts.env ?? {}) };
   const paths = relayLifecyclePaths(opts.kookrDir ?? env.KOOKR_DIR ?? join(homedir(), '.kookr'));
   const bindHost = env.KOOKR_RELAY_BIND_HOST ?? '127.0.0.1';
   const port = positiveInt(env.KOOKR_RELAY_PORT ?? env.PORT, 8080);
@@ -680,7 +680,7 @@ function unquote(value: string): string {
 
 async function fetchRelayPolicySummary(opts: RelayLifecycleOptions): Promise<RelayDoctorReport['policy']> {
   const config = resolveRuntimeConfig(opts);
-  const env = { ...loadDotEnv(config.envFilePath), ...process.env, ...(opts.env ?? {}) };
+  const env = { ...process.env, ...loadDotEnv(config.envFilePath), ...(opts.env ?? {}) };
   const adminToken = env.KOOKR_RELAY_ADMIN_TOKEN?.trim();
   if (!adminToken && env.KOOKR_RELAY_INSECURE_DEV !== '1') return { status: 'unavailable' };
   const headers: Record<string, string> | undefined = adminToken ? { authorization: `Bearer ${adminToken}` } : undefined;

@@ -23,13 +23,23 @@ function isToolingSideEffect(kind: string): boolean {
   if (!kind.includes('writeFile')) return false;
   const stack = new Error().stack ?? '';
   if (stack.includes(mod)) return false;
-  // tsx may write its own transform/cache artifacts while loading TypeScript.
+  // tsx may touch its own transform/cache artifacts while loading TypeScript.
   // Ignore only those loader writes, never writes whose stack reaches the
   // module being probed.
   return stack.includes('/node_modules/.pnpm/tsx@') || stack.includes('/node_modules/tsx/');
 }
 
-function record(kind: string): void {
+function isReadOnlyOpen(kind: string, args: unknown[]): boolean {
+  if (kind !== 'fs.open' && kind !== 'fs.openSync' && kind !== 'fs.promises.open') return false;
+  const flags = args[1];
+  if (flags === undefined) return true;
+  if (typeof flags === 'string') return flags === 'r' || flags === 'rs';
+  if (typeof flags === 'number') return (flags & fs.constants.O_ACCMODE) === fs.constants.O_RDONLY;
+  return false;
+}
+
+function record(kind: string, args: unknown[]): void {
+  if (isReadOnlyOpen(kind, args)) return;
   if (isToolingSideEffect(kind)) return;
   violations.push(kind);
 }
@@ -40,7 +50,7 @@ function patchMethod<T extends object, K extends keyof T>(target: T, key: K, kin
   Object.defineProperty(target, key, {
     configurable: true,
     value: (...args: unknown[]) => {
-      record(kind);
+      record(kind, args);
       return (original as (...inner: unknown[]) => unknown).apply(target, args);
     },
   });
@@ -87,11 +97,11 @@ patchMethod(process, 'prependListener', 'process.prependListener');
 const originalSetTimeout = globalThis.setTimeout;
 const originalSetInterval = globalThis.setInterval;
 globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
-  record('setTimeout');
+  record('setTimeout', args);
   return originalSetTimeout(...args);
 }) as typeof setTimeout;
 globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
-  record('setInterval');
+  record('setInterval', args);
   return originalSetInterval(...args);
 }) as typeof setInterval;
 
