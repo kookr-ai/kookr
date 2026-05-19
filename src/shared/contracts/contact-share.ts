@@ -64,6 +64,7 @@ export interface SharedTask {
   };
   localDisplayLabel: string;
   lifecycle: ContactShareLifecycle;
+  expiresAt?: string;
   grants: ContactShareGrant[];
   source: 'contact-share';
   remoteStatus: RemoteTaskProjectionStatus;
@@ -174,7 +175,10 @@ export function isContactShareEnvelope(value: unknown): value is ContactShareEnv
     || typeof envelope.recipientDeviceId !== 'string'
     || !ENVELOPE_KINDS.includes(envelope.kind as ContactShareEnvelopeKind)
     || typeof envelope.createdAt !== 'string'
-    || (envelope.expiresAt !== undefined && typeof envelope.expiresAt !== 'string')
+    || (envelope.expiresAt !== undefined && (
+      typeof envelope.expiresAt !== 'string'
+      || !Number.isFinite(Date.parse(envelope.expiresAt))
+    ))
     || typeof envelope.ciphertext !== 'string'
     || envelope.ciphertext.length === 0
     || typeof envelope.senderSignature !== 'string'
