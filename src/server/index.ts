@@ -73,6 +73,7 @@ import type { NodeId, ServerRevision, SessionEpoch, SessionId } from '../remote/
 import type { RemotePolicyCache } from '../remote/policy-cache.js';
 import type { ShareSubject } from '../remote/policy-sync.js';
 import type { RemoteInputAdapter } from './remote-input-adapter.js';
+import { RuntimeAttentionMissSampler } from './attention-miss-runtime-sampler.js';
 
 // --- Exported types ---
 
@@ -1264,15 +1265,25 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ? getOrCreateFindingEvidenceReviewHmacKey(kookrDir)
     : Buffer.alloc(32, 0);
   const findingEvidenceReviewLogStore = ReviewLogStore.forKookrDir(kookrDir);
+  const findingEvidenceReviewConfig = readFindingEvidenceReviewConfigFromEnv(process.env, findingEvidenceReviewHmacKey, buildInfo.commitHash);
+  const findingEvidenceReviewSamplerConfig = readFindingEvidenceReviewSamplerConfigFromEnv(process.env);
   const findingEvidenceReviewSampler = new FindingEvidenceReviewSampler({
     candidateReader: {
       listReviewCandidates: (limit) => monitor.getFindingEvidenceReviewCandidates(limit),
     },
     llmClient: llmClient ?? null,
-    serviceConfig: readFindingEvidenceReviewConfigFromEnv(process.env, findingEvidenceReviewHmacKey, buildInfo.commitHash),
-    samplerConfig: readFindingEvidenceReviewSamplerConfigFromEnv(process.env),
+    serviceConfig: findingEvidenceReviewConfig,
+    samplerConfig: findingEvidenceReviewSamplerConfig,
     reviewLogStore: findingEvidenceReviewLogStore,
     queueStore: FindingEvidenceReviewQueueStore.forKookrDir(kookrDir),
+    attentionMissSampler: new RuntimeAttentionMissSampler({
+      listTasks: () => taskStore.getAllTasks(),
+      hasActiveFinding: (agentId) => queue.getActiveAnomaly(agentId) !== null,
+      recentFindingStateFor: (agentId) => queue.getSnoozedUntil(agentId) === null ? 'none' : 'recent_snoozed',
+    }, {
+      maxSamples: findingEvidenceReviewSamplerConfig.candidateReadLimit,
+      maxPerStratum: Math.max(1, Math.min(3, findingEvidenceReviewSamplerConfig.maxCandidatesPerInterval)),
+    }),
   });
 
   const app = createRoutes({

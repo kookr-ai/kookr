@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { LlmClient } from '../core/llm-client.js';
+import {
+  emptyAttentionMissSamplingCounters,
+  type AttentionMissSamplingCounters,
+  type AttentionMissSamplingResult,
+} from '../core/attention-miss-review.js';
 import type { FindingEvidenceAuditRecord } from '../shared/contracts/anomalies.js';
 import {
   buildFindingEvidenceReviewInputV1,
@@ -68,6 +73,7 @@ export interface FindingEvidenceReviewSamplerDeps {
   samplerConfig: FindingEvidenceReviewSamplerConfig;
   reviewLogStore: Pick<ReviewLogStore, 'readAll' | 'appendReview' | 'appendInvalidAttempt'>;
   queueStore: FindingEvidenceReviewQueueStore;
+  attentionMissSampler?: { sampleMissCandidates(): AttentionMissSamplingResult };
   now?: () => Date;
   modelRunner?: FindingEvidenceReviewModelRunner;
 }
@@ -86,6 +92,7 @@ export interface FindingEvidenceReviewSamplerRunSummary {
   invalidOutputs: number;
   storageFailures: number;
   budgetExhausted: boolean;
+  falseNegative: AttentionMissSamplingCounters;
 }
 
 export interface FindingEvidenceReviewSamplerStatusV1 {
@@ -105,6 +112,7 @@ export interface FindingEvidenceReviewSamplerStatusV1 {
     spentTokens: number;
     remainingTokens: number;
   };
+  falseNegative: AttentionMissSamplingCounters;
 }
 
 const DEFAULT_SAMPLER_CONFIG: FindingEvidenceReviewSamplerConfig = {
@@ -201,6 +209,7 @@ export class FindingEvidenceReviewSampler {
   private running = false;
   private nextRunAt: string | null = null;
   private lastRun: FindingEvidenceReviewSamplerRunSummary | null = null;
+  private lastFalseNegativeCounters: AttentionMissSamplingCounters = emptyAttentionMissSamplingCounters();
 
   constructor(private readonly deps: FindingEvidenceReviewSamplerDeps) {}
 
@@ -237,6 +246,7 @@ export class FindingEvidenceReviewSampler {
       invalidOutputs: 0,
       storageFailures: 0,
       budgetExhausted: false,
+      falseNegative: emptyAttentionMissSamplingCounters(),
     };
     if (this.running) {
       increment(summary.skipped, 'sampler_locked');
@@ -252,6 +262,7 @@ export class FindingEvidenceReviewSampler {
           increment(summary.skipped, 'sampler_disabled');
           return;
         }
+        this.sampleFalseNegativeCandidates(summary);
         if (!this.deps.llmClient) {
           increment(summary.skipped, 'llm_unavailable');
           return;
@@ -301,6 +312,7 @@ export class FindingEvidenceReviewSampler {
         spentTokens: budget.spentTokens,
         remainingTokens: Math.max(0, this.deps.samplerConfig.dailyTokenBudget - budget.spentTokens),
       },
+      falseNegative: this.lastFalseNegativeCounters,
     };
   }
 
@@ -362,6 +374,13 @@ export class FindingEvidenceReviewSampler {
       });
       summary.enqueued += 1;
     }
+  }
+
+  private sampleFalseNegativeCandidates(summary: FindingEvidenceReviewSamplerRunSummary): void {
+    if (!this.deps.attentionMissSampler) return;
+    const result = this.deps.attentionMissSampler.sampleMissCandidates();
+    summary.falseNegative = result.counters;
+    this.lastFalseNegativeCounters = result.counters;
   }
 
   private async processQueue(summary: FindingEvidenceReviewSamplerRunSummary): Promise<void> {
