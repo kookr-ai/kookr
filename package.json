@@ -54,6 +54,7 @@
     "test:onboarding": "bash scripts/onboarding-smoke-test.sh",
     "validate:skills": "node --import tsx scripts/validate-skills.ts",
     "test:hooks": "for t in .claude/hooks-tests/*.test.sh; do echo \"== $t ==\"; bash \"$t\" || exit 1; done",
+    "validate:docs-commands": "node --import tsx scripts/verify-documented-commands.ts",
     "demo:record": "pnpm build && node --import tsx demo/record.ts",
     "codex:rebuild": "bash scripts/rebuild-codex.sh",
     "merge": "bash scripts/kookr-merge.sh",
