@@ -4,13 +4,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import {
-  buildCheckpointLoadInstruction,
-  inspectMemoryWriteCandidates,
   resolveAndPrepareCheckpointDir,
-  slugifyForCheckpointKey,
-  inspectSemanticCheckpoint,
-  __test__,
 } from './checkpoint-path.js';
+import {
+  slugifyForCheckpointKey,
+  repoKeyFor,
+} from './checkpoint-key.js';
+import {
+  buildCheckpointLoadInstruction,
+} from './checkpoint-load-instruction.js';
+import {
+  inspectMemoryWriteCandidates,
+  inspectSemanticCheckpoint,
+} from './checkpoint-inspection.js';
 
 describe('slugifyForCheckpointKey', () => {
   it('replaces filesystem-unsafe characters in a branch name', () => {
@@ -27,23 +33,23 @@ describe('slugifyForCheckpointKey', () => {
 
 describe('repoKeyFor (internal)', () => {
   it('produces a slug + 8-char hash suffix', () => {
-    const key = __test__.repoKeyFor('/workspace/kookr-feat/.git');
+    const key = repoKeyFor('/workspace/kookr-feat/.git');
     expect(key).toMatch(/^-workspace-kookr-feat-\.git-[0-9a-f]{8}$/);
   });
 
   it('truncates very long paths but stays unique via the hash', () => {
     const longA = '/' + 'a'.repeat(200) + '/.git';
     const longB = '/' + 'b'.repeat(200) + '/.git';
-    const keyA = __test__.repoKeyFor(longA);
-    const keyB = __test__.repoKeyFor(longB);
+    const keyA = repoKeyFor(longA);
+    const keyB = repoKeyFor(longB);
     expect(keyA.length).toBeLessThanOrEqual(120);
     expect(keyB.length).toBeLessThanOrEqual(120);
     expect(keyA).not.toBe(keyB); // hash distinguishes
   });
 
   it('is deterministic for the same input', () => {
-    const a = __test__.repoKeyFor('/some/path/.git');
-    const b = __test__.repoKeyFor('/some/path/.git');
+    const a = repoKeyFor('/some/path/.git');
+    const b = repoKeyFor('/some/path/.git');
     expect(a).toBe(b);
   });
 });

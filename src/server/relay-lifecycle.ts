@@ -2,30 +2,39 @@ import { createHash } from 'node:crypto';
 import { W_OK } from 'node:constants';
 import { once } from 'node:events';
 import { accessSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { appendFile, readFile } from 'node:fs/promises';
+import { appendFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
-import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 
 import { envRelayConnectionCredentials, loadStoredRelayConnectionCredentials, type RelayConnectionCredentials } from './relay-connection-store.js';
+import {
+  type RelayDoctorReport,
+  type RelayEnvDiagnosis,
+  type RelayLifecycleOptions,
+  type RelayLifecyclePaths,
+  type RelayNodeDiagnosis,
+  type RelayProcessDiagnosis,
+  type RelayStateResetResult,
+  type RelayStorageDiagnosis,
+} from './relay-lifecycle-contracts.js';
+import { relayLifecyclePaths } from './relay-lifecycle-paths.js';
+import { readRecentRelayLogs } from './relay-log-reader.js';
+import { redactRelaySecret } from './relay-secret-redaction.js';
 
-export type RelayLifecycleMode = 'detached';
-export type RelayProcessState = 'running' | 'stopped' | 'stale-pid' | 'foreign-process' | 'foreign-port';
-export type RelayEnvState = 'ok' | 'missing-env' | 'missing-admin-token' | 'restart-required';
-export type RelayNodeState = 'not-configured' | 'ok' | 'token-rejected' | 'unreachable' | 'error';
-
-export interface RelayLifecyclePaths {
-  kookrDir: string;
-  pidPath: string;
-  logPath: string;
-  statePath: string;
-  dbPath: string;
+interface RuntimeConfig {
+  cwd: string;
+  paths: RelayLifecyclePaths;
+  bindHost: string;
+  port: number;
+  relayUrl: string;
+  envFilePath: string;
+  stateDbPath: string;
 }
 
-export interface RelayStateFile {
+interface RelayStateFile {
   schemaVersion: 'relay-lifecycle-state.v1';
-  mode: RelayLifecycleMode;
+  mode: 'detached';
   pid: number;
   command: string[];
   cwd: string;
@@ -37,81 +46,6 @@ export interface RelayStateFile {
   startedAt: string;
   envFilePath?: string;
   envFileHash?: string;
-}
-
-export interface RelayProcessDiagnosis {
-  state: RelayProcessState;
-  pid?: number;
-  expectedPid?: number;
-  commandLine?: string;
-  bindHost: string;
-  port: number;
-  relayUrl: string;
-  message: string;
-}
-
-export interface RelayEnvDiagnosis {
-  state: RelayEnvState;
-  envFilePath: string;
-  envFilePresent: boolean;
-  adminTokenConfigured: boolean;
-  insecureDev: boolean;
-  processAdminTokenConfigured: boolean;
-  requiresRestart: boolean;
-  message: string;
-}
-
-export interface RelayNodeDiagnosis {
-  state: RelayNodeState;
-  relayUrl?: string;
-  nodeId?: string;
-  message: string;
-}
-
-export interface RelayStorageDiagnosis {
-  state: 'ok' | 'db-write-failed';
-  dbPath: string;
-  message: string;
-}
-
-export interface RelayDoctorReport {
-  checkedAt: string;
-  paths: RelayLifecyclePaths;
-  process: RelayProcessDiagnosis;
-  env: RelayEnvDiagnosis;
-  node: RelayNodeDiagnosis;
-  storage: RelayStorageDiagnosis;
-  policy: {
-    nodeCount?: number;
-    invitationCount?: number;
-    maxPolicyVersion?: number;
-    status: 'unavailable' | 'ok' | 'unauthorized';
-  };
-  recentLogs: string[];
-  nextActions: string[];
-}
-
-export interface RelayStateResetResult {
-  backupDir: string;
-  backedUpPaths: string[];
-  removedPaths: string[];
-}
-
-export interface RelayLifecycleOptions {
-  cwd?: string;
-  kookrDir?: string;
-  env?: NodeJS.ProcessEnv;
-  now?: () => Date;
-}
-
-interface RuntimeConfig {
-  cwd: string;
-  paths: RelayLifecyclePaths;
-  bindHost: string;
-  port: number;
-  relayUrl: string;
-  envFilePath: string;
-  stateDbPath: string;
 }
 
 const STATE_VERSION = 'relay-lifecycle-state.v1';
@@ -128,30 +62,6 @@ const RELAY_ENV_HASH_KEYS = [
   `KOOKR_RELAY_${'TRUSTED_PROXY'}`,
   'PORT',
 ];
-const TOKEN_PATTERNS = [
-  /(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi,
-  /(KOOKR_[A-Z_]*(?:TOKEN|SECRET|KEY|PASSWORD)=)[^\s]+/g,
-  /(kookr_tok_v1_)[A-Za-z0-9_-]+/g,
-  /("?(?:relayToken|nodeToken|adminToken|accountToken)"?\s*:\s*")[^"]+/g,
-];
-
-export function relayLifecyclePaths(kookrDir = join(homedir(), '.kookr')): RelayLifecyclePaths {
-  return {
-    kookrDir,
-    pidPath: join(kookrDir, 'relay.pid'),
-    logPath: join(kookrDir, 'relay.log'),
-    statePath: join(kookrDir, 'relay.state.json'),
-    dbPath: join(kookrDir, 'relay.sqlite'),
-  };
-}
-
-export function redactRelaySecret(text: string): string {
-  let redacted = text;
-  for (const pattern of TOKEN_PATTERNS) {
-    redacted = redacted.replace(pattern, '$1[redacted]');
-  }
-  return redacted;
-}
 
 function relayStateFileHash(path: string): string | undefined {
   try {
@@ -325,7 +235,7 @@ export async function diagnoseRelayProcess(opts: RelayLifecycleOptions = {}): Pr
 
 export async function diagnoseRelayNode(opts: RelayLifecycleOptions = {}): Promise<RelayNodeDiagnosis> {
   const env = opts.env ?? process.env;
-  const kookrDir = opts.kookrDir ?? join(homedir(), '.kookr');
+  const kookrDir = opts.kookrDir ?? relayLifecyclePaths().kookrDir;
   let credentials: RelayConnectionCredentials | null = envRelayConnectionCredentials(env);
   if (!credentials) {
     try {
@@ -513,42 +423,12 @@ export async function backupAndResetRelayState(opts: RelayLifecycleOptions = {})
   return { backupDir, backedUpPaths, removedPaths };
 }
 
-export async function readRecentRelayLogs(logPath: string, maxLines = 80): Promise<string[]> {
-  try {
-    const text = await readFile(logPath, 'utf8');
-    return text.split(/\r?\n/).filter(Boolean).slice(-maxLines).map(redactRelaySecret);
-  } catch {
-    return [];
-  }
-}
-
-export function formatRelayDoctorReport(report: RelayDoctorReport): string {
-  const safe = {
-    checkedAt: report.checkedAt,
-    relayUrl: report.process.relayUrl,
-    process: report.process,
-    env: report.env,
-    node: report.node,
-    storage: report.storage,
-    policy: report.policy,
-    paths: {
-      pid: report.paths.pidPath,
-      log: report.paths.logPath,
-      state: report.paths.statePath,
-      sqlite: report.paths.dbPath,
-    },
-    recentLogs: report.recentLogs,
-    nextActions: report.nextActions,
-  };
-  return `${JSON.stringify(safe, null, 2)}\n`;
-}
-
 function resolveRuntimeConfig(opts: RelayLifecycleOptions): RuntimeConfig {
   const cwd = resolve(opts.cwd ?? process.cwd());
   const baseEnv = opts.env ?? process.env;
   const configuredEnvFilePath = baseEnv.KOOKR_RELAY_ENV_FILE ? resolve(baseEnv.KOOKR_RELAY_ENV_FILE) : join(cwd, '.env');
   const env = { ...process.env, ...loadDotEnv(configuredEnvFilePath), ...(opts.env ?? {}) };
-  const paths = relayLifecyclePaths(opts.kookrDir ?? env.KOOKR_DIR ?? join(homedir(), '.kookr'));
+  const paths = relayLifecyclePaths(opts.kookrDir ?? env.KOOKR_DIR);
   const bindHost = env.KOOKR_RELAY_BIND_HOST ?? '127.0.0.1';
   const port = positiveInt(env.KOOKR_RELAY_PORT ?? env.PORT, 8080);
   const relayHost = bindHost === '0.0.0.0' || bindHost === '::' ? '127.0.0.1' : bindHost;

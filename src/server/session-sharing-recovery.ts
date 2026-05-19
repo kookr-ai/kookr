@@ -13,7 +13,9 @@ import type {
   SessionSharingRecoveryResultState,
 } from '../shared/contracts/session-sharing-recovery.js';
 import { SESSION_SHARING_TERMINAL_TRUST_ENV_NAME } from '../shared/contracts/session-sharing-recovery.js';
-import { backupAndResetRelayState, relayLifecyclePaths, type RelayLifecycleOptions } from './relay-lifecycle.js';
+import { backupAndResetRelayState } from './relay-lifecycle.js';
+import type { RelayLifecycleOptions } from './relay-lifecycle-contracts.js';
+import { relayLifecyclePaths } from './relay-lifecycle-paths.js';
 import type { RelayConnectionManager } from './relay-connection-manager.js';
 import type { RelayShareClient } from './relay-share-client.js';
 import type { TaskShareService } from './task-share-service.js';
