@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { AttentionMissSamplingResult } from '../core/attention-miss-review.js';
 import type { FindingEvidenceAuditRecord } from '../shared/contracts/anomalies.js';
 import type { FindingEvidenceReviewModelRunner, FindingEvidenceReviewResponseV1 } from './finding-evidence-review-service.js';
 import {
@@ -106,8 +107,10 @@ async function makeSampler(options: {
   samplerConfig?: Partial<FindingEvidenceReviewSamplerConfig>;
   dailyCostCents?: number;
   serviceEnabled?: boolean;
+  llmAvailable?: boolean;
   runner?: FindingEvidenceReviewModelRunner;
   reviewRecords?: unknown[];
+  attentionMissSampler?: { sampleMissCandidates(): AttentionMissSamplingResult };
   now?: () => Date;
 }) {
   const reviewLogStore = {
@@ -118,7 +121,7 @@ async function makeSampler(options: {
   const runner = options.runner ?? { review: vi.fn(async () => response()) };
   const sampler = new FindingEvidenceReviewSampler({
     candidateReader: { listReviewCandidates: vi.fn(() => options.records ?? [candidate()]) },
-    llmClient: { provider: 'fake-provider', model: 'fake-model', complete: vi.fn() },
+    llmClient: options.llmAvailable === false ? null : { provider: 'fake-provider', model: 'fake-model', complete: vi.fn() },
     serviceConfig: {
       enabled: options.serviceEnabled ?? true,
       maxCandidates: 5,
@@ -129,6 +132,7 @@ async function makeSampler(options: {
     samplerConfig: config(options.samplerConfig),
     reviewLogStore,
     queueStore: FindingEvidenceReviewQueueStore.forKookrDir(options.dir),
+    ...(options.attentionMissSampler ? { attentionMissSampler: options.attentionMissSampler } : {}),
     now: options.now ?? (() => NOW),
     modelRunner: runner,
   });
@@ -181,6 +185,48 @@ describe('FindingEvidenceReviewSampler', () => {
     }
   });
 
+  test('samples false-negative diagnostics before model-review provider gates', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'finding-review-sampler-miss-no-llm-'));
+    try {
+      const runner = { review: vi.fn(async () => response()) };
+      const { sampler } = await makeSampler({
+        dir,
+        runner,
+        llmAvailable: false,
+        attentionMissSampler: {
+          sampleMissCandidates: vi.fn(() => ({
+            counters: {
+              eligible: 2,
+              sampled: 1,
+              reviewable: 1,
+              unreviewable: 0,
+              reviewed: 0,
+              miss_confirmed: 0,
+            },
+            strata: {},
+            seeds: [],
+          })),
+        },
+      });
+
+      const summary = await sampler.runOnce();
+
+      expect(summary.skipped).toEqual({ llm_unavailable: 1 });
+      expect(summary.falseNegative).toEqual({
+        eligible: 2,
+        sampled: 1,
+        reviewable: 1,
+        unreviewable: 0,
+        reviewed: 0,
+        miss_confirmed: 0,
+      });
+      expect(summary.modelCallsAttempted).toBe(0);
+      expect(runner.review).not.toHaveBeenCalled();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('deduplicates by candidate id plus input hash across runs', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'finding-review-sampler-dedupe-'));
     try {
@@ -196,6 +242,47 @@ describe('FindingEvidenceReviewSampler', () => {
       expect(second.skipped).toEqual(expect.objectContaining({ duplicate: 1 }));
       expect(runner.review).toHaveBeenCalledTimes(1);
       expect((await sampler.getStatus()).queue.reviewed).toBe(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('tracks false-negative sampling diagnostics separately from the false-positive queue', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'finding-review-sampler-miss-diag-'));
+    try {
+      const runner = { review: vi.fn(async () => response()) };
+      const { sampler } = await makeSampler({
+        dir,
+        runner,
+        attentionMissSampler: {
+          sampleMissCandidates: vi.fn(() => ({
+            counters: {
+              eligible: 5,
+              sampled: 3,
+              reviewable: 2,
+              unreviewable: 1,
+              reviewed: 1,
+              miss_confirmed: 1,
+            },
+            strata: {},
+            seeds: [],
+          })),
+        },
+      });
+
+      const summary = await sampler.runOnce();
+      const status = await sampler.getStatus();
+
+      expect(summary.falseNegative).toEqual({
+        eligible: 5,
+        sampled: 3,
+        reviewable: 2,
+        unreviewable: 1,
+        reviewed: 1,
+        miss_confirmed: 1,
+      });
+      expect(status.falseNegative).toEqual(summary.falseNegative);
+      expect(status.queue.reviewed).toBe(1);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
