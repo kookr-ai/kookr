@@ -20,13 +20,15 @@ const allowedCacheRoots = [
 ];
 
 function isToolingSideEffect(kind: string): boolean {
-  if (!kind.includes('writeFile')) return false;
   const stack = new Error().stack ?? '';
   if (stack.includes(mod)) return false;
-  // tsx may write its own transform/cache artifacts while loading TypeScript.
+  const isTsxLoader = stack.includes('/node_modules/.pnpm/tsx@') || stack.includes('/node_modules/tsx/');
+  if (!isTsxLoader) return false;
+  if (!kind.includes('writeFile') && !kind.endsWith('.open') && !kind.endsWith('.openSync')) return false;
+  // tsx may read source files and write transform/cache artifacts while loading TypeScript.
   // Ignore only those loader writes, never writes whose stack reaches the
   // module being probed.
-  return stack.includes('/node_modules/.pnpm/tsx@') || stack.includes('/node_modules/tsx/');
+  return true;
 }
 
 function record(kind: string): void {
