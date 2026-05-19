@@ -394,17 +394,37 @@ function parseParameters(raw: unknown): PlaybookParameter[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
-    .map((item) => ({
-      name: String(item.name ?? ''),
-      description: String(item.description ?? ''),
-      required: item.required === true || item.required === 'true',
-      ...(item.default !== undefined ? { default: String(item.default) } : {}),
-      ...(item.type === 'select' ? { type: 'select' as const } : {}),
-      ...(item.type === 'textarea' ? { type: 'textarea' as const } : {}),
-      ...(Array.isArray(item.options) ? { options: parseOptions(item.options) } : {}),
-      ...(typeof item.source === 'string' && item.source ? { source: item.source } : {}),
-      ...(item.defaultFrom === 'git-remote' ? { defaultFrom: 'git-remote' as const } : {}),
-    }));
+    .map((item) => {
+      const gatedBy = parseParameterGatedBy(item.gatedBy);
+      return {
+        name: String(item.name ?? ''),
+        description: String(item.description ?? ''),
+        required: item.required === true || item.required === 'true',
+        ...(item.default !== undefined ? { default: String(item.default) } : {}),
+        ...(item.type === 'select' ? { type: 'select' as const } : {}),
+        ...(item.type === 'textarea' ? { type: 'textarea' as const } : {}),
+        ...(Array.isArray(item.options) ? { options: parseOptions(item.options) } : {}),
+        ...(typeof item.source === 'string' && item.source ? { source: item.source } : {}),
+        ...(item.defaultFrom === 'git-remote' ? { defaultFrom: 'git-remote' as const } : {}),
+        ...(gatedBy ? { gatedBy } : {}),
+      };
+    });
+}
+
+/**
+ * Validate an optional parameter `gatedBy` value. An empty/absent value is
+ * treated as "not gated"; a non-empty value not in {@link LAUNCH_DEPENDENCIES}
+ * is a fatal parse error, consistent with how `dependencies` entries are
+ * validated. See `docs/rfc/rfc-capability-gated-playbook-params.md`.
+ */
+function parseParameterGatedBy(raw: unknown): LaunchDependency | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const value = String(raw).trim();
+  if (!value) return undefined;
+  if (!(LAUNCH_DEPENDENCIES as readonly string[]).includes(value)) {
+    throw new PlaybookParseError(`Unsupported parameter gatedBy dependency: ${value}`);
+  }
+  return value as LaunchDependency;
 }
 
 function parseOptions(raw: unknown[]): PlaybookParameterOption[] {

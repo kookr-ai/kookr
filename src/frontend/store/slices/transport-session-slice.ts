@@ -74,6 +74,7 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
     playbooksLoading: false,
     playbooksLastFetchedAt: 0,
     playbooksLastFetchedCwd: '',
+    hostCapabilities: {},
     sttUrl: '',
     speechCapabilities: null,
     activeSTTInputId: null,
@@ -118,9 +119,10 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
       });
     },
 
-    handlePlaybooks: (playbooks, cwd) => {
+    handlePlaybooks: (playbooks, cwd, capabilities) => {
       set({
         playbooks,
+        hostCapabilities: capabilities ?? {},
         playbooksLoading: false,
         playbooksLastFetchedAt: Date.now(),
         playbooksLastFetchedCwd: cwd,

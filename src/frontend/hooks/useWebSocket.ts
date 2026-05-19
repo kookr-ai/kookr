@@ -130,7 +130,7 @@ export function useWebSocket() {
             handleGitHubUpdate(msg.taskId, msg.prs, msg.issues, msg.changes);
             break;
           case 'playbooks':
-            handlePlaybooks(msg.playbooks, msg.cwd);
+            handlePlaybooks(msg.playbooks, msg.cwd, msg.capabilities);
             break;
           case 'suggestion':
             handleSuggestion(msg.agentId, msg.suggestions, msg.quickActions);

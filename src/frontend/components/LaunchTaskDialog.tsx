@@ -19,6 +19,9 @@ const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({
 // Singleton so all dialog instances share the same MRU list
 const recentPaths = new RecentPaths();
 
+/** Time-to-live for the playbook list cache, in milliseconds. */
+const PLAYBOOK_CACHE_TTL_MS = 30_000;
+
 type Tab = 'manual' | 'playbooks';
 
 interface Props {
@@ -49,6 +52,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const playbooks = useKookrStore((s) => s.playbooks);
   const playbooksLastFetchedAt = useKookrStore((s) => s.playbooksLastFetchedAt);
   const playbooksLastFetchedCwd = useKookrStore((s) => s.playbooksLastFetchedCwd);
+  const hostCapabilities = useKookrStore((s) => s.hostCapabilities);
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   // Relaunch paths drive the form from props. In that mode we neither read
   // nor write the persisted draft — the relaunched task owns its own state.
@@ -114,10 +118,14 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   useEffect(() => {
     if (relaunchPlaybookId || (projectContext && initialTab === 'playbooks')) {
       const targetCwd = projectContext ? serverCwd : (cwd.trim() || serverCwd);
+      // A cached `absent` capability is treated as stale so a user who just
+      // installed the dependency is not stuck with a collapsed control until
+      // the cache TTL expires. See rfc-capability-gated-playbook-params.md.
       const isFresh =
         playbooksLastFetchedCwd === targetCwd &&
-        Date.now() - playbooksLastFetchedAt < 30_000 &&
-        playbooks.length > 0;
+        Date.now() - playbooksLastFetchedAt < PLAYBOOK_CACHE_TTL_MS &&
+        playbooks.length > 0 &&
+        !Object.values(hostCapabilities).some((c) => c === 'absent');
       if (!isFresh) {
         setPlaybooksLoading(true);
         send({ type: 'listPlaybooks', cwd: targetCwd });
@@ -218,8 +226,6 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     }
   }
 
-  const PLAYBOOK_CACHE_TTL = 30_000;
-
   function getPlaybookSourceCwd(): string {
     return projectContext ? serverCwd : (cwd.trim() || serverCwd);
   }
@@ -231,10 +237,13 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
   function switchToPlaybooks() {
     const targetCwd = getPlaybookSourceCwd();
+    // A cached `absent` capability is treated as stale — see the mount-time
+    // fetch above and rfc-capability-gated-playbook-params.md.
     const isFresh =
       playbooksLastFetchedCwd === targetCwd &&
-      Date.now() - playbooksLastFetchedAt < PLAYBOOK_CACHE_TTL &&
-      playbooks.length > 0;
+      Date.now() - playbooksLastFetchedAt < PLAYBOOK_CACHE_TTL_MS &&
+      playbooks.length > 0 &&
+      !Object.values(hostCapabilities).some((c) => c === 'absent');
 
     setTab('playbooks');
     if (!isFresh) {
