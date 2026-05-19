@@ -152,17 +152,17 @@ export class RalphCycler {
 
     // 1. iteration cap (always-checked, separate from predicate).
     if (loop.currentIteration >= loop.iterationCap) {
-      await this.finishIteration(task, loop, {
+      await this.finishIteration(taskStore, opts.taskId, task, loop, now, {
         startedAt, endedAt: now, exitReason: 'iteration_cap',
         cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
       });
-      this.terminate(loop, 'completed');
+      taskStore.setRalphLoopStatus(opts.taskId, 'completed', { now });
       return { kind: 'terminate', reason: 'iteration_cap', events };
     }
 
     // 2. apply decay BEFORE stall checks, so a freshly-decayed target can be
     //    re-burned in the same iteration if the agent reports it stalled again.
-    this.applyDecay(loop, stallConfig, opts.taskId, events);
+    this.applyDecay(taskStore, opts.taskId, loop, stallConfig, events, now);
 
     // 3. predicate (slow check). Failures keep the loop alive.
     let predicateOutcome: PredicateResult | null = null;
@@ -173,11 +173,11 @@ export class RalphCycler {
         lastOutputFile: opts.lastOutputFile,
       });
       if (predicateOutcome.satisfied) {
-        await this.finishIteration(task, loop, {
+        await this.finishIteration(taskStore, opts.taskId, task, loop, now, {
           startedAt, endedAt: now, exitReason: 'predicate_satisfied',
           cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
         });
-        this.terminate(loop, 'completed');
+        taskStore.setRalphLoopStatus(opts.taskId, 'completed', { now });
         return { kind: 'terminate', reason: 'predicate_satisfied', events };
       }
     }
@@ -204,11 +204,11 @@ export class RalphCycler {
       } else {
         // No predicate, or predicate matched, or predicate failed (error/
         // timeout — can't tell us either way). Trust the agent.
-        await this.finishIteration(task, loop, {
+        await this.finishIteration(taskStore, opts.taskId, task, loop, now, {
           startedAt, endedAt: now, exitReason: 'predicate_satisfied',
           cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
         });
-        this.terminate(loop, 'completed');
+        taskStore.setRalphLoopStatus(opts.taskId, 'completed', { now });
         return { kind: 'terminate', reason: 'predicate_satisfied', events };
       }
     }
@@ -217,7 +217,7 @@ export class RalphCycler {
     //    A `progress` for the same target an iteration recently reported
     //    `stalled` for is the agent saying "made it through this time."
     if (verdict?.verdict === 'progress' && verdict.target) {
-      this.unburnTarget(loop, canonicalizeTarget(verdict.target), 'progress_verdict', opts.taskId, events);
+      this.unburnTarget(taskStore, opts.taskId, loop, canonicalizeTarget(verdict.target), 'progress_verdict', events, now);
     }
 
     // 6. stall handling. Sources: agent verdict.stalled (richer), or
@@ -250,18 +250,18 @@ export class RalphCycler {
     }
 
     if (stallTarget !== undefined) {
-      const burned = this.recordStall(loop, stallTarget, stallReason ?? '', stallBlockers, stallConfig, opts.taskId, events, stallPermanent);
+      const burned = this.recordStall(taskStore, opts.taskId, loop, stallTarget, stallReason ?? '', stallBlockers, stallConfig, events, now, stallPermanent);
       // Permanent-stall short-circuit: in single-target loops, retrying a
       // structurally-unfit target is pure waste — terminate at count=1
       // instead of waiting for `consecutiveStallsForSingleTargetTermination`.
       // Multi-target loops fall through to the all-declared-burned check
       // (the agent picks a different target next iteration).
       if (stallPermanent && stallConfig.loopShape === 'single-target') {
-        await this.finishIteration(task, loop, {
+        await this.finishIteration(taskStore, opts.taskId, task, loop, now, {
           startedAt, endedAt: now, exitReason: 'target_stalled',
           cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
         });
-        this.terminate(loop, 'completed');
+        taskStore.setRalphLoopStatus(opts.taskId, 'completed', { now });
         return { kind: 'terminate', reason: 'target_stalled', events };
       }
       // Single-target termination check: when the loop is declared
@@ -271,11 +271,11 @@ export class RalphCycler {
         stallConfig.loopShape === 'single-target'
         && burned.consecutiveStallCount >= stallConfig.consecutiveStallsForSingleTargetTermination
       ) {
-        await this.finishIteration(task, loop, {
+        await this.finishIteration(taskStore, opts.taskId, task, loop, now, {
           startedAt, endedAt: now, exitReason: 'target_stalled',
           cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
         });
-        this.terminate(loop, 'completed');
+        taskStore.setRalphLoopStatus(opts.taskId, 'completed', { now });
         return { kind: 'terminate', reason: 'target_stalled', events };
       }
       // Multi-target all-burned check.
@@ -285,11 +285,11 @@ export class RalphCycler {
         && stallConfig.declaredTargets.length > 0
         && this.allDeclaredBurned(loop, stallConfig.declaredTargets)
       ) {
-        await this.finishIteration(task, loop, {
+        await this.finishIteration(taskStore, opts.taskId, task, loop, now, {
           startedAt, endedAt: now, exitReason: 'all_targets_stalled',
           cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
         });
-        this.terminate(loop, 'completed');
+        taskStore.setRalphLoopStatus(opts.taskId, 'completed', { now });
         return { kind: 'terminate', reason: 'all_targets_stalled', events };
       }
     }
@@ -300,8 +300,10 @@ export class RalphCycler {
     const iterationCostCap = stallConfig.iterationCostCapUsd;
     if (iterationCostCap !== undefined && costDelta !== null && costDelta > iterationCostCap) {
       const streak = (loop.consecutiveIterationCostCapStreak ?? 0) + 1;
-      loop.consecutiveIterationCostCapStreak = streak;
-      loop.iterationCostWarningCount = (loop.iterationCostWarningCount ?? 0) + 1;
+      taskStore.updateRalphLoop(opts.taskId, (currentLoop) => {
+        currentLoop.consecutiveIterationCostCapStreak = streak;
+        currentLoop.iterationCostWarningCount = (currentLoop.iterationCostWarningCount ?? 0) + 1;
+      }, { now });
       events.push({
         type: 'ralph_iteration_cost_warning',
         taskId: opts.taskId,
@@ -311,16 +313,18 @@ export class RalphCycler {
         consecutiveStreak: streak,
       });
       if (streak >= stallConfig.consecutiveIterationCostCapHits) {
-        await this.finishIteration(task, loop, {
+        await this.finishIteration(taskStore, opts.taskId, task, loop, now, {
           startedAt, endedAt: now, exitReason: 'iteration_cost_cap',
           cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
         });
-        this.terminate(loop, 'completed');
+        taskStore.setRalphLoopStatus(opts.taskId, 'completed', { now });
         return { kind: 'terminate', reason: 'iteration_cost_cap', events };
       }
     } else if (iterationCostCap !== undefined && costDelta !== null) {
       // Within-cap iteration: reset streak.
-      loop.consecutiveIterationCostCapStreak = 0;
+      taskStore.updateRalphLoop(opts.taskId, (currentLoop) => {
+        currentLoop.consecutiveIterationCostCapStreak = 0;
+      }, { now });
     }
 
     const diff = await this.computeIterationDiff(task, loop);
@@ -328,27 +332,29 @@ export class RalphCycler {
 
     // 8. cumulative cost cap (existing behavior).
     if (isCostCapReached(loop, cost)) {
-      loop.zeroDiffStreak = nextZeroDiffStreak;
-      await this.appendFinishedIteration(task, loop, {
+      taskStore.updateRalphLoop(opts.taskId, (currentLoop) => {
+        currentLoop.zeroDiffStreak = nextZeroDiffStreak;
+      }, { now });
+      await this.appendFinishedIteration(taskStore, opts.taskId, task, loop, now, {
         startedAt, endedAt: now, exitReason: 'cost_cap',
         cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
         gitBaselineRef: diff.gitBaselineRef, diffStats: diff.diffStats,
       });
-      this.terminate(loop, 'completed');
-      task.updatedAt = new Date(now);
+      taskStore.setRalphLoopStatus(opts.taskId, 'completed', { now });
       return { kind: 'terminate', reason: 'cost_cap', events };
     }
 
     // 9. zero-diff convergence (existing).
     if (isZeroDiffConverged(loop, nextZeroDiffStreak)) {
-      loop.zeroDiffStreak = nextZeroDiffStreak;
-      await this.appendFinishedIteration(task, loop, {
+      taskStore.updateRalphLoop(opts.taskId, (currentLoop) => {
+        currentLoop.zeroDiffStreak = nextZeroDiffStreak;
+      }, { now });
+      await this.appendFinishedIteration(taskStore, opts.taskId, task, loop, now, {
         startedAt, endedAt: now, exitReason: 'zero_diff_convergence',
         cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
         gitBaselineRef: diff.gitBaselineRef, diffStats: diff.diffStats,
       });
-      this.terminate(loop, 'completed');
-      task.updatedAt = new Date(now);
+      taskStore.setRalphLoopStatus(opts.taskId, 'completed', { now });
       return { kind: 'terminate', reason: 'zero_diff_convergence', events };
     }
 
@@ -362,18 +368,21 @@ export class RalphCycler {
       : predicateOutcome?.errored ? 'predicate_error'
       : 'continued';
 
-    loop.zeroDiffStreak = nextZeroDiffStreak;
-    await this.appendFinishedIteration(task, loop, {
+    taskStore.updateRalphLoop(opts.taskId, (currentLoop) => {
+      currentLoop.zeroDiffStreak = nextZeroDiffStreak;
+    }, { now });
+    await this.appendFinishedIteration(taskStore, opts.taskId, task, loop, now, {
       startedAt, endedAt: now, exitReason,
       cumulativeCostUsd: cost, costDeltaUsd: costDelta, verdict,
       gitBaselineRef: diff.gitBaselineRef, diffStats: diff.diffStats,
     });
 
     const nextIteration = loop.currentIteration + 1;
-    loop.currentIteration = nextIteration;
-    loop.cumulativeIterations += 1;
-    loop.lastIterationStartedAt = now;
-    task.updatedAt = new Date(now);
+    taskStore.updateRalphLoop(opts.taskId, (currentLoop) => {
+      currentLoop.currentIteration = nextIteration;
+      currentLoop.cumulativeIterations += 1;
+      currentLoop.lastIterationStartedAt = now;
+    }, { now });
 
     void this.io.createBaselineTag(nextIteration, { cwd: task.cwd });
 
@@ -386,57 +395,72 @@ export class RalphCycler {
    * `ralph_target_burned` event on the burn transition. Returns the row.
    */
   private recordStall(
+    taskStore: TaskStore,
+    taskId: string,
     loop: RalphLoopState,
     target: string,
     reason: string,
     blockers: string[],
     stallConfig: ReturnType<typeof resolveStallConfig>,
-    taskId: string,
     events: RalphCyclerEvent[],
+    now: number,
     permanent: boolean = false,
   ): BurnedOutTarget {
-    if (!loop.burnedOutTargets) loop.burnedOutTargets = [];
-    let row = loop.burnedOutTargets.find((t) => t.target === target);
-    if (!row) {
-      row = {
-        target,
-        consecutiveStallCount: 0,
-        totalStallCount: 0,
-        firstStalledAtIteration: loop.currentIteration,
-        lastStallReason: reason,
-        lastStallBlockers: blockers,
-        burned: false,
-        lastAttemptedIteration: loop.currentIteration,
-      };
-      loop.burnedOutTargets.push(row);
-    }
-    row.consecutiveStallCount += 1;
-    row.totalStallCount += 1;
-    row.lastStallReason = reason;
-    row.lastStallBlockers = blockers;
-    row.lastAttemptedIteration = loop.currentIteration;
+    let result: BurnedOutTarget | undefined;
+    taskStore.updateRalphLoop(taskId, (currentLoop) => {
+      if (!currentLoop.burnedOutTargets) currentLoop.burnedOutTargets = [];
+      let row = currentLoop.burnedOutTargets.find((t) => t.target === target);
+      if (!row) {
+        row = {
+          target,
+          consecutiveStallCount: 0,
+          totalStallCount: 0,
+          firstStalledAtIteration: currentLoop.currentIteration,
+          lastStallReason: reason,
+          lastStallBlockers: blockers,
+          burned: false,
+          lastAttemptedIteration: currentLoop.currentIteration,
+        };
+        currentLoop.burnedOutTargets.push(row);
+      }
+      row.consecutiveStallCount += 1;
+      row.totalStallCount += 1;
+      row.lastStallReason = reason;
+      row.lastStallBlockers = blockers;
+      row.lastAttemptedIteration = currentLoop.currentIteration;
 
-    // `permanent: true` short-circuits the count threshold so the agent's
-    // structural-unfitness call (umbrella issue, malformed body, ...) burns
-    // on the first stall instead of wasting another iteration to confirm.
-    // The flag is persisted on the row so applyDecay can skip it (decay
-    // would otherwise silently undo a permanent burn after N idle iterations).
-    const justBurned =
-      !row.burned
-      && (permanent || row.consecutiveStallCount >= stallConfig.consecutiveStallsPerTarget);
-    if (justBurned) {
-      row.burned = true;
-      if (permanent) row.permanent = true;
-      events.push({
-        type: 'ralph_target_burned',
-        taskId,
-        target,
-        iteration: loop.currentIteration,
-        stallCount: row.consecutiveStallCount,
-        reason,
-      });
-    }
-    return row;
+      // `permanent: true` short-circuits the count threshold so the agent's
+      // structural-unfitness call (umbrella issue, malformed body, ...) burns
+      // on the first stall instead of wasting another iteration to confirm.
+      // The flag is persisted on the row so applyDecay can skip it (decay
+      // would otherwise silently undo a permanent burn after N idle iterations).
+      const justBurned =
+        !row.burned
+        && (permanent || row.consecutiveStallCount >= stallConfig.consecutiveStallsPerTarget);
+      if (justBurned) {
+        row.burned = true;
+        if (permanent) row.permanent = true;
+        events.push({
+          type: 'ralph_target_burned',
+          taskId,
+          target,
+          iteration: currentLoop.currentIteration,
+          stallCount: row.consecutiveStallCount,
+          reason,
+        });
+      }
+      result = { ...row, lastStallBlockers: [...row.lastStallBlockers] };
+    }, { now });
+    return result ?? {
+      target,
+      consecutiveStallCount: 0,
+      totalStallCount: 0,
+      firstStalledAtIteration: loop.currentIteration,
+      lastStallReason: reason,
+      lastStallBlockers: blockers,
+      burned: false,
+      lastAttemptedIteration: loop.currentIteration,
+    };
   }
 
   /**
@@ -445,45 +469,52 @@ export class RalphCycler {
    * when the target was actually burned and is now being un-burned.
    */
   private unburnTarget(
+    taskStore: TaskStore,
+    taskId: string,
     loop: RalphLoopState,
     target: string,
     via: 'progress_verdict' | 'patch_burned_targets' | 'decay',
-    taskId: string,
     events: RalphCyclerEvent[],
+    now: number,
   ): void {
     if (!loop.burnedOutTargets) return;
-    const idx = loop.burnedOutTargets.findIndex((t) => t.target === target);
-    if (idx < 0) return;
-    const row = loop.burnedOutTargets[idx];
-    const wasBurned = row.burned;
-    // Reset the burn counter and drop the burned flag, but KEEP the row so
-    // `totalStallCount` and `firstStalledAtIteration` survive across burn
-    // cycles. The dashboard "burned-out targets" rendering filters by
-    // `burned: true` (see RalphLoopPanel.tsx); rendering doesn't depend on
-    // the row being absent. Preserves cumulative attempt history through
-    // un-burn → re-stall cycles for forensic / dashboard use.
-    row.consecutiveStallCount = 0;
-    row.burned = false;
-    // Drop the permanent flag too — `progress` is the agent's
-    // self-correction signal, and `patch_burned_targets` is the operator
-    // override; both should fully clear the structural-unfitness claim.
-    delete row.permanent;
-    if (wasBurned) {
-      events.push({
-        type: 'ralph_target_unburned',
-        taskId,
-        target,
-        iteration: loop.currentIteration,
-        via,
-      });
-    }
+    taskStore.updateRalphLoop(taskId, (currentLoop) => {
+      if (!currentLoop.burnedOutTargets) return;
+      const idx = currentLoop.burnedOutTargets.findIndex((t) => t.target === target);
+      if (idx < 0) return;
+      const row = currentLoop.burnedOutTargets[idx];
+      const wasBurned = row.burned;
+      // Reset the burn counter and drop the burned flag, but KEEP the row so
+      // `totalStallCount` and `firstStalledAtIteration` survive across burn
+      // cycles. The dashboard "burned-out targets" rendering filters by
+      // `burned: true` (see RalphLoopPanel.tsx); rendering doesn't depend on
+      // the row being absent. Preserves cumulative attempt history through
+      // un-burn → re-stall cycles for forensic / dashboard use.
+      row.consecutiveStallCount = 0;
+      row.burned = false;
+      // Drop the permanent flag too — `progress` is the agent's
+      // self-correction signal, and `patch_burned_targets` is the operator
+      // override; both should fully clear the structural-unfitness claim.
+      delete row.permanent;
+      if (wasBurned) {
+        events.push({
+          type: 'ralph_target_unburned',
+          taskId,
+          target,
+          iteration: currentLoop.currentIteration,
+          via,
+        });
+      }
+    }, { now });
   }
 
   private applyDecay(
+    taskStore: TaskStore,
+    taskId: string,
     loop: RalphLoopState,
     stallConfig: ReturnType<typeof resolveStallConfig>,
-    taskId: string,
     events: RalphCyclerEvent[],
+    now: number,
   ): void {
     const decay = (stallConfig as { burnedTargetDecayIterations?: number }).burnedTargetDecayIterations;
     if (decay === undefined || !loop.burnedOutTargets) return;
@@ -494,7 +525,7 @@ export class RalphCycler {
       (t) => t.permanent !== true && loop.currentIteration - t.lastAttemptedIteration >= decay,
     );
     for (const row of stale) {
-      this.unburnTarget(loop, row.target, 'decay', taskId, events);
+      this.unburnTarget(taskStore, taskId, loop, row.target, 'decay', events, now);
     }
   }
 
@@ -506,16 +537,21 @@ export class RalphCycler {
   }
 
   private async finishIteration(
+    taskStore: TaskStore,
+    taskId: string,
     task: Task,
     loop: RalphLoopState,
+    now: number,
     fields: Pick<
       RalphIterationRecord,
       'startedAt' | 'endedAt' | 'exitReason' | 'cumulativeCostUsd' | 'costDeltaUsd' | 'verdict'
     >,
   ): Promise<void> {
     const diff = await this.computeIterationDiff(task, loop);
-    loop.zeroDiffStreak = nextZeroDiffStreakFor(loop, diff.diffStats);
-    await this.appendFinishedIteration(task, loop, {
+    taskStore.updateRalphLoop(taskId, (currentLoop) => {
+      currentLoop.zeroDiffStreak = nextZeroDiffStreakFor(currentLoop, diff.diffStats);
+    }, { now });
+    await this.appendFinishedIteration(taskStore, taskId, task, loop, now, {
       ...fields,
       gitBaselineRef: diff.gitBaselineRef,
       diffStats: diff.diffStats,
@@ -533,8 +569,11 @@ export class RalphCycler {
   }
 
   private async appendFinishedIteration(
+    taskStore: TaskStore,
+    taskId: string,
     task: Task,
     loop: RalphLoopState,
+    now: number,
     fields: Pick<
       RalphIterationRecord,
       'startedAt' | 'endedAt' | 'exitReason' | 'cumulativeCostUsd' | 'gitBaselineRef' | 'diffStats' | 'costDeltaUsd' | 'verdict'
@@ -561,14 +600,14 @@ export class RalphCycler {
     // in the cost source (e.g., a transient cost-tracker outage on iteration
     // N still lets iteration N+1 compute a delta against iteration N-1 once
     // the source recovers).
-    if (fields.cumulativeCostUsd !== null) {
-      loop.lastCumulativeCostUsd = fields.cumulativeCostUsd;
+    const cumulativeCostUsd = fields.cumulativeCostUsd;
+    if (cumulativeCostUsd !== null) {
+      taskStore.updateRalphLoop(taskId, (currentLoop) => {
+        currentLoop.lastCumulativeCostUsd = cumulativeCostUsd;
+      }, { now });
     }
   }
 
-  private terminate(loop: RalphLoopState, status: 'completed' | 'failed' | 'cancelled'): void {
-    loop.status = status;
-  }
 }
 
 function isZeroDiff(stats: RalphIterationDiffStats | null): boolean {

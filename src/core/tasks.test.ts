@@ -338,6 +338,94 @@ describe('TaskStore', () => {
     });
   });
 
+  describe('Ralph loop mutation APIs', () => {
+    test('setRalphLoop and setRalphLoopStatus centralize updatedAt changes', () => {
+      const task = store.createTask('Looped', '/cwd');
+
+      store.setRalphLoop(task.id, {
+        prompt: 'p',
+        iterationCap: 5,
+        currentIteration: 0,
+        status: 'running',
+        lastIterationStartedAt: 0,
+        cumulativeIterations: 0,
+      }, { now: 1_000 });
+
+      expect(store.getTask(task.id)!.ralphLoop?.status).toBe('running');
+      expect(store.getTask(task.id)!.updatedAt.toISOString()).toBe(new Date(1_000).toISOString());
+
+      store.setRalphLoopStatus(task.id, 'paused', { now: 2_000 });
+
+      expect(store.getTask(task.id)!.ralphLoop?.status).toBe('paused');
+      expect(store.getTask(task.id)!.updatedAt.toISOString()).toBe(new Date(2_000).toISOString());
+    });
+
+    test('updateRalphLoop mutates nested loop fields through the store boundary', () => {
+      const task = store.createTask('Looped', '/cwd');
+      store.setRalphLoop(task.id, {
+        prompt: 'p',
+        iterationCap: 5,
+        currentIteration: 0,
+        status: 'running',
+        lastIterationStartedAt: 0,
+        cumulativeIterations: 0,
+      });
+
+      const updated = store.updateRalphLoop(task.id, (loop) => {
+        loop.currentIteration = 2;
+        loop.cumulativeIterations = 2;
+        loop.lastIterationStartedAt = 3_000;
+      }, { now: 4_000 });
+
+      expect(updated!.ralphLoop).toMatchObject({
+        currentIteration: 2,
+        cumulativeIterations: 2,
+        lastIterationStartedAt: 3_000,
+      });
+      expect(updated!.updatedAt.toISOString()).toBe(new Date(4_000).toISOString());
+    });
+
+    test('claimRalphLoopOwner and clearRalphLoopOwner preserve ownership invariants', () => {
+      const task = store.createTask('Looped', '/cwd');
+      const firstSession = {
+        tmuxSession: 'kookr-first',
+        agentType: 'claude-code' as const,
+        cwd: '/cwd',
+        createdAt: new Date(),
+      };
+      const secondSession = {
+        tmuxSession: 'kookr-second',
+        agentType: 'claude-code' as const,
+        cwd: '/cwd',
+        createdAt: new Date(),
+      };
+      store.addSession(task.id, firstSession);
+      store.addSession(task.id, secondSession);
+      store.setRalphLoop(task.id, {
+        prompt: 'p',
+        iterationCap: 5,
+        currentIteration: 0,
+        status: 'running',
+        lastIterationStartedAt: 0,
+        cumulativeIterations: 0,
+      });
+
+      store.claimRalphLoopOwner(task.id, firstSession, { now: 1_000 });
+      store.claimRalphLoopOwner(task.id, secondSession, { now: 2_000 });
+      expect(store.getTask(task.id)!.ralphLoop?.ownerSessionId).toBe('kookr-first');
+
+      store.claimRalphLoopOwner(task.id, secondSession, { allowTransfer: true, now: 3_000 });
+      expect(store.getTask(task.id)!.ralphLoop?.ownerSessionId).toBe('kookr-second');
+
+      store.clearRalphLoopOwner(task.id, 'kookr-first', { now: 4_000 });
+      expect(store.getTask(task.id)!.ralphLoop?.ownerSessionId).toBe('kookr-second');
+
+      store.clearRalphLoopOwner(task.id, 'kookr-second', { now: 5_000 });
+      expect(store.getTask(task.id)!.ralphLoop?.ownerSessionId).toBeUndefined();
+      expect(store.getTask(task.id)!.updatedAt.toISOString()).toBe(new Date(5_000).toISOString());
+    });
+  });
+
   describe('Serialization', () => {
     test('getAllTasks returns all tasks as array', () => {
       store.createTask('Task 1', '/cwd');
