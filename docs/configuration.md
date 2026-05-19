@@ -132,6 +132,13 @@ KOOKR_TELEGRAM_ALLOWED_USERS=123456789
 KOOKR_REMOTE_CHAT_PROJECTS=/path/to/project-a,/path/to/project-b
 ```
 
+Set a phone-reachable dashboard origin when Telegram messages should open the
+Kookr dashboard from another device:
+
+```bash
+KOOKR_REMOTE_CHAT_DASHBOARD_URL=https://kookr.example.com
+```
+
 Use dry run mode to validate parsing without launching tasks:
 
 ```bash

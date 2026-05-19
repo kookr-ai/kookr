@@ -62,8 +62,34 @@ function parseAllowedProjects(value: string | undefined): Array<{ name: string; 
     .map((cwd) => ({ name: cwd.split('/').pop() ?? cwd, cwd }));
 }
 
-function dashboardBaseUrl(host: string, port: number): string {
+function localDashboardBaseUrl(host: string, port: number): string {
   return `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`;
+}
+
+function dashboardBaseUrl(env: Env, host: string, port: number, warn: (message: string) => void): string {
+  const configured = env.KOOKR_REMOTE_CHAT_DASHBOARD_URL?.trim();
+  if (configured) {
+    try {
+      const url = new URL(configured);
+      const isHttp = url.protocol === 'http:' || url.protocol === 'https:';
+      const isOrigin = url.pathname === '/' && url.search === '' && url.hash === '' && url.username === '' && url.password === '';
+      if (isHttp && isOrigin) {
+        return url.origin;
+      }
+    } catch {
+      // Fall through to the warning below.
+    }
+    warn(
+      '[telegram] KOOKR_REMOTE_CHAT_DASHBOARD_URL must be an http(s) origin like ' +
+      'https://kookr.example.com; using local dashboard URL instead.',
+    );
+  } else if (host === '0.0.0.0' || host === '127.0.0.1' || host === 'localhost') {
+    warn(
+      `[telegram] KOOKR_REMOTE_CHAT_DASHBOARD_URL is unset; Telegram dashboard links will use ` +
+      `${localDashboardBaseUrl(host, port)} and may not open from a phone.`,
+    );
+  }
+  return localDashboardBaseUrl(host, port);
 }
 
 export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promise<RemoteChatTrigger> {
@@ -110,7 +136,7 @@ export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promi
       dataDir: deps.kookrDir,
       dryRun: env.KOOKR_REMOTE_CHAT_DRY_RUN === '1',
       allowCodexRemoteSpawn: env.KOOKR_REMOTE_CHAT_ALLOW_CODEX === '1',
-      dashboardBaseUrl: dashboardBaseUrl(deps.host, deps.port),
+      dashboardBaseUrl: dashboardBaseUrl(env, deps.host, deps.port, warn),
       launchTask: deps.launchTask,
       llmClient: deps.llmClient,
       whisperUrl: env.KOOKR_STT_WHISPER_URL,

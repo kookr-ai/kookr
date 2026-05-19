@@ -82,6 +82,7 @@ describe('startRemoteChatTrigger', () => {
     }));
     const probeWhisperReachability = vi.fn(async () => ({ ok: true as const, modelCount: 2 }));
     const logs: string[] = [];
+    const warnings: string[] = [];
 
     const result = await startRemoteChatTrigger({
       host: '0.0.0.0',
@@ -102,6 +103,7 @@ describe('startRemoteChatTrigger', () => {
         probeWhisperReachability,
       }),
       log: (message) => logs.push(message),
+      warn: (message) => warnings.push(message),
     });
 
     expect(result.handle).not.toBeNull();
@@ -122,11 +124,113 @@ describe('startRemoteChatTrigger', () => {
       launchTask,
     }));
     expect(logs).toContain('[telegram] active — allowedUsers=2 projects=2 dryRun=true codex=enabled audio=enabled');
+    expect(warnings).toEqual([
+      '[telegram] KOOKR_REMOTE_CHAT_DASHBOARD_URL is unset; Telegram dashboard links will use http://localhost:4800 and may not open from a phone.',
+    ]);
 
     await vi.waitFor(() => {
       expect(probeWhisperReachability).toHaveBeenCalledWith('http://127.0.0.1:8010');
       expect(logs).toContain('[telegram] voice probe: 200 OK (2 models)');
     });
+  });
+
+  test('warns when unset dashboard URL falls back to loopback host', async () => {
+    const warnings: string[] = [];
+    const startTelegramTrigger = vi.fn(async () => ({
+      stop: vi.fn(),
+      onPermissionBlocked: vi.fn(),
+    }));
+
+    await startRemoteChatTrigger({
+      host: '127.0.0.1',
+      port: 4801,
+      kookrDir: '/tmp/kookr',
+      launchTask: vi.fn(),
+      llmClient: null,
+      env: {
+        KOOKR_TELEGRAM_BOT_TOKEN: 'token',
+        KOOKR_TELEGRAM_ALLOWED_USERS: '101',
+        KOOKR_REMOTE_CHAT_PROJECTS: '/repo',
+      },
+      loadTelegramModule: async () => ({
+        startTelegramTrigger,
+        probeWhisperReachability: vi.fn(),
+      }),
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(startTelegramTrigger).toHaveBeenCalledWith(expect.objectContaining({
+      dashboardBaseUrl: 'http://127.0.0.1:4801',
+    }));
+    expect(warnings).toEqual([
+      '[telegram] KOOKR_REMOTE_CHAT_DASHBOARD_URL is unset; Telegram dashboard links will use http://127.0.0.1:4801 and may not open from a phone.',
+    ]);
+  });
+
+  test('uses configured phone-reachable dashboard origin for Telegram links', async () => {
+    const warn = vi.fn();
+    const startTelegramTrigger = vi.fn(async () => ({
+      stop: vi.fn(),
+      onPermissionBlocked: vi.fn(),
+    }));
+
+    await startRemoteChatTrigger({
+      host: '0.0.0.0',
+      port: 4800,
+      kookrDir: '/tmp/kookr',
+      launchTask: vi.fn(),
+      llmClient: null,
+      env: {
+        KOOKR_TELEGRAM_BOT_TOKEN: 'token',
+        KOOKR_TELEGRAM_ALLOWED_USERS: '101',
+        KOOKR_REMOTE_CHAT_PROJECTS: '/repo',
+        KOOKR_REMOTE_CHAT_DASHBOARD_URL: 'https://kookr.example.com/',
+      },
+      loadTelegramModule: async () => ({
+        startTelegramTrigger,
+        probeWhisperReachability: vi.fn(),
+      }),
+      warn,
+    });
+
+    expect(startTelegramTrigger).toHaveBeenCalledWith(expect.objectContaining({
+      dashboardBaseUrl: 'https://kookr.example.com',
+    }));
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test('warns and falls back when configured dashboard URL is not an origin', async () => {
+    const warnings: string[] = [];
+    const startTelegramTrigger = vi.fn(async () => ({
+      stop: vi.fn(),
+      onPermissionBlocked: vi.fn(),
+    }));
+
+    await startRemoteChatTrigger({
+      host: '127.0.0.1',
+      port: 4801,
+      kookrDir: '/tmp/kookr',
+      launchTask: vi.fn(),
+      llmClient: null,
+      env: {
+        KOOKR_TELEGRAM_BOT_TOKEN: 'token',
+        KOOKR_TELEGRAM_ALLOWED_USERS: '101',
+        KOOKR_REMOTE_CHAT_PROJECTS: '/repo',
+        KOOKR_REMOTE_CHAT_DASHBOARD_URL: 'https://kookr.example.com/tasks',
+      },
+      loadTelegramModule: async () => ({
+        startTelegramTrigger,
+        probeWhisperReachability: vi.fn(),
+      }),
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(startTelegramTrigger).toHaveBeenCalledWith(expect.objectContaining({
+      dashboardBaseUrl: 'http://127.0.0.1:4801',
+    }));
+    expect(warnings).toEqual([
+      '[telegram] KOOKR_REMOTE_CHAT_DASHBOARD_URL must be an http(s) origin like https://kookr.example.com; using local dashboard URL instead.',
+    ]);
   });
 
   test('logs and continues when Telegram startup throws', async () => {
