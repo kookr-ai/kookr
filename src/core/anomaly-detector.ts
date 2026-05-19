@@ -38,7 +38,7 @@ export interface AnomalyDetectionEvaluation {
  * Detect the highest-priority anomaly in a window of events for an agent.
  * Returns the most severe anomaly found, or null if everything looks normal.
  *
- * Priority: permission_blocked (warning) > repeated_error (warning) > needs_input (info)
+ * Priority: critical > warning > info.
  */
 export function detectAnomalies(
   events: AgentEvent[],

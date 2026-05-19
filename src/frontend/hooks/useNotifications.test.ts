@@ -128,6 +128,10 @@ describe('useNotifications', () => {
     mount();
 
     expect(notificationCtor).toHaveBeenCalledTimes(1);
+    expect(notificationCtor).toHaveBeenCalledWith(
+      'Agent: permission blocked',
+      expect.objectContaining({ body: 'mock finding' }),
+    );
   });
 
   test('notifies when a new finding arrives after mount while sound alerts are muted', () => {
