@@ -12,6 +12,7 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 | `pnpm test:coverage` | Vitest with V8 coverage. | Local. |
 | `pnpm test:watch` | Vitest watch mode. | Local. |
 | `pnpm check:e2e` | TypeScript check for Playwright tests. | Local + CI (`test` job). |
+| `pnpm validate:docs-commands` | Verifies documented package scripts, local CLI binaries, and repo-local command entrypoints exist. | Local + CI (`test` job). |
 | `pnpm exec playwright test` | Browser E2E. | Local + CI (`build` job, Playwright container). |
 | `pnpm test:hooks` | Shell regression tests for project hooks. | Local + CI (`test` job). |
 | `CANARY=1 pnpm exec playwright test e2e/canary.spec.ts` | Real-agent canary, validates mock event fixtures against real Claude Code (Haiku). Local/manual due to API cost. | Local only. |

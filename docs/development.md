@@ -20,7 +20,7 @@ pnpm dev:server          # backend only
 pnpm dev:frontend        # frontend only
 pnpm test                # Vitest unit/integration tests
 pnpm test:watch          # Vitest watch mode
-pnpm test:e2e            # Playwright E2E tests
+pnpm exec playwright test # Playwright E2E tests
 pnpm build               # generate build info, build dtach, typecheck, build frontend
 pnpm build && pnpm start # production mode on 4800
 pnpm run doctor          # local setup diagnostics

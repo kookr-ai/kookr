@@ -172,6 +172,13 @@ if ! pnpm validate:skills; then
   exit 1
 fi
 
+echo "Validating documented commands..."
+if ! pnpm validate:docs-commands; then
+  echo ""
+  echo "Push rejected: documented command validation failed."
+  exit 1
+fi
+
 echo "Running tests..."
 if ! pnpm test; then
   echo ""
