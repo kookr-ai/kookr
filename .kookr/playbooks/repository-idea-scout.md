@@ -42,7 +42,7 @@ parameters:
       - label: Testing
         value: testing
   - name: useKnowledgeBase
-    description: "Ground ideas in the local knowledge base via the kb CLI. 'auto' uses the KB when the kb CLI is installed and a relevant shelf exists; 'off' skips KB grounding and relies only on the issue backlog and codebase."
+    description: "Ground ideas in the local knowledge base via the kb CLI. 'auto' uses the KB when the kb CLI is installed and a relevant shelf exists; 'off' skips KB grounding and relies only on the issue backlog and codebase. When the kb CLI is not installed this setting has no effect and both values behave identically."
     required: false
     default: auto
     type: select
