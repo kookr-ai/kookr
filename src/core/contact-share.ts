@@ -39,7 +39,10 @@ function cloneSharedTask(task: SharedTask): SharedTask {
 }
 
 function lifecycleForDecision(decision: ShareDecision | undefined, expiresAt: string | undefined, now: Date): ContactShareLifecycle {
-  if (expiresAt && Date.parse(expiresAt) <= now.getTime()) return 'expired';
+  if (expiresAt) {
+    const expiresAtMs = Date.parse(expiresAt);
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now.getTime()) return 'expired';
+  }
   if (!decision) return 'pending';
   switch (decision.kind) {
     case 'share.accept':
@@ -49,6 +52,10 @@ function lifecycleForDecision(decision: ShareDecision | undefined, expiresAt: st
     case 'share.revoke':
       return 'revoked';
   }
+}
+
+function isSharedTaskActive(lifecycle: ContactShareLifecycle): boolean {
+  return lifecycle === 'accepted';
 }
 
 function isDecisionEnvelope(envelope: ContactShareEnvelope): envelope is ContactShareEnvelope & { kind: DecisionKind } {
@@ -106,9 +113,6 @@ export class ContactShareReadModel {
       const previousDecision = this.decisionsByDeviceShare.get(key);
       if (decisionWins(previousDecision, next)) {
         this.decisionsByDeviceShare.set(key, next);
-        if (stored.kind === 'share.refuse' || stored.kind === 'share.revoke') {
-          this.sharedTasks.delete(sharedTaskIdForShare(stored.shareId));
-        }
       }
     }
     return { ...stored };
@@ -145,6 +149,7 @@ export class ContactShareReadModel {
     if (!decisionWins(this.decisionsByDeviceShare.get(key), decision)) return null;
     this.decisionsByDeviceShare.set(key, decision);
 
+    const inviteEnvelope = this.inviteEnvelopeForShare(invite.shareId);
     const task: SharedTask = {
       kind: 'shared-task',
       sharedTaskId: sharedTaskIdForShare(invite.shareId),
@@ -157,6 +162,7 @@ export class ContactShareReadModel {
       ...(invite.terminalSubject ? { terminalSubject: { ...invite.terminalSubject } } : {}),
       localDisplayLabel: invite.taskLabel,
       lifecycle: 'accepted',
+      ...(inviteEnvelope?.expiresAt ? { expiresAt: inviteEnvelope.expiresAt } : {}),
       grants: normalizeContactShareGrants(invite.grants),
       source: 'contact-share',
       remoteStatus: invite.remoteStatus,
@@ -177,8 +183,13 @@ export class ContactShareReadModel {
     this.sharedTasks.delete(sharedTaskIdForShare(shareId));
   }
 
-  listSharedTasks(): SharedTask[] {
-    return [...this.sharedTasks.values()].map(cloneSharedTask);
+  listSharedTasks(now = new Date()): SharedTask[] {
+    const activeTasks: SharedTask[] = [];
+    for (const task of this.sharedTasks.values()) {
+      const refreshed = this.pruneInactiveSharedTaskForRead(task, now);
+      if (refreshed) activeTasks.push(refreshed);
+    }
+    return activeTasks;
   }
 
   private decisionKey(shareId: string, recipientDeviceId: string): string {
@@ -198,10 +209,22 @@ export class ContactShareReadModel {
     return (this.decisionsByDeviceShare.get(this.decisionKey(shareId, recipientDeviceId))?.decisionVersion ?? 0) + 1;
   }
 
+  private pruneInactiveSharedTaskForRead(task: SharedTask, now: Date): SharedTask | null {
+    const inviteEnvelope = this.inviteEnvelopeForShare(task.shareId);
+    const lifecycle = lifecycleForDecision(this.latestDecisionForShare(task.shareId), inviteEnvelope?.expiresAt, now);
+    if (!isSharedTaskActive(lifecycle)) {
+      this.sharedTasks.delete(task.sharedTaskId);
+      return null;
+    }
+    return cloneSharedTask({
+      ...task,
+      lifecycle,
+      ...(inviteEnvelope?.expiresAt ? { expiresAt: inviteEnvelope.expiresAt } : {}),
+    });
+  }
+
   private inboxItemForInvite(invite: DecryptedContactShareInvite, now = new Date()): ContactShareInboxItem {
-    const inviteEnvelope = [...this.envelopes.values()]
-      .filter((envelope) => envelope.shareId === invite.shareId && envelope.kind === 'share.invite')
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const inviteEnvelope = this.inviteEnvelopeForShare(invite.shareId);
     const decision = this.latestDecisionForShare(invite.shareId);
     const updatedAt = decision?.createdAt ?? inviteEnvelope?.createdAt ?? new Date(0).toISOString();
     return {
@@ -218,6 +241,12 @@ export class ContactShareReadModel {
       updatedAt,
       ...(inviteEnvelope?.expiresAt ? { expiresAt: inviteEnvelope.expiresAt } : {}),
     };
+  }
+
+  private inviteEnvelopeForShare(shareId: string): ContactShareEnvelope | undefined {
+    return [...this.envelopes.values()]
+      .filter((envelope) => envelope.shareId === shareId && envelope.kind === 'share.invite')
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   }
 }
 

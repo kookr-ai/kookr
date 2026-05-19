@@ -175,4 +175,57 @@ describe('ContactShareReadModel', () => {
     expect(expired.acceptShare('share-1', 'device-recipient-a', new Date('2026-05-18T10:03:00.000Z'))).toBeNull();
     expect(expired.listSharedTasks()).toEqual([]);
   });
+
+  it('rejects malformed invite expiry values', () => {
+    const model = new ContactShareReadModel();
+
+    expect(() => model.ingestEncryptedEnvelope(envelope({
+      expiresAt: 'not-a-date',
+    }))).toThrow(/invalid contact share envelope/);
+  });
+
+  it('expires accepted shared tasks when their invite TTL passes', () => {
+    const model = new ContactShareReadModel();
+    model.ingestEncryptedEnvelope(envelope({
+      expiresAt: '2026-05-18T10:02:00.000Z',
+    }));
+    model.recordDecryptedInvite(invite());
+
+    const accepted = model.acceptShare('share-1', 'device-recipient-a', new Date('2026-05-18T10:01:00.000Z'));
+    expect(accepted).toEqual(expect.objectContaining({
+      lifecycle: 'accepted',
+      expiresAt: '2026-05-18T10:02:00.000Z',
+    }));
+    expect(model.listSharedTasks(new Date('2026-05-18T10:01:30.000Z'))).toEqual([
+      expect.objectContaining({
+        sharedTaskId: 'shared:share-1',
+        lifecycle: 'accepted',
+        expiresAt: '2026-05-18T10:02:00.000Z',
+      }),
+    ]);
+
+    expect(model.listSharedTasks(new Date('2026-05-18T10:02:00.000Z'))).toEqual([]);
+    expect(model.acceptShare('share-1', 'device-recipient-a', new Date('2026-05-18T10:02:01.000Z'))).toBeNull();
+  });
+
+  it('removes an accepted shared task when a later revoke arrives', () => {
+    const model = new ContactShareReadModel();
+    model.ingestEncryptedEnvelope(envelope());
+    model.recordDecryptedInvite(invite());
+
+    expect(model.acceptShare('share-1', 'device-recipient-a', new Date('2026-05-18T10:01:00.000Z'))).toEqual(expect.objectContaining({
+      lifecycle: 'accepted',
+    }));
+
+    model.ingestEncryptedEnvelope(envelope({
+      envelopeId: 'env-revoke-v2',
+      kind: 'share.revoke',
+      decisionVersion: 2,
+      createdAt: '2026-05-18T10:02:00.000Z',
+      ciphertext: 'sealed:revoke:opaque',
+    }));
+
+    expect(model.listSharedTasks(new Date('2026-05-18T10:02:01.000Z'))).toEqual([]);
+    expect(model.acceptShare('share-1', 'device-recipient-a', new Date('2026-05-18T10:02:02.000Z'))).toBeNull();
+  });
 });
