@@ -229,6 +229,18 @@ The system SHOULD persist manual finding-evidence review outcomes in an append-o
 
 **Evidence:** `src/server/review-log-store.ts`, `src/server/finding-evidence-review-service.ts`, `src/server/routes/diagnostics-routes.ts`, `src/server/review-log-store.test.ts`, `src/server/finding-evidence-review-service.test.ts`, `src/server/routes/diagnostics-routes.test.ts`.
 
+### R2.13: Report Detector Proposal Candidates [F2.12] — SHOULD — `done`
+
+The system SHOULD turn repeated finding-evidence review outcomes into advisory detector proposal reports without changing live detector behavior automatically.
+
+**Acceptance criteria:**
+- Reports are grouped by detector target, candidate kind, input schema version, prompt version, and app build version
+- Reports include review counts, false-positive / false-negative / invalid / unclear populations, confidence distribution, input hashes, and evidence references
+- Generated proposals are advisory only and cannot execute commands or mutate detector configuration
+- Diagnostics cap and escape model-controlled text before returning it
+
+**Evidence:** `src/server/detector-proposal-report.ts`, `src/server/review-log-store.ts`, `src/server/routes/diagnostics-routes.ts`, `src/server/detector-proposal-report.test.ts`, `src/server/routes/diagnostics-routes.test.ts`.
+
 ---
 
 ## R3: The Loop — Respond & Advance

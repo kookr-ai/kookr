@@ -397,6 +397,79 @@ describe('diagnostics routes', () => {
       });
     });
 
+    test('detector proposal diagnostics groups repeated targets and escapes model text', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+      const target = {
+        candidateKind: 'false_positive',
+        detectorTarget: 'needs_input',
+        inputSchemaVersion: 'finding-evidence-review-input.v1',
+        promptVersion: 'finding-evidence-review-prompt.v1',
+        appGitSha: 'abc123',
+      };
+      const reviewLine = (candidateId: string, inputHash: string, rationale: string) => JSON.stringify({
+        schemaVersion: 'finding-evidence-review-log-record.v1',
+        kind: 'valid_review',
+        appendedAt: '2026-05-18T10:06:00.000Z',
+        inputHash,
+        target,
+        review: {
+          schemaVersion: 'finding-evidence-review.v1',
+          candidateId,
+          verdict: 'likely_false_positive',
+          confidence: 'high',
+          evidenceRefs: [`${candidateId}:observation:1`],
+          rationale,
+          reviewedAt: '2026-05-18T10:05:00.000Z',
+          reviewer: {
+            provider: 'fake-provider',
+            model: 'fake-model',
+            promptVersion: 'finding-evidence-review-prompt.v1',
+          },
+        },
+      });
+      writeFileSync(join(tempDir, 'finding-evidence-reviews.jsonl'), [
+        reviewLine('finding-1', 'a'.repeat(64), '<script>alert("x")</script>'),
+        reviewLine('finding-2', 'b'.repeat(64), 'terminal activity continued'),
+      ].join('\n'));
+
+      const res = await mkApp(reviewDeps(null)).request('http://example.com/api/finding-evidence-review-detector-proposals?minReviews=2', {
+        headers: { 'x-kookr-admin-token': 'admin-secret' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual(expect.objectContaining({
+        schemaVersion: 'detector-proposal-report-response.v1',
+        diagnostics: [],
+      }));
+      expect(body.reports).toHaveLength(1);
+      expect(body.reports[0]).toEqual(expect.objectContaining({
+        detectorTarget: 'needs_input',
+        reviewCounts: expect.objectContaining({
+          falsePositive: 2,
+          falseNegative: 0,
+          invalid: 0,
+          unclear: 0,
+        }),
+        proposal: expect.objectContaining({
+          status: 'candidate',
+          advisoryOnly: true,
+          canExecuteCommands: false,
+          canMutateDetectorConfig: false,
+        }),
+      }));
+      const serialized = JSON.stringify(body);
+      expect(serialized).toContain('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;');
+      expect(serialized).not.toContain('<script>');
+    });
+
+    test('detector proposal diagnostics rejects unauthorized non-loopback requests', async () => {
+      const res = await mkApp(reviewDeps(null)).request('http://example.com/api/finding-evidence-review-detector-proposals');
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'finding-review-forbidden' });
+    });
+
     test('sampler diagnostics route exposes budget, queue, and provider status', async () => {
       process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
       const sampler = {

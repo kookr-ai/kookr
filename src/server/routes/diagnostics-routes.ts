@@ -16,6 +16,7 @@ import {
   type FindingEvidenceReviewServiceConfig,
 } from '../finding-evidence-review-service.js';
 import { ReviewLogStore } from '../review-log-store.js';
+import { buildDetectorProposalReportResponseV1 } from '../detector-proposal-report.js';
 import type { RouteDeps } from './shared.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
@@ -150,6 +151,20 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       records: read.records.slice(-boundedLimit),
       diagnostics: read.diagnostics,
     });
+  });
+
+  app.get('/api/finding-evidence-review-detector-proposals', async (c) => {
+    if (!isAuthorizedFindingReviewRequest(getRemoteAddress(c), c.req.header(REVIEW_ADMIN_TOKEN_HEADER))) {
+      return c.json({ error: 'finding-review-forbidden' }, 403);
+    }
+
+    const minReviewsParam = c.req.query('minReviews');
+    const maxEvidenceParam = c.req.query('maxEvidence');
+    const read = await getFindingEvidenceReviewLogStore().readAll();
+    return c.json(buildDetectorProposalReportResponseV1(read.records, read.diagnostics, {
+      minPopulationReviews: readPositiveIntQuery(minReviewsParam, 2, 100),
+      maxEvidencePerReport: readPositiveIntQuery(maxEvidenceParam, 5, 50),
+    }));
   });
 
   app.get('/api/finding-evidence-review-sampler', async (c) => {
@@ -372,4 +387,11 @@ function isLoopbackAddress(address: string): boolean {
     || normalized === '::ffff:127.0.0.1'
     || normalized === '127.0.0.1'
     || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized);
+}
+
+function readPositiveIntQuery(value: string | undefined, fallback: number, max: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, max);
 }

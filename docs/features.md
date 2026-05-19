@@ -72,6 +72,7 @@ Kookr's supervisor is an AI that watches agent streams and **understands** what 
 | F2.9 | **Notify when attention is needed** | Visual alert in the UI + optional browser notification with the explanation summary. |
 | F2.10 | **Audit finding evidence** | Capture bounded evidence snapshots over time for surfaced supervisor findings so operators can review false positives and timing-sensitive alerts without reconstructing behavior from source code. |
 | F2.11 | **Persist finding review diagnostics** | Store manual finding-evidence review outcomes and invalid model attempts in an append-only diagnostics log that is separate from runtime task state. |
+| F2.12 | **Report detector proposal candidates** | Group repeated finding-review outcomes by detector target and version into advisory diagnostics reports with evidence hashes, review populations, and plain-text model rationale excerpts; reports never mutate detector behavior automatically. |
 
 **Implementation approach:** V1 detection patterns are implemented as pure functions in `anomaly-detector.ts`, co-located with their tests for simplicity. The SKILL.md approach (community-contributable, discoverable patterns) remains a valid V2 direction. V2 can also add LLM-powered analysis for nuanced detection (trajectory drift, strategic dead ends).
 
