@@ -1,13 +1,13 @@
 import {
   buildRelayDoctorReport,
   diagnoseRelayProcess,
-  formatRelayDoctorReport,
-  readRecentRelayLogs,
-  relayLifecyclePaths,
   restartRelay,
   startRelay,
   stopRelay,
 } from '../src/server/relay-lifecycle.js';
+import { formatRelayDoctorReport } from '../src/server/relay-lifecycle-cli-format.js';
+import { relayLifecyclePaths } from '../src/server/relay-lifecycle-paths.js';
+import { readRecentRelayLogs } from '../src/server/relay-log-reader.js';
 
 async function main(): Promise<void> {
   const command = process.argv[2] ?? 'status';

@@ -30,7 +30,8 @@ import {
   deliverInitialPromptToSession,
   resolveBracketedPasteSubmit,
 } from './agent-launch-context.js';
-import { buildCheckpointLoadInstruction, resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
+import { buildCheckpointLoadInstruction } from '../core/checkpoint-load-instruction.js';
+import { resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';

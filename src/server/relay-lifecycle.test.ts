@@ -13,10 +13,10 @@ import {
   diagnoseRelayEnv,
   diagnoseRelayNode,
   diagnoseRelayProcess,
-  relayLifecyclePaths,
   startRelay,
   stopRelay,
 } from './relay-lifecycle.js';
+import { relayLifecyclePaths } from './relay-lifecycle-paths.js';
 
 const cleanupDirs: string[] = [];
 let relay: RelayServerHandle | null = null;
