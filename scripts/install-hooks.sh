@@ -16,6 +16,9 @@
 #   - post-merge-keyword-scan.sh — when the user prompt mentions a merge,
 #     scans open PRs in the cwd repo and surfaces ones needing rebase.
 #     (UserPromptSubmit)
+#   - kb-context-inject.sh — RFC 018 M2 relevance-gated knowledge-base
+#     context injection. OFF by default; inert unless KOOKR_KB_CONTEXT_INJECT
+#     is truthy. (UserPromptSubmit)
 #
 # Skills installed today:
 #   - pre-pr-review — the companion skill for pr-workflow-gate.sh. It lives
@@ -63,6 +66,7 @@ HOOKS=(
   $'pr-workflow-gate.sh\tPreToolUse\tBash\tBash(gh pr create*)'
   $'oss-contribution-gate.sh\tPreToolUse\tBash\tBash(gh pr create*)'
   $'post-merge-keyword-scan.sh\tUserPromptSubmit\t\t'
+  $'kb-context-inject.sh\tUserPromptSubmit\t\t'
 )
 
 # Project-scope skill symlinks are intentionally empty. Globally-loaded

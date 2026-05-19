@@ -15,6 +15,7 @@ This document walks both newcomers through the setup, from the "I just want to c
 > - `hooks/pr-workflow-gate.sh` → `~/.claude/hooks/pr-workflow-gate.sh`
 > - `hooks/oss-contribution-gate.sh` → `~/.claude/hooks/oss-contribution-gate.sh`
 > - `hooks/post-merge-keyword-scan.sh` → `~/.claude/hooks/post-merge-keyword-scan.sh`
+> - `hooks/kb-context-inject.sh` → `~/.claude/hooks/kb-context-inject.sh` (RFC 018 M2; off by default)
 > - `plugin/skills/pre-pr-review/` → `~/.claude/skills/pre-pr-review/`
 > - `plugin/reviewer-specialists/` → `~/.claude/reviewer-specialists/`
 > - `plugin/skills/pr-contribution-excellence/` → `~/.claude/skills/pr-contribution-excellence/`
@@ -24,6 +25,43 @@ This document walks both newcomers through the setup, from the "I just want to c
 > The remaining user-global pieces (`claim-gate`, `ai-coauthor-push-guard`, plus the `oss-gate` and `oss-registry-check` CLIs) live outside this repo because they target unrelated workflows; bundling them is a separate effort and out of scope here.
 >
 > `pr-workflow-gate.sh` is **scope-gated**: it consults `~/.kookr/pr-gated-repos.json` and forms an opinion only about repos listed there. If the file is absent the hook falls back to the previous "gate everything" behavior — the upgrade is opt-out, not opt-in. See `Minimum install` below for the scope-list format and the "silent mode" (`[]`) recipe.
+
+## KB context-injection hook (`kb-context-inject.sh`)
+
+`hooks/kb-context-inject.sh` is a `UserPromptSubmit` hook implementing the
+RFC 018 §11 consumer contract. Before an agent turn it runs a
+relevance-gated `kb search` and injects the post-gate knowledge-base context
+into the turn:
+
+- Calls `kb search "<prompt>" --gate --task-context-file=<f> --format=json`.
+- Assembles `task_context` from `$TASK_CHECKPOINT_DIR/CHECKPOINT.json`
+  (`task_id` + `next_actions`) or the prompt, stamped with a monotonic
+  per-session turn id (the freshness contract).
+- Validates the response's `gate_verdict` against the vendored
+  relevance-gate schema (`src/core/relevance-gate-schema.ts`).
+- Honors the verdict — `no-relevant-context` / `empty-index` inject nothing;
+  `injected` + `low_confidence` injects but flags every snippet
+  `[low-confidence]`.
+- Echoes `gate_verdict` (state, by-stage drop counts, `degraded`) to stderr —
+  the collapsed debug channel.
+
+**OFF by default.** The hook is inert unless `KOOKR_KB_CONTEXT_INJECT` is
+truthy (`1`/`true`/`on`/`yes`). RFC 018 M1 returned a **NO-GO** for defaulting
+the gate on (see `docs/rfcs/018-m1-canary-report.md` in
+`knowledge-base-mcp-server`), and `kb search --gate` invokes an LLM judge
+that adds latency to every turn. M2 ships the mechanism; M3 decides
+default-on. Opt in for a session with:
+
+```bash
+export KOOKR_KB_CONTEXT_INJECT=1
+```
+
+`scripts/install-hooks.sh` symlinks and registers the hook like the others.
+When enabled it needs the `kb` CLI (`knowledge-base-mcp-server`) on `PATH`
+and `node` + `tsx` (resolved from the `node_modules` of the repo the hook
+symlinks back to — run `pnpm install` there). It is fail-open: a missing
+dependency, an unreachable judge, a malformed response, or any crash
+degrades to "inject nothing" — the turn always proceeds.
 
 ## Fast path: repo pre-push hook only
 
@@ -88,6 +126,7 @@ If your prompt or criteria contain strings that PreToolUse hooks match on (`gh p
    - `~/.claude/hooks/pr-workflow-gate.sh` → `$(repo-root)/hooks/pr-workflow-gate.sh`
    - `~/.claude/hooks/oss-contribution-gate.sh` → `$(repo-root)/hooks/oss-contribution-gate.sh`
    - `~/.claude/hooks/post-merge-keyword-scan.sh` → `$(repo-root)/hooks/post-merge-keyword-scan.sh`
+   - `~/.claude/hooks/kb-context-inject.sh` → `$(repo-root)/hooks/kb-context-inject.sh`
    - `~/.claude/skills/pre-pr-review` → `$(repo-root)/plugin/skills/pre-pr-review`
    - `~/.claude/skills/pr-contribution-excellence` → `$(repo-root)/plugin/skills/pr-contribution-excellence`
    - `~/.claude/reviewer-specialists` → `$(repo-root)/plugin/reviewer-specialists`
