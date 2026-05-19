@@ -402,6 +402,32 @@ describe('createKookrServer', () => {
 
         clientWs.send(JSON.stringify({
           type: 'remote.command',
+          commandId: 'cmd-lease-heartbeat',
+          actorId: 'spoofed-client-value',
+          clientId: 'spoofed-client-id',
+          nodeId: registration.nodeId,
+          nodeEpoch: '1',
+          sessionId: 'remote-session',
+          sessionEpoch: '1',
+          grantId: 'spoofed-grant',
+          idempotencyKey: 'idem-heartbeat-1',
+          action: 'leaseHeartbeat',
+          leaseId: 'lease-1',
+          baseRevision: 1,
+        }));
+        await waitForCondition(() => messages.some((msg) => (
+          (msg as { commandId?: string; outcome?: string }).commandId === 'cmd-lease-heartbeat'
+          && (msg as { outcome?: string }).outcome === 'accepted'
+        )));
+        expect(messages).toContainEqual(expect.objectContaining({
+          commandId: 'cmd-lease-heartbeat',
+          action: 'leaseHeartbeat',
+          outcome: 'accepted',
+          result: expect.objectContaining({ leaseId: 'lease-1', state: 'held-remote' }),
+        }));
+
+        clientWs.send(JSON.stringify({
+          type: 'remote.command',
           commandId: 'cmd-submit-message',
           actorId: 'spoofed-client-value',
           clientId: 'spoofed-client-id',
@@ -477,6 +503,72 @@ describe('createKookrServer', () => {
           action: 'submitMessage',
           outcome: 'rejected',
           reason: 'error.leaseMismatch',
+        }));
+        expect(remoteBackend.getWrittenText('remote-session')).toBe('hello remote\r');
+
+        clientWs.send(JSON.stringify({
+          type: 'remote.command',
+          commandId: 'cmd-lease-override',
+          actorId: 'spoofed-client-value',
+          clientId: 'spoofed-client-id',
+          nodeId: registration.nodeId,
+          nodeEpoch: '1',
+          sessionId: 'remote-session',
+          sessionEpoch: '1',
+          grantId: 'spoofed-grant',
+          idempotencyKey: 'idem-override-1',
+          action: 'leaseOverride',
+          leaseId: 'lease-1',
+          baseRevision: 1,
+        }));
+        await waitForCondition(() => messages.some((msg) => (
+          (msg as { commandId?: string; outcome?: string }).commandId === 'cmd-lease-override'
+          && (msg as { outcome?: string }).outcome === 'accepted'
+        )));
+        expect(messages).toContainEqual(expect.objectContaining({
+          commandId: 'cmd-lease-override',
+          action: 'leaseOverride',
+          outcome: 'accepted',
+          result: { revoked: true },
+        }));
+
+        clientWs.send(JSON.stringify({
+          type: 'remote.command',
+          commandId: 'cmd-submit-after-override',
+          actorId: 'spoofed-client-value',
+          clientId: 'spoofed-client-id',
+          nodeId: registration.nodeId,
+          nodeEpoch: '1',
+          sessionId: 'remote-session',
+          sessionEpoch: '1',
+          grantId: 'spoofed-grant',
+          idempotencyKey: 'idem-submit-after-override',
+          action: 'submitMessage',
+          leaseId: 'lease-1',
+          baseRevision: 1,
+          lastSeenSeq: 0,
+          payload: {
+            type: 'submit-message',
+            sessionId: 'remote-session',
+            sessionEpoch: '1',
+            leaseId: 'lease-1',
+            commandId: 'cmd-submit-after-override',
+            idempotencyKey: 'idem-submit-after-override',
+            text: 'after override',
+            appendNewline: true,
+            baseRevision: 1,
+            lastSeenSeq: 0,
+            maxAgeMs: 10_000,
+          },
+        }));
+        await waitForCondition(() => messages.some((msg) => (
+          (msg as { commandId?: string }).commandId === 'cmd-submit-after-override'
+        )));
+        expect(messages).toContainEqual(expect.objectContaining({
+          commandId: 'cmd-submit-after-override',
+          action: 'submitMessage',
+          outcome: 'rejected',
+          reason: 'error.leaseRevoked',
         }));
         expect(remoteBackend.getWrittenText('remote-session')).toBe('hello remote\r');
       } finally {
