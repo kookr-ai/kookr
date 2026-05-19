@@ -58,18 +58,18 @@ stateDiagram-v2
 | Terminated | reopen | Open | Developer via GUI | User wants to continue — a new session can be launched |
 | Terminated | cancel | Cancelled | Developer via GUI | User discards a terminated task outright |
 | Open | cancel | Cancelled | Developer via GUI | No agent running; just close the task |
-| Completed | reopen | Open | Developer via GUI, **or** crash-recovery (`src/server/crash-recovery.ts:156-157`) auto-reopens a `completed` / `terminated` task when a surviving session is discovered after a Kookr restart | Work wasn't right; needs another attempt |
+| Completed | reopen | Open | Developer via GUI, **or** crash-recovery (`src/server/crash-recovery.ts`) auto-reopens a `completed` / `terminated` task when a surviving session is discovered after a Kookr restart | Work wasn't right; needs another attempt |
 | Cancelled | reopen | Open | Developer via GUI | Changed mind; task is needed after all |
 
 **Key design notes:**
 
 - **Pending state** (added 2026-03-29): When the concurrency limit is reached, new tasks enter `Pending` instead of `InProgress`. They are promoted automatically when a slot opens. This prevents resource exhaustion when many tasks are launched simultaneously.
 - **InProgress → Open (not Completed)** when an agent session ends. The agent finishing its process does not mean the task is done — the developer must explicitly mark the task as complete. This avoids false positives where the agent ran to completion but produced wrong results.
-- **Terminated state** (added 2026-04-22 to this catalog to match long-standing code; state itself introduced by `rfc-task-loss-prevention.md`). When reconciliation finds every session for an `InProgress` / `Open` task dead, the task transitions to `Terminated` — *not* `Completed`. This split exists so silent tmux/dtach deaths (WSL glitches, OOM kills, external `tmux kill-server`) cannot propagate through "Clear completed" and permanently delete work the user never saw. The user then `ackTerminatedTask`s (→ `Completed`), reopens (→ `Open`), or cancels (→ `Cancelled`). See `docs/architecture.md` § "Task lifecycle — `completed` vs `terminated`" and `src/core/tasks.ts:103-110, 194-199` for the allowed transitions.
+- **Terminated state** (added 2026-04-22 to this catalog to match long-standing code; state itself introduced by `rfc-task-loss-prevention.md`). When reconciliation finds every session for an `InProgress` / `Open` task dead, the task transitions to `Terminated` — *not* `Completed`. This split exists so silent tmux/dtach deaths (WSL glitches, OOM kills, external `tmux kill-server`) cannot propagate through "Clear completed" and permanently delete work the user never saw. The user then `ackTerminatedTask`s (→ `Completed`), reopens (→ `Open`), or cancels (→ `Cancelled`). See `docs/architecture.md` § "Task lifecycle — `completed` vs `terminated`" and `VALID_TRANSITIONS` in `src/core/tasks.ts` for the allowed transitions.
 - **Multiple agent sessions per task.** A task in Open state can have a new agent launched against it (retry with modified prompt, different approach, etc.). The task tracks its history of agent sessions.
 - **Completion criteria** are optional hints. When provided, the supervisor can flag "agent completed but criteria not met" as an attention event. But the developer always has final say.
 - **Cleanup:** "Clear completed" sweeps `Completed` and `Cancelled` tasks. `Terminated` tasks are NOT swept by default — the user must opt in via the confirmation checkbox — for the same data-loss reason the state was introduced.
-- **Resolved 2026-04-10:** the previously-documented `Pending → InProgress` promotion bug is fixed. `addSession()` (`src/core/tasks.ts:235-249`) auto-transitions both `'open'` and `'pending'` tasks to `'inProgress'`, and `promotePendingTasks` (`src/server/agent-lifecycle.ts:273-309`) drives the promotion loop up to `MAX_ACTIVE_TASKS`.
+- **Resolved 2026-04-10:** the previously-documented `Pending → InProgress` promotion bug is fixed. `addSession()` auto-transitions both `'open'` and `'pending'` tasks to `'inProgress'`, and `promotePendingTasks` in `src/server/agent-lifecycle.ts` drives the promotion loop up to `MAX_ACTIVE_TASKS`.
 
 ### 2. Agent Session Lifecycle
 
@@ -93,14 +93,14 @@ stateDiagram-v2
   Stuck --> Running: Developer sends terminal input bytes
   Stuck --> Snoozed: Developer snoozes agent
 
-  Snoozed --> Running: Snooze timer expires, supervisor resumes polling
+  Snoozed --> Running: Snooze timer expires, stored anomaly can re-enter queue
   Snoozed --> Completed: Agent finishes while snoozed (process exit still detected)
 
   Errored --> [*]: Developer acknowledges
   Completed --> [*]
 
   note right of Snoozed
-    Supervisor pauses polling.
+    Supervisor monitoring continues.
     Process keeps running.
     Exit still detected.
   end note
@@ -121,7 +121,7 @@ stateDiagram-v2
 | WaitingForInput | snooze | Snoozed | Developer via GUI | |
 | Stuck | input_sent | Running | Developer via GUI -> `AgentAdapter.sendInput()` | Input delivered to running agent via terminal backend byte write |
 | Stuck | snooze | Snoozed | Developer via GUI | |
-| Snoozed | snooze_expired | Running | Snooze timer | Supervisor resumes polling, re-evaluates |
+| Snoozed | snooze_expired | Running | Snooze timer | Stored anomaly can re-enter the active queue; supervisor monitoring was already running |
 | Snoozed | process_exit | Completed | Agent adapter (process exit in terminal) | Terminal session still monitored during snooze |
 
 **Implementation note (updated 2026-05-09):** The diagram above is conceptual only. The `AgentStatus` type exists in `src/core/types.ts` but is **not used as a live state machine** in the current implementation. The supervisor's actual agent state is expressed through:
@@ -134,7 +134,7 @@ The documented state machine above represents historical **conceptual design**, 
 **Key design implications:**
 - **Snooze** is managed at the attention queue level, not as an agent status transition. The agent process continues running in its terminal session. Process exit is still detected because the adapter monitors the terminal session independently.
 - The distinction between `WaitingForInput` and `Errored` is expressed through anomaly types (`repeated_error`, `needs_input`, `permission_blocked`) rather than `AgentStatus` transitions. Stuck-loop detection is deferred to V2 AI supervisor.
-- **`'aborted'` is a production `SessionInfo.lastStatus` value** written by `cancelTask` (`src/server/agent-lifecycle.ts:196-199`). Reconciliation (`src/server/reconciliation.ts:65`) and `tasks.ts:352` both branch on it to avoid treating cancelled sessions as live. It is NOT in the `AgentStatus` union in `src/core/types.ts:191-197`; it only exists in the extended `SessionInfo.lastStatus` type at `src/core/tasks.ts:34`. Treat the session-level lifecycle as `{'completed' | 'aborted'}` in `lastStatus`, independently of the conceptual `AgentStatus` transitions above.
+- **`'aborted'` is a production `SessionInfo.lastStatus` value** written by task cancellation/cleanup paths. Reconciliation and task store helpers branch on it to avoid treating cancelled sessions as live. It is NOT in the `AgentStatus` union; it exists in the extended `SessionInfo.lastStatus` type in `src/core/session-read-model.ts`. Treat the session-level lifecycle as `{'completed' | 'aborted'}` in `lastStatus`, independently of the conceptual `AgentStatus` transitions above.
 
 **Relationship to tasks:**
 - Every agent session belongs to exactly one task.
@@ -195,7 +195,7 @@ stateDiagram-v2
 
 ### 4. Snooze Timer
 
-Lightweight entity: just a `(agentId, expiresAt, reason?)` tuple managed by the attention router.
+Lightweight entity managed by the attention router. In current code it is a `SnoozeEntry` keyed by task ID when the agent has an owning task, otherwise by agent ID. The stored fields include `agentId`, `key`, `kind` (`finding` or `task`), optional `anomaly`, `expiresAt`, `createdAt`, optional `expiredPendingRestore`, and optional `reason`. Task-keying lets a snooze survive session rotation such as Ralph iterations or crash-recovery relaunches.
 
 ```mermaid
 stateDiagram-v2
@@ -208,9 +208,9 @@ stateDiagram-v2
   Cancelled --> [*]
 ```
 
-**Implementation note (updated 2026-04-10):** The `Active → Cancelled` transition via "developer manually wakes agent" is implemented end-to-end. The `cancelSnooze` WebSocket message (`src/shared/contracts/messages.ts:87`) is handled in `src/server/ws.ts:375` and calls `AttentionQueue.cancelSnooze(agentId)` (`src/core/attention-queue.ts:74`). A snooze can therefore be cancelled by (a) the developer manually, (b) agent completion (`unregisterAgent` → `remove`), or (c) the timer firing.
+**Implementation note (updated 2026-05-19):** The `Active → Cancelled` transition via "developer manually wakes agent" is implemented end-to-end. The `cancelSnooze` WebSocket message is handled in `src/server/ws.ts` and calls `AttentionQueue.cancelSnooze(agentId)`. A snooze can therefore be cancelled by (a) the developer manually, (b) task cleanup via `purgeTask`, or (c) the timer firing.
 
-**Implementation note (updated 2026-05-09):** Snooze does **not** pause supervisor monitoring. Hook events and watchdog verdicts continue flowing through `Monitor`; `AttentionQueue.enqueue()` updates the stored snoozed anomaly and keeps it out of the active queue until expiry/manual wake/purge.
+**Implementation note (updated 2026-05-19):** Snooze does **not** pause supervisor monitoring. Hook events and watchdog verdicts continue flowing through `Monitor`; `AttentionQueue.enqueue()` updates the stored snoozed anomaly and keeps it out of the active queue until expiry/manual wake/purge. Production snoozes are task-keyed when possible, so `purge(agentId)` intentionally preserves snooze state while `purgeTask(taskId)` removes it when the task lifecycle ends.
 
 ### Additional Operational State Machines
 
@@ -218,7 +218,7 @@ stateDiagram-v2
 |---|---|---|---|
 | Checkpoint cycle | `idle`, `prompting`, `compacting` plus session-scoped `gaveUp` | `src/core/checkpoint-cycler.ts` | Sends the checkpoint prompt when transcript context crosses the trigger ratio, then sends `/compact` after a Stop event. Repeated no-progress compact attempts set `gaveUp` for that session |
 | Ralph loop | `running`, `paused`, `completed`, `failed`, `cancelled` | `src/core/ralph-cycler.ts`, `src/server/ralph-loop-service.ts` | Terminal states prevent further iteration injection. `paused` preserves the loop but does not launch a fresh runtime until explicitly resumed |
-| Schedule execution receipt | `reserved`, `accepted`, `terminal`, `unknown_after_restart` | `src/core/schedule.ts`, `src/server/schedule-runner.ts` | Latest execution outcomes further classify queued/running/completed/cancelled/deduplicated/skipped/failed states for the UI |
+| Schedule execution receipt | `reserved`, `accepted`, `terminal`, `unknown_after_restart` | `src/core/schedule.ts`, `src/server/schedule-runner.ts` | Latest execution outcomes further classify running/completed/cancelled/deduplicated/dispatch-failed/skipped-active/skipped-capacity/unknown-after-restart states for the UI |
 | Workspace attempt | `running`, `passed`, `blocked`, `timed_out`, `cancelled`, `superseded`, `completed` | `src/core/workspace-attempt-repository.ts` | Durable cleanup/preflight/diagnostic attempt records, separate from task lifecycle |
 | Quota poller | `idle`, `polling`, `healthy`, `backoff`, `auth_failed`, `disabled` | `src/adapters/quota-adapter.ts` | Polling state for Anthropic OAuth usage quota, with backoff on 429/network/schema failures |
 | Watchdog verdict | `healthy`, `grace_period`, `needs_input`, `permission_blocked`, `tool_running`, `quiet_working`, `mcp_starting`, `stale_agent`, `hook_disconnected` | `src/core/watchdog.ts` | Verdict union is converted into queue anomalies by `Monitor.applyWatchdogVerdict()` when actionable |
@@ -230,7 +230,7 @@ stateDiagram-v2
 | Task | Core (tasks.ts) — developer actions + agent session events | Persisted (tasks.json) |
 | Agent Session | Agent adapter (raw events) + Supervisor (derived states) | Persisted (inline in tasks.json) — ADR-008 |
 | Attention Event | Supervisor (creation) + Attention Router (skip/snooze/resolution) | In-memory |
-| Snooze Timer | Attention Router | In-memory |
+| Snooze Timer | Attention Router | In-memory queue state, serialized in the task-file envelope by `task-persistence.ts` |
 
 **Startup reconciliation (ADR-008, updated for ADR-014 on 2026-04-22; tmux removed 2026-04-24):** On startup, session state is reconciled from tasks.json (which includes inline session metadata) + `TerminalBackend` liveness queries. Reconciliation queries only `LocalDtachBackend` (see `src/server/reconciliation.ts`) — V8 removed the tmux backend and `src/server/start.ts` hard-rejects `KOOKR_BACKEND=tmux`. Sessions with a live dtach socket are reconnected; sessions without one are marked `terminated` (per rfc-task-loss-prevention). Snooze timers and attention events are ephemeral and rebuilt from reconciled session states.
 
@@ -241,8 +241,8 @@ stateDiagram-v2
 | Agent Session: Completed -> Running | Final state for a session. To retry, launch a new session against the same task |
 | Task: InProgress -> Completed (automatic) | Not allowed. Reconciliation transitions to `Terminated`, not `Completed`, when every session dies without user ack — see the transition table and the "Terminated state" design note. The only auto-completion is the `Terminated → Completed` user-driven `ackTerminatedTask` |
 | Task: Completed/Cancelled/Terminated -> InProgress | Must reopen first (-> Open), then launch agent (Open -> InProgress) |
-| Task: Terminated -> Pending / InProgress directly | Not allowed. `Terminated` exits via `ackTerminatedTask`, `reopen`, or `cancel` only — see `src/core/tasks.ts:108` |
-| Snoozed -> Stuck | Not allowed directly. Snooze expiry transitions to Running; the supervisor then re-evaluates on next poll cycle and may re-detect an anomaly |
+| Task: Terminated -> Pending / InProgress directly | Not allowed. `Terminated` exits via `ackTerminatedTask`, `reopen`, or `cancel` only — see `VALID_TRANSITIONS` in `src/core/tasks.ts` |
+| Snoozed -> Stuck | Not allowed directly. Snooze expiry restores a stored anomaly or leaves the agent unqueued; later hook/watchdog processing may detect a fresh anomaly |
 | Skip while Snoozed | Not applicable — snoozed agents are not in the queue |
 
 ## Deferred Edge Cases

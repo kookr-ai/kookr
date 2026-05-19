@@ -19,7 +19,7 @@ stateDiagram-v2
 ```
 
 **Implemented modes:**
-- **AllClear** — no agents need attention. Nothing in active queue, nothing skipped. `AttentionQueue.isAllClear()` at `src/core/attention-queue.ts:178` is the code-level equivalent.
+- **AllClear** — no agents need attention. Nothing in active queue, nothing skipped. `AttentionQueue.isAllClear()` is the code-level equivalent.
 - **Routing** — at least one agent in the active tier needs attention.
 
 > Updated 2026-05-09: `AllSkipped` is not an implemented mode. `AttentionQueue.next()` sorts skipped entries after active entries and returns a skipped entry when all queued entries are skipped. There is no `isAllSkipped()` predicate and no FIFO skipped-tier timestamp.
@@ -66,7 +66,7 @@ Skipped tier:
 | Monitoring | Hook events and watchdog verdicts continue to be processed; `enqueue()` updates the stored snoozed anomaly without moving it into the active queue |
 | Process exit while snoozed | Detected by adapter. Snooze timer cancelled. Agent marked completed |
 | Timer expiry | `restoreExpiredSnoozes()` moves agent back to active queue if anomaly is still present. If not, agent remains unqueued |
-| Manual wake (updated 2026-04-10) | Developer can cancel a snooze via the `cancelSnooze` WebSocket message (`src/shared/contracts/messages.ts:87`), handled in `src/server/ws.ts:375` → `AttentionQueue.cancelSnooze(agentId)` (`src/core/attention-queue.ts:74`). If the anomaly is still present the agent returns to the active tier immediately |
+| Manual wake (updated 2026-05-19) | Developer can cancel a snooze via the `cancelSnooze` WebSocket message, handled in `src/server/ws.ts` → `AttentionQueue.cancelSnooze(agentId)`. If the anomaly is still present the agent returns to the active tier immediately |
 | Optional reason | Stored for context when snooze expires (e.g., "waiting for CI pipeline") |
 
 ## Developer Actions Summary
@@ -75,7 +75,7 @@ Skipped tier:
 |---|---|---|---|---|
 | **Respond** | Remove from queue | N/A (resume sent) | Yes | Only if new anomaly detected |
 | **Skip** | Move to skipped tier | Continues (state change un-skips) | Yes | After active tier empty, or on state change |
-| **Snooze** | Remove from queue | Paused until timer expires | Yes | After timer expires + anomaly still present |
+| **Snooze** | Remove from queue | Continues; matching anomalies update the hidden snoozed entry | Yes | After timer expires/manual wake + anomaly still present |
 
 ## Transition Ownership
 

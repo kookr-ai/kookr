@@ -18,7 +18,7 @@ flowchart TD
   Nav -->|"current focus + next"| WS
   Nav -->|"snooze/wake"| ST
   ST -->|"snooze expired"| PQ
-  ST -->|"pause/resume polling"| SupOut[Supervisor Agent]
+  ST -->|"hide until expiry / wake"| SupOut[Supervisor Agent]
   WS -->|"snapshot / update / alert"| SPA[Browser SPA]
   SPA -->|"respond / skip / snooze / navigate / getNext"| Nav
 ```

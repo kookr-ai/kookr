@@ -10,7 +10,7 @@ The agent adapter bridges Kookr to the supported coding-agent CLIs — **Claude 
 
 - Create managed terminal sessions and launch the configured agent binary in interactive mode (ADR-007 interactive rationale, ADR-014 dtach persistence)
 - Tail transcript JSONL (`~/.claude/projects/<project>/<session_id>.jsonl` for Claude Code; Codex CLI equivalent) for structured agent events
-- Receive real-time hook events via per-session JSONL files. Claude Code hooks include `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `PermissionRequest`, `Notification`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` — see `HookEventName` in `src/core/types.ts:2-14`. Codex CLI advertises its supported subset via `codexHookCapabilities` on `session_start`
+- Receive real-time hook events via per-session JSONL files. Claude Code hooks include `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `PermissionRequest`, `Notification`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` — see `HookEventName` in `src/core/hook-events.ts`. Codex CLI advertises its supported subset via `codexHookCapabilities` on `session_start`
 - Stream agent output to the browser: `LocalDtachBackend` maintains a persistent attach and ring buffer; every `SessionBridge` attach receives recent bytes plus live output
 - Map structured data into normalized `AgentEvent` objects — no ANSI terminal parsing needed
 - Send developer input as bytes to the child PTY
