@@ -25,6 +25,10 @@ import { CombinedShadowStrategy } from '../../core/combined-shadow-strategy.js';
 import { HttpPushTracker } from '../../core/http-push-tracker.js';
 import { PaneSemanticsStrategy } from '../../core/pane-patterns.js';
 import { ProcessLivenessStrategy } from '../../core/process-liveness.js';
+import {
+  JsonlProgressBudgetBurnDiagnosticSink,
+  ProgressBudgetBurnDiagnostics,
+} from '../../core/progress-budget-burn-diagnostics.js';
 
 export interface CoreStoresDeps {
   kookrDir: string;
@@ -56,6 +60,7 @@ export interface CoreStores {
   ralphCycler: RalphCycler;
   tokenTracker: TokenTracker;
   budgetChecker: BudgetChecker;
+  progressBudgetBurnDiagnostics: ProgressBudgetBurnDiagnostics;
   projectConfigStore: ProjectConfigStore;
   projectSidebarStore: ProjectSidebarStore;
   shadowRegistry: ShadowDetectorRegistry;
@@ -132,6 +137,10 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
 
   const budgetThresholdUsd = readBudgetThresholdFromEnv();
   const budgetChecker = new BudgetChecker(budgetThresholdUsd);
+  const progressBudgetBurnDiagnostics = new ProgressBudgetBurnDiagnostics(
+    {},
+    new JsonlProgressBudgetBurnDiagnosticSink(join(deps.kookrDir, 'budget-burn-diagnostics.jsonl')),
+  );
   if (budgetThresholdUsd > 0) {
     console.log(`[budget] Warning threshold: $${budgetThresholdUsd.toFixed(2)} per task (critical at 2x)`);
   } else {
@@ -183,6 +192,7 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
     ralphCycler,
     tokenTracker,
     budgetChecker,
+    progressBudgetBurnDiagnostics,
     projectConfigStore,
     projectSidebarStore,
     shadowRegistry,
