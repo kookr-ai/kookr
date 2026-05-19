@@ -292,12 +292,14 @@ describe('RalphLoopService', () => {
     const { store, service } = mkService();
     const task = store.createTask('prompt', '/repo');
     task.ralphLoop = baseLoop({ status: 'running', currentIteration: 2 });
+    const before = task.updatedAt.getTime();
 
     const result = service.completeLoop(task);
 
     expect(result).toEqual({ ok: true, value: 'completed', changed: true });
     expect(task.status).toBe('open');
     expect(task.ralphLoop.status).toBe('completed');
+    expect(task.updatedAt.getTime()).toBeGreaterThanOrEqual(before);
   });
 
   test('completeLoop is idempotent after the loop is already completed', () => {
@@ -325,8 +327,14 @@ describe('RalphLoopService', () => {
     task.ralphLoop = baseLoop();
 
     expect(service.pauseLoop(task)).toMatchObject({ ok: true, changed: true, value: { status: 'paused' } });
+    expect(store.getTask(task.id)!.ralphLoop?.status).toBe('paused');
     expect(await service.resumeLoop(task)).toMatchObject({ ok: true, changed: true, value: { status: 'running' } });
+    expect(store.getTask(task.id)!.ralphLoop).toMatchObject({
+      status: 'running',
+      ownerSessionId: 's1',
+    });
     expect(service.cancelLoop(task)).toMatchObject({ ok: true, changed: true, value: 'cancelled' });
+    expect(store.getTask(task.id)!.ralphLoop?.status).toBe('cancelled');
   });
 
   test('resume rejects a paused loop when no live session remains', async () => {
@@ -559,11 +567,13 @@ describe('RalphLoopService', () => {
     const { store, service } = mkService({ interactionLog: { append } });
     const task = store.createTask('prompt', '/repo');
     task.ralphLoop = baseLoop({ status: 'paused', prompt: 'old prompt' });
+    const before = task.updatedAt.getTime();
 
     const result = await service.updatePrompt(task, 'new prompt');
 
     expect(result).toMatchObject({ ok: true, changed: true, value: { prompt: 'new prompt' } });
-    expect(task.ralphLoop.prompt).toBe('new prompt');
+    expect(store.getTask(task.id)!.ralphLoop?.prompt).toBe('new prompt');
+    expect(store.getTask(task.id)!.updatedAt.getTime()).toBeGreaterThanOrEqual(before);
     expect(append).toHaveBeenCalledWith(expect.objectContaining({
       type: 'ralph_prompt_updated',
       taskId: task.id,

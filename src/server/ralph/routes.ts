@@ -151,16 +151,19 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     // the operator needs to roll back manually.
     const previous = (loop.burnedOutTargets ?? []).map((t) => ({ ...t }));
 
-    if (clear) {
-      loop.burnedOutTargets = [];
-    } else {
-      const removeSet = new Set(remove.map((t) => canonicalizeTarget(t as string)));
-      loop.burnedOutTargets = (loop.burnedOutTargets ?? []).filter((t) => !removeSet.has(t.target));
-    }
+    const updated = taskStore.updateRalphLoop(id, (currentLoop) => {
+      if (clear) {
+        currentLoop.burnedOutTargets = [];
+      } else {
+        const removeSet = new Set(remove.map((t) => canonicalizeTarget(t as string)));
+        currentLoop.burnedOutTargets = (currentLoop.burnedOutTargets ?? []).filter((t) => !removeSet.has(t.target));
+      }
+    });
+    const updatedLoop = updated?.ralphLoop ?? loop;
 
     // `removed` is the actual canonicalized delta, not the operator's input.
     // Operators may submit unknown or already-clean targets.
-    const remaining = new Set((loop.burnedOutTargets ?? []).map((t) => t.target));
+    const remaining = new Set((updatedLoop.burnedOutTargets ?? []).map((t) => t.target));
     const actuallyRemoved = previous
       .filter((t) => !remaining.has(t.target));
 
@@ -181,7 +184,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
       } catch (err) {
         console.warn(`[ralph-routes] ralph_burned_targets_modified audit append failed for task ${id}:`, err);
       }
-      const iter = loop.currentIteration;
+      const iter = updatedLoop.currentIteration;
       for (const t of actuallyRemoved) {
         if (!t.burned) continue;
         void deps.interactionLog.append({
@@ -195,9 +198,8 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
       }
     }
 
-    task.updatedAt = new Date();
     broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
-    return c.json({ ok: true, burnedOutTargets: loop.burnedOutTargets });
+    return c.json({ ok: true, burnedOutTargets: updatedLoop.burnedOutTargets });
   });
 
   app.delete('/api/tasks/:id/ralph-loop', (c) => {

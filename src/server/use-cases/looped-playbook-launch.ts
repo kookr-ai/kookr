@@ -152,8 +152,7 @@ export async function launchLoopedPlaybook(
       await deps.ralphLoopService.startLoop(result.task, buildPlaybookRalphLoopRequest(prepared, loopPrompt));
     } catch (err) {
       if (result.task.ralphLoop) {
-        result.task.ralphLoop.status = 'failed';
-        result.task.updatedAt = new Date();
+        deps.taskStore.setRalphLoopStatus(result.task.id, 'failed');
       }
       await deps.cleanupFailedTask?.(result.task.id);
       throw err;
@@ -304,8 +303,7 @@ export async function replaceLoopedPlaybook(
       await deps.ralphLoopService.startLoop(result.task, buildPlaybookRalphLoopRequest(prepared, loopPrompt));
     } catch (err) {
       if (result.task.ralphLoop) {
-        result.task.ralphLoop.status = 'failed';
-        result.task.updatedAt = new Date();
+        deps.taskStore.setRalphLoopStatus(result.task.id, 'failed');
       }
       await deps.cleanupFailedTask?.(result.task.id);
       throw err;

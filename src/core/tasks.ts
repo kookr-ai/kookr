@@ -36,6 +36,12 @@ export class InvalidTransitionError extends Error {
   }
 }
 
+function taskStoreDate(value?: Date | number): Date {
+  if (value instanceof Date) return value;
+  if (typeof value === 'number') return new Date(value);
+  return new Date();
+}
+
 /**
  * Claim (or transfer) the Ralph loop owner session on `task`.
  *
@@ -50,13 +56,17 @@ export function claimRalphLoopOwner(
   task: Task,
   session: SessionInfo | undefined,
   opts: { allowTransfer?: boolean } = {},
-): void {
+): boolean {
   const loop = task.ralphLoop;
-  if (!loop || !session) return;
+  if (!loop || !session) return false;
   const isTransfer = Boolean(loop.ownerSessionId && loop.ownerSessionId !== session.tmuxSession);
-  if (isTransfer && !opts.allowTransfer) return;
+  if (isTransfer && !opts.allowTransfer) return false;
 
-  if (!loop.ownerSessionId || isTransfer) loop.ownerSessionId = session.tmuxSession;
+  if (!loop.ownerSessionId || isTransfer) {
+    loop.ownerSessionId = session.tmuxSession;
+    return true;
+  }
+  return false;
 }
 
 // Valid transitions: from -> set of allowed destinations
@@ -355,6 +365,63 @@ export class TaskStore {
     task.completionFeedback = feedback;
     task.updatedAt = new Date();
     return true;
+  }
+
+  setRalphLoop(taskId: string, loop: Task['ralphLoop'], opts: { now?: Date | number } = {}): Task | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task) return undefined;
+    task.ralphLoop = loop;
+    task.updatedAt = taskStoreDate(opts.now);
+    return task;
+  }
+
+  updateRalphLoop(
+    taskId: string,
+    updater: (loop: NonNullable<Task['ralphLoop']>) => void,
+    opts: { now?: Date | number } = {},
+  ): Task | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task?.ralphLoop) return undefined;
+    updater(task.ralphLoop);
+    task.updatedAt = taskStoreDate(opts.now);
+    return task;
+  }
+
+  setRalphLoopStatus(
+    taskId: string,
+    status: NonNullable<Task['ralphLoop']>['status'],
+    opts: { now?: Date | number } = {},
+  ): Task | undefined {
+    return this.updateRalphLoop(taskId, (loop) => {
+      loop.status = status;
+    }, opts);
+  }
+
+  claimRalphLoopOwner(
+    taskId: string,
+    session: SessionInfo | undefined,
+    opts: { allowTransfer?: boolean; now?: Date | number } = {},
+  ): Task | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task) return undefined;
+    if (claimRalphLoopOwner(task, session, opts)) {
+      task.updatedAt = taskStoreDate(opts.now);
+    }
+    return task;
+  }
+
+  clearRalphLoopOwner(
+    taskId: string,
+    sessionId: string,
+    opts: { now?: Date | number } = {},
+  ): Task | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task?.ralphLoop) return undefined;
+    if (task.ralphLoop.ownerSessionId === sessionId) {
+      delete task.ralphLoop.ownerSessionId;
+      task.updatedAt = taskStoreDate(opts.now);
+    }
+    return task;
   }
 
   setReflectMeta(taskId: string, meta: ReflectMeta): void {
