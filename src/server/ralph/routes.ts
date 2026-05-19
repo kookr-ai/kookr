@@ -129,9 +129,11 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     } catch {
       return c.json({ error: 'invalid JSON body' }, 400);
     }
-
-    const remove = Array.isArray(body.remove) ? body.remove : [];
-    if (!remove.every((t) => typeof t === 'string')) {
+    if (body.remove !== undefined && !Array.isArray(body.remove)) {
+      return c.json({ error: 'remove, when present, must be an array of strings' }, 400);
+    }
+    const remove = body.remove ?? [];
+    if (!remove.every((target) => typeof target === 'string')) {
       return c.json({ error: 'remove, when present, must be an array of strings' }, 400);
     }
     const clear = body.clear === true;

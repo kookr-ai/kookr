@@ -50,7 +50,13 @@ function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
   return task;
 }
 
-function mkRalphDeps(taskStore = new TaskStore()): RouteDeps {
+function mkRalphDeps(
+  taskStore = new TaskStore(),
+  overrides: {
+    ralphLoopService?: Partial<RalphLoopService>;
+    broadcastToAll?: (msg: ServerMessage) => void;
+  } = {},
+): RouteDeps {
   const monitor = new Monitor(taskStore, new AttentionQueue());
   const ralphLoopService = {
     startLoop: vi.fn(async (task) => {
@@ -69,13 +75,17 @@ function mkRalphDeps(taskStore = new TaskStore()): RouteDeps {
       if (mutableTask?.ralphLoop) mutableTask.ralphLoop.status = 'cancelled';
       return { ok: true, changed: true, value: 'cancelled' };
     }),
+    modifyBurnedTargets: vi.fn((taskId) => {
+      return { ok: true, changed: true, value: taskStore.getTask(taskId)?.ralphLoop?.burnedOutTargets ?? [] };
+    }),
+    ...overrides.ralphLoopService,
   } as unknown as RalphLoopService;
 
   return {
     taskStore,
     monitor,
     ralphLoopService,
-    broadcastToAll: broadcastNoop,
+    broadcastToAll: overrides.broadcastToAll ?? broadcastNoop,
     serverCwd: '/server',
     launchServiceDeps: { taskStore, adapterRegistry: {}, lifecycleDeps: {} } as never,
     adapter: {} as never,
@@ -125,6 +135,191 @@ describe('legacy Ralph task entrypoints', () => {
 
     expect(res.status).toBe(410);
     expect(await res.json()).toMatchObject({ code: 'generic_ralph_removed' });
+  });
+});
+
+describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
+  test('delegates burned-target updates to RalphLoopService and broadcasts changed results', async () => {
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'loop', '/cwd');
+    task.status = 'pending';
+    task.ralphLoop = {
+      prompt: 'loop',
+      iterationCap: 6,
+      currentIteration: 2,
+      status: 'running',
+      lastIterationStartedAt: Date.now(),
+      cumulativeIterations: 2,
+      burnedOutTargets: [
+        {
+          target: 'src/a.ts',
+          consecutiveStallCount: 1,
+          totalStallCount: 1,
+          firstStalledAtIteration: 1,
+          lastStallReason: 'no_diff',
+          lastStallBlockers: ['src/a.ts'],
+          burned: true,
+          lastAttemptedIteration: 1,
+        },
+      ],
+    };
+    const modifyBurnedTargets = vi.fn(() => {
+      const mutableTask = taskStore.getTaskForMutation(task.id);
+      if (!mutableTask?.ralphLoop) throw new Error('missing Ralph loop');
+      mutableTask.ralphLoop.burnedOutTargets = [];
+      return {
+        ok: true,
+        changed: true,
+        value: [],
+      };
+    });
+    const broadcastToAll = vi.fn();
+
+    const res = await mkApp(mkRalphDeps(taskStore, {
+      ralphLoopService: { modifyBurnedTargets } as never,
+      broadcastToAll,
+    })).request(`/api/tasks/${task.id}/ralph-loop/burned-targets`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remove: ['src/a.ts'] }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, burnedOutTargets: [] });
+    expect(modifyBurnedTargets).toHaveBeenCalledWith(task.id, { remove: ['src/a.ts'], clear: false });
+    expect(broadcastToAll).toHaveBeenCalledTimes(1);
+    const snapshot = broadcastToAll.mock.calls[0]?.[0] as Extract<ServerMessage, { type: 'snapshot' }>;
+    expect(snapshot.agents.find((agent) => agent.taskId === task.id)?.ralphLoop?.burnedOutTargets).toEqual([]);
+  });
+
+  test('forwards clear-all burned-target updates to RalphLoopService', async () => {
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'loop', '/cwd');
+    task.ralphLoop = {
+      prompt: 'loop',
+      iterationCap: 6,
+      currentIteration: 2,
+      status: 'running',
+      lastIterationStartedAt: Date.now(),
+      cumulativeIterations: 2,
+      burnedOutTargets: [],
+    };
+    const modifyBurnedTargets = vi.fn(() => ({
+      ok: true,
+      changed: true,
+      value: [],
+    }));
+
+    const res = await mkApp(mkRalphDeps(taskStore, {
+      ralphLoopService: { modifyBurnedTargets } as never,
+    })).request(`/api/tasks/${task.id}/ralph-loop/burned-targets`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clear: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, burnedOutTargets: [] });
+    expect(modifyBurnedTargets).toHaveBeenCalledWith(task.id, { remove: [], clear: true });
+  });
+
+  test.each([
+    { remove: [42] },
+    { remove: 'src/a.ts' },
+  ])('rejects malformed remove values before calling the service: %j', async (body) => {
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'loop', '/cwd');
+    task.ralphLoop = {
+      prompt: 'loop',
+      iterationCap: 6,
+      currentIteration: 2,
+      status: 'running',
+      lastIterationStartedAt: Date.now(),
+      cumulativeIterations: 2,
+    };
+    const modifyBurnedTargets = vi.fn();
+    const broadcastToAll = vi.fn();
+
+    const res = await mkApp(mkRalphDeps(taskStore, {
+      ralphLoopService: { modifyBurnedTargets } as never,
+      broadcastToAll,
+    })).request(`/api/tasks/${task.id}/ralph-loop/burned-targets`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'remove, when present, must be an array of strings' });
+    expect(modifyBurnedTargets).not.toHaveBeenCalled();
+    expect(broadcastToAll).not.toHaveBeenCalled();
+  });
+
+  test('returns service errors without broadcasting', async () => {
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'loop', '/cwd');
+    task.ralphLoop = {
+      prompt: 'loop',
+      iterationCap: 6,
+      currentIteration: 2,
+      status: 'running',
+      lastIterationStartedAt: Date.now(),
+      cumulativeIterations: 2,
+    };
+    const modifyBurnedTargets = vi.fn(() => ({
+      ok: false,
+      status: 404,
+      body: { error: 'task has no Ralph loop attached' },
+    }));
+    const broadcastToAll = vi.fn();
+
+    const res = await mkApp(mkRalphDeps(taskStore, {
+      ralphLoopService: { modifyBurnedTargets } as never,
+      broadcastToAll,
+    })).request(`/api/tasks/${task.id}/ralph-loop/burned-targets`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remove: ['src/a.ts'] }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'task has no Ralph loop attached' });
+    expect(modifyBurnedTargets).toHaveBeenCalledWith(task.id, { remove: ['src/a.ts'], clear: false });
+    expect(broadcastToAll).not.toHaveBeenCalled();
+  });
+
+  test('does not broadcast unchanged burned-target updates', async () => {
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'loop', '/cwd');
+    task.ralphLoop = {
+      prompt: 'loop',
+      iterationCap: 6,
+      currentIteration: 2,
+      status: 'running',
+      lastIterationStartedAt: Date.now(),
+      cumulativeIterations: 2,
+      burnedOutTargets: [],
+    };
+    const modifyBurnedTargets = vi.fn(() => ({
+      ok: true,
+      changed: false,
+      value: [],
+    }));
+    const broadcastToAll = vi.fn();
+
+    const res = await mkApp(mkRalphDeps(taskStore, {
+      ralphLoopService: { modifyBurnedTargets } as never,
+      broadcastToAll,
+    })).request(`/api/tasks/${task.id}/ralph-loop/burned-targets`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, burnedOutTargets: [] });
+    expect(modifyBurnedTargets).toHaveBeenCalledWith(task.id, { remove: [], clear: false });
+    expect(broadcastToAll).not.toHaveBeenCalled();
   });
 });
 
