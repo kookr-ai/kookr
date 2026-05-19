@@ -120,3 +120,34 @@ The original design produced a single recommended idea per run and self-terminat
 - One idea per iteration keeps the existing Ralph "one unit of work per iteration" discipline, which matched the original loop design.
 - Caching the bootstrap (issue inventory, feature inventory) once and reusing it across idea iterations keeps cost roughly proportional to `targetIdeaCount` rather than re-fetching per idea.
 - A separate per-idea report file (rather than one growing `recommendation.md`) keeps each idea's evidence reviewable on its own and makes one-issue-per-idea filing straightforward.
+
+## Update: Knowledge-base-grounded ideation (2026-05-19)
+
+### Problem
+
+The playbook grounded every idea in three sources: the issue backlog, the local codebase and docs, and the model's own knowledge. The first two are rigorously evidenced — duplicate matrices, file-path citations, positive and negative capability checks. The third is unevidenced, bound by the model's training cutoff, and the most hallucination-prone input. It is what produces the generic "add caching" or "improve tests" ideas the Anti-Patterns section already fights.
+
+Kookr ships a local knowledge base reachable through the `kb` CLI, with shelves covering software engineering, autonomous agents, fault tolerance, backend systems, observability, testing, security, and recorded process wisdom (`_wisdom`, `agent-task-lessons`). That corpus is the state-of-the-art substrate the idea-generation step was missing.
+
+### What changed
+
+- New `useKnowledgeBase` parameter (`auto` or `off`, default `auto`). `auto` grounds ideas in the KB when the `kb` CLI is installed and a relevant shelf exists; `off` reproduces the previous issue-backlog-and-codebase behavior exactly.
+- New `dependencies: [kb]` frontmatter so the launch surfaces an advisory note when the `kb` CLI is unhealthy. The dependency is advisory, not blocking — a degraded or missing KB does not stop the launch.
+- New **Phase 3.5: Domain Knowledge Survey**. After the feature inventory, the agent routes the project to candidate shelves with `kb where`, runs one broad multi-query survey — via a single `kb-scout` subagent when available, otherwise inline `kb search` — and writes `<stateDir>/kb-seeds.json`, a passage set bucketed by diversity dimension.
+- KB retrieval enters at three points: **seed** (Phase 3.5, broad, once per run), **refine** (Phase 4.3, one scoped `kb search` per candidate to sharpen its implementation and risk sections), and **critique** (Phase 4.4, the product and implementation reviewers cite the `_wisdom` and `agent-task-lessons` shelves).
+- New per-idea artifact `kb-evidence.md`, a new `## Knowledge base grounding` section in every per-idea report, a `## Knowledge base grounding summary` section in the consolidated document, and `groundedIn` / `kbStale` fields on every `ideas-log.json` entry.
+
+### Design rationale
+
+- **Best-effort, never blocking.** KB grounding follows the same optionality pattern the playbook already uses for critic subagents: when the capability is absent the agent does the rest of the work unchanged. The `kb` CLI and the `kb-scout` subagent are Kookr-local, so the prompt body stays portable across agents — only the optional KB phase depends on them.
+- **Relevance gate.** The playbook is generic and runs against any GitHub repository, while the KB is skewed toward LLM, agent, and backend topics. A `kb where` miss, an empty KB, or an absent CLI all route to a `status: skipped` seeds file and the run proceeds without KB grounding. An off-domain scout run landing there is expected, not a failure, and does not reduce `targetIdeaCount`.
+- **Diversity stays authoritative.** A narrow KB could collapse the dimension rotation if it were allowed to originate ideas. The rotation remains the source of truth for an idea's dimension; KB seeds, bucketed by dimension, only inform the angle. An idea with `groundedIn: []` is still valid.
+- **Provenance.** Every KB-derived claim must cite a real `<kb>/<path>` passage observed in `kb` output, mirroring the evidence discipline the duplicate-search matrix already enforces. The codebase capability check is never skipped because a KB passage exists.
+- **Mechanism choice.** The seeding survey is the canonical multi-query case for the `kb-scout` subagent — cheap Haiku tokens, ranked source-tagged passages. Per-candidate refinement is a single direct `kb search`: `kb-scout`'s own guidance is not to invoke it once a substantive search pass is already done, and spawning one subagent per idea would multiply cost across up to 15 ideas for no gain.
+- **Staleness.** A playbook that claims state-of-the-art techniques off a stale index is a correctness hazard, so `kb` stale-index warnings are copied verbatim into `kb-seeds.json`, the per-idea `kb-evidence.md`, the `kbStale` log field, and the consolidated document.
+
+### Alternatives considered
+
+- **Use `kb ask` instead of `kb search`.** Rejected. `kb ask` synthesizes an answer through a local LLM; idea generation wants raw passages the agent reasons over itself, and `ask` adds an LLM-endpoint dependency.
+- **Make KB grounding mandatory.** Rejected. The playbook must run against arbitrary repositories far from the KB's domains; a hard dependency would break the generic-repo requirement from the original design.
+- **Write scouted ideas back into a KB shelf with `kb remember`.** Rejected for this change. The playbook is read-only by default and `kb-scout` is forbidden write paths; closing that loop is a deliberate non-goal.
