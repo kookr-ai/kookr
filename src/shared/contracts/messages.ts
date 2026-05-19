@@ -28,6 +28,16 @@ import type {
 export type { AttemptState, ContributionAttempt, IssueCheckError };
 export type { TaskCompletionFeedback };
 
+/**
+ * Observed presence of a host capability (a {@link LaunchDependency}) on the
+ * Kookr server host. `available` — the dependency's binary spawned and ran;
+ * `absent` — it is not on the server `PATH`. An *unknown* result (probe
+ * timeout/error) is encoded as the dependency key being omitted from the
+ * `capabilities` map, never as a third member.
+ * See `docs/rfc/rfc-capability-gated-playbook-params.md`.
+ */
+export type HostCapability = 'available' | 'absent';
+
 /** Per-project outcome of a cross-project worktree sweep. */
 export type CrossProjectSweepProjectResult =
   | { kind: 'ok'; projectId: string; summaries: CleanupResultSummary[]; elapsedMs: number }
@@ -175,7 +185,18 @@ export type ServerMessage =
       issues: GitHubIssueState[];
       changes: GitHubStateChange[];
     }
-  | { type: 'playbooks'; cwd: string; playbooks: Playbook[] }
+  | {
+      type: 'playbooks';
+      cwd: string;
+      playbooks: Playbook[];
+      /**
+       * Host-capability state for dependencies that some discovered playbook
+       * gates a parameter on. Omitted entirely when no gated parameter exists;
+       * a dependency key is omitted when its probe could not determine presence
+       * (fail-open). See `docs/rfc/rfc-capability-gated-playbook-params.md`.
+       */
+      capabilities?: Partial<Record<LaunchDependency, HostCapability>>;
+    }
   | { type: 'suggestion'; agentId: string; suggestionId?: string; suggestions: string[]; quickActions: QuickAction[] }
   | { type: 'projectSummaries'; projects: ProjectSummary[] }
   | { type: 'contributionWarning'; project: string; message: string; severity: 'approaching' | 'exceeded' }

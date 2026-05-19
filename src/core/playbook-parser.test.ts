@@ -110,6 +110,60 @@ body.`;
     expect(() => parsePlaybook(content, 'bad.md', '/p')).toThrow(PlaybookParseError);
   });
 
+  test('parses parameter gatedBy', () => {
+    const content = `---
+name: Gated param
+parameters:
+  - name: useKB
+    description: "Use kb when available"
+    required: false
+    default: auto
+    type: select
+    gatedBy: kb
+    options:
+      - label: Auto
+        value: auto
+      - label: "Off"
+        value: "off"
+---
+body.`;
+    const pb = parsePlaybook(content, 'gated.md', '/p');
+    expect(pb.parameters).toHaveLength(1);
+    expect(pb.parameters[0]).toMatchObject({
+      name: 'useKB',
+      gatedBy: 'kb',
+      default: 'auto',
+      type: 'select',
+    });
+  });
+
+  test('rejects unknown parameter gatedBy dependency', () => {
+    const content = `---
+name: Bad gatedBy
+parameters:
+  - name: useFoo
+    description: "Bad"
+    required: false
+    gatedBy: postgres
+---
+body.`;
+    expect(() => parsePlaybook(content, 'bad-gated.md', '/p')).toThrow(PlaybookParseError);
+    expect(() => parsePlaybook(content, 'bad-gated.md', '/p')).toThrow(/Unsupported parameter gatedBy/);
+  });
+
+  test('omits parameter gatedBy when absent', () => {
+    const content = `---
+name: No gate
+parameters:
+  - name: simple
+    description: "no gate"
+    required: false
+---
+body.`;
+    const pb = parsePlaybook(content, 'plain.md', '/p');
+    expect(pb.parameters[0].gatedBy).toBeUndefined();
+  });
+
   test('parses loopable workflow tags and effective loop defaults', () => {
     const content = `---
 name: Loopable workflow

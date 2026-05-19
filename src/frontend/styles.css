@@ -3956,6 +3956,18 @@ textarea::-webkit-resizer { background: transparent; }
   gap: 12px;
 }
 
+/* Annotation for a capability-gated parameter whose dependency is absent. */
+.playbook-param-gated-note {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.playbook-param-gated-note code {
+  font-size: 11px;
+}
+
 .schedule-field-error {
   color: var(--red);
   font-size: 11px;

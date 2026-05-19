@@ -247,7 +247,7 @@ export function PlaybookBrowser({
   onTaskTargetCwdChange,
   onRequestEditCwd,
 }: Props) {
-  const { playbooks, playbooksLoading, availableAgentTypes, defaultAgentType, projectSummaries } = useKookrStore();
+  const { playbooks, playbooksLoading, availableAgentTypes, defaultAgentType, projectSummaries, hostCapabilities } = useKookrStore();
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const [selected, setSelected] = useState<Playbook | null>(null);
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
@@ -303,6 +303,24 @@ export function PlaybookBrowser({
       searchRef.current?.focus();
     }
   }, [playbooksLoading, selected]);
+
+  // Pin capability-collapsed parameters to their default. When a gated
+  // dependency is probed `absent` the parameter renders no control, so its
+  // submitted value must be the default. Collapse state depends only on the
+  // selected playbook and host capabilities — `paramValues`/`setParamValues`
+  // are intentionally excluded from the dependency list (see the matching
+  // effect in PlaybookParameterForm and the RFC at
+  // docs/rfc/rfc-capability-gated-playbook-params.md).
+  useEffect(() => {
+    if (!selected) return;
+    for (const param of selected.parameters) {
+      if (!param.gatedBy || param.default == null) continue;
+      if (hostCapabilities[param.gatedBy] !== 'absent') continue;
+      setParamValues((prev) =>
+        (prev[param.name] ?? '') === param.default ? prev : { ...prev, [param.name]: param.default! },
+      );
+    }
+  }, [selected, hostCapabilities]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Resolve dynamic sources when a playbook is selected
   useEffect(() => {
@@ -739,54 +757,79 @@ export function PlaybookBrowser({
               const options = getEffectiveOptions(param.name, param.options);
               const isSelect = param.type === 'select' && options && options.length > 0;
               const useFilterable = isSelect && options.length > FILTERABLE_THRESHOLD;
-
+              // A gated parameter whose dependency is probed `absent` is inert.
+              // Collapse it (hide control, pin value to default) when it has a
+              // default to pin to; otherwise leave the control plus annotation.
+              const gatedAbsent = param.gatedBy != null && hostCapabilities[param.gatedBy] === 'absent';
+              const collapsed = gatedAbsent && param.default != null;
+              const noteId = `playbook-param-gated-${param.name}`;
+              // Annotation lives OUTSIDE the <label> so its text does not get
+              // concatenated into the control's accessible name; the control
+              // references it via aria-describedby instead.
               return (
-                <label key={param.name} className="playbook-param">
-                  {param.name}
-                  {param.required && <span className="playbook-required">*</span>}
-                  {useFilterable ? (
-                    <FilterableSelect
-                      options={options}
-                      value={paramValues[param.name] ?? ''}
-                      onChange={(v) =>
-                        setParamValues((prev) => ({ ...prev, [param.name]: v }))
-                      }
-                      placeholder={param.description}
-                    />
-                  ) : isSelect ? (
-                    <select
-                      value={paramValues[param.name] ?? ''}
-                      onChange={(e) =>
-                        setParamValues((prev) => ({ ...prev, [param.name]: e.target.value }))
-                      }
+                <div key={param.name} className="playbook-param-row">
+                  <label className="playbook-param">
+                    <span className="playbook-param-name">
+                      {param.name}
+                      {param.required && <span className="playbook-required">*</span>}
+                    </span>
+                    {collapsed ? null : useFilterable ? (
+                      <FilterableSelect
+                        options={options}
+                        value={paramValues[param.name] ?? ''}
+                        onChange={(v) =>
+                          setParamValues((prev) => ({ ...prev, [param.name]: v }))
+                        }
+                        placeholder={param.description}
+                      />
+                    ) : isSelect ? (
+                      <select
+                        value={paramValues[param.name] ?? ''}
+                        onChange={(e) =>
+                          setParamValues((prev) => ({ ...prev, [param.name]: e.target.value }))
+                        }
+                        aria-describedby={gatedAbsent ? noteId : undefined}
+                      >
+                        <option value="">— Select —</option>
+                        {options.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : param.type === 'textarea' ? (
+                      <textarea
+                        rows={3}
+                        value={paramValues[param.name] ?? ''}
+                        onChange={(e) =>
+                          setParamValues((prev) => ({ ...prev, [param.name]: e.target.value }))
+                        }
+                        placeholder={param.description}
+                        aria-describedby={gatedAbsent ? noteId : undefined}
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        value={paramValues[param.name] ?? ''}
+                        onChange={(e) =>
+                          setParamValues((prev) => ({ ...prev, [param.name]: e.target.value }))
+                        }
+                        placeholder={param.description}
+                        aria-describedby={gatedAbsent ? noteId : undefined}
+                      />
+                    )}
+                  </label>
+                  {gatedAbsent && (
+                    <span
+                      id={noteId}
+                      className="playbook-param-gated-note"
+                      role="status"
+                      aria-live="polite"
                     >
-                      <option value="">— Select —</option>
-                      {options.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  ) : param.type === 'textarea' ? (
-                    <textarea
-                      rows={3}
-                      value={paramValues[param.name] ?? ''}
-                      onChange={(e) =>
-                        setParamValues((prev) => ({ ...prev, [param.name]: e.target.value }))
-                      }
-                      placeholder={param.description}
-                    />
-                  ) : (
-                    <input
-                      type="text"
-                      value={paramValues[param.name] ?? ''}
-                      onChange={(e) =>
-                        setParamValues((prev) => ({ ...prev, [param.name]: e.target.value }))
-                      }
-                      placeholder={param.description}
-                    />
+                      <code>{param.gatedBy}</code> not detected on host — this parameter has no effect.
+                    </span>
                   )}
-                </label>
+                </div>
               );
             })}
           </div>

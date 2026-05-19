@@ -1,6 +1,6 @@
 import type { ServerMessage, ClientMessage } from '../../shared/contracts/messages.js';
 import type { LaunchOpts, LaunchResult } from '../launch-service.js';
-import { discoverPlaybooks } from '../../core/playbook-discovery.js';
+import { preparePlaybookList } from '../use-cases/playbook-list.js';
 import { preparePlaybookLaunch } from '../use-cases/playbook-launch.js';
 import { handleLaunchResult } from './launch-result.js';
 
@@ -24,8 +24,8 @@ export class PlaybookHandler {
   async handle(msg: PlaybookMessage): Promise<{ duplicate: boolean }> {
     switch (msg.type) {
       case 'listPlaybooks': {
-        const playbooks = await discoverPlaybooks(msg.cwd);
-        this.deps.send({ type: 'playbooks', cwd: msg.cwd, playbooks });
+        const { playbooks, capabilities } = await preparePlaybookList(msg.cwd);
+        this.deps.send({ type: 'playbooks', cwd: msg.cwd, playbooks, capabilities });
         return { duplicate: false };
       }
 

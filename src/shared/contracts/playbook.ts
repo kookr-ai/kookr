@@ -22,6 +22,13 @@ export interface PlaybookParameter {
   source?: string;
   /** Server-side default resolver used when the launch form leaves this parameter blank. */
   defaultFrom?: 'git-remote';
+  /**
+   * Launch dependency this parameter is only meaningful when present. When the
+   * dependency is probed `absent` on the host, the launch form collapses the
+   * parameter to its default and annotates it. Pure form-rendering hint — never
+   * enforced server-side. See `docs/rfc/rfc-capability-gated-playbook-params.md`.
+   */
+  gatedBy?: LaunchDependency;
 }
 
 export interface PlaybookLoopConfig {

@@ -51,7 +51,7 @@ export type {
   GitHubStateChange,
 } from './contracts/github.js';
 export type { AgentActivityMeta } from './contracts/hook-events.js';
-export type { Playbook } from './contracts/playbook.js';
+export type { Playbook, LaunchDependency } from './contracts/playbook.js';
 export type { ProjectConfig } from './contracts/project-config.js';
 export type { ProjectSummary, TaskSummary } from './contracts/project-summary.js';
 export type { QuotaStatus, QuotaWindow } from './contracts/quota.js';

@@ -22,6 +22,7 @@ import type {
   CleanupResultSummary,
   SystemResourceStatus,
   CollaborationCapabilities,
+  LaunchDependency,
 } from '../../shared/protocol.js';
 import type {
   ProjectSidebarCatalogEntry,
@@ -32,6 +33,7 @@ import type {
   ContributionAttempt,
   IssueCheckError,
   OssAttemptsSnapshot,
+  HostCapability,
 } from '../../shared/contracts/messages.js';
 
 export type AlertSeverity = 'error' | 'info';
@@ -102,6 +104,12 @@ export interface TransportSessionSlice {
   playbooksLoading: boolean;
   playbooksLastFetchedAt: number;
   playbooksLastFetchedCwd: string;
+  /**
+   * Host-capability state from the most recent `playbooks` message. Empty when
+   * no discovered playbook gates a parameter, or when probes returned unknown.
+   * Drives capability-gated parameter rendering in the launch form.
+   */
+  hostCapabilities: Partial<Record<LaunchDependency, HostCapability>>;
   sttUrl: string;
   speechCapabilities: CollaborationCapabilities | null;
   activeSTTInputId: string | null;
@@ -131,7 +139,11 @@ export interface TransportSessionSlice {
     speechCapabilities?: CollaborationCapabilities,
   ) => void;
   handleUpdate: (agentId: string, state: AgentState) => void;
-  handlePlaybooks: (playbooks: Playbook[], cwd: string) => void;
+  handlePlaybooks: (
+    playbooks: Playbook[],
+    cwd: string,
+    capabilities?: Partial<Record<LaunchDependency, HostCapability>>,
+  ) => void;
   setConnected: (connected: boolean) => void;
   setTerminalOutput: (agentId: string, output: string) => void;
   setPlaybooksLoading: (loading: boolean) => void;
