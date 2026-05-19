@@ -154,9 +154,10 @@ The system MAY detect when agent cost is climbing with no progress.
 - A configured per-task cost threshold emits a `budget_exceeded` supervisor finding when observed spend crosses the warning threshold
 - A critical finding emits when observed spend reaches 2x the warning threshold
 - Budget alerts are reactive to observed transcript/token accounting and clearly communicate that an agent may overshoot by one turn
-- Progress-aware "cost climbing with no progress" classification remains deferred until the AI supervisor can evaluate task progress semantically
+- A diagnostics-only progress-aware sampler records cost/token deltas, task status stability, agent event activity, repeated-error state, and permission-block state without inserting findings into the attention queue
+- User-facing progress-aware "cost climbing with no progress" findings remain deferred until replay/precision evidence justifies promotion
 
-**Evidence:** `src/core/budget-checker.ts` (reactive threshold checker), `src/server/lifecycle-timers.ts` (token scan emits budget findings), `src/core/budget-checker.test.ts`, `src/server/lifecycle-timers.test.ts`. Progress-aware budget-burn detection remains a V2 enhancement.
+**Evidence:** `src/core/budget-checker.ts` (reactive threshold checker), `src/core/progress-budget-burn-diagnostics.ts` (diagnostics-only progress-aware sampler), `src/server/lifecycle-timers.ts` (token scan emits budget findings and advisory diagnostics), `src/core/budget-checker.test.ts`, `src/core/progress-budget-burn-diagnostics.test.ts`, `src/server/lifecycle-timers.test.ts`. User-facing progress-aware budget-burn findings remain a V2 enhancement.
 
 ### R2.6: Detect Trajectory Drift [F2.6] — MAY — `deferred`
 
@@ -996,7 +997,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R2.2 | F2.2 | SHOULD | deferred | — |
 | R2.3 | F2.3 | SHOULD | done | anomaly-detector |
 | R2.4 | F2.4 | SHOULD | done | hook-parser, anomaly-detector, monitor |
-| R2.5 | F2.5 | MAY | partial | budget-checker, lifecycle-timers, token-tracker |
+| R2.5 | F2.5 | MAY | partial | budget-checker, progress-budget-burn-diagnostics, lifecycle-timers, token-tracker |
 | R2.6 | F2.6 | MAY | deferred | — |
 | R2.7 | F2.7 | SHOULD | done | anomaly-detector, ws, Toasts |
 | R2.8 | F2.8 | SHALL | done | anomaly-detector, attention-queue |
@@ -1087,5 +1088,5 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 |-----|--------|-------------|
 | R1.4 | deferred | Agent discovery outside Kookr-managed sessions |
 | R1.5 | deferred | Detect new/exited agents outside Kookr-managed sessions |
-| R2.5 | partial | Progress-aware budget burn; reactive cost-threshold alerts are implemented |
+| R2.5 | partial | User-facing progress-aware budget burn; reactive cost-threshold alerts and diagnostics-only progress-aware sampling are implemented |
 | R2.6 | deferred | Trajectory drift via the V2 semantic supervisor |

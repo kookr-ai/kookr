@@ -1,10 +1,16 @@
 import { describe, expect, test, vi } from 'vitest';
-import { restoreExpiredSnoozes, runBudgetCheck } from './lifecycle-timers.js';
+import {
+  findFirstActiveSession,
+  restoreExpiredSnoozes,
+  runBudgetCheck,
+  runProgressBudgetBurnDiagnosticSample,
+} from './lifecycle-timers.js';
 import { BudgetChecker } from '../core/budget-checker.js';
 import type { Task } from '../core/tasks.js';
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import type { Anomaly } from '../core/types.js';
+import type { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diagnostics.js';
 
 function makeAnomaly(agentId: string): Anomaly {
   return {
@@ -99,6 +105,46 @@ describe('runBudgetCheck', () => {
     expect(runBudgetCheck(task, 5, checker, enqueue)).toBe(true);
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue.mock.calls[0][0]).toBe('agent-live');
+  });
+
+  test('uses the shared active-session selection helper', () => {
+    const task = makeTask({
+      sessions: [
+        { tmuxSession: 'agent-dead', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'completed' },
+        { tmuxSession: 'agent-live', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'running' },
+      ],
+    });
+
+    expect(findFirstActiveSession(task)?.tmuxSession).toBe('agent-live');
+  });
+
+  test('samples progress-aware budget diagnostics with events from the selected live session', () => {
+    const task = makeTask({
+      sessions: [
+        { tmuxSession: 'agent-dead', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'completed' },
+        { tmuxSession: 'agent-live', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'running' },
+      ],
+    });
+    const diagnostics = {
+      sample: vi.fn(() => null),
+    } satisfies Pick<ProgressBudgetBurnDiagnostics, 'sample'>;
+    const getAgentEvents = vi.fn(() => [
+      { type: 'permission_request' as const, sessionId: 'agent-live', toolName: 'Bash' },
+    ]);
+
+    expect(runProgressBudgetBurnDiagnosticSample(
+      task,
+      { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4, costUsd: 0.25 },
+      diagnostics,
+      getAgentEvents,
+    )).toBe(false);
+
+    expect(getAgentEvents).toHaveBeenCalledWith('agent-live');
+    expect(diagnostics.sample).toHaveBeenCalledWith(expect.objectContaining({
+      task,
+      agentId: 'agent-live',
+      events: [{ type: 'permission_request', sessionId: 'agent-live', toolName: 'Bash' }],
+    }));
   });
 
   test('does not re-fire on the next tick after warning already enqueued', () => {

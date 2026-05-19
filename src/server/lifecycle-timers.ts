@@ -1,18 +1,20 @@
 import type { Monitor } from '../core/monitor.js';
 import { isActiveStatus, type Task, type TaskStore } from '../core/tasks.js';
-import type { AgentActivityMeta, Anomaly } from '../core/types.js';
+import type { AgentActivityMeta, AgentEvent, Anomaly, TokenUsage } from '../core/types.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TokenTracker } from '../core/token-tracker.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { BudgetChecker } from '../core/budget-checker.js';
+import type { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diagnostics.js';
 import type { HookFileWatcher } from './hook-watcher.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { ShadowDetectorRegistry } from '../core/shadow-detector.js';
 import type { QuotaAdapter } from '../adapters/quota-adapter.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
+import type { SessionInfo } from '../core/session-read-model.js';
 import { reconcile } from './reconciliation.js';
 import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
 import { saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
@@ -56,6 +58,8 @@ export interface TimerDeps {
    * levels. Reactive only — may overshoot by one turn.
    */
   budgetChecker?: BudgetChecker;
+  /** Diagnostics-only progress-aware budget-burn sampler. Never mutates the attention queue. */
+  progressBudgetBurnDiagnostics?: ProgressBudgetBurnDiagnostics;
   /** Authoritative git worktree registry, refreshed when dashboard clients are connected. */
   worktreeRegistry?: WorktreeRegistry;
   /** Repo path used for single-repo worktree registry refreshes. */
@@ -92,14 +96,35 @@ export function runBudgetCheck(
   enqueue: (agentId: string, anomaly: Anomaly) => void,
 ): boolean {
   if (!budgetChecker || budgetChecker.getThresholdUsd() <= 0) return false;
-  const activeSession = task.sessions.find(
-    (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted',
-  );
+  const activeSession = findFirstActiveSession(task);
   if (!activeSession) return false;
   const anomaly = budgetChecker.check(task.id, activeSession.tmuxSession, costUsd);
   if (!anomaly) return false;
   enqueue(activeSession.tmuxSession, anomaly);
   return true;
+}
+
+export function findFirstActiveSession(task: Task): SessionInfo | undefined {
+  return task.sessions.find(
+    (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted',
+  );
+}
+
+export function runProgressBudgetBurnDiagnosticSample(
+  task: Task,
+  usage: TokenUsage,
+  diagnostics: Pick<ProgressBudgetBurnDiagnostics, 'sample'> | undefined,
+  getAgentEvents: (agentId: string) => AgentEvent[],
+): boolean {
+  const activeSession = findFirstActiveSession(task);
+  if (!activeSession || !diagnostics) return false;
+
+  return diagnostics.sample({
+    task,
+    agentId: activeSession.tmuxSession,
+    usage,
+    events: getAgentEvents(activeSession.tmuxSession),
+  }) !== null;
 }
 
 export function restoreExpiredSnoozes(queue: AttentionQueue, taskStore: TaskStore): boolean {
@@ -184,6 +209,13 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           if (runBudgetCheck(task, usage.costUsd, deps.budgetChecker, (aid, a) => queue.enqueue(aid, a))) {
             changed = true;
           }
+
+          runProgressBudgetBurnDiagnosticSample(
+            task,
+            usage,
+            deps.progressBudgetBurnDiagnostics,
+            (agentId) => monitor.getAgentEvents(agentId),
+          );
         }
       }
       if (changed) {
