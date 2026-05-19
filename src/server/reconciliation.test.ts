@@ -283,7 +283,7 @@ describe('Startup Reconciliation', () => {
       lastStatus: 'completed', // Already completed — backend session is gone
     });
     // Task is inProgress but session is completed — stuck state
-    expect(task.status).toBe('inProgress');
+    expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
 
     const result = await reconcile(taskStore, backend);
 
@@ -409,7 +409,7 @@ describe('Startup Reconciliation', () => {
     const task = taskStore.createTask('Old task from v0', '/cwd');
     // Manually add a session that's already completed (bypassing addSession
     // which would auto-transition to inProgress) to simulate loaded state.
-    const t = taskStore.getTask(task.id)!;
+    const t = taskStore.getTaskForMutation(task.id)!;
     t.sessions.push({
       tmuxSession: 'kookr-legacy',
       agentType: 'claude-code',
@@ -430,7 +430,7 @@ describe('Startup Reconciliation', () => {
 
   test('open task with active sessions is not backfilled', async () => {
     const task = taskStore.createTask('Active old task', '/cwd');
-    const t = taskStore.getTask(task.id)!;
+    const t = taskStore.getTaskForMutation(task.id)!;
     t.sessions.push({
       tmuxSession: 'kookr-active',
       agentType: 'claude-code',
@@ -462,7 +462,7 @@ describe('Startup Reconciliation', () => {
         createdAt: new Date(),
         lastStatus: 'completed',
       });
-      task.ralphLoop = {
+      taskStore.getTaskForMutation(task.id)!.ralphLoop = {
         prompt: 'iterate',
         iterationCap: 5,
         currentIteration: 1,
@@ -490,7 +490,7 @@ describe('Startup Reconciliation', () => {
       createdAt: new Date(),
       lastStatus: 'completed',
     });
-    task.ralphLoop = {
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = {
       prompt: 'iterate',
       iterationCap: 5,
       currentIteration: 1,
@@ -503,7 +503,7 @@ describe('Startup Reconciliation', () => {
     expect(firstResult.tasksTerminated).toHaveLength(0);
     expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
 
-    task.ralphLoop.status = 'completed';
+    taskStore.getTaskForMutation(task.id)!.ralphLoop!.status = 'completed';
 
     const secondResult = await reconcile(taskStore, backend);
     expect(secondResult.tasksTerminated).toContain(task.id);
@@ -520,7 +520,7 @@ describe('Startup Reconciliation', () => {
       createdAt: new Date(),
       lastStatus: 'completed',
     });
-    task.ralphLoop = {
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = {
       prompt: 'iterate',
       iterationCap: 5,
       currentIteration: 5,

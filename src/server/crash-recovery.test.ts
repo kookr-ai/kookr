@@ -53,7 +53,7 @@ describe('Crash Recovery', () => {
       lastStatus: 'running',
       ...sessionOverrides,
     });
-    return task;
+    return taskStore.getTask(task.id)!;
   }
 
   test('relaunches dead sessions after reconciliation', async () => {
@@ -77,7 +77,7 @@ describe('Crash Recovery', () => {
     expect(result.failed).toHaveLength(0);
 
     // Task should be reopened and back to inProgress (adapter.launch calls addSession)
-    const updatedTask = taskStore.getTask(task.id)!;
+    const updatedTask = taskStore.getTaskForMutation(task.id)!;
     expect(updatedTask.status).toBe('inProgress');
     expect(updatedTask.sessions).toHaveLength(2);
 
@@ -135,7 +135,7 @@ describe('Crash Recovery', () => {
     expect(result.skipped).toHaveLength(0);
 
     // Relaunch count should be incremented
-    const updatedTask = taskStore.getTask(task.id)!;
+    const updatedTask = taskStore.getTaskForMutation(task.id)!;
     const newSession = updatedTask.sessions.find((s) => s.relaunchCount === 4)!;
     expect(newSession).toBeDefined();
   });
@@ -401,7 +401,7 @@ describe('Crash Recovery', () => {
 
     // Wait a bit to be outside the crash-loop window in the test
     // We can't actually wait 60s, so we'll manually set lastRelaunchedAt to the past
-    const updatedTask = taskStore.getTask(task.id)!;
+    const updatedTask = taskStore.getTaskForMutation(task.id)!;
     const newSession1 = updatedTask.sessions.find((s) => s.tmuxSession === newTmux1)!;
     newSession1.lastRelaunchedAt = Date.now() - 120_000; // simulate 2 minutes ago
 

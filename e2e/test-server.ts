@@ -217,7 +217,7 @@ async function main() {
   // removed generic Ralph API.
   server.app.post('/api/test/set-ralph-loop/:taskId', async (c) => {
     const taskId = c.req.param('taskId');
-    const task = server.taskStore.getTask(taskId);
+    const task = server.taskStore.getTaskForMutation(taskId);
     if (!task) return c.json({ error: `Task not found: ${taskId}` }, 404);
 
     const body = await c.req.json().catch(() => ({})) as {

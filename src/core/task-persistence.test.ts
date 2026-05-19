@@ -34,6 +34,13 @@ function makePersistedFinding(
   };
 }
 
+function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
+  const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
+  const task = targetStore.getTaskForMutation(created.id);
+  if (!task) throw new Error(`missing task ${created.id}`);
+  return task;
+}
+
 describe('Task Persistence', () => {
   let tempDir: string;
   let filePath: string;
@@ -49,8 +56,8 @@ describe('Task Persistence', () => {
 
   test('save writes tasks.json atomically', async () => {
     const store = new TaskStore();
-    store.createTask('Fix auth', '/cwd');
-    store.createTask('Add tests', '/cwd');
+    createTaskForMutation(store, 'Fix auth', '/cwd');
+    createTaskForMutation(store, 'Add tests', '/cwd');
 
     await saveTasks(store.getAllTasks(), filePath);
 
@@ -61,7 +68,7 @@ describe('Task Persistence', () => {
 
   test('load reads existing tasks.json (round-trip)', async () => {
     const store = new TaskStore();
-    const task = store.createTask('Fix auth', '/cwd', 'Tests pass');
+    const task = createTaskForMutation(store, 'Fix auth', '/cwd', 'Tests pass');
     store.startTask(task.id);
 
     await saveTasks(store.getAllTasks(), filePath);
@@ -101,7 +108,7 @@ describe('Task Persistence', () => {
 
   test('v2 format (envelope) loads tasks and lifetime counter', async () => {
     const store = new TaskStore();
-    store.createTask('Task', '/cwd');
+    createTaskForMutation(store, 'Task', '/cwd');
     await saveTasks(store.getAllTasks(), filePath, 42.50);
 
     const { tasks, lifetimeSpendUsd } = await loadTasks(filePath);
@@ -111,7 +118,7 @@ describe('Task Persistence', () => {
 
   test('lifetime counter round-trips through save/load/loadTasks', async () => {
     const store = new TaskStore();
-    const task = store.createTask('Task', '/cwd');
+    const task = createTaskForMutation(store, 'Task', '/cwd');
     store.updateTokenUsage(task.id, { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 3.75 });
 
     await saveTasks(store.getAllTasks(), filePath, store.getLifetimeSpendUsd());
@@ -182,7 +189,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
     vi.useFakeTimers({ now: new Date('2026-01-01T00:00:00Z') });
 
     const taskStore = new TaskStore();
-    const task = taskStore.createTask('Fix bugs', '/cwd');
+    const task = createTaskForMutation(taskStore, 'Fix bugs', '/cwd');
     taskStore.addSession(task.id, {
       tmuxSession: 'kookr-abc',
       agentType: 'claude',
@@ -221,7 +228,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
 
   test('expired no-anomaly task snoozes filtered on deserialize', () => {
     const taskStore = new TaskStore();
-    const task = taskStore.createTask('Task', '/cwd');
+    const task = createTaskForMutation(taskStore, 'Task', '/cwd');
     taskStore.addSession(task.id, {
       tmuxSession: 'kookr-x',
       agentType: 'claude',
@@ -244,7 +251,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
 
   test('expired anomaly-backed snooze for active task is retained as pending restoration', () => {
     const taskStore = new TaskStore();
-    const task = taskStore.createTask('Task', '/cwd');
+    const task = createTaskForMutation(taskStore, 'Task', '/cwd');
     taskStore.addSession(task.id, {
       tmuxSession: 'kookr-x',
       agentType: 'claude',
@@ -270,7 +277,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
     // the queue's task-keyed resolver carries it onto whatever session the
     // task launches next.
     const taskStore = new TaskStore();
-    const task = taskStore.createTask('Task', '/cwd');
+    const task = createTaskForMutation(taskStore, 'Task', '/cwd');
     taskStore.addSession(task.id, {
       tmuxSession: 'kookr-old',
       agentType: 'claude',
@@ -307,7 +314,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
     // The persistence layer passes taskId through as `key` directly; the
     // queue does not re-derive the key from agentId on import.
     const taskStore = new TaskStore();
-    const task = taskStore.createTask('Task', '/cwd');
+    const task = createTaskForMutation(taskStore, 'Task', '/cwd');
     taskStore.addSession(task.id, {
       tmuxSession: 'kookr-current',
       agentType: 'claude',
@@ -332,7 +339,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
 
   test('multi-session task: selects correct active session', () => {
     const taskStore = new TaskStore();
-    const task = taskStore.createTask('Task', '/cwd');
+    const task = createTaskForMutation(taskStore, 'Task', '/cwd');
     // First session: crash-recovered
     taskStore.addSession(task.id, {
       tmuxSession: 'kookr-old',
@@ -361,7 +368,7 @@ describe('serializeSnoozed / deserializeSnoozed', () => {
     vi.useFakeTimers({ now: new Date('2026-01-01T00:00:00Z') });
 
     const taskStore = new TaskStore();
-    const task = taskStore.createTask('Task', '/cwd');
+    const task = createTaskForMutation(taskStore, 'Task', '/cwd');
     taskStore.addSession(task.id, {
       tmuxSession: 'kookr-abc',
       agentType: 'claude',
@@ -417,7 +424,7 @@ describe('saveTasksWithSnapshotPolicy', () => {
 
     test("'none' policy writes tasks.json but no snapshots", async () => {
       const store = new TaskStore();
-      store.createTask('T', '/cwd');
+      createTaskForMutation(store, 'T', '/cwd');
       await saveTasksWithSnapshotPolicy(store.getAllTasks(), filePath, 'none');
       const files = baseName(tempDir);
       expect(files).toContain('tasks.json');
@@ -427,7 +434,7 @@ describe('saveTasksWithSnapshotPolicy', () => {
 
     test("'daily' creates tasks.json.daily.YYYYMMDD on first save of the day", async () => {
       const store = new TaskStore();
-      store.createTask('T', '/cwd');
+      createTaskForMutation(store, 'T', '/cwd');
       await saveTasksWithSnapshotPolicy(store.getAllTasks(), filePath, 'daily');
       const files = baseName(tempDir);
       const daily = files.filter((f) => f.startsWith('tasks.json.daily.'));
@@ -437,7 +444,7 @@ describe('saveTasksWithSnapshotPolicy', () => {
 
     test("'daily' is a no-op if today's snapshot already exists", async () => {
       const store = new TaskStore();
-      store.createTask('T', '/cwd');
+      createTaskForMutation(store, 'T', '/cwd');
       await saveTasksWithSnapshotPolicy(store.getAllTasks(), filePath, 'daily');
       await saveTasksWithSnapshotPolicy(store.getAllTasks(), filePath, 'daily');
       await saveTasksWithSnapshotPolicy(store.getAllTasks(), filePath, 'daily');
@@ -447,7 +454,7 @@ describe('saveTasksWithSnapshotPolicy', () => {
 
     test("'daily' prunes snapshots older than 7 days", async () => {
       const store = new TaskStore();
-      store.createTask('T', '/cwd');
+      createTaskForMutation(store, 'T', '/cwd');
 
       // Seed three stale daily files via direct write + backdated mtime.
       const stale10 = join(tempDir, 'tasks.json.daily.20250101'); // way old date
@@ -471,7 +478,7 @@ describe('saveTasksWithSnapshotPolicy', () => {
 
     test("'predelete' always creates a new snapshot per call", async () => {
       const store = new TaskStore();
-      store.createTask('T', '/cwd');
+      createTaskForMutation(store, 'T', '/cwd');
       await saveTasksWithSnapshotPolicy(store.getAllTasks(), filePath, 'predelete');
       await new Promise((r) => setTimeout(r, 1100)); // ensure distinct YYYYMMDDTHHMMSS
       await saveTasksWithSnapshotPolicy(store.getAllTasks(), filePath, 'predelete');
@@ -482,7 +489,7 @@ describe('saveTasksWithSnapshotPolicy', () => {
 
     test("'predelete' retains only the last 5 snapshots", async () => {
       const store = new TaskStore();
-      store.createTask('T', '/cwd');
+      createTaskForMutation(store, 'T', '/cwd');
 
       // Seed 7 fake predelete files with distinct timestamps.
       const stamps = [
@@ -512,7 +519,7 @@ describe('saveTasksWithSnapshotPolicy', () => {
       // external tooling). We spy on console.warn to confirm swallow behavior.
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const store = new TaskStore();
-      store.createTask('T', '/cwd');
+      createTaskForMutation(store, 'T', '/cwd');
       // Save once to create tasks.json.
       await saveTasks(store.getAllTasks(), filePath);
       // Delete tasks.json so the copy phase will fail.
@@ -549,7 +556,7 @@ describe('Task Persistence — ralphLoop round-trip (issue #440)', () => {
 
   test('ralphLoop survives save and load with all fields intact', async () => {
     const store = new TaskStore();
-    const task = store.createTask('Loop until DONE', '/cwd');
+    const task = createTaskForMutation(store, 'Loop until DONE', '/cwd');
     task.ralphLoop = {
       prompt: 'Continue working on the feature.',
       iterationCap: 20,
@@ -569,7 +576,7 @@ describe('Task Persistence — ralphLoop round-trip (issue #440)', () => {
 
   test('tasks without ralphLoop continue to load without the field', async () => {
     const store = new TaskStore();
-    store.createTask('Plain task', '/cwd');
+    createTaskForMutation(store, 'Plain task', '/cwd');
 
     await saveTasks(store.getAllTasks(), filePath);
     const { tasks } = await loadTasks(filePath);
@@ -579,7 +586,7 @@ describe('Task Persistence — ralphLoop round-trip (issue #440)', () => {
 
   test('ralphLoop with stopPredicate omitted round-trips as undefined', async () => {
     const store = new TaskStore();
-    const task = store.createTask('Loop with cap only', '/cwd');
+    const task = createTaskForMutation(store, 'Loop with cap only', '/cwd');
     task.ralphLoop = {
       prompt: 'Keep iterating.',
       iterationCap: 5,

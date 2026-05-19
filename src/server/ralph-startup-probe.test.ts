@@ -29,9 +29,16 @@ function fakeBackend(behavior: (id: string) => boolean | Promise<boolean>): Term
   } as unknown as TerminalBackend;
 }
 
+function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
+  const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
+  const task = targetStore.getTaskForMutation(created.id);
+  if (!task) throw new Error(`missing task ${created.id}`);
+  return task;
+}
+
 function withTask(sessions: SessionInfo[]) {
   const store = new TaskStore();
-  const task = store.createTask('p', '/cwd');
+  const task = createTaskForMutation(store, 'p', '/cwd');
   for (const s of sessions) store.addSession(task.id, s);
   return task;
 }

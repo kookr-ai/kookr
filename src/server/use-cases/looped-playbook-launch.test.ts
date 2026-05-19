@@ -38,14 +38,24 @@ parameters:
 Loop {{target}}.
 `, async (cwd) => {
       const taskStore = new TaskStore();
-      const startLoop = vi.fn(async () => ({ ok: true, changed: true, value: undefined }));
+      const startLoop = vi.fn(async (task, input) => {
+        taskStore.getTaskForMutation(task.id)!.ralphLoop = {
+          prompt: input.prompt,
+          iterationCap: input.iterationCap,
+          currentIteration: 0,
+          status: 'running',
+          lastIterationStartedAt: 0,
+          cumulativeIterations: 0,
+        };
+        return { ok: true, changed: true, value: taskStore.getTask(task.id)!.ralphLoop };
+      });
       const launchTask = vi.fn(async (opts) => {
         const task = taskStore.createTask({
           prompt: opts.prompt,
           cwd: opts.cwd,
+          playbookId: opts.playbookId,
           playbookParameterValues: opts.playbookParameterValues,
         });
-        task.playbookId = opts.playbookId;
         return { task, queued: false };
       });
 
@@ -68,11 +78,16 @@ Loop {{target}}.
       expect(launchPrompt).toContain('iteration cap of 7');
       expect(launchPrompt).toContain('complete at most one missing phase or one small unit of work');
       expect(launchPrompt).toContain('Loop repo.');
-      expect(startLoop).toHaveBeenCalledWith(result.task, {
+      expect(startLoop).toHaveBeenCalledWith(expect.objectContaining({ id: result.task.id }), {
         prompt: launchPrompt,
         iterationCap: 7,
         zeroDiffConvergence: { consecutiveIterations: 2 },
         costCapUsd: 3,
+      });
+      expect(result.task.ralphLoop).toMatchObject({
+        prompt: launchPrompt,
+        iterationCap: 7,
+        status: 'running',
       });
     });
   });
@@ -94,9 +109,9 @@ Body.
         const task = taskStore.createTask({
           prompt: opts.prompt,
           cwd: opts.cwd,
+          playbookId: opts.playbookId,
           playbookParameterValues: opts.playbookParameterValues,
         });
-        task.playbookId = opts.playbookId;
         return { task, queued: false };
       });
 
@@ -112,6 +127,63 @@ Body.
 
       const startLoopArgs = startLoop.mock.calls[0]?.[1] as { stopPredicate?: string } | undefined;
       expect(startLoopArgs?.stopPredicate).toBe('test -f .batch-stop && grep -qE "^STOP:" .batch-stop');
+    });
+  });
+
+  it('marks a partially-started loop failed when startLoop throws', async () => {
+    await withPlaybook(`---
+name: Loopable
+tags: [workflow, loopable]
+---
+
+Loop.
+`, async (cwd) => {
+      const taskStore = new TaskStore();
+      const launchedTaskIds: string[] = [];
+      const launchTask = vi.fn(async (opts) => {
+        const task = taskStore.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          playbookId: opts.playbookId,
+          playbookParameterValues: opts.playbookParameterValues,
+        });
+        launchedTaskIds.push(task.id);
+        taskStore.getTaskForMutation(task.id)!.ralphLoop = {
+          prompt: opts.prompt,
+          iterationCap: 6,
+          currentIteration: 0,
+          status: 'running',
+          lastIterationStartedAt: 0,
+          cumulativeIterations: 0,
+        };
+        return { task, queued: false };
+      });
+      const markLoopFailed = vi.fn((taskId: string) => {
+        const task = taskStore.getTaskForMutation(taskId);
+        if (task?.ralphLoop) task.ralphLoop.status = 'failed';
+        return true;
+      });
+      const cleanupFailedTask = vi.fn(async () => undefined);
+
+      await expect(launchLoopedPlaybook({
+        taskStore,
+        launchTask,
+        ralphLoopService: {
+          startLoop: vi.fn(async () => {
+            throw new Error('start failed');
+          }),
+          markLoopFailed,
+        } as unknown as RalphLoopService,
+        cleanupFailedTask,
+      }, {
+        cwd,
+        playbookPath: 'workflow.md',
+        parameterValues: {},
+      })).rejects.toThrow('start failed');
+
+      expect(markLoopFailed).toHaveBeenCalledWith(launchedTaskIds[0]);
+      expect(cleanupFailedTask).toHaveBeenCalledWith(launchedTaskIds[0]);
+      expect(taskStore.getTask(launchedTaskIds[0]!)!.ralphLoop!.status).toBe('failed');
     });
   });
 
@@ -153,10 +225,10 @@ Loop {{target}}.
       const existing = taskStore.createTask({
         prompt: 'Loop repo.',
         cwd,
+        playbookId: 'workflow.md',
         playbookParameterValues: { target: 'repo' },
       });
-      existing.playbookId = 'workflow.md';
-      existing.ralphLoop = {
+      taskStore.getTaskForMutation(existing.id)!.ralphLoop = {
         prompt: 'Loop repo.',
         iterationCap: 6,
         currentIteration: 0,
@@ -211,10 +283,10 @@ Loop {{target}}.
       const existing = taskStore.createTask({
         prompt: 'Loop repo.',
         cwd,
+        playbookId: 'workflow.md',
         playbookParameterValues: { target: 'repo' },
       });
-      existing.playbookId = 'workflow.md';
-      existing.ralphLoop = {
+      taskStore.getTaskForMutation(existing.id)!.ralphLoop = {
         prompt: 'Loop repo.',
         iterationCap: 6,
         currentIteration: 2,
@@ -295,11 +367,11 @@ Loop {{target}}.
       const stale = taskStore.createTask({
         prompt: 'Loop repo.',
         cwd,
+        playbookId: 'workflow.md',
         playbookParameterValues: { target: 'repo' },
       });
-      stale.playbookId = 'workflow.md';
       taskStore.cancelTask(stale.id);
-      stale.ralphLoop = {
+      taskStore.getTaskForMutation(stale.id)!.ralphLoop = {
         prompt: 'Loop repo.',
         iterationCap: 6,
         currentIteration: 0,
@@ -356,10 +428,10 @@ Loop in docs/target-note.md.
         const task = taskStore.createTask({
           prompt: opts.prompt,
           cwd: opts.cwd,
+          playbookId: opts.playbookId,
+          projectId: opts.projectId,
           playbookParameterValues: opts.playbookParameterValues,
         });
-        task.playbookId = opts.playbookId;
-        if (opts.projectId) taskStore.setProjectId(task.id, opts.projectId);
         return { task, queued: false };
       });
 
@@ -421,10 +493,10 @@ describe('replaceLoopedPlaybook', () => {
     const old = taskStore.createTask({
       prompt: 'Loop repo.',
       cwd,
+      playbookId: 'workflow.md',
       playbookParameterValues: { target: 'repo' },
     });
-    old.playbookId = 'workflow.md';
-    old.ralphLoop = {
+    taskStore.getTaskForMutation(old.id)!.ralphLoop = {
       prompt: 'Loop repo.',
       iterationCap: 6,
       currentIteration: 3,
@@ -440,10 +512,10 @@ describe('replaceLoopedPlaybook', () => {
       const t = taskStore.createTask({
         prompt: opts.prompt,
         cwd: opts.cwd,
+        playbookId: opts.playbookId,
+        projectId: opts.projectId,
         playbookParameterValues: opts.playbookParameterValues,
       });
-      t.playbookId = opts.playbookId;
-      if (opts.projectId) taskStore.setProjectId(t.id, opts.projectId);
       return { task: t, queued: false };
     });
   }
@@ -453,12 +525,23 @@ describe('replaceLoopedPlaybook', () => {
     launchTask: makeLaunchTask(taskStore),
     ralphLoopService: {
       cancelLoop: vi.fn((task) => {
-        if (task.ralphLoop && task.ralphLoop.status === 'running') {
-          task.ralphLoop.status = 'cancelled';
+        const mutableTask = taskStore.getTaskForMutation(task.id);
+        if (mutableTask?.ralphLoop && mutableTask.ralphLoop.status === 'running') {
+          mutableTask.ralphLoop.status = 'cancelled';
         }
         return { ok: true, value: 'cancelled', changed: true };
       }),
-      startLoop: vi.fn(async () => ({ ok: true, changed: true, value: undefined })),
+      startLoop: vi.fn(async (task, input) => {
+        taskStore.getTaskForMutation(task.id)!.ralphLoop = {
+          prompt: input.prompt,
+          iterationCap: input.iterationCap,
+          currentIteration: 0,
+          status: 'running',
+          lastIterationStartedAt: 0,
+          cumulativeIterations: 0,
+        };
+        return { ok: true, changed: true, value: taskStore.getTask(task.id)!.ralphLoop };
+      }),
     } as unknown as RalphLoopService,
     cancelReplacedTask: vi.fn(async () => undefined),
     ...overrides,
@@ -484,8 +567,9 @@ Loop {{target}}.
         cancelLoop: vi.fn((task) => {
           order.push('cancelLoop');
           // cancelLoop in production flips loop.status synchronously.
-          if (task.ralphLoop && task.ralphLoop.status === 'running') {
-            task.ralphLoop.status = 'cancelled';
+          const mutableTask = taskStore.getTaskForMutation(task.id);
+          if (mutableTask?.ralphLoop && mutableTask.ralphLoop.status === 'running') {
+            mutableTask.ralphLoop.status = 'cancelled';
           }
           return { ok: true, value: 'cancelled', changed: true };
         }),
@@ -495,7 +579,7 @@ Loop {{target}}.
         order.push('cancelReplacedTask');
         // At this point loop.status MUST already be 'cancelled' — otherwise
         // a Stop event arriving during this await spawns iteration N+1.
-        const t = taskStore.getTask(taskId);
+        const t = taskStore.getTaskForMutation(taskId);
         expect(t?.ralphLoop?.status).toBe('cancelled');
         taskStore.cancelTask(taskId);
       });
@@ -513,7 +597,7 @@ Loop {{target}}.
       });
 
       expect(order).toEqual(['cancelLoop', 'cancelReplacedTask']);
-      expect(ralphLoopService.cancelLoop).toHaveBeenCalledWith(old);
+      expect(ralphLoopService.cancelLoop).toHaveBeenCalledWith(expect.objectContaining({ id: old.id }));
     });
   });
 
@@ -530,7 +614,7 @@ Loop {{target}}.
       const cancelReplacedTask = vi.fn(async (taskId) => {
         // Simulate what real cancelTaskLifecycle does.
         taskStore.cancelTask(taskId);
-        const t = taskStore.getTask(taskId);
+        const t = taskStore.getTaskForMutation(taskId);
         if (t?.ralphLoop) t.ralphLoop.status = 'cancelled';
       });
       const writeReplaceAudit = vi.fn(async () => undefined);
@@ -545,6 +629,10 @@ Loop {{target}}.
 
       expect(cancelReplacedTask).toHaveBeenCalledWith(old.id);
       expect(result.task.id).not.toBe(old.id);
+      expect(result.task.ralphLoop).toMatchObject({
+        prompt: expect.stringContaining('Loop {{target}}.'),
+        status: 'running',
+      });
       expect(oldIteration).toBe(3);
       expect(writeReplaceAudit).toHaveBeenCalledWith(expect.objectContaining({
         replacedTaskId: old.id,
@@ -714,8 +802,9 @@ Loop {{target}}.
         launchTask,
         ralphLoopService: {
           cancelLoop: vi.fn((task) => {
-            if (task.ralphLoop && task.ralphLoop.status === 'running') {
-              task.ralphLoop.status = 'cancelled';
+            const mutableTask = taskStore.getTaskForMutation(task.id);
+            if (mutableTask?.ralphLoop && mutableTask.ralphLoop.status === 'running') {
+              mutableTask.ralphLoop.status = 'cancelled';
             }
             return { ok: true, value: 'cancelled', changed: true };
           }),
@@ -760,8 +849,9 @@ Loop {{target}}.
 
       const sharedRalphService = {
         cancelLoop: vi.fn((task) => {
-          if (task.ralphLoop && task.ralphLoop.status === 'running') {
-            task.ralphLoop.status = 'cancelled';
+          const mutableTask = taskStore.getTaskForMutation(task.id);
+          if (mutableTask?.ralphLoop && mutableTask.ralphLoop.status === 'running') {
+            mutableTask.ralphLoop.status = 'cancelled';
           }
           cancelLoopReached();
           return { ok: true, value: 'cancelled', changed: true };

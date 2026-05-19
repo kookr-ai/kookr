@@ -33,6 +33,13 @@ import {
 import type { RalphCycler } from '../core/ralph-cycler.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 
+function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
+  const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
+  const task = targetStore.getTaskForMutation(created.id);
+  if (!task) throw new Error(`missing task ${created.id}`);
+  return task;
+}
+
 // ---------------------------------------------------------------------------
 // Mock-based tests: controlled pre/post anomaly snapshots
 // ---------------------------------------------------------------------------
@@ -359,7 +366,7 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
   }
 
   async function launchAgent() {
-    const task = taskStore.createTask('Test', '/cwd');
+    const task = createTaskForMutation(taskStore, 'Test', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Test', '/cwd');
     monitor.registerAgent(tmuxName);
     return tmuxName;
@@ -602,7 +609,7 @@ describe('wireEventPipeline – Ralph fresh-runtime wiring on Stop (integration)
     // as the Ralph loop owner so the Stop fingerprint check passes, AND we
     // need the real task id before constructing the cycler stub so we can
     // skip the placeholder/overwrite dance.
-    const task = taskStore.createTask('Looped', '/cwd');
+    const task = createTaskForMutation(taskStore, 'Looped', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'iterate again', '/cwd');
     monitor.registerAgent(tmuxName);
 

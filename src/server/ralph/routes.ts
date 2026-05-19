@@ -6,7 +6,6 @@ import {
   formatIterationLogCsv,
   readIterationLog,
 } from '../../core/ralph-iteration-log.js';
-import { canonicalizeTarget } from '../../core/ralph-iteration-verdict.js';
 import { nowISO } from '../../core/interaction-log.js';
 import { normalizeAgentType } from '../../core/agent-types.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
@@ -124,11 +123,6 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
    */
   app.patch('/api/tasks/:id/ralph-loop/burned-targets', async (c) => {
     const id = c.req.param('id');
-    const task = taskStore.getTask(id);
-    if (!task) return c.json({ error: 'Task not found' }, 404);
-    const loop = task.ralphLoop;
-    if (!loop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
-
     let body: { remove?: unknown; clear?: unknown };
     try {
       body = await c.req.json();
@@ -142,64 +136,12 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     }
     const clear = body.clear === true;
 
-    if (remove.length === 0 && !clear) {
-      // Empty no-op: return current state without firing an audit event.
-      return c.json({ ok: true, burnedOutTargets: loop.burnedOutTargets ?? [] });
+    const result = await ralphLoopService.modifyBurnedTargets(id, { remove: remove as string[], clear });
+    if (!result.ok) return c.json(result.body, result.status);
+    if (result.changed) {
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
     }
-
-    // Snapshot the full prior shape so the audit log can reproduce state if
-    // the operator needs to roll back manually.
-    const previous = (loop.burnedOutTargets ?? []).map((t) => ({ ...t }));
-
-    const updated = taskStore.updateRalphLoop(id, (currentLoop) => {
-      if (clear) {
-        currentLoop.burnedOutTargets = [];
-      } else {
-        const removeSet = new Set(remove.map((t) => canonicalizeTarget(t as string)));
-        currentLoop.burnedOutTargets = (currentLoop.burnedOutTargets ?? []).filter((t) => !removeSet.has(t.target));
-      }
-    });
-    const updatedLoop = updated?.ralphLoop ?? loop;
-
-    // `removed` is the actual canonicalized delta, not the operator's input.
-    // Operators may submit unknown or already-clean targets.
-    const remaining = new Set((updatedLoop.burnedOutTargets ?? []).map((t) => t.target));
-    const actuallyRemoved = previous
-      .filter((t) => !remaining.has(t.target));
-
-    // Await the main audit event so on-disk order matches mutation order.
-    // Per-target unburn events are best-effort and must not fail the operator
-    // mutation, which is already committed in memory.
-    if (deps.interactionLog) {
-      const ts = new Date().toISOString();
-      try {
-        await deps.interactionLog.append({
-          type: 'ralph_burned_targets_modified',
-          taskId: id,
-          removed: actuallyRemoved.map((t) => t.target),
-          cleared: clear,
-          previousBurnedOutTargets: previous,
-          timestamp: ts,
-        });
-      } catch (err) {
-        console.warn(`[ralph-routes] ralph_burned_targets_modified audit append failed for task ${id}:`, err);
-      }
-      const iter = updatedLoop.currentIteration;
-      for (const t of actuallyRemoved) {
-        if (!t.burned) continue;
-        void deps.interactionLog.append({
-          type: 'ralph_target_unburned',
-          taskId: id,
-          target: t.target,
-          iteration: iter,
-          via: 'patch_burned_targets',
-          timestamp: ts,
-        }).catch(() => undefined);
-      }
-    }
-
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
-    return c.json({ ok: true, burnedOutTargets: updatedLoop.burnedOutTargets });
+    return c.json({ ok: true, burnedOutTargets: result.value });
   });
 
   app.delete('/api/tasks/:id/ralph-loop', (c) => {
@@ -213,7 +155,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     if (result.changed) {
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
     }
-    return c.json({ ok: true, status: task.ralphLoop.status });
+    return c.json({ ok: true, status: result.value });
   });
 
   app.post('/api/tasks/:id/ralph-loop/complete', (c) => {
@@ -227,7 +169,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     if (result.changed) {
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
     }
-    return c.json({ ok: true, status: task.ralphLoop.status });
+    return c.json({ ok: true, status: result.value });
   });
 
   app.patch('/api/tasks/:id/ralph-loop/prompt', async (c) => {

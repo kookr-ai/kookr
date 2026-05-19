@@ -25,6 +25,10 @@ function baseLoop(overrides: Partial<RalphLoopState> = {}): RalphLoopState {
   };
 }
 
+function setStoredLoop(store: TaskStore, taskId: string, loop: RalphLoopState): void {
+  store.getTaskForMutation(taskId)!.ralphLoop = loop;
+}
+
 function mkService(deps: {
   store?: TaskStore;
   terminalBackend?: FakeTerminalBackend;
@@ -140,7 +144,7 @@ describe('RalphLoopService', () => {
     });
 
     expect(result).toMatchObject({ ok: true, changed: true });
-    expect(task.ralphLoop).toMatchObject({
+    expect(store.getTask(task.id)!.ralphLoop).toMatchObject({
       prompt: 'iterate until done',
       iterationCap: 7,
       status: 'running',
@@ -152,8 +156,27 @@ describe('RalphLoopService', () => {
     });
   });
 
+  test('startLoop accepts a TaskStore snapshot and mutates the stored task', async () => {
+    const { store, service } = mkService();
+    const created = store.createTask('prompt', '/repo');
+    const snapshot = store.getTask(created.id)!;
+
+    const result = await service.startLoop(snapshot, {
+      prompt: 'iterate from snapshot',
+      iterationCap: 3,
+    });
+
+    expect(result).toMatchObject({ ok: true, changed: true });
+    expect(snapshot.ralphLoop).toBeUndefined();
+    expect(store.getTask(created.id)!.ralphLoop).toMatchObject({
+      prompt: 'iterate from snapshot',
+      iterationCap: 3,
+      status: 'running',
+    });
+  });
+
   test('handleStopEvent advances and launches the next Ralph runtime from the service boundary', async () => {
-    const handleStop = vi.fn().mockResolvedValue({ kind: 'launch_fresh', taskId: 'task-1', text: 'continue' });
+    const handleStop = vi.fn();
     const launchFreshTaskSession = vi.fn(async (task: ReturnType<TaskStore['createTask']>, _prompt: string, opts?: { tmuxName?: string }) => {
       const tmuxSession = opts?.tmuxName ?? 'agent-2';
       store.addSession(task.id, {
@@ -179,14 +202,15 @@ describe('RalphLoopService', () => {
       claudeSessionId: 'runtime-1',
       transcriptPath: '/root.jsonl',
     });
-    task.ralphLoop = baseLoop({
+    setStoredLoop(store, task.id, baseLoop({
       ownerSessionId: 'agent-1',
       // Non-zero iteration so the RALPH_ITERATION assertion below proves the
       // value comes from `String(loop.currentIteration)`, not from a hardcoded
       // '0' that coincides with the default. The original bug was specifically
       // that every post-iter-0 launch had a stale iteration value.
       currentIteration: 3,
-    });
+    }));
+    handleStop.mockResolvedValue({ kind: 'launch_fresh', taskId: task.id, text: 'continue' });
     const stopEvent: AgentEvent = {
       type: 'stop',
       sessionId: 'runtime-1',
@@ -203,7 +227,7 @@ describe('RalphLoopService', () => {
       sessionId: 'agent-1',
       cumulativeCostUsd: 1.25,
     }));
-    expect(launchFreshTaskSession).toHaveBeenCalledWith(task, 'continue', expect.objectContaining({
+    expect(launchFreshTaskSession).toHaveBeenCalledWith(expect.objectContaining({ id: task.id }), 'continue', expect.objectContaining({
       tmuxName: expect.stringMatching(/^kookr-[0-9a-f]{8}$/),
       // PR2: env var pointing at the task's verdict file is injected on every
       // launch so the agent can write its verdict regardless of `cd`.
@@ -217,15 +241,15 @@ describe('RalphLoopService', () => {
       }),
     }));
     const launchedTmuxName = launchFreshTaskSession.mock.calls[0]?.[2]?.tmuxName;
-    expect(task.ralphLoop).toMatchObject({
+    expect(store.getTask(task.id)!.ralphLoop).toMatchObject({
       ownerSessionId: launchedTmuxName,
       lastHandledStopFingerprint: expect.any(String),
     });
-    expect(task.ralphLoop.handlingStopFingerprint).toBeUndefined();
+    expect(store.getTask(task.id)!.ralphLoop!.handlingStopFingerprint).toBeUndefined();
   });
 
   test('handleStopEvent leaves a loop cancelled when cancellation happens during fresh launch', async () => {
-    const handleStop = vi.fn().mockResolvedValue({ kind: 'launch_fresh', taskId: 'task-1', text: 'continue' });
+    const handleStop = vi.fn();
     const launchFreshTaskSession = vi.fn(async (task: ReturnType<TaskStore['createTask']>, _prompt: string, opts?: { tmuxName?: string }) => {
       const tmuxSession = opts?.tmuxName ?? 'agent-2';
       await terminalBackend.createSession(tmuxSession, 'claude');
@@ -236,7 +260,7 @@ describe('RalphLoopService', () => {
         createdAt: new Date('2026-05-03T00:03:00Z'),
         lastStatus: 'running',
       });
-      task.ralphLoop!.status = 'cancelled';
+      store.getTaskForMutation(task.id)!.ralphLoop!.status = 'cancelled';
       return tmuxSession;
     });
     const { store, service, monitor, terminalBackend } = mkService({
@@ -251,7 +275,8 @@ describe('RalphLoopService', () => {
       createdAt: new Date('2026-05-03T00:00:00Z'),
       lastStatus: 'running',
     });
-    task.ralphLoop = baseLoop({ ownerSessionId: 'agent-1' });
+    setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1' }));
+    handleStop.mockResolvedValue({ kind: 'launch_fresh', taskId: task.id, text: 'continue' });
     const stopEvent: AgentEvent = {
       type: 'stop',
       sessionId: 'runtime-1',
@@ -263,16 +288,17 @@ describe('RalphLoopService', () => {
     await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 1.25 });
 
     const launchedTmuxName = launchFreshTaskSession.mock.calls[0]?.[2]?.tmuxName;
-    expect(task.ralphLoop.status).toBe('cancelled');
-    expect(task.ralphLoop.ownerSessionId).toBeUndefined();
-    expect(task.ralphLoop.handlingStopFingerprint).toBeUndefined();
+    const storedLoop = store.getTask(task.id)!.ralphLoop!;
+    expect(storedLoop.status).toBe('cancelled');
+    expect(storedLoop.ownerSessionId).toBeUndefined();
+    expect(storedLoop.handlingStopFingerprint).toBeUndefined();
     expect(await terminalBackend.isAlive(launchedTmuxName!)).toBe(false);
   });
 
   test('attachLoop refuses to replace an active loop', async () => {
     const { store, service } = mkService();
     const task = store.createTask('prompt', '/repo');
-    task.ralphLoop = baseLoop({ status: 'paused', currentIteration: 3 });
+    setStoredLoop(store, task.id, baseLoop({ status: 'paused', currentIteration: 3 }));
 
     const result = await service.attachLoop(task, { prompt: 'new', iterationCap: 4 });
 
@@ -285,35 +311,35 @@ describe('RalphLoopService', () => {
         currentIteration: 3,
       },
     });
-    expect(task.ralphLoop.prompt).toBe('iterate');
+    expect(store.getTask(task.id)!.ralphLoop!.prompt).toBe('iterate');
   });
 
   test('completeLoop marks an active loop completed without cancelling the task turn', () => {
     const { store, service } = mkService();
     const task = store.createTask('prompt', '/repo');
-    task.ralphLoop = baseLoop({ status: 'running', currentIteration: 2 });
-    const before = task.updatedAt.getTime();
+    setStoredLoop(store, task.id, baseLoop({ status: 'running', currentIteration: 2 }));
 
-    const result = service.completeLoop(task);
+    const snapshot = store.getTask(task.id)!;
+    const result = service.completeLoop(snapshot);
 
     expect(result).toEqual({ ok: true, value: 'completed', changed: true });
-    expect(task.status).toBe('open');
-    expect(task.ralphLoop.status).toBe('completed');
-    expect(task.updatedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(snapshot.ralphLoop!.status).toBe('running');
+    expect(store.getTask(task.id)!.status).toBe('open');
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('completed');
   });
 
   test('completeLoop is idempotent after the loop is already completed', () => {
     const { store, service } = mkService();
     const task = store.createTask('prompt', '/repo');
-    task.ralphLoop = baseLoop({ status: 'completed' });
+    setStoredLoop(store, task.id, baseLoop({ status: 'completed' }));
 
-    const result = service.completeLoop(task);
+    const result = service.completeLoop(store.getTask(task.id)!);
 
     expect(result).toEqual({ ok: true, value: 'completed', changed: false });
-    expect(task.ralphLoop.status).toBe('completed');
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('completed');
   });
 
-  test('pause, resume, and cancel own task mutation semantics', async () => {
+  test('pause, resume, and cancel mutate stored task when called with snapshots', async () => {
     const { store, service, terminalBackend } = mkService();
     await terminalBackend.createSession('s1', 'claude');
     const task = store.createTask('prompt', '/repo');
@@ -324,17 +350,53 @@ describe('RalphLoopService', () => {
       createdAt: new Date('2026-05-03T00:00:00Z'),
       lastStatus: 'running',
     });
-    task.ralphLoop = baseLoop();
+    setStoredLoop(store, task.id, baseLoop());
 
-    expect(service.pauseLoop(task)).toMatchObject({ ok: true, changed: true, value: { status: 'paused' } });
-    expect(store.getTask(task.id)!.ralphLoop?.status).toBe('paused');
-    expect(await service.resumeLoop(task)).toMatchObject({ ok: true, changed: true, value: { status: 'running' } });
-    expect(store.getTask(task.id)!.ralphLoop).toMatchObject({
-      status: 'running',
-      ownerSessionId: 's1',
+    const snapshot = store.getTask(task.id)!;
+    expect(service.pauseLoop(snapshot)).toMatchObject({ ok: true, changed: true, value: { status: 'paused' } });
+    expect(snapshot.ralphLoop!.status).toBe('running');
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('paused');
+
+    expect(await service.resumeLoop(snapshot)).toMatchObject({ ok: true, changed: true, value: { status: 'running' } });
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('running');
+
+    expect(service.cancelLoop(snapshot)).toMatchObject({ ok: true, changed: true, value: 'cancelled' });
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('cancelled');
+  });
+
+  test('active loop controls accept TaskStore snapshots and persist to the stored task', async () => {
+    const { store, service, terminalBackend } = mkService();
+    await terminalBackend.createSession('s1', 'claude');
+    const task = store.createTask('prompt', '/repo');
+    store.addSession(task.id, {
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-03T00:00:00Z'),
+      lastStatus: 'running',
     });
-    expect(service.cancelLoop(task)).toMatchObject({ ok: true, changed: true, value: 'cancelled' });
-    expect(store.getTask(task.id)!.ralphLoop?.status).toBe('cancelled');
+    setStoredLoop(store, task.id, baseLoop());
+
+    const staleBeforePause = store.getTask(task.id)!;
+    expect(service.pauseLoop(staleBeforePause)).toMatchObject({ ok: true, changed: true, value: { status: 'paused' } });
+    expect(staleBeforePause.ralphLoop!.status).toBe('running');
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('paused');
+
+    const staleBeforeResume = store.getTask(task.id)!;
+    expect(await service.resumeLoop(staleBeforeResume)).toMatchObject({ ok: true, changed: true, value: { status: 'running' } });
+    expect(staleBeforeResume.ralphLoop!.status).toBe('paused');
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('running');
+
+    const staleBeforeComplete = store.getTask(task.id)!;
+    expect(service.completeLoop(staleBeforeComplete)).toEqual({ ok: true, value: 'completed', changed: true });
+    expect(staleBeforeComplete.ralphLoop!.status).toBe('running');
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('completed');
+
+    setStoredLoop(store, task.id, baseLoop());
+    const staleBeforeCancel = store.getTask(task.id)!;
+    expect(service.cancelLoop(staleBeforeCancel)).toMatchObject({ ok: true, changed: true, value: 'cancelled' });
+    expect(staleBeforeCancel.ralphLoop!.status).toBe('running');
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('cancelled');
   });
 
   test('resume rejects a paused loop when no live session remains', async () => {
@@ -347,7 +409,7 @@ describe('RalphLoopService', () => {
       createdAt: new Date('2026-05-03T00:00:00Z'),
       lastStatus: 'running',
     });
-    task.ralphLoop = baseLoop({ status: 'paused' });
+    setStoredLoop(store, task.id, baseLoop({ status: 'paused' }));
 
     const result = await service.resumeLoop(task);
 
@@ -356,7 +418,7 @@ describe('RalphLoopService', () => {
       status: 409,
       body: { status: 'paused' },
     });
-    expect(task.ralphLoop.status).toBe('paused');
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('paused');
   });
 
   describe('verdict file lifecycle (PR2 service-layer integration)', () => {
@@ -389,7 +451,7 @@ describe('RalphLoopService', () => {
         claudeSessionId: 'runtime-1',
         transcriptPath: '/root.jsonl',
       });
-      task.ralphLoop = baseLoop({ ownerSessionId: 'agent-1', currentIteration: 3 });
+      setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1', currentIteration: 3 }));
 
       const verdictPath = defaultVerdictPath(task.cwd, task.id);
       await writeFile(verdictPath, JSON.stringify({
@@ -439,7 +501,7 @@ describe('RalphLoopService', () => {
         claudeSessionId: 'runtime-1',
         transcriptPath: '/root.jsonl',
       });
-      task.ralphLoop = baseLoop({ ownerSessionId: 'agent-1', currentIteration: 5 });
+      setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1', currentIteration: 5 }));
 
       const verdictPath = defaultVerdictPath(task.cwd, task.id);
       // Wrong-iteration verdict — agent wrote iter 99, engine is on iter 5.
@@ -464,8 +526,8 @@ describe('RalphLoopService', () => {
       const cyclerOpts = handleStop.mock.calls[0][1] as { verdict?: unknown };
       expect(cyclerOpts.verdict).toBeUndefined();
       // Operability counters bumped on the loop state.
-      expect(task.ralphLoop.verdictWarningCount).toBe(1);
-      expect(task.ralphLoop.lastVerdictWarningReason).toMatch(/iteration 99 does not match expected 5/);
+      expect(store.getTask(task.id)!.ralphLoop!.verdictWarningCount).toBe(1);
+      expect(store.getTask(task.id)!.ralphLoop!.lastVerdictWarningReason).toMatch(/iteration 99 does not match expected 5/);
       // Warning event emitted for forensics.
       expect(append).toHaveBeenCalledWith(expect.objectContaining({
         type: 'ralph_verdict_warning',
@@ -499,7 +561,7 @@ describe('RalphLoopService', () => {
         createdAt: new Date('2026-05-08T00:00:00Z'), lastStatus: 'running',
         claudeSessionId: 'runtime-1', transcriptPath: '/root.jsonl',
       });
-      task.ralphLoop = baseLoop({ ownerSessionId: 'agent-1', currentIteration: 0 });
+      setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1', currentIteration: 0 }));
 
       // Write the post-stop verdict file (consumed and unlinked by Stop handling).
       const verdictPath = defaultVerdictPath(task.cwd, task.id);
@@ -566,14 +628,12 @@ describe('RalphLoopService', () => {
     const append = vi.fn().mockResolvedValue(undefined);
     const { store, service } = mkService({ interactionLog: { append } });
     const task = store.createTask('prompt', '/repo');
-    task.ralphLoop = baseLoop({ status: 'paused', prompt: 'old prompt' });
-    const before = task.updatedAt.getTime();
+    setStoredLoop(store, task.id, baseLoop({ status: 'paused', prompt: 'old prompt' }));
 
     const result = await service.updatePrompt(task, 'new prompt');
 
     expect(result).toMatchObject({ ok: true, changed: true, value: { prompt: 'new prompt' } });
-    expect(store.getTask(task.id)!.ralphLoop?.prompt).toBe('new prompt');
-    expect(store.getTask(task.id)!.updatedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(store.getTask(task.id)!.ralphLoop!.prompt).toBe('new prompt');
     expect(append).toHaveBeenCalledWith(expect.objectContaining({
       type: 'ralph_prompt_updated',
       taskId: task.id,
@@ -581,5 +641,81 @@ describe('RalphLoopService', () => {
       previousPrompt: 'old prompt',
       prompt: 'new prompt',
     }));
+  });
+
+  test('updatePrompt accepts a TaskStore snapshot and persists to the stored task', async () => {
+    const append = vi.fn().mockResolvedValue(undefined);
+    const { store, service } = mkService({ interactionLog: { append } });
+    const task = store.createTask('prompt', '/repo');
+    setStoredLoop(store, task.id, baseLoop({ status: 'paused', prompt: 'old prompt' }));
+    const snapshot = store.getTask(task.id)!;
+
+    const result = await service.updatePrompt(snapshot, 'new prompt');
+
+    expect(result).toMatchObject({ ok: true, changed: true, value: { prompt: 'new prompt' } });
+    expect(snapshot.ralphLoop!.prompt).toBe('old prompt');
+    expect(store.getTask(task.id)!.ralphLoop!.prompt).toBe('new prompt');
+  });
+
+  test('modifyBurnedTargets owns burned-target mutation and audit logging', async () => {
+    const append = vi.fn().mockResolvedValue(undefined);
+    const { store, service } = mkService({ interactionLog: { append } });
+    const task = store.createTask('prompt', '/repo');
+    setStoredLoop(store, task.id, baseLoop({
+      currentIteration: 4,
+      burnedOutTargets: [
+        {
+          target: 'api',
+          consecutiveStallCount: 2,
+          totalStallCount: 2,
+          firstStalledAtIteration: 1,
+          lastStallReason: 'same error',
+          lastStallBlockers: ['timeout'],
+          burned: true,
+          lastAttemptedIteration: 3,
+        },
+        {
+          target: 'ui',
+          consecutiveStallCount: 1,
+          totalStallCount: 1,
+          firstStalledAtIteration: 2,
+          lastStallReason: 'compile',
+          lastStallBlockers: [],
+          burned: false,
+          lastAttemptedIteration: 3,
+        },
+      ],
+    }));
+
+    const result = await service.modifyBurnedTargets(task.id, { remove: [' API '], clear: false });
+
+    expect(result).toMatchObject({ ok: true, changed: true, value: [{ target: 'ui' }] });
+    expect(store.getTask(task.id)!.ralphLoop!.burnedOutTargets).toMatchObject([{ target: 'ui' }]);
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ralph_burned_targets_modified',
+      taskId: task.id,
+      removed: ['api'],
+      cleared: false,
+    }));
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ralph_target_unburned',
+      taskId: task.id,
+      target: 'api',
+      iteration: 4,
+      via: 'patch_burned_targets',
+    }));
+  });
+
+  test('markLoopFailed owns failed-start loop status mutation', () => {
+    const { store, service } = mkService();
+    const task = store.createTask('prompt', '/repo');
+    setStoredLoop(store, task.id, baseLoop({ status: 'running' }));
+    const before = store.getTask(task.id)!.updatedAt.getTime();
+
+    expect(service.markLoopFailed(task.id)).toBe(true);
+
+    const updated = store.getTask(task.id)!;
+    expect(updated.ralphLoop!.status).toBe('failed');
+    expect(updated.updatedAt.getTime()).toBeGreaterThanOrEqual(before);
   });
 });

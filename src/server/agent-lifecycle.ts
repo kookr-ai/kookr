@@ -392,7 +392,9 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       const adapter = adapterRegistry.get(pending.agentType);
       const launchPrompt = pending.launchNote ? `${pending.launchNote}\n\n${pending.prompt}` : pending.prompt;
       await adapter.launch(pending.id, launchPrompt, pending.cwd);
-      await registerNewAgent(pending, lifecycleDeps);
+      const launched = taskStore.getTask(pending.id);
+      if (!launched) throw new Error(`Task disappeared after launch: ${pending.id}`);
+      await registerNewAgent(launched, lifecycleDeps);
       promoted++;
     } catch (err) {
       // If launch fails, cancel the task rather than leaving it pending forever

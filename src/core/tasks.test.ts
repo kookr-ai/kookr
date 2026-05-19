@@ -11,14 +11,14 @@ describe('TaskStore', () => {
 
   describe('Task CRUD', () => {
     test('createTask returns task with id and status open', () => {
-      const task = store.createTask('Fix auth bug', '/home/user/project');
+      const task = store.createTask('Fix auth bug', '/workspace/project');
 
       expect(task.id).toBeDefined();
       expect(typeof task.id).toBe('string');
       expect(task.id.length).toBeGreaterThan(0);
       expect(task.status).toBe('open');
       expect(task.prompt).toBe('Fix auth bug');
-      expect(task.cwd).toBe('/home/user/project');
+      expect(task.cwd).toBe('/workspace/project');
       expect(task.createdAt).toBeInstanceOf(Date);
       expect(task.updatedAt).toBeInstanceOf(Date);
     });
@@ -30,6 +30,42 @@ describe('TaskStore', () => {
       expect(retrieved).toBeDefined();
       expect(retrieved!.id).toBe(created.id);
       expect(retrieved!.prompt).toBe('Fix bug');
+    });
+
+    test('getTask returns a snapshot instead of the stored mutable record', () => {
+      const created = store.createTask('Fix bug', '/cwd');
+      store.addSession(created.id, {
+        tmuxSession: 'kookr-abc',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      });
+
+      const snapshot = store.getTask(created.id)!;
+      snapshot.status = 'completed';
+      snapshot.sessions[0]!.lastStatus = 'completed';
+      snapshot.updatedAt = new Date('2001-01-01T00:00:00.000Z');
+
+      const reread = store.getTask(created.id)!;
+      expect(reread.status).toBe('inProgress');
+      expect(reread.sessions[0]!.lastStatus).toBeUndefined();
+      expect(reread.updatedAt.getTime()).not.toBe(snapshot.updatedAt.getTime());
+    });
+
+    test('createTask returns a snapshot instead of the stored mutable record', () => {
+      const created = store.createTask('Fix bug', '/cwd');
+
+      created.prompt = 'mutated outside store';
+      created.sessions.push({
+        tmuxSession: 'kookr-external',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      });
+
+      const reread = store.getTask(created.id)!;
+      expect(reread.prompt).toBe('Fix bug');
+      expect(reread.sessions).toHaveLength(0);
     });
 
     test('getTask returns undefined for unknown id', () => {
@@ -45,6 +81,138 @@ describe('TaskStore', () => {
       store.createTask('Task 3', '/cwd');
 
       expect(store.listTasks()).toHaveLength(3);
+    });
+
+    test('listTasks returns snapshots instead of stored mutable records', () => {
+      const created = store.createTask('Task 1', '/cwd');
+      store.addSession(created.id, {
+        tmuxSession: 'kookr-abc',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+      });
+      store.updateTokenUsage(created.id, {
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheReadTokens: 3,
+        cacheWriteTokens: 4,
+        costUsd: 0.25,
+      });
+      store.getTaskForMutation(created.id)!.ralphLoop = {
+        prompt: 'loop',
+        iterationCap: 3,
+        currentIteration: 1,
+        status: 'running',
+        lastIterationStartedAt: 0,
+        cumulativeIterations: 1,
+        stallConfig: { declaredTargets: ['api'] },
+        burnedOutTargets: [{
+          target: 'api',
+          consecutiveStallCount: 2,
+          totalStallCount: 2,
+          firstStalledAtIteration: 0,
+          lastStallReason: 'same error',
+          lastStallBlockers: ['timeout'],
+          burned: true,
+          lastAttemptedIteration: 1,
+        }],
+      };
+      const [snapshot] = store.listTasks();
+
+      snapshot!.prompt = 'mutated outside store';
+      snapshot!.createdAt.setUTCFullYear(2001);
+      snapshot!.sessions[0]!.lastStatus = 'completed';
+      snapshot!.tokenUsage!.costUsd = 99;
+      snapshot!.ralphLoop!.stallConfig!.declaredTargets!.push('mutated');
+      snapshot!.ralphLoop!.burnedOutTargets![0]!.lastStallBlockers.push('mutated');
+
+      const reread = store.getTask(created.id)!;
+      expect(reread.prompt).toBe('Task 1');
+      expect(reread.createdAt.getUTCFullYear()).not.toBe(2001);
+      expect(reread.sessions[0]!.lastStatus).toBe('running');
+      expect(reread.tokenUsage!.costUsd).toBe(0.25);
+      expect(reread.ralphLoop!.stallConfig!.declaredTargets).toEqual(['api']);
+      expect(reread.ralphLoop!.burnedOutTargets![0]!.lastStallBlockers).toEqual(['timeout']);
+    });
+
+    test('secondary read APIs return snapshots instead of stored mutable records', () => {
+      const pending = store.createTask({
+        prompt: 'Pending task',
+        cwd: '/cwd',
+        projectId: 'local/project',
+      });
+      store.pendTask(pending.id);
+      const active = store.createTask({
+        prompt: 'Active task',
+        cwd: '/cwd',
+        projectId: 'local/project',
+      });
+      store.addSession(active.id, {
+        tmuxSession: 'kookr-active',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+      });
+
+      store.getNextPending()!.prompt = 'mutated pending';
+      store.listTasksByProject('local/project')
+        .find((task) => task.id === active.id)!
+        .sessions[0]!.lastStatus = 'completed';
+      store.findTaskBySession('kookr-active')!.sessions[0]!.lastStatus = 'completed';
+      store.getAllTasks()[0]!.prompt = 'mutated all task';
+      store.getActiveSessions()[0]!.session.lastStatus = 'completed';
+
+      expect(store.getTask(pending.id)!.prompt).toBe('Pending task');
+      const activeSnapshot = store.getTask(active.id)!;
+      expect(activeSnapshot.prompt).toBe('Active task');
+      expect(activeSnapshot.sessions[0]!.lastStatus).toBe('running');
+    });
+
+    test('mutation APIs return snapshots instead of stored mutable records', () => {
+      const task = store.createTask('Task', '/cwd');
+
+      const started = store.startTask(task.id);
+      started.prompt = 'mutated start';
+      expect(store.getTask(task.id)!.prompt).toBe('Task');
+
+      const session = {
+        tmuxSession: 'kookr-abc',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+      } as const;
+      const withSession = store.addSession(task.id, session);
+      session.createdAt.setUTCFullYear(2001);
+      withSession.sessions[0]!.lastStatus = 'completed';
+      expect(store.getTask(task.id)!.sessions[0]!.createdAt.getUTCFullYear()).not.toBe(2001);
+      expect(store.getTask(task.id)!.sessions[0]!.lastStatus).toBe('running');
+
+      const updatedSession = store.updateSession(task.id, 'kookr-abc', { claudeSessionId: 'runtime-1' });
+      updatedSession.sessions[0]!.claudeSessionId = 'mutated-runtime';
+      expect(store.getTask(task.id)!.sessions[0]!.claudeSessionId).toBe('runtime-1');
+
+      const renamed = store.renameTask(task.id, 'Renamed');
+      renamed.name = 'mutated name';
+      expect(store.getTask(task.id)!.name).toBe('Renamed');
+
+      const tokenUsage = {
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheReadTokens: 3,
+        cacheWriteTokens: 4,
+        costUsd: 0.01,
+      };
+      const usage = store.updateTokenUsage(task.id, tokenUsage);
+      tokenUsage.costUsd = 7;
+      usage.tokenUsage!.costUsd = 9;
+      expect(store.getTask(task.id)!.tokenUsage!.costUsd).toBe(0.01);
+
+      const cancelled = store.cancelTask(task.id);
+      cancelled.prompt = 'mutated cancel';
+      expect(store.getTask(task.id)!.prompt).toBe('Task');
     });
 
     test('listTasks filters by status', () => {
@@ -64,11 +232,48 @@ describe('TaskStore', () => {
     test('createTask stores playbookParameterValues when provided', () => {
       const task = store.createTask({
         prompt: 'Analyze repo',
-        cwd: '/home/user/project',
+        cwd: '/workspace/project',
         playbookParameterValues: { repoFullName: 'owner/repo', batchSize: '5' },
       });
 
       expect(task.playbookParameterValues).toEqual({ repoFullName: 'owner/repo', batchSize: '5' });
+    });
+
+    test('createTask clones object-bearing inputs on ingress', () => {
+      const playbookParameterValues = { repoFullName: 'owner/repo', batchSize: '5' };
+      const launchHealthSummary = {
+        degradedDependencies: ['kb'],
+        findings: [{
+          dependency: 'kb',
+          status: 'failed' as const,
+          category: 'unavailable',
+          summary: 'KB unavailable',
+          recommendedAction: 'Continue without KB.',
+        }],
+      };
+      const task = store.createTask({
+        prompt: 'Analyze repo',
+        cwd: '/workspace/project',
+        playbookParameterValues,
+        launchHealthSummary,
+      });
+
+      playbookParameterValues.batchSize = '100';
+      launchHealthSummary.degradedDependencies.push('git');
+      launchHealthSummary.findings[0]!.summary = 'mutated';
+
+      const reread = store.getTask(task.id)!;
+      expect(reread.playbookParameterValues).toEqual({ repoFullName: 'owner/repo', batchSize: '5' });
+      expect(reread.launchHealthSummary).toEqual({
+        degradedDependencies: ['kb'],
+        findings: [{
+          dependency: 'kb',
+          status: 'failed',
+          category: 'unavailable',
+          summary: 'KB unavailable',
+          recommendedAction: 'Continue without KB.',
+        }],
+      });
     });
 
     test('createTask omits playbookParameterValues when not provided', () => {
@@ -234,7 +439,7 @@ describe('TaskStore', () => {
         cwd: '/cwd',
         createdAt: new Date(),
       });
-      task.ralphLoop = {
+      store.getTaskForMutation(task.id)!.ralphLoop = {
         prompt: 'p',
         iterationCap: 5,
         currentIteration: 0,
@@ -249,7 +454,7 @@ describe('TaskStore', () => {
         transcriptPath: '/path/to/transcript.jsonl',
       });
 
-      expect(task.ralphLoop.ownerSessionId).toBe('kookr-loop');
+      expect(store.getTask(task.id)!.ralphLoop!.ownerSessionId).toBe('kookr-loop');
     });
 
     test('updateSession does not touch Ralph owner for unrelated sessions', () => {
@@ -267,7 +472,7 @@ describe('TaskStore', () => {
         cwd: '/cwd',
         createdAt: new Date(),
       });
-      task.ralphLoop = {
+      store.getTaskForMutation(task.id)!.ralphLoop = {
         prompt: 'p',
         iterationCap: 5,
         currentIteration: 0,
@@ -282,7 +487,7 @@ describe('TaskStore', () => {
         transcriptPath: '/wrong.jsonl',
       });
 
-      expect(task.ralphLoop.ownerSessionId).toBe('kookr-owner');
+      expect(store.getTask(task.id)!.ralphLoop!.ownerSessionId).toBe('kookr-owner');
     });
 
     test('getActiveSessions returns sessions with lastStatus not completed', () => {
@@ -308,6 +513,40 @@ describe('TaskStore', () => {
       expect(active).toHaveLength(1);
       expect(active[0].taskId).toBe(t1.id);
       expect(active[0].session.tmuxSession).toBe('kookr-1');
+    });
+
+    test('getActiveSessions returns session snapshots', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-active',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+      });
+
+      const [active] = store.getActiveSessions();
+      active!.session.lastStatus = 'completed';
+
+      expect(store.getTask(task.id)!.sessions[0]!.lastStatus).toBe('running');
+    });
+
+    test('findTaskBySession returns a task snapshot', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-find',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      });
+
+      const found = store.findTaskBySession('kookr-find')!;
+      found.prompt = 'mutated found task';
+      found.sessions[0]!.lastStatus = 'completed';
+
+      const reread = store.getTask(task.id)!;
+      expect(reread.prompt).toBe('Task');
+      expect(reread.sessions[0]!.lastStatus).toBeUndefined();
     });
 
     test('addSession auto-transitions task to inProgress', () => {
@@ -338,91 +577,21 @@ describe('TaskStore', () => {
     });
   });
 
-  describe('Ralph loop mutation APIs', () => {
-    test('setRalphLoop and setRalphLoopStatus centralize updatedAt changes', () => {
-      const task = store.createTask('Looped', '/cwd');
-
-      store.setRalphLoop(task.id, {
-        prompt: 'p',
-        iterationCap: 5,
-        currentIteration: 0,
-        status: 'running',
-        lastIterationStartedAt: 0,
-        cumulativeIterations: 0,
-      }, { now: 1_000 });
-
-      expect(store.getTask(task.id)!.ralphLoop?.status).toBe('running');
-      expect(store.getTask(task.id)!.updatedAt.toISOString()).toBe(new Date(1_000).toISOString());
-
-      store.setRalphLoopStatus(task.id, 'paused', { now: 2_000 });
-
-      expect(store.getTask(task.id)!.ralphLoop?.status).toBe('paused');
-      expect(store.getTask(task.id)!.updatedAt.toISOString()).toBe(new Date(2_000).toISOString());
-    });
-
-    test('updateRalphLoop mutates nested loop fields through the store boundary', () => {
-      const task = store.createTask('Looped', '/cwd');
-      store.setRalphLoop(task.id, {
-        prompt: 'p',
-        iterationCap: 5,
-        currentIteration: 0,
-        status: 'running',
-        lastIterationStartedAt: 0,
-        cumulativeIterations: 0,
-      });
-
-      const updated = store.updateRalphLoop(task.id, (loop) => {
-        loop.currentIteration = 2;
-        loop.cumulativeIterations = 2;
-        loop.lastIterationStartedAt = 3_000;
-      }, { now: 4_000 });
-
-      expect(updated!.ralphLoop).toMatchObject({
-        currentIteration: 2,
-        cumulativeIterations: 2,
-        lastIterationStartedAt: 3_000,
-      });
-      expect(updated!.updatedAt.toISOString()).toBe(new Date(4_000).toISOString());
-    });
-
-    test('claimRalphLoopOwner and clearRalphLoopOwner preserve ownership invariants', () => {
-      const task = store.createTask('Looped', '/cwd');
-      const firstSession = {
-        tmuxSession: 'kookr-first',
-        agentType: 'claude-code' as const,
+  describe('Project queries', () => {
+    test('listTasksByProject returns task snapshots', () => {
+      const task = store.createTask({ prompt: 'Task', cwd: '/cwd', projectId: 'github.com/acme/app' });
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-project',
+        agentType: 'claude-code',
         cwd: '/cwd',
         createdAt: new Date(),
-      };
-      const secondSession = {
-        tmuxSession: 'kookr-second',
-        agentType: 'claude-code' as const,
-        cwd: '/cwd',
-        createdAt: new Date(),
-      };
-      store.addSession(task.id, firstSession);
-      store.addSession(task.id, secondSession);
-      store.setRalphLoop(task.id, {
-        prompt: 'p',
-        iterationCap: 5,
-        currentIteration: 0,
-        status: 'running',
-        lastIterationStartedAt: 0,
-        cumulativeIterations: 0,
+        lastStatus: 'running',
       });
 
-      store.claimRalphLoopOwner(task.id, firstSession, { now: 1_000 });
-      store.claimRalphLoopOwner(task.id, secondSession, { now: 2_000 });
-      expect(store.getTask(task.id)!.ralphLoop?.ownerSessionId).toBe('kookr-first');
+      const [projectTask] = store.listTasksByProject('github.com/acme/app');
+      projectTask!.sessions[0]!.lastStatus = 'completed';
 
-      store.claimRalphLoopOwner(task.id, secondSession, { allowTransfer: true, now: 3_000 });
-      expect(store.getTask(task.id)!.ralphLoop?.ownerSessionId).toBe('kookr-second');
-
-      store.clearRalphLoopOwner(task.id, 'kookr-first', { now: 4_000 });
-      expect(store.getTask(task.id)!.ralphLoop?.ownerSessionId).toBe('kookr-second');
-
-      store.clearRalphLoopOwner(task.id, 'kookr-second', { now: 5_000 });
-      expect(store.getTask(task.id)!.ralphLoop?.ownerSessionId).toBeUndefined();
-      expect(store.getTask(task.id)!.updatedAt.toISOString()).toBe(new Date(5_000).toISOString());
+      expect(store.getTask(task.id)!.sessions[0]!.lastStatus).toBe('running');
     });
   });
 
@@ -435,6 +604,43 @@ describe('TaskStore', () => {
       expect(all).toHaveLength(2);
       expect(all[0].prompt).toBe('Task 1');
       expect(all[1].prompt).toBe('Task 2');
+    });
+
+    test('getAllTasks and loadTasks do not leak mutable task records', () => {
+      const task = store.createTask('Task 1', '/cwd');
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-all',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+      });
+      const [snapshot] = store.getAllTasks();
+      snapshot!.sessions[0]!.lastStatus = 'completed';
+      expect(store.getTask(task.id)!.sessions[0]!.lastStatus).toBe('running');
+
+      const imported: Task[] = [{
+        id: 'imported-1',
+        prompt: 'Imported task',
+        cwd: '/imported',
+        status: 'open',
+        sessions: [{
+          tmuxSession: 'kookr-imported',
+          agentType: 'claude-code',
+          cwd: '/imported',
+          createdAt: new Date(),
+          lastStatus: 'running',
+        }],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        agentType: 'claude-code',
+      }];
+      store.loadTasks(imported);
+      imported[0]!.prompt = 'mutated source';
+      imported[0]!.sessions[0]!.lastStatus = 'completed';
+
+      expect(store.getTask('imported-1')!.prompt).toBe('Imported task');
+      expect(store.getTask('imported-1')!.sessions[0]!.lastStatus).toBe('running');
     });
 
     test('loadTasks replaces all tasks from array', () => {
@@ -454,8 +660,17 @@ describe('TaskStore', () => {
 
       store.loadTasks(imported);
 
+      imported[0].prompt = 'Mutated after load';
+      imported[0].sessions.push({
+        tmuxSession: 'external-mutation',
+        agentType: 'claude-code',
+        cwd: '/imported',
+        createdAt: new Date(),
+      });
+
       expect(store.listTasks()).toHaveLength(1);
       expect(store.getTask('imported-1')!.prompt).toBe('Imported task');
+      expect(store.getTask('imported-1')!.sessions).toHaveLength(0);
       expect(store.listTasks().find((t) => t.prompt === 'Original')).toBeUndefined();
     });
   });
@@ -612,7 +827,7 @@ describe('TaskStore', () => {
     test('addSession auto-transitions pending task to inProgress', () => {
       const task = store.createTask('Task', '/cwd');
       store.pendTask(task.id);
-      expect(task.status).toBe('pending');
+      expect(store.getTask(task.id)!.status).toBe('pending');
 
       store.addSession(task.id, {
         tmuxSession: 'kookr-abc',
@@ -621,7 +836,7 @@ describe('TaskStore', () => {
         createdAt: new Date(),
       });
 
-      expect(task.status).toBe('inProgress');
+      expect(store.getTask(task.id)!.status).toBe('inProgress');
     });
 
     test('pending -> cancelled via cancelTask', () => {
@@ -657,6 +872,13 @@ describe('TaskStore', () => {
 
       const t1 = store.createTask('Task 1', '/cwd');
       store.pendTask(t1.id);
+      store.getTaskForMutation(t1.id)!.sessions.push({
+        tmuxSession: 'kookr-pending',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+      });
 
       const t2 = store.createTask('Task 2', '/cwd');
       store.pendTask(t2.id);
@@ -664,6 +886,8 @@ describe('TaskStore', () => {
       const next = store.getNextPending();
       expect(next).toBeDefined();
       expect(next!.id).toBe(t1.id); // FIFO: oldest first
+      next!.sessions[0]!.lastStatus = 'completed';
+      expect(store.getTask(t1.id)!.sessions[0]!.lastStatus).toBe('running');
     });
 
     test('getPendingCount returns number of pending tasks', () => {

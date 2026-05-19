@@ -18,6 +18,13 @@ const baseLoop = (overrides: Partial<RalphLoopState> = {}): RalphLoopState => ({
   ...overrides,
 });
 
+function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
+  const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
+  const task = targetStore.getTaskForMutation(created.id);
+  if (!task) throw new Error(`missing task ${created.id}`);
+  return task;
+}
+
 interface RecordingIO {
   io: RalphCyclerIO;
   predicateCalls: Array<{ command: string; iteration: number }>;
@@ -91,14 +98,14 @@ describe('RalphCycler', () => {
   });
 
   it('returns noop when the task has no ralphLoop', async () => {
-    const task = store.createTask('plain task', workDir);
+    const task = createTaskForMutation(store, 'plain task', workDir);
     const cycler = new RalphCycler(buildIO().io);
     const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1' });
     expect(action).toEqual({ kind: 'noop', events: [] });
   });
 
   it('returns noop when the loop status is not running', async () => {
-    const task = store.createTask('paused task', workDir);
+    const task = createTaskForMutation(store, 'paused task', workDir);
     task.ralphLoop = baseLoop({ status: 'paused' });
     const cycler = new RalphCycler(buildIO().io);
     const action = await cycler.handleStop(store, { taskId: task.id, sessionId: 's1' });
@@ -106,7 +113,7 @@ describe('RalphCycler', () => {
   });
 
   it('requests a fresh runtime launch and advances the counter on a normal continue', async () => {
-    const task = store.createTask('looping', workDir);
+    const task = createTaskForMutation(store, 'looping', workDir);
     task.ralphLoop = baseLoop({ iterationCap: 5, currentIteration: 2 });
     const recorder = buildIO();
     const cycler = new RalphCycler(recorder.io);
@@ -127,7 +134,7 @@ describe('RalphCycler', () => {
   });
 
   it('uses the latest loop prompt when launching the next iteration', async () => {
-    const task = store.createTask('looping', workDir);
+    const task = createTaskForMutation(store, 'looping', workDir);
     task.ralphLoop = baseLoop({
       prompt: 'Edited prompt for the next turn.',
       iterationCap: 5,
@@ -144,7 +151,7 @@ describe('RalphCycler', () => {
   });
 
   it('terminates with iteration_cap and does not inject when cap is reached', async () => {
-    const task = store.createTask('at cap', workDir);
+    const task = createTaskForMutation(store, 'at cap', workDir);
     task.ralphLoop = baseLoop({ iterationCap: 5, currentIteration: 5 });
     const recorder = buildIO();
     const cycler = new RalphCycler(recorder.io);
@@ -153,6 +160,7 @@ describe('RalphCycler', () => {
 
     expect(action).toEqual({ kind: 'terminate', reason: 'iteration_cap', events: [] });
     expect(task.ralphLoop?.status).toBe('completed');
+    expect(task.updatedAt.getTime()).toBe(2_000);
     // Counter must not advance past the cap.
     expect(task.ralphLoop?.currentIteration).toBe(5);
     // Predicate is NOT consulted when the cap is hit (fast check first).
@@ -162,7 +170,7 @@ describe('RalphCycler', () => {
   });
 
   it('terminates with predicate_satisfied when the predicate exits 0', async () => {
-    const task = store.createTask('predicate stop', workDir);
+    const task = createTaskForMutation(store, 'predicate stop', workDir);
     task.ralphLoop = baseLoop({
       iterationCap: 100,
       currentIteration: 3,
@@ -182,7 +190,7 @@ describe('RalphCycler', () => {
   });
 
   it('continues with predicate_timeout exit reason when the predicate times out', async () => {
-    const task = store.createTask('slow predicate', workDir);
+    const task = createTaskForMutation(store, 'slow predicate', workDir);
     task.ralphLoop = baseLoop({ iterationCap: 10, stopPredicate: 'sleep 30' });
     const recorder = buildIO();
     recorder.setPredicateResult({ satisfied: false, exitCode: null, timedOut: true, errored: false });
@@ -196,7 +204,7 @@ describe('RalphCycler', () => {
   });
 
   it('continues with predicate_error exit reason on spawn failure', async () => {
-    const task = store.createTask('bad predicate', workDir);
+    const task = createTaskForMutation(store, 'bad predicate', workDir);
     task.ralphLoop = baseLoop({ stopPredicate: '/nonexistent/binary' });
     const recorder = buildIO();
     recorder.setPredicateResult({
@@ -215,7 +223,7 @@ describe('RalphCycler', () => {
   });
 
   it('skips predicate evaluation when stopPredicate is omitted', async () => {
-    const task = store.createTask('cap-only', workDir);
+    const task = createTaskForMutation(store, 'cap-only', workDir);
     task.ralphLoop = baseLoop({ iterationCap: 10 });
     const recorder = buildIO();
     const cycler = new RalphCycler(recorder.io);
@@ -228,7 +236,7 @@ describe('RalphCycler', () => {
   });
 
   it('persists null gitBaselineRef when computeDiffStats returns null', async () => {
-    const task = store.createTask('no git', workDir);
+    const task = createTaskForMutation(store, 'no git', workDir);
     task.ralphLoop = baseLoop({ currentIteration: 1 });
     const recorder = buildIO();
     recorder.setDiffStats(null);
@@ -241,7 +249,7 @@ describe('RalphCycler', () => {
   });
 
   it('persists the diffStats when the baseline diff succeeds', async () => {
-    const task = store.createTask('with git', workDir);
+    const task = createTaskForMutation(store, 'with git', workDir);
     task.ralphLoop = baseLoop({ currentIteration: 4 });
     const recorder = buildIO();
     recorder.setDiffStats({ filesChanged: 2, insertions: 7, deletions: 1 });
@@ -254,7 +262,7 @@ describe('RalphCycler', () => {
   });
 
   it('passes the cumulativeCostUsd through to the iteration record', async () => {
-    const task = store.createTask('cost tracking', workDir);
+    const task = createTaskForMutation(store, 'cost tracking', workDir);
     task.ralphLoop = baseLoop();
     const recorder = buildIO();
     const cycler = new RalphCycler(recorder.io);
@@ -269,7 +277,7 @@ describe('RalphCycler', () => {
   });
 
   it('persists null cost when the source is unavailable (distinct from 0)', async () => {
-    const task = store.createTask('no cost source', workDir);
+    const task = createTaskForMutation(store, 'no cost source', workDir);
     task.ralphLoop = baseLoop();
     const recorder = buildIO();
     const cycler = new RalphCycler(recorder.io);
@@ -280,7 +288,7 @@ describe('RalphCycler', () => {
   });
 
   it('terminates with cost_cap when cumulative cost reaches the configured cap', async () => {
-    const task = store.createTask('cost cap', workDir);
+    const task = createTaskForMutation(store, 'cost cap', workDir);
     task.ralphLoop = baseLoop({ iterationCap: 10, currentIteration: 2, costCapUsd: 3 });
     const recorder = buildIO();
     const cycler = new RalphCycler(recorder.io);
@@ -297,7 +305,7 @@ describe('RalphCycler', () => {
   });
 
   it('fails closed when cost is unknown and does not stop solely on costCapUsd', async () => {
-    const task = store.createTask('unknown cost', workDir);
+    const task = createTaskForMutation(store, 'unknown cost', workDir);
     task.ralphLoop = baseLoop({ iterationCap: 10, costCapUsd: 0.01 });
     const recorder = buildIO();
     const cycler = new RalphCycler(recorder.io);
@@ -314,7 +322,7 @@ describe('RalphCycler', () => {
   });
 
   it('tracks consecutive zero-diff iterations and terminates on configured convergence', async () => {
-    const task = store.createTask('zero diff', workDir);
+    const task = createTaskForMutation(store, 'zero diff', workDir);
     task.ralphLoop = baseLoop({
       iterationCap: 10,
       currentIteration: 4,
@@ -334,7 +342,7 @@ describe('RalphCycler', () => {
   });
 
   it('resets zeroDiffStreak when diff stats show progress', async () => {
-    const task = store.createTask('progress', workDir);
+    const task = createTaskForMutation(store, 'progress', workDir);
     task.ralphLoop = baseLoop({
       iterationCap: 10,
       zeroDiffStreak: 3,
@@ -351,7 +359,7 @@ describe('RalphCycler', () => {
   });
 
   it('does not count unavailable diff stats as zero-diff convergence', async () => {
-    const task = store.createTask('no diff stats', workDir);
+    const task = createTaskForMutation(store, 'no diff stats', workDir);
     task.ralphLoop = baseLoop({
       iterationCap: 10,
       zeroDiffStreak: 1,
@@ -369,7 +377,7 @@ describe('RalphCycler', () => {
   });
 
   it('keeps iteration cap ahead of predicate, cost, and convergence checks', async () => {
-    const task = store.createTask('ordering cap', workDir);
+    const task = createTaskForMutation(store, 'ordering cap', workDir);
     task.ralphLoop = baseLoop({
       iterationCap: 2,
       currentIteration: 2,
@@ -394,7 +402,7 @@ describe('RalphCycler', () => {
   });
 
   it('keeps predicate_satisfied ahead of built-in cost and convergence exits', async () => {
-    const task = store.createTask('ordering predicate', workDir);
+    const task = createTaskForMutation(store, 'ordering predicate', workDir);
     task.ralphLoop = baseLoop({
       iterationCap: 10,
       currentIteration: 2,
@@ -418,7 +426,7 @@ describe('RalphCycler', () => {
   });
 
   it('survives audit-log write failure without throwing', async () => {
-    const task = store.createTask('flaky disk', workDir);
+    const task = createTaskForMutation(store, 'flaky disk', workDir);
     task.ralphLoop = baseLoop();
     const recorder = buildIO();
     recorder.io.appendIterationRecord = async () => {
@@ -435,7 +443,7 @@ describe('RalphCycler', () => {
   });
 
   it('end-to-end: real iteration JSONL is appended via the default IO', async () => {
-    const task = store.createTask('real jsonl', workDir);
+    const task = createTaskForMutation(store, 'real jsonl', workDir);
     task.ralphLoop = baseLoop({ iterationCap: 100, currentIteration: 1 });
     // Use a partial real-IO setup: real iteration log writer, fake the rest
     // so the test stays hermetic but exercises the JSONL path end-to-end.
@@ -469,7 +477,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('verdict.complete + no predicate → terminate predicate_satisfied with verdict on the iteration record', async () => {
     const recorder = buildIO();
-    const task = store.createTask('verdict complete', workDir);
+    const task = createTaskForMutation(store, 'verdict complete', workDir);
     task.ralphLoop = baseLoop({ currentIteration: 1, iterationCap: 5 });
     const cycler = new RalphCycler(recorder.io);
 
@@ -487,7 +495,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
   it('verdict.complete + clean predicate exit ≠ 0 → continue with predicate_disagree event', async () => {
     const recorder = buildIO();
     recorder.setPredicateResult({ satisfied: false, exitCode: 1, timedOut: false, errored: false });
-    const task = store.createTask('disagree', workDir);
+    const task = createTaskForMutation(store, 'disagree', workDir);
     task.ralphLoop = baseLoop({ stopPredicate: 'false', currentIteration: 2, iterationCap: 5 });
     const cycler = new RalphCycler(recorder.io);
 
@@ -509,7 +517,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
     // this test catches that direction.
     const recorder = buildIO();
     recorder.setPredicateResult({ satisfied: false, exitCode: null, timedOut: false, errored: true });
-    const task = store.createTask('predicate errored', workDir);
+    const task = createTaskForMutation(store, 'predicate errored', workDir);
     task.ralphLoop = baseLoop({ stopPredicate: 'no-such-cmd', currentIteration: 1, iterationCap: 5 });
     const cycler = new RalphCycler(recorder.io);
 
@@ -526,7 +534,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
   it('verdict.complete + predicate timeout → terminate predicate_satisfied (predicate could not speak)', async () => {
     const recorder = buildIO();
     recorder.setPredicateResult({ satisfied: false, exitCode: null, timedOut: true, errored: false });
-    const task = store.createTask('predicate timeout', workDir);
+    const task = createTaskForMutation(store, 'predicate timeout', workDir);
     task.ralphLoop = baseLoop({ stopPredicate: 'sleep 10', currentIteration: 1, iterationCap: 5 });
     const cycler = new RalphCycler(recorder.io);
 
@@ -542,7 +550,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('verdict.stalled (single-target, default config) burns the target on threshold and terminates target_stalled', async () => {
     const recorder = buildIO();
-    const task = store.createTask('single stall', workDir);
+    const task = createTaskForMutation(store, 'single stall', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 10,
       stallConfig: { loopShape: 'single-target', consecutiveStallsForSingleTargetTermination: 2 },
@@ -578,7 +586,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('verdict.stalled with permanent:true burns at count=1 and terminates single-target loops immediately', async () => {
     const recorder = buildIO();
-    const task = store.createTask('permanent stall', workDir);
+    const task = createTaskForMutation(store, 'permanent stall', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 10,
       // Use defaults: count threshold = 2, termination threshold = 3. Without
@@ -608,7 +616,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('verdict.stalled with permanent:true in multi-target burns at count=1 but does not auto-terminate', async () => {
     const recorder = buildIO();
-    const task = store.createTask('permanent multi', workDir);
+    const task = createTaskForMutation(store, 'permanent multi', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 10,
       stallConfig: { loopShape: 'multi-target', consecutiveStallsPerTarget: 2 },
@@ -633,7 +641,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('multi-target with declaredTargets: terminates all_targets_stalled when each declared target is permanent-burned at count=1', async () => {
     const recorder = buildIO();
-    const task = store.createTask('all permanent', workDir);
+    const task = createTaskForMutation(store, 'all permanent', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 100,
       // Default consecutiveStallsPerTarget=2; the test proves permanent:true
@@ -658,7 +666,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('applyDecay skips permanent-burned targets so the structural-unfitness claim stays sticky', async () => {
     const recorder = buildIO();
-    const task = store.createTask('permanent decay', workDir);
+    const task = createTaskForMutation(store, 'permanent decay', workDir);
     // Multi-target with no declaredTargets so the loop doesn't terminate via
     // `all_targets_stalled` and we get to observe decay at iter 5.
     task.ralphLoop = baseLoop({
@@ -697,7 +705,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('progress verdict clears the permanent flag (agent self-correction overrides)', async () => {
     const recorder = buildIO();
-    const task = store.createTask('permanent then progress', workDir);
+    const task = createTaskForMutation(store, 'permanent then progress', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 10,
       stallConfig: { loopShape: 'multi-target' },
@@ -721,7 +729,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('verdict.stalled (multi-target, no declaredTargets) records but never auto-terminates on stall alone', async () => {
     const recorder = buildIO();
-    const task = store.createTask('multi stall', workDir);
+    const task = createTaskForMutation(store, 'multi stall', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 10,
       stallConfig: { loopShape: 'multi-target', consecutiveStallsPerTarget: 2 },
@@ -743,7 +751,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('multi-target with declaredTargets: terminates all_targets_stalled when every declared target is burned', async () => {
     const recorder = buildIO();
-    const task = store.createTask('all burned', workDir);
+    const task = createTaskForMutation(store, 'all burned', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 100,
       stallConfig: {
@@ -771,7 +779,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('canonicalizes target keys: "#154" and " 154 " accrue on the same row', async () => {
     const recorder = buildIO();
-    const task = store.createTask('canonical', workDir);
+    const task = createTaskForMutation(store, 'canonical', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 10,
       stallConfig: { loopShape: 'single-target', consecutiveStallsForSingleTargetTermination: 99 },
@@ -793,7 +801,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('progress verdict for the same canonicalized target un-burns it and emits ralph_target_unburned', async () => {
     const recorder = buildIO();
-    const task = store.createTask('unburn', workDir);
+    const task = createTaskForMutation(store, 'unburn', workDir);
     // No declaredTargets so the all-burned terminator can't race the un-burn
     // path. Use multi-target so single-target threshold doesn't terminate either.
     task.ralphLoop = baseLoop({
@@ -836,7 +844,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('after un-burn → re-stall: row resets consecutive count but keeps totalStallCount + firstStalledAtIteration', async () => {
     const recorder = buildIO();
-    const task = store.createTask('un-burn re-stall', workDir);
+    const task = createTaskForMutation(store, 'un-burn re-stall', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 100,
       stallConfig: { loopShape: 'multi-target', consecutiveStallsPerTarget: 2 },
@@ -873,7 +881,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('decay un-burns a stale target after burnedTargetDecayIterations elapsed', async () => {
     const recorder = buildIO();
-    const task = store.createTask('decay', workDir);
+    const task = createTaskForMutation(store, 'decay', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 5, iterationCap: 100,
       burnedOutTargets: [{
@@ -903,7 +911,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('iteration cost cap: single hit warns, two consecutive hits terminate iteration_cost_cap', async () => {
     const recorder = buildIO();
-    const task = store.createTask('iter cost cap', workDir);
+    const task = createTaskForMutation(store, 'iter cost cap', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 10,
       stallConfig: { iterationCostCapUsd: 0.50, consecutiveIterationCostCapHits: 2 },
@@ -935,7 +943,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('iteration cost cap: a within-cap iteration resets the consecutive streak', async () => {
     const recorder = buildIO();
-    const task = store.createTask('cost reset', workDir);
+    const task = createTaskForMutation(store, 'cost reset', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 10,
       stallConfig: { iterationCostCapUsd: 0.50, consecutiveIterationCostCapHits: 2 },
@@ -955,7 +963,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
 
   it('iteration cost cap: never fires when prior cost is unknown (first iteration after attach)', async () => {
     const recorder = buildIO();
-    const task = store.createTask('cost unknown prior', workDir);
+    const task = createTaskForMutation(store, 'cost unknown prior', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 10,
       stallConfig: { iterationCostCapUsd: 0.10, consecutiveIterationCostCapHits: 1 },
@@ -978,7 +986,7 @@ describe('RalphCycler — stall handling (PR2)', () => {
   it('stallPredicate (no verdict file) records a stall under the synthetic key', async () => {
     const recorder = buildIO();
     recorder.setPredicateResult({ satisfied: true, exitCode: 0, timedOut: false, errored: false });
-    const task = store.createTask('stall pred', workDir);
+    const task = createTaskForMutation(store, 'stall pred', workDir);
     task.ralphLoop = baseLoop({
       currentIteration: 1, iterationCap: 10,
       stallPredicate: 'true', // simulated

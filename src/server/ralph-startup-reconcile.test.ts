@@ -17,6 +17,13 @@ const baseLoop = (overrides: Partial<RalphLoopState> = {}): RalphLoopState => ({
   ...overrides,
 });
 
+function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
+  const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
+  const task = targetStore.getTaskForMutation(created.id);
+  if (!task) throw new Error(`missing task ${created.id}`);
+  return task;
+}
+
 interface Recorder {
   appended: Array<{ taskDir: string; record: RalphIterationRecord }>;
   appendIterationRecord: (taskDir: string, record: RalphIterationRecord) => Promise<void>;
@@ -72,7 +79,7 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
   });
 
   it('preserves a loop when at least one session is live', async () => {
-    const task = store.createTask('alive', '/cwd');
+    const task = createTaskForMutation(store, 'alive', '/cwd');
     task.ralphLoop = baseLoop();
     store.addSession(task.id, {
       tmuxSession: 'live-1',
@@ -102,7 +109,7 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
   });
 
   it('marks loop as failed when the only session is completed', async () => {
-    const task = store.createTask('all done', '/cwd');
+    const task = createTaskForMutation(store, 'all done', '/cwd');
     task.ralphLoop = baseLoop({ currentIteration: 12 });
     store.addSession(task.id, {
       tmuxSession: 'dead-1',
@@ -131,7 +138,7 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
   });
 
   it('marks loop as failed when the only session is aborted', async () => {
-    const task = store.createTask('aborted', '/cwd');
+    const task = createTaskForMutation(store, 'aborted', '/cwd');
     task.ralphLoop = baseLoop();
     store.addSession(task.id, {
       tmuxSession: 'dead-2',
@@ -154,7 +161,7 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
     // Predecessor sessions retain crashRecovered=true even with non-terminal
     // lastStatus, mirroring the predicate in task-persistence.ts. They should
     // not count as live.
-    const task = store.createTask('only crash predecessor', '/cwd');
+    const task = createTaskForMutation(store, 'only crash predecessor', '/cwd');
     task.ralphLoop = baseLoop();
     store.addSession(task.id, {
       tmuxSession: 'pred-1',
@@ -176,7 +183,7 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
   it('preserves a loop when one session is dead and a later one is live', async () => {
     // Mirrors the post-recovery state: original session aborted +
     // crashRecovered, replacement session is fresh.
-    const task = store.createTask('recovered', '/cwd');
+    const task = createTaskForMutation(store, 'recovered', '/cwd');
     task.ralphLoop = baseLoop({
       ownerSessionId: 'pred',
     });
@@ -212,7 +219,7 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
   });
 
   it('transfers a stale owner to a fresh crash-recovery relaunch', async () => {
-    const task = store.createTask('fresh recovery', '/cwd');
+    const task = createTaskForMutation(store, 'fresh recovery', '/cwd');
     task.ralphLoop = baseLoop({
       ownerSessionId: 'pred',
     });
@@ -246,7 +253,7 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
   });
 
   it('marks loop as failed when the task has no sessions at all', async () => {
-    const task = store.createTask('orphan', '/cwd');
+    const task = createTaskForMutation(store, 'orphan', '/cwd');
     task.ralphLoop = baseLoop();
     // No addSession — task.sessions is the empty array.
 
@@ -262,7 +269,7 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
   it.each(['paused', 'completed', 'failed', 'cancelled'] as const)(
     'does not touch a loop in %s status',
     async (status) => {
-      const task = store.createTask(`status ${status}`, '/cwd');
+      const task = createTaskForMutation(store, `status ${status}`, '/cwd');
       task.ralphLoop = baseLoop({ status });
       // No live session — but the loop is not in `running`, so it must be
       // ignored regardless.
@@ -279,7 +286,7 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
   );
 
   it('skips tasks with no ralphLoop entirely', async () => {
-    store.createTask('plain', '/cwd');
+    createTaskForMutation(store, 'plain', '/cwd');
     const summary = await reconcileStartupLoops(store, {
       appendIterationRecord: recorder.appendIterationRecord,
       now,
@@ -288,7 +295,7 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
   });
 
   it('still marks the loop failed even when the audit-log write throws', async () => {
-    const task = store.createTask('flaky disk', '/cwd');
+    const task = createTaskForMutation(store, 'flaky disk', '/cwd');
     task.ralphLoop = baseLoop();
     store.addSession(task.id, {
       tmuxSession: 'dead',
@@ -313,22 +320,22 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
 
   it('handles many tasks with mixed outcomes correctly', async () => {
     // 2 alive + 1 dead + 1 paused (skipped) + 1 plain task
-    const aliveA = store.createTask('a', '/a');
+    const aliveA = createTaskForMutation(store, 'a', '/a');
     aliveA.ralphLoop = baseLoop({ currentIteration: 3 });
     store.addSession(aliveA.id, { tmuxSession: 'a-1', agentType: 'claude-code', cwd: '/a', createdAt: new Date() });
 
-    const aliveB = store.createTask('b', '/b');
+    const aliveB = createTaskForMutation(store, 'b', '/b');
     aliveB.ralphLoop = baseLoop({ currentIteration: 5 });
     store.addSession(aliveB.id, { tmuxSession: 'b-1', agentType: 'claude-code', cwd: '/b', createdAt: new Date() });
 
-    const dead = store.createTask('c', '/c');
+    const dead = createTaskForMutation(store, 'c', '/c');
     dead.ralphLoop = baseLoop({ currentIteration: 9 });
     store.addSession(dead.id, { tmuxSession: 'c-1', agentType: 'claude-code', cwd: '/c', createdAt: new Date(), lastStatus: 'completed' });
 
-    const paused = store.createTask('d', '/d');
+    const paused = createTaskForMutation(store, 'd', '/d');
     paused.ralphLoop = baseLoop({ status: 'paused', currentIteration: 1 });
 
-    store.createTask('plain', '/e');
+    createTaskForMutation(store, 'plain', '/e');
 
     const summary = await reconcileStartupLoops(store, {
       appendIterationRecord: recorder.appendIterationRecord,
