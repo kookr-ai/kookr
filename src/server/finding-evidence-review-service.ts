@@ -16,7 +16,7 @@ import {
   type FindingEvidenceReviewInputV1,
   type FindingEvidenceReviewParseResult,
 } from '../core/finding-evidence-review.js';
-import type { ReviewLogStore } from './review-log-store.js';
+import type { FindingEvidenceReviewLogTargetV1, ReviewLogStore } from './review-log-store.js';
 
 export type FindingEvidenceReviewMode = 'estimate_only' | 'model_review' | 'persisted_review';
 
@@ -160,10 +160,11 @@ export class FindingEvidenceReviewService {
       results.push(parsed);
       if (mode === 'persisted_review') {
         const inputHash = inputHashes[index]!;
+        const target = reviewLogTargetForInput(input);
         if (parsed.status === 'valid') {
-          await this.deps.reviewLogStore!.appendReview(parsed.review, inputHash, this.now());
+          await this.deps.reviewLogStore!.appendReview(parsed.review, inputHash, this.now(), target);
         } else {
-          await this.deps.reviewLogStore!.appendInvalidAttempt(parsed.attempt, inputHash, this.now());
+          await this.deps.reviewLogStore!.appendInvalidAttempt(parsed.attempt, inputHash, this.now(), target);
         }
       }
     }
@@ -225,6 +226,16 @@ export class FindingEvidenceReviewService {
   private now(): Date {
     return this.deps.now?.() ?? new Date();
   }
+}
+
+function reviewLogTargetForInput(input: FindingEvidenceReviewInputV1): FindingEvidenceReviewLogTargetV1 {
+  return {
+    candidateKind: input.candidateKind,
+    detectorTarget: input.finding.type,
+    inputSchemaVersion: input.schemaVersion,
+    promptVersion: FINDING_EVIDENCE_REVIEW_PROMPT_VERSION,
+    ...(input.versions.appGitSha ? { appGitSha: input.versions.appGitSha } : {}),
+  };
 }
 
 export function readFindingEvidenceReviewConfigFromEnv(env: NodeJS.ProcessEnv, hmacKey: Buffer, appGitSha?: string): FindingEvidenceReviewServiceConfig {

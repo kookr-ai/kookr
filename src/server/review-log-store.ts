@@ -15,12 +15,21 @@ import {
 export const FINDING_EVIDENCE_REVIEW_LOG_FILE = 'finding-evidence-reviews.jsonl';
 export const FINDING_EVIDENCE_REVIEW_LOG_SCHEMA_VERSION = 'finding-evidence-review-log-record.v1';
 
+export interface FindingEvidenceReviewLogTargetV1 {
+  candidateKind: 'false_positive' | 'false_negative';
+  detectorTarget: string;
+  inputSchemaVersion: string;
+  promptVersion: string;
+  appGitSha?: string;
+}
+
 export type FindingEvidenceReviewLogRecordV1 =
   | {
       schemaVersion: typeof FINDING_EVIDENCE_REVIEW_LOG_SCHEMA_VERSION;
       kind: 'valid_review';
       appendedAt: string;
       inputHash: string;
+      target?: FindingEvidenceReviewLogTargetV1;
       review: FindingEvidenceReviewV1;
     }
   | {
@@ -28,6 +37,7 @@ export type FindingEvidenceReviewLogRecordV1 =
       kind: 'invalid_attempt';
       appendedAt: string;
       inputHash: string;
+      target?: FindingEvidenceReviewLogTargetV1;
       attempt: FindingEvidenceReviewInvalidAttemptV1;
     };
 
@@ -60,22 +70,34 @@ export class ReviewLogStore {
     return this.appendChain;
   }
 
-  appendReview(review: FindingEvidenceReviewV1, inputHash: string, appendedAt = new Date()): Promise<void> {
+  appendReview(
+    review: FindingEvidenceReviewV1,
+    inputHash: string,
+    appendedAt = new Date(),
+    target?: FindingEvidenceReviewLogTargetV1,
+  ): Promise<void> {
     return this.append({
       schemaVersion: FINDING_EVIDENCE_REVIEW_LOG_SCHEMA_VERSION,
       kind: 'valid_review',
       appendedAt: appendedAt.toISOString(),
       inputHash,
+      ...(target ? { target } : {}),
       review,
     });
   }
 
-  appendInvalidAttempt(attempt: FindingEvidenceReviewInvalidAttemptV1, inputHash: string, appendedAt = new Date()): Promise<void> {
+  appendInvalidAttempt(
+    attempt: FindingEvidenceReviewInvalidAttemptV1,
+    inputHash: string,
+    appendedAt = new Date(),
+    target?: FindingEvidenceReviewLogTargetV1,
+  ): Promise<void> {
     return this.append({
       schemaVersion: FINDING_EVIDENCE_REVIEW_LOG_SCHEMA_VERSION,
       kind: 'invalid_attempt',
       appendedAt: appendedAt.toISOString(),
       inputHash,
+      ...(target ? { target } : {}),
       attempt,
     });
   }
@@ -149,9 +171,19 @@ function isFindingEvidenceReviewLogRecord(value: unknown): value is FindingEvide
   if (value.schemaVersion !== FINDING_EVIDENCE_REVIEW_LOG_SCHEMA_VERSION) return false;
   if (typeof value.appendedAt !== 'string' || !isIsoDate(value.appendedAt)) return false;
   if (typeof value.inputHash !== 'string' || !/^[a-f0-9]{64}$/i.test(value.inputHash)) return false;
+  if (value.target !== undefined && !isFindingEvidenceReviewLogTarget(value.target)) return false;
   if (value.kind === 'valid_review') return isFindingEvidenceReview(value.review);
   if (value.kind === 'invalid_attempt') return isFindingEvidenceReviewInvalidAttempt(value.attempt);
   return false;
+}
+
+function isFindingEvidenceReviewLogTarget(value: unknown): value is FindingEvidenceReviewLogTargetV1 {
+  if (!isRecord(value)) return false;
+  if (value.candidateKind !== 'false_positive' && value.candidateKind !== 'false_negative') return false;
+  if (typeof value.detectorTarget !== 'string' || value.detectorTarget.trim() === '') return false;
+  if (typeof value.inputSchemaVersion !== 'string' || value.inputSchemaVersion.trim() === '') return false;
+  if (typeof value.promptVersion !== 'string' || value.promptVersion.trim() === '') return false;
+  return value.appGitSha === undefined || typeof value.appGitSha === 'string';
 }
 
 function isFindingEvidenceReview(value: unknown): value is FindingEvidenceReviewV1 {

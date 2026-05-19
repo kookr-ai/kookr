@@ -12,6 +12,13 @@ import {
 } from './review-log-store.js';
 
 const INPUT_HASH = 'a'.repeat(64);
+const TARGET = {
+  candidateKind: 'false_positive' as const,
+  detectorTarget: 'permission_blocked',
+  inputSchemaVersion: 'finding-evidence-review-input.v1',
+  promptVersion: 'finding-evidence-review-prompt.v1',
+  appGitSha: 'abc123',
+};
 
 function validReview(overrides: Partial<FindingEvidenceReviewV1> = {}): FindingEvidenceReviewV1 {
   return {
@@ -80,6 +87,59 @@ describe('ReviewLogStore', () => {
 
       const raw = await readFile(join(dir, FINDING_EVIDENCE_REVIEW_LOG_FILE), 'utf8');
       expect(raw.trim().split('\n')).toHaveLength(2);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('appends and reads detector target metadata', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'review-log-store-target-'));
+    try {
+      const store = ReviewLogStore.forKookrDir(dir);
+
+      await store.appendReview(validReview(), INPUT_HASH, new Date('2026-05-18T10:06:00.000Z'), TARGET);
+      await store.appendInvalidAttempt(invalidAttempt(), INPUT_HASH, new Date('2026-05-18T10:07:00.000Z'), TARGET);
+
+      const read = await store.readAll();
+      expect(read.diagnostics).toEqual([]);
+      expect(read.records).toEqual([
+        expect.objectContaining({
+          kind: 'valid_review',
+          target: TARGET,
+        }),
+        expect.objectContaining({
+          kind: 'invalid_attempt',
+          target: TARGET,
+        }),
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('skips lines with invalid detector target metadata', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'review-log-store-invalid-target-'));
+    try {
+      const store = ReviewLogStore.forKookrDir(dir);
+      await store.appendReview(validReview({ candidateId: 'kept' }), INPUT_HASH, new Date('2026-05-18T10:06:00.000Z'), TARGET);
+      await writeFile(join(dir, FINDING_EVIDENCE_REVIEW_LOG_FILE), [
+        JSON.stringify((await store.readAll()).records[0]),
+        JSON.stringify({
+          schemaVersion: 'finding-evidence-review-log-record.v1',
+          kind: 'valid_review',
+          appendedAt: '2026-05-18T10:06:00.000Z',
+          inputHash: INPUT_HASH,
+          target: { ...TARGET, detectorTarget: '' },
+          review: validReview({ candidateId: 'invalid-target' }),
+        }),
+      ].join('\n'), 'utf8');
+
+      const read = await store.readAll();
+      expect(read.records).toHaveLength(1);
+      expect(read.records[0]?.kind).toBe('valid_review');
+      expect(read.diagnostics).toEqual([
+        { lineNumber: 2, failureKind: 'invalid_record', message: 'line did not match finding evidence review log schema' },
+      ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

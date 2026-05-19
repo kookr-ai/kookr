@@ -208,11 +208,23 @@ describe('FindingEvidenceReviewService', () => {
       expect.objectContaining({ candidateId: 'finding-2', verdict: 'likely_false_positive' }),
       expect.stringMatching(/^[a-f0-9]{64}$/),
       new Date('2026-05-18T10:05:00.000Z'),
+      expect.objectContaining({
+        candidateKind: 'false_positive',
+        detectorTarget: 'permission_blocked',
+        inputSchemaVersion: 'finding-evidence-review-input.v1',
+        promptVersion: 'finding-evidence-review-prompt.v1',
+      }),
     );
     expect(appendInvalidAttempt).toHaveBeenCalledWith(
       expect.objectContaining({ candidateId: 'finding-1', failureKind: 'malformed_json' }),
       expect.stringMatching(/^[a-f0-9]{64}$/),
       new Date('2026-05-18T10:05:00.000Z'),
+      expect.objectContaining({
+        candidateKind: 'false_positive',
+        detectorTarget: 'permission_blocked',
+        inputSchemaVersion: 'finding-evidence-review-input.v1',
+        promptVersion: 'finding-evidence-review-prompt.v1',
+      }),
     );
   });
 
