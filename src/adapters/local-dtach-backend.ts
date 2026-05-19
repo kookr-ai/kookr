@@ -9,8 +9,8 @@
  *     `write` / `captureBytes` / `onData`.
  *   - Per-session 1 MB ring buffer backed by a monotonic `head` counter
  *     (lock-free reads; no torn wraparound). Snapshotted to
- *     `<instanceDir>/rings/<sessionId>.{bin,meta.json}` every
- *     `RING_FLUSH_INTERVAL_MS` and once during `close()` so the scrollback
+ *     `<instanceDir>/rings/<sessionId>.{bin,meta.json}` on the configured
+ *     flush interval and once during `close()` so the scrollback
  *     survives a Kookr restart that left the dtach masters running.
  *   - Per-session write mutex with a 2 s timeout that releases on
  *     `pty.write` backpressure so `captureBytes` and other consumers are
@@ -34,13 +34,10 @@ import {
   readFileSync,
   readlinkSync,
   readdirSync,
-  renameSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs';
 import { access as fsAccess } from 'node:fs/promises';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { spawn, type IPty } from 'node-pty';
 import {
   type BackendError,
@@ -52,22 +49,18 @@ import {
   SessionGoneError,
   WriteTimeoutError,
 } from './terminal-backend.js';
-
-/** Crash-safe manifest entry. */
-interface ManifestEntry {
-  sessionId: SessionId;
-  pid: number;
-  startedAt: string; // ISO 8601
-  status: 'pending' | 'active' | 'recovered';
-  /** Full socket path, absolute. */
-  sock: string;
-}
-
-interface ManifestFile {
-  version: 1;
-  instanceId: string;
-  entries: ManifestEntry[];
-}
+import {
+  type DtachManifestEntry,
+  type DtachManifestFile,
+  DtachManifestStore,
+} from './dtach-manifest-store.js';
+import {
+  DEFAULT_RING_FLUSH_INTERVAL_MS,
+  type DtachRingState,
+  DtachRingStore,
+  RING_BUFFER_BYTES,
+  createDtachRingState,
+} from './dtach-ring-store.js';
 
 const PENDING_TTL_MS = 10_000;
 /**
@@ -82,24 +75,6 @@ const DEFAULT_MAX_SESSION_ID_LEN = 40;
 /** Bytes available in `sun_path` (excluding NUL) per platform. */
 const SUN_PATH_LIMIT = process.platform === 'darwin' ? 103 : 107;
 const KILL_WAIT_SECONDS = 10;
-/**
- * Per-session scrollback captured from the PTY, consumed on frontend attach
- * as a byte replay.
- *
- * Sized for ratatui-style TUIs (Codex, Claude Code). Idle is silent (0 B/s),
- * but active sessions stream the assistant's token output at ~10 KB/s as
- * cursor-positioned differential repaints. The 64 KB predecessor held only
- * ~6 seconds of streaming output, so on any attach the ring often contained
- * only the tail of a diff stream with no established background — xterm.js
- * replayed the bytes faithfully but painted into empty cells, leaving hot
- * regions (the input box cursor) as the only visible content.
- *
- * 1 MB holds ~90 seconds of streaming output or the full startup paint of
- * a freshly launched session. It does NOT recover sessions that survived
- * a Kookr restart — those start with an empty ring; see the follow-up
- * work on ring-buffer persistence.
- */
-const RING_BUFFER_BYTES = 1 * 1024 * 1024;
 const DEFAULT_WRITE_TIMEOUT_MS = 2_000;
 const REATTACH_WINDOW_MS = 60_000;
 const REATTACH_CAP = 3;
@@ -111,32 +86,13 @@ const REATTACH_CAP = 3;
  * running and its hosted TUI is idle, so no new bytes arrive to repopulate the
  * ring — without persistence, browser attach sees a blank viewport.
  */
-const RING_FLUSH_INTERVAL_MS = 2_000;
 const RINGS_DIRNAME = 'rings';
-const RING_META_VERSION = 1;
 
 /** Per-session in-memory state owned by the backend. */
-interface AttachedSession {
-  id: SessionId;
+interface AttachedSession extends DtachRingState {
   sock: string;
   /** Current attach child; null while transiently detached after a crash. */
   pty: IPty | null;
-  /**
-   * Counter of bytes ingested into the ring. Monotonically increases for the
-   * lifetime of a single backend instance. After a Kookr restart that
-   * recovered the session via `loadPersistedRing`, this is reset to the
-   * persisted byte count (the absolute value across restarts is not
-   * preserved — nothing outside the backend depends on it).
-   */
-  ringHead: number;
-  /** Fixed-size backing store for the ring buffer. */
-  ringBuffer: Buffer;
-  /**
-   * `ringHead` value at the last successful disk flush. `-1` until the first
-   * flush completes. Used by `flushAllRings` to skip sessions whose ring has
-   * not changed since the last tick — idle sessions never re-write.
-   */
-  lastFlushedHead: number;
   /** Byte subscribers. */
   dataSubscribers: Set<(data: Uint8Array) => void>;
   /** Writer-mutex tail — chained Promise that sequences write/writeSequence. */
@@ -174,22 +130,18 @@ export interface LocalDtachBackendOptions {
 
   /**
    * Override the per-session ring-buffer flush interval. Tests use a short
-   * value so they don't have to sleep through the production cadence. Defaults
-   * to `RING_FLUSH_INTERVAL_MS`.
+   * value so they don't have to sleep through the production cadence.
    */
   ringFlushIntervalMs?: number;
 }
 
 export class LocalDtachBackend implements TerminalBackend {
   private readonly instanceDir: string;
-  private readonly manifestPath: string;
-  private readonly ringsDir: string;
+  private readonly manifestStore: DtachManifestStore;
+  private readonly ringStore: DtachRingStore;
   private readonly dtachBinary: string;
   private readonly instanceId: string;
   private readonly writeTimeoutMs: number;
-
-  /** Single-instance serialization for manifest read-modify-write. */
-  private manifestLock: Promise<void> = Promise.resolve();
 
   /** Active attached sessions (persistent internal attaches). */
   private readonly attached = new Map<SessionId, AttachedSession>();
@@ -223,13 +175,12 @@ export class LocalDtachBackend implements TerminalBackend {
       options.socketDir ?? join('/tmp', 'kookr-dtach', String(process.getuid?.() ?? 'unknown'));
     this.instanceDir = join(baseDir, this.instanceId);
     mkdirSync(this.instanceDir, { recursive: true, mode: 0o700 });
-    this.manifestPath = join(this.instanceDir, 'manifest.json');
-    this.ringsDir = join(this.instanceDir, RINGS_DIRNAME);
-    mkdirSync(this.ringsDir, { recursive: true, mode: 0o700 });
+    this.manifestStore = new DtachManifestStore(join(this.instanceDir, 'manifest.json'), this.instanceId);
+    this.ringStore = new DtachRingStore(join(this.instanceDir, RINGS_DIRNAME));
 
     void this.recoverOnStartup();
 
-    const flushInterval = options.ringFlushIntervalMs ?? RING_FLUSH_INTERVAL_MS;
+    const flushInterval = options.ringFlushIntervalMs ?? DEFAULT_RING_FLUSH_INTERVAL_MS;
     this.flushTimer = setInterval(() => {
       this.flushAllRings();
     }, flushInterval);
@@ -267,8 +218,7 @@ export class LocalDtachBackend implements TerminalBackend {
     // Step 1: write `pending` manifest entry before spawn so a mid-spawn crash
     // is recoverable.
     const startedAt = new Date().toISOString();
-    await this.withManifestLock(() => {
-      const manifest = this.readManifest();
+    await this.manifestStore.update((manifest) => {
       manifest.entries = manifest.entries.filter((e) => e.sessionId !== spec.id);
       manifest.entries.push({
         sessionId: spec.id,
@@ -277,7 +227,6 @@ export class LocalDtachBackend implements TerminalBackend {
         status: 'pending',
         sock,
       });
-      this.writeManifestAtomic(manifest);
     });
 
     // Step 2: spawn dtach master via setsid so it outlives this Kookr process.
@@ -296,10 +245,8 @@ export class LocalDtachBackend implements TerminalBackend {
       await sleep(25);
     }
     if (!existsSync(sock)) {
-      await this.withManifestLock(() => {
-        const manifest = this.readManifest();
+      await this.manifestStore.update((manifest) => {
         manifest.entries = manifest.entries.filter((e) => e.sessionId !== spec.id);
-        this.writeManifestAtomic(manifest);
       });
       throw new Error(`dtach socket did not appear for session ${spec.id}`);
     }
@@ -308,14 +255,12 @@ export class LocalDtachBackend implements TerminalBackend {
     const masterPid = await this.findDtachMasterPid(sock);
 
     // Step 5: flip manifest → active.
-    await this.withManifestLock(() => {
-      const manifest = this.readManifest();
+    await this.manifestStore.update((manifest) => {
       const entry = manifest.entries.find((e) => e.sessionId === spec.id);
       if (entry) {
         entry.status = 'active';
         entry.pid = masterPid;
       }
-      this.writeManifestAtomic(manifest);
     });
 
     // Step 6: open the persistent internal attach. From this point all I/O
@@ -324,7 +269,7 @@ export class LocalDtachBackend implements TerminalBackend {
   }
 
   async listSessions(): Promise<SessionId[]> {
-    const manifest = this.readManifest();
+    const manifest = this.manifestStore.read();
     return manifest.entries
       .filter((e) => e.status === 'active' || e.status === 'recovered')
       .map((e) => e.sessionId);
@@ -359,7 +304,7 @@ export class LocalDtachBackend implements TerminalBackend {
     // removed the session from `this.attached`, so `flushAllRings` won't see
     // it either.
     this.disposeAttach(id);
-    this.removePersistedRing(id);
+    this.ringStore.remove(id);
 
     if (!entry) return;
 
@@ -392,10 +337,8 @@ export class LocalDtachBackend implements TerminalBackend {
         // fine
       }
     }
-    await this.withManifestLock(() => {
-      const manifest = this.readManifest();
+    await this.manifestStore.update((manifest) => {
       manifest.entries = manifest.entries.filter((e) => e.sessionId !== id);
-      this.writeManifestAtomic(manifest);
     });
   }
 
@@ -485,7 +428,7 @@ export class LocalDtachBackend implements TerminalBackend {
     const existing = this.attached.get(id);
     if (existing) return existing;
 
-    const entry = this.readManifestSync().entries.find((e) => e.sessionId === id);
+    const entry = this.manifestStore.read().entries.find((e) => e.sessionId === id);
     if (!entry || !existsSync(entry.sock)) {
       this.emitError({ kind: 'session-gone', id });
       throw new SessionGoneError(id);
@@ -505,7 +448,7 @@ export class LocalDtachBackend implements TerminalBackend {
     let sess = this.attached.get(id);
     if (sess?.pty) return sess;
 
-    const entry = this.readManifestSync().entries.find((e) => e.sessionId === id);
+    const entry = this.manifestStore.read().entries.find((e) => e.sessionId === id);
     if (!entry || !existsSync(entry.sock)) {
       this.emitError({ kind: 'session-gone', id });
       throw new SessionGoneError(id);
@@ -558,12 +501,9 @@ export class LocalDtachBackend implements TerminalBackend {
     let sess = this.attached.get(id);
     if (!sess) {
       sess = {
-        id,
+        ...createDtachRingState(id),
         sock,
         pty: null,
-        ringHead: 0,
-        ringBuffer: Buffer.alloc(RING_BUFFER_BYTES),
-        lastFlushedHead: -1,
         dataSubscribers: new Set(),
         writeMutex: Promise.resolve(),
         pendingWriters: 0,
@@ -576,7 +516,7 @@ export class LocalDtachBackend implements TerminalBackend {
       // `captureBytes` after restart replays the persisted scrollback instead
       // of returning an empty ring. Fail-open if the file is missing or
       // malformed — a fresh ring is strictly better than a crash here.
-      this.loadPersistedRing(sess);
+      this.ringStore.load(sess);
       this.attached.set(id, sess);
     }
     this.attachPtyInto(sess, sock, initialSize);
@@ -730,148 +670,16 @@ export class LocalDtachBackend implements TerminalBackend {
   private flushAllRings(): void {
     for (const sess of this.attached.values()) {
       if (sess.ringHead === sess.lastFlushedHead) continue;
-      this.persistRing(sess);
+      this.ringStore.persist(sess);
     }
   }
 
   private copyFromRing(sess: AttachedSession, head: number, size: number, out: Buffer): void {
-    if (size === 0) return;
-    const firstLogical = head - size;
-    const startSlot = firstLogical % RING_BUFFER_BYTES;
-    const tail = Math.min(size, RING_BUFFER_BYTES - startSlot);
-    sess.ringBuffer.copy(out, 0, startSlot, startSlot + tail);
-    if (tail < size) {
-      sess.ringBuffer.copy(out, tail, 0, size - tail);
-    }
+    this.ringStore.copyFrom(sess, head, size, out);
   }
 
   private copyIntoRing(sess: AttachedSession, bytes: Uint8Array): void {
-    if (bytes.length === 0) return;
-    const source = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    let retained = source;
-    let firstLogical = sess.ringHead;
-    if (source.length > RING_BUFFER_BYTES) {
-      retained = source.subarray(source.length - RING_BUFFER_BYTES);
-      firstLogical += source.length - RING_BUFFER_BYTES;
-    }
-
-    const startSlot = firstLogical % RING_BUFFER_BYTES;
-    const tail = Math.min(retained.length, RING_BUFFER_BYTES - startSlot);
-    retained.copy(sess.ringBuffer, startSlot, 0, tail);
-    if (tail < retained.length) {
-      retained.copy(sess.ringBuffer, 0, tail);
-    }
-    sess.ringHead += source.length;
-  }
-
-  /**
-   * Write `sess`'s ring buffer to `<ringsDir>/<id>.bin` (raw bytes in logical
-   * order, oldest first) and a sibling `.meta.json` (version + savedAt). Both
-   * files are written via tmp+rename so a mid-write crash never leaves a
-   * partial snapshot. Updates `sess.lastFlushedHead` only on full success so
-   * the next tick retries.
-   */
-  private persistRing(sess: AttachedSession): void {
-    try {
-      const head = sess.ringHead;
-      const size = Math.min(head, RING_BUFFER_BYTES);
-      const out = Buffer.alloc(size);
-      // Copy in logical order so the file's byte 0 is the oldest byte still
-      // in the ring. The wrapped-ring case (head > RING_BUFFER_BYTES) splits
-      // into at most two contiguous slices; two `Buffer.copy` calls beat the
-      // per-byte loop the first draft used (1 MB × N sessions × 2 s timer).
-      const firstLogical = head - size;
-      const startSlot = firstLogical % RING_BUFFER_BYTES;
-      const tail = Math.min(size, RING_BUFFER_BYTES - startSlot);
-      sess.ringBuffer.copy(out, 0, startSlot, startSlot + tail);
-      if (tail < size) {
-        sess.ringBuffer.copy(out, tail, 0, size - tail);
-      }
-
-      const binPath = this.ringPathFor(sess.id);
-      const metaPath = this.metaPathFor(sess.id);
-      const tmpBin = `${binPath}.${randomUUID()}.tmp`;
-      const tmpMeta = `${metaPath}.${randomUUID()}.tmp`;
-      writeFileSync(tmpBin, out, { mode: 0o600 });
-      writeFileSync(
-        tmpMeta,
-        JSON.stringify({
-          version: RING_META_VERSION,
-          // `size` is load-bearing: `loadPersistedRing` cross-checks it
-          // against the .bin file length to detect mid-write truncation a
-          // crash could have left between the two `writeFileSync` calls.
-          size,
-          savedAt: new Date().toISOString(),
-        }),
-        { mode: 0o600 },
-      );
-      // Rename meta last: a crash between the two renames leaves a stale .bin
-      // but no .meta — `loadPersistedRing` requires both, so the orphan .bin
-      // is ignored on next attach.
-      renameSync(tmpBin, binPath);
-      renameSync(tmpMeta, metaPath);
-
-      sess.lastFlushedHead = head;
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn(`[dtach-backend] failed to persist ring for ${sess.id}: ${String(err)}`);
-    }
-  }
-
-  /**
-   * Restore the ring buffer for `sess` from disk if a snapshot exists. Called
-   * from `openAttach` before the new pty is wired up so the very first
-   * `captureBytes` after a Kookr restart sees the persisted scrollback
-   * instead of an empty viewport.
-   *
-   * Fail-open: missing files, malformed meta, or wrong version all leave the
-   * session with a fresh empty ring (which is strictly better than crashing
-   * here — the worst-case outcome is the bug this PR set out to fix).
-   */
-  private loadPersistedRing(sess: AttachedSession): void {
-    const binPath = this.ringPathFor(sess.id);
-    const metaPath = this.metaPathFor(sess.id);
-    if (!existsSync(binPath) || !existsSync(metaPath)) return;
-    try {
-      const metaRaw = readFileSync(metaPath, 'utf-8');
-      const meta = JSON.parse(metaRaw) as { version?: number; size?: number };
-      if (meta.version !== RING_META_VERSION) return;
-      const buf = readFileSync(binPath);
-      // Reject snapshots where the .bin file's actual length disagrees with
-      // the size meta promised — that's the signature of a truncated write
-      // that crashed between the two `writeFileSync` calls.
-      if (typeof meta.size !== 'number' || meta.size !== buf.length) return;
-      const size = Math.min(buf.length, RING_BUFFER_BYTES);
-      if (size === 0) return;
-      buf.copy(sess.ringBuffer, 0, 0, size);
-      // Reset the ring offset to the end of the persisted slab. Subsequent
-      // writes wrap from there; the absolute `ringHead` value is local to a
-      // backend instance (no external consumer reads it), so restarting the
-      // counter at `size` is safe.
-      sess.ringHead = size;
-      sess.lastFlushedHead = size;
-    } catch {
-      // fail-open
-    }
-  }
-
-  /** Remove the persisted ring + meta for a session. Used by `killSession`. */
-  private removePersistedRing(id: SessionId): void {
-    for (const path of [this.ringPathFor(id), this.metaPathFor(id)]) {
-      try {
-        if (existsSync(path)) unlinkSync(path);
-      } catch {
-        // best-effort
-      }
-    }
-  }
-
-  private ringPathFor(id: SessionId): string {
-    return join(this.ringsDir, `${id}.bin`);
-  }
-
-  private metaPathFor(id: SessionId): string {
-    return join(this.ringsDir, `${id}.meta.json`);
+    this.ringStore.copyInto(sess, bytes);
   }
 
   // ─── Manifest persistence + recovery ────────────────────────────────────
@@ -885,27 +693,19 @@ export class LocalDtachBackend implements TerminalBackend {
    *      socket dir scan, emit `manifest-corrupt`.
    */
   private async recoverOnStartup(): Promise<void> {
-    await this.withManifestLock(() => {
-      if (!existsSync(this.manifestPath)) return;
+    await this.manifestStore.withLock(() => {
+      const recovery = this.manifestStore.readForRecovery();
+      if (recovery.kind === 'missing') return;
 
-      let manifest: ManifestFile | null = null;
-      try {
-        const raw = readFileSync(this.manifestPath, 'utf-8');
-        const parsed = JSON.parse(raw) as ManifestFile;
-        if (parsed.version !== 1) {
-          throw new Error(`unsupported manifest version ${parsed.version}`);
-        }
-        manifest = parsed;
-      } catch {
-        manifest = null;
-      }
-
-      if (!manifest) {
+      let manifest: DtachManifestFile;
+      if (recovery.kind === 'invalid') {
+        this.manifestStore.renameCorrupt();
         manifest = this.rebuildManifestFromSocketDir();
-        this.writeManifestAtomic(manifest);
+        this.manifestStore.writeAtomic(manifest);
         this.emitError({ kind: 'manifest-corrupt', recoveredCount: manifest.entries.length });
         return;
       }
+      manifest = recovery.manifest;
 
       const now = Date.now();
       const before = manifest.entries.length;
@@ -918,7 +718,7 @@ export class LocalDtachBackend implements TerminalBackend {
           // any ring snapshot that may have been left behind (otherwise a
           // future session reusing this id would inherit stale scrollback
           // from a different agent process).
-          this.removePersistedRing(e.sessionId);
+          this.ringStore.remove(e.sessionId);
           return [];
         }
         // Active or recovered: verify pid ownership. Unverifiable entries
@@ -929,14 +729,14 @@ export class LocalDtachBackend implements TerminalBackend {
           // Manifest entry whose dtach master and socket are both gone — the
           // session is dead. Clean up its ring snapshot for the same reason
           // as the pending-aged-out branch above.
-          this.removePersistedRing(e.sessionId);
+          this.ringStore.remove(e.sessionId);
           return [];
         }
         return [{ ...e, status: 'recovered' as const }];
       });
 
       if (manifest.entries.length !== before) {
-        this.writeManifestAtomic(manifest);
+        this.manifestStore.writeAtomic(manifest);
       }
     });
   }
@@ -946,16 +746,8 @@ export class LocalDtachBackend implements TerminalBackend {
    * Each `.sock` file becomes a `recovered` entry (pid resolved if possible).
    * Used when the manifest fails to parse.
    */
-  private rebuildManifestFromSocketDir(): ManifestFile {
-    // Rename the corrupt manifest for forensic analysis.
-    try {
-      const ts = new Date().toISOString().replace(/[:.]/g, '-');
-      renameSync(this.manifestPath, `${this.manifestPath}.corrupt-${ts}`);
-    } catch {
-      // best-effort
-    }
-
-    const entries: ManifestEntry[] = [];
+  private rebuildManifestFromSocketDir(): DtachManifestFile {
+    const entries: DtachManifestEntry[] = [];
     let socks: string[] = [];
     try {
       socks = readdirSync(this.instanceDir).filter((n) => n.endsWith('.sock'));
@@ -987,7 +779,7 @@ export class LocalDtachBackend implements TerminalBackend {
    * recycled pid that happens to be alive. Checks `/proc/<pid>/exe` resolves
    * to the dtach binary AND `/proc/<pid>/cmdline` contains the socket path.
    */
-  private verifyEntryOwnership(entry: ManifestEntry): boolean {
+  private verifyEntryOwnership(entry: DtachManifestEntry): boolean {
     if (entry.pid <= 0) {
       // pid never resolved; fall back to socket-file presence only.
       return existsSync(entry.sock);
@@ -1078,54 +870,8 @@ export class LocalDtachBackend implements TerminalBackend {
     }
   }
 
-  private async readEntry(id: SessionId): Promise<ManifestEntry | null> {
-    const manifest = this.readManifestSync();
-    return manifest.entries.find((e) => e.sessionId === id) ?? null;
-  }
-
-  /**
-   * Synchronous manifest read — NO corruption recovery here; that is handled
-   * by `recoverOnStartup`. Caller-facing read paths use this; parse failure
-   * returns an empty manifest as a soft fallback.
-   */
-  private readManifest(): ManifestFile {
-    return this.readManifestSync();
-  }
-
-  private readManifestSync(): ManifestFile {
-    if (!existsSync(this.manifestPath)) {
-      return { version: 1, instanceId: this.instanceId, entries: [] };
-    }
-    try {
-      const raw = readFileSync(this.manifestPath, 'utf-8');
-      const parsed = JSON.parse(raw) as ManifestFile;
-      if (parsed.version !== 1) {
-        throw new Error(`unsupported manifest version ${parsed.version}`);
-      }
-      return parsed;
-    } catch {
-      return { version: 1, instanceId: this.instanceId, entries: [] };
-    }
-  }
-
-  private writeManifestAtomic(manifest: ManifestFile): void {
-    const tmp = `${this.manifestPath}.${randomUUID()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(manifest, null, 2), { mode: 0o600 });
-    renameSync(tmp, this.manifestPath);
-  }
-
-  private async withManifestLock<T>(fn: () => T): Promise<T> {
-    const prev = this.manifestLock;
-    let release!: () => void;
-    this.manifestLock = new Promise<void>((res) => {
-      release = res;
-    });
-    try {
-      await prev;
-      return fn();
-    } finally {
-      release();
-    }
+  private async readEntry(id: SessionId): Promise<DtachManifestEntry | null> {
+    return this.manifestStore.getEntry(id);
   }
 }
 
