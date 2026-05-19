@@ -23,7 +23,7 @@ stateDiagram-v2
   Recovered --> [*]: Operator kills via killSession
 ```
 
-> Updated 2026-04-24: Added `Recovered` state to reflect `src/adapters/local-dtach-backend.ts:61` (`status: 'pending' | 'active' | 'recovered'`).
+> Updated 2026-04-24: Added `Recovered` state to reflect the LocalDtachBackend manifest status union (`'pending' | 'active' | 'recovered'`).
 
 ## Transition Ownership
 

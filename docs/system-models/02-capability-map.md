@@ -106,7 +106,7 @@ flowchart LR
 | Auto-advance after action | attention-router | Must |
 | All-clear / all-skipped state | attention-router | Must |
 | Skip agent (deprioritize, back of queue) | attention-router | Must |
-| Snooze agent (pause monitoring + timer) | attention-router + supervisor-agent | Must |
+| Snooze agent (hide finding until expiry/manual wake while monitoring continues) | attention-router + supervisor-agent | Must |
 | View agent context | frontend (SPA) | Must |
 | Send response via terminal keystrokes | agent-adapter | Must |
 | Browser notifications | frontend (SPA) | Nice-to-have |

@@ -119,7 +119,7 @@ Review the error output and provide a hint about an alternative approach.
 
 Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2), `detect-repeated-error`, `detect-idle-agent`.
 
-> **Updated 2026-05-12 — current anomaly catalogue.** The live `AnomalyType` union is defined in `src/core/types.ts`:
+> **Updated 2026-05-12 — current anomaly catalogue.** The live `AnomalyType` union is defined in `src/shared/contracts/anomalies.ts` and re-exported through `src/core/types.ts`:
 > `needs_input`, `permission_blocked`, `repeated_error`, `merge_conflict`, `stale_agent`, `hook_disconnected`, `hook_missing`, `tmux_unresponsive`, `api_error`, `budget_exceeded`.
 > `needs_input` subsumes both `stop` and `ask_user_question` (via `Anomaly.subType`). `budget_exceeded` is emitted by `src/core/budget-checker.ts` when a task crosses its configured per-task USD threshold (F4.9). `stuck_loop` was removed; the aspirational `detect-stuck-loop` and `detect-trajectory-drift` patterns above remain V2 directions, not V1 code. Note: `tmux_unresponsive` is the symbol the code emits today; V8 Main C rename to `backend_unreachable` is pending.
 
@@ -157,7 +157,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 - Wraps each agent type (Claude Code, Codex CLI) behind a common `AgentAdapter` interface. `RoutingAgentAdapter` dispatches to the concrete adapter by `agentType` (`claude-code-adapter.ts` or `codex-cli-adapter.ts`)
 - Spawns and controls agent sessions through `LocalDtachBackend` — creation, byte-level write for input delivery, termination. The backend owns one persistent attach per session, a 64 KB ring buffer, a per-session write mutex, and lazy re-attach with a 3-per-60-s cap. Transport-level failures surface as structured `BackendError` events wired into the anomaly queue and `/api/health`
 - Tails the agent's **transcript JSONL file** for structured events — same AgentEvent normalization for both agents, sourced from structured data rather than parsed terminal text
-- Receives **hook events** via per-session JSONL files in `~/.kookr/hooks/`. Full event set is `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `PermissionRequest`, `Notification`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` — see `HookEventName` in `src/core/types.ts:2-14`. Codex CLI advertises its supported subset via `codexHookCapabilities` on `session_start`. Hooks are configured per agent via a Kookr-generated settings file (Claude Code `--settings`, Codex CLI config file); they are additive to the user's own hooks. See [PoC 001](poc/001-hook-mechanism-validation.md)
+- Receives **hook events** via per-session JSONL files in `~/.kookr/hooks/`. Full event set is `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `PermissionRequest`, `Notification`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` — see `HookEventName` in `src/core/hook-events.ts`. Codex CLI advertises its supported subset via `codexHookCapabilities` on `session_start`. Hooks are configured per agent via a Kookr-generated settings file (Claude Code `--settings`, Codex CLI config file); they are additive to the user's own hooks. See [PoC 001](poc/001-hook-mechanism-validation.md)
 - Uses **`backend.captureBytes`** for clean terminal display snapshots (shown in the GUI, not used for anomaly detection)
 - Delivers developer input as byte-level writes to the managed dtach session via `backend.write` / `backend.writeSequence`
 
@@ -216,21 +216,22 @@ stateDiagram-v2
 > - Playbook surface: `playbooks`
 > - Multi-project surface: `projectSummaries`, `contributionWarning`
 > - Achievements: `achievement:unlocked`, `achievement:reset:ack`
-> - Infrastructure health: `quotaStatus`, `circuitBreakerStatus`, `diagnosticReport`
+> - Infrastructure health: `quotaStatus`, `resourceStatus`, `circuitBreakerStatus`, `diagnosticReport`
 > - Scheduled tasks: `schedules`, `scheduleFired`
 > - GitHub PR/issue awareness: `githubUpdate`
-> - Workspace / contribution workspace: `workspaceView`, `workspaceCleanupDetail`, `workspaceStartWorkAck`
+> - Workspace / contribution workspace: `workspaceView`, `workspaceCleanupDetail`, `workspaceSweepComplete`, `workspaceSweepBusy`, `workspaceStartWorkAck`
+> - OSS attempts: `ossAttempts`
 >
 > **ClientMessage families:**
 >
 > - Respond / triage: `respond`, `respondAll`, `directReply`, `navigate`, `getNext`, `skip`, `skipAll`, `snooze`, `cancelSnooze`, `stop`, `findingFeedback`
-> - Task lifecycle: `launch`, `completeTask`, `relaunch`, `cancelTask`, `reopenTask`, `deleteTask`, `renameTask`, `clearCompleted`, `ackTerminatedTask`, `permissionChoice`
+> - Task lifecycle: `launch`, `completeTask`, `setTaskFeedback`, `requestTaskReflect`, `relaunch`, `cancelTask`, `reopenTask`, `deleteTask`, `renameTask`, `clearCompleted`, `ackTerminatedTask`, `permissionChoice`
 > - Playbooks: `listPlaybooks`, `launchPlaybook`
 > - Session reflection: `reflect`
 > - Projects: `setProjectConfig`, `selectProject`
 > - Achievements: `achievement:reset`, `achievement:setEnabled`
 > - Infrastructure: `rearmCircuitBreaker`, `telemetry`
-> - Workspace: `workspace:getView`, `workspace:getCleanupDetail`, `workspace:cleanupCandidate`, `workspace:bulkSafeCleanup`, `workspace:runCleanupDiagnostic`, `workspace:startWork`
+> - Workspace: `workspace:getView`, `workspace:getCleanupDetail`, `workspace:cleanupCandidate`, `workspace:bulkSafeCleanup`, `workspace:runCleanupDiagnostic`, `workspace:startWork`, `workspace:sweep`
 
 The `alert` message carries the supervisor's **explanation** of what's wrong with an agent. The `suggestion` message provides AI-generated response predictions and quick-action buttons when an agent needs input. The `playbooks` message returns discovered playbook templates for a given CWD. The `projectSummaries` message broadcasts per-project aggregated state (PRs, agents, contribution limits). The `contributionWarning` message alerts when a project approaches or exceeds its contribution rate limit. The `quotaStatus` and `circuitBreakerStatus` messages expose infrastructure health; the `workspaceView` family drives the contribution workspace UI.
 
@@ -242,7 +243,7 @@ Agents run in managed dtach sessions (see [ADR-014](adr/014-local-dtach-backend.
 >
 > Events are derived from structured sources: transcript JSONL files (same format as headless output) and per-session hook JSONL files (`~/.kookr/hooks/<session>.jsonl`). No terminal output parsing is needed.
 >
-> **Event routing:** the active adapter emits `(sessionId, event)` — the server routes by `sessionId` (stable across restarts, the same value used as the dtach socket filename and as the `tmuxSession` field retained for legacy-schema reasons), not by agent-supplied session IDs (which require `SessionStart` to be processed first). The monitor owns anomaly detection and attention queue. Session metadata (task ID, agent type, paths, last status) is persisted inline in `tasks.json` alongside task data. Snooze timers and attention events remain in-memory (rebuilt on startup from reconciled session states via hook replay).
+> **Event routing:** the active adapter emits `(sessionId, event)` — the server routes by `sessionId` (stable across restarts, the same value used as the dtach socket filename and as the `tmuxSession` field retained for legacy-schema reasons), not by agent-supplied session IDs (which require `SessionStart` to be processed first). The monitor owns anomaly detection and attention queue. Session metadata (task ID, agent type, paths, last status) is persisted inline in `tasks.json` alongside task data. Attention events remain in-memory and are rebuilt on startup from reconciled session states via hook replay; snoozes are serialized in the task-file envelope and re-imported into the queue.
 >
 > **`AgentStatus` note:** `AgentStatus = 'starting' | 'running' | 'stuck' | 'errored' | 'completed' | 'snoozed'` is kept for metadata on persisted sessions (`SessionInfo.lastStatus`) but is **not** used as a live state machine. Live agent state is expressed through `AgentState.anomaly` and `AgentState.snoozedUntil` in `monitor.ts`. See [`docs/system-models/05-state-machine-catalog.md`](system-models/05-state-machine-catalog.md#2-agent-session-lifecycle) for the authoritative discussion.
 
@@ -284,6 +285,8 @@ cp ~/.kookr/tasks.json.predelete.YYYYMMDDTHHMMSS ~/.kookr/tasks.json
 > **Drift-reconcile 2026-04-22** added the OSS-attempts cluster: `oss-attempts-routes.ts` (server route), `oss-attempts-slice.ts` (Zustand slice), `oss-trends.ts` (frontend aggregation), and the OSS-dashboard components `OssProductivityView`, `OssWeeklyBars`, `OssTrendsErrorBoundary`, plus `DiffPane` and `markdown.ts`, which were live in code but missing from the tree.
 >
 > **Drift-reconcile 2026-05-09** refreshed the grouped inventory for Ralph loops, checkpoint cycling, workspace cleanup, Telegram/STT integration, frontend onboarding/effective-hooks controls, and shared contract modules. The tree remains capability-grouped; it is not an exhaustive file manifest.
+>
+> **Drift-reconcile 2026-05-19** added the remote session-sharing module, newer route/event-processor files, dtach manifest/ring stores, frontend audio/task-sharing controls, and removed stale component/file names that no longer exist (`ralph-stop.ts`, `LaunchDialog`, `AgentExecutionConfig`, `CapacityGauge`).
 
 ```
 kookr/
@@ -292,9 +295,15 @@ kookr/
 │   │   ├── protocol.ts                    # Re-exports ServerMessage/ClientMessage + shared core types
 │   │   ├── contracts/messages.ts          # Canonical WS protocol tagged-union
 │   │   ├── contracts/client-message-schema.ts # Runtime client-message validation helpers
+│   │   ├── contracts/agent-*.ts           # Shared agent event/state/type contracts
+│   │   ├── contracts/anomalies.ts         # Canonical AnomalyType/Anomaly contract
+│   │   ├── contracts/task*.ts             # Task, task-status, and completion contracts
 │   │   ├── contracts/playbook.ts          # Shared playbook DTOs
 │   │   ├── contracts/ralph.ts             # Ralph loop request/response contracts
 │   │   ├── contracts/ralph-iteration-log.ts # Ralph iteration-log DTOs
+│   │   ├── contracts/session-sharing-*.ts # Public/owner/recovery sharing contracts
+│   │   ├── contracts/relay-connection.ts  # Hosted relay connection contract
+│   │   ├── contracts/workspace.ts         # Workspace cleanup/start-work contracts
 │   │   └── repo-slug.ts                   # GitHub `owner/repo` normalization
 │   │
 │   ├── server/                            # HTTP (Hono) + WebSocket server
@@ -312,6 +321,10 @@ kookr/
 │   │   │   ├── settings-routes.ts         #   settings / prefs
 │   │   │   ├── deploy-routes.ts           #   prod-update helpers
 │   │   │   ├── diagnostics-routes.ts      #   self-diagnostic
+│   │   │   ├── contact-share-routes.ts    #   contact-share management
+│   │   │   ├── relay-connection-routes.ts #   hosted relay connection state
+│   │   │   ├── share-routes.ts            #   task/session sharing endpoints
+│   │   │   ├── session-sharing-recovery-routes.ts # recovery/status endpoints
 │   │   │   ├── oss-attempts-routes.ts     #   OSS contribution attempts + trends API
 │   │   │   └── shared.ts                  #   common helpers
 │   │   ├── use-cases/                     # Server business logic (agent-input, delete-task,
@@ -328,6 +341,11 @@ kookr/
 │   │   │   ├── reflection-handler.ts      #   reflection request/ack
 │   │   │   ├── sweep-handler.ts           #   cross-project workspace cleanup sweep
 │   │   │   └── workspace-handler.ts       #   workspace cleanup messages
+│   │   ├── event-processors/              # Per-event side effects:
+│   │   │                                  #   checkpoint-stop, GitHub events,
+│   │   │                                  #   permission quick actions/alerts,
+│   │   │                                  #   response assist, session activity,
+│   │   │                                  #   stop-token scanning, token accounting
 │   │   ├── event-projection.ts            # Strip transport-unused AgentEvent fields
 │   │   ├── oss-attempts-snapshot.ts       # Serialize OSS attempts for WS snapshot
 │   │   ├── hook-watcher.ts                # Tail per-session hook JSONL files
@@ -340,15 +358,25 @@ kookr/
 │   │   ├── event-pipeline.ts              # Wires adapter events into monitor/tracker/watchdog
 │   │   ├── lifecycle-timers.ts            # Periodic timers: liveness, reconciliation, task save
 │   │   ├── ralph-loop-service.ts          # Ralph iteration-loop orchestration
-│   │   ├── ralph-stop.ts                  # Stop-event handoff into Ralph cycler
+│   │   ├── ralph/                         # Ralph HTTP routes and stop-event ownership
+│   │   │   ├── routes.ts
+│   │   │   ├── stop-event-ownership.ts
+│   │   │   └── stop-event-processor.ts
 │   │   ├── schedule-runner.ts             # Cron-driven scheduled tasks
 │   │   ├── schedule-service.ts            # Schedule CRUD + persistence
 │   │   ├── schedule-validator.ts          # Cron / schedule validation
 │   │   ├── reflection-task.ts             # Session reflection background task (ADR-010)
 │   │   ├── diagnostic-runner.ts           # Self-diagnostic job runner
 │   │   ├── oss-refresh.ts                 # OSS contribution PR/linked-issue refresh
+│   │   ├── oss-source-watcher.ts          # Watches OSS source files for refresh triggers
 │   │   ├── achievement-watcher.ts         # Detect achievement unlocks, persist
 │   │   ├── ledger-watcher.ts              # Watch OSS contribution ledger
+│   │   ├── resource-status-service.ts     # System resource sampling surface
+│   │   ├── system-resource-sampler.ts     # CPU/memory/disk sampling
+│   │   ├── task-share-service.ts          # Task sharing service boundary
+│   │   ├── relay-*.ts                     # Hosted relay lifecycle/client/connection stores
+│   │   ├── remote-*.ts                    # Remote command/input adapters
+│   │   ├── share-*.ts                     # Share projection/diagnostics services
 │   │   ├── worktree-guardrails.ts         # Enforce worktree safety invariants
 │   │   ├── settings-side-effects.ts       # React to settings changes
 │   │   ├── hash-prompt.ts                 # Prompt hashing helper
@@ -366,6 +394,9 @@ kookr/
 │   │   # Tasks + sessions
 │   │   ├── tasks.ts                       # In-memory task store + state machine
 │   │   ├── task-persistence.ts            # Atomic JSON file persistence
+│   │   ├── task-read-model.ts             # Read DTOs for tasks
+│   │   ├── task-status.ts                 # TaskStatus / AgentStatus / TurnState unions
+│   │   ├── session-read-model.ts          # Session DTOs
 │   │   ├── task-naming.ts                 # AI task naming via LLM (F4.8)
 │   │   ├── token-tracker.ts               # Token/cost tracking per session (F4.9)
 │   │   ├── checkpoint-cycler.ts           # /compact checkpoint cycle + cancel-backoff controller (ADR-015)
@@ -388,6 +419,11 @@ kookr/
 │   │   ├── combined-shadow-strategy.ts    # Shadow strategy orchestrator
 │   │   ├── shadow-report.ts               # Offline shadow report generator
 │   │   ├── self-diagnostic.ts             # Runtime self-diagnostic
+│   │   ├── turn-state.ts                  # Current-turn state derivation
+│   │   ├── activity-ledger.ts             # Persistent activity log
+│   │   ├── attention-miss-review.ts       # Attention miss review helpers
+│   │   ├── finding-evidence-audit.ts      # Evidence audit model
+│   │   ├── finding-evidence-review.ts     # Finding evidence review logic
 │   │   # Response assist + suggestions
 │   │   ├── context-feedback.ts            # Context-window feedback helpers
 │   │   ├── response-assist.ts             # Quick-action extraction (F3.8)
@@ -404,6 +440,8 @@ kookr/
 │   │   ├── google-client.ts               # Google Gemini implementation
 │   │   ├── groq-client.ts                 # Groq implementation
 │   │   ├── openrouter-client.ts           # OpenRouter (OpenAI-compatible) implementation
+│   │   ├── llm-factory.ts                 # Provider selection
+│   │   ├── llm-types.ts                   # Provider DTOs
 │   │   ├── circuit-breaker.ts             # Generic circuit-breaker primitive
 │   │   ├── circuit-breaker-llm-client.ts  # LLM client wrapped in a breaker
 │   │   # GitHub awareness (F7 / ADR-012)
@@ -413,6 +451,8 @@ kookr/
 │   │   ├── github-state-differ.ts
 │   │   ├── github-scanner-service.ts
 │   │   ├── github-alerts.ts
+│   │   ├── launch-dependency-preflight.ts # Launch dependency checks
+│   │   ├── contact-share.ts               # Contact-share domain model
 │   │   # Telemetry + training data
 │   │   ├── telemetry.ts                   # Session telemetry event log
 │   │   ├── telemetry-report.ts            # Telemetry aggregation
@@ -424,6 +464,8 @@ kookr/
 │   │   ├── oss-attempt-store.ts           # OSS contribution attempt records + ledger
 │   │   ├── ledger-analytics.ts            # Analytics over OSS contribution ledger
 │   │   ├── repo-policy-resolver.ts        # Per-repo contribution policy resolver
+│   │   ├── repo-tags.ts                   # Repo tag helpers
+│   │   ├── project-sidebar-store.ts       # Project sidebar persisted state
 │   │   ├── skill-tracked-repo-discovery.ts# Skill-tracked repo sidebar source
 │   │   ├── pr-lessons-discovery.ts        # Discover PR-lesson playbooks
 │   │   # Playbooks + scheduling
@@ -441,7 +483,11 @@ kookr/
 │   │   ├── git-helpers.ts                 # Git helpers shared by server
 │   │   ├── persistence-utils.ts           # Atomic/persistent file utilities
 │   │   ├── settings-store.ts              # Server settings persistence
-│   │   └── achievement-catalog.ts         # Achievement definitions
+│   │   ├── achievement-catalog.ts         # Achievement definitions
+│   │   ├── pricing-tables.ts              # Provider pricing metadata
+│   │   ├── plugin-paths.ts                # Plugin path resolution helpers
+│   │   ├── hook-*.ts                      # Hook event/spec/path helpers
+│   │   └── kb-*.ts                        # KB context injection + lesson classification
 │   │
 │   ├── adapters/                          # I/O boundaries (ports-and-adapters pattern)
 │   │   ├── terminal-backend.ts            # TerminalBackend interface (dtach-only post-V8)
@@ -453,14 +499,20 @@ kookr/
 │   │   ├── claude-code-adapter.ts         # Managed Claude Code sessions
 │   │   ├── codex-cli-adapter.ts           # Managed Codex CLI sessions
 │   │   ├── codex-config.ts                # Codex CLI config/settings emission
+│   │   ├── codex-rollout-scanner.ts       # Codex rollout metadata discovery
 │   │   ├── effective-hook-settings.ts     # Persist/read effective hook settings per session
 │   │   ├── agent-launch-context.ts        # Per-launch env + paths
+│   │   ├── dtach-manifest-store.ts        # Durable dtach manifest
+│   │   ├── dtach-ring-store.ts            # Durable ring-buffer state
+│   │   ├── file-based-agents.ts           # File-backed agent inventory helpers
 │   │   ├── probe-agent-binary.ts          # Agent binary probe helpers
 │   │   ├── quota-adapter.ts               # Usage-quota surface for LLM providers
 │   │   ├── github-fetcher.ts              # `gh` CLI wrapper (REST + GraphQL)
 │   │   ├── circuit-breaker-github-fetcher.ts    # Circuit-breaker wrapper
 │   │   ├── git-info.ts                    # Git branch/commit from filesystem
-│   │   └── git-worktree.ts                # Git worktree create/cleanup
+│   │   ├── git-worktree-registry.ts       # Worktree registry
+│   │   ├── git-worktree.ts                # Git worktree create/cleanup
+│   │   └── worktree-marker.ts             # Protected-worktree markers
 │   │
 │   ├── integrations/                      # Optional integration surfaces
 │   │   └── telegram/                      # Telegram voice/text ingestion and STT bridge
@@ -474,6 +526,24 @@ kookr/
 │   │       ├── warmup.ts                  # STT warmup
 │   │       └── fake-telegram-server.ts    # Test/dev fake server
 │   │
+│   ├── remote/                            # Session-sharing / hosted-relay domain
+│   │   ├── share-contract.ts              # Shared session contract
+│   │   ├── share-policy.ts                # Share/mutation policy
+│   │   ├── grants.ts                      # Access grants
+│   │   ├── handshake.ts                   # Relay handshake
+│   │   ├── launch-allowlist.ts            # Remote launch allowlist
+│   │   ├── launch-broker.ts               # Supervised remote launches
+│   │   ├── command-pipeline.ts            # Remote command validation + dispatch
+│   │   ├── command-journal.ts             # Durable command journal
+│   │   ├── permission-broker.ts           # Remote permission decisions
+│   │   ├── session-stream-publisher.ts    # Terminal/event publication
+│   │   ├── terminal-frame-crypto.ts       # Terminal frame encryption
+│   │   ├── terminal-publication-gate.ts   # Publication policy gate
+│   │   ├── policy-*.ts                    # Policy cache/sync
+│   │   ├── projections.ts                 # Public/private projections
+│   │   ├── push.ts                        # Push transport helpers
+│   │   └── stream-events.ts               # Remote stream event contracts
+│   │
 │   └── frontend/                          # SPA (React + Vite — ADR-002)
 │       ├── App.tsx                        # Root component with keyboard shortcuts
 │       ├── main.tsx                       # Entry point
@@ -481,7 +551,12 @@ kookr/
 │       ├── styles.css                     # Dark theme CSS
 │       ├── presentation.ts                # Pure presentation helpers
 │       ├── telemetry.ts                   # Frontend telemetry client
+│       ├── agent-buckets.ts               # Agent grouping helpers
+│       ├── derive-project-cwd.ts          # Project CWD helpers
+│       ├── resource-status.ts             # Resource status presentation
 │       ├── terminal-send.ts               # Terminal send helpers
+│       ├── terminal-paste.ts              # Terminal paste helpers
+│       ├── audio/                         # Browser sound preferences + alert log
 │       ├── group-findings.ts              # Finding grouping for FindingsPanel
 │       ├── markdown.ts                    # Markdown rendering helpers
 │       ├── oss-trends.ts                  # OSS contribution trend aggregation for the dashboard
@@ -490,14 +565,15 @@ kookr/
 │       │   #                 SnoozeDialog, SnoozeGroup, SentOverlay, Toasts, Tooltip,
 │       │   #                 ConfirmDialog, CompleteDialogFooter, ShortcutsHelp, AchievementToast,
 │       │   #                 DiffPane, DndPill
-│       │   # Launch / playbooks: LaunchDialog, PlaybookBrowser, PlaybookSelector,
+│       │   # Launch / playbooks: LaunchTaskDialog, PlaybookBrowser, PlaybookSelector,
 │       │   #                     PlaybookParameterForm, QuickLaunch, StartWorkPanel,
-│       │   #                     AgentExecutionConfig, AgentTypeSelector
+│       │   #                     AgentTypeSelector
 │       │   # Projects + GitHub: ProjectSidebar, ProjectSidebarManager, ProjectDetailDrawer,
 │       │   #                    GitHubPanel, ContributionWorkspace, CleanupCandidateTable
+│       │   # Sharing: TaskShareModal, TaskIdCopyButton
 │       │   # OSS trends dashboard: OssProductivityView, OssWeeklyBars, OssTrendsErrorBoundary
 │       │   # Ralph + onboarding: RalphLoopPanel, OnboardingTour, OnboardingLayoutDiagram
-│       │   # Infra + diagnostics: CapacityGauge, CircuitBreakerPanel, DetectionStatsPanel,
+│       │   # Infra + diagnostics: OperationsPanel, AudioAlertsPanel, CircuitBreakerPanel, DetectionStatsPanel,
 │       │   #                      ActivityPanel, AchievementsPanel, SettingsDialog,
 │       │   #                      ScheduleSection, SchedulesDialog, VoiceInputButton,
 │       │   #                      EffectiveHookSettingsModal, HookInventorySection,
@@ -511,7 +587,7 @@ kookr/
 │           ├── store-types.ts             # Store-wide types
 │           ├── slices/                    # achievements-system, project-sidebar,
 │           │                              # transport-session, triage-navigation, workspace,
-│           │                              # oss-attempts
+│           │                              # oss-attempts, system-status
 │           ├── onboarding-store.ts        # Onboarding tour state
 │           ├── onboarding-status.ts       # Onboarding persistence state
 │           ├── launch-task-dialog-draft.ts# Launch dialog draft persistence

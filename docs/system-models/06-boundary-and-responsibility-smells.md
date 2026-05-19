@@ -12,7 +12,7 @@ Identify design smells in the V1 architecture before implementation. Pre-impleme
 
 **Detail:** The adapter parses structured data (hooks + transcript JSONL) into `AgentEvent` objects, and could derive status. But the supervisor also detects `stuck` and `waiting_for_input` states. Who owns the canonical agent status?
 
-**Decision (accepted):** Adapter emits only raw events (`tool_use`, `error`, `completed`). Supervisor owns the `AgentStatus` state machine and all status transitions. The adapter is a translator (structured data → `AgentEvent`); the supervisor is the single source of truth for agent state. This contract is enforced at the type level: the adapter returns `AgentEvent`, never `AgentStatus`.
+**Decision (accepted, updated 2026-05-19):** Adapter emits only raw events (`tool_use`, `error`, `completed`, etc.) plus terminal lifecycle signals. The supervisor owns derived live state through `AgentState.anomaly`, watchdog verdicts, and attention-queue entries; `AgentStatus` is persisted session metadata, not a live transition machine. The adapter is a translator (structured data → `AgentEvent`); it does not own anomaly or attention state.
 
 ## Ambiguous Ownership Findings
 
@@ -21,7 +21,7 @@ Identify design smells in the V1 architecture before implementation. Pre-impleme
 | 1 | **Process lifecycle** — who kills a managed agent? The adapter (it owns the process handle) or the backend (it receives the GUI command)? | agent-adapter, server | Low | Decided |
 | 2 | **~~Resume serialization~~** — resolved by ADR-007. No more resume subprocess; input delivered through the terminal backend byte-write path | agent-adapter, server, attention-router | ~~Medium~~ | Resolved (ADR-007) |
 
-**#1 Decision (accepted):** The adapter exposes a `stop(agentId)` method. The server calls it in response to the GUI command. Adapter owns the process handle; server owns the routing of user commands.
+**#1 Decision (accepted, updated 2026-05-19):** The server routes user lifecycle commands and calls the adapter/terminal backend to stop or kill sessions. The `TerminalBackend` owns dtach process/session I/O; server lifecycle helpers own the task-level transition and cleanup policy.
 
 **#2 ~~Recommendation~~ (issue #9, resolved by ADR-007):** No longer applicable. With managed terminal sessions, input is delivered through the terminal backend to the running agent process. There is no resume subprocess to serialize.
 
@@ -35,7 +35,7 @@ None found. V1 is simple enough that control paths are singular.
 |---|---|---|---|---|
 | 1 | **Backend monolith** — the single backend process mixes HTTP serving, WebSocket handling, process management, supervisor logic, and task persistence | server/index.ts | Medium — **Accepted simplification** |
 
-**#1 Decision (accepted):** This is a known architectural simplification for V1, not a smell. The process is one, but the code is modular from the start: `server/` (HTTP + WS), `core/` (tasks, supervisor), `adapters/` (tmux + agent I/O). Each concern has defined interfaces and is independently testable. **Extraction trigger:** revisit if supervisor CPU usage interferes with HTTP/WS responsiveness, or if the module count exceeds what a single process can cleanly organize.
+**#1 Decision (accepted, updated 2026-05-19):** This is a known architectural simplification for V1, not a smell. The process is one, but the code is modular: `server/` (HTTP + WS), `core/` (tasks, supervisor), `adapters/` (dtach + agent I/O), `remote/` (session-sharing policy/transport domain), and `frontend/` (SPA). Each concern has defined interfaces and is independently testable. **Extraction trigger:** revisit if supervisor CPU usage interferes with HTTP/WS responsiveness, or if the module count exceeds what a single process can cleanly organize.
 
 ### Resolved: Design-vs-Reality for AskUserQuestion (issue #3)
 

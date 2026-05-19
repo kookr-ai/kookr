@@ -8,7 +8,7 @@ The attention router manages the developer-facing prioritization and navigation.
 
 - Maintain a priority-sorted queue of agents needing attention
 - Serve "getNext" requests: which agent should the developer focus on?
-- Handle three developer actions: **respond** (send input), **skip** (back of queue), **snooze** (pause monitoring + timer)
+- Handle three developer actions: **respond** (send input), **skip** (back of queue), **snooze** (hide finding until expiry/manual wake while monitoring continues)
 - Auto-advance to next agent after any action
 - Detect "all clear" (no queued or snoozed agents need attention). Skipped agents remain queued and can cycle back through `next()`.
 - Manage snooze timers and re-queue agents on expiry
@@ -18,7 +18,7 @@ The attention router manages the developer-facing prioritization and navigation.
 
 - Priority queue of active alerts/bottlenecks
 - Skip state: skipped agents sort after active entries and can cycle back when no active entries remain
-- Snooze timers: `(agentId, expiresAt, reason?)` — on expiry, move the stored anomaly back into the active queue
+- Snooze timers: task-keyed `SnoozeEntry` records when possible, otherwise agent-keyed — on expiry, move the stored anomaly back into the active queue
 - Navigation state: which agent is currently selected
 - "All clear" determination
 - WebSocket message dispatch to the SPA (alerts, updates, snapshots)
