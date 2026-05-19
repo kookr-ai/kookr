@@ -281,6 +281,31 @@ Body.
     expect(parsed.body).toContain('node "$KOOKR_REPO/bin/kookr-spawn.js"');
   });
 
+  test('shipped Repository Idea Scout playbook grounds ideas in the knowledge base', async () => {
+    const content = await readFile('.kookr/playbooks/repository-idea-scout.md', 'utf8');
+    const parsed = parsePlaybook(content, 'repository-idea-scout.md', '/project');
+
+    expect(parsed.name).toBe('Repository Idea Scout');
+    expect(parsed.dependencies).toEqual(['kb']);
+
+    const useKb = parsed.parameters.find((p) => p.name === 'useKnowledgeBase');
+    expect(useKb?.type).toBe('select');
+    expect(useKb?.required).toBe(false);
+    expect(useKb?.default).toBe('auto');
+    expect(useKb?.options?.map((o) => o.value)).toEqual(['auto', 'off']);
+
+    // KB grounding is best-effort augmentation. Lock the three injection
+    // points — seed (Phase 3.5), refine (4.3), critique (4.4) — and the
+    // per-idea report contract so a regression in any of them fails here.
+    expect(parsed.body).toContain('## Knowledge Base Grounding');
+    expect(parsed.body).toContain('## Phase 3.5: Domain Knowledge Survey');
+    expect(parsed.body).toContain('### 4.3 Knowledge Base Refinement');
+    expect(parsed.body).toContain('### 4.4 Critic Review');
+    expect(parsed.body).toContain(
+      'literal headings `## Duplicate evidence table` and `## Knowledge base grounding`',
+    );
+  });
+
   test('validates zero-diff convergence against default iteration cap', () => {
     const content = `---
 name: Bad zero-diff
