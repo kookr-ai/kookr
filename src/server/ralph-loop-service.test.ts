@@ -67,6 +67,7 @@ describe('RalphLoopService', () => {
     const source = readFileSync(new URL('./ralph/routes.ts', import.meta.url), 'utf8');
     expect(source).toContain('ralphLoopService');
     expect(source).not.toContain('new RalphLoopService');
+    expect(source).not.toContain('updateRalphLoop');
     expect(source).not.toContain('claimRalphLoopOwner');
     expect(source).not.toContain('ralphStopFingerprint');
     expect(source).not.toContain('handlingStopFingerprint');
@@ -88,6 +89,12 @@ describe('RalphLoopService', () => {
     expect(source).toContain('.reconcileStartupLoops()');
     expect(source).not.toContain('claimRalphLoopOwner');
     expect(source).not.toContain('reconcileRalphLoops');
+  });
+
+  test('looped playbook launch delegates failed transition ownership to the service', () => {
+    const source = readFileSync(new URL('./use-cases/looped-playbook-launch.ts', import.meta.url), 'utf8');
+    expect(source).toContain('ralphLoopService.markLoopFailed');
+    expect(source).not.toContain('setRalphLoopStatus');
   });
 
   test('validates loop requests at the ownership boundary', () => {

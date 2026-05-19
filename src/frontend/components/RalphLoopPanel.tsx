@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { BurnedOutTarget, RalphIterationLogReadModel, RalphIterationRecord, RalphLoopState, RalphStallConfig } from '../../shared/protocol.js';
 import { formatCost } from '../presentation.js';
+import { updateRalphBurnedTargets, updateRalphLoopPrompt } from '../ralph-loop-api.js';
 
 type RalphLoopPanelData = RalphIterationLogReadModel & {
   /** Full RalphLoopState — narrowed to what the panel actually reads. */
@@ -93,19 +94,11 @@ export function RalphLoopPanel({ taskId }: Props) {
     setPromptSaving(true);
     setPromptMessage(null);
     try {
-      const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/ralph-loop/prompt`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: promptDraft }),
-      });
-      const body = await res.json().catch(() => ({})) as { error?: string; ralphLoop?: RalphLoopReadModel };
-      if (!res.ok) throw new Error(body.error ?? `Request failed with ${res.status}`);
-      if (body.ralphLoop) {
-        setState((current) => current.status === 'ready'
-          ? { ...current, data: { ...current.data, ralphLoop: body.ralphLoop } }
-          : current);
-        setPromptDraft(body.ralphLoop.prompt);
-      }
+      const body = await updateRalphLoopPrompt(taskId, promptDraft);
+      setState((current) => current.status === 'ready'
+        ? { ...current, data: { ...current.data, ralphLoop: body.ralphLoop } }
+        : current);
+      setPromptDraft(body.ralphLoop.prompt);
       promptDirtyRef.current = false;
       setPromptDirty(false);
       setPromptMessage('Saved for future iterations.');
@@ -131,15 +124,7 @@ export function RalphLoopPanel({ taskId }: Props) {
       return;
     }
     try {
-      const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/ralph-loop/burned-targets`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clear: true }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { error?: string };
-        throw new Error(body.error ?? `Request failed with ${res.status}`);
-      }
+      await updateRalphBurnedTargets(taskId, { clear: true });
       // Optimistic local clear; the next 5s poll will refresh authoritatively.
       setState((current) => current.status === 'ready' && current.data.ralphLoop
         ? {

@@ -11,6 +11,7 @@ import { ScheduleSection } from './ScheduleSection.js';
 import { useDnd } from '../hooks/useDnd.js';
 import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
+import { sendRalphLoopCommand, type RalphLoopCommand } from '../ralph-loop-api.js';
 
 export const HEALTHY_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.healthy';
 export const PENDING_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.pending';
@@ -66,15 +67,11 @@ function RalphLoopControls({ agent }: { agent: AgentState }): React.ReactElement
 
   const isActive = loop.status === 'running' || loop.status === 'paused';
 
-  async function callEndpoint(path: string, method = 'POST') {
+  async function runCommand(command: RalphLoopCommand) {
     try {
-      const res = await fetch(path, { method });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({})) as { error?: string };
-        handleAlert('', data.error ?? `Server error ${res.status}`, 'error');
-      }
+      await sendRalphLoopCommand(taskId, command);
     } catch (err) {
-      handleAlert('', String(err), 'error');
+      handleAlert('', err instanceof Error ? err.message : String(err), 'error');
     }
   }
 
@@ -87,20 +84,20 @@ function RalphLoopControls({ agent }: { agent: AgentState }): React.ReactElement
         <button
           className="btn-xs ralph-btn"
           aria-label="Pause Ralph loop"
-          onClick={() => callEndpoint(`/api/tasks/${taskId}/ralph-loop/pause`)}
+          onClick={() => runCommand('pause')}
         >Pause</button>
       )}
       {loop.status === 'paused' && (
         <button
           className="btn-xs ralph-btn"
           aria-label="Resume Ralph loop"
-          onClick={() => callEndpoint(`/api/tasks/${taskId}/ralph-loop/resume`)}
+          onClick={() => runCommand('resume')}
         >Resume</button>
       )}
       <button
         className="btn-xs ralph-btn"
         aria-label="Cancel Ralph loop"
-        onClick={() => callEndpoint(`/api/tasks/${taskId}/ralph-loop`, 'DELETE')}
+        onClick={() => runCommand('cancel')}
       >Cancel</button>
     </span>
   );
