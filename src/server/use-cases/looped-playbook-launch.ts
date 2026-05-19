@@ -151,14 +151,12 @@ export async function launchLoopedPlaybook(
     try {
       await deps.ralphLoopService.startLoop(result.task, buildPlaybookRalphLoopRequest(prepared, loopPrompt));
     } catch (err) {
-      if (result.task.ralphLoop) {
-        deps.taskStore.setRalphLoopStatus(result.task.id, 'failed');
-      }
+      deps.ralphLoopService.markLoopFailed(result.task.id);
       await deps.cleanupFailedTask?.(result.task.id);
       throw err;
     }
 
-    return result;
+    return refreshLaunchResultTask(deps.taskStore, result);
   } finally {
     inFlightLoopedPlaybooks.delete(key);
   }
@@ -302,9 +300,7 @@ export async function replaceLoopedPlaybook(
     try {
       await deps.ralphLoopService.startLoop(result.task, buildPlaybookRalphLoopRequest(prepared, loopPrompt));
     } catch (err) {
-      if (result.task.ralphLoop) {
-        deps.taskStore.setRalphLoopStatus(result.task.id, 'failed');
-      }
+      deps.ralphLoopService.markLoopFailed(result.task.id);
       await deps.cleanupFailedTask?.(result.task.id);
       throw err;
     }
@@ -327,10 +323,14 @@ export async function replaceLoopedPlaybook(
       }
     }
 
-    return { result, replacedTaskId: input.replacedTaskId, oldIteration };
+    return { result: refreshLaunchResultTask(deps.taskStore, result), replacedTaskId: input.replacedTaskId, oldIteration };
   } finally {
     inFlightLoopedPlaybooks.delete(inputKey);
   }
+}
+
+function refreshLaunchResultTask(taskStore: TaskStore, result: LaunchResult): LaunchResult {
+  return { ...result, task: taskStore.getTask(result.task.id) ?? result.task };
 }
 
 export function buildPlaybookRalphLoopRequest(

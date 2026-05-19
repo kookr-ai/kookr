@@ -315,21 +315,20 @@ export async function launchTask(
     criteria: opts.criteria,
     parentTaskId: opts.parentTaskId,
     agentType,
+    name: opts.name,
+    playbookId: opts.playbookId,
+    projectId: opts.projectId,
     playbookParameterValues: opts.playbookParameterValues,
     launchHealthSummary,
     launchNote,
   });
 
-  if (opts.name) task.name = opts.name;
-  if (opts.playbookId) task.playbookId = opts.playbookId;
-  if (opts.projectId) taskStore.setProjectId(task.id, opts.projectId);
-
   if (taskStore.getActiveCount() >= maxActive) {
-    taskStore.pendTask(task.id);
+    const queuedTask = taskStore.pendTask(task.id);
     // The task record is committed (queued for promotion), so the round-robin
     // launch consumed its slot — advance the rotation.
     if (isRoundRobin) deps.roundRobinCursor?.advance();
-    return { task, queued: true };
+    return { task: queuedTask, queued: true };
   }
 
   // PR4: ralph-loop launches need verdict env injected so iteration 0 can
@@ -357,8 +356,9 @@ export async function launchTask(
   if (isRoundRobin) deps.roundRobinCursor?.advance();
   const source = opts.launchSource ?? 'api';
   console.log(`[launch] source=${source} agent=${agentType} taskId=${task.id} cwd=${opts.cwd}`);
-  await registerNewAgent(task, lifecycleDeps);
-  return { task, queued: false };
+  const launchedTask = taskStore.getTask(task.id) ?? task;
+  await registerNewAgent(launchedTask, lifecycleDeps);
+  return { task: launchedTask, queued: false };
 }
 
 export function promptWithLaunchNote(task: Pick<Task, 'prompt' | 'launchNote'>): string {
@@ -430,6 +430,7 @@ export async function launchFreshTaskSession(
     undefined,
     opts,
   );
-  await registerNewAgent(task, deps.lifecycleDeps);
+  const launchedTask = deps.taskStore.getTask(task.id) ?? task;
+  await registerNewAgent(launchedTask, deps.lifecycleDeps);
   return sessionId;
 }

@@ -3,6 +3,13 @@ import { isStopFromMainTaskSession, ralphStopFingerprint } from './stop-event-ow
 import { TaskStore } from '../../core/tasks.js';
 import type { AgentEvent } from '../../core/types.js';
 
+function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
+  const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
+  const task = targetStore.getTaskForMutation(created.id);
+  if (!task) throw new Error(`missing task ${created.id}`);
+  return task;
+}
+
 describe('isStopFromMainTaskSession', () => {
   test('accepts Stop from the Ralph owner terminal session before runtime metadata arrives', () => {
     // Regression for the iteration-stall bug. Before the fix, a Ralph loop
@@ -10,7 +17,7 @@ describe('isStopFromMainTaskSession', () => {
     // old three-ref Stop gate rejected the agent's Stop before the runtime id
     // was backfilled. The gate now keys on the terminal session owner only.
     const store = new TaskStore();
-    const task = store.createTask('Looped', '/cwd');
+    const task = createTaskForMutation(store, 'Looped', '/cwd');
     store.addSession(task.id, {
       tmuxSession: 'kookr-loop',
       agentType: 'claude-code',
@@ -40,7 +47,7 @@ describe('isStopFromMainTaskSession', () => {
 
   test('rejects Stop from a stale terminal session even when runtime metadata matches', () => {
     const store = new TaskStore();
-    const task = store.createTask('Looped', '/cwd');
+    const task = createTaskForMutation(store, 'Looped', '/cwd');
     store.addSession(task.id, {
       tmuxSession: 'kookr-owner',
       agentType: 'claude-code',

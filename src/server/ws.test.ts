@@ -14,7 +14,7 @@ import type { GitHubReference, GitHubPRState, GitHubIssueState } from '../core/g
 import { MessageRouter } from './ws.js';
 import type { ServerMessage, ClientMessage } from '../shared/protocol.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
-import type { RalphLoopService } from './ralph-loop-service.js';
+import { RalphLoopService } from './ralph-loop-service.js';
 
 describe('WebSocket MessageRouter', () => {
   let taskStore: TaskStore;
@@ -35,17 +35,32 @@ describe('WebSocket MessageRouter', () => {
     terminal = new FakeTerminalBackend();
     adapter = new ClaudeCodeAdapter(terminal, taskStore);
     sentMessages = [];
-    cancelLoop = vi.fn((task) => {
-      if (task.ralphLoop) task.ralphLoop.status = 'cancelled';
-      return { ok: true, value: 'cancelled', changed: true };
+    const ralphLoopService = new RalphLoopService({
+      taskStore,
+      monitor,
+      serverCwd: '/test/cwd',
+      broadcastToAll: (msg) => { sentMessages.push(msg); },
+      interactionLog: undefined,
+      ralphCycler: undefined,
+      terminalBackend: terminal,
+      tokenTracker: undefined as never,
+      launchFreshTaskSession: async () => {
+        throw new Error('not used');
+      },
+      completeTask: async () => undefined,
     });
+    cancelLoop = vi.fn(ralphLoopService.cancelLoop.bind(ralphLoopService));
 
     /** Minimal launch function for tests — mirrors LaunchService without registration. */
     const testLaunchTask = async (opts: LaunchOpts): Promise<LaunchResult> => {
-      const task = taskStore.createTask(opts.prompt, opts.cwd, opts.criteria);
-      if (opts.name) task.name = opts.name;
-      if (opts.playbookId) task.playbookId = opts.playbookId;
-      if (opts.projectId) taskStore.setProjectId(task.id, opts.projectId);
+      const task = taskStore.createTask({
+        prompt: opts.prompt,
+        cwd: opts.cwd,
+        criteria: opts.criteria,
+        name: opts.name,
+        playbookId: opts.playbookId,
+        projectId: opts.projectId,
+      });
       await adapter.launch(task.id, opts.prompt, opts.cwd);
       return { task, queued: false };
     };
@@ -523,8 +538,12 @@ describe('WebSocket MessageRouter', () => {
       interactionLog,
       launchTask: async (opts: LaunchOpts): Promise<LaunchResult> => {
         launchedPrompts.push(opts.prompt);
-        const task = taskStore.createTask(opts.prompt, opts.cwd, opts.criteria);
-        if (opts.name) task.name = opts.name;
+        const task = taskStore.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          criteria: opts.criteria,
+          name: opts.name,
+        });
         return { task, queued: false };
       },
     });
@@ -690,7 +709,7 @@ describe('WebSocket MessageRouter', () => {
       // state intact. See docs/rfc/rfc-ralph-loop-batch-mode-findings.md Phase 0.
       const task = taskStore.createTask('Looped', '/cwd');
       const tmuxName = await adapter.launch(task.id, 'Looped', '/cwd');
-      task.ralphLoop = {
+      taskStore.getTaskForMutation(task.id)!.ralphLoop = {
         prompt: 'iterate',
         iterationCap: 5,
         currentIteration: 1,
@@ -699,18 +718,19 @@ describe('WebSocket MessageRouter', () => {
         cumulativeIterations: 1,
         ownerSessionId: tmuxName,
       };
-      const startStatus = task.status;
+      const startStatus = taskStore.getTask(task.id)!.status;
 
       await router.handleMessage({ type: 'completeTask', taskId: task.id });
 
       expect(cancelLoop).not.toHaveBeenCalled();
       // Task status is preserved — the loop continues, so the parent task
       // does not transition to 'completed'.
-      expect(task.status).toBe(startStatus);
-      expect(task.ralphLoop.status).toBe(loopStatus);
+      const updated = taskStore.getTask(task.id)!;
+      expect(updated.status).toBe(startStatus);
+      expect(updated.ralphLoop!.status).toBe(loopStatus);
       // Owner session is killed so its Stop hook can spawn the next iteration.
       expect(await terminal.isAlive(tmuxName)).toBe(false);
-      expect(task.sessions[0].lastStatus).toBe('completed');
+      expect(updated.sessions[0].lastStatus).toBe('completed');
     },
   );
 
@@ -721,7 +741,7 @@ describe('WebSocket MessageRouter', () => {
     // still 'running' or 'paused'.
     const task = taskStore.createTask('Looped', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Looped', '/cwd');
-    task.ralphLoop = {
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = {
       prompt: 'iterate',
       iterationCap: 5,
       currentIteration: 5,
@@ -734,7 +754,7 @@ describe('WebSocket MessageRouter', () => {
     await router.handleMessage({ type: 'completeTask', taskId: task.id });
 
     expect(cancelLoop).not.toHaveBeenCalled();
-    expect(task.status).toBe('completed');
+    expect(taskStore.getTask(task.id)!.status).toBe('completed');
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 
@@ -822,7 +842,7 @@ describe('WebSocket MessageRouter', () => {
       // docs/rfc/rfc-ralph-loop-batch-mode-findings.md Phase 0.
       const task = taskStore.createTask('Looped', '/cwd');
       const tmuxName = await adapter.launch(task.id, 'Looped', '/cwd');
-      task.ralphLoop = {
+      taskStore.getTaskForMutation(task.id)!.ralphLoop = {
         prompt: 'iterate',
         iterationCap: 5,
         currentIteration: 1,
@@ -834,9 +854,10 @@ describe('WebSocket MessageRouter', () => {
 
       await router.handleMessage({ type: 'cancelTask', taskId: task.id });
 
-      expect(cancelLoop).toHaveBeenCalledWith(task);
-      expect(task.status).toBe('cancelled');
-      expect(task.ralphLoop.status).toBe('cancelled');
+      expect(cancelLoop).toHaveBeenCalledTimes(1);
+      const updated = taskStore.getTask(task.id)!;
+      expect(updated.status).toBe('cancelled');
+      expect(updated.ralphLoop!.status).toBe('cancelled');
       expect(await terminal.isAlive(tmuxName)).toBe(false);
     },
   );
@@ -844,7 +865,7 @@ describe('WebSocket MessageRouter', () => {
   test('cancelTask on a Ralph child whose loop already terminated does not re-cancel', async () => {
     const task = taskStore.createTask('Looped', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Looped', '/cwd');
-    task.ralphLoop = {
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = {
       prompt: 'iterate',
       iterationCap: 5,
       currentIteration: 5,
@@ -857,8 +878,9 @@ describe('WebSocket MessageRouter', () => {
     await router.handleMessage({ type: 'cancelTask', taskId: task.id });
 
     expect(cancelLoop).not.toHaveBeenCalled();
-    expect(task.status).toBe('cancelled');
-    expect(task.ralphLoop.status).toBe('completed');
+    const updated = taskStore.getTask(task.id)!;
+    expect(updated.status).toBe('cancelled');
+    expect(updated.ralphLoop!.status).toBe('completed');
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 
@@ -1408,10 +1430,14 @@ describe('WebSocket MessageRouter — Playbooks', () => {
     tempDir = await mkdtemp(join(tmpdir(), 'kookr-ws-test-'));
 
     const testLaunchTask = async (opts: LaunchOpts): Promise<LaunchResult> => {
-      const task = taskStore.createTask(opts.prompt, opts.cwd, opts.criteria);
-      if (opts.name) task.name = opts.name;
-      if (opts.playbookId) task.playbookId = opts.playbookId;
-      if (opts.projectId) taskStore.setProjectId(task.id, opts.projectId);
+      const task = taskStore.createTask({
+        prompt: opts.prompt,
+        cwd: opts.cwd,
+        criteria: opts.criteria,
+        name: opts.name,
+        playbookId: opts.playbookId,
+        projectId: opts.projectId,
+      });
       await adapter.launch(task.id, opts.prompt, opts.cwd);
       return { task, queued: false };
     };

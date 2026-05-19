@@ -503,7 +503,7 @@ describe('launchTask', () => {
         createdAt: new Date(),
         lastStatus: 'completed',
       });
-      existing.ralphLoop = {
+      store.getTaskForMutation(existing.id)!.ralphLoop = {
         prompt: 'iterate',
         iterationCap: 5,
         currentIteration: 1,

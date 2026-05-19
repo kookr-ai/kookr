@@ -46,12 +46,16 @@ export interface CreateTaskOptions {
   criteria?: string;
   parentTaskId?: string;
   agentType?: AgentType;
+  name?: string;
+  playbookId?: string;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
   /** Advisory diagnostics captured during launch without changing task identity. */
   launchHealthSummary?: TaskLaunchHealthSummary;
   /** Warning text prepended to the first agent prompt, but not stored in `prompt`. */
   launchNote?: string;
+  /** Normalized project identifier (e.g. "github.com/owner/repo" or "local/dirname"). */
+  projectId?: string;
 }
 
 export interface TaskLaunchHealthSummary {

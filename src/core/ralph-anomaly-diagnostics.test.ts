@@ -16,6 +16,13 @@ const baseLoop = (overrides: Partial<RalphLoopState> = {}): RalphLoopState => ({
   ...overrides,
 });
 
+function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
+  const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
+  const task = targetStore.getTaskForMutation(created.id);
+  if (!task) throw new Error(`missing task ${created.id}`);
+  return task;
+}
+
 const record = (overrides: Partial<RalphIterationRecord> = {}): RalphIterationRecord => ({
   iterationNumber: 0,
   startedAt: 1_000,
@@ -41,7 +48,7 @@ describe('generateRalphAnomalyDiagnosticsReport', () => {
   });
 
   it('reports no-data readiness when Ralph loops have no iteration logs', async () => {
-    const task = store.createTask('loop with no data', dir);
+    const task = createTaskForMutation(store, 'loop with no data', dir);
     task.ralphLoop = baseLoop();
 
     const report = await generateRalphAnomalyDiagnosticsReport(store.getAllTasks(), new Date('2026-05-02T10:00:00Z'));
@@ -57,7 +64,7 @@ describe('generateRalphAnomalyDiagnosticsReport', () => {
   });
 
   it('keeps unknown cost distinct from zero cost and blocks cost velocity readiness', async () => {
-    const task = store.createTask('cost telemetry', dir);
+    const task = createTaskForMutation(store, 'cost telemetry', dir);
     task.ralphLoop = baseLoop();
     await writeRecords(dir, [
       record({ iterationNumber: 0, cumulativeCostUsd: null, startedAt: 1_000, endedAt: 2_000 }),
@@ -76,7 +83,7 @@ describe('generateRalphAnomalyDiagnosticsReport', () => {
   });
 
   it('computes cost deltas chronologically when re-armed loop epochs reuse iteration numbers', async () => {
-    const task = store.createTask('re-armed cost telemetry', dir);
+    const task = createTaskForMutation(store, 're-armed cost telemetry', dir);
     task.ralphLoop = baseLoop();
     await writeRecords(dir, [
       record({ iterationNumber: 0, cumulativeCostUsd: 0, startedAt: 1_000, endedAt: 2_000 }),
@@ -97,7 +104,7 @@ describe('generateRalphAnomalyDiagnosticsReport', () => {
   });
 
   it('does not treat small runtime samples as active anomaly thresholds', async () => {
-    const task = store.createTask('runtime telemetry', dir);
+    const task = createTaskForMutation(store, 'runtime telemetry', dir);
     task.ralphLoop = baseLoop();
     await writeRecords(dir, [
       record({ iterationNumber: 0, startedAt: 1_000, endedAt: 1_000 }),
@@ -115,7 +122,7 @@ describe('generateRalphAnomalyDiagnosticsReport', () => {
   });
 
   it('marks runtime and cost signals ready only after enough observed samples', async () => {
-    const task = store.createTask('ready telemetry', dir);
+    const task = createTaskForMutation(store, 'ready telemetry', dir);
     task.ralphLoop = baseLoop({ costCapUsd: 10 });
     const records = Array.from({ length: 21 }, (_, index) => record({
       iterationNumber: index,
@@ -140,7 +147,7 @@ describe('generateRalphAnomalyDiagnosticsReport', () => {
   });
 
   it('computes cost velocity candidates from non-zero deltas without hiding zero deltas', async () => {
-    const task = store.createTask('sparse spend telemetry', dir);
+    const task = createTaskForMutation(store, 'sparse spend telemetry', dir);
     task.ralphLoop = baseLoop({ costCapUsd: 10 });
     let cumulativeCostUsd = 0;
     const records = Array.from({ length: 41 }, (_, index) => {

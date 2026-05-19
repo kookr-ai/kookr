@@ -43,7 +43,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-1',
     prompt: 'Fix the bug in auth',
-    cwd: '/home/user/project',
+    cwd: '/workspace/project',
     agentType: 'claude-code',
     status: 'inProgress',
     sessions: [{ tmuxSession: 'kookr-abc123', lastStatus: 'inProgress' }],
@@ -167,7 +167,7 @@ describe('registerNewAgent', () => {
 
     await registerNewAgent(makeTask(), deps);
 
-    expect(deps.autoNameTask).toHaveBeenCalledWith('task-1', 'Fix the bug in auth', '/home/user/project', undefined);
+    expect(deps.autoNameTask).toHaveBeenCalledWith('task-1', 'Fix the bug in auth', '/workspace/project', undefined);
   });
 
   test('passes criteria to autoNameTask', async () => {
@@ -176,7 +176,7 @@ describe('registerNewAgent', () => {
 
     await registerNewAgent(task, deps);
 
-    expect(deps.autoNameTask).toHaveBeenCalledWith('task-1', 'Fix the bug in auth', '/home/user/project', 'Must pass all tests');
+    expect(deps.autoNameTask).toHaveBeenCalledWith('task-1', 'Fix the bug in auth', '/workspace/project', 'Must pass all tests');
   });
 
   test('skips auto-naming when task already has a name (e.g., playbooks)', async () => {
@@ -309,7 +309,7 @@ function makeTerminalInputDeps(overrides: Partial<TerminalInputDeps> = {}): Term
     } as any,
     abortPendingSuggestion: vi.fn(),
     broadcastToAll: vi.fn(),
-    serverCwd: '/home/user/project',
+    serverCwd: '/workspace/project',
     ...overrides,
   };
 }
@@ -323,7 +323,7 @@ describe('handleTerminalInput', () => {
     expect(deps.monitor.markInputReceived).toHaveBeenCalledWith('kookr-session-1');
     expect(deps.abortPendingSuggestion).toHaveBeenCalledWith('kookr-session-1');
     expect(deps.broadcastToAll).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'snapshot', serverCwd: '/home/user/project' }),
+      expect.objectContaining({ type: 'snapshot', serverCwd: '/workspace/project' }),
     );
   });
 
@@ -736,7 +736,7 @@ function makePromotionDeps(overrides: Partial<PromotionDeps> = {}): PromotionDep
     adapterRegistry: createAdapterRegistry(adapter),
     lifecycleDeps: makeDeps(),
     broadcastToAll: vi.fn(),
-    serverCwd: '/home/user/project',
+    serverCwd: '/workspace/project',
     ...overrides,
   };
 }
@@ -786,6 +786,7 @@ describe('promotePendingTasks', () => {
       getNextPending: vi.fn()
         .mockReturnValueOnce(pendingTask)
         .mockReturnValueOnce(undefined),
+      getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
     };
     const lifecycleDeps = makeDeps();
@@ -798,7 +799,7 @@ describe('promotePendingTasks', () => {
     const result = await promotePendingTasks(deps);
 
     expect(result).toBe(1);
-    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith('pending-1', 'Fix the bug in auth', '/home/user/project');
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith('pending-1', 'Fix the bug in auth', '/workspace/project');
     expect(deps.broadcastToAll).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'snapshot' }),
     );
@@ -817,6 +818,7 @@ describe('promotePendingTasks', () => {
       getNextPending: vi.fn()
         .mockReturnValueOnce(pendingTask)
         .mockReturnValueOnce(undefined),
+      getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
     };
     const lifecycleDeps = makeDeps();
@@ -832,7 +834,7 @@ describe('promotePendingTasks', () => {
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
       'pending-1',
       '[Kookr launch warning] KB unavailable.\n\nFix the bug in auth',
-      '/home/user/project',
+      '/workspace/project',
     );
   });
 
@@ -853,6 +855,7 @@ describe('promotePendingTasks', () => {
     const mockTaskStore = {
       getActiveCount: vi.fn().mockReturnValue(0), // always below limit
       getNextPending: vi.fn().mockReturnValue(stuckTask), // always returns same task
+      getTask: vi.fn().mockReturnValue(stuckTask),
       cancelTask: vi.fn(),
     };
     const lifecycleDeps = makeDeps();
@@ -886,6 +889,7 @@ describe('promotePendingTasks', () => {
       getNextPending: vi.fn()
         .mockReturnValueOnce(pendingTask)
         .mockReturnValueOnce(undefined),
+      getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
     };
     const deps = makePromotionDeps({
@@ -1000,6 +1004,18 @@ describe('promotePendingTasks (integration)', () => {
     expect(taskStore.getTask(t3.id)!.status).toBe('inProgress');
     expect(taskStore.getActiveCount()).toBe(2);
     expect(taskStore.getPendingCount()).toBe(0);
+  });
+
+  test('registers the post-launch task snapshot after promotion', async () => {
+    const task = taskStore.createTask('Task 1', '/cwd');
+    taskStore.pendTask(task.id);
+
+    const promoted = await promotePendingTasks(deps);
+
+    expect(promoted).toBe(1);
+    expect(deps.lifecycleDeps.monitor.registerAgent).toHaveBeenCalledWith('kookr-test-1');
+    expect(deps.lifecycleDeps.watchdog.registerAgent).toHaveBeenCalledWith('kookr-test-1');
+    expect(deps.lifecycleDeps.hookWatcher.watch).toHaveBeenCalledWith('kookr-test-1', { replayExisting: true });
   });
 
   test('cancels task when adapter.launch fails', async () => {

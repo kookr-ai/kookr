@@ -137,19 +137,20 @@ export async function reconcile(
     // gap; reconciliation must not racily mark the parent task 'terminated'
     // during that window. See docs/rfc/rfc-ralph-loop-batch-mode-findings.md
     // Phase 0.
+    const latestTask = taskStore.getTask(task.id) ?? task;
     const ralphActive =
-      task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
+      latestTask.ralphLoop?.status === 'running' || latestTask.ralphLoop?.status === 'paused';
     if (
       !ralphActive &&
-      (task.status === 'inProgress' || task.status === 'open') &&
-      task.sessions.length > 0 &&
-      task.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted')
+      (latestTask.status === 'inProgress' || latestTask.status === 'open') &&
+      latestTask.sessions.length > 0 &&
+      latestTask.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted')
     ) {
-      if (task.status === 'open') {
-        taskStore.startTask(task.id);
+      if (latestTask.status === 'open') {
+        taskStore.startTask(latestTask.id);
       }
-      taskStore.terminateTask(task.id);
-      result.tasksTerminated.push(task.id);
+      taskStore.terminateTask(latestTask.id);
+      result.tasksTerminated.push(latestTask.id);
     }
   }
 

@@ -148,8 +148,8 @@ export class LifecycleHandler {
         // Natural session ends are auto-completed via reconciliation instead.
         const stopTask = this.deps.taskStore.findTaskBySession(msg.agentId);
         if (stopTask && stopTask.status === 'inProgress') {
-          this.deps.taskStore.updateSession(stopTask.id, msg.agentId, { lastStatus: 'completed' });
-          if (stopTask.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted')) {
+          const updated = this.deps.taskStore.updateSession(stopTask.id, msg.agentId, { lastStatus: 'completed' });
+          if (updated.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted')) {
             this.deps.taskStore.reopenTask(stopTask.id);
           }
         }

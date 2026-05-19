@@ -29,6 +29,13 @@ function makeSubagentStart(sessionId: string, agentId = 'subagent-1'): AgentEven
   return { type: 'subagent_start', sessionId, agentId, agentType: 'test-agent' };
 }
 
+function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
+  const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
+  const task = targetStore.getTaskForMutation(created.id);
+  if (!task) throw new Error(`missing task ${created.id}`);
+  return task;
+}
+
 describe('Monitor', () => {
   let taskStore: TaskStore;
   let queue: AttentionQueue;
@@ -134,7 +141,7 @@ describe('Monitor', () => {
   });
 
   test('getSnapshot excludes stale anomaly state for completed tasks', () => {
-    const task = taskStore.createTask({ prompt: 'ship it', cwd: '/repo' });
+    const task = createTaskForMutation(taskStore, { prompt: 'ship it', cwd: '/repo' });
     taskStore.addSession(task.id, {
       tmuxSession: 'agent-1',
       agentType: 'claude-code',
@@ -155,7 +162,7 @@ describe('Monitor', () => {
   });
 
   test('getSnapshot hides completed Ralph iteration sessions while keeping live owner visible', () => {
-    const task = taskStore.createTask({ prompt: 'loop', cwd: '/repo' });
+    const task = createTaskForMutation(taskStore, { prompt: 'loop', cwd: '/repo' });
     task.ralphLoop = {
       prompt: 'again',
       iterationCap: 5,
@@ -383,13 +390,13 @@ describe('Monitor', () => {
   });
 
   test('getSnapshot includes task metadata when task is linked', () => {
-    const task = taskStore.createTask('Fix auth token refresh in the login flow', '/home/user/webapp');
+    const task = createTaskForMutation(taskStore, 'Fix auth token refresh in the login flow', '/workspace/webapp');
     taskStore.setProjectId(task.id, 'github.com/acme/webapp');
     const sessionCreatedAt = new Date('2026-03-24T10:00:00Z');
     taskStore.addSession(task.id, {
       tmuxSession: 'agent-1',
       agentType: 'claude-code',
-      cwd: '/home/user/webapp',
+      cwd: '/workspace/webapp',
       createdAt: sessionCreatedAt,
     });
     monitor.processEvents('agent-1', [makeToolUse('s1', 'Bash')]);
@@ -400,7 +407,7 @@ describe('Monitor', () => {
     expect(a1).toBeDefined();
     expect(a1!.taskId).toBe(task.id);
     expect(a1!.taskName).toBe('Fix auth token refresh in the login flow');
-    expect(a1!.cwd).toBe('/home/user/webapp');
+    expect(a1!.cwd).toBe('/workspace/webapp');
     expect(a1!.agentType).toBe('claude-code');
     expect(a1!.startedAt).toBe(sessionCreatedAt.toISOString());
     expect(a1!.projectId).toBe('github.com/acme/webapp');
@@ -408,7 +415,7 @@ describe('Monitor', () => {
   });
 
   test('getSnapshot uses projectId for stable display label across worktrees', () => {
-    const task = taskStore.createTask('Investigate prod issue', '/path/to/kookr-prod');
+    const task = createTaskForMutation(taskStore, 'Investigate prod issue', '/path/to/kookr-prod');
     taskStore.setProjectId(task.id, 'github.com/kookr-ai/kookr');
     taskStore.addSession(task.id, {
       tmuxSession: 'agent-1',
@@ -425,7 +432,7 @@ describe('Monitor', () => {
   });
 
   test('getSnapshot uses task.name over truncated prompt when set', () => {
-    const task = taskStore.createTask('Fix auth token refresh in the login flow', '/cwd');
+    const task = createTaskForMutation(taskStore, 'Fix auth token refresh in the login flow', '/cwd');
     taskStore.renameTask(task.id, 'Auth fix');
     taskStore.addSession(task.id, {
       tmuxSession: 'agent-1',
@@ -443,7 +450,7 @@ describe('Monitor', () => {
 
   test('getSnapshot truncates long task prompts for taskName', () => {
     const longPrompt = 'Refactor the authentication middleware to support OAuth2 with PKCE flow and add comprehensive integration tests for all edge cases';
-    const task = taskStore.createTask(longPrompt, '/cwd');
+    const task = createTaskForMutation(taskStore, longPrompt, '/cwd');
     taskStore.addSession(task.id, {
       tmuxSession: 'agent-1',
       agentType: 'claude-code',
@@ -474,7 +481,7 @@ describe('Monitor', () => {
 
   describe('turn state in snapshot (issue #358)', () => {
     function linkInteractiveTask(agentType: 'codex-cli' | 'claude-code', tmuxSession: string) {
-      const task = taskStore.createTask(`Interactive ${agentType} task`, '/repo');
+      const task = createTaskForMutation(taskStore, `Interactive ${agentType} task`, '/repo');
       // addSession transitions the task to 'inProgress'; the interactive
       // terminal process then stays alive for follow-ups.
       taskStore.addSession(task.id, {
@@ -712,7 +719,7 @@ describe('Monitor', () => {
 
   describe('getSnapshot synthetic entries', () => {
     test('includes synthetic entry for pending task with no agent', () => {
-      const task = taskStore.createTask('Install dependencies', '/home/user/app');
+      const task = createTaskForMutation(taskStore, 'Install dependencies', '/workspace/app');
       // open -> pending
       taskStore.pendTask(task.id);
 
@@ -724,16 +731,16 @@ describe('Monitor', () => {
       expect(entry!.events).toEqual([]);
       expect(entry!.anomaly).toBeNull();
       expect(entry!.taskName).toBe('Install dependencies');
-      expect(entry!.cwd).toBe('/home/user/app');
+      expect(entry!.cwd).toBe('/workspace/app');
       expect(entry!.taskId).toBe(task.id);
       expect(entry!.description).toBe('Install dependencies');
       expect(entry!.startedAt).toBe(task.createdAt.toISOString());
     });
 
     test('includes playbookParameterValues in snapshot for playbook tasks', () => {
-      const task = taskStore.createTask({
+      const task = createTaskForMutation(taskStore, {
         prompt: 'Analyze owner/repo',
-        cwd: '/home/user/app',
+        cwd: '/workspace/app',
         playbookParameterValues: { repo: 'owner/repo', count: '10' },
       });
       // Set playbookId (normally done by launch-service)
@@ -749,13 +756,13 @@ describe('Monitor', () => {
     });
 
     test('includes synthetic entry for completed task after agent unregistered', () => {
-      const task = taskStore.createTask('Run database migration', '/home/user/app');
+      const task = createTaskForMutation(taskStore, 'Run database migration', '/workspace/app');
       const sessionCreatedAt = new Date('2026-03-30T12:00:00Z');
       // addSession auto-transitions open -> inProgress
       taskStore.addSession(task.id, {
         tmuxSession: 'agent-c1',
         agentType: 'claude-code',
-        cwd: '/home/user/app',
+        cwd: '/workspace/app',
         createdAt: sessionCreatedAt,
       });
       monitor.registerAgent('agent-c1');
@@ -775,16 +782,16 @@ describe('Monitor', () => {
       expect(entry!.events).toEqual([]);
       expect(entry!.anomaly).toBeNull();
       expect(entry!.taskName).toBe('Run database migration');
-      expect(entry!.cwd).toBe('/home/user/app');
+      expect(entry!.cwd).toBe('/workspace/app');
       expect(entry!.description).toBe('Run database migration');
     });
 
     test('completed task synthetic entry normalizes legacy missing worktree health as cleaned_up', () => {
-      const task = taskStore.createTask('Ship implementation PR', '/home/user/app');
+      const task = createTaskForMutation(taskStore, 'Ship implementation PR', '/workspace/app');
       taskStore.addSession(task.id, {
         tmuxSession: 'agent-cleaned',
         agentType: 'claude-code',
-        cwd: '/home/user/app',
+        cwd: '/workspace/app',
         createdAt: new Date(),
         worktreeHealth: 'missing',
       });
@@ -799,12 +806,12 @@ describe('Monitor', () => {
     });
 
     test('includes synthetic entry for cancelled task after agent unregistered', () => {
-      const task = taskStore.createTask('Deploy staging build', '/home/user/app');
+      const task = createTaskForMutation(taskStore, 'Deploy staging build', '/workspace/app');
       // addSession auto-transitions open -> inProgress
       taskStore.addSession(task.id, {
         tmuxSession: 'agent-x1',
         agentType: 'claude-code',
-        cwd: '/home/user/app',
+        cwd: '/workspace/app',
         createdAt: new Date(),
       });
       monitor.registerAgent('agent-x1');
@@ -826,11 +833,11 @@ describe('Monitor', () => {
     });
 
     test('does NOT duplicate entry when task has both active agent and task record', () => {
-      const task = taskStore.createTask('Fix login bug', '/home/user/app');
+      const task = createTaskForMutation(taskStore, 'Fix login bug', '/workspace/app');
       taskStore.addSession(task.id, {
         tmuxSession: 'agent-d1',
         agentType: 'claude-code',
-        cwd: '/home/user/app',
+        cwd: '/workspace/app',
         createdAt: new Date(),
       });
       monitor.registerAgent('agent-d1');
@@ -844,11 +851,11 @@ describe('Monitor', () => {
     });
 
     test('completed task synthetic entry includes tokenUsage', () => {
-      const task = taskStore.createTask('Analyze logs', '/home/user/app');
+      const task = createTaskForMutation(taskStore, 'Analyze logs', '/workspace/app');
       taskStore.addSession(task.id, {
         tmuxSession: 'agent-t1',
         agentType: 'claude-code',
-        cwd: '/home/user/app',
+        cwd: '/workspace/app',
         createdAt: new Date(),
       });
       taskStore.updateTokenUsage(task.id, {
@@ -875,11 +882,11 @@ describe('Monitor', () => {
     });
 
     test('active agent snapshot enriches description from task prompt', () => {
-      const task = taskStore.createTask('Refactor the payment module', '/home/user/app');
+      const task = createTaskForMutation(taskStore, 'Refactor the payment module', '/workspace/app');
       taskStore.addSession(task.id, {
         tmuxSession: 'agent-desc',
         agentType: 'claude-code',
-        cwd: '/home/user/app',
+        cwd: '/workspace/app',
         createdAt: new Date(),
       });
       monitor.registerAgent('agent-desc');
@@ -893,7 +900,7 @@ describe('Monitor', () => {
     });
 
     test('cancelled task without sessions uses done-{id} agentId', () => {
-      const task = taskStore.createTask('Build docker image', '/home/user/app');
+      const task = createTaskForMutation(taskStore, 'Build docker image', '/workspace/app');
       // open -> inProgress -> cancelled, no sessions
       taskStore.startTask(task.id);
       taskStore.cancelTask(task.id);

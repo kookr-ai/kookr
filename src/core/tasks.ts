@@ -36,12 +36,6 @@ export class InvalidTransitionError extends Error {
   }
 }
 
-function taskStoreDate(value?: Date | number): Date {
-  if (value instanceof Date) return value;
-  if (typeof value === 'number') return new Date(value);
-  return new Date();
-}
-
 /**
  * Claim (or transfer) the Ralph loop owner session on `task`.
  *
@@ -56,17 +50,13 @@ export function claimRalphLoopOwner(
   task: Task,
   session: SessionInfo | undefined,
   opts: { allowTransfer?: boolean } = {},
-): boolean {
+): void {
   const loop = task.ralphLoop;
-  if (!loop || !session) return false;
+  if (!loop || !session) return;
   const isTransfer = Boolean(loop.ownerSessionId && loop.ownerSessionId !== session.tmuxSession);
-  if (isTransfer && !opts.allowTransfer) return false;
+  if (isTransfer && !opts.allowTransfer) return;
 
-  if (!loop.ownerSessionId || isTransfer) {
-    loop.ownerSessionId = session.tmuxSession;
-    return true;
-  }
-  return false;
+  if (!loop.ownerSessionId || isTransfer) loop.ownerSessionId = session.tmuxSession;
 }
 
 // Valid transitions: from -> set of allowed destinations
@@ -79,11 +69,20 @@ const VALID_TRANSITIONS: Record<TaskStatus, Set<TaskStatus>> = {
   cancelled: new Set(['open']),
 };
 
+function cloneTask(task: Task): Task {
+  return structuredClone(task) as Task;
+}
+
 export class TaskStore {
   private tasks = new Map<string, Task>();
   /** Monotonically increasing lifetime spending counter (USD). Survives task deletion. */
   private lifetimeSpendUsd: number = 0;
 
+  /**
+   * Creates and returns a snapshot of the newly stored task record. Code that
+   * intentionally owns a multi-field state transition must opt in through
+   * getTaskForMutation or a narrower TaskStore mutation API.
+   */
   createTask(opts: CreateTaskOptions): Task;
   createTask(prompt: string, cwd: string, criteria?: string, parentTaskId?: string): Task;
   createTask(promptOrOpts: string | CreateTaskOptions, cwdArg?: string, criteriaArg?: string, parentTaskIdArg?: string): Task {
@@ -96,9 +95,12 @@ export class TaskStore {
       criteria,
       parentTaskId,
       agentType,
+      name,
+      playbookId,
       playbookParameterValues,
       launchHealthSummary,
       launchNote,
+      projectId,
     } = opts;
 
     // Validate parent exists if specified
@@ -119,8 +121,15 @@ export class TaskStore {
       createdAt: now,
       updatedAt: now,
     };
-    if (playbookParameterValues) task.playbookParameterValues = playbookParameterValues;
-    if (launchHealthSummary) task.launchHealthSummary = launchHealthSummary;
+    if (name) task.name = name.trim() || undefined;
+    if (playbookId) task.playbookId = playbookId;
+    if (projectId) task.projectId = projectId;
+    if (playbookParameterValues) {
+      task.playbookParameterValues = structuredClone(playbookParameterValues) as Record<string, string>;
+    }
+    if (launchHealthSummary) {
+      task.launchHealthSummary = structuredClone(launchHealthSummary);
+    }
     if (launchNote) task.launchNote = launchNote;
     this.tasks.set(task.id, task);
 
@@ -134,19 +143,29 @@ export class TaskStore {
       parent.updatedAt = new Date();
     }
 
-    return task;
+    return cloneTask(task);
   }
 
   getTask(id: string): Task | undefined {
+    const task = this.tasks.get(id);
+    return task ? cloneTask(task) : undefined;
+  }
+
+  /**
+   * Return the stored mutable task for code paths that intentionally own a
+   * multi-field state transition. Prefer narrower TaskStore methods for simple
+   * updates; this exists so mutable access is explicit rather than accidental.
+   */
+  getTaskForMutation(id: string): Task | undefined {
     return this.tasks.get(id);
   }
 
   listTasks(filter?: { status?: TaskStatus }): Task[] {
     const all = Array.from(this.tasks.values());
     if (filter?.status) {
-      return all.filter((t) => t.status === filter.status);
+      return all.filter((t) => t.status === filter.status).map(cloneTask);
     }
-    return all;
+    return all.map(cloneTask);
   }
 
   private transition(id: string, to: TaskStatus): Task {
@@ -163,11 +182,11 @@ export class TaskStore {
   }
 
   startTask(id: string): Task {
-    return this.transition(id, 'inProgress');
+    return cloneTask(this.transition(id, 'inProgress'));
   }
 
   completeTask(id: string): Task {
-    return this.transition(id, 'completed');
+    return cloneTask(this.transition(id, 'completed'));
   }
 
   /**
@@ -177,19 +196,19 @@ export class TaskStore {
   terminateTask(id: string): Task {
     const task = this.transition(id, 'terminated');
     task.terminatedAt = new Date();
-    return task;
+    return cloneTask(task);
   }
 
   cancelTask(id: string): Task {
-    return this.transition(id, 'cancelled');
+    return cloneTask(this.transition(id, 'cancelled'));
   }
 
   pendTask(id: string): Task {
-    return this.transition(id, 'pending');
+    return cloneTask(this.transition(id, 'pending'));
   }
 
   reopenTask(id: string): Task {
-    return this.transition(id, 'open');
+    return cloneTask(this.transition(id, 'open'));
   }
 
   deleteTask(id: string): void {
@@ -225,7 +244,7 @@ export class TaskStore {
         }
       }
     }
-    return oldest;
+    return oldest ? cloneTask(oldest) : undefined;
   }
 
   /** Count pending tasks. */
@@ -244,7 +263,7 @@ export class TaskStore {
     }
     task.name = name.trim() || undefined;
     task.updatedAt = new Date();
-    return task;
+    return cloneTask(task);
   }
 
   addSession(taskId: string, session: SessionInfo): Task {
@@ -252,7 +271,7 @@ export class TaskStore {
     if (!task) {
       throw new Error(`Task not found: ${taskId}`);
     }
-    task.sessions.push(session);
+    task.sessions.push(structuredClone(session) as SessionInfo);
     task.updatedAt = new Date();
 
     // Auto-transition to inProgress when a session is added (covers both fresh and promoted tasks)
@@ -260,7 +279,7 @@ export class TaskStore {
       task.status = 'inProgress';
     }
 
-    return task;
+    return cloneTask(task);
   }
 
   updateSession(
@@ -278,7 +297,7 @@ export class TaskStore {
     }
     Object.assign(session, patch);
     task.updatedAt = new Date();
-    return task;
+    return cloneTask(task);
   }
 
   /**
@@ -367,63 +386,6 @@ export class TaskStore {
     return true;
   }
 
-  setRalphLoop(taskId: string, loop: Task['ralphLoop'], opts: { now?: Date | number } = {}): Task | undefined {
-    const task = this.tasks.get(taskId);
-    if (!task) return undefined;
-    task.ralphLoop = loop;
-    task.updatedAt = taskStoreDate(opts.now);
-    return task;
-  }
-
-  updateRalphLoop(
-    taskId: string,
-    updater: (loop: NonNullable<Task['ralphLoop']>) => void,
-    opts: { now?: Date | number } = {},
-  ): Task | undefined {
-    const task = this.tasks.get(taskId);
-    if (!task?.ralphLoop) return undefined;
-    updater(task.ralphLoop);
-    task.updatedAt = taskStoreDate(opts.now);
-    return task;
-  }
-
-  setRalphLoopStatus(
-    taskId: string,
-    status: NonNullable<Task['ralphLoop']>['status'],
-    opts: { now?: Date | number } = {},
-  ): Task | undefined {
-    return this.updateRalphLoop(taskId, (loop) => {
-      loop.status = status;
-    }, opts);
-  }
-
-  claimRalphLoopOwner(
-    taskId: string,
-    session: SessionInfo | undefined,
-    opts: { allowTransfer?: boolean; now?: Date | number } = {},
-  ): Task | undefined {
-    const task = this.tasks.get(taskId);
-    if (!task) return undefined;
-    if (claimRalphLoopOwner(task, session, opts)) {
-      task.updatedAt = taskStoreDate(opts.now);
-    }
-    return task;
-  }
-
-  clearRalphLoopOwner(
-    taskId: string,
-    sessionId: string,
-    opts: { now?: Date | number } = {},
-  ): Task | undefined {
-    const task = this.tasks.get(taskId);
-    if (!task?.ralphLoop) return undefined;
-    if (task.ralphLoop.ownerSessionId === sessionId) {
-      delete task.ralphLoop.ownerSessionId;
-      task.updatedAt = taskStoreDate(opts.now);
-    }
-    return task;
-  }
-
   setReflectMeta(taskId: string, meta: ReflectMeta): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
@@ -442,9 +404,9 @@ export class TaskStore {
     if (Number.isFinite(delta) && delta > 0) {
       this.lifetimeSpendUsd += delta;
     }
-    task.tokenUsage = usage;
+    task.tokenUsage = structuredClone(usage) as TokenUsage;
     task.updatedAt = new Date();
-    return task;
+    return cloneTask(task);
   }
 
   getActiveSessions(): Array<{ taskId: string; session: SessionInfo }> {
@@ -452,7 +414,7 @@ export class TaskStore {
     for (const task of this.tasks.values()) {
       for (const session of task.sessions) {
         if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {
-          result.push({ taskId: task.id, session });
+          result.push({ taskId: task.id, session: structuredClone(session) as SessionInfo });
         }
       }
     }
@@ -486,14 +448,14 @@ export class TaskStore {
 
   /** List tasks belonging to a specific project. */
   listTasksByProject(projectId: string): Task[] {
-    return Array.from(this.tasks.values()).filter((t) => t.projectId === projectId);
+    return Array.from(this.tasks.values()).filter((t) => t.projectId === projectId).map(cloneTask);
   }
 
   /** Find the task that owns a given tmux session name. O(n) scan. */
   findTaskBySession(tmuxSessionName: string): Task | undefined {
     for (const task of this.tasks.values()) {
       if (task.sessions.some((s) => s.tmuxSession === tmuxSessionName)) {
-        return task;
+        return cloneTask(task);
       }
     }
     return undefined;
@@ -501,14 +463,14 @@ export class TaskStore {
 
   /** Get all tasks as an array (for serialization) */
   getAllTasks(): Task[] {
-    return Array.from(this.tasks.values());
+    return Array.from(this.tasks.values()).map(cloneTask);
   }
 
   /** Load tasks from an array (for deserialization) */
   loadTasks(tasks: Task[], savedLifetimeSpendUsd?: number): void {
     this.tasks.clear();
     for (const task of tasks) {
-      this.tasks.set(task.id, task);
+      this.tasks.set(task.id, cloneTask(task));
     }
     if (savedLifetimeSpendUsd !== undefined && Number.isFinite(savedLifetimeSpendUsd) && savedLifetimeSpendUsd > 0) {
       this.lifetimeSpendUsd = savedLifetimeSpendUsd;

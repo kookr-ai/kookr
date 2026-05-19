@@ -43,11 +43,18 @@ function broadcastNoop(_msg: ServerMessage): void {
   /* no-op */
 }
 
+function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
+  const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
+  const task = targetStore.getTaskForMutation(created.id);
+  if (!task) throw new Error(`missing task ${created.id}`);
+  return task;
+}
+
 function mkRalphDeps(taskStore = new TaskStore()): RouteDeps {
   const monitor = new Monitor(taskStore, new AttentionQueue());
   const ralphLoopService = {
     startLoop: vi.fn(async (task) => {
-      task.ralphLoop = {
+      taskStore.getTaskForMutation(task.id)!.ralphLoop = {
         prompt: task.prompt,
         iterationCap: 6,
         currentIteration: 0,
@@ -58,7 +65,8 @@ function mkRalphDeps(taskStore = new TaskStore()): RouteDeps {
       return { ok: true, changed: true, value: undefined };
     }),
     cancelLoop: vi.fn((task) => {
-      if (task.ralphLoop) task.ralphLoop.status = 'cancelled';
+      const mutableTask = taskStore.getTaskForMutation(task.id);
+      if (mutableTask?.ralphLoop) mutableTask.ralphLoop.status = 'cancelled';
       return { ok: true, changed: true, value: 'cancelled' };
     }),
   } as unknown as RalphLoopService;
@@ -79,12 +87,12 @@ function mockRouteLaunchTask(taskStore: TaskStore) {
     const task = taskStore.createTask({
       prompt: opts.prompt,
       cwd: opts.cwd,
+      name: opts.name,
+      playbookId: opts.playbookId,
+      projectId: opts.projectId,
       playbookParameterValues: opts.playbookParameterValues,
     });
-    if (opts.name) task.name = opts.name;
-    if (opts.playbookId) task.playbookId = opts.playbookId;
-    if (opts.projectId) taskStore.setProjectId(task.id, opts.projectId);
-    return { task, queued: false };
+    return { task: taskStore.getTask(task.id)!, queued: false };
   });
 }
 
@@ -108,7 +116,7 @@ describe('legacy Ralph task entrypoints', () => {
   test('attach Ralph is removed', async () => {
     vi.clearAllMocks();
     const taskStore = new TaskStore();
-    const task = taskStore.createTask('go', '/cwd');
+    const task = createTaskForMutation(taskStore, 'go', '/cwd');
     const res = await mkApp(mkRalphDeps(taskStore)).request(`/api/tasks/${task.id}/ralph-loop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -236,13 +244,13 @@ Loop {{target}}.
 
   test('keeps playbook replace available by default and matches keys against target cwd', async () => {
     const taskStore = new TaskStore();
-    const old = taskStore.createTask({
+    const old = createTaskForMutation(taskStore, {
       prompt: 'old loop',
       cwd: targetCwd,
       playbookParameterValues: { target: 'repo' },
     });
-    old.playbookId = 'workflow.md';
-    old.ralphLoop = {
+    taskStore.getTaskForMutation(old.id)!.playbookId = 'workflow.md';
+    taskStore.getTaskForMutation(old.id)!.ralphLoop = {
       prompt: 'old loop',
       iterationCap: 6,
       currentIteration: 2,

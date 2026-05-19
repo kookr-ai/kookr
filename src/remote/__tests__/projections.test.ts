@@ -3,10 +3,17 @@ import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { TaskStore } from '../../core/tasks.js';
 import { projectAlertForRemoteReplay, projectTaskForRemoteReplay } from '../projections.js';
 
+function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
+  const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
+  const task = targetStore.getTaskForMutation(created.id);
+  if (!task) throw new Error(`missing task ${created.id}`);
+  return task;
+}
+
 describe('remote replay projections', () => {
   it('projects tasks into a replayable metadata shape without remote-only persistence fields', () => {
     const store = new TaskStore();
-    const task = store.createTask('Replay me', '/repo');
+    const task = createTaskForMutation(store, 'Replay me', '/repo');
     task.updatedAt = new Date('2026-05-14T00:00:00.000Z');
     store.addSession(task.id, {
       tmuxSession: 'kookr-session',
