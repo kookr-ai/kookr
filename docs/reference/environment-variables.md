@@ -178,6 +178,24 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 | --- | --- | --- | --- |
 | `KOOKR_BUDGET_WARN_USD` | `25` | Number in USD, `0` disables | Per-task reactive token-cost warning threshold. Critical alerts fire at twice this value. Invalid or blank values use the default. |
 | `KOOKR_AUTO_REFLECT_DISABLE` | unset | `1` to disable | Kill switch for task-feedback reflection spawning. |
+| `KOOKR_FINDING_REVIEW_ENABLED` | unset | `true` to enable | Enables local/admin finding-evidence review diagnostics. Required before manual model review or the background sampler can call the LLM. |
+| `KOOKR_FINDING_REVIEW_DAILY_COST_CENTS` | `0` | Non-negative integer cents | Daily cost budget for finding-evidence model reviews. `0` keeps model calls disabled. |
+| `KOOKR_FINDING_REVIEW_MAX_CANDIDATES` | `5` | Positive integer | Maximum candidates reviewed by one manual finding-evidence review request. |
+| `KOOKR_FINDING_REVIEW_TIMEOUT_MS` | `15000` | Positive integer milliseconds | Timeout for each finding-evidence review model call. |
+| `KOOKR_FINDING_REVIEW_TOKEN` | unset | Secret string | Optional CSRF token required in `x-kookr-finding-review-token` for finding-evidence review mutation routes. |
+| `KOOKR_FINDING_REVIEW_ADMIN_TOKEN` | unset | Secret string | Optional bearer-style admin token accepted in `x-kookr-admin-token` for non-loopback finding-evidence diagnostics access. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_ENABLED` | unset | `true` to enable | Starts the M2 background sampler. It remains inert unless `KOOKR_FINDING_REVIEW_ENABLED=true`, an LLM provider is configured, and the daily cost budget is positive. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_INTERVAL_MS` | `900000` | Positive integer milliseconds | Background sampler interval. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_MIN_AGE_MS` | `30000` | Non-negative integer milliseconds | Minimum candidate age before the sampler may enqueue it. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_MIN_OBSERVATIONS` | `2` | Positive integer | Minimum observation count before the sampler may enqueue a candidate. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_MAX_PER_INTERVAL` | `3` | Positive integer | Maximum queued candidates the sampler may attempt in one interval. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_MAX_PER_DETECTOR` | `1` | Positive integer | Per-detector attempt cap for one sampler interval, preventing one noisy detector from consuming the interval. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_MAX_TOKENS_PER_CANDIDATE` | `2000` | Positive integer tokens | Per-candidate estimated token cap before review. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_DAILY_TOKEN_BUDGET` | `20000` | Positive integer tokens | Daily token budget for background finding-evidence reviews. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_LEASE_MS` | `300000` | Positive integer milliseconds | Lease and stale lock window for sampler queue processing. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_MAX_ATTEMPTS` | `3` | Positive integer | Maximum review attempts before a queue entry becomes terminal. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_RETRY_BASE_MS` | `60000` | Positive integer milliseconds | Base delay for exponential retry backoff. |
+| `KOOKR_FINDING_REVIEW_SAMPLER_CANDIDATE_READ_LIMIT` | `50` | Positive integer | Number of audit candidates read from the monitor per sampler pass. |
 
 ## Hooks And Contribution Tracking
 

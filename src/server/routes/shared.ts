@@ -38,6 +38,7 @@ import type { TaskShareService } from '../task-share-service.js';
 import type { RelayConnectionManager } from '../relay-connection-manager.js';
 import type { ContactShareReadModel } from '../../core/contact-share.js';
 import type { LlmClient } from '../../core/llm-client.js';
+import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sampler.js';
 
 /**
  * Phase A0 easy connection sharing config. The server always provides it;
@@ -160,4 +161,6 @@ export interface RouteDeps {
   llmClient?: LlmClient | null;
   /** Test seam for deterministic finding-evidence review input hashes. */
   findingEvidenceReviewHmacKey?: Buffer;
+  /** Disabled-by-default M2 finding-evidence background sampler. */
+  findingEvidenceReviewSampler?: Pick<FindingEvidenceReviewSampler, 'getStatus'>;
 }

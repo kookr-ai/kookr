@@ -24,6 +24,10 @@ export interface FindingEvidenceCandidateReader {
   listReviewCandidates(limit: number): FindingEvidenceAuditRecord[];
 }
 
+export interface FindingEvidenceReviewModelRunner {
+  review(request: FindingEvidenceReviewRequest): Promise<FindingEvidenceReviewResponseV1>;
+}
+
 export interface FindingEvidenceReviewServiceConfig {
   enabled: boolean;
   maxCandidates: number;
