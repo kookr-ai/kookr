@@ -81,6 +81,9 @@ jobs:
       - name: Validate documented commands
         run: pnpm validate:docs-commands
 
+      - name: Validate requirements status matrix
+        run: pnpm validate:requirements
+
       # Reporter list and reportOnFailure live in vitest.config.ts so local
       # `pnpm test:coverage` and CI produce the same artifacts. `--coverage`
       # is the only flag this step adds; do not re-pass reporters here or

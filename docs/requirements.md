@@ -146,11 +146,17 @@ The system SHOULD detect when an agent is blocked on a tool permission prompt.
 
 **Evidence:** `src/core/hook-parser.ts` (PermissionRequest parsing), `src/core/anomaly-detector.ts` (permission_blocked, stop suppression), `src/core/monitor.test.ts` ("PermissionRequest event enters queue as permission_blocked"), `src/core/anomaly-detector.test.ts` ("stop after permission_request → needs_input not permission_blocked"). Validated by [PoC 001](poc/001-hook-mechanism-validation.md).
 
-### R2.5: Detect Budget Burn [F2.5] — MAY — `deferred`
+### R2.5: Detect Budget Burn [F2.5] — MAY — `partial`
 
 The system MAY detect when agent cost is climbing with no progress.
 
-**Rationale for deferral:** Requires cost tracking integration. V2 feature.
+**Acceptance criteria:**
+- A configured per-task cost threshold emits a `budget_exceeded` supervisor finding when observed spend crosses the warning threshold
+- A critical finding emits when observed spend reaches 2x the warning threshold
+- Budget alerts are reactive to observed transcript/token accounting and clearly communicate that an agent may overshoot by one turn
+- Progress-aware "cost climbing with no progress" classification remains deferred until the AI supervisor can evaluate task progress semantically
+
+**Evidence:** `src/core/budget-checker.ts` (reactive threshold checker), `src/server/lifecycle-timers.ts` (token scan emits budget findings), `src/core/budget-checker.test.ts`, `src/server/lifecycle-timers.test.ts`. Progress-aware budget-burn detection remains a V2 enhancement.
 
 ### R2.6: Detect Trajectory Drift [F2.6] — MAY — `deferred`
 
@@ -174,14 +180,16 @@ The system SHOULD generate a human-readable explanation for each detected anomal
 The system SHALL prioritize agents by urgency when multiple need attention.
 
 **Acceptance criteria:**
-- Priority order: `permission_blocked` (warning) > `repeated_error` (warning) > `needs_input/AskUserQuestion` (warning) > `needs_input/Stop` (info)
-- The attention queue surfaces the highest-severity agent first
+- The attention queue surfaces critical findings before warning findings before info findings
+- Critical `budget_exceeded` findings outrank warning findings
+- Warning findings include `budget_exceeded` warning threshold alerts, `permission_blocked`, `repeated_error`, and `needs_input/AskUserQuestion`; same-severity findings preserve queue order rather than applying a separate anomaly-type ranking
+- Stop-derived `needs_input` findings use info severity and rank after warning findings
 - Priority recalculated as anomalies are detected or resolved
 - **Stop event suppression** means only `needs_input` survives when agent completes its turn — stuck/error/permission anomalies from prior phases don't persist after stop
 
 **Evidence:** `src/core/anomaly-detector.ts` (severity ranking, stop suppression + `prioritize()` function), `src/core/attention-queue.ts` (priority-sorted queue), `src/core/anomaly-detector.test.ts` ("multiple anomalies sorted by severity").
 
-### R2.9: Notify When Attention Needed [F2.9] — SHOULD — `partial`
+### R2.9: Notify When Attention Needed [F2.9] — SHOULD — `done`
 
 The system SHOULD alert the user when an agent needs attention.
 
@@ -189,7 +197,7 @@ The system SHOULD alert the user when an agent needs attention.
 - Visual alert displayed in the UI (toast notification) when an anomaly is detected
 - Optional browser notification with explanation summary
 
-**Evidence:** `src/frontend/components/Toasts.tsx` (in-app toasts — done). Browser Notification API not yet integrated (todo).
+**Evidence:** `src/frontend/components/Toasts.tsx` (in-app toasts), `src/frontend/hooks/useNotifications.ts` (Browser Notification API fallback), `src/frontend/App.tsx` (notification hook mounted at dashboard root), `src/frontend/hooks/useNotifications.test.ts`.
 
 ### R2.10: Suppress Stale Terminal Session Findings [F2.9] — SHALL — `done`
 
@@ -981,16 +989,22 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R1.3 | F1.4 | SHOULD | partial | tasks, frontend components |
 | R1.4 | F1.1 | MAY | deferred | — |
 | R1.5 | F1.5 | MAY | deferred | — |
+| R1.6 | F1.4 | SHOULD | partial | git-worktree-registry, reconciliation, lifecycle-timers, monitor |
 | R1.7 | F1.4 | SHOULD | done | completion-digest, completion-metadata, lifecycle-handler |
+| R1.8 | F4.4 | SHOULD | done | agent-lifecycle, lifecycle-handler |
 | R2.1 | F2.1 | SHALL | done | hook-parser, anomaly-detector, monitor |
-| R2.2 | F2.2 | SHOULD | done | anomaly-detector |
+| R2.2 | F2.2 | SHOULD | deferred | — |
 | R2.3 | F2.3 | SHOULD | done | anomaly-detector |
 | R2.4 | F2.4 | SHOULD | done | hook-parser, anomaly-detector, monitor |
-| R2.5 | F2.5 | MAY | deferred | — |
+| R2.5 | F2.5 | MAY | partial | budget-checker, lifecycle-timers, token-tracker |
 | R2.6 | F2.6 | MAY | deferred | — |
 | R2.7 | F2.7 | SHOULD | done | anomaly-detector, ws, Toasts |
 | R2.8 | F2.8 | SHALL | done | anomaly-detector, attention-queue |
-| R2.9 | F2.9 | SHOULD | partial | Toasts (done), browser notifications (todo) |
+| R2.9 | F2.9 | SHOULD | done | Toasts, useNotifications, App |
+| R2.10 | F2.9 | SHALL | done | monitor, finding-helpers, DetectionStatsPanel |
+| R2.11 | F2.10 | SHOULD | done | finding-evidence-audit, monitor, lifecycle-timers, diagnostics-routes |
+| R2.12 | F2.11 | SHOULD | done | review-log-store, finding-evidence-review-service, diagnostics-routes |
+| R2.13 | F2.12 | SHOULD | done | detector-proposal-report, review-log-store, diagnostics-routes |
 | R3.1 | F3.1 | SHALL | done | AgentDetail, useStore |
 | R3.2 | F3.2 | SHALL | done | AgentDetail, ws, claude-code-adapter |
 | R3.3 | F3.3 | SHALL | done | attention-queue, loop.test |
@@ -1021,8 +1035,10 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R5.3 | F5.3 | SHOULD | done | StatusBar |
 | R5.4 | F5.4 | SHOULD | done | App, useStore, DetailPanel |
 | R5.5 | F5.5 | SHALL | done | useWebSocket, ws, useStore |
+| R5.6 | — | SHOULD | done | OnboardingTour, onboarding-status, onboarding-tour E2E |
 | R5.7 | — | SHOULD | done | project-sidebar-store, project-routes, project-sidebar-slice |
 | R5.8 | — | SHOULD | done | DetailPanel, ActivityPanel, ProjectDetailDrawer, FindingsPanel, TopBar |
+| R5.9 | — | SHOULD | done | github-scanner-service, github-state-store, github-fetcher |
 | R5.10 | — | SHOULD | done | system-resource-metrics, resource-status-service, useWebSocket, StatusBar |
 | R6.1 | ADR-007 / ADR-014 | SHALL | done | local-dtach-backend |
 | R6.2 | PoC 001 | SHALL | done | claude-code-adapter, hook-watcher, hook-parser |
@@ -1031,20 +1047,28 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R6.5 | arch | SHALL | done | server/index |
 | R6.6 | features | SHALL | partial | tested on Linux only |
 | R6.7 | arch | SHALL | done | server/index |
+| R6.8 | — | SHALL | done | semantic-checkpoint schema, checkpoint-path, checkpoint-cycler |
+| R6.9 | — | SHALL | done | memory-write-candidates schema, checkpoint-path |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |
 | R7.4 | CLAUDE.md | SHALL | done | package.json |
+| R8.1 | — | SHALL | done | workspace-cleanup-policy, cleanup inspector/projections/service |
+| R8.2 | — | SHALL | done | workspace-cleanup use-cases, shared contracts |
+| R8.3 | — | SHALL | done | workspace-cleanup-service, CleanupCandidateTable |
 | R9.1 | F8.1-F8.3 | SHOULD | done | reflection-recommendation, reflection-task, StatusBar |
+| R10.1 | F11 | SHALL | done | schedule, schedule-service, schedule-runner, schedule-routes |
 | R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
 
 ---
 
 ## Gap Summary
 
-### SHALL requirements not yet fully done: none
+### SHALL requirements not yet fully done:
 
-All 18 SHALL requirements are `done`. The MVP core loop is fully implemented and tested.
+| Req | What's left |
+|-----|-------------|
+| R6.6 | macOS validation |
 
 ### SHOULD requirements remaining:
 
@@ -1052,11 +1076,16 @@ All 18 SHALL requirements are `done`. The MVP core loop is fully implemented and
 |-----|-------------|
 | R1.2 | Wire activity display end-to-end (hook events → frontend) — repeat-pill done |
 | R1.3 | Display agent metadata — all gap items done, cost deferred to R2.5 |
-| R2.9 | Browser Notification API integration |
+| R1.6 | Worktree health reconciliation shipped for live registry checks; remaining validation is around edge-case stale/prunable refresh behavior |
+| R2.2 | Detect stuck loops through the V2 semantic supervisor; deterministic same-tool counting was removed |
 | R3.4 | Polish "all clear" empty state UI |
 | R4.5 | Auto-evaluation of completion criteria (V2 candidate) |
-| R6.6 | macOS validation |
 
-### MAY (deferred) requirements: 4
+### MAY requirements remaining: 4
 
-R1.4 (agent discovery), R1.5 (detect new/exited agents), R2.5 (budget burn), R2.6 (trajectory drift).
+| Req | Status | What's left |
+|-----|--------|-------------|
+| R1.4 | deferred | Agent discovery outside Kookr-managed sessions |
+| R1.5 | deferred | Detect new/exited agents outside Kookr-managed sessions |
+| R2.5 | partial | Progress-aware budget burn; reactive cost-threshold alerts are implemented |
+| R2.6 | deferred | Trajectory drift via the V2 semantic supervisor |

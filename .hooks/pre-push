@@ -179,6 +179,13 @@ if ! pnpm validate:docs-commands; then
   exit 1
 fi
 
+echo "Validating requirements status matrix..."
+if ! pnpm validate:requirements; then
+  echo ""
+  echo "Push rejected: requirements status validation failed."
+  exit 1
+fi
+
 echo "Running tests..."
 if ! pnpm test; then
   echo ""

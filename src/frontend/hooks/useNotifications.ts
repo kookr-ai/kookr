@@ -82,7 +82,7 @@ export function useNotifications() {
       const title = agent.anomaly!.type === 'needs_input'
         ? 'Agent needs input'
         : `Agent: ${agent.anomaly!.type.replace('_', ' ')}`;
-      const body = agent.taskName ?? agent.agentId;
+      const body = agent.anomaly!.explanation;
 
       const notification = new Notification(title, {
         body,
