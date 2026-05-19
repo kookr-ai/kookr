@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createRelayServer, type RelayServerHandle } from '../../relay/server.js';
 import { createRelayConnectionManager, type RelayRuntimeHandle } from './relay-connection-manager.js';
 import { relayConnectionCredentialsPath } from './relay-connection-store.js';
-import { relayLifecyclePaths } from './relay-lifecycle.js';
+import { relayLifecyclePaths } from './relay-lifecycle-paths.js';
 import type { RemoteNodeStatus } from '../remote/node-client.js';
 
 let relay: RelayServerHandle | null = null;

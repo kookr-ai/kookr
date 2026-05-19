@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto';
 import {
   CHECKPOINT_JSON_FILENAME,
   SEMANTIC_CHECKPOINT_SCHEMA_VERSION,
-} from './checkpoint-path.js';
+} from './checkpoint-contracts.js';
 import {
   parseRelevanceGateVerdict,
   type RelevanceGateVerdict,

@@ -2,7 +2,7 @@ import { computeContextFillFromTranscript } from './token-tracker.js';
 import {
   MEMORY_WRITE_CANDIDATES_FILENAME,
   MEMORY_WRITE_CANDIDATES_SCHEMA_VERSION,
-} from './checkpoint-path.js';
+} from './checkpoint-contracts.js';
 import type { TaskStore } from './tasks.js';
 
 /**
