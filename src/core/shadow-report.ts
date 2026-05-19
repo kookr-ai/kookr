@@ -5,7 +5,8 @@
  * transitions + heartbeats, and computes per-strategy coverage metrics.
  */
 
-import { readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 import type { ShadowLogEntry, ShadowTransition, ShadowHeartbeat, ShadowSource } from './shadow-detector.js';
 import type { AnomalyType } from './types.js';
 
@@ -230,10 +231,17 @@ export function generateReport(entries: ShadowLogEntry[]): ShadowReport {
     };
   }
 
-  // Determine observation window
-  const timestamps = entries.map((e) => new Date(e.timestamp).getTime());
-  const startMs = Math.min(...timestamps);
-  const endMs = Math.max(...timestamps);
+  // Determine observation window. Iterate instead of spreading into Math.min/max:
+  // entries.length above ~100k overflows JS's spread-args limit and throws
+  // RangeError("Maximum call stack size exceeded"), which made multi-day logs
+  // silently unanalyzable.
+  let startMs = Number.POSITIVE_INFINITY;
+  let endMs = Number.NEGATIVE_INFINITY;
+  for (const e of entries) {
+    const ts = new Date(e.timestamp).getTime();
+    if (ts < startMs) startMs = ts;
+    if (ts > endMs) endMs = ts;
+  }
 
   // Find all unique sources
   const sources = new Set<ShadowSource>();
@@ -286,21 +294,49 @@ export function generateReport(entries: ShadowLogEntry[]): ShadowReport {
 
 // --- File-based report ---
 
-export async function generateReportFromFile(filePath: string): Promise<ShadowReport> {
-  let content: string;
+/**
+ * Read the shadow log line-by-line. readFile(path, 'utf-8') exceeds V8's
+ * ~512MB string-length limit on multi-day logs, so the previous
+ * implementation silently returned an empty report. Streaming sidesteps
+ * the string-length cap; in-memory entry size is still bounded by JS heap.
+ */
+export async function parseShadowLogFromFile(
+  filePath: string,
+): Promise<{ entries: ShadowLogEntry[]; errors: number }> {
+  const entries: ShadowLogEntry[] = [];
+  let errors = 0;
+
+  let stream;
   try {
-    content = await readFile(filePath, 'utf-8');
+    stream = createReadStream(filePath, { encoding: 'utf-8' });
   } catch {
-    return {
-      generatedAt: new Date().toISOString(),
-      observationWindow: null,
-      strategies: [],
-      totalEntries: 0,
-      parseErrors: 0,
-    };
+    return { entries, errors };
   }
 
-  const { entries, errors } = parseShadowLog(content);
+  try {
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line) as ShadowLogEntry;
+        if (entry.kind === 'transition' || entry.kind === 'heartbeat') {
+          entries.push(entry);
+        } else {
+          errors++;
+        }
+      } catch {
+        errors++;
+      }
+    }
+  } catch {
+    // ENOENT or stream error: return whatever was parsed.
+  }
+
+  return { entries, errors };
+}
+
+export async function generateReportFromFile(filePath: string): Promise<ShadowReport> {
+  const { entries, errors } = await parseShadowLogFromFile(filePath);
   const report = generateReport(entries);
   report.parseErrors = errors;
   return report;
