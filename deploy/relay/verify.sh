@@ -8,6 +8,8 @@ UNIT="${KOOKR_RELAY_UNIT:-kookr-relay.service}"
 MONITOR_STAMP="${KOOKR_RELAY_MONITOR_STAMP:-/var/lib/kookr-relay/monitor-heartbeat}"
 BACKUP_GLOB="${KOOKR_RELAY_BACKUP_GLOB:-/var/backups/kookr-relay/*.sqlite}"
 SSH_PORT="${KOOKR_RELAY_SSH_PORT:-22}"
+INCIDENT_ESCALATION_URL="${KOOKR_RELAY_INCIDENT_ESCALATION_URL:-}"
+HOSTED_RELAY_ENABLED="${KOOKR_HOSTED_RELAY_ENABLED:-}"
 
 failures=0
 
@@ -84,6 +86,16 @@ daily_backup_exists() {
   find ${BACKUP_GLOB} -mtime -2 -type f -size +0c >/dev/null 2>&1
 }
 
+incident_escalation_configured() {
+  [ "$HOSTED_RELAY_ENABLED" = "1" ] || [ "$HOSTED_RELAY_ENABLED" = "true" ] || [ "$HOSTED_RELAY_ENABLED" = "yes" ] || return 0
+  [ -n "$INCIDENT_ESCALATION_URL" ]
+}
+
+synthetic_probe_manifest_available() {
+  [ "$HOSTED_RELAY_ENABLED" = "1" ] || [ "$HOSTED_RELAY_ENABLED" = "true" ] || [ "$HOSTED_RELAY_ENABLED" = "yes" ] || return 0
+  [ -n "$DOMAIN" ] && curl --fail --silent --show-error "https://${DOMAIN}/relay/ops/synthetic-probes" >/dev/null
+}
+
 ssh_not_public_when_ufw_present() {
   if ! has_command ufw; then
     return 0
@@ -104,6 +116,8 @@ check "systemd relay unit is active" service_active
 check "sqlite database exists and passes quick_check" sqlite_readable
 check "off-box monitor heartbeat is recent" monitor_recent
 check "daily sqlite backup exists" daily_backup_exists
+check "incident escalation hook is configured" incident_escalation_configured
+check "synthetic probe manifest is reachable" synthetic_probe_manifest_available
 
 if [ "$failures" -ne 0 ]; then
   printf '%s posture check(s) failed\n' "$failures" >&2

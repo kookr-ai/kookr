@@ -215,6 +215,7 @@ describe('relay command metadata audit', () => {
     expect(JSON.stringify(rows)).not.toContain(Buffer.from('SECRET_TERMINAL_PAYLOAD').toString('base64'));
     expect(JSON.stringify(rows)).not.toContain('member-1');
     expect(JSON.stringify(rows)).not.toContain('device-1');
+    expect(JSON.stringify(rows)).not.toContain('inv-1');
     expect(JSON.stringify(rows)).not.toContain('session-1');
   });
 });

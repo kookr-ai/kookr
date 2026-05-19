@@ -7,6 +7,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 
 import {
   DEFAULT_HOSTED_RELAY_URL,
+  HOSTED_RELAY_SYNTHETIC_PROBES,
   createHostedRelayGateStatus,
   hostedRelayStatusMessage,
   parseHostedRelayFlag,
@@ -18,6 +19,7 @@ import {
   type HostedRelayMetricsResponse,
   type HostedRelayMode,
   type HostedRelayNodeCredentialResponse,
+  type HostedRelaySyntheticProbe,
   type GuestLinkPosture,
   type HostedRelayStatus,
 } from '../src/shared/contracts/hosted-relay.js';
@@ -158,7 +160,17 @@ export interface RelayServerOptions {
   pushSubject?: string;
   streamBackpressureBytes?: number;
   stateDbPath?: string | null;
-  stateStore?: Pick<RelaySqliteStateStore, 'load' | 'saveRegistration' | 'saveInvitation' | 'saveContactShareEnvelope' | 'probe' | 'close'>;
+  stateStore?: Pick<
+    RelaySqliteStateStore,
+    | 'load'
+    | 'saveRegistration'
+    | 'saveInvitation'
+    | 'saveContactShareEnvelope'
+    | 'saveTerminalViewingDisabledTenant'
+    | 'deleteTerminalViewingDisabledTenant'
+    | 'probe'
+    | 'close'
+  >;
   stateProbe?: () => boolean;
   bindHost?: string;
   trustedProxy?: boolean;
@@ -208,6 +220,7 @@ export interface RelayServerHandle {
   rotateVapidKeys(): { publicKey: string; version: number; invalidated: number };
   sendTestPush(deviceId: string): Promise<PushDeliveryOutcome>;
   metadataAuditRows(): RelayMetadataAuditRow[];
+  tenantTerminalViewingStatus(): Array<{ tenantId: string; disabled: boolean; reason?: string }>;
   close(): Promise<void>;
 }
 
@@ -570,6 +583,7 @@ function normalizeHostedRelayOptions(opts: RelayServerOptions): HostedRelayRunti
 function hostedRelayStatus(
   hosted: HostedRelayRuntimeOptions,
   accountTokenConfigured: boolean,
+  terminalViewing: { disabledTenants?: number; blockReason?: string; killSwitchPersistenceOk?: boolean } = {},
 ): HostedRelayStatus {
   const gates: HostedRelayGateStatus = {
     ...createHostedRelayGateStatus(hosted.operationalGatesMet),
@@ -578,6 +592,15 @@ function hostedRelayStatus(
   };
   const operationalGatesMet = Object.values(gates).every(Boolean);
   const mode = hosted.enabled && operationalGatesMet ? hosted.mode : 'notConfigured';
+  const terminalViewingBlockReason = terminalViewing.blockReason
+    ?? (
+      hosted.enabled
+      && operationalGatesMet
+      && mode === 'available'
+      && terminalViewing.killSwitchPersistenceOk === false
+        ? 'hosted-relay-kill-switch-persistence-unavailable'
+        : undefined
+    );
   return {
     configured: hosted.enabled && operationalGatesMet,
     relayUrl: hosted.relayUrl,
@@ -591,6 +614,11 @@ function hostedRelayStatus(
     ...(hosted.environment ? { environment: hosted.environment } : {}),
     tlsExpiresAt: hosted.tlsExpiresAt,
     dataRetentionDays: hosted.dataRetentionDays,
+    terminalViewing: {
+      enabled: hosted.enabled && operationalGatesMet && mode === 'available' && !terminalViewingBlockReason,
+      ...(terminalViewingBlockReason ? { blockReason: terminalViewingBlockReason } : {}),
+      disabledTenants: terminalViewing.disabledTenants ?? 0,
+    },
   };
 }
 
@@ -828,6 +856,12 @@ function grantRequestStatus(reason: string): 400 | 404 | 409 | 429 {
   }
 }
 
+function websocketCloseReason(reason: string): string {
+  const encoded = Buffer.from(reason);
+  if (encoded.byteLength <= 123) return reason;
+  return encoded.subarray(0, 120).toString('utf8').replace(/[\uFFFD]+$/g, '');
+}
+
 function isRemoteTaskProjection(value: unknown): value is RemoteTaskProjectionV1 {
   const projection = value as Partial<RemoteTaskProjectionV1>;
   return typeof value === 'object'
@@ -996,6 +1030,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     registrations: [],
     invitations: [],
     contactShareEnvelopes: [],
+    terminalViewingDisabledTenants: [],
     quarantinedRows: 0,
   };
   if (stateStore) {
@@ -1034,6 +1069,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const memberWebSocketNonces = new Map<string, MemberWebSocketNonce>();
   const memberRetryTokens = new Map<string, MemberRetryTokenBinding>();
   const metadataAudit: RelayMetadataAuditRow[] = [];
+  const terminalViewingDisabledTenants = new Map<string, { reason: string; disabledAt: string }>(
+    stateSnapshot.terminalViewingDisabledTenants.map((entry) => [entry.tenantId, {
+      reason: entry.reason,
+      disabledAt: entry.disabledAt,
+    }]),
+  );
   const ticketSourceFailures = new Map<string, { count: number; lockedUntil?: number }>();
   let closing = false;
   let stateWriteFailure: { operation: string; message: string; at: string } | null = null;
@@ -1136,6 +1177,52 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     }
   };
 
+  const persistTerminalViewingDisabledTenant = (tenantId: string, state: { reason: string; disabledAt: string }): void => {
+    if (closing) return;
+    if (!stateStore) {
+      const err = new Error('relay state store unavailable');
+      stateWriteFailure = {
+        operation: 'saveTerminalViewingDisabledTenant',
+        message: err.message,
+        at: new Date().toISOString(),
+      };
+      throw new RelayStateWriteError('saveTerminalViewingDisabledTenant', err);
+    }
+    try {
+      stateStore.saveTerminalViewingDisabledTenant({ tenantId, ...state });
+    } catch (err) {
+      stateWriteFailure = {
+        operation: 'saveTerminalViewingDisabledTenant',
+        message: err instanceof Error ? err.message : String(err),
+        at: new Date().toISOString(),
+      };
+      throw new RelayStateWriteError('saveTerminalViewingDisabledTenant', err);
+    }
+  };
+
+  const deleteTerminalViewingDisabledTenant = (tenantId: string): void => {
+    if (closing) return;
+    if (!stateStore) {
+      const err = new Error('relay state store unavailable');
+      stateWriteFailure = {
+        operation: 'deleteTerminalViewingDisabledTenant',
+        message: err.message,
+        at: new Date().toISOString(),
+      };
+      throw new RelayStateWriteError('deleteTerminalViewingDisabledTenant', err);
+    }
+    try {
+      stateStore.deleteTerminalViewingDisabledTenant(tenantId);
+    } catch (err) {
+      stateWriteFailure = {
+        operation: 'deleteTerminalViewingDisabledTenant',
+        message: err instanceof Error ? err.message : String(err),
+        at: new Date().toISOString(),
+      };
+      throw new RelayStateWriteError('deleteTerminalViewingDisabledTenant', err);
+    }
+  };
+
   const recordLastSeen = (registration: NodeRegistration): void => {
     const updated: NodeRegistration = { ...registration, lastSeen: new Date().toISOString() };
     try {
@@ -1171,10 +1258,60 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     return { nodeId, nodeToken };
   };
 
+  const terminalKillSwitchPersistenceOk = (): boolean => {
+    if (!stateStore || stateWriteFailure) return false;
+    try {
+      return opts.stateProbe ? opts.stateProbe() : stateStore.probe();
+    } catch {
+      return false;
+    }
+  };
+
+  const hostedTerminalViewingGlobalBlockReason = (): string | undefined => {
+    if (!hosted.enabled) return undefined;
+    const status = hostedRelayStatus(hosted, Boolean(accountToken), {
+      disabledTenants: terminalViewingDisabledTenants.size,
+      killSwitchPersistenceOk: terminalKillSwitchPersistenceOk(),
+    });
+    if (status.terminalViewing.blockReason) return status.terminalViewing.blockReason;
+    if (!status.configured) return 'hosted-relay-production-gate';
+    if (status.mode === 'notConfigured') return 'hosted-relay-production-gate';
+    if (status.mode === 'maintenance') return 'hosted-relay-maintenance';
+    if (status.mode === 'emergencyDisabled') return 'hosted-relay-emergency-disabled';
+    return undefined;
+  };
+
   const currentHostedStatus = (): HostedRelayStatus => ({
-    ...hostedRelayStatus(hosted, Boolean(accountToken)),
+    ...hostedRelayStatus(hosted, Boolean(accountToken), {
+      disabledTenants: terminalViewingDisabledTenants.size,
+      blockReason: hostedTerminalViewingGlobalBlockReason(),
+      killSwitchPersistenceOk: terminalKillSwitchPersistenceOk(),
+    }),
     guestLinkPosture: guestLinkPosture(hosted, memberWebSocketNonceTtlMs),
   });
+
+  const tenantForNode = (nodeId: NodeId): string | null => registrations.get(nodeId)?.ownerId ?? null;
+
+  const hostedTerminalViewingBlockReason = (nodeId: NodeId): string | null => {
+    const globalBlock = hostedTerminalViewingGlobalBlockReason();
+    if (globalBlock) return globalBlock;
+    if (!hosted.enabled) return null;
+    const tenantId = tenantForNode(nodeId);
+    if (!tenantId) return 'tenant-isolation-failed';
+    return terminalViewingDisabledTenants.get(tenantId)?.reason ?? null;
+  };
+
+  const closeTenantTerminalSubscribers = (tenantId: string, reason: string): void => {
+    for (const [nodeId, set] of subscribers) {
+      if (tenantForNode(nodeId) !== tenantId) continue;
+      for (const sub of [...set]) {
+        if (!sub.terminal) continue;
+        sub.ws.close(4005, websocketCloseReason(reason));
+        set.delete(sub);
+      }
+      if (set.size === 0) subscribers.delete(nodeId);
+    }
+  };
 
   const hostedBlocksNewShares = (): string | null => {
     if (!hosted.enabled) return null;
@@ -1658,6 +1795,66 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         sendJson(res, 200, response);
         return;
       }
+      if (req.method === 'GET' && url.pathname === '/relay/admin/metadata-audit') {
+        if (!opts.allowInsecureAdmin && !isAuthorizedAdmin(req, opts.adminToken)) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        sendJson(res, 200, { rows: metadataAudit });
+        return;
+      }
+      if (
+        req.method === 'GET'
+        && (url.pathname === '/relay/ops/synthetic-probes' || url.pathname === '/relay/admin/synthetic-probes')
+      ) {
+        if (url.pathname.startsWith('/relay/admin/') && !opts.allowInsecureAdmin && !isAuthorizedAdmin(req, opts.adminToken)) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const probes: readonly HostedRelaySyntheticProbe[] = HOSTED_RELAY_SYNTHETIC_PROBES;
+        sendJson(res, 200, { probes, requiredCount: probes.filter((probe) => probe.required).length });
+        return;
+      }
+      if (
+        req.method === 'POST'
+        && url.pathname.startsWith('/relay/admin/tenants/')
+        && (
+          url.pathname.endsWith('/terminal-viewing/disable')
+          || url.pathname.endsWith('/terminal-viewing/enable')
+        )
+      ) {
+        if (!opts.allowInsecureAdmin && !isAuthorizedAdmin(req, opts.adminToken)) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        const disable = url.pathname.endsWith('/terminal-viewing/disable');
+        const tenantId = decodeURIComponent(
+          url.pathname.slice('/relay/admin/tenants/'.length, disable ? -'/terminal-viewing/disable'.length : -'/terminal-viewing/enable'.length),
+        );
+        if (!tenantId) {
+          sendJson(res, 400, { error: 'tenant-id-required' });
+          return;
+        }
+        if (disable) {
+          const body = await readJson(req).catch(() => ({})) as { reason?: unknown };
+          const reason = typeof body.reason === 'string' && body.reason.trim()
+            ? body.reason.trim().slice(0, 160)
+            : 'tenant-terminal-viewing-disabled';
+          const state = { reason, disabledAt: new Date().toISOString() };
+          terminalViewingDisabledTenants.set(tenantId, state);
+          closeTenantTerminalSubscribers(tenantId, reason);
+          persistTerminalViewingDisabledTenant(tenantId, state);
+        } else {
+          deleteTerminalViewingDisabledTenant(tenantId);
+          terminalViewingDisabledTenants.delete(tenantId);
+        }
+        sendJson(res, 200, {
+          tenantId,
+          terminalViewingDisabled: terminalViewingDisabledTenants.has(tenantId),
+          ...(terminalViewingDisabledTenants.get(tenantId) ?? {}),
+        });
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/relay/dashboard') {
         sendHtml(res, 200, relayDashboardHtml());
         return;
@@ -1716,17 +1913,22 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 403, { error: 'terminal grant required' });
           return;
         }
+        const requestedNodeId = asNodeId(nodeId);
+        const terminalBlock = terminal ? hostedTerminalViewingBlockReason(requestedNodeId) : null;
+        if (terminalBlock) {
+          sendJson(res, 503, { error: terminalBlock });
+          return;
+        }
         if (terminal && !terminalTransportAllowed(req, { trustedProxy })) {
           incrementSecurityEvent();
           sendJson(res, 403, { error: 'transport.insecure' });
           return;
         }
-        const resolvedTerminal = resolveTerminalSubscription(asNodeId(nodeId), auth, terminal);
+        const resolvedTerminal = resolveTerminalSubscription(requestedNodeId, auth, terminal);
         if (resolvedTerminal && 'error' in resolvedTerminal) {
           sendJson(res, 403, { error: resolvedTerminal.error });
           return;
         }
-        const requestedNodeId = asNodeId(nodeId);
         const registration = registrations.get(requestedNodeId);
         const connected = nodeSockets.has(requestedNodeId);
         sendJson(res, 200, {
@@ -2670,6 +2872,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         socket.destroy();
         return;
       }
+      const terminalBlock = terminal ? hostedTerminalViewingBlockReason(asNodeId(nodeId)) : null;
+      if (terminalBlock) {
+        socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       if (terminal && !terminalTransportAllowed(req, { trustedProxy })) {
         incrementSecurityEvent();
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
@@ -3130,7 +3338,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   }
 
   function routeTerminalStreamEvent(event: TerminalStreamEvent): void {
-    appendTerminalPublicationAudit(event);
+    const terminalBlock = hostedTerminalViewingBlockReason(event.nodeId);
+    if (terminalBlock) {
+      appendTerminalPublicationAudit(event, 'rejected', terminalBlock);
+      return;
+    }
+    appendTerminalPublicationAudit(event, 'forwarded');
     const subscribed = subscribers.get(event.nodeId);
     if (!subscribed) return;
     for (const sub of [...subscribed]) {
@@ -3155,7 +3368,11 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     metadataAudit.push(row);
   }
 
-  function appendTerminalPublicationAudit(event: TerminalStreamEvent): void {
+  function appendTerminalPublicationAudit(
+    event: TerminalStreamEvent,
+    outcome: RelayMetadataAuditRow['outcome'] = 'forwarded',
+    reason?: string,
+  ): void {
     if (event.kind !== 'terminal.bytes' || !event.publication) return;
     const principal = event.publication.principal;
     appendMetadataAudit({
@@ -3166,8 +3383,9 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         .slice(0, 24),
       nodeId: event.nodeId,
       relayId: accountId,
-      outcome: 'forwarded',
+      outcome,
       timestamp: new Date().toISOString(),
+      ...(reason ? { reason } : {}),
       publicationScopeId: event.publication.publicationScopeId,
       principalKind: principal.kind,
       pseudonymousMemberId: pseudonymousAuditId(principal.kind === 'guest-member' ? principal.memberSessionId : principal.contactId),
@@ -3352,6 +3570,23 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         });
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(result));
       };
+      const requiredGrant = grantForRemoteCommandAction(action);
+      if (requiredGrant === 'terminalInput' && !terminalInputTransportAllowed) {
+        incrementSecurityEvent();
+        sendCommandReject('transport.insecure');
+        return;
+      }
+      if (requiredGrant === 'terminalInput') {
+        const terminalBlock = hostedTerminalViewingBlockReason(subscribedNodeId);
+        if (terminalBlock) {
+          sendCommandReject(terminalBlock);
+          return;
+        }
+      }
+      if (!authAllows(auth, requiredGrant, invitations)) {
+        sendCommandReject(requiredGrant ? `missing ${requiredGrant} grant` : 'unknown action');
+        return;
+      }
       appendMetadataAudit({
         type: 'relay.metadata-audit',
         commandId,
@@ -3360,16 +3595,6 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         outcome: 'forwarded',
         timestamp: new Date().toISOString(),
       });
-      const requiredGrant = grantForRemoteCommandAction(action);
-      if (requiredGrant === 'terminalInput' && !terminalInputTransportAllowed) {
-        incrementSecurityEvent();
-        sendCommandReject('transport.insecure');
-        return;
-      }
-      if (!authAllows(auth, requiredGrant, invitations)) {
-        sendCommandReject(requiredGrant ? `missing ${requiredGrant} grant` : 'unknown action');
-        return;
-      }
       let terminalCommandSession: RelayClientSubscription['terminal'] | null = null;
       let submitMessagePayload: {
         text: string;
@@ -3612,6 +3837,11 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     },
     sendTestPush,
     metadataAuditRows: () => [...metadataAudit],
+    tenantTerminalViewingStatus: () => [...terminalViewingDisabledTenants.entries()].map(([tenantId, state]) => ({
+      tenantId,
+      disabled: true,
+      reason: state.reason,
+    })),
     async close(): Promise<void> {
       closing = true;
       for (const ws of [...nodeSockets.values()]) ws.close(1001, 'relay closing');
@@ -4024,6 +4254,7 @@ function relayJoinHtml(): string {
     .approval-watch { border: 1px solid #2b373d; border-radius: 6px; padding: 12px; margin-top: 10px; background: #0f1519; }
     .approval-watch .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .terminal-shell { margin-top: 14px; border: 1px solid #2b373d; border-radius: 6px; background: #06080a; overflow: hidden; }
+    .privacy-notice { border: 1px solid #374151; border-radius: 6px; padding: 12px; margin-top: 14px; background: #111827; }
     .terminal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; background: #0f1519; border-bottom: 1px solid #2b373d; }
     .terminal-toolbar strong { font-size: 13px; }
     .terminal-viewer { height: clamp(220px, 42dvh, 520px); min-height: 180px; }
@@ -4078,6 +4309,10 @@ function relayJoinHtml(): string {
     <section id="terminal-status" class="request" hidden aria-label="Terminal sharing status">
       <strong id="terminal-status-title"></strong>
       <p id="terminal-status-copy" class="muted"></p>
+    </section>
+    <section id="terminal-privacy-notice" class="privacy-notice" hidden aria-label="Public relay terminal privacy notice">
+      <strong>Public relay terminal viewing is live-only.</strong>
+      <p class="muted">Terminal bytes are routed through this relay for the approved browser session. Do not paste secrets into shared terminals, and stop viewing if the owner revokes access.</p>
     </section>
     <section id="terminal-shell" class="terminal-shell" hidden aria-label="Shared terminal">
       <div class="terminal-toolbar">
@@ -4149,6 +4384,7 @@ const offlineLastSeenEl = document.getElementById('offline-last-seen');
 const terminalStatusEl = document.getElementById('terminal-status');
 const terminalStatusTitleEl = document.getElementById('terminal-status-title');
 const terminalStatusCopyEl = document.getElementById('terminal-status-copy');
+const terminalPrivacyNoticeEl = document.getElementById('terminal-privacy-notice');
 const terminalShellEl = document.getElementById('terminal-shell');
 const terminalEl = document.getElementById('terminal');
 const terminalLiveStateEl = document.getElementById('terminal-live-state');
@@ -4578,6 +4814,7 @@ function resetTerminalStream(message) {
     terminalWs.close();
     terminalWs = null;
   }
+  terminalPrivacyNoticeEl.hidden = true;
   terminalLiveStateEl.textContent = 'Waiting for terminal projection';
   if (message) setTerminalBanner(message, true);
   renderComposerState();
@@ -4691,6 +4928,7 @@ function renderMemberShareState(memberState) {
   notifyApprovalEl.disabled = false;
   terminalMayView = terminal.state === 'available' || terminal.state === 'viewOnly';
   terminalMayInput = terminal.state === 'available';
+  terminalPrivacyNoticeEl.hidden = !terminalMayView;
   if (terminal.state === 'available') {
     terminalStatusTitleEl.textContent = 'Terminal input approved';
     terminalStatusCopyEl.textContent = memberState.controllerLease && memberState.controllerLease.state === 'heldByAnotherDevice'
