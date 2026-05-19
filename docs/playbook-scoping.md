@@ -83,3 +83,7 @@ typescript
 ## UI provenance
 
 The Playbook Browser shows a small `plugin` or `user` badge next to playbooks that came from outside the current project. Project-tier playbooks show no badge (they're the default).
+
+## Capability-gated parameters
+
+A playbook parameter can declare `gatedBy: <launch-dependency>` (currently only `kb`). When that dependency is **absent** on the Kookr server host, the launch form collapses the parameter to its default and annotates it instead of offering an inert control. The dependency is probed at playbook-list time; an unknown probe result fails open (the parameter renders normally). `gatedBy` is a pure form-rendering hint — it is never enforced server-side, and it is independent of the playbook's `dependencies` declaration (declare both when a parameter both needs and is gated by a dependency). See [`docs/rfc/rfc-capability-gated-playbook-params.md`](./rfc/rfc-capability-gated-playbook-params.md) for the design and rationale.
