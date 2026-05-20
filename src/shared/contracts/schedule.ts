@@ -7,6 +7,7 @@ export interface SchedulePlaybook {
 
 export type ScheduleStopReason = 'trigger_limit_reached';
 export type ScheduleExecutionTrigger = 'cron' | 'manual';
+export type ScheduleExecutionDecision = 'cron_due' | 'manual_run' | 'catch_up' | 'stale_catch_up';
 export type ScheduleExecutionOutcome =
   | 'queued'
   | 'running'
@@ -16,6 +17,7 @@ export type ScheduleExecutionOutcome =
   | 'dispatch_failed'
   | 'skipped_active'
   | 'skipped_capacity'
+  | 'skipped_stale'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -27,14 +29,33 @@ export type ScheduleExecutionReasonCode =
   | 'validation'
   | 'deduplicated'
   | 'launch_error'
+  | 'stale_catch_up'
   | 'reconciled_after_restart'
   | 'unknown_after_restart';
+
+export interface ScheduleExecutionLedgerEntry {
+  id: string;
+  scheduleId: string;
+  receiptId?: string;
+  executionToken?: string;
+  trigger: ScheduleExecutionTrigger;
+  decision: ScheduleExecutionDecision;
+  scheduledFor?: string;
+  evaluatedAt: string;
+  completedAt?: string;
+  taskId?: string;
+  blockingTaskId?: string;
+  outcome: ScheduleExecutionOutcome;
+  reasonCode?: ScheduleExecutionReasonCode;
+  message?: string;
+}
 
 export interface ScheduleExecutionReceipt {
   id: string;
   scheduleId: string;
   executionToken: string;
   trigger: ScheduleExecutionTrigger;
+  decision: ScheduleExecutionDecision;
   scheduledFor?: string;
   evaluatedAt: string;
   taskId?: string;
@@ -74,6 +95,7 @@ export interface Schedule {
   lastCronEvaluatedAt?: string;
   latestExecution?: ScheduleLatestExecutionStatus;
   currentExecution?: ScheduleExecutionReceipt;
+  executionLedger: ScheduleExecutionLedgerEntry[];
   createdAt: string;
   updatedAt: string;
 }

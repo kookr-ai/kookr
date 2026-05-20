@@ -3,18 +3,19 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ScheduleStore } from '../core/schedule.js';
+import { TaskStore } from '../core/tasks.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
 
-function withService(testFn: (service: ScheduleService) => void): void {
+function withService(testFn: (service: ScheduleService, store: ScheduleStore, dir: string) => void | Promise<void>): Promise<void> | void {
   const dir = mkdtempSync(join(tmpdir(), 'schedule-service-test-'));
-  try {
-    const store = new ScheduleStore(dir);
-    const service = new ScheduleService({ store, validator: new ScheduleValidator() });
-    testFn(service);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+  const store = new ScheduleStore(dir);
+  const service = new ScheduleService({ store, validator: new ScheduleValidator() });
+  const result = testFn(service, store, dir);
+  if (result && typeof result === 'object' && 'then' in result) {
+    return result.finally(() => rmSync(dir, { recursive: true, force: true }));
   }
+  rmSync(dir, { recursive: true, force: true });
 }
 
 describe('ScheduleService status', () => {
@@ -68,6 +69,58 @@ describe('ScheduleService status', () => {
         lastTickCompletedAt: expect.any(String),
       }));
       expect(snapshot).not.toHaveProperty('lastError');
+    });
+  });
+
+  it('updates the execution ledger when a scheduled task reaches a terminal state', async () => {
+    await withService(async (service, store) => {
+      const schedule = store.create({
+        name: 'Terminal',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-1', false);
+
+      await service.recordTaskTerminalOutcome('task-1', 'completed');
+
+      expect(store.get(schedule.id)!.executionLedger).toEqual([
+        expect.objectContaining({
+          taskId: 'task-1',
+          outcome: 'completed',
+          reasonCode: 'none',
+          completedAt: expect.any(String),
+        }),
+      ]);
+    });
+  });
+
+  it('updates the execution ledger when startup reconciliation finds a completed task', async () => {
+    await withService(async (service, store) => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Run scheduled work', '/tmp');
+      taskStore.startTask(task.id);
+      const completedTask = taskStore.completeTask(task.id);
+      const schedule = store.create({
+        name: 'Reconcile',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, task.id, false);
+
+      await service.reconcileOnStartup(taskStore);
+
+      expect(store.get(schedule.id)!.executionLedger).toEqual([
+        expect.objectContaining({
+          taskId: completedTask.id,
+          outcome: 'completed',
+          reasonCode: 'reconciled_after_restart',
+          completedAt: completedTask.updatedAt.toISOString(),
+        }),
+      ]);
     });
   });
 });

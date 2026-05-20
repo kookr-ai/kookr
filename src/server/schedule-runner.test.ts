@@ -92,6 +92,14 @@ Do the test thing.
     expect(launched).toHaveLength(1);
     expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
     expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('running');
+    expect(store.get(schedule.id)!.executionLedger).toEqual([
+      expect.objectContaining({
+        taskId: 'task-1',
+        outcome: 'running',
+        decision: 'cron_due',
+        scheduledFor: expect.any(String),
+      }),
+    ]);
   });
 
   it('skips disabled schedules', async () => {
@@ -137,6 +145,11 @@ Do the test thing.
     expect(launched).toHaveLength(1);
     expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_active');
     expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('previous_run_active');
+    expect(store.get(schedule.id)!.executionLedger.at(-1)).toEqual(expect.objectContaining({
+      outcome: 'skipped_active',
+      reasonCode: 'previous_run_active',
+      blockingTaskId: 'task-1',
+    }));
   });
 
   it('fires when previous run is stale (older than threshold)', async () => {
@@ -193,6 +206,10 @@ Do the test thing.
     expect(launched).toHaveLength(0);
     expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_capacity');
     expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('capacity');
+    expect(store.get(schedule.id)!.executionLedger.at(-1)).toEqual(expect.objectContaining({
+      outcome: 'skipped_capacity',
+      reasonCode: 'capacity',
+    }));
     expect(store.get(schedule.id)!.remainingTriggers).toBe(2);
     expect(store.get(schedule.id)!.enabled).toBe(true);
   });
@@ -250,6 +267,14 @@ Do the test thing.
     expect(result.taskId).toBe('task-1');
     expect(launched).toHaveLength(1);
     expect(store.get(schedule.id)!.latestExecution?.trigger).toBe('manual');
+    expect(store.get(schedule.id)!.executionLedger).toEqual([
+      expect.objectContaining({
+        trigger: 'manual',
+        decision: 'manual_run',
+        outcome: 'running',
+        taskId: 'task-1',
+      }),
+    ]);
   });
 
   it('consumes finite cron trigger quota and auto-stops once exhausted', async () => {
@@ -335,6 +360,42 @@ Do the test thing.
     runner.stop();
 
     expect(service.getStatusSnapshot().catchUpEnabled).toBe(true);
+    expect(store.get(schedule.id)!.executionLedger[0]).toEqual(expect.objectContaining({
+      decision: 'catch_up',
+      outcome: 'running',
+    }));
+  });
+
+  it('records stale catch-up skips in the execution ledger', async () => {
+    const schedule = store.create({
+      name: 'StaleCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 26 * 60 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    runner.start();
+    await vi.waitFor(() => {
+      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_stale');
+    });
+    runner.stop();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('stale_catch_up');
+    await runner.tick();
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.executionLedger).toEqual([
+      expect.objectContaining({
+        decision: 'stale_catch_up',
+        outcome: 'skipped_stale',
+        reasonCode: 'stale_catch_up',
+        scheduledFor: expect.any(String),
+      }),
+    ]);
   });
 
   it('skips catch-up when KOOKR_NO_CATCHUP is set', async () => {

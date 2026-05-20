@@ -963,6 +963,18 @@ The system SHALL allow a schedule to define an optional finite number of cron-tr
 
 **Evidence:** `src/core/schedule.ts` (persisted schedule model), `src/server/schedule-service.ts` (quota accounting and auto-stop), `src/server/schedule-runner.ts` (runtime enforcement), `src/server/routes/schedule-routes.ts` (REST contract), `src/frontend/components/ScheduleSection.tsx` and `src/frontend/components/SchedulesDialog.tsx` (quota visibility), `src/core/schedule.test.ts`, `src/server/schedule-runner.test.ts`, `src/server/index.test.ts`.
 
+### R10.2: Schedule Execution Ledger [F11] — SHALL — `done`
+
+The system SHALL persist a per-schedule execution ledger for cron, manual, skipped, missed, and catch-up decisions.
+
+**Acceptance criteria:**
+- Ledger entries include schedule id, due timestamp when applicable, evaluated time, trigger, decision, outcome, reason code, and related task/blocking task ids when available
+- Skips caused by active previous runs, capacity pressure, and stale catch-up windows are durable across restarts
+- The schedule API exposes the ledger with each schedule response
+- The schedules UI surfaces recent ledger entries without replacing the latest execution summary
+
+**Evidence:** `src/core/schedule.ts`, `src/shared/contracts/schedule.ts`, `src/server/schedule-service.ts`, `src/server/schedule-runner.ts`, `src/server/routes/schedule-routes.ts`, `src/frontend/components/SchedulesDialog.tsx`, `src/core/schedule.test.ts`, `src/server/schedule-runner.test.ts`, `src/server/routes/schedule-routes.test.ts`.
+
 ---
 
 ## R11: Self-Diagnostic Telemetry
@@ -1059,6 +1071,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R8.3 | — | SHALL | done | workspace-cleanup-service, CleanupCandidateTable |
 | R9.1 | F8.1-F8.3 | SHOULD | done | reflection-recommendation, reflection-task, StatusBar |
 | R10.1 | F11 | SHALL | done | schedule, schedule-service, schedule-runner, schedule-routes |
+| R10.2 | F11 | SHALL | done | schedule execution ledger, schedule-runner, schedule-routes, SchedulesDialog |
 | R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
 
 ---

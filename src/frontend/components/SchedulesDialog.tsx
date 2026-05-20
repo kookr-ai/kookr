@@ -54,6 +54,81 @@ function quotaLabel(schedule: ScheduleResponse): string {
   return `Scheduled runs: ${schedule.remainingTriggers ?? schedule.maxTriggers} left of ${schedule.maxTriggers}`;
 }
 
+function ledgerDecisionLabel(entry: ScheduleResponse['executionLedger'][number]): string {
+  switch (entry.decision) {
+    case 'catch_up':
+      return 'Catch-up';
+    case 'stale_catch_up':
+      return 'Stale catch-up';
+    case 'manual_run':
+      return 'Manual';
+    case 'cron_due':
+      return 'Cron';
+  }
+}
+
+function ledgerSummary(entry: ScheduleResponse['executionLedger'][number]): string {
+  const subject = entry.scheduledFor
+    ? `due ${formatRelativeTime(entry.scheduledFor)}`
+    : `checked ${formatRelativeTime(entry.evaluatedAt)}`;
+  const task = entry.taskId ? ` · task ${entry.taskId.slice(0, 8)}` : '';
+  const blocker = entry.blockingTaskId ? ` · blocked by ${entry.blockingTaskId.slice(0, 8)}` : '';
+  const reason = entry.reasonCode && entry.reasonCode !== 'none' ? ` · ${reasonLabel(entry.reasonCode)}` : '';
+  return `${ledgerDecisionLabel(entry)} ${subject}: ${outcomeLabel(entry.outcome)}${reason}${task}${blocker}`;
+}
+
+function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outcome']): string {
+  switch (outcome) {
+    case 'queued':
+      return 'queued';
+    case 'running':
+      return 'running';
+    case 'completed':
+      return 'completed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'deduplicated':
+      return 'deduplicated';
+    case 'dispatch_failed':
+      return 'dispatch failed';
+    case 'skipped_active':
+      return 'skipped: active run';
+    case 'skipped_capacity':
+      return 'skipped: capacity';
+    case 'skipped_stale':
+      return 'skipped: stale';
+    case 'unknown_after_restart':
+      return 'unknown after restart';
+  }
+}
+
+function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][number]['reasonCode']>): string {
+  switch (reason) {
+    case 'none':
+      return 'none';
+    case 'capacity':
+      return 'capacity';
+    case 'previous_run_active':
+      return 'previous run active';
+    case 'missing_cwd':
+      return 'missing working directory';
+    case 'missing_playbook':
+      return 'missing playbook';
+    case 'validation':
+      return 'validation';
+    case 'deduplicated':
+      return 'deduplicated';
+    case 'launch_error':
+      return 'launch error';
+    case 'stale_catch_up':
+      return 'stale catch-up';
+    case 'reconciled_after_restart':
+      return 'reconciled after restart';
+    case 'unknown_after_restart':
+      return 'unknown after restart';
+  }
+}
+
 async function parseJson(res: Response) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -372,6 +447,16 @@ export function SchedulesDialog({ onClose }: Props) {
                     <span className="schedule-task-ref">Task {schedule.latestExecution.taskId.slice(0, 8)}</span>
                   )}
                 </div>
+                {schedule.executionLedger.length > 0 && (
+                  <div className="schedule-ledger">
+                    {schedule.executionLedger.slice(-3).reverse().map((entry) => (
+                      <div key={entry.id} className="schedule-ledger-entry" title={entry.message}>
+                        <span className="schedule-ledger-time">{formatRelativeTime(entry.completedAt ?? entry.evaluatedAt)}</span>
+                        <span>{ledgerSummary(entry)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="schedule-manager-actions">
                 <button

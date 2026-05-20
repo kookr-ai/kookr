@@ -12,6 +12,7 @@ export interface SchedulePlaybook {
 
 export type ScheduleStopReason = 'trigger_limit_reached';
 export type ScheduleExecutionTrigger = 'cron' | 'manual';
+export type ScheduleExecutionDecision = 'cron_due' | 'manual_run' | 'catch_up' | 'stale_catch_up';
 export type ScheduleExecutionOutcome =
   | 'queued'
   | 'running'
@@ -21,6 +22,7 @@ export type ScheduleExecutionOutcome =
   | 'dispatch_failed'
   | 'skipped_active'
   | 'skipped_capacity'
+  | 'skipped_stale'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -32,14 +34,33 @@ export type ScheduleExecutionReasonCode =
   | 'validation'
   | 'deduplicated'
   | 'launch_error'
+  | 'stale_catch_up'
   | 'reconciled_after_restart'
   | 'unknown_after_restart';
+
+export interface ScheduleExecutionLedgerEntry {
+  id: string;
+  scheduleId: string;
+  receiptId?: string;
+  executionToken?: string;
+  trigger: ScheduleExecutionTrigger;
+  decision: ScheduleExecutionDecision;
+  scheduledFor?: string;
+  evaluatedAt: string;
+  completedAt?: string;
+  taskId?: string;
+  blockingTaskId?: string;
+  outcome: ScheduleExecutionOutcome;
+  reasonCode?: ScheduleExecutionReasonCode;
+  message?: string;
+}
 
 export interface ScheduleExecutionReceipt {
   id: string;
   scheduleId: string;
   executionToken: string;
   trigger: ScheduleExecutionTrigger;
+  decision: ScheduleExecutionDecision;
   scheduledFor?: string;
   evaluatedAt: string;
   taskId?: string;
@@ -81,6 +102,7 @@ export interface Schedule {
   lastCronEvaluatedAt?: string;
   latestExecution?: ScheduleLatestExecutionStatus;
   currentExecution?: ScheduleExecutionReceipt;
+  executionLedger: ScheduleExecutionLedgerEntry[];
   createdAt: string;
   updatedAt: string;
 }
@@ -234,6 +256,7 @@ export class ScheduleStore {
       },
       cwd: input.cwd,
       agentType: input.agentType ?? DEFAULT_AGENT_TYPE,
+      executionLedger: [],
       createdAt: now,
       updatedAt: now,
     };
@@ -352,9 +375,49 @@ function normalizeSchedule(raw: unknown): Schedule | null {
     ...(typeof candidate.lastCronEvaluatedAt === 'string' ? { lastCronEvaluatedAt: candidate.lastCronEvaluatedAt } : {}),
     ...(candidate.latestExecution ? { latestExecution: normalizeLatestExecution(candidate.latestExecution) } : {}),
     ...(candidate.currentExecution ? { currentExecution: normalizeCurrentExecution(candidate.currentExecution) } : {}),
+    executionLedger: normalizeExecutionLedger(candidate.executionLedger),
   };
 
   return normalized;
+}
+
+function normalizeExecutionLedger(raw: unknown): ScheduleExecutionLedgerEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    const entry = normalizeExecutionLedgerEntry(item);
+    return entry ? [entry] : [];
+  });
+}
+
+function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEntry | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const candidate = raw as Partial<ScheduleExecutionLedgerEntry>;
+  if (
+    !candidate.id
+    || !candidate.scheduleId
+    || !candidate.trigger
+    || !candidate.decision
+    || !candidate.evaluatedAt
+    || !candidate.outcome
+  ) {
+    return undefined;
+  }
+  return {
+    id: String(candidate.id),
+    scheduleId: String(candidate.scheduleId),
+    trigger: candidate.trigger,
+    decision: candidate.decision,
+    evaluatedAt: candidate.evaluatedAt,
+    outcome: candidate.outcome,
+    ...(candidate.receiptId ? { receiptId: candidate.receiptId } : {}),
+    ...(candidate.executionToken ? { executionToken: candidate.executionToken } : {}),
+    ...(candidate.scheduledFor ? { scheduledFor: candidate.scheduledFor } : {}),
+    ...(candidate.completedAt ? { completedAt: candidate.completedAt } : {}),
+    ...(candidate.taskId ? { taskId: candidate.taskId } : {}),
+    ...(candidate.blockingTaskId ? { blockingTaskId: candidate.blockingTaskId } : {}),
+    ...(candidate.reasonCode ? { reasonCode: candidate.reasonCode } : {}),
+    ...(candidate.message ? { message: candidate.message } : {}),
+  };
 }
 
 function normalizeLatestExecution(raw: unknown): ScheduleLatestExecutionStatus | undefined {
@@ -388,6 +451,7 @@ function normalizeCurrentExecution(raw: unknown): ScheduleExecutionReceipt | und
     executionToken: candidate.executionToken,
     scheduleId: candidate.scheduleId,
     trigger: candidate.trigger,
+    decision: candidate.decision ?? (candidate.trigger === 'manual' ? 'manual_run' : 'cron_due'),
     evaluatedAt: candidate.evaluatedAt,
     status: candidate.status,
     ...(candidate.scheduledFor ? { scheduledFor: candidate.scheduledFor } : {}),

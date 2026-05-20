@@ -50,6 +50,41 @@ describe('schedule routes', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  describe('GET /api/schedules', () => {
+    test('returns persisted execution ledger entries', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      const evaluatedAt = '2026-01-01T09:00:00.000Z';
+      store.replace({
+        ...store.get(schedule.id)!,
+        executionLedger: [
+          {
+            id: `${schedule.id}:cron:${evaluatedAt}`,
+            scheduleId: schedule.id,
+            trigger: 'cron',
+            decision: 'stale_catch_up',
+            scheduledFor: evaluatedAt,
+            evaluatedAt,
+            completedAt: '2026-01-02T09:00:00.000Z',
+            outcome: 'skipped_stale',
+            reasonCode: 'stale_catch_up',
+            message: 'Due run is outside the catch-up window',
+          },
+        ],
+      });
+
+      const res = await mkApp({ scheduleService: service }).request('/api/schedules');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.schedules[0].executionLedger).toEqual([
+        expect.objectContaining({
+          decision: 'stale_catch_up',
+          outcome: 'skipped_stale',
+          reasonCode: 'stale_catch_up',
+        }),
+      ]);
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // DELETE /api/schedules/:id
   // ---------------------------------------------------------------------------
