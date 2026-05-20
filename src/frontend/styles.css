@@ -2343,6 +2343,7 @@ kbd {
 }
 .operations-panel-body .audio-alerts-section,
 .operations-panel-body .detection-stats-section,
+.operations-panel-body .finding-evidence-section,
 .operations-panel-body .circuit-breaker-section {
   border-top: 0;
   border-bottom: 1px solid var(--border-dim);
@@ -2352,6 +2353,18 @@ kbd {
 }
 .operations-panel-body .section-header {
   min-width: 0;
+}
+.operations-panel-body .section-header-button {
+  width: 100%;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.operations-panel-body .section-header-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .operations-panel-body .stats-label {
   min-width: 0;
@@ -2383,6 +2396,15 @@ kbd {
   .operations-panel .audio-alert-description {
     grid-column: 1 / -1;
     white-space: normal;
+  }
+  .operations-panel .finding-evidence-sampler,
+  .operations-panel .finding-evidence-review-row,
+  .operations-panel .finding-evidence-proposal-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .operations-panel .finding-evidence-review-row > *,
+  .operations-panel .finding-evidence-proposal-row > * {
+    min-width: 0;
   }
 }
 
@@ -5976,6 +5998,141 @@ button.project-drawer-link:focus-visible {
   font-weight: 600;
   min-width: 40px;
   text-align: right;
+}
+
+/* --- Finding Evidence Diagnostics --- */
+.finding-evidence-section {
+  border-top: 1px solid var(--border-dim);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.finding-evidence-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 6px;
+}
+.finding-evidence-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px 10px;
+  padding: 8px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.05);
+}
+.finding-evidence-summary-grid span {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.finding-evidence-summary-grid strong {
+  color: var(--text-bright);
+  font-size: 15px;
+}
+.finding-evidence-chips,
+.finding-evidence-warnings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.finding-evidence-chip,
+.finding-evidence-warning {
+  max-width: 100%;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid var(--border-dim);
+  overflow-wrap: anywhere;
+}
+.finding-evidence-chip--muted {
+  color: var(--text-muted);
+}
+.finding-evidence-warning {
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(251, 191, 36, 0.25);
+}
+.finding-evidence-sampler,
+.finding-evidence-review-row,
+.finding-evidence-proposal-row {
+  display: grid;
+  grid-template-columns: auto minmax(96px, 1fr) auto auto auto auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  background: rgba(148, 163, 184, 0.04);
+}
+.finding-evidence-review-row {
+  grid-template-columns: auto minmax(120px, 1fr) auto auto;
+}
+.finding-evidence-proposal-row {
+  grid-template-columns: minmax(120px, 0.8fr) auto minmax(0, 2fr) auto;
+}
+.finding-evidence-list,
+.finding-evidence-proposals {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.finding-evidence-state-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.finding-evidence-state-dot--on {
+  background: var(--green);
+}
+.finding-evidence-review-kind {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  background: rgba(148, 163, 184, 0.08);
+}
+.finding-evidence-review-kind--invalid_attempt {
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.08);
+}
+.finding-evidence-target,
+.finding-evidence-proposal-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.finding-evidence-target {
+  color: var(--text-bright);
+  font-weight: 600;
+}
+.finding-evidence-review-status,
+.finding-evidence-time {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.finding-evidence-proposal-link {
+  color: var(--blue);
+  font-size: 10px;
+  font-weight: 600;
+  text-decoration: none;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.finding-evidence-proposal-link:hover {
+  color: var(--text-bright);
 }
 
 /* --- Audio Alerts Section --- */

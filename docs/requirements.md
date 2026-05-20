@@ -222,8 +222,9 @@ The system SHOULD capture bounded evidence snapshots for surfaced supervisor fin
 - Quick findings that clear inside the timing grace window are classified as `transient_too_fast`, not durable detector failures
 - Active findings with later terminal or event activity that no longer matches the blocking condition are classified as `possible_false_positive`
 - Evidence audit records are visible in raw snapshots and through `/api/finding-evidence-audit` for low-cost sampling or small-model review
+- The Operations diagnostics panel summarizes evidence audit counts and current review candidates without requiring API spelunking
 
-**Evidence:** `src/core/finding-evidence-audit.ts`, `src/core/monitor.ts`, `src/server/lifecycle-timers.ts`, `src/server/routes/diagnostics-routes.ts`, `src/core/finding-evidence-audit.test.ts`, `src/core/monitor.test.ts`.
+**Evidence:** `src/core/finding-evidence-audit.ts`, `src/core/monitor.ts`, `src/server/lifecycle-timers.ts`, `src/server/routes/diagnostics-routes.ts`, `src/frontend/components/FindingEvidenceDiagnosticsPanel.tsx`, `src/core/finding-evidence-audit.test.ts`, `src/core/monitor.test.ts`, `src/frontend/components/OperationsPanel.test.ts`.
 
 ### R2.12: Persist Finding Evidence Review Diagnostics [F2.11] — SHOULD — `done`
 
@@ -235,8 +236,9 @@ The system SHOULD persist manual finding-evidence review outcomes in an append-o
 - Malformed or partial log lines are skipped when reading diagnostics
 - Invalid attempts are stored as non-verdict records with failure kind, raw output hash, reviewer metadata, prompt version, and input hash
 - Model-generated diagnostic text is capped before it is stored or returned
+- The Operations diagnostics panel shows sampler availability, review queue state, budget status, and recent persisted review outcomes
 
-**Evidence:** `src/server/review-log-store.ts`, `src/server/finding-evidence-review-service.ts`, `src/server/routes/diagnostics-routes.ts`, `src/server/review-log-store.test.ts`, `src/server/finding-evidence-review-service.test.ts`, `src/server/routes/diagnostics-routes.test.ts`.
+**Evidence:** `src/server/review-log-store.ts`, `src/server/finding-evidence-review-service.ts`, `src/server/routes/diagnostics-routes.ts`, `src/frontend/components/FindingEvidenceDiagnosticsPanel.tsx`, `src/server/review-log-store.test.ts`, `src/server/finding-evidence-review-service.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `src/frontend/components/OperationsPanel.test.ts`.
 
 ### R2.13: Report Detector Proposal Candidates [F2.12] — SHOULD — `done`
 
@@ -247,8 +249,9 @@ The system SHOULD turn repeated finding-evidence review outcomes into advisory d
 - Reports include review counts, false-positive / false-negative / invalid / unclear populations, confidence distribution, input hashes, and evidence references
 - Generated proposals are advisory only and cannot execute commands or mutate detector configuration
 - Diagnostics cap and escape model-controlled text before returning it
+- The Operations diagnostics panel surfaces detector proposal candidates with links to the full proposal report
 
-**Evidence:** `src/server/detector-proposal-report.ts`, `src/server/review-log-store.ts`, `src/server/routes/diagnostics-routes.ts`, `src/server/detector-proposal-report.test.ts`, `src/server/routes/diagnostics-routes.test.ts`.
+**Evidence:** `src/server/detector-proposal-report.ts`, `src/server/review-log-store.ts`, `src/server/routes/diagnostics-routes.ts`, `src/frontend/components/FindingEvidenceDiagnosticsPanel.tsx`, `src/server/detector-proposal-report.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `src/frontend/components/OperationsPanel.test.ts`.
 
 ---
 
