@@ -80,17 +80,39 @@ async function memberWebSocketNonce(relay: RelayServerHandle, cookie: string): P
   return body.security!.webSocketNonce!;
 }
 
-async function connectMember(relay: RelayServerHandle, nodeId: string, memberToken: string, cookie?: string): Promise<WebSocket> {
+async function connectMember(
+  relay: RelayServerHandle,
+  nodeId: string,
+  memberToken: string,
+  cookie?: string,
+  params: Record<string, string> = {},
+): Promise<WebSocket> {
   const memberCookie = cookie ?? `kookr_relay_member_token=${memberToken}`;
   const nonce = await memberWebSocketNonce(relay, memberCookie);
   const wsUrl = new URL('/relay/client', relay.url());
   wsUrl.protocol = 'ws:';
   wsUrl.searchParams.set('nodeId', nodeId);
   wsUrl.searchParams.set('wsNonce', nonce);
+  for (const [key, value] of Object.entries(params)) wsUrl.searchParams.set(key, value);
   const ws = new WebSocket(wsUrl, { headers: { origin: relay.url(), cookie: memberCookie } });
   sockets.push(ws);
   await once(ws, 'open');
   return ws;
+}
+
+async function connectedViewerCount(
+  relay: RelayServerHandle,
+  nodeToken: string,
+  invitationId: string,
+): Promise<number> {
+  const res = await fetch(new URL('/relay/node/invitations', relay.url()), {
+    headers: { authorization: `Bearer ${nodeToken}` },
+  });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { invitations: Array<{ invitationId: string; connectedViewerCount: number }> };
+  const invitation = body.invitations.find((candidate) => candidate.invitationId === invitationId);
+  expect(invitation).toBeTruthy();
+  return invitation!.connectedViewerCount;
 }
 
 async function connectNode(relay: RelayServerHandle, nodeId: string, token: string): Promise<WebSocket> {
@@ -887,6 +909,113 @@ describe('relay node-scoped task-share endpoints', () => {
         acceptedAt: expect.any(String),
       })],
     });
+  });
+
+  it('counts one member device with a share socket and terminal socket as one connected viewer', async () => {
+    const relay = await startRelay();
+    const { nodeId, nodeToken } = relay.registerNode();
+    const nodeWs = await connectNode(relay, nodeId, nodeToken);
+    const created = relay.createInvitation({
+      nodeId,
+      subject: { kind: 'task', nodeId, taskId: 'task-terminal-view' },
+      grants: ['view', 'terminalView'],
+    });
+    const accepted = relay.acceptInvitation(created.token, 'viewer');
+    if (!accepted.ok) throw new Error('expected accept');
+    const invitationId = accepted.accepted.invitation.invitationId;
+    const cookie = [
+      `kookr_relay_member_token=${accepted.accepted.memberToken}`,
+      `kookr_relay_device_id=${accepted.accepted.deviceId}`,
+    ].join('; ');
+
+    publishSessionProjection(nodeWs, {
+      nodeId,
+      invitationId,
+      policyVersion: accepted.accepted.invitation.policyVersion,
+    });
+    await waitFor(async () => {
+      const stateUrl = new URL('/relay/dashboard/state', relay.url());
+      stateUrl.searchParams.set('nodeId', nodeId);
+      stateUrl.searchParams.set('projectionId', 'proj-primary');
+      stateUrl.searchParams.set('sessionAlias', 'primary');
+      stateUrl.searchParams.set('afterSeq', '0');
+      const res = await fetch(stateUrl, { headers: { cookie } });
+      return res.status === 200;
+    });
+
+    await connectMember(relay, nodeId, accepted.accepted.memberToken, cookie);
+    await connectMember(relay, nodeId, accepted.accepted.memberToken, cookie, {
+      projectionId: 'proj-primary',
+      sessionAlias: 'primary',
+    });
+
+    await waitFor(async () => {
+      const res = await fetch(new URL(`/relay/dashboard/state?nodeId=${encodeURIComponent(nodeId)}`, relay.url()), {
+        headers: { authorization: 'Bearer admin-secret' },
+      });
+      const body = await res.json() as { members?: unknown[] };
+      return body.members?.length === 2;
+    });
+    const stateRes = await fetch(new URL(`/relay/dashboard/state?nodeId=${encodeURIComponent(nodeId)}`, relay.url()), {
+      headers: { authorization: 'Bearer admin-secret' },
+    });
+    const stateBody = await stateRes.json() as { members: Array<Record<string, unknown>> };
+    expect(stateBody.members).toHaveLength(2);
+    expect(stateBody.members).toEqual([
+      expect.not.objectContaining({ memberId: expect.any(String) }),
+      expect.not.objectContaining({ memberId: expect.any(String) }),
+    ]);
+    expect(stateBody.members).toEqual([
+      expect.not.objectContaining({ deviceId: expect.any(String) }),
+      expect.not.objectContaining({ deviceId: expect.any(String) }),
+    ]);
+    await expect(connectedViewerCount(relay, nodeToken, invitationId)).resolves.toBe(1);
+  });
+
+  it('counts distinct accepted guest devices separately for one task share', async () => {
+    const relay = await startRelay();
+    const { nodeId, nodeToken } = relay.registerNode();
+    const created = await fetch(new URL('/relay/node/invitations', relay.url()), {
+      method: 'POST',
+      headers: nodeHeaders(nodeToken),
+      body: JSON.stringify({ subject: { kind: 'task', taskId: 'task-two-devices' }, grants: ['view'] }),
+    });
+    const body = await created.json() as {
+      invitation: { invitationId: string };
+      shareTicket: { shareId: string; password: string };
+    };
+
+    const firstAccepted = await fetch(new URL('/relay/share-tickets/accept', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shareId: body.shareTicket.shareId, password: body.shareTicket.password, displayName: 'viewer-1' }),
+    });
+    const secondAccepted = await fetch(new URL('/relay/share-tickets/accept', relay.url()), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shareId: body.shareTicket.shareId, password: body.shareTicket.password, displayName: 'viewer-2' }),
+    });
+    expect(firstAccepted.status).toBe(200);
+    expect(secondAccepted.status).toBe(200);
+    const firstCookie = cookieHeaderFromSetCookie(firstAccepted.headers.get('set-cookie') ?? '');
+    const secondCookie = cookieHeaderFromSetCookie(secondAccepted.headers.get('set-cookie') ?? '');
+
+    await connectMember(
+      relay,
+      nodeId,
+      cookieValue(firstCookie, 'kookr_relay_member_token'),
+      firstCookie,
+    );
+    await connectMember(
+      relay,
+      nodeId,
+      cookieValue(secondCookie, 'kookr_relay_member_token'),
+      secondCookie,
+    );
+
+    await waitFor(async () => (
+      await connectedViewerCount(relay, nodeToken, body.invitation.invitationId)
+    ) === 2);
   });
 
   it('redacts member projection labels and reports offline nodes without stale projections', async () => {
