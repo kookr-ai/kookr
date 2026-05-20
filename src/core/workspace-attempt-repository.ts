@@ -3,7 +3,7 @@
  *
  * Every preflight and cleanup action writes a record here.
  * Records survive UI disconnects and partial failures.
- * StartWorkService and CleanupService write through this boundary;
+ * CleanupService writes through this boundary;
  * ContributionWorkspaceQuery reads through it.
  */
 
@@ -15,18 +15,15 @@ import type {
   AttemptType,
   AttemptStatus,
   AttemptDisposition,
-  StartWorkHandoff,
 } from './workspace-types.js';
 
 interface WorkspaceAttemptFile {
   version: 1;
   attempts: WorkspaceAttemptRecord[];
-  handoffs: StartWorkHandoff[];
 }
 
 export class WorkspaceAttemptRepository {
   private attempts = new Map<string, WorkspaceAttemptRecord>();
-  private handoffs = new Map<string, StartWorkHandoff>();
   private filePath?: string;
 
   constructor(filePath?: string) {
@@ -159,40 +156,6 @@ export class WorkspaceAttemptRepository {
     return result.slice(0, limit);
   }
 
-  /** Record a Start Work handoff. */
-  recordHandoff(params: {
-    projectId: string;
-    taskId: string;
-    sessionId?: string;
-    prompt: string;
-    playbookId?: string;
-  }): StartWorkHandoff {
-    const handoff: StartWorkHandoff = {
-      handoffId: randomUUID(),
-      projectId: params.projectId,
-      taskId: params.taskId,
-      sessionId: params.sessionId,
-      launchedAt: new Date().toISOString(),
-      prompt: params.prompt,
-      playbookId: params.playbookId,
-    };
-    this.handoffs.set(handoff.handoffId, handoff);
-    this.persist();
-    return handoff;
-  }
-
-  /** Get recent handoffs for a project. */
-  listHandoffsByProject(projectId: string, limit = 10): StartWorkHandoff[] {
-    const result: StartWorkHandoff[] = [];
-    for (const handoff of this.handoffs.values()) {
-      if (handoff.projectId === projectId) {
-        result.push(handoff);
-      }
-    }
-    result.sort((a, b) => b.launchedAt.localeCompare(a.launchedAt));
-    return result.slice(0, limit);
-  }
-
   private load(): void {
     if (!this.filePath || !existsSync(this.filePath)) return;
 
@@ -202,13 +165,9 @@ export class WorkspaceAttemptRepository {
       for (const attempt of parsed.attempts ?? []) {
         this.attempts.set(attempt.attemptId, attempt);
       }
-      for (const handoff of parsed.handoffs ?? []) {
-        this.handoffs.set(handoff.handoffId, handoff);
-      }
     } catch (err) {
       console.warn('[workspace] Failed to load workspace attempt history:', err instanceof Error ? err.message : err);
       this.attempts.clear();
-      this.handoffs.clear();
     }
   }
 
@@ -220,7 +179,6 @@ export class WorkspaceAttemptRepository {
     const payload: WorkspaceAttemptFile = {
       version: 1,
       attempts: Array.from(this.attempts.values()),
-      handoffs: Array.from(this.handoffs.values()),
     };
 
     const fd = openSync(tempPath, 'w');

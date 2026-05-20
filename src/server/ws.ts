@@ -311,7 +311,6 @@ export class MessageRouter {
 
       // --- Workspace (Phase 1a) ---
       case 'workspace:getView':
-      case 'workspace:startWork':
       case 'workspace:getCleanupDetail':
       case 'workspace:runCleanupDiagnostic':
       case 'workspace:cleanupCandidate':

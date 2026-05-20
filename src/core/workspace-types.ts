@@ -126,18 +126,6 @@ export interface WorkspaceAttemptRecord {
   sweepRunId?: string;
 }
 
-// --- Start Work Handoff ---
-
-export interface StartWorkHandoff {
-  handoffId: string;
-  projectId: string;
-  taskId: string;
-  sessionId?: string;
-  launchedAt: string;
-  prompt: string;
-  playbookId?: string;
-}
-
 // --- Worktree Lease ---
 
 export interface WorktreeLease {

@@ -302,7 +302,6 @@ export interface WorkspaceSlice {
     diagnosticLaunch?: CleanupDiagnosticLaunch,
   ) => void;
   handleWorkspaceCleanupDetail: (worktreePath: string, detail?: CleanupCandidateDetail, error?: string) => void;
-  handleWorkspaceStartWorkAck: (ack: { taskId: string; queued: boolean; duplicate?: boolean; error?: string }) => void;
   setWorkspaceLoading: (loading: boolean) => void;
   setWorkspaceCleanupDetailLoading: (loading: boolean) => void;
   setWorkspaceError: (error: string | null) => void;

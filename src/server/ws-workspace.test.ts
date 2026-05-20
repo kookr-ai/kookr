@@ -182,63 +182,6 @@ describe('WebSocket workspace message routing', () => {
     }
   });
 
-  // ---- workspace:startWork ----
-
-  test('workspace:startWork sends ack on success', async () => {
-    const router = createRouter();
-    await router.handleMessageSafe({
-      type: 'workspace:startWork',
-      projectId: 'local/test-repo',
-      cwd: '/test/repo',
-      prompt: 'Fix the login bug',
-    });
-
-    const acks = sentMessages.filter((m) => m.type === 'workspaceStartWorkAck');
-    expect(acks).toHaveLength(1);
-    if (acks[0].type === 'workspaceStartWorkAck') {
-      expect(acks[0].taskId).toBe('task-1');
-      expect(acks[0].queued).toBe(false);
-      expect(acks[0].error).toBeUndefined();
-    }
-  });
-
-  test('workspace:startWork sends ack with error on failure', async () => {
-    mockLaunchTask.mockRejectedValueOnce(new Error('no slots available'));
-    const router = createRouter();
-
-    await router.handleMessageSafe({
-      type: 'workspace:startWork',
-      projectId: 'local/test-repo',
-      cwd: '/test/repo',
-      prompt: 'Fix the login bug',
-    });
-
-    const acks = sentMessages.filter((m) => m.type === 'workspaceStartWorkAck');
-    expect(acks).toHaveLength(1);
-    if (acks[0].type === 'workspaceStartWorkAck') {
-      expect(acks[0].taskId).toBe('');
-      expect(acks[0].queued).toBe(false);
-      expect(acks[0].error).toBe('no slots available');
-    }
-  });
-
-  test('workspace:startWork sends error when workspace disabled', async () => {
-    const router = createRouter({ workspaceEnabled: false });
-    await router.handleMessageSafe({
-      type: 'workspace:startWork',
-      projectId: 'local/test-repo',
-      cwd: '/test/repo',
-      prompt: 'Fix the login bug',
-    });
-
-    const acks = sentMessages.filter((m) => m.type === 'workspaceStartWorkAck');
-    expect(acks).toHaveLength(1);
-    if (acks[0].type === 'workspaceStartWorkAck') {
-      expect(acks[0].error).toBe('Workspace is not available');
-    }
-    expect(mockLaunchTask).not.toHaveBeenCalled();
-  });
-
   test('workspace:getCleanupDetail sends on-demand cleanup detail', async () => {
     mockGitResponses({
       '--git-common-dir': '/test/repo/.git',

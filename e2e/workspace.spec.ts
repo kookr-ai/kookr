@@ -156,86 +156,6 @@ test.describe('Contribution Workspace', () => {
     await expect(page.locator('.workspace-overlay')).toBeVisible();
   });
 
-  test('start work tab is default active tab', async ({ page, request }) => {
-    const projectId = 'github.com/org/tabs';
-    await setupProjectInSidebar(page, request, projectId);
-    await openProjectDrawer(page, projectId);
-    await openWorkspace(page);
-
-    // Start Work tab should be active
-    const startTab = page.locator('.workspace-tab', { hasText: 'Start Work' });
-    await expect(startTab).toHaveClass(/active/);
-
-    // Cleanup tab should not be active
-    const cleanupTab = page.locator('.workspace-tab', { hasText: 'Cleanup' });
-    await expect(cleanupTab).not.toHaveClass(/active/);
-
-    // Start work form should be visible
-    await expect(page.locator('.start-work-form')).toBeVisible();
-  });
-
-  test('switch to cleanup tab', async ({ page, request }) => {
-    const projectId = 'github.com/org/cleanup';
-    await setupProjectInSidebar(page, request, projectId);
-    await openProjectDrawer(page, projectId);
-    await openWorkspace(page);
-
-    // Click Cleanup tab
-    await page.locator('.workspace-tab', { hasText: 'Cleanup' }).click();
-
-    // Cleanup tab should now be active
-    const cleanupTab = page.locator('.workspace-tab', { hasText: 'Cleanup' });
-    await expect(cleanupTab).toHaveClass(/active/);
-
-    // Start Work tab should no longer be active
-    const startTab = page.locator('.workspace-tab', { hasText: 'Start Work' });
-    await expect(startTab).not.toHaveClass(/active/);
-
-    // Cleanup empty state should be visible (no real git data in test server)
-    await expect(page.locator('.cleanup-empty')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('.cleanup-empty')).toContainText('No worktree candidates');
-  });
-
-  test('start work submit disabled without prompt', async ({ page, request }) => {
-    const projectId = 'github.com/org/submit-disabled';
-    await setupProjectInSidebar(page, request, projectId);
-    await openProjectDrawer(page, projectId);
-    await openWorkspace(page);
-
-    // Submit button should be disabled when prompt is empty
-    await expect(page.locator('.start-work-submit')).toBeDisabled();
-  });
-
-  test('start work submit enabled with prompt', async ({ page, request }) => {
-    const projectId = 'github.com/org/submit-enabled';
-    await setupProjectInSidebar(page, request, projectId);
-    await openProjectDrawer(page, projectId);
-    await openWorkspace(page);
-
-    // Fill in the prompt
-    await page.locator('#sw-prompt').fill('Fix the authentication bug');
-
-    // Submit button should now be enabled
-    await expect(page.locator('.start-work-submit')).toBeEnabled();
-  });
-
-  test('submit start work form', async ({ page, request }) => {
-    const projectId = 'github.com/org/start-work';
-    await setupProjectInSidebar(page, request, projectId);
-    await openProjectDrawer(page, projectId);
-    await openWorkspace(page);
-
-    // Fill in the prompt and optional issue ref
-    await page.locator('#sw-prompt').fill('Implement user profile page');
-    await page.locator('#sw-issue').fill('#42');
-
-    // Click submit
-    await page.locator('.start-work-submit').click();
-
-    // Button should show launching state
-    await expect(page.locator('.start-work-submit')).toContainText('Launching');
-  });
-
   test('close workspace with X button', async ({ page, request }) => {
     const projectId = 'github.com/org/close-x';
     await setupProjectInSidebar(page, request, projectId);
@@ -263,14 +183,11 @@ test.describe('Contribution Workspace', () => {
     await expect(page.locator('.workspace-overlay')).not.toBeVisible();
   });
 
-  test('cleanup tab shows empty state when no candidates', async ({ page, request }) => {
+  test('cleanup view shows empty state when no candidates', async ({ page, request }) => {
     const projectId = 'github.com/org/cleanup-empty';
     await setupProjectInSidebar(page, request, projectId);
     await openProjectDrawer(page, projectId);
     await openWorkspace(page);
-
-    // Switch to Cleanup tab
-    await page.locator('.workspace-tab', { hasText: 'Cleanup' }).click();
 
     // Should show empty state (test server has no real git repos)
     await expect(page.locator('.cleanup-empty')).toBeVisible({ timeout: 5000 });
@@ -286,8 +203,8 @@ test.describe('Contribution Workspace', () => {
     await openProjectDrawer(page, projectId);
     await openWorkspace(page);
 
-    // The workspace header should show "Contribution Workspace"
-    await expect(page.locator('.workspace-header h2')).toContainText('Contribution Workspace');
+    // The workspace header should show "Workspace Cleanup"
+    await expect(page.locator('.workspace-header h2')).toContainText('Workspace Cleanup');
   });
 
   test('cleanup list rows render age, ahead/behind, dirty, detached, and failed states', async ({ page, request }) => {
@@ -295,8 +212,6 @@ test.describe('Contribution Workspace', () => {
     await setupProjectInSidebar(page, request, projectId);
     await openProjectDrawer(page, projectId);
     await openWorkspace(page);
-
-    await page.locator('.workspace-tab', { hasText: 'Cleanup' }).click();
 
     const caps = {
       canSafeRemove: false,
