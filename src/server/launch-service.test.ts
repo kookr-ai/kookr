@@ -689,11 +689,13 @@ describe('launchTask', () => {
   it('stamps launchSource into the server log on successful launch', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
-      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', launchSource: 'cli' });
-      const matched = logSpy.mock.calls.some((args) =>
-        typeof args[0] === 'string' && args[0].includes('[launch] source=cli'),
-      );
-      expect(matched).toBe(true);
+      const result = await launchTask(deps, { prompt: 'hello', cwd: '/tmp', launchSource: 'cli' });
+      const launchLogs = logSpy.mock.calls
+        .map(([line]) => line)
+        .filter((line): line is string => typeof line === 'string' && line.startsWith('[launch] '));
+      expect(launchLogs).toEqual([
+        `[launch] source=cli agent=claude-code taskId=${result.task.id} cwd=/tmp`,
+      ]);
     } finally {
       logSpy.mockRestore();
     }
@@ -702,11 +704,13 @@ describe('launchTask', () => {
   it('defaults launchSource to api when not provided', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
-      await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
-      const matched = logSpy.mock.calls.some((args) =>
-        typeof args[0] === 'string' && args[0].includes('[launch] source=api'),
-      );
-      expect(matched).toBe(true);
+      const result = await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
+      const launchLogs = logSpy.mock.calls
+        .map(([line]) => line)
+        .filter((line): line is string => typeof line === 'string' && line.startsWith('[launch] '));
+      expect(launchLogs).toEqual([
+        `[launch] source=api agent=claude-code taskId=${result.task.id} cwd=/tmp`,
+      ]);
     } finally {
       logSpy.mockRestore();
     }
@@ -856,18 +860,20 @@ describe('launchTask', () => {
         ralphVerdictEnv: true,
       });
       const adapter = deps.adapterRegistry.get('claude-code');
-      const launchCall = (adapter.launch as ReturnType<typeof vi.fn>).mock.calls[0];
-      // launch(taskId, prompt, cwd, resume, opts)
-      expect(launchCall).toBeDefined();
-      const launchOpts = launchCall![4];
-      expect(launchOpts).toBeDefined();
-      expect(launchOpts.extraEnv).toBeDefined();
       // Path is absolute and uses the per-task suffix (taskId.slice(0, 12)).
       const expectedSuffix = result.task.id.slice(0, 12);
-      expect(launchOpts.extraEnv.RALPH_VERDICT_FILE).toMatch(
-        new RegExp(`/\\.ralph-verdict-${expectedSuffix}\\.json$`),
+      expect(adapter.launch).toHaveBeenCalledWith(
+        result.task.id,
+        'iterate',
+        '/tmp',
+        undefined,
+        {
+          extraEnv: {
+            RALPH_VERDICT_FILE: expect.stringMatching(new RegExp(`/\\.ralph-verdict-${expectedSuffix}\\.json$`)),
+            RALPH_ITERATION: '0',
+          },
+        },
       );
-      expect(launchOpts.extraEnv.RALPH_ITERATION).toBe('0');
     });
 
     it('omits adapter opts entirely when ralphVerdictEnv is unset (no regression for non-ralph launches)', async () => {
