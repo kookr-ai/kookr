@@ -137,6 +137,11 @@ Do the test thing.
     expect(launched).toHaveLength(1);
     expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_active');
     expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('previous_run_active');
+    expect(store.get(schedule.id)!.executionLedger?.at(-1)).toEqual(expect.objectContaining({
+      outcome: 'skipped_active',
+      reasonCode: 'previous_run_active',
+      blockingTaskId: 'task-1',
+    }));
   });
 
   it('fires when previous run is stale (older than threshold)', async () => {
@@ -193,6 +198,11 @@ Do the test thing.
     expect(launched).toHaveLength(0);
     expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_capacity');
     expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('capacity');
+    expect(store.get(schedule.id)!.executionLedger?.at(-1)).toEqual(expect.objectContaining({
+      outcome: 'skipped_capacity',
+      reasonCode: 'capacity',
+      scheduledFor: expect.any(String),
+    }));
     expect(store.get(schedule.id)!.remainingTriggers).toBe(2);
     expect(store.get(schedule.id)!.enabled).toBe(true);
   });
@@ -335,6 +345,75 @@ Do the test thing.
     runner.stop();
 
     expect(service.getStatusSnapshot().catchUpEnabled).toBe(true);
+    expect(store.get(schedule.id)!.executionLedger?.at(-1)).toEqual(expect.objectContaining({
+      outcome: 'running',
+      catchUp: true,
+      scheduledFor: expect.any(String),
+    }));
+  });
+
+  it('records stale catch-up skips durably and advances the missed due watermark', async () => {
+    const schedule = store.create({
+      name: 'StaleCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 25 * 60 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    runner.start();
+    await vi.waitFor(() => {
+      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_stale_catchup');
+    });
+    runner.stop();
+
+    const updated = store.get(schedule.id)!;
+    expect(launched).toHaveLength(0);
+    expect(updated.latestExecution).toEqual(expect.objectContaining({
+      outcome: 'skipped_stale_catchup',
+      reasonCode: 'stale_catchup',
+      catchUp: true,
+    }));
+    expect(updated.lastScheduledFor).toBe(updated.latestExecution?.scheduledFor);
+    expect(updated.executionLedger).toEqual([
+      expect.objectContaining({
+        outcome: 'skipped_stale_catchup',
+        reasonCode: 'stale_catchup',
+        catchUp: true,
+      }),
+    ]);
+  });
+
+  it('records stale due skips during steady-state ticks', async () => {
+    const schedule = store.create({
+      name: 'StaleTick',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 25 * 60 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+
+    const updated = store.get(schedule.id)!;
+    expect(launched).toHaveLength(0);
+    expect(updated.latestExecution).toEqual(expect.objectContaining({
+      outcome: 'skipped_stale_catchup',
+      reasonCode: 'stale_catchup',
+      catchUp: true,
+    }));
+    expect(updated.executionLedger).toEqual([
+      expect.objectContaining({
+        outcome: 'skipped_stale_catchup',
+        scheduledFor: updated.lastScheduledFor,
+      }),
+    ]);
   });
 
   it('skips catch-up when KOOKR_NO_CATCHUP is set', async () => {

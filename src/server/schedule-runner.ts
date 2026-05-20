@@ -106,6 +106,11 @@ export class ScheduleRunner {
         }
         const scheduledNextRun = computeNextRunFor(schedule);
         if (!scheduledNextRun || scheduledNextRun > now) continue;
+        if (scheduledNextRun < new Date(now.getTime() - CATCHUP_MAX_STALENESS_MS)) {
+          console.log(`[schedule] Skipping stale run for "${schedule.name}" (due ${scheduledNextRun.toISOString()}, > 24h ago)`);
+          await this.deps.service.recordStaleCatchUpSkipped(schedule.id, scheduledNextRun.toISOString());
+          continue;
+        }
         await this.fire(schedule, 'cron', scheduledNextRun);
       }
       this.deps.service.recordTickCompleted();
@@ -124,6 +129,7 @@ export class ScheduleRunner {
     schedule: Schedule,
     trigger: 'cron' | 'manual',
     scheduledNextRun?: Date,
+    options: { catchUp?: boolean } = {},
   ): Promise<{ taskId?: string; error?: string; queued?: boolean }> {
     if (trigger === 'cron' && isTriggerLimitExhausted(schedule)) {
       await this.deps.service.markCronLimitExhausted(schedule.id);
@@ -134,6 +140,7 @@ export class ScheduleRunner {
       schedule,
       trigger,
       scheduledNextRun?.toISOString(),
+      options,
     );
 
     if (schedule.latestExecution?.taskId && this.deps.isTaskBlockingSchedule(schedule.latestExecution.taskId)) {
@@ -144,6 +151,7 @@ export class ScheduleRunner {
         'skipped_active',
         'previous_run_active',
         'Previous run still active',
+        { blockingTaskId: schedule.latestExecution.taskId },
       );
       return { error: 'Previous run still active' };
     }
@@ -207,9 +215,10 @@ export class ScheduleRunner {
 
       if (scheduledNext < now && scheduledNext >= cutoff) {
         console.log(`[schedule] Catching up "${schedule.name}" (was due ${scheduledNext.toISOString()})`);
-        await this.fire(schedule, 'cron', scheduledNext);
+        await this.fire(schedule, 'cron', scheduledNext, { catchUp: true });
       } else if (scheduledNext < cutoff) {
         console.log(`[schedule] Skipping stale catch-up for "${schedule.name}" (due ${scheduledNext.toISOString()}, > 24h ago)`);
+        await this.deps.service.recordStaleCatchUpSkipped(schedule.id, scheduledNext.toISOString());
       }
     }
   }

@@ -42,6 +42,25 @@ function latestExecutionLabel(schedule: ScheduleResponse): string {
   return `${latest.outcome} ${formatRelativeTime(latest.triggeredAt ?? latest.evaluatedAt)}${message}`;
 }
 
+function renderExecutionLedger(schedule: ScheduleResponse) {
+  const entries = (schedule.executionLedger ?? []).slice(-3).reverse();
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="schedule-ledger">
+      {entries.map((entry) => (
+        <div key={entry.id} className="schedule-ledger-entry">
+          <span className="schedule-ledger-outcome">{entry.outcome}</span>
+          <span>{formatRelativeTime(entry.completedAt ?? entry.triggeredAt ?? entry.evaluatedAt)}</span>
+          {entry.scheduledFor && <span>due {formatRelativeTime(entry.scheduledFor)}</span>}
+          {entry.blockingTaskId && <span className="schedule-task-ref">blocked by {entry.blockingTaskId.slice(0, 8)}</span>}
+          {entry.catchUp && <span>catch-up</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function nextRunLabel(schedule: ScheduleResponse): string {
   if (schedule.stopReason === 'trigger_limit_reached') return 'exhausted';
   if (!schedule.enabled) return 'paused';
@@ -372,6 +391,7 @@ export function SchedulesDialog({ onClose }: Props) {
                     <span className="schedule-task-ref">Task {schedule.latestExecution.taskId.slice(0, 8)}</span>
                   )}
                 </div>
+                {renderExecutionLedger(schedule)}
               </div>
               <div className="schedule-manager-actions">
                 <button

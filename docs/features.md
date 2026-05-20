@@ -222,7 +222,8 @@ Kookr supports cron-scheduled recurring tasks for maintenance playbooks, periodi
 | F11.1 | **Cron expressions** | `cron.ts` parses standard 5/6-field cron expressions and computes next-run times using `cron-parser`. |
 | F11.2 | **Schedule store** | `schedule-service.ts` persists schedules; `schedule-validator.ts` validates them on create/update. |
 | F11.3 | **Runner** | `schedule-runner.ts` fires due schedules, spawning a task via the regular launch pipeline. |
-| F11.4 | **UI** | `SchedulesDialog.tsx` + `ScheduleSection.tsx` provide CRUD; the server broadcasts `schedules` on change and `scheduleFired` on each firing. |
+| F11.4 | **Execution ledger** | Schedules keep recent execution ledger entries for launched, skipped, stale catch-up, and restart-reconciled runs, including due time, evaluation time, reason code, and blocking task where applicable. |
+| F11.5 | **UI** | `SchedulesDialog.tsx` + `ScheduleSection.tsx` provide CRUD and recent execution visibility; the server broadcasts `schedules` on change and `scheduleFired` on each firing. |
 
 ### F12: Contribution Workspace & Worktree Cleanup
 

@@ -53,6 +53,7 @@ function statusClass(schedule: ScheduleResponse): string {
     case 'dispatch_failed':
     case 'skipped_active':
     case 'skipped_capacity':
+    case 'skipped_stale_catchup':
     case 'unknown_after_restart':
       return 'schedule-status-fail';
     default:

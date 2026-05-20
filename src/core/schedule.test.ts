@@ -262,6 +262,19 @@ describe('ScheduleStore', () => {
         taskId: 'task-1',
         reasonCode: 'validation',
       },
+      executionLedger: [{
+        id: 'receipt-1',
+        scheduleId: created.id,
+        receiptId: 'receipt-1',
+        executionToken: 'token-1',
+        scheduledFor: '2026-01-01T00:00:00.000Z',
+        evaluatedAt: '2026-01-01T00:00:01.000Z',
+        trigger: 'cron',
+        outcome: 'dispatch_failed',
+        taskId: 'task-1',
+        reasonCode: 'validation',
+        message: 'Invalid schedule definition',
+      }],
     });
     await store.persist();
 
@@ -269,6 +282,7 @@ describe('ScheduleStore', () => {
     const data = JSON.parse(content);
     expect(data).toHaveLength(1);
     expect(data[0].latestExecution.outcome).toBe('dispatch_failed');
+    expect(data[0].executionLedger[0].outcome).toBe('dispatch_failed');
     expect(data[0].remainingTriggers).toBe(0);
     expect(data[0].stopReason).toBe('trigger_limit_reached');
 
@@ -276,6 +290,14 @@ describe('ScheduleStore', () => {
     await reloaded.load();
     expect(reloaded.list()).toHaveLength(1);
     expect(reloaded.list()[0].latestExecution?.outcome).toBe('dispatch_failed');
+    expect(reloaded.list()[0].executionLedger).toEqual([
+      expect.objectContaining({
+        receiptId: 'receipt-1',
+        scheduledFor: '2026-01-01T00:00:00.000Z',
+        outcome: 'dispatch_failed',
+        reasonCode: 'validation',
+      }),
+    ]);
     expect(reloaded.list()[0].remainingTriggers).toBe(0);
     expect(reloaded.list()[0].stopReason).toBe('trigger_limit_reached');
     expect(reloaded.list()[0].exhaustedAt).toBe('2026-01-01T00:05:00.000Z');

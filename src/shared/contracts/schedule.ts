@@ -16,6 +16,7 @@ export type ScheduleExecutionOutcome =
   | 'dispatch_failed'
   | 'skipped_active'
   | 'skipped_capacity'
+  | 'skipped_stale_catchup'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -28,6 +29,7 @@ export type ScheduleExecutionReasonCode =
   | 'deduplicated'
   | 'launch_error'
   | 'reconciled_after_restart'
+  | 'stale_catchup'
   | 'unknown_after_restart';
 
 export interface ScheduleExecutionReceipt {
@@ -39,6 +41,7 @@ export interface ScheduleExecutionReceipt {
   evaluatedAt: string;
   taskId?: string;
   status: 'reserved' | 'accepted' | 'terminal' | 'unknown_after_restart';
+  catchUp?: boolean;
 }
 
 export interface ScheduleLatestExecutionStatus {
@@ -52,6 +55,25 @@ export interface ScheduleLatestExecutionStatus {
   outcome: ScheduleExecutionOutcome;
   reasonCode?: ScheduleExecutionReasonCode;
   message?: string;
+  catchUp?: boolean;
+}
+
+export interface ScheduleExecutionLedgerEntry {
+  id: string;
+  scheduleId: string;
+  receiptId?: string;
+  executionToken?: string;
+  scheduledFor?: string;
+  evaluatedAt: string;
+  triggeredAt?: string;
+  completedAt?: string;
+  trigger: ScheduleExecutionTrigger;
+  taskId?: string;
+  outcome: ScheduleExecutionOutcome | 'reserved';
+  reasonCode?: ScheduleExecutionReasonCode;
+  message?: string;
+  blockingTaskId?: string;
+  catchUp?: boolean;
 }
 
 export interface Schedule {
@@ -74,6 +96,7 @@ export interface Schedule {
   lastCronEvaluatedAt?: string;
   latestExecution?: ScheduleLatestExecutionStatus;
   currentExecution?: ScheduleExecutionReceipt;
+  executionLedger?: ScheduleExecutionLedgerEntry[];
   createdAt: string;
   updatedAt: string;
 }

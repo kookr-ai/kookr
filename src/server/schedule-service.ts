@@ -3,6 +3,7 @@ import type { TaskStore } from '../core/tasks.js';
 import {
   type CreateScheduleInput,
   type Schedule,
+  type ScheduleExecutionLedgerEntry,
   type ScheduleExecutionOutcome,
   type ScheduleExecutionReasonCode,
   type ScheduleListResponse,
@@ -21,6 +22,8 @@ export interface ScheduleServiceDeps {
   validator: ScheduleValidator;
   broadcast?: (payload: ScheduleListResponse) => void;
 }
+
+const MAX_SCHEDULE_EXECUTION_LEDGER_ENTRIES = 50;
 
 export class ScheduleService {
   private readonly store: ScheduleStore;
@@ -115,7 +118,12 @@ export class ScheduleService {
     this.broadcastSchedules();
   }
 
-  async reserveExecution(schedule: Schedule, trigger: 'cron' | 'manual', scheduledFor?: string) {
+  async reserveExecution(
+    schedule: Schedule,
+    trigger: 'cron' | 'manual',
+    scheduledFor?: string,
+    options: { catchUp?: boolean } = {},
+  ) {
     const receiptId = randomUUID();
     const executionToken = randomUUID();
     const evaluatedAt = new Date().toISOString();
@@ -131,7 +139,19 @@ export class ScheduleService {
         ...(scheduledFor ? { scheduledFor } : {}),
         evaluatedAt,
         status: 'reserved',
+        ...(options.catchUp ? { catchUp: true } : {}),
       },
+      executionLedger: upsertExecutionLedger(schedule, {
+        id: receiptId,
+        scheduleId: schedule.id,
+        receiptId,
+        executionToken,
+        trigger,
+        ...(scheduledFor ? { scheduledFor } : {}),
+        evaluatedAt,
+        outcome: 'reserved',
+        ...(options.catchUp ? { catchUp: true } : {}),
+      }),
       updatedAt: evaluatedAt,
     };
     this.store.replace(updated);
@@ -154,6 +174,45 @@ export class ScheduleService {
     this.broadcastSchedules();
   }
 
+  async recordStaleCatchUpSkipped(scheduleId: string, scheduledFor: string): Promise<void> {
+    const schedule = this.requireSchedule(scheduleId);
+    const evaluatedAt = new Date().toISOString();
+    const message = 'Missed run is older than the catch-up window';
+    const latestExecution: ScheduleLatestExecutionStatus = {
+      executionToken: `stale-catchup:${scheduledFor}`,
+      scheduledFor,
+      evaluatedAt,
+      trigger: 'cron',
+      outcome: 'skipped_stale_catchup',
+      reasonCode: 'stale_catchup',
+      message,
+      catchUp: true,
+    };
+
+    this.store.replace({
+      ...schedule,
+      lastRunAt: evaluatedAt,
+      lastRunStatus: 'failed',
+      lastScheduledFor: scheduledFor,
+      lastCronEvaluatedAt: evaluatedAt,
+      latestExecution,
+      executionLedger: upsertExecutionLedger(schedule, {
+        id: `stale-catchup:${scheduleId}:${scheduledFor}`,
+        scheduleId,
+        executionToken: latestExecution.executionToken,
+        scheduledFor,
+        evaluatedAt,
+        trigger: 'cron',
+        outcome: 'skipped_stale_catchup',
+        reasonCode: 'stale_catchup',
+        message,
+        catchUp: true,
+      }),
+    });
+    await this.store.persist();
+    this.broadcastSchedules();
+  }
+
   async markExecutionAccepted(scheduleId: string, receiptId: string, taskId: string, queued: boolean): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
     const receipt = this.requireReceipt(schedule, receiptId);
@@ -168,6 +227,7 @@ export class ScheduleService {
       taskId,
       outcome: queued ? 'queued' : 'running',
       reasonCode: 'none',
+      ...(receipt.catchUp ? { catchUp: true } : {}),
     };
     this.store.replace({
       ...schedule,
@@ -180,6 +240,20 @@ export class ScheduleService {
         taskId,
         status: 'accepted',
       },
+      executionLedger: upsertExecutionLedger(schedule, {
+        id: receipt.id,
+        scheduleId,
+        receiptId,
+        executionToken: receipt.executionToken,
+        ...(receipt.scheduledFor ? { scheduledFor: receipt.scheduledFor } : {}),
+        evaluatedAt: receipt.evaluatedAt,
+        triggeredAt,
+        trigger: receipt.trigger,
+        taskId,
+        outcome: queued ? 'queued' : 'running',
+        reasonCode: 'none',
+        ...(receipt.catchUp ? { catchUp: true } : {}),
+      }),
     });
     await this.store.persist();
     this.broadcastSchedules();
@@ -191,6 +265,7 @@ export class ScheduleService {
     outcome: Exclude<ScheduleExecutionOutcome, 'completed' | 'cancelled' | 'running' | 'queued'>,
     reasonCode: ScheduleExecutionReasonCode,
     message?: string,
+    metadata: { blockingTaskId?: string } = {},
   ): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
     const receipt = this.requireReceipt(schedule, receiptId);
@@ -211,39 +286,82 @@ export class ScheduleService {
         outcome,
         reasonCode,
         ...(message ? { message } : {}),
+        ...(receipt.catchUp ? { catchUp: true } : {}),
       },
       currentExecution: {
         ...receipt,
         status: outcome === 'unknown_after_restart' ? 'unknown_after_restart' : 'terminal',
       },
+      executionLedger: upsertExecutionLedger(schedule, {
+        id: receipt.id,
+        scheduleId,
+        receiptId,
+        executionToken: receipt.executionToken,
+        ...(receipt.scheduledFor ? { scheduledFor: receipt.scheduledFor } : {}),
+        evaluatedAt: receipt.evaluatedAt,
+        trigger: receipt.trigger,
+        ...(receipt.taskId ? { taskId: receipt.taskId } : {}),
+        outcome,
+        reasonCode,
+        ...(message ? { message } : {}),
+        ...(metadata.blockingTaskId ? { blockingTaskId: metadata.blockingTaskId } : {}),
+        ...(receipt.catchUp ? { catchUp: true } : {}),
+      }),
     });
     await this.store.persist();
     this.broadcastSchedules();
   }
 
   async recordTaskTerminalOutcome(taskId: string, status: 'completed' | 'cancelled'): Promise<void> {
-    const schedule = this.store.list().find((candidate) => candidate.latestExecution?.taskId === taskId);
-    if (!schedule?.latestExecution || schedule.latestExecution.taskId !== taskId) return;
+    const schedule = this.store.list().find((candidate) =>
+      candidate.latestExecution?.taskId === taskId
+      || candidate.executionLedger?.some((entry) => entry.taskId === taskId)
+    );
+    if (!schedule) return;
+
+    const latestForTask = schedule.latestExecution?.taskId === taskId ? schedule.latestExecution : undefined;
+    const ledgerEntry = schedule.executionLedger?.find((entry) => entry.taskId === taskId);
+    if (!latestForTask && !ledgerEntry) return;
 
     const currentReceipt = schedule.currentExecution;
-    if (currentReceipt?.taskId && currentReceipt.taskId !== taskId) return;
+    const completedAt = new Date().toISOString();
+    const entryForTask = latestForTask ?? ledgerEntry!;
+    const latestExecution = latestForTask
+      ? {
+          ...latestForTask,
+          outcome: status,
+          reasonCode: 'none' as const,
+        }
+      : schedule.latestExecution;
 
     this.store.replace({
       ...schedule,
-      lastRunAt: new Date().toISOString(),
+      lastRunAt: completedAt,
       lastRunTaskId: taskId,
       lastRunStatus: status,
-      latestExecution: {
-        ...schedule.latestExecution,
-        outcome: status,
-        reasonCode: 'none',
-      },
-      ...(currentReceipt ? {
+      ...(latestExecution ? { latestExecution } : {}),
+      ...(currentReceipt?.taskId === taskId ? {
         currentExecution: {
           ...currentReceipt,
           status: 'terminal',
         },
       } : {}),
+      executionLedger: upsertExecutionLedger(schedule, {
+        id: currentReceipt?.taskId === taskId
+          ? currentReceipt.id
+          : (entryForTask.receiptId ?? entryForTask.executionToken ?? ledgerEntry?.id ?? taskId),
+        scheduleId: schedule.id,
+        ...(entryForTask.receiptId ? { receiptId: entryForTask.receiptId } : {}),
+        ...(entryForTask.executionToken ? { executionToken: entryForTask.executionToken } : {}),
+        ...(entryForTask.scheduledFor ? { scheduledFor: entryForTask.scheduledFor } : {}),
+        evaluatedAt: entryForTask.evaluatedAt,
+        completedAt,
+        trigger: entryForTask.trigger,
+        taskId,
+        outcome: status,
+        reasonCode: 'none',
+        ...(entryForTask.catchUp ? { catchUp: true } : {}),
+      }),
     });
     await this.store.persist();
     this.broadcastSchedules();
@@ -272,6 +390,19 @@ export class ScheduleService {
               ...schedule.currentExecution,
               status: 'unknown_after_restart',
             },
+            executionLedger: upsertExecutionLedger(schedule, {
+              id: schedule.currentExecution.id,
+              scheduleId: schedule.id,
+              receiptId: schedule.currentExecution.id,
+              executionToken: schedule.currentExecution.executionToken,
+              ...(schedule.currentExecution.scheduledFor ? { scheduledFor: schedule.currentExecution.scheduledFor } : {}),
+              evaluatedAt: schedule.currentExecution.evaluatedAt,
+              trigger: schedule.currentExecution.trigger,
+              outcome: 'unknown_after_restart',
+              reasonCode: 'unknown_after_restart',
+              message: 'Execution could not be reconciled after restart',
+              ...(schedule.currentExecution.catchUp ? { catchUp: true } : {}),
+            }),
           });
           changed = true;
           continue;
@@ -299,6 +430,20 @@ export class ScheduleService {
               status: 'unknown_after_restart',
             },
           } : {}),
+          executionLedger: upsertExecutionLedger(schedule, {
+            id: schedule.currentExecution?.id ?? latest.receiptId ?? latest.executionToken,
+            scheduleId: schedule.id,
+            ...(latest.receiptId ? { receiptId: latest.receiptId } : {}),
+            executionToken: latest.executionToken,
+            ...(latest.scheduledFor ? { scheduledFor: latest.scheduledFor } : {}),
+            evaluatedAt: latest.evaluatedAt,
+            trigger: latest.trigger,
+            ...(latest.taskId ? { taskId: latest.taskId } : {}),
+            outcome: 'unknown_after_restart',
+            reasonCode: 'unknown_after_restart',
+            message: 'Task state could not be reconciled after restart',
+            ...(latest.catchUp ? { catchUp: true } : {}),
+          }),
         });
         changed = true;
         continue;
@@ -326,6 +471,20 @@ export class ScheduleService {
               status: 'terminal',
             },
           } : {}),
+          executionLedger: upsertExecutionLedger(schedule, {
+            id: schedule.currentExecution?.id ?? latest.receiptId ?? latest.executionToken,
+            scheduleId: schedule.id,
+            ...(latest.receiptId ? { receiptId: latest.receiptId } : {}),
+            executionToken: latest.executionToken,
+            ...(latest.scheduledFor ? { scheduledFor: latest.scheduledFor } : {}),
+            evaluatedAt: latest.evaluatedAt,
+            completedAt: task.updatedAt.toISOString(),
+            trigger: latest.trigger,
+            taskId: task.id,
+            outcome: scheduleOutcome,
+            reasonCode: 'reconciled_after_restart',
+            ...(latest.catchUp ? { catchUp: true } : {}),
+          }),
         });
         changed = true;
       }
@@ -380,6 +539,34 @@ export class ScheduleService {
 
 function currentTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
+function upsertExecutionLedger(
+  schedule: Pick<Schedule, 'executionLedger'>,
+  entry: ScheduleExecutionLedgerEntry,
+): ScheduleExecutionLedgerEntry[] {
+  const existing = schedule.executionLedger ?? [];
+  const index = existing.findIndex((candidate) => sameLedgerEntry(candidate, entry));
+  if (index === -1) {
+    return [...existing, entry].slice(-MAX_SCHEDULE_EXECUTION_LEDGER_ENTRIES);
+  }
+
+  return existing.map((candidate, candidateIndex) => (
+    candidateIndex === index
+      ? { ...candidate, ...entry, id: candidate.id }
+      : candidate
+  )).slice(-MAX_SCHEDULE_EXECUTION_LEDGER_ENTRIES);
+}
+
+function sameLedgerEntry(a: ScheduleExecutionLedgerEntry, b: ScheduleExecutionLedgerEntry): boolean {
+  if (a.receiptId && b.receiptId) return a.receiptId === b.receiptId;
+  if (a.scheduledFor && b.scheduledFor) {
+    return a.scheduleId === b.scheduleId
+      && a.trigger === b.trigger
+      && a.scheduledFor === b.scheduledFor
+      && a.outcome === b.outcome;
+  }
+  return a.id === b.id;
 }
 
 function consumeCronTrigger(

@@ -21,6 +21,7 @@ export type ScheduleExecutionOutcome =
   | 'dispatch_failed'
   | 'skipped_active'
   | 'skipped_capacity'
+  | 'skipped_stale_catchup'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -33,6 +34,7 @@ export type ScheduleExecutionReasonCode =
   | 'deduplicated'
   | 'launch_error'
   | 'reconciled_after_restart'
+  | 'stale_catchup'
   | 'unknown_after_restart';
 
 export interface ScheduleExecutionReceipt {
@@ -44,6 +46,7 @@ export interface ScheduleExecutionReceipt {
   evaluatedAt: string;
   taskId?: string;
   status: 'reserved' | 'accepted' | 'terminal' | 'unknown_after_restart';
+  catchUp?: boolean;
 }
 
 export interface ScheduleLatestExecutionStatus {
@@ -57,6 +60,25 @@ export interface ScheduleLatestExecutionStatus {
   outcome: ScheduleExecutionOutcome;
   reasonCode?: ScheduleExecutionReasonCode;
   message?: string;
+  catchUp?: boolean;
+}
+
+export interface ScheduleExecutionLedgerEntry {
+  id: string;
+  scheduleId: string;
+  receiptId?: string;
+  executionToken?: string;
+  scheduledFor?: string;
+  evaluatedAt: string;
+  triggeredAt?: string;
+  completedAt?: string;
+  trigger: ScheduleExecutionTrigger;
+  taskId?: string;
+  outcome: ScheduleExecutionOutcome | 'reserved';
+  reasonCode?: ScheduleExecutionReasonCode;
+  message?: string;
+  blockingTaskId?: string;
+  catchUp?: boolean;
 }
 
 export interface Schedule {
@@ -81,6 +103,7 @@ export interface Schedule {
   lastCronEvaluatedAt?: string;
   latestExecution?: ScheduleLatestExecutionStatus;
   currentExecution?: ScheduleExecutionReceipt;
+  executionLedger?: ScheduleExecutionLedgerEntry[];
   createdAt: string;
   updatedAt: string;
 }
@@ -352,6 +375,7 @@ function normalizeSchedule(raw: unknown): Schedule | null {
     ...(typeof candidate.lastCronEvaluatedAt === 'string' ? { lastCronEvaluatedAt: candidate.lastCronEvaluatedAt } : {}),
     ...(candidate.latestExecution ? { latestExecution: normalizeLatestExecution(candidate.latestExecution) } : {}),
     ...(candidate.currentExecution ? { currentExecution: normalizeCurrentExecution(candidate.currentExecution) } : {}),
+    ...(Array.isArray(candidate.executionLedger) ? { executionLedger: candidate.executionLedger.flatMap(normalizeExecutionLedgerEntry) } : {}),
   };
 
   return normalized;
@@ -374,7 +398,33 @@ function normalizeLatestExecution(raw: unknown): ScheduleLatestExecutionStatus |
     ...(candidate.taskId ? { taskId: candidate.taskId } : {}),
     ...(candidate.reasonCode ? { reasonCode: candidate.reasonCode } : {}),
     ...(candidate.message ? { message: candidate.message } : {}),
+    ...(candidate.catchUp ? { catchUp: true } : {}),
   };
+}
+
+function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEntry[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const candidate = raw as Partial<ScheduleExecutionLedgerEntry>;
+  if (!candidate.id || !candidate.scheduleId || !candidate.evaluatedAt || !candidate.trigger || !candidate.outcome) {
+    return [];
+  }
+  return [{
+    id: candidate.id,
+    scheduleId: candidate.scheduleId,
+    evaluatedAt: candidate.evaluatedAt,
+    trigger: candidate.trigger,
+    outcome: candidate.outcome,
+    ...(candidate.receiptId ? { receiptId: candidate.receiptId } : {}),
+    ...(candidate.executionToken ? { executionToken: candidate.executionToken } : {}),
+    ...(candidate.scheduledFor ? { scheduledFor: candidate.scheduledFor } : {}),
+    ...(candidate.triggeredAt ? { triggeredAt: candidate.triggeredAt } : {}),
+    ...(candidate.completedAt ? { completedAt: candidate.completedAt } : {}),
+    ...(candidate.taskId ? { taskId: candidate.taskId } : {}),
+    ...(candidate.reasonCode ? { reasonCode: candidate.reasonCode } : {}),
+    ...(candidate.message ? { message: candidate.message } : {}),
+    ...(candidate.blockingTaskId ? { blockingTaskId: candidate.blockingTaskId } : {}),
+    ...(candidate.catchUp ? { catchUp: true } : {}),
+  }];
 }
 
 function normalizeCurrentExecution(raw: unknown): ScheduleExecutionReceipt | undefined {
@@ -392,6 +442,7 @@ function normalizeCurrentExecution(raw: unknown): ScheduleExecutionReceipt | und
     status: candidate.status,
     ...(candidate.scheduledFor ? { scheduledFor: candidate.scheduledFor } : {}),
     ...(candidate.taskId ? { taskId: candidate.taskId } : {}),
+    ...(candidate.catchUp ? { catchUp: true } : {}),
   };
 }
 
