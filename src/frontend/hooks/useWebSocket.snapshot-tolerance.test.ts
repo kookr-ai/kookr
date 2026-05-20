@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { dispatchSnapshotMessageForClient, parseServerMessageForClient } from './useWebSocket.js';
+import {
+  dispatchAlertMessageForClient,
+  dispatchSnapshotMessageForClient,
+  parseServerMessageForClient,
+} from './useWebSocket.js';
+import { createKookrStore } from '../store/useStore.js';
 
 describe('parseServerMessageForClient snapshot tolerance', () => {
   it('preserves unknown snapshot fields for additive server-message compatibility', () => {
@@ -41,5 +46,23 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0][12]).toBe(7);
     expect(calls[0][13]).toEqual({ capabilitiesByDevice: { 'local-node': [] } });
+  });
+
+  it('dispatches alert details through the WebSocket alert runtime path', () => {
+    const store = createKookrStore();
+
+    dispatchAlertMessageForClient({
+      type: 'alert',
+      agentId: '',
+      summary: 'Error starting "demo": spawn failed',
+      details: 'Run `pnpm run doctor` from the Kookr checkout.',
+      severity: 'critical',
+    }, store.getState().handleAlert);
+
+    expect(store.getState().alerts[0]).toMatchObject({
+      summary: 'Error starting "demo": spawn failed',
+      details: 'Run `pnpm run doctor` from the Kookr checkout.',
+      severity: 'error',
+    });
   });
 });

@@ -41,6 +41,7 @@ export type AlertSeverity = 'error' | 'info';
 export interface Alert {
   agentId: string;
   summary: string;
+  details?: string;
   severity: AlertSeverity;
   timestamp: Date;
 }
@@ -163,7 +164,7 @@ export interface TriageNavigationSlice {
   respondAllAgentIds: string[] | null;
   shortcutsArmed: boolean;
 
-  handleAlert: (agentId: string, summary: string, severity?: AlertSeverity) => void;
+  handleAlert: (agentId: string, summary: string, severity?: AlertSeverity, details?: string) => void;
   handleSuggestion: (agentId: string, suggestions: string[], quickActions: QuickAction[]) => void;
   clearSuggestion: (agentId: string) => void;
   handleGitHubUpdate: (taskId: string, prs: GitHubPRState[], issues: GitHubIssueState[], changes: GitHubStateChange[]) => void;

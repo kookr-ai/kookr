@@ -38,8 +38,14 @@ export function Toasts() {
         <div
           key={alertKey(alert)}
           className={`toast ${alert.severity === 'error' ? 'toast-error' : 'toast-info'}`}
+          role={alert.severity === 'error' ? 'alert' : 'status'}
+          aria-live={alert.severity === 'error' ? 'assertive' : 'polite'}
+          aria-atomic="true"
         >
-          <span className="toast-message">{alert.summary}</span>
+          <span className="toast-message">
+            <span>{alert.summary}</span>
+            {alert.details && <span className="toast-details">{alert.details}</span>}
+          </span>
           <button className="toast-dismiss" onClick={() => dismissAlert(i)}>
             &times;
           </button>

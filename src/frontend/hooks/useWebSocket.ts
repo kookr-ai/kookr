@@ -3,7 +3,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { initTelemetry, track } from '../telemetry.js';
 import type { ClientMessage } from '../../shared/protocol.js';
 import { isSystemResourceStatus } from '../resource-status.js';
-import type { TransportSessionSlice } from '../store/store-types.js';
+import type { TransportSessionSlice, TriageNavigationSlice } from '../store/store-types.js';
 
 const RECONNECT_DELAY_MS = 2000;
 
@@ -35,6 +35,14 @@ export function dispatchSnapshotMessageForClient(
     msg.maxActiveTasks,
     msg.speechCapabilities,
   );
+}
+
+export function dispatchAlertMessageForClient(
+  msg: Record<string, any>,
+  handleAlert: TriageNavigationSlice['handleAlert'],
+): void {
+  const severity = msg.severity === 'critical' || msg.severity === 'warning' ? 'error' : 'info';
+  handleAlert(msg.agentId, msg.summary, severity, msg.details || undefined);
 }
 
 export function useWebSocket() {
@@ -122,8 +130,7 @@ export function useWebSocket() {
             handleUpdate(msg.agentId, msg.state);
             break;
           case 'alert': {
-            const severity = msg.severity === 'critical' || msg.severity === 'warning' ? 'error' : 'info';
-            handleAlert(msg.agentId, msg.summary, severity);
+            dispatchAlertMessageForClient(msg, handleAlert);
             break;
           }
           case 'githubUpdate':

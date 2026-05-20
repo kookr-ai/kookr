@@ -2,6 +2,13 @@ import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { LaunchResult } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 
+const GENERIC_LAUNCH_RECOVERY_DETAILS = [
+  'Launch recovery:',
+  '- Run `pnpm run doctor` from the Kookr checkout and follow the suggested fixes.',
+  '- Check that the selected agent binary is installed and authenticated.',
+  '- Verify the working directory exists and no required Kookr port is already in use.',
+].join('\n');
+
 /**
  * Emit result-aware feedback after a launch/relaunch/launchPlaybook attempt.
  *
@@ -34,7 +41,7 @@ export function handleLaunchResult(
             `Recommended action: ${finding.recommendedAction}`,
           ].filter(Boolean).join('\n'),
         ).join('\n\n')
-      : '';
+      : GENERIC_LAUNCH_RECOVERY_DETAILS;
     send({
       type: 'alert',
       agentId: '',
