@@ -85,8 +85,12 @@ interface PresenceMember {
   nodeId: NodeId;
   grants: ShareGrant[];
   connectedAt: string;
+  memberId?: string;
+  deviceId?: string;
   invitationId?: string;
 }
+
+type PublicPresenceMember = Omit<PresenceMember, 'memberId' | 'deviceId'>;
 
 export interface RelayMetadataAuditRow {
   type: 'relay.metadata-audit';
@@ -1562,10 +1566,24 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     if (set.size === 0) subscribers.delete(invitation.nodeId);
   };
 
-  const connectedViewerCount = (nodeId: NodeId, invitationId: string): number => (
-    [...(presence.get(nodeId)?.values() ?? [])]
-      .filter((member) => member.invitationId === invitationId && member.grants.includes('view'))
-      .length
+  const viewerIdentityKey = (member: PresenceMember): string => {
+    if (member.memberId && member.deviceId) return `member-device:${member.memberId}:${member.deviceId}`;
+    if (member.memberId) return `member:${member.memberId}`;
+    if (member.deviceId) return `actor-device:${member.actorId}:${member.deviceId}`;
+    return `legacy:${member.actorId || member.clientId}`;
+  };
+
+  const connectedViewerCount = (nodeId: NodeId, invitationId: string): number => {
+    const viewers = new Set<string>();
+    for (const member of presence.get(nodeId)?.values() ?? []) {
+      if (member.invitationId !== invitationId || !member.grants.includes('view')) continue;
+      viewers.add(viewerIdentityKey(member));
+    }
+    return viewers.size;
+  };
+
+  const publicPresenceMembers = (nodeId: NodeId): PublicPresenceMember[] => (
+    [...(presence.get(nodeId)?.values() ?? [])].map(({ memberId: _memberId, deviceId: _deviceId, ...member }) => member)
   );
 
   const toNodeInvitationViewWithPresence = (invitation: InvitationRecord): RelayNodeInvitationView => (
@@ -1945,7 +1963,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
               .map((event) => eventForAuth(auth, event))
             : [],
           terminalEvents: [],
-          members: [...(presence.get(asNodeId(nodeId))?.values() ?? [])],
+          members: publicPresenceMembers(asNodeId(nodeId)),
         });
         return;
       }
@@ -3278,6 +3296,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       nodeId,
       grants: [...auth.grants],
       connectedAt: new Date().toISOString(),
+      ...(auth.memberId ? { memberId: auth.memberId } : {}),
+      ...(auth.deviceId ? { deviceId: auth.deviceId } : {}),
       ...(auth.invitationId ? { invitationId: auth.invitationId } : {}),
     });
     broadcastPresence(nodeId);
@@ -3297,7 +3317,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const encoded = JSON.stringify({
       type: 'relay.presence',
       nodeId,
-      members: [...(presence.get(nodeId)?.values() ?? [])],
+      members: publicPresenceMembers(nodeId),
     });
     for (const sub of [...subscribed]) {
       if (!subscriptionStillAuthorized(nodeId, sub)) continue;
