@@ -123,6 +123,47 @@ test.describe('Easy connection sharing Phase A0', () => {
     await collaborator.close();
   });
 
+  test('owner approves guest terminal viewing through the share modal', async ({ page, request, browser }) => {
+    await createTask(request);
+    await selectTask(page);
+    const joinUrl = await createShareFromDashboard(page);
+
+    const collaborator = await browser.newContext();
+    const collaboratorPage = await collaborator.newPage();
+
+    await collaboratorPage.goto(joinUrl);
+    await expect.poll(() => collaboratorPage.evaluate(() => location.hash)).toBe('');
+    await collaboratorPage.getByLabel('Display name').fill('Dogfood guest');
+    await collaboratorPage.getByRole('button', { name: 'Join' }).click();
+
+    await expect(collaboratorPage.getByLabel('Shared task projection')).toBeVisible({ timeout: 10_000 });
+    await expect(collaboratorPage.locator('#terminal-banner')).toContainText(
+      'Terminal viewing requires owner approval.',
+      { timeout: 10_000 },
+    );
+    await collaboratorPage.getByRole('button', { name: 'Request terminal viewing' }).click();
+    await expect(collaboratorPage.locator('#terminal-status-title')).toContainText('Terminal request pending');
+
+    const dialog = page.getByRole('dialog', { name: 'Share this task' });
+    const terminalRequests = dialog.locator('[aria-label="Terminal viewing requests"]');
+    await expect(dialog.locator('.task-share-state')).toContainText('Viewer connected', { timeout: 10_000 });
+    await expect(terminalRequests).toContainText('Dogfood guest requested terminal viewing', {
+      timeout: 10_000,
+    });
+    await expect(dialog.getByRole('button', { name: 'Approve' })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Approve' }).click();
+
+    await expect(dialog.getByText('Watch terminal')).toBeVisible({ timeout: 10_000 });
+    await expect(terminalRequests).toHaveCount(0);
+    await expect(collaboratorPage.locator('#terminal-status-title')).toContainText('Terminal viewing approved', {
+      timeout: 10_000,
+    });
+    await expect(collaboratorPage.getByLabel('Shared terminal')).toBeVisible();
+    await expect(collaboratorPage.getByLabel('Terminal input message')).toBeDisabled();
+
+    await collaborator.close();
+  });
+
   test('guest terminal input requests remain non-actionable for owners', async ({ page, request, browser }) => {
     await createTask(request);
     const tmuxName = await getLatestTmuxName(request);

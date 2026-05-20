@@ -18,6 +18,14 @@ else
   PROD_DIR="${ROOT_DIR}/../kookr-prod"
 fi
 
+ENV_ROOT_DIR="${KOOKR_ENV_ROOT_DIR:-${ROOT_DIR}}"
+if [[ "${KOOKR_ENV_ROOT_DIR:-}" == "" && "$(basename "${ROOT_DIR}")" == "kookr-prod" && -f "${ROOT_DIR}/../kookr/.env" ]]; then
+  ENV_ROOT_DIR="$(
+    cd "${ROOT_DIR}/../kookr" 2>/dev/null
+    pwd -P
+  )"
+fi
+
 if [[ ! -d "${PROD_DIR}" ]]; then
   echo "Production worktree not found: ${PROD_DIR}" >&2
   echo "Bootstrapping detached worktree from origin/main..." >&2
@@ -26,8 +34,8 @@ if [[ ! -d "${PROD_DIR}" ]]; then
   git worktree add --detach "${PROD_DIR}" origin/main
 fi
 
-if [[ -f "${ROOT_DIR}/.env" ]]; then
-  ln -sfn "${ROOT_DIR}/.env" "${PROD_DIR}/.env"
+if [[ -f "${ENV_ROOT_DIR}/.env" ]]; then
+  ln -sfn "${ENV_ROOT_DIR}/.env" "${PROD_DIR}/.env"
 fi
 
 cd "${PROD_DIR}"
