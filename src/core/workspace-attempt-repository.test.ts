@@ -22,7 +22,7 @@ describe('WorkspaceAttemptRepository', () => {
       const attempt = repo.createAttempt({
         type: 'preflight',
         projectId: 'github.com/org/repo',
-        reasonCode: 'start_work',
+        reasonCode: 'cleanup_requested',
         source: 'workspace_ui',
         evidenceSummary: 'test',
       });

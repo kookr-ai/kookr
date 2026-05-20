@@ -103,7 +103,7 @@ Non-goals:
 | 3 | `03-permission-quick-action.ts` | F2.4 (permission block), F3.8 (quick action), F2.7 (explanation) | 12s | Triage |
 | 4 | `04-playbooks.ts` | F6.1/F6.2/F6.3 (browse, parameter, launch), F4.5 (criteria) | 15s | Workflow |
 | 5 | `05-github-awareness.ts` | F7.1/F7.2/F7.3/F7.4/F7.5 (PR detected, CI failure, alert, GitHub tab) | 15s | Workflow |
-| 6 | `06-contribution-ws.ts` | F12.1/F12.2/F12.4/F12.5 (start work, worktree lease, view, safe cleanup), F4.10 (parent/child) | 15s | Workflow |
+| 6 | `06-contribution-ws.ts` | F12.1/F12.3/F12.4 (worktree lease, cleanup view, safe cleanup), F4.10 (parent/child) | 15s | Workflow |
 | 7 | `07-schedules-autonomy.ts` | F11.1/F11.4 (cron + UI), F9.1/F9.2 (autonomy + auto-proceed) | 15s | Operations |
 | 8 | `08-reflection-breakers.ts` | F8.1/F8.2/F8.3 (interaction log, friction, report), F10.1/F10.3 (breaker state + status panel) | 18s | Operations |
 | 9 | `09-quota-diagnostics-settings.ts` | F14.1/F14.2 (quota), F15.1/F15.3 (diagnostics + stats), FS.1/FS.2 (settings) | 15s | Operations |
