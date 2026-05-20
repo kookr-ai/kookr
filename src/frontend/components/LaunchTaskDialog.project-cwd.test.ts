@@ -165,6 +165,9 @@ describe('LaunchTaskDialog projectCwd prop', () => {
     expect(container.textContent).toContain('/server/cwd');
     expect(container.textContent).not.toContain('/old/draft/path');
     expect(Array.from(container.querySelectorAll('.playbook-resolved-cwd-path')).map((el) => el.textContent)).toEqual(['/server/cwd', '']);
+    const playbooksTab = Array.from(container.querySelectorAll<HTMLButtonElement>('.dialog-tab'))
+      .find((button) => button.textContent === 'Playbooks');
+    expect(document.activeElement).toBe(playbooksTab);
 
     act(() => root.unmount());
   });

@@ -9,6 +9,7 @@ import {
   saveLaunchTaskDialogDraft,
   clearLaunchTaskDialogDraft,
 } from '../store/launch-task-dialog-draft.js';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
@@ -84,6 +85,8 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     () => defaultAgentType ?? serverDefaultAgentType ?? 'claude-code',
   );
   const [draftRestored, setDraftRestored] = useState(initialHadDraft);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const playbooksTabRef = useRef<HTMLButtonElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const cwdRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLUListElement>(null);
@@ -113,6 +116,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   useEffect(() => {
     if (tab === 'manual') promptRef.current?.focus();
   }, [tab]);
+  useDialogFocus({
+    dialogRef,
+    initialFocusRef: initialTab === 'playbooks' ? playbooksTabRef : promptRef,
+  });
 
   // When opening directly to playbooks, ensure the list is fetched.
   useEffect(() => {
@@ -254,9 +261,16 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
   return (
     <div className="dialog-overlay">
-      <div className="dialog">
+      <div
+        ref={dialogRef}
+        className="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="launch-task-dialog-title"
+        tabIndex={-1}
+      >
         <div className="dialog-header">
-          <h3>Launch New Task</h3>
+          <h3 id="launch-task-dialog-title">Launch New Task</h3>
           <button className="dialog-close" onClick={() => { track({ type: 'launch_dialog_closed', submitted: false, dwellMs: Date.now() - openedAtRef.current }); onClose(); }} aria-label="Close">&times;</button>
         </div>
 
@@ -269,6 +283,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
             Manual
           </button>
           <button
+            ref={playbooksTabRef}
             type="button"
             className={`dialog-tab ${tab === 'playbooks' ? 'active' : ''}`}
             onClick={switchToPlaybooks}

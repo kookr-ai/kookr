@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { buildAgentSelectionOptions, type AgentSelection } from '../../shared/protocol.js';
 import { useSoundPreference } from '../audio/sound.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useKookrStore } from '../store/useStore.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { HookInventorySection } from './HookInventorySection.js';
@@ -506,13 +507,17 @@ export function SettingsDialog({ onClose, focusField }: Props) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const sound = useSoundPreference();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,
     sharing: null,
     hooks: null,
   });
   const maxActiveTasksInputRef = useRef<HTMLInputElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const didFocusRef = useRef(false);
+
+  useDialogFocus({ dialogRef, initialFocusRef: closeButtonRef });
 
   useEffect(() => {
     fetch('/api/settings')
@@ -615,10 +620,18 @@ export function SettingsDialog({ onClose, focusField }: Props) {
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog settings-dialog" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="dialog settings-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-dialog-title"
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="dialog-header">
-          <h3>Settings</h3>
-          <button className="dialog-close" onClick={onClose} aria-label="Close">&times;</button>
+          <h3 id="settings-dialog-title">Settings</h3>
+          <button ref={closeButtonRef} className="dialog-close" onClick={onClose} aria-label="Close">&times;</button>
         </div>
         <div className="dialog-tabs settings-dialog-tabs" role="tablist" aria-label="Settings sections">
           {SETTINGS_TABS.map((tab) => {
@@ -706,6 +719,7 @@ export function SettingsDialog({ onClose, focusField }: Props) {
                         <input
                           type="number"
                           className="settings-number"
+                          aria-label="Stale agent timeout"
                           value={settings.watchdogStaleThresholdSec}
                           onChange={(e) => handleNumberChange('watchdogStaleThresholdSec', e.target.value, 15, 90)}
                           min={15}
@@ -728,6 +742,7 @@ export function SettingsDialog({ onClose, focusField }: Props) {
                         <input
                           type="number"
                           className="settings-number"
+                          aria-label="Repeated error threshold"
                           value={settings.repeatedErrorThreshold}
                           onChange={(e) => handleNumberChange('repeatedErrorThreshold', e.target.value, 2, 10)}
                           min={2}
@@ -817,6 +832,7 @@ export function SettingsDialog({ onClose, focusField }: Props) {
                         <input
                           type="number"
                           className="settings-number"
+                          aria-label="GitHub polling interval"
                           value={settings.githubPollingIntervalSec}
                           onChange={(e) => handleNumberChange('githubPollingIntervalSec', e.target.value, 15, 600)}
                           min={15}
