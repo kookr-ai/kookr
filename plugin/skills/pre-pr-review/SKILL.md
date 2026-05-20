@@ -230,6 +230,8 @@ upstream that declares a base-branch rule.
 
 **After ALL mandatory checks above pass**, create the state file that allows `gh pr create` through the hook gate. The key must match the hook's derivation, which prefers `-R owner/repo` / `--head` parsed from the command and only falls back to the cwd when a flag is absent — so deriving `REPO_NAME` from the git remote URL matches both paths:
 
+Important: the hook parses the raw shell command text before the shell expands variables. If the eventual `gh pr create` command uses `--head "$BRANCH"` or `--head "$SYNC_BRANCH"`, the hook may look for a gate marker keyed to the literal variable token rather than the branch value. Prefer writing the final `gh pr create` command with a literal `--head branch-name`. If the PR head is not the currently checked-out branch, set `PR_HEAD_BRANCH` below to that exact head branch; the snippet converts `/` to `-`.
+
 ```bash
 # Match pr-workflow-gate.sh's `-R owner/repo` parsing by deriving REPO_NAME
 # from the remote URL, not the worktree's directory basename. Worktrees
@@ -238,7 +240,8 @@ upstream that declares a base-branch rule.
 # never looks up. See issue #406.
 REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null || true)
 REPO_NAME=$(basename -s .git "${REMOTE_URL:-$(git rev-parse --show-toplevel)}")
-SAFE_BRANCH=$(git rev-parse --abbrev-ref HEAD | tr '/' '-')
+SAFE_BRANCH=${PR_HEAD_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}
+SAFE_BRANCH=$(printf '%s' "$SAFE_BRANCH" | tr '/' '-')
 touch "/dev/shm/.pr-gate-${REPO_NAME}-${SAFE_BRANCH}-pre-done"
 ```
 

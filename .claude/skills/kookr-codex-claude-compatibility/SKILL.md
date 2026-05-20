@@ -1,8 +1,8 @@
 ---
 name: kookr-codex-claude-compatibility
-description: Make Codex CLI behave more like Claude Code for Kookr by preserving the known fork, branch, build, deploy, and live-verification workflow for Claude-compatible skills, agents, settings, hooks, and related UX.
-keywords: codex, claude, compatibility, codex cli, claude code, skills, agents, subagents, settings, permissions, hooks, costs, kookr, deploy, rebuild, app-server
-related: claude-code-permissions, claude-code-hooks, self-reflect, token-efficiency
+description: Make Codex CLI behave more like Claude Code for Kookr by preserving the known fork, branch, build, deploy, daily upstream sync, and live-verification workflow for Claude-compatible skills, agents, settings, hooks, and related UX.
+keywords: codex, claude, compatibility, codex cli, claude code, skills, agents, subagents, settings, permissions, hooks, costs, kookr, deploy, rebuild, app-server, daily upstream sync, feat/claude-compat, upstream/main, gh pr create, pre-pr-review
+related: claude-code-permissions, claude-code-hooks, self-reflect, token-efficiency, pre-pr-review
 ---
 
 # Codex Claude Compatibility
@@ -13,6 +13,7 @@ related: claude-code-permissions, claude-code-hooks, self-reflect, token-efficie
 - The task touches Claude-compatible `.claude/skills` or `.claude/agents` behavior in Codex
 - The task involves Codex settings, permission semantics, hooks, cost surfacing, or Kookr integration
 - You need to rebuild or redeploy the custom Codex binary used by Kookr
+- You need to sync `feat/claude-compat` with `upstream/main`
 - You need the shortest path back into the Codex fork without rediscovering repo state
 
 ## Reference Principle
@@ -149,6 +150,68 @@ Sanity check:
 Kookr should use `${KOOKR_CODEX_BIN:-${CODEX_INSTALL_DIR:-$HOME/bin}/codex}` as the deployed custom Codex binary.
 
 If you had to use an alternate checkout or target dir for a one-off rebuild, do not leave that as the operating model. The final committed source of truth must still be `feat/claude-compat` in `${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}`.
+
+## Daily Upstream Sync Gotchas
+
+When keeping `feat/claude-compat` current with `upstream/main`, use the auditable sync-PR workflow rather than rebasing or force-pushing the integration branch.
+
+### Pre-PR review must happen before `gh pr create`
+
+The local `pr-workflow-gate` hook blocks `gh pr create` unless the `pre-pr-review` skill has created its gate marker. Run the pre-PR review after the sync branch passes local verification and before the first `gh pr create` attempt.
+
+For a pure upstream sync, focus reviewer specialists on the merge-resolution and sync fix-up commits, not on re-reviewing every upstream commit. Ask them to inspect:
+
+- conflicted files resolved in the merge commit
+- generated schema reconciliation
+- any post-merge fix-up commits
+- release/version/install behavior touched by the sync
+
+Fix blocking reviewer findings, rerun the affected local verification, and push the updated sync branch before creating the PR.
+
+### Use a literal `--head` branch in `gh pr create`
+
+Do not pass the sync branch to `gh pr create` through a shell variable such as `--head "$SYNC_BRANCH"`. The local `pr-workflow-gate` parses the raw shell command text before shell expansion, so a variable can make it look for the wrong gate marker.
+
+Use a literal head branch in the actual `gh pr create` command:
+
+```bash
+gh pr create \
+  --repo jeanibarz/codex \
+  --base feat/claude-compat \
+  --head sync/upstream-main-YYYYMMDD \
+  --title "sync: merge upstream/main into feat/claude-compat (YYYY-MM-DD)" \
+  --body "..."
+```
+
+If you need shell variables to assemble text, expand them before the command or write the final literal command explicitly.
+
+### Treat `gh pr merge` local git failures as ambiguous
+
+`gh pr merge --merge --delete-branch` can merge the PR remotely and still exit nonzero while doing local git cleanup. One known failure is:
+
+```text
+fatal: 'main' is already checked out at '...'
+```
+
+If `gh pr merge` exits nonzero after contacting GitHub, do not retry blindly and do not stop for user intervention. First inspect the remote PR:
+
+```bash
+gh pr view "$PR_URL" --json state,mergedAt,mergeCommit,url
+git ls-remote --heads origin feat/claude-compat "$SYNC_BRANCH"
+```
+
+If the PR state is `MERGED`, continue with Phase 6 from the remote merge commit:
+
+1. `git fetch origin`
+2. Fast-forward the main checkout's `feat/claude-compat`
+3. Build and install from the final integration branch
+4. Delete the remote sync branch manually if `--delete-branch` did not do it:
+
+```bash
+git push origin --delete "$SYNC_BRANCH"
+```
+
+Only stop if the PR is still open or the base branch did not advance to the reported merge commit.
 
 ## Real Verification Workflow
 
