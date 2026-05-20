@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CreateTaskShareApiResponse,
   ListTaskSharesApiResponse,
+  ResolveTaskShareGrantRequestApiResponse,
   TaskShareMutableGrant,
   RevokeTaskShareApiResponse,
   TaskShareTicket,
@@ -235,7 +236,12 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
   const guestPathSelected = sharePath === 'guest';
   const verifiedContacts = contacts.filter((contact) => contact.trustState === 'verified');
   const pendingInbox = inbox.filter((item) => item.lifecycle === 'pending');
-  const pendingGrantRequestCount = displayedShare?.grantRequests.filter((request) => request.status === 'pending').length ?? 0;
+  const pendingGrantRequests = displayedShare?.grantRequests.filter((request) => request.status === 'pending') ?? [];
+  const terminalViewGrantRequests = pendingGrantRequests.filter((request) => (
+    request.requestedGrants.length > 0
+    && request.requestedGrants.every((grant) => grant === 'terminalView')
+  ));
+  const unsupportedGrantRequestCount = pendingGrantRequests.length - terminalViewGrantRequests.length;
 
   function commitShares(nextShares: TaskShareSummary[]) {
     sharesRef.current = nextShares;
@@ -518,6 +524,31 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
     }
   }
 
+  async function resolveGrantRequest(invitationId: string, requestId: string, decision: 'approve' | 'deny') {
+    if (!csrfToken || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/share/task/${encodeURIComponent(invitationId)}/grant-requests/${encodeURIComponent(requestId)}/${decision}`,
+        {
+          method: 'POST',
+          headers: { [SHARE_CSRF_HEADER]: csrfToken },
+        },
+      );
+      if (!res.ok) throw new Error(`grant-request-${decision}-${res.status}`);
+      const body = await res.json() as ResolveTaskShareGrantRequestApiResponse;
+      commitShares(replaceShare(sharesRef.current, body.share));
+    } catch {
+      setError(decision === 'approve'
+        ? 'Terminal viewing was not approved.'
+        : 'Terminal viewing request was not denied.');
+      await loadShares().catch(() => undefined);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function enterNewShareMode() {
     setNewShareMode(true);
     setTtlMs(DEFAULT_TTL_MS);
@@ -792,12 +823,47 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
               </section>
             )}
 
-            {displayedShare && !terminalShare && pendingGrantRequestCount > 0 && (
+            {displayedShare && !terminalShare && terminalViewGrantRequests.length > 0 && (
+              <section className="task-share-diagnostic" aria-label="Terminal viewing requests">
+                <div className="task-share-row">
+                  <span>Terminal viewing requests</span>
+                  <strong>{terminalViewGrantRequests.length} pending</strong>
+                </div>
+                {terminalViewGrantRequests.map((request) => (
+                  <div key={request.requestId} className="task-share-contact-row">
+                    <div>
+                      <strong>{request.comment ?? 'Guest requested terminal viewing'}</strong>
+                      <span>{new Date(request.requestedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
+                    <div className="task-share-field-actions">
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        disabled={busy}
+                        onClick={() => void resolveGrantRequest(displayedShare.invitationId, request.requestId, 'approve')}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={busy}
+                        onClick={() => void resolveGrantRequest(displayedShare.invitationId, request.requestId, 'deny')}
+                      >
+                        Deny
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </section>
+            )}
+
+            {displayedShare && !terminalShare && unsupportedGrantRequestCount > 0 && (
               <div className="task-share-disabled" role="status">
-                <strong>Guest links stay view-only</strong>
+                <strong>Guest links stay limited</strong>
                 <p>
-                  {pendingGrantRequestCount === 1 ? 'One control request is' : `${pendingGrantRequestCount} control requests are`}
-                  {' '}waiting, but public guest links cannot approve terminal or task controls.
+                  {unsupportedGrantRequestCount === 1 ? 'One unsupported control request is' : `${unsupportedGrantRequestCount} unsupported control requests are`}
+                  {' '}waiting, but public guest links can only approve terminal viewing.
                 </p>
               </div>
             )}
