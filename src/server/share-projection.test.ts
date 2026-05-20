@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { AttentionQueue } from '../core/attention-queue.js';
 import { TaskStore } from '../core/tasks.js';
+import { buildPermissionRequestBinding } from '../shared/contracts/permission-request-binding.js';
 import { asNodeId } from '../remote/ids.js';
 import { projectTaskForRemoteShare, sanitizeRemoteTaskLabel } from './share-projection.js';
 
@@ -60,12 +62,58 @@ describe('RemoteTaskProjectionV1', () => {
       cwd: '/private/project',
     });
 
-    const projection = projectTaskForRemoteShare(task, {
+    const projection = projectTaskForRemoteShare(store.getTask(task.id)!, {
       nodeId: asNodeId('kookr-node-test'),
     });
 
     expect(projection.taskLabel).toBe(`Task ${task.id.slice(0, 8)}`);
     expect(JSON.stringify(projection)).not.toContain('/private/project');
     expect(JSON.stringify(projection)).not.toContain('github_pat_secret');
+  });
+
+  it('includes only a bound permission request when permission approval projection is enabled', () => {
+    const store = new TaskStore();
+    const queue = new AttentionQueue();
+    const task = store.createTask('Permission task', '/tmp');
+    store.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      createdAt: new Date('2026-05-17T00:00:00.000Z'),
+      cwd: '/tmp',
+      status: 'running',
+    });
+    const detectedAt = new Date('2026-05-17T00:01:00.000Z');
+    queue.enqueue('agent-1', {
+      agentId: 'agent-1',
+      type: 'permission_blocked',
+      severity: 'warning',
+      explanation: 'permission required',
+      detectedAt,
+    });
+    const event = {
+      type: 'permission_request' as const,
+      sessionId: 'agent-1',
+      toolName: 'Bash',
+      toolInput: { command: 'git push origin feature' },
+      eventSeq: 7,
+    };
+
+    const projection = projectTaskForRemoteShare(store.getTask(task.id)!, {
+      nodeId: asNodeId('kookr-node-test'),
+      queue,
+      includePermissionApproval: true,
+      getAgentEvents: () => [event],
+    });
+
+    expect(projection.activePermissionRequest).toEqual({
+      sessionId: 'agent-1',
+      defaultKeystroke: '1',
+      permissionRequest: buildPermissionRequestBinding({
+        sessionId: 'agent-1',
+        event,
+        detectedAt,
+      }),
+    });
+    expect(JSON.stringify(projection)).not.toContain('git push origin feature');
   });
 });

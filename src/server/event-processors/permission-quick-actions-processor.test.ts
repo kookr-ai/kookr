@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import { buildPermissionRequestBinding } from '../../shared/contracts/permission-request-binding.js';
 import type { AgentState } from '../../shared/contracts/agent-state.js';
 import { createPermissionQuickActionsProcessor } from './permission-quick-actions-processor.js';
 
@@ -24,11 +25,17 @@ function permissionState(): AgentState {
 describe('PermissionQuickActionsProcessor', () => {
   test('captures the pane and broadcasts permission quick actions while still blocked', async () => {
     const broadcasts: unknown[] = [];
+    const current = permissionState();
+    const permissionRequest = buildPermissionRequestBinding({
+      sessionId: 'agent-1',
+      event: current.events[0] as Extract<AgentState['events'][number], { type: 'permission_request' }>,
+      detectedAt: current.anomaly!.detectedAt,
+    });
     const processor = createPermissionQuickActionsProcessor({
       displayCapture: {
         captureDisplay: vi.fn().mockResolvedValue('Do you want to proceed?\n1. Yes\n2. No'),
       },
-      getAgentState: vi.fn().mockReturnValue(permissionState()),
+      getAgentState: vi.fn().mockReturnValue(current),
       broadcastToAll: (msg) => { broadcasts.push(msg); },
     });
 
@@ -40,8 +47,16 @@ describe('PermissionQuickActionsProcessor', () => {
       agentId: 'agent-1',
       suggestions: [],
       quickActions: [
-        { label: 'Allow: Bash: `git status`', keystroke: '1' },
-        { label: 'Deny', keystroke: '2' },
+        {
+          label: 'Allow: Bash: `git status`',
+          keystroke: '1',
+          permissionRequest,
+        },
+        {
+          label: 'Deny',
+          keystroke: '2',
+          permissionRequest,
+        },
       ],
     });
   });
@@ -53,6 +68,24 @@ describe('PermissionQuickActionsProcessor', () => {
         captureDisplay: vi.fn().mockResolvedValue('Do you want to proceed?\n1. Yes\n2. No'),
       },
       getAgentState: vi.fn().mockReturnValue({ agentId: 'agent-1', anomaly: null, events: [] }),
+      broadcastToAll,
+    });
+
+    processor.process({ tmuxName: 'agent-1', agentState: permissionState() });
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(broadcastToAll).not.toHaveBeenCalled();
+  });
+
+  test('drops captured actions if the active request has already been answered', async () => {
+    const broadcastToAll = vi.fn();
+    const current = permissionState();
+    current.events.push({ type: 'input_received', sessionId: 's1' });
+    const processor = createPermissionQuickActionsProcessor({
+      displayCapture: {
+        captureDisplay: vi.fn().mockResolvedValue('Do you want to proceed?\n1. Yes\n2. No'),
+      },
+      getAgentState: vi.fn().mockReturnValue(current),
       broadcastToAll,
     });
 

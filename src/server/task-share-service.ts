@@ -1,4 +1,5 @@
 import type { AttentionQueue } from '../core/attention-queue.js';
+import type { AgentEvent } from '../core/agent-events.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { RemoteControlEvent } from '../remote/control-events.js';
 import type { NodeEpoch, NodeId, PolicyVersion, ServerRevision, SessionEpoch, SessionId } from '../remote/ids.js';
@@ -26,6 +27,7 @@ export interface TaskShareServiceOptions {
   client: RelayShareClient;
   taskStore: TaskStore;
   queue?: AttentionQueue;
+  getAgentEvents?: (agentId: string) => readonly AgentEvent[];
   remotePolicyCache?: RemotePolicyCache | null;
   getNodeIdentity: () => { nodeId: NodeId; nodeEpoch: NodeEpoch } | null;
   nextServerRevision: () => ServerRevision;
@@ -38,6 +40,7 @@ export class TaskShareService {
   private readonly client: RelayShareClient;
   private readonly taskStore: TaskStore;
   private readonly queue?: AttentionQueue;
+  private readonly getAgentEvents?: (agentId: string) => readonly AgentEvent[];
   private readonly remotePolicyCache?: RemotePolicyCache | null;
   private readonly getNodeIdentity: TaskShareServiceOptions['getNodeIdentity'];
   private readonly nextServerRevision: TaskShareServiceOptions['nextServerRevision'];
@@ -53,6 +56,7 @@ export class TaskShareService {
     this.client = opts.client;
     this.taskStore = opts.taskStore;
     this.queue = opts.queue;
+    this.getAgentEvents = opts.getAgentEvents;
     this.remotePolicyCache = opts.remotePolicyCache;
     this.getNodeIdentity = opts.getNodeIdentity;
     this.nextServerRevision = opts.nextServerRevision;
@@ -229,7 +233,12 @@ export class TaskShareService {
       return false;
     }
 
-    const projection = projectTaskForRemoteShare(task, { nodeId: identity.nodeId, queue: this.queue });
+    const projection = projectTaskForRemoteShare(task, {
+      nodeId: identity.nodeId,
+      queue: this.queue,
+      getAgentEvents: this.getAgentEvents,
+      includePermissionApproval: effective.grants.includes('permissionApprove'),
+    });
     const projectionKey = projectionDedupeKey(projection);
     if (options.dedupe && this.lastPublishedProjectionKeys.get(effective.invitationId) === projectionKey) {
       return false;
@@ -377,6 +386,7 @@ function projectionDedupeKey(projection: RemoteTaskProjectionV1): string {
     status: projection.status,
     hasFinding: projection.hasFinding,
     needsInput: projection.needsInput,
+    activePermissionRequest: projection.activePermissionRequest,
     updatedAt: projection.updatedAt,
   });
 }

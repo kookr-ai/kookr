@@ -150,6 +150,51 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(result.success).toBe(true);
   });
 
+  test('accepts a permission choice with a bound permission request', () => {
+    const permissionRequest = {
+      requestId: 'request-1',
+      toolName: 'Bash',
+      toolInputHash: 'hash-1',
+      detectedAt: '2026-05-15T19:00:00.000Z',
+      ttlMs: 300000,
+    };
+    const result = ClientMessageSchema.safeParse({
+      type: 'permissionChoice',
+      agentId: 'agent-1',
+      keystroke: '1',
+      permissionRequest,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.permissionRequest).toEqual(permissionRequest);
+    }
+  });
+
+  test('rejects a permission choice with a malformed permission request binding', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'permissionChoice',
+      agentId: 'agent-1',
+      keystroke: '1',
+      permissionRequest: {
+        requestId: 'request-1',
+        toolName: 'Bash',
+        toolInputHash: 'hash-1',
+        detectedAt: '2026-05-15T19:00:00.000Z',
+        ttlMs: '300000',
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects a permission choice without a permission request binding', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'permissionChoice',
+      agentId: 'agent-1',
+      keystroke: '1',
+    });
+    expect(result.success).toBe(false);
+  });
+
   test('rejects an unknown type as a discriminator error', () => {
     const result = ClientMessageSchema.safeParse({ type: 'wat' });
     expect(result.success).toBe(false);

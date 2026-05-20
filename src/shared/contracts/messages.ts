@@ -10,6 +10,7 @@ import type { Playbook, PlaybookScope, LaunchDependency } from './playbook.js';
 import type { ProjectSummary } from './project-summary.js';
 import type { ProjectConfig } from './project-config.js';
 import type { QuickAction } from './quick-action.js';
+import type { PermissionRequestBinding } from './permission-request-binding.js';
 import type { QuotaStatus } from './quota.js';
 import type { ScheduleResponse, ScheduleStatusSnapshot } from './schedule.js';
 import type { CollaborationCapabilities } from './speech.js';
@@ -266,7 +267,7 @@ export type ClientMessage =
   | { type: 'ackTerminatedTask'; taskId: string }
   | { type: 'achievement:reset' }
   | { type: 'achievement:setEnabled'; enabled: boolean }
-  | { type: 'permissionChoice'; agentId: string; keystroke: string }
+  | { type: 'permissionChoice'; agentId: string; keystroke: string; permissionRequest: PermissionRequestBinding }
   | { type: 'rearmCircuitBreaker'; name: string }
   | { type: 'findingFeedback'; agentId: string; anomalyType: AnomalyType; explanation: string; verdict: 'false_positive' }
   | { type: 'workspace:getView'; projectId: string }

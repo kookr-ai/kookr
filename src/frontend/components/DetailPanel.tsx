@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
 import { useKookrStore } from '../store/useStore.js';
-import type { AgentState, ClientMessage } from '../../shared/protocol.js';
+import type { AgentState, ClientMessage, PermissionRequestBinding } from '../../shared/protocol.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { track, trackClick } from '../telemetry.js';
@@ -451,11 +451,14 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
   // Check if quick actions are permission-type (have keystroke field)
   const isPermissionActions = quickActions.length > 0 && 'keystroke' in (suggestion?.quickActions[0] ?? {});
 
-  function handlePermissionChoice(keystroke: string) {
+  function handlePermissionChoice(action: { keystroke?: string; permissionRequest?: PermissionRequestBinding }) {
+    const { keystroke, permissionRequest } = action;
     if (!agent || permissionButtonsDisabled) return;
+    if (!keystroke) return;
+    if (!permissionRequest) return;
     setPermissionButtonsDisabled(true);
     track({ type: 'quick_action_clicked', agentId: agent.agentId, actionLabel: `permission:${keystroke}` });
-    const sent = send({ type: 'permissionChoice', agentId: agent.agentId, keystroke });
+    const sent = send({ type: 'permissionChoice', agentId: agent.agentId, keystroke, permissionRequest });
     if (!sent) {
       setPermissionButtonsDisabled(false);
       handleAlert('', 'Message not sent — connection lost. Please try again.', 'error');
@@ -576,7 +579,11 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
       const num = parseInt(e.key, 10);
       if (num >= 1 && num <= quickActions.length) {
         e.preventDefault();
-        handleQuickAction(quickActions[num - 1].value, quickActions[num - 1].isAi, String(num));
+        if (isPermissionActions) {
+          handlePermissionChoice(quickActions[num - 1]);
+        } else {
+          handleQuickAction(quickActions[num - 1].value, quickActions[num - 1].isAi, String(num));
+        }
         return;
       }
     }
@@ -844,7 +851,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
                 <button
                   key={action.value}
                   className="btn-quick-action permission-action"
-                  onClick={() => handlePermissionChoice((action as { keystroke: string }).keystroke)}
+                  onClick={() => handlePermissionChoice(action)}
                   disabled={permissionButtonsDisabled}
                   title={action.value}
                 >

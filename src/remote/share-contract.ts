@@ -13,6 +13,7 @@
 
 import type { NodeId, PolicyVersion, SessionEpoch, SessionId } from './ids.js';
 import type { OwnerTerminalSharingStatus } from '../shared/contracts/session-sharing-owner.js';
+import type { PermissionRequestBinding } from '../shared/contracts/permission-request-binding.js';
 
 export type TaskShareGrant =
   | 'view'
@@ -155,6 +156,11 @@ export interface RemoteTaskProjectionV1 {
   status: RemoteTaskProjectionStatus;
   hasFinding: boolean;
   needsInput: boolean;
+  activePermissionRequest?: {
+    sessionId: SessionId;
+    defaultKeystroke: string;
+    permissionRequest: PermissionRequestBinding;
+  };
   updatedAt: string;
 }
 

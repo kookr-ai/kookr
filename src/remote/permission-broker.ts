@@ -1,21 +1,37 @@
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
+import type { AgentEvent } from '../core/agent-events.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import type { Monitor } from '../core/monitor.js';
+import {
+  validatePermissionApprovalBinding,
+  type PermissionApprovalPayload,
+  type PermissionRequestBinding,
+} from '../shared/contracts/permission-request-binding.js';
 
 export interface RemotePermissionBrokerDeps {
   adapter: Pick<AgentAdapter, 'sendKeystroke'>;
-  monitor: Pick<Monitor, 'isPermissionBlocked' | 'markInputReceived'>;
+  monitor: Pick<Monitor, 'isPermissionBlocked' | 'markInputReceived'> & {
+    getAgentEvents: (agentId: string) => AgentEvent[];
+  };
   queue: Pick<AttentionQueue, 'getAnomaly' | 'respondAndAdvance'>;
   interactionLog?: DeferredInteractionLogWriter;
   onRespond?: (agentId: string, outcome?: 'used' | 'cleared') => void;
   isOwnerLocal?: (identity: { actorId?: string; ownerId?: string; local?: boolean }) => boolean;
+  now?: () => Date;
 }
 
 export class RemotePermissionBroker {
+  private readonly consumedApprovals = new Set<string>();
+
   constructor(private readonly deps: RemotePermissionBrokerDeps) {}
 
-  async approve(sessionId: string, keystroke = '1', actorId?: string): Promise<{ keystroke: string }> {
+  async approve(
+    sessionId: string,
+    keystroke = '1',
+    actorId?: string,
+    payload?: PermissionApprovalPayload,
+  ): Promise<{ keystroke: string; permissionRequest: PermissionRequestBinding }> {
     if (this.deps.isOwnerLocal && !this.deps.isOwnerLocal({ actorId })) {
       throw new Error('owner identity required');
     }
@@ -24,7 +40,25 @@ export class RemotePermissionBroker {
       throw new Error('session is not permission-blocked');
     }
     const anomaly = this.deps.queue.getAnomaly(sessionId);
-    await this.deps.adapter.sendKeystroke(sessionId, keystroke);
+    const binding = validatePermissionApprovalBinding({
+      sessionId,
+      events: this.deps.monitor.getAgentEvents(sessionId),
+      anomaly,
+      payload,
+      now: this.deps.now?.(),
+    });
+    if (!binding.ok) throw new Error(binding.reason);
+    const consumeKey = `${sessionId}\0${binding.binding.requestId}`;
+    if (this.consumedApprovals.has(consumeKey)) {
+      throw new Error('permission request approval already consumed');
+    }
+    this.consumedApprovals.add(consumeKey);
+    try {
+      await this.deps.adapter.sendKeystroke(sessionId, keystroke);
+    } catch (err) {
+      this.consumedApprovals.delete(consumeKey);
+      throw err;
+    }
     this.deps.monitor.markInputReceived(sessionId);
     this.deps.queue.respondAndAdvance(sessionId);
     this.deps.onRespond?.(sessionId, 'used');
@@ -45,6 +79,6 @@ export class RemotePermissionBroker {
         timestamp: ts,
       });
     }
-    return { keystroke };
+    return { keystroke, permissionRequest: binding.binding };
   }
 }

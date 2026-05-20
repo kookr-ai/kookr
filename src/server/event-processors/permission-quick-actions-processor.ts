@@ -1,4 +1,5 @@
 import { extractPermissionActions } from '../../core/permission-actions.js';
+import { buildPermissionRequestBinding, latestPermissionRequestEvent } from '../../shared/contracts/permission-request-binding.js';
 import { isPermissionRequestEvent } from '../../core/types.js';
 import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
@@ -35,7 +36,15 @@ export function createPermissionQuickActionsProcessor({
           // Guard: still permission_blocked? (agent may have moved on during capture).
           const current = getAgentState(tmuxName);
           if (current?.anomaly?.type !== 'permission_blocked') return;
-          const quickActions = extractPermissionActions(permEvent.toolName, permEvent.toolInput, pane);
+          const currentPermEvent = latestPermissionRequestEvent(current.events);
+          if (!currentPermEvent) return;
+          const permissionRequest = buildPermissionRequestBinding({
+            sessionId: tmuxName,
+            event: currentPermEvent,
+            detectedAt: current.anomaly.detectedAt,
+          });
+          const quickActions = extractPermissionActions(currentPermEvent.toolName, currentPermEvent.toolInput, pane)
+            .map((action) => ({ ...action, permissionRequest }));
           broadcastToAll({
             type: 'suggestion',
             agentId: tmuxName,

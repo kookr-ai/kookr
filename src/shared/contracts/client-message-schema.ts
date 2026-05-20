@@ -17,6 +17,13 @@ import type { ClientMessage } from './messages.js';
 const agentSelection = z.enum(['claude-code', 'codex-cli', 'round-robin']);
 const playbookScope = z.enum(['project', 'user', 'plugin']);
 const launchDependency = z.enum(['kb']);
+const permissionRequestBinding = z.object({
+  requestId: z.string(),
+  toolName: z.string(),
+  toolInputHash: z.string(),
+  detectedAt: z.string(),
+  ttlMs: z.number(),
+});
 const anomalyType = z.enum([
   'needs_input',
   'permission_blocked',
@@ -177,7 +184,12 @@ const ClientMessageSchemaImpl = z.union([
   z.object({ type: z.literal('ackTerminatedTask'), taskId: z.string() }),
   z.object({ type: z.literal('achievement:reset') }),
   z.object({ type: z.literal('achievement:setEnabled'), enabled: z.boolean() }),
-  z.object({ type: z.literal('permissionChoice'), agentId: z.string(), keystroke: z.string() }),
+  z.object({
+    type: z.literal('permissionChoice'),
+    agentId: z.string(),
+    keystroke: z.string(),
+    permissionRequest: permissionRequestBinding,
+  }),
   z.object({ type: z.literal('rearmCircuitBreaker'), name: z.string() }),
   z.object({
     type: z.literal('findingFeedback'),
