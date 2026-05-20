@@ -225,7 +225,6 @@ export type ServerMessage =
       projects: Array<CrossProjectSweepProjectResult>;
     }
   | { type: 'workspaceSweepBusy'; holderPid: number; heldSince: string }
-  | { type: 'workspaceStartWorkAck'; taskId: string; queued: boolean; duplicate?: boolean; error?: string }
   | { type: 'diagnosticReport'; report: DiagnosticReport }
   | {
       type: 'ossAttempts';
@@ -285,5 +284,4 @@ export type ClientMessage =
     }
   | { type: 'workspace:bulkSafeCleanup'; projectId: string }
   | { type: 'workspace:runCleanupDiagnostic'; projectId: string; worktreePath: string; reviewFingerprint: string }
-  | { type: 'workspace:startWork'; projectId: string; cwd: string; prompt: string; issueRef?: string; playbookId?: string }
   | { type: 'workspace:sweep' };

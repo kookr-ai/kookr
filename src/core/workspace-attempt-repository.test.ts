@@ -22,7 +22,7 @@ describe('WorkspaceAttemptRepository', () => {
       const attempt = repo.createAttempt({
         type: 'preflight',
         projectId: 'github.com/org/repo',
-        reasonCode: 'start_work',
+        reasonCode: 'cleanup_requested',
         source: 'workspace_ui',
         evidenceSummary: 'test',
       });
@@ -333,91 +333,8 @@ describe('WorkspaceAttemptRepository', () => {
     });
   });
 
-  describe('recordHandoff', () => {
-    it('creates a handoff record', () => {
-      const handoff = repo.recordHandoff({
-        projectId: 'proj',
-        taskId: 'task-1',
-        prompt: 'fix the bug',
-      });
-
-      expect(handoff.handoffId).toBeTruthy();
-      expect(handoff.taskId).toBe('task-1');
-      expect(handoff.prompt).toBe('fix the bug');
-      expect(handoff.launchedAt).toBeTruthy();
-    });
-
-    it('creates a handoff with playbookId', () => {
-      const handoff = repo.recordHandoff({
-        projectId: 'proj',
-        taskId: 'task-1',
-        prompt: 'run the playbook',
-        playbookId: 'oss-contribute',
-      });
-
-      expect(handoff.playbookId).toBe('oss-contribute');
-      expect(handoff.projectId).toBe('proj');
-      expect(handoff.taskId).toBe('task-1');
-      expect(handoff.prompt).toBe('run the playbook');
-    });
-
-    it('creates a handoff without playbookId (undefined)', () => {
-      const handoff = repo.recordHandoff({
-        projectId: 'proj',
-        taskId: 'task-1',
-        prompt: 'simple task',
-      });
-
-      expect(handoff.playbookId).toBeUndefined();
-    });
-  });
-
-  describe('listHandoffsByProject', () => {
-    it('returns handoffs for the project', () => {
-      repo.recordHandoff({ projectId: 'proj-a', taskId: 't1', prompt: 'p1' });
-      repo.recordHandoff({ projectId: 'proj-a', taskId: 't2', prompt: 'p2' });
-      repo.recordHandoff({ projectId: 'proj-b', taskId: 't3', prompt: 'p3' });
-
-      const results = repo.listHandoffsByProject('proj-a');
-      expect(results).toHaveLength(2);
-    });
-
-    it('respects limit parameter', () => {
-      for (let i = 0; i < 15; i++) {
-        repo.recordHandoff({
-          projectId: 'proj',
-          taskId: `task-${i}`,
-          prompt: `prompt ${i}`,
-        });
-      }
-
-      const limited = repo.listHandoffsByProject('proj', 5);
-      expect(limited).toHaveLength(5);
-    });
-
-    it('returns empty array for unknown project', () => {
-      repo.recordHandoff({ projectId: 'proj-a', taskId: 't1', prompt: 'p1' });
-
-      const results = repo.listHandoffsByProject('nonexistent');
-      expect(results).toEqual([]);
-    });
-
-    it('defaults to limit of 10', () => {
-      for (let i = 0; i < 15; i++) {
-        repo.recordHandoff({
-          projectId: 'proj',
-          taskId: `task-${i}`,
-          prompt: `prompt ${i}`,
-        });
-      }
-
-      const results = repo.listHandoffsByProject('proj');
-      expect(results).toHaveLength(10);
-    });
-  });
-
   describe('persistence', () => {
-    it('reloads attempts and handoffs from disk', () => {
+    it('reloads attempts from disk', () => {
       const filePath = join(tempDir, 'workspace-attempts.json');
       const persistentRepo = new WorkspaceAttemptRepository(filePath);
 
@@ -431,15 +348,9 @@ describe('WorkspaceAttemptRepository', () => {
         evidenceSummary: 'remove merged branch',
       });
       persistentRepo.passAttempt(attempt.attemptId, 'done');
-      persistentRepo.recordHandoff({
-        projectId: 'proj',
-        taskId: 'task-1',
-        prompt: 'follow-up task',
-      });
 
       const reloaded = new WorkspaceAttemptRepository(filePath);
       expect(reloaded.listByProject('proj')).toHaveLength(1);
-      expect(reloaded.listHandoffsByProject('proj')).toHaveLength(1);
       expect(reloaded.getAttempt(attempt.attemptId)?.status).toBe('passed');
     });
 
@@ -449,7 +360,6 @@ describe('WorkspaceAttemptRepository', () => {
 
       const reloaded = new WorkspaceAttemptRepository(filePath);
       expect(reloaded.listByProject('proj')).toEqual([]);
-      expect(reloaded.listHandoffsByProject('proj')).toEqual([]);
     });
   });
 });

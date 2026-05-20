@@ -79,12 +79,6 @@ export function createWorkspaceSlice(set: StoreSet, get: StoreGet): WorkspaceSli
       });
     },
 
-    handleWorkspaceStartWorkAck: (ack) => {
-      if (ack.error) {
-        set({ workspaceError: ack.error });
-      }
-    },
-
     setWorkspaceLoading: (loading) => {
       set({ workspaceLoading: loading });
     },

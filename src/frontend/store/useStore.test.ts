@@ -1046,16 +1046,6 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().workspaceCleanupDetailError).toBeNull();
   });
 
-  test('handleWorkspaceStartWorkAck sets error on failure', () => {
-    store.getState().handleWorkspaceStartWorkAck({ taskId: '', queued: false, error: 'launch failed' });
-    expect(store.getState().workspaceError).toBe('launch failed');
-  });
-
-  test('handleWorkspaceStartWorkAck does not set error on success', () => {
-    store.getState().handleWorkspaceStartWorkAck({ taskId: 'task-1', queued: false });
-    expect(store.getState().workspaceError).toBeNull();
-  });
-
   test('setWorkspaceLoading toggles loading state', () => {
     expect(store.getState().workspaceLoading).toBe(false);
     store.getState().setWorkspaceLoading(true);

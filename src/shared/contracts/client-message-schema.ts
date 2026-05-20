@@ -222,14 +222,6 @@ const ClientMessageSchemaImpl = z.union([
     worktreePath: z.string(),
     reviewFingerprint: z.string(),
   }),
-  z.object({
-    type: z.literal('workspace:startWork'),
-    projectId: z.string(),
-    cwd: z.string(),
-    prompt: z.string(),
-    issueRef: z.string().optional(),
-    playbookId: z.string().optional(),
-  }),
   z.object({ type: z.literal('workspace:sweep') }),
 ]);
 

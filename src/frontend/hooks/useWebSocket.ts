@@ -67,7 +67,6 @@ export function useWebSocket() {
     handleSchedules,
     handleWorkspaceView,
     handleWorkspaceCleanupDetail,
-    handleWorkspaceStartWorkAck,
     handleSweepComplete,
     handleSweepBusy,
     handleOssAttempts,
@@ -188,9 +187,6 @@ export function useWebSocket() {
           case 'workspaceCleanupDetail':
             handleWorkspaceCleanupDetail(msg.worktreePath, msg.detail, msg.error);
             break;
-          case 'workspaceStartWorkAck':
-            handleWorkspaceStartWorkAck(msg);
-            break;
           case 'workspaceSweepComplete':
             handleSweepComplete({
               runId: msg.runId,
@@ -224,7 +220,7 @@ export function useWebSocket() {
     ws.onerror = () => {
       ws.close();
     };
-  }, [handleSnapshot, handleUpdate, handleAlert, handleGitHubUpdate, handlePlaybooks, handleSuggestion, hydrateProjectSidebarFromServer, handleProjectSummaries, handleAchievementUnlocked, handleQuotaStatus, handleResourceStatus, handleCircuitBreakerStatus, handleDiagnosticReport, handleSchedules, handleWorkspaceView, handleWorkspaceCleanupDetail, handleWorkspaceStartWorkAck, handleSweepComplete, handleSweepBusy, handleOssAttempts, setConnected]);
+  }, [handleSnapshot, handleUpdate, handleAlert, handleGitHubUpdate, handlePlaybooks, handleSuggestion, hydrateProjectSidebarFromServer, handleProjectSummaries, handleAchievementUnlocked, handleQuotaStatus, handleResourceStatus, handleCircuitBreakerStatus, handleDiagnosticReport, handleSchedules, handleWorkspaceView, handleWorkspaceCleanupDetail, handleSweepComplete, handleSweepBusy, handleOssAttempts, setConnected]);
 
   useEffect(() => {
     connect();

@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import type { ServerMessage, ClientMessage } from '../../shared/contracts/messages.js';
 import type { TaskStore } from '../../core/tasks.js';
 import type { WorkspaceAttemptRepository } from '../../core/workspace-attempt-repository.js';
@@ -7,7 +6,6 @@ import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js'
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
 import type { LaunchOpts, LaunchResult } from '../launch-service.js';
 import { getWorkspaceView } from '../use-cases/contribution-workspace-query.js';
-import { startWork } from '../use-cases/start-work-service.js';
 import { resolveWorkspaceContext } from '../use-cases/workspace-context.js';
 import { cleanupSafeWorkspaceCandidates, cleanupWorkspaceCandidate } from '../use-cases/workspace-cleanup-service.js';
 import { launchWorkspaceCleanupDiagnostic } from '../use-cases/workspace-cleanup-diagnostic-service.js';
@@ -87,47 +85,6 @@ export class WorkspaceHandler {
           this.deps.send({
             type: 'workspaceView',
             view: unavailableView(msg.projectId),
-            error: message,
-          });
-        }
-        return;
-      }
-
-      case 'workspace:startWork': {
-        if (!this.deps.workspaceEnabled || !this.deps.attemptRepository || !this.deps.launchTask) {
-          this.deps.send({ type: 'workspaceStartWorkAck', taskId: '', queued: false, error: 'Workspace is not available' });
-          return;
-        }
-        if (!msg.cwd || !msg.cwd.startsWith('/') || !existsSync(msg.cwd)) {
-          this.deps.send({ type: 'workspaceStartWorkAck', taskId: '', queued: false, error: 'Invalid working directory' });
-          return;
-        }
-        try {
-          const result = await startWork(
-            {
-              launchTask: this.deps.launchTask,
-              attemptRepository: this.deps.attemptRepository,
-            },
-            {
-              projectId: msg.projectId,
-              cwd: msg.cwd,
-              prompt: msg.prompt,
-              issueRef: msg.issueRef,
-              playbookId: msg.playbookId,
-            },
-          );
-          this.deps.send({
-            type: 'workspaceStartWorkAck',
-            taskId: result.launchResult.task.id,
-            queued: result.launchResult.queued,
-            duplicate: result.launchResult.duplicate,
-          });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this.deps.send({
-            type: 'workspaceStartWorkAck',
-            taskId: '',
-            queued: false,
             error: message,
           });
         }

@@ -1,11 +1,8 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import type { CleanupCandidateAssessment, ClientMessage } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
-import { StartWorkPanel } from './StartWorkPanel.js';
 import { CleanupCandidateTable } from './CleanupCandidateTable.js';
-
-type WorkspaceTab = 'start' | 'cleanup';
 
 interface Props {
   send: (msg: ClientMessage) => void;
@@ -14,7 +11,6 @@ interface Props {
 }
 
 export function ContributionWorkspace({ send, projectId, onClose }: Props) {
-  const [tab, setTab] = useState<WorkspaceTab>('start');
   const view = useKookrStore((s) => s.workspaceView);
   const loading = useKookrStore((s) => s.workspaceLoading);
   const error = useKookrStore((s) => s.workspaceError);
@@ -31,7 +27,6 @@ export function ContributionWorkspace({ send, projectId, onClose }: Props) {
     send({ type: 'workspace:getView', projectId });
   }, [send, projectId, setWorkspaceLoading]);
 
-  // Fetch view on mount if not already loaded for this project
   useEffect(() => {
     if (!view || view.projectId !== projectId) {
       refreshView();
@@ -40,7 +35,6 @@ export function ContributionWorkspace({ send, projectId, onClose }: Props) {
 
   useEscapeToClose(onClose);
 
-  // Focus trap: keep Tab cycling within the modal; restore focus on close
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel) return;
@@ -75,9 +69,6 @@ export function ContributionWorkspace({ send, projectId, onClose }: Props) {
   const displayName = view?.displayName ?? projectId;
   const policy = view?.policy ?? 'unknown_policy';
 
-  const tabId = (t: WorkspaceTab) => `workspace-tab-${t}`;
-  const panelId = (t: WorkspaceTab) => `workspace-tabpanel-${t}`;
-
   const requestCleanupDetail = useCallback((candidate: CleanupCandidateAssessment) => {
     if (!candidate.worktreePath) return;
     setWorkspaceCleanupDetailLoading(true);
@@ -100,7 +91,7 @@ export function ContributionWorkspace({ send, projectId, onClose }: Props) {
         aria-labelledby="workspace-title"
       >
         <div className="workspace-header">
-          <h2 id="workspace-title">Contribution Workspace</h2>
+          <h2 id="workspace-title">Workspace Cleanup</h2>
           <span className="workspace-project">{displayName}</span>
           {policy === 'unknown_policy' && (
             <span className="workspace-policy-badge unknown">unknown policy</span>
@@ -110,101 +101,57 @@ export function ContributionWorkspace({ send, projectId, onClose }: Props) {
           </button>
         </div>
 
-        <div className="workspace-tabs" role="tablist" aria-label="Workspace sections">
-          <button
-            id={tabId('start')}
-            role="tab"
-            aria-selected={tab === 'start'}
-            aria-controls={panelId('start')}
-            className={`workspace-tab ${tab === 'start' ? 'active' : ''}`}
-            onClick={() => setTab('start')}
-          >
-            Start Work
-          </button>
-          <button
-            id={tabId('cleanup')}
-            role="tab"
-            aria-selected={tab === 'cleanup'}
-            aria-controls={panelId('cleanup')}
-            className={`workspace-tab ${tab === 'cleanup' ? 'active' : ''}`}
-            onClick={() => setTab('cleanup')}
-          >
-            Cleanup
-          </button>
-        </div>
-
         <div className="workspace-body">
           {loading && <div className="workspace-loading" aria-live="polite">Loading workspace...</div>}
           {error && <div className="workspace-error" role="alert">{error}</div>}
 
-          {tab === 'start' && (
-            <div
-              id={panelId('start')}
-              role="tabpanel"
-              aria-labelledby={tabId('start')}
-            >
-              <StartWorkPanel
-                send={send}
-                projectId={projectId}
-                repoPath={view?.repoPath}
-              />
-            </div>
-          )}
-
-          {tab === 'cleanup' && (
-            <div
-              id={panelId('cleanup')}
-              role="tabpanel"
-              aria-labelledby={tabId('cleanup')}
-              style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
-            >
-              <CleanupCandidateTable
-                candidates={view?.candidates ?? []}
-                recentAttempts={view?.recentAttempts ?? []}
-                activeLeases={view?.activeLeases ?? []}
-                repoPath={view?.repoPath}
-                projectId={projectId}
-                cleanupDetail={cleanupDetail}
-                cleanupDetailLoading={cleanupDetailLoading}
-                cleanupDetailError={cleanupDetailError}
-                onRequestDetail={requestCleanupDetail}
-                onCleanup={(candidate, options) => {
-                  if (!candidate.worktreePath) return;
-                  setWorkspaceLoading(true);
-                  send({
-                    type: 'workspace:cleanupCandidate',
-                    projectId,
-                    worktreePath: candidate.worktreePath,
-                    branch: candidate.branch,
-                    deleteBranch: options.deleteBranch,
-                    riskAccepted: options.riskAccepted,
-                    discardDirtyState: options.discardDirtyState,
-                    reviewFingerprint: options.reviewFingerprint,
-                  });
-                }}
-                onBulkSafeCleanup={() => {
-                  setWorkspaceLoading(true);
-                  send({
-                    type: 'workspace:bulkSafeCleanup',
-                    projectId,
-                  });
-                }}
-                onRunDiagnostic={(candidate, reviewFingerprint) => {
-                  if (!candidate.worktreePath) return;
-                  setWorkspaceLoading(true);
-                  send({
-                    type: 'workspace:runCleanupDiagnostic',
-                    projectId,
-                    worktreePath: candidate.worktreePath,
-                    reviewFingerprint,
-                  });
-                }}
-                onClearDetail={clearWorkspaceCleanupDetail}
-                onRefresh={refreshView}
-                loading={loading}
-              />
-            </div>
-          )}
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <CleanupCandidateTable
+              candidates={view?.candidates ?? []}
+              recentAttempts={view?.recentAttempts ?? []}
+              activeLeases={view?.activeLeases ?? []}
+              repoPath={view?.repoPath}
+              projectId={projectId}
+              cleanupDetail={cleanupDetail}
+              cleanupDetailLoading={cleanupDetailLoading}
+              cleanupDetailError={cleanupDetailError}
+              onRequestDetail={requestCleanupDetail}
+              onCleanup={(candidate, options) => {
+                if (!candidate.worktreePath) return;
+                setWorkspaceLoading(true);
+                send({
+                  type: 'workspace:cleanupCandidate',
+                  projectId,
+                  worktreePath: candidate.worktreePath,
+                  branch: candidate.branch,
+                  deleteBranch: options.deleteBranch,
+                  riskAccepted: options.riskAccepted,
+                  discardDirtyState: options.discardDirtyState,
+                  reviewFingerprint: options.reviewFingerprint,
+                });
+              }}
+              onBulkSafeCleanup={() => {
+                setWorkspaceLoading(true);
+                send({
+                  type: 'workspace:bulkSafeCleanup',
+                  projectId,
+                });
+              }}
+              onRunDiagnostic={(candidate, reviewFingerprint) => {
+                if (!candidate.worktreePath) return;
+                setWorkspaceLoading(true);
+                send({
+                  type: 'workspace:runCleanupDiagnostic',
+                  projectId,
+                  worktreePath: candidate.worktreePath,
+                  reviewFingerprint,
+                });
+              }}
+              onClearDetail={clearWorkspaceCleanupDetail}
+              onRefresh={refreshView}
+              loading={loading}
+            />
+          </div>
         </div>
       </div>
     </div>

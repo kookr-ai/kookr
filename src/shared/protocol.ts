@@ -75,7 +75,6 @@ export type {
   CleanupDiagnosticLaunch,
   CleanupResultSummary,
   RepoPolicy,
-  StartWorkHandoff,
   WorkspaceAttemptRecord,
   WorkspaceView,
   WorktreeLease,
