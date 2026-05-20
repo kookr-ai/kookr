@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { chmod, mkdtemp, rm, mkdir, writeFile, symlink } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, mkdir, readlink, writeFile, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -205,9 +205,77 @@ describe('deploy-routes', () => {
       expect(script).toContain('git switch --detach origin/main');
     });
 
-    it('prod-update script links the main checkout .env into kookr-prod', () => {
+    it('prod-update script links the selected env root .env into kookr-prod', () => {
       const script = readFileSync(join(process.cwd(), 'scripts', 'prod-update.sh'), 'utf-8');
-      expect(script).toContain('ln -sfn "${ROOT_DIR}/.env" "${PROD_DIR}/.env"');
+      expect(script).toContain('ln -sfn "${ENV_ROOT_DIR}/.env" "${PROD_DIR}/.env"');
+    });
+
+    it('prod-update keeps the prod .env symlink pointed at the sibling main checkout when run from kookr-prod', async () => {
+      const main = join(root, 'kookr');
+      const prod = join(root, 'kookr-prod');
+      const bin = join(root, 'bin');
+      await mkdir(join(main), { recursive: true });
+      await mkdir(join(prod, 'scripts'), { recursive: true });
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(main, '.env'), 'KOOKR_RELAY_ADMIN_TOKEN=main-token\n', 'utf8');
+      await writeFile(
+        join(prod, 'scripts', 'prod-update.sh'),
+        readFileSync(join(process.cwd(), 'scripts', 'prod-update.sh'), 'utf-8'),
+        'utf8',
+      );
+      await writeFile(join(prod, 'scripts', 'prod-restart.sh'), '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+      await writeFile(join(bin, 'git'), '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+      await writeFile(join(bin, 'pnpm'), '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+      await chmod(join(prod, 'scripts', 'prod-update.sh'), 0o755);
+      await chmod(join(prod, 'scripts', 'prod-restart.sh'), 0o755);
+      await chmod(join(bin, 'git'), 0o755);
+      await chmod(join(bin, 'pnpm'), 0o755);
+
+      execFileSync('bash', [join(prod, 'scripts', 'prod-update.sh')], {
+        cwd: prod,
+        env: {
+          ...cleanEnv,
+          KOOKR_ENV_ROOT_DIR: undefined,
+          KOOKR_PROD_DIR: prod,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+        },
+      });
+
+      await expect(readlink(join(prod, '.env'))).resolves.toBe(join(main, '.env'));
+    });
+
+    it('prod-update honors an explicit env root override for the production .env symlink', async () => {
+      const prod = join(root, 'kookr-prod');
+      const overrideRoot = join(root, 'config-root');
+      const bin = join(root, 'bin');
+      await mkdir(join(prod, 'scripts'), { recursive: true });
+      await mkdir(overrideRoot, { recursive: true });
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(overrideRoot, '.env'), 'KOOKR_RELAY_ADMIN_TOKEN=override-token\n', 'utf8');
+      await writeFile(
+        join(prod, 'scripts', 'prod-update.sh'),
+        readFileSync(join(process.cwd(), 'scripts', 'prod-update.sh'), 'utf-8'),
+        'utf8',
+      );
+      await writeFile(join(prod, 'scripts', 'prod-restart.sh'), '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+      await writeFile(join(bin, 'git'), '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+      await writeFile(join(bin, 'pnpm'), '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+      await chmod(join(prod, 'scripts', 'prod-update.sh'), 0o755);
+      await chmod(join(prod, 'scripts', 'prod-restart.sh'), 0o755);
+      await chmod(join(bin, 'git'), 0o755);
+      await chmod(join(bin, 'pnpm'), 0o755);
+
+      execFileSync('bash', [join(prod, 'scripts', 'prod-update.sh')], {
+        cwd: prod,
+        env: {
+          ...cleanEnv,
+          KOOKR_ENV_ROOT_DIR: overrideRoot,
+          KOOKR_PROD_DIR: prod,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+        },
+      });
+
+      await expect(readlink(join(prod, '.env'))).resolves.toBe(join(overrideRoot, '.env'));
     });
 
     it('prod:setup mirrors the production .env symlink step', () => {

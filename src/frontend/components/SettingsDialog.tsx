@@ -416,6 +416,9 @@ function RelayConnectionSection() {
           Forget
         </button>
       </div>
+      <p className="settings-desc">
+        Use Pair with a relay admin token to create this node ID and token. Use Connect only when you already have both.
+      </p>
 
       <div className="settings-section-title">Session Sharing Recovery</div>
       <div className="settings-warning">

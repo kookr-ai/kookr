@@ -377,6 +377,55 @@ describe('SettingsDialog tabs', () => {
     expect(container.textContent).toContain(command);
   });
 
+  test('makes relay admin-token-only setup actionable through Pair instead of Connect', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === '/api/settings') {
+        return { ok: true, json: async () => DEFAULT_SETTINGS } as Response;
+      }
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-relay' }) } as Response;
+      }
+      if (url === '/api/relay-connection' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: false,
+              source: 'none',
+              connectionState: 'localOnly',
+              relayConnected: false,
+            },
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    await flush();
+
+    const sharingTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Sharing');
+    await act(async () => {
+      sharingTab!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('.settings-field input'));
+    await act(async () => {
+      changeInput(inputs[0]!, 'http://relay.test');
+      changeInput(inputs[3]!, 'admin-token-secret');
+    });
+    await flush();
+
+    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>('button'));
+    const connect = buttons.find((button) => button.textContent?.trim() === 'Connect');
+    const pair = buttons.find((button) => button.textContent?.trim() === 'Pair');
+    expect(connect?.disabled).toBe(true);
+    expect(pair?.disabled).toBe(false);
+    expect(container.textContent).toContain('Use Pair with a relay admin token to create this node ID and token.');
+    expect(container.textContent).toContain('Use Connect only when you already have both.');
+  });
+
   test('pairs a custom relay with an admin token without sending a node token', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (url, init) => {
