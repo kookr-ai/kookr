@@ -925,6 +925,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       client: relayShareClient,
       taskStore,
       queue,
+      getAgentEvents: (agentId) => monitor.getAgentEvents(agentId),
       remotePolicyCache,
       getNodeIdentity: () => ({
         nodeId: nodeClient.status.nodeId,

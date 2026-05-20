@@ -7,6 +7,7 @@ import type { SnoozeSuppressionTracker } from '../../core/snooze-suppression.js'
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { nowISO } from '../../core/interaction-log.js';
 import { recordFalsePositive } from '../../core/anomaly-detector.js';
+import { validatePermissionApprovalBinding } from '../../shared/contracts/permission-request-binding.js';
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
 
 /**
@@ -316,6 +317,15 @@ export class AnomalyHandler {
           return;
         }
         const prePermAnomaly = this.deps.queue.getAnomaly(msg.agentId);
+        const binding = validatePermissionApprovalBinding({
+          sessionId: msg.agentId,
+          events: this.deps.monitor.getAgentEvents(msg.agentId),
+          anomaly: prePermAnomaly,
+          payload: { permissionRequest: msg.permissionRequest },
+        });
+        // The UI may hold a stale quick action after the terminal prompt has
+        // advanced. Drop it instead of sending a keystroke to a new prompt.
+        if (!binding.ok) return;
         await this.deps.adapter.sendKeystroke(msg.agentId, msg.keystroke);
         this.deps.monitor.markInputReceived(msg.agentId);
         this.deps.queue.respondAndAdvance(msg.agentId);

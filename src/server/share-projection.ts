@@ -1,7 +1,9 @@
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Task } from '../core/tasks.js';
-import type { NodeId } from '../remote/ids.js';
+import type { AgentEvent } from '../shared/contracts/agent-events.js';
+import type { NodeId, SessionId } from '../remote/ids.js';
 import type { RemoteTaskProjectionStatus, RemoteTaskProjectionV1 } from '../remote/share-contract.js';
+import { buildPermissionRequestBinding, latestPermissionRequestEvent } from '../shared/contracts/permission-request-binding.js';
 
 export const REMOTE_TASK_LABEL_MAX_LENGTH = 80;
 
@@ -46,9 +48,17 @@ function toProjectionStatus(task: Task, needsInput: boolean): RemoteTaskProjecti
 
 export function projectTaskForRemoteShare(
   task: Task,
-  opts: { nodeId: NodeId; queue?: AttentionQueue },
+  opts: {
+    nodeId: NodeId;
+    queue?: AttentionQueue;
+    includePermissionApproval?: boolean;
+    getAgentEvents?: (agentId: string) => readonly AgentEvent[];
+  },
 ): RemoteTaskProjectionV1 {
   const needsInput = hasNeedsInputFinding(task, opts.queue);
+  const activePermissionRequest = opts.includePermissionApproval
+    ? activePermissionRequestForTask(task, opts)
+    : undefined;
   return {
     schemaVersion: 'remote-task-projection.v1',
     nodeId: opts.nodeId,
@@ -57,6 +67,33 @@ export function projectTaskForRemoteShare(
     status: toProjectionStatus(task, needsInput),
     hasFinding: hasAnyFinding(task, opts.queue),
     needsInput,
+    ...(activePermissionRequest ? { activePermissionRequest } : {}),
     updatedAt: task.updatedAt.toISOString(),
   };
+}
+
+function activePermissionRequestForTask(
+  task: Task,
+  opts: {
+    queue?: AttentionQueue;
+    getAgentEvents?: (agentId: string) => readonly AgentEvent[];
+  },
+): RemoteTaskProjectionV1['activePermissionRequest'] | undefined {
+  if (!opts.queue || !opts.getAgentEvents) return undefined;
+  for (const session of task.sessions) {
+    const anomaly = opts.queue.peek(session.tmuxSession);
+    if (anomaly?.type !== 'permission_blocked') continue;
+    const event = latestPermissionRequestEvent(opts.getAgentEvents(session.tmuxSession));
+    if (!event) continue;
+    return {
+      sessionId: session.tmuxSession as SessionId,
+      defaultKeystroke: '1',
+      permissionRequest: buildPermissionRequestBinding({
+        sessionId: session.tmuxSession,
+        event,
+        detectedAt: anomaly.detectedAt,
+      }),
+    };
+  }
+  return undefined;
 }

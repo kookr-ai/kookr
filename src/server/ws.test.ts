@@ -7,6 +7,7 @@ import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { Monitor } from '../core/monitor.js';
 import { DeferredInteractionLogWriter, readInteractionLog } from '../core/interaction-log.js';
+import { buildPermissionRequestBinding } from '../shared/contracts/permission-request-binding.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
@@ -1882,6 +1883,15 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
     });
   });
 
+  function currentPermissionRequest(tmuxName: string) {
+    const event = monitor.getAgentEvents(tmuxName)[0] as Extract<ReturnType<Monitor['getAgentEvents']>[number], { type: 'permission_request' }>;
+    return buildPermissionRequestBinding({
+      sessionId: tmuxName,
+      event,
+      detectedAt: queue.getAnomaly(tmuxName)!.detectedAt,
+    });
+  }
+
   test('sends keystroke to agent when permission_blocked', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Fix bug', '/cwd');
@@ -1895,9 +1905,42 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
       type: 'permissionChoice',
       agentId: tmuxName,
       keystroke: '1',
+      permissionRequest: currentPermissionRequest(tmuxName),
     });
 
     // Keystroke '1' translates to the single UTF-8 byte '1'.
+    expect(terminal.getWrittenText(tmuxName).slice(before)).toBe('1');
+  });
+
+  test('validates permission request binding when permissionChoice includes one', async () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const before = terminal.getWrittenText(tmuxName).length;
+    monitor.registerAgent(tmuxName);
+    monitor.processEvents(tmuxName, [
+      { type: 'permission_request', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'git status' } },
+    ]);
+    const event = monitor.getAgentEvents(tmuxName)[0] as Extract<ReturnType<Monitor['getAgentEvents']>[number], { type: 'permission_request' }>;
+    const permissionRequest = buildPermissionRequestBinding({
+      sessionId: tmuxName,
+      event,
+      detectedAt: queue.getAnomaly(tmuxName)!.detectedAt,
+    });
+
+    await router.handleMessage({
+      type: 'permissionChoice',
+      agentId: tmuxName,
+      keystroke: '1',
+      permissionRequest: { ...permissionRequest, toolInputHash: 'stale-hash' },
+    });
+    expect(terminal.getWrittenText(tmuxName).slice(before)).toBe('');
+
+    await router.handleMessage({
+      type: 'permissionChoice',
+      agentId: tmuxName,
+      keystroke: '1',
+      permissionRequest,
+    });
     expect(terminal.getWrittenText(tmuxName).slice(before)).toBe('1');
   });
 
@@ -1914,6 +1957,7 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
       type: 'permissionChoice',
       agentId: tmuxName,
       keystroke: 'y',
+      permissionRequest: currentPermissionRequest(tmuxName),
     });
 
     // Should clear suggestions
@@ -1942,6 +1986,7 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
       type: 'permissionChoice',
       agentId: tmuxName,
       keystroke: '; rm -rf /',
+      permissionRequest: currentPermissionRequest(tmuxName),
     });
 
     // Invalid keystroke must be rejected before touching the backend.
@@ -1962,6 +2007,13 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
       type: 'permissionChoice',
       agentId: tmuxName,
       keystroke: '1',
+      permissionRequest: {
+        requestId: 'request-1',
+        toolName: 'Bash',
+        toolInputHash: 'hash-1',
+        detectedAt: '2026-05-15T19:00:00.000Z',
+        ttlMs: 300000,
+      },
     });
 
     // Stale guard must reject — no byte should reach the backend.
@@ -1983,6 +2035,7 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
         type: 'permissionChoice',
         agentId: tmuxName,
         keystroke: key,
+        permissionRequest: currentPermissionRequest(tmuxName),
       });
 
       // The accepted keystroke is the only write after launch-time prompt delivery.

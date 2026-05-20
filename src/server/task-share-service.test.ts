@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { TaskStore } from '../core/tasks.js';
 import type { Anomaly } from '../core/types.js';
+import { buildPermissionRequestBinding } from '../shared/contracts/permission-request-binding.js';
 import type { RemoteControlEvent } from '../remote/control-events.js';
 import { asGrantId, asNodeEpoch, asNodeId, asPolicyVersion, asSeq, asServerRevision, asSessionEpoch, asSessionId } from '../remote/ids.js';
 import { RemotePolicyCache } from '../remote/policy-cache.js';
@@ -281,6 +282,78 @@ describe('TaskShareService', () => {
 
     service.publishTaskProjectionForTask(task.id);
     expect(events).toHaveLength(2);
+  });
+
+  it('publishes active permission binding only to shares with permission approval grant', async () => {
+    const taskStore = new TaskStore();
+    const queue = new AttentionQueue();
+    const task = taskStore.createTask('task', '/tmp');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      createdAt: new Date('2026-05-17T00:00:00.000Z'),
+      cwd: '/tmp',
+      status: 'running',
+    });
+    const detectedAt = new Date('2026-05-17T00:01:00.000Z');
+    queue.enqueue('agent-1', {
+      type: 'permission_blocked',
+      agentId: 'agent-1',
+      severity: 'warning',
+      explanation: 'permission required',
+      detectedAt,
+    });
+    const permissionEvent = {
+      type: 'permission_request' as const,
+      sessionId: 'agent-1',
+      toolName: 'Bash',
+      toolInput: { command: 'git status' },
+      eventSeq: 9,
+    };
+    const createdShare = share({ taskId: task.id, grants: ['view', 'permissionApprove'] });
+    const events: Array<RemoteControlEvent<RemoteTaskProjectionEnvelopeV1>> = [];
+    const service = new TaskShareService({
+      client: clientFor(createdShare),
+      taskStore,
+      queue,
+      getAgentEvents: () => [permissionEvent],
+      getNodeIdentity: () => ({ nodeId: asNodeId('kookr-node-test'), nodeEpoch: asNodeEpoch('1') }),
+      nextServerRevision: () => asServerRevision(events.length + 1),
+      publish: (event) => {
+        events.push(event);
+        return true;
+      },
+    });
+
+    await service.createTaskShare({ taskId: task.id, ttlMs: 60_000 });
+
+    expect(events[0].payload.projection.activePermissionRequest).toEqual({
+      sessionId: 'agent-1',
+      defaultKeystroke: '1',
+      permissionRequest: buildPermissionRequestBinding({
+        sessionId: 'agent-1',
+        event: permissionEvent,
+        detectedAt,
+      }),
+    });
+    expect(JSON.stringify(events[0].payload.projection)).not.toContain('git status');
+
+    const viewOnlyEvents: Array<RemoteControlEvent<RemoteTaskProjectionEnvelopeV1>> = [];
+    const viewOnlyService = new TaskShareService({
+      client: clientFor(share({ taskId: task.id })),
+      taskStore,
+      queue,
+      getAgentEvents: () => [permissionEvent],
+      getNodeIdentity: () => ({ nodeId: asNodeId('kookr-node-test'), nodeEpoch: asNodeEpoch('1') }),
+      nextServerRevision: () => asServerRevision(viewOnlyEvents.length + 1),
+      publish: (event) => {
+        viewOnlyEvents.push(event);
+        return true;
+      },
+    });
+
+    await viewOnlyService.createTaskShare({ taskId: task.id, ttlMs: 60_000 });
+    expect(viewOnlyEvents[0].payload.projection.activePermissionRequest).toBeUndefined();
   });
 
   it('remembers approved grants and publishes the task projection', async () => {

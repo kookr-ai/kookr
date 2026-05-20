@@ -43,6 +43,7 @@ export interface RemoteCommandHandlerDeps {
   markDone: (taskId: string) => Promise<void>;
   remoteInputAdapter: RemoteInputAdapter | null;
   controllerLeaseManager: ControllerLeaseManager | null;
+  now?: () => Date;
 }
 
 export async function configureRemoteCommandHandler(deps: RemoteCommandHandlerDeps): Promise<void> {
@@ -62,6 +63,7 @@ export async function configureRemoteCommandHandler(deps: RemoteCommandHandlerDe
     markDone,
     remoteInputAdapter,
     controllerLeaseManager,
+    now,
   } = deps;
 
   if (!remoteNodeClient || !commandJournal) return;
@@ -88,6 +90,7 @@ export async function configureRemoteCommandHandler(deps: RemoteCommandHandlerDe
     queue,
     interactionLog,
     onRespond: abortPendingSuggestion,
+    now,
   });
 
   remoteNodeClient.setCommandHandler(async (command) => {
@@ -187,6 +190,7 @@ export async function configureRemoteCommandHandler(deps: RemoteCommandHandlerDe
               command.sessionId,
               (command.payload as { keystroke?: string } | undefined)?.keystroke ?? '1',
               command.actorId,
+              command.payload as { keystroke?: unknown; permissionRequest?: unknown } | undefined,
             ),
           },
         });

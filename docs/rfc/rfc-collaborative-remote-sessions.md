@@ -1307,22 +1307,23 @@ audit stores request hash and redacted request summary, not full prompt or
 terminal output.
 
 Remote permission decisions are valid only for a specific active local
-permission request. The node emits `permission.requested` with
-`permissionRequestId`, `requestHash`, task/session id, session epoch, tool or
-action name, normalized command/path summary, risk class, prompt timestamp,
-allowed suggestion ids, `baseRevision`, and expiry. Remote approvals reference
-`permissionRequestId + suggestionId`. The node recomputes the request hash
-and rejects stale, mismatched, replayed, wildcard, offline, or already-resolved
-decisions. `permissionApprove` does not authorize "approve all",
-permission-rule edits, bypass flags, or future prompts unless a separate
-explicit grant is added later.
+permission request. The node emits `permission.requested` or a permission
+quick action with a `permissionRequest` binding containing `requestId`,
+`toolName`, `toolInputHash`, `detectedAt`, and `ttlMs`, plus the local
+terminal `keystroke` for the selected menu option. Remote approvals echo that
+binding back in the `permissionApprove` payload. The node recomputes the
+binding from the currently active `PermissionRequest` event and rejects stale,
+mismatched, replayed, wildcard, offline, or already-resolved decisions before
+sending any terminal keystroke. `permissionApprove` does not authorize
+"approve all", permission-rule edits, bypass flags, or future prompts unless
+a separate explicit grant is added later.
 
 **Permission request terminal states.** Every `permission.requested` emits
 exactly one `permission.resolved` event whose `reason` field is:
 
 | Reason | Meaning |
 |---|---|
-| `approved` | Operator approved a specific suggestion id |
+| `approved` | Operator approved the current request binding and selected terminal keystroke |
 | `denied` | Operator denied the request |
 | `expired` | Prompt expired before any decision |
 | `cancelled-by-agent` | Agent cancelled the prompt (process restart, agent timeout); audit trail preserves the no-decision state |
@@ -1336,8 +1337,8 @@ Clients render `cancelled-by-*` as a distinct visual state from
 `permission.requested` event as a focused, modal-style decision per request,
 not as an unordered or auto-reorderable list. If multiple permission requests
 are pending on the same session, the client surfaces them in receive order
-and disables the approve control on a request whose `permissionRequestId` is
-not the topmost one until the operator explicitly expands it. This is a
+and disables the approve control on a request whose `permissionRequest.requestId`
+is not the topmost one until the operator explicitly expands it. This is a
 contract on every Kookr-built client; third-party clients that violate it are
 considered non-conforming.
 
@@ -1805,6 +1806,12 @@ ideas are:
    restricted to owner identity. Every command has actor, `commandId`,
    `baseRevision`, idempotency key, audit entry, and local node
    authorization. `command.getOutcome` is implemented.
+
+   `permissionApprove` commands also carry the specific permission request
+   binding they intend to answer: request id, tool name, tool input hash,
+   detection timestamp, and TTL. The local node recomputes that binding from
+   the currently active `PermissionRequest` event and rejects missing, stale,
+   replayed, or mismatched approvals before sending a terminal keystroke.
 
    **Acceptance gate**: local-only smoke test passes (R23) including
    the **local permission-approval path** — when no relay is
