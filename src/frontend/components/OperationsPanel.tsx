@@ -3,6 +3,7 @@ import type { ClientMessage } from '../../shared/protocol.js';
 import { DetectionStatsPanel } from './DetectionStatsPanel.js';
 import { CircuitBreakerPanel } from './CircuitBreakerPanel.js';
 import { AudioAlertsPanel } from './AudioAlertsPanel.js';
+import { FindingEvidenceDiagnosticsPanel } from './FindingEvidenceDiagnosticsPanel.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 
 const FOCUSABLE_SELECTOR = [
@@ -91,6 +92,7 @@ export function OperationsPanel({ send, onClose }: Props) {
         <div className="operations-panel-body">
           <AudioAlertsPanel />
           <DetectionStatsPanel defaultExpanded showEmpty />
+          <FindingEvidenceDiagnosticsPanel />
           <CircuitBreakerPanel send={send} defaultExpanded showEmpty />
         </div>
       </div>

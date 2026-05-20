@@ -397,6 +397,145 @@ describe('diagnostics routes', () => {
       });
     });
 
+    test('operations diagnostics route exposes compact non-loopback summary without admin token', async () => {
+      const target = {
+        candidateKind: 'false_positive',
+        detectorTarget: 'needs_input',
+        inputSchemaVersion: 'finding-evidence-review-input.v1',
+        promptVersion: 'finding-evidence-review-prompt.v1',
+        appGitSha: 'abc123',
+      };
+      writeFileSync(join(tempDir, 'finding-evidence-reviews.jsonl'), `${JSON.stringify({
+        schemaVersion: 'finding-evidence-review-log-record.v1',
+        kind: 'valid_review',
+        appendedAt: '2026-05-18T10:06:00.000Z',
+        inputHash: 'a'.repeat(64),
+        target,
+        review: {
+          schemaVersion: 'finding-evidence-review.v1',
+          candidateId: 'finding-1',
+          verdict: 'likely_false_positive',
+          confidence: 'high',
+          evidenceRefs: ['finding-1:observation:1'],
+          rationale: 'private reviewer rationale',
+          reviewedAt: '2026-05-18T10:05:00.000Z',
+          reviewer: {
+            provider: 'fake-provider',
+            model: 'fake-model',
+            promptVersion: 'finding-evidence-review-prompt.v1',
+          },
+        },
+      })}\n`);
+      const sampler = {
+        getStatus: vi.fn(() => ({
+          schemaVersion: 'finding-evidence-review-sampler-status.v1',
+          enabled: true,
+          running: false,
+          providerAvailable: true,
+          lastRun: null,
+          nextRunAt: null,
+          queue: { queued: 1, in_progress: 0, reviewed: 0, failed_retryable: 0, failed_terminal: 0 },
+          budget: {
+            date: '2026-05-18',
+            dailyCostCents: 100,
+            spentCostCents: 25,
+            remainingCostCents: 75,
+            dailyTokenBudget: 20000,
+            spentTokens: 500,
+            remainingTokens: 19500,
+          },
+        })),
+      };
+
+      const res = await mkApp({
+        ...reviewDeps(null),
+        findingEvidenceReviewSampler: sampler,
+      }).request('http://example.com/api/finding-evidence-operations-diagnostics');
+
+      expect(res.status).toBe(200);
+      const bodyText = await res.text();
+      expect(bodyText).not.toContain('private reviewer rationale');
+      expect(bodyText).not.toContain('Raw explanation');
+      expect(bodyText).not.toContain('Raw terminal text');
+      expect(bodyText).not.toContain('private note');
+      expect(bodyText).not.toContain('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+      const body = JSON.parse(bodyText);
+      expect(Object.keys(body).sort()).toEqual([
+        'audit',
+        'proposals',
+        'reviewLog',
+        'sampler',
+        'schemaVersion',
+      ]);
+      expect(body).toEqual({
+        schemaVersion: 'finding-evidence-operations-diagnostics.v1',
+        audit: { recordsCount: 1, reviewCandidatesCount: 1 },
+        reviewLog: {
+          recordsCount: 1,
+          validReviews: 1,
+          invalidAttempts: 0,
+          diagnosticsCount: 0,
+          verdictCounts: { likely_false_positive: 1 },
+        },
+        sampler: {
+          status: 'available',
+          value: {
+            schemaVersion: 'finding-evidence-review-sampler-status.v1',
+            enabled: true,
+            running: false,
+            providerAvailable: true,
+            lastRun: null,
+            nextRunAt: null,
+            queue: { queued: 1, in_progress: 0, reviewed: 0, failed_retryable: 0, failed_terminal: 0 },
+            budget: {
+              date: '2026-05-18',
+              dailyCostCents: 100,
+              spentCostCents: 25,
+              remainingCostCents: 75,
+              dailyTokenBudget: 20000,
+              spentTokens: 500,
+              remainingTokens: 19500,
+            },
+          },
+        },
+        proposals: {
+          diagnosticsCount: 0,
+          reports: [{
+            detectorTarget: 'needs_input',
+            candidateKind: 'false_positive',
+            reviewCounts: {
+              total: 1,
+              falsePositive: 1,
+              falseNegative: 0,
+              invalid: 0,
+              unclear: 0,
+              supportsFinding: 0,
+            },
+            proposal: {
+              status: 'insufficient_evidence',
+              summary: 'needs_input has 1 repeated false positive review(s), including 1 high-confidence review(s); keep collecting evidence before proposing a detector change.',
+            },
+          }],
+        },
+      });
+      expect(sampler.getStatus).toHaveBeenCalled();
+    });
+
+    test('operations diagnostics route reports sampler unavailable without failing the summary', async () => {
+      const res = await mkApp(reviewDeps(null))
+        .request('http://example.com/api/finding-evidence-operations-diagnostics');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        schemaVersion: 'finding-evidence-operations-diagnostics.v1',
+        audit: { recordsCount: 1, reviewCandidatesCount: 1 },
+        sampler: {
+          status: 'unavailable',
+          error: 'finding-review-sampler-unavailable',
+        },
+      }));
+    });
+
     test('detector proposal diagnostics groups repeated targets and escapes model text', async () => {
       process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
       const target = {
