@@ -9,6 +9,7 @@ import type { ContactShareInboxItem, SharedTask } from '../../shared/contracts/c
 import { TaskShareModal } from './TaskShareModal.js';
 
 const TASK_ID = 'task-1';
+const SHARE_CSRF_HEADER = 'x-kookr-csrf';
 const SHARE_ID = '123-456';
 const PASSWORD = 'correct-horse-battery-staple';
 const JOIN_URL = `http://localhost:4801/relay/join/${SHARE_ID}#password=${PASSWORD}`;
@@ -366,7 +367,129 @@ describe('TaskShareModal', () => {
     expect(container.textContent).toContain(message);
   });
 
-  test('keeps guest grant requests non-actionable', async () => {
+  test('approves guest terminal viewing requests', async () => {
+    const share = {
+      invitationId: 'inv-1',
+      taskId: 'task-1',
+      createdAt: '2026-05-16T12:00:00.000Z',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      state: 'viewerConnected',
+      connectedViewerCount: 1,
+      grants: ['view'],
+      grantRequests: [{
+        requestId: 'grant-req-1',
+        invitationId: 'inv-1',
+        requestedGrants: ['terminalView'],
+        status: 'pending',
+        requestedAt: '2026-05-16T12:01:00.000Z',
+        comment: 'Guest requested terminal viewing',
+      }],
+      terminalSharing: {
+        state: 'available',
+        message: 'Terminal sharing is available for approved collaborators.',
+        checkedAt: '2026-05-16T12:01:00.000Z',
+      },
+    };
+    const fetchMock = vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') return jsonResponse({ csrfToken: 'csrf-share' });
+      if (url === '/api/share/task' && !init) return jsonResponse({ shares: [share] });
+      if (
+        url === '/api/share/task/inv-1/grant-requests/grant-req-1/approve'
+        && (init as RequestInit | undefined)?.method === 'POST'
+      ) {
+        return jsonResponse({
+          share: {
+            ...share,
+            grants: ['view', 'terminalView'],
+            grantRequests: [{ ...share.grantRequests[0], status: 'approved', resolvedAt: '2026-05-16T12:02:00.000Z' }],
+          },
+          request: { ...share.grantRequests[0], status: 'approved', resolvedAt: '2026-05-16T12:02:00.000Z' },
+        });
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    root = renderModal(container);
+    await flush();
+
+    expect(container.textContent).toContain('Terminal viewing requests');
+    expect(container.textContent).toContain('Guest requested terminal viewing');
+    expect(container.textContent).toContain('Approve');
+    expect(container.textContent).toContain('Deny');
+
+    await act(async () => {
+      getButtonByText(container, 'Approve').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/share/task/inv-1/grant-requests/grant-req-1/approve',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ [SHARE_CSRF_HEADER]: 'csrf-share' }),
+      }),
+    );
+    expect(container.textContent).toContain('Approved grants');
+    expect(container.textContent).toContain('Watch terminal');
+    expect(container.textContent).not.toContain('Terminal viewing requests');
+  });
+
+  test('denies guest terminal viewing requests', async () => {
+    const share = {
+      invitationId: 'inv-1',
+      taskId: 'task-1',
+      createdAt: '2026-05-16T12:00:00.000Z',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      state: 'viewerConnected',
+      connectedViewerCount: 1,
+      grants: ['view'],
+      grantRequests: [{
+        requestId: 'grant-req-1',
+        invitationId: 'inv-1',
+        requestedGrants: ['terminalView'],
+        status: 'pending',
+        requestedAt: '2026-05-16T12:01:00.000Z',
+        comment: 'Guest requested terminal viewing',
+      }],
+    };
+    const fetchMock = vi.fn(async (url, init) => {
+      if (url === '/api/share/csrf-token') return jsonResponse({ csrfToken: 'csrf-share' });
+      if (url === '/api/share/task' && !init) return jsonResponse({ shares: [share] });
+      if (
+        url === '/api/share/task/inv-1/grant-requests/grant-req-1/deny'
+        && (init as RequestInit | undefined)?.method === 'POST'
+      ) {
+        return jsonResponse({
+          share: {
+            ...share,
+            grantRequests: [{ ...share.grantRequests[0], status: 'denied', resolvedAt: '2026-05-16T12:02:00.000Z' }],
+          },
+          request: { ...share.grantRequests[0], status: 'denied', resolvedAt: '2026-05-16T12:02:00.000Z' },
+        });
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    root = renderModal(container);
+    await flush();
+
+    await act(async () => {
+      getButtonByText(container, 'Deny').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/share/task/inv-1/grant-requests/grant-req-1/deny',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ [SHARE_CSRF_HEADER]: 'csrf-share' }),
+      }),
+    );
+    expect(container.textContent).not.toContain('Terminal viewing requests');
+    expect(container.textContent).not.toContain('Watch terminal');
+  });
+
+  test('keeps unsupported guest grant requests non-approvable', async () => {
     const fetchMock = vi.fn(async (url, init) => {
       if (url === '/api/share/csrf-token') {
         return { ok: true, json: async () => ({ csrfToken: 'csrf-share' }) } as Response;
@@ -386,7 +509,7 @@ describe('TaskShareModal', () => {
               grantRequests: [{
                 requestId: 'grant-req-1',
                 invitationId: 'inv-1',
-                requestedGrants: ['terminalInput'],
+                requestedGrants: ['terminalView', 'terminalInput'],
                 status: 'pending',
                 requestedAt: '2026-05-16T12:01:00.000Z',
                 comment: 'Alice requested terminal input',
@@ -402,8 +525,8 @@ describe('TaskShareModal', () => {
     await flush();
 
     expect(container.textContent).toContain('Guest Link is lower assurance');
-    expect(container.textContent).toContain('Guest links stay view-only');
-    expect(container.textContent).toContain('One control request is waiting');
+    expect(container.textContent).toContain('Guest links stay limited');
+    expect(container.textContent).toContain('One unsupported control request is waiting');
     expect(container.textContent).not.toContain('Alice requested terminal input');
     expect(container.textContent).not.toContain('Send messages');
     expect(container.textContent).not.toContain('Approve');
