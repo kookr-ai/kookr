@@ -111,7 +111,7 @@ export function AudioAlertsPanel() {
           <strong>{tabId}</strong>
         </div>
 
-        <div className="audio-alert-counts" aria-label="Audio alert counts by outcome">
+        <div className="audio-alert-counts" role="group" aria-label="Audio alert counts by outcome">
           {Object.entries(snapshot.countsByOutcome)
             .filter((entry): entry is [AudioAlertOutcome, number] => isAudioAlertOutcome(entry[0]))
             .map(([outcome, count]) => (

@@ -1,19 +1,11 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useRef } from 'react';
 import type { ClientMessage } from '../../shared/protocol.js';
 import { DetectionStatsPanel } from './DetectionStatsPanel.js';
 import { CircuitBreakerPanel } from './CircuitBreakerPanel.js';
 import { AudioAlertsPanel } from './AudioAlertsPanel.js';
 import { FindingEvidenceDiagnosticsPanel } from './FindingEvidenceDiagnosticsPanel.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
-
-const FOCUSABLE_SELECTOR = [
-  'button:not([disabled])',
-  '[href]',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(', ');
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
 
 interface Props {
   send: (msg: ClientMessage) => void;
@@ -23,49 +15,10 @@ interface Props {
 export function OperationsPanel({ send, onClose }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
   const titleId = 'operations-panel-title';
 
-  useEffect(() => {
-    previousFocusRef.current = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    closeButtonRef.current?.focus();
-    return () => {
-      previousFocusRef.current?.focus();
-      previousFocusRef.current = null;
-    };
-  }, []);
+  useDialogFocus({ dialogRef, initialFocusRef: closeButtonRef });
   useEscapeToClose(onClose);
-
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== 'Tab') return;
-      const dialog = dialogRef.current;
-      if (!dialog) return;
-      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
-      const first = focusable[0] ?? dialog;
-      const last = focusable[focusable.length - 1] ?? dialog;
-
-      if (!dialog.contains(document.activeElement)) {
-        event.preventDefault();
-        first.focus();
-        return;
-      }
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-        return;
-      }
-      if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, []);
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
@@ -75,6 +28,7 @@ export function OperationsPanel({ send, onClose }: Props) {
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="dialog-header operations-panel-header">

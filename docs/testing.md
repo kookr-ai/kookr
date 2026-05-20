@@ -17,6 +17,8 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 | `pnpm test:hooks` | Shell regression tests for project hooks. | Local + CI (`test` job). |
 | `CANARY=1 pnpm exec playwright test e2e/canary.spec.ts` | Real-agent canary, validates mock event fixtures against real Claude Code (Haiku). Local/manual due to API cost. | Local only. |
 
+`e2e/accessibility-smoke.spec.ts` adds axe-backed structural scans for the dashboard shell and core dialogs. It disables axe's `color-contrast` rule because the existing dark theme has broad contrast debt that would make the smoke layer noisy; do not add broader suppressions without documenting the reason here.
+
 ## CI Mapping
 
 | Workflow | Triggers | Jobs |
