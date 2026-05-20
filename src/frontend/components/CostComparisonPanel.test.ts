@@ -265,6 +265,30 @@ describe('CostComparisonPanel', () => {
     expect(fetchSpy.mock.calls.some(c => (c[0] as string).includes('window=30d'))).toBe(true);
   });
 
+  test('aborts stale cost-comparison requests when filters change', async () => {
+    const signals: AbortSignal[] = [];
+    const fetchSpy = vi.fn((_url: string, init?: RequestInit) => {
+      signals.push(init?.signal as AbortSignal);
+      return new Promise<Response>(() => undefined);
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const el = mount();
+    await flush();
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(false);
+
+    const select = el.querySelector('.cost-window-select') as HTMLSelectElement;
+    act(() => {
+      select.value = '30d';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals).toHaveLength(2);
+    expect(signals[1]?.aborted).toBe(false);
+  });
+
   test('selecting an agent chip narrows the fetch', async () => {
     const fetchSpy = vi.fn(() => Promise.resolve({
       ok: true, status: 200, json: () => Promise.resolve(makeResponse()),
