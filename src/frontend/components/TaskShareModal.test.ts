@@ -132,6 +132,22 @@ function getInputForLabel(container: HTMLElement, labelText: string): HTMLInputE
   return input as HTMLInputElement;
 }
 
+function expectSingleJsonPost(
+  fetchMock: { mock: { calls: Array<[RequestInfo | URL, RequestInit?]> } },
+  url: string,
+) {
+  const calls = fetchMock.mock.calls.filter(
+    ([actualUrl, init]) => actualUrl === url && init?.method === 'POST',
+  );
+  expect(calls).toHaveLength(1);
+  const init = calls[0][1]!;
+  expect(init.headers).toEqual({
+    'content-type': 'application/json',
+    'x-kookr-csrf': 'csrf-share',
+  });
+  return JSON.parse(init.body as string) as Record<string, unknown>;
+}
+
 describe('TaskShareModal', () => {
   let container: HTMLDivElement;
   let root: Root | null;
@@ -294,22 +310,12 @@ describe('TaskShareModal', () => {
     });
     await flush();
 
-    const sendCall = fetchMock.mock.calls.find(
-      ([url, init]) => url === '/api/contact-share/shares' && (init as RequestInit | undefined)?.method === 'POST',
-    );
-    expect(sendCall).toBeDefined();
-    expect((sendCall![1] as RequestInit).headers).toMatchObject({
-      'content-type': 'application/json',
-      'x-kookr-csrf': 'csrf-share',
-    });
-    const sentBody = JSON.parse((sendCall![1] as RequestInit).body as string) as Record<string, unknown>;
-    expect(sentBody).toEqual(expect.objectContaining({
+    const sentBody = expectSingleJsonPost(fetchMock, '/api/contact-share/shares');
+    expect(sentBody).toEqual({
       taskId: 'task-1',
       contactId: 'contact-alice',
       recipientDeviceId: 'alice-laptop',
-    }));
-    expect(sentBody.ciphertext).toBeUndefined();
-    expect(sentBody.senderSignature).toBeUndefined();
+    });
 
     await act(async () => {
       getButton(container, 'Accept Contact Share invitation from Jean').dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -324,10 +330,8 @@ describe('TaskShareModal', () => {
     expect(container.textContent).toContain('0 pending');
 
     for (const path of ['/api/contact-share/inbox/share-alice/accept', '/api/contact-share/inbox/share-bob/refuse']) {
-      const call = fetchMock.mock.calls.find(([url]) => url === path);
-      expect((call?.[1] as RequestInit | undefined)?.headers).toMatchObject({
-        'content-type': 'application/json',
-        'x-kookr-csrf': 'csrf-share',
+      expect(expectSingleJsonPost(fetchMock, path)).toEqual({
+        recipientDeviceId: 'local-device',
       });
     }
   });
@@ -848,11 +852,7 @@ describe('TaskShareModal', () => {
     });
     await flush();
 
-    const postCall = fetchMock.mock.calls.find(
-      ([url, init]) => url === '/api/share/task' && (init as RequestInit | undefined)?.method === 'POST',
-    );
-    expect(postCall).toBeDefined();
-    expect(JSON.parse((postCall![1] as RequestInit).body as string)).toEqual({
+    expect(expectSingleJsonPost(fetchMock, '/api/share/task')).toEqual({
       taskId: 'task-1',
       ttlMs: 8 * 60 * 60 * 1000,
     });
@@ -913,11 +913,7 @@ describe('TaskShareModal', () => {
     });
     await flush();
 
-    const postCall = fetchMock.mock.calls.find(
-      ([url, init]) => url === '/api/share/task' && (init as RequestInit | undefined)?.method === 'POST',
-    );
-    expect(postCall).toBeDefined();
-    expect(JSON.parse((postCall![1] as RequestInit).body as string)).toEqual({
+    expect(expectSingleJsonPost(fetchMock, '/api/share/task')).toEqual({
       taskId: 'task-1',
       ttlMs: maxTtl,
       displayLabel: 'Review-safe label',
@@ -966,11 +962,7 @@ describe('TaskShareModal', () => {
     });
     await flush();
 
-    const postCall = fetchMock.mock.calls.find(
-      ([url, init]) => url === '/api/share/task' && (init as RequestInit | undefined)?.method === 'POST',
-    );
-    expect(postCall).toBeDefined();
-    expect(JSON.parse((postCall![1] as RequestInit).body as string)).toEqual({
+    expect(expectSingleJsonPost(fetchMock, '/api/share/task')).toEqual({
       taskId: 'task-1',
       ttlMs: 10 * 60 * 1000,
     });

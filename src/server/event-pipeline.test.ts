@@ -392,9 +392,15 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     const suggestionMsgs = broadcastMessages.filter(
       (m): m is Extract<ServerMessage, { type: 'suggestion' }> => m.type === 'suggestion',
     );
-    const clearMsg = suggestionMsgs.find(m => m.suggestions.length === 0);
-    expect(clearMsg).toBeDefined();
-    expect(clearMsg!.agentId).toBe(tmuxName);
+    const clears = suggestionMsgs.filter(
+      (m) => m.suggestions.length === 0 && m.quickActions.length === 0,
+    );
+    expect(clears).toEqual([expect.objectContaining({
+      agentId: tmuxName,
+      suggestionId: expect.stringMatching(/^[0-9a-f-]+$/),
+      suggestions: [],
+      quickActions: [],
+    })]);
   });
 
   test('user_prompt also clears via anomaly-diff', async () => {
@@ -411,11 +417,16 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     const suggestionMsgs = broadcastMessages.filter(
       (m): m is Extract<ServerMessage, { type: 'suggestion' }> => m.type === 'suggestion',
     );
-    // At least one clear (empty suggestions + quickActions) confirms anomaly-diff fired.
+    // Exactly one clear (empty suggestions + quickActions) confirms anomaly-diff fired without duplicate broadcasts.
     const clears = suggestionMsgs.filter(
       (m) => m.suggestions.length === 0 && m.quickActions.length === 0,
     );
-    expect(clears.length).toBeGreaterThanOrEqual(1);
+    expect(clears).toEqual([expect.objectContaining({
+      agentId: tmuxName,
+      suggestionId: expect.stringMatching(/^[0-9a-f-]+$/),
+      suggestions: [],
+      quickActions: [],
+    })]);
   });
 
   test('events that do not change anomaly state do not trigger clearing', async () => {

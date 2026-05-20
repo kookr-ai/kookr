@@ -97,7 +97,7 @@ describe('DetailPanel permission quick actions', () => {
 
     const button = Array.from(container.querySelectorAll('button'))
       .find((candidate) => candidate.textContent?.includes('Allow: Bash')) as HTMLButtonElement | undefined;
-    expect(button).toBeDefined();
+    expect(button).toBeInstanceOf(HTMLButtonElement);
     act(() => button!.click());
 
     expect(sent).toContainEqual({
@@ -116,7 +116,7 @@ describe('DetailPanel permission quick actions', () => {
     });
 
     const input = container.querySelector<HTMLInputElement>('.response-row input');
-    expect(input).toBeDefined();
+    expect(input).toBeInstanceOf(HTMLInputElement);
     act(() => {
       input!.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true }));
     });
