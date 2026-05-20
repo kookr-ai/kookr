@@ -94,6 +94,47 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     reviewCandidates: deps.monitor.getFindingEvidenceReviewCandidates(20),
   }));
 
+  app.get('/api/finding-evidence-operations-diagnostics', async (c) => {
+    const auditRecords = deps.monitor.getFindingEvidenceAuditRecords();
+    const reviewCandidates = deps.monitor.getFindingEvidenceReviewCandidates(20);
+    const reviewLog = await getFindingEvidenceReviewLogStore().readAll();
+    const proposalResponse = buildDetectorProposalReportResponseV1(reviewLog.records, reviewLog.diagnostics);
+    let sampler:
+      | { status: 'available'; value: Awaited<ReturnType<NonNullable<typeof deps.findingEvidenceReviewSampler>['getStatus']>> }
+      | { status: 'unavailable'; error: string };
+    if (!deps.findingEvidenceReviewSampler) {
+      sampler = { status: 'unavailable', error: 'finding-review-sampler-unavailable' };
+    } else {
+      try {
+        sampler = { status: 'available', value: await deps.findingEvidenceReviewSampler.getStatus() };
+      } catch {
+        sampler = { status: 'unavailable', error: 'finding-review-sampler-unavailable' };
+      }
+    }
+
+    return c.json({
+      schemaVersion: 'finding-evidence-operations-diagnostics.v1',
+      audit: {
+        recordsCount: auditRecords.length,
+        reviewCandidatesCount: reviewCandidates.length,
+      },
+      reviewLog: buildReviewLogOperationsSummary(reviewLog.records, reviewLog.diagnostics),
+      sampler,
+      proposals: {
+        reports: proposalResponse.reports.slice(0, 20).map((report) => ({
+          detectorTarget: report.detectorTarget,
+          candidateKind: report.candidateKind,
+          reviewCounts: report.reviewCounts,
+          proposal: {
+            status: report.proposal.status,
+            summary: report.proposal.summary,
+          },
+        })),
+        diagnosticsCount: proposalResponse.diagnostics.length,
+      },
+    });
+  });
+
   app.post('/api/finding-evidence-review', async (c) => {
     if (process.env.KOOKR_FINDING_REVIEW_ENABLED !== 'true') return c.json({ error: 'finding-review-disabled' }, 404);
     if (!deps.llmClient) return c.json({ error: 'finding-review-llm-unavailable' }, 503);
@@ -387,6 +428,36 @@ function isLoopbackAddress(address: string): boolean {
     || normalized === '::ffff:127.0.0.1'
     || normalized === '127.0.0.1'
     || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized);
+}
+
+function buildReviewLogOperationsSummary(
+  records: Awaited<ReturnType<ReviewLogStore['readAll']>>['records'],
+  diagnostics: Awaited<ReturnType<ReviewLogStore['readAll']>>['diagnostics'],
+): {
+  recordsCount: number;
+  validReviews: number;
+  invalidAttempts: number;
+  diagnosticsCount: number;
+  verdictCounts: Record<string, number>;
+} {
+  const verdictCounts: Record<string, number> = {};
+  let validReviews = 0;
+  let invalidAttempts = 0;
+  for (const record of records) {
+    if (record.kind === 'valid_review') {
+      validReviews += 1;
+      verdictCounts[record.review.verdict] = (verdictCounts[record.review.verdict] ?? 0) + 1;
+    } else {
+      invalidAttempts += 1;
+    }
+  }
+  return {
+    recordsCount: records.length,
+    validReviews,
+    invalidAttempts,
+    diagnosticsCount: diagnostics.length,
+    verdictCounts,
+  };
 }
 
 function readPositiveIntQuery(value: string | undefined, fallback: number, max: number): number {
