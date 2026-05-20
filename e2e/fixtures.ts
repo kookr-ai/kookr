@@ -10,6 +10,7 @@
 import { test as base, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
+import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from '../src/frontend/store/onboarding-status.js';
 
 export const test = base.extend<{ suppressOnboarding: boolean }, { serverURL: string }>({
   // Test-level option: when true (default), the fixture pre-marks the
@@ -93,14 +94,14 @@ export const test = base.extend<{ suppressOnboarding: boolean }, { serverURL: st
   // `test.use({ suppressOnboarding: false })`.
   page: async ({ page, suppressOnboarding }, use) => {
     if (suppressOnboarding) {
-      await page.addInitScript(() => {
+      await page.addInitScript((storageKey) => {
         try {
           window.localStorage.removeItem('kookr:projectSidebarCatalog');
           window.localStorage.removeItem('kookr:projectSidebarPrefs');
-          window.localStorage.setItem('kookr:onboarding:seen-v1', 'true');
+          window.localStorage.setItem(storageKey, 'true');
         }
         catch { /* ignore */ }
-      });
+      }, ONBOARDING_STORAGE_KEY);
     }
     await use(page);
   },

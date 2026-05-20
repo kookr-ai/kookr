@@ -7,7 +7,7 @@
  *  - "?" → "Take the product tour" re-shows from HelpDialog
  *  - Esc closes
  *  - Focus is inside the modal at open
- *  - Backdrop click on Card 3 closes without spawning LaunchDialog
+ *  - Backdrop click on the launch card closes without spawning LaunchDialog
  *  - Body class swaps with active card
  *  - Contract: every TOUR_TARGET_CLASSES entry resolves to ≥1 live element
  *
@@ -44,6 +44,17 @@ test.describe('Onboarding tour', () => {
     await seedFresh(page);
     await expect(page.locator('[data-testid="onboarding-overlay"]')).toBeVisible();
     await expect(page.locator('.onboarding-tour')).toBeVisible();
+    await expect(page.locator('.onboarding-tour h3')).toHaveText('Welcome to Kookr');
+  });
+
+  test('old seen marker does not suppress the rewritten tour', async ({ page }) => {
+    await page.addInitScript(() => {
+      try { window.localStorage.setItem('kookr:onboarding:seen-v1', 'true'); }
+      catch { /* ignore */ }
+    });
+    await page.goto('/');
+    await expect(page.locator('.logo')).toHaveText('KOOKR');
+    await expect(page.locator('[data-testid="onboarding-overlay"]')).toBeVisible();
     await expect(page.locator('.onboarding-tour h3')).toHaveText('Welcome to Kookr');
   });
 
@@ -104,7 +115,7 @@ test.describe('Onboarding tour', () => {
     await seedFresh(page);
     await expect(page.locator('.onboarding-tour')).toBeVisible();
 
-    // Advance to Card 3 — the card whose ring spotlights the + Launch button.
+    // Advance to Card 3: the card whose ring spotlights the + Launch button.
     await page.keyboard.press('ArrowRight'); // -> Card 2
     await page.keyboard.press('ArrowRight'); // -> Card 3
     await expect(page.locator('.onboarding-tour h3')).toHaveText('Launching an agent');
@@ -142,7 +153,12 @@ test.describe('Onboarding tour', () => {
     await page.keyboard.press('ArrowRight');
     await expect(page.locator('body')).toHaveClass(/kookr-tour-active-launch/);
 
-    // Card 4 = findings.
+    // Card 4 = first-launch readiness; no spotlight target.
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.onboarding-tour h3')).toHaveText('First-launch readiness');
+    await expect(page.locator('body')).not.toHaveClass(/kookr-tour-active-/);
+
+    // Card 5 = findings.
     await page.keyboard.press('ArrowRight');
     await expect(page.locator('body')).toHaveClass(/kookr-tour-active-findings/);
 
@@ -159,6 +175,24 @@ test.describe('Onboarding tour', () => {
     await expect(page.locator('.onboarding-tour h3')).toHaveText('The four panes');
     await page.keyboard.press('Enter');
     await expect(page.locator('.onboarding-tour h3')).toHaveText('Launching an agent');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.onboarding-tour h3')).toHaveText('First-launch readiness');
+  });
+
+  test('first-launch readiness card gives setup recovery actions', async ({ page }) => {
+    await seedFresh(page);
+    await expect(page.locator('.onboarding-tour')).toBeVisible();
+
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+
+    await expect(page.locator('.onboarding-tour h3')).toHaveText('First-launch readiness');
+    await expect(page.locator('.onboarding-tour')).toContainText('pnpm run doctor');
+    await expect(page.locator('.onboarding-tour')).toContainText('installed and authenticated');
+    await expect(page.locator('.onboarding-tour')).toContainText('4801');
+    await expect(page.locator('.onboarding-tour')).toContainText('5173');
+    await expect(page.locator('.onboarding-tour')).toContainText('4800');
   });
 
   test('? key while tour is open does not stack ShortcutsHelp on top', async ({ page }) => {

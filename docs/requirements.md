@@ -656,17 +656,20 @@ The system SHALL update all panels live as agent states change, with no manual r
 
 **Evidence:** `src/frontend/hooks/useWebSocket.ts` (connection + reconnect), `src/server/ws.ts` (snapshot on connect, broadcast on change), `src/frontend/store/useStore.ts` (state handlers).
 
-### R5.6: Onboarding Tour Test Controls — SHOULD — `done`
+### R5.6: Onboarding Tour Controls And First-Launch Recovery Guidance — SHOULD — `done`
 
-The system SHOULD expose deterministic controls for automated tests to identify or suppress the first-run onboarding tour without relying on CSS classes or persisted browser state.
+The system SHOULD expose deterministic controls for automated tests to identify or suppress the first-run onboarding tour without relying on CSS classes or persisted browser state, and the tour SHOULD connect first-time launch failures to existing setup diagnostics and recovery actions.
 
 **Acceptance criteria:**
 - The onboarding overlay exposes a stable `data-testid="onboarding-overlay"` selector
 - The Skip/Close button exposes a stable `data-testid="onboarding-skip"` selector
 - `?onboarding=0` suppresses the first-run onboarding tour even when localStorage has no seen marker
 - `KOOKR_DISABLE_ONBOARDING=1` suppresses the first-run onboarding tour at frontend build/test time
+- The onboarding tour includes a first-launch readiness step.
+- The step points users to `pnpm run doctor`.
+- The step names common first-launch blockers: missing or unauthenticated agent binaries, launch preflight messages, and dev/prod port conflicts.
 
-**Evidence:** `src/frontend/components/OnboardingTour.tsx`, `src/frontend/store/onboarding-status.ts`, `src/frontend/store/onboarding-status.test.ts`, `e2e/onboarding-tour.spec.ts`.
+**Evidence:** `src/frontend/components/OnboardingTour.tsx`, `src/frontend/store/onboarding-status.ts`, `e2e/onboarding-tour.spec.ts`.
 
 ### R5.7: Persistent Project Sidebar Preferences — SHOULD — `done`
 
@@ -1048,7 +1051,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R5.3 | F5.3 | SHOULD | done | StatusBar |
 | R5.4 | F5.4 | SHOULD | done | App, useStore, DetailPanel |
 | R5.5 | F5.5 | SHALL | done | useWebSocket, ws, useStore |
-| R5.6 | — | SHOULD | done | OnboardingTour, onboarding-status, onboarding-tour E2E |
+| R5.6 | F4.12 | SHOULD | done | OnboardingTour, onboarding-status, onboarding-tour E2E |
 | R5.7 | — | SHOULD | done | project-sidebar-store, project-routes, project-sidebar-slice |
 | R5.8 | — | SHOULD | done | DetailPanel, ActivityPanel, ProjectDetailDrawer, FindingsPanel, TopBar |
 | R5.9 | — | SHOULD | done | github-scanner-service, github-state-store, github-fetcher |

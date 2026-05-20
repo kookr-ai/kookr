@@ -62,6 +62,22 @@ export const ONBOARDING_CARDS: Card[] = [
     ),
   },
   {
+    title: 'First-launch readiness',
+    body: (
+      <>
+        <p>
+          If the first agent does not start, check setup before retrying. Run <kbd>pnpm run doctor</kbd>
+          from the Kookr checkout, then fix the reported Node, build-tool, dtach, Docker, GPU, or port issue.
+        </p>
+        <ul className="onboarding-checklist">
+          <li>Confirm the selected Claude Code or Codex CLI binary is installed and authenticated.</li>
+          <li>Use launch preflight messages for direct recovery commands such as KB doctor or binary path fixes.</li>
+          <li>Keep dev ports <kbd>4801</kbd> and <kbd>5173</kbd> free; production-style Kookr uses <kbd>4800</kbd>.</li>
+        </ul>
+      </>
+    ),
+  },
+  {
     title: 'Findings and routing',
     targetClass: 'findings',
     body: (

@@ -1,6 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { STORAGE_KEY as KEY } from './onboarding-status.js';
 
+const OLD_STORAGE_KEY = 'kookr:onboarding:seen-v1';
+
 // Each test imports the module fresh via `vi.resetModules()` so the module-level
 // IIFE-once storage selection and `inMemorySeen` singleton are isolated.
 
@@ -62,6 +64,13 @@ describe('onboarding-status', () => {
     data.set(KEY, 'true');
     const m = await import('./onboarding-status.js');
     expect(m.shouldShow()).toBe(false);
+  });
+
+  test('shouldShow ignores the previous seen key after a material tour rewrite', async () => {
+    const data = installFakeLocalStorage();
+    data.set(OLD_STORAGE_KEY, 'true');
+    const m = await import('./onboarding-status.js');
+    expect(m.shouldShow()).toBe(true);
   });
 
   test('shouldShow returns false when onboarding=0 is present in the URL', async () => {

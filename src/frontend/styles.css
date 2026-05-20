@@ -8583,6 +8583,18 @@ button.act-tool-entry:focus-visible {
   margin: 0;
 }
 
+.onboarding-checklist {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.onboarding-checklist li {
+  padding-left: 2px;
+}
+
 .onboarding-card-body strong {
   color: var(--text-bright);
 }

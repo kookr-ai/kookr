@@ -39,23 +39,24 @@ This RFC proposes a small first-run tour that runs once per browser, can be dism
 - No analytics/telemetry on tour completion.
 - No locale/translation support.
 - No interactive sample tasks, demo data, or sandboxed mode while the tour is open.
-- No content-versioning *mechanism*. Storage key carries the version: `kookr:onboarding:seen-v1`. Material rewrite bumps to `-v2`. Discipline rule kept by deliberate choice (round-3 socratic #5: a content-hash key would invalidate on every typo fix; the version is "did this rewrite materially change what users see," which is a judgment call, not a hash).
+- No content-versioning *mechanism*. Storage key carries the version: `kookr:onboarding:seen-v2`. Material rewrite bumps the suffix. Discipline rule kept by deliberate choice (round-3 socratic #5: a content-hash key would invalidate on every typo fix; the version is "did this rewrite materially change what users see," which is a judgment call, not a hash).
 - No focus-trap implementation.
-- No mobile-specific re-open path. Kookr is desktop-first; the `?` button is hidden in compact mode and Card 5 is dissolved (round-3 delivery #4 + socratic #4) so the mobile gap is acknowledged not papered over.
+- No mobile-specific re-open path. Kookr is desktop-first; the `?` button is hidden in compact mode, so the mobile gap is acknowledged not papered over.
 - No naive-participant validation gate as a hard *Requirements* item. v3 added it; round-3 design-minimalist + failure-mode + socratic flagged it as unenforced vibes. Moved to **Process commitments** below — separated from RFC requirements.
 
 ## Design
 
 ### High-level shape
 
-`OnboardingTour.tsx` is a paged modal — a slide deck of **4 cards** (round-3 socratic #4 dissolved Card 5). Each card has title, body (~2-4 sentences), and navigation: `Back`, `Next`, `Skip tour`, dot indicators. The final card's primary button is `Done`.
+`OnboardingTour.tsx` is a paged modal — a slide deck of **5 cards**. Each card has title, body (~2-4 sentences), and navigation: `Back`, `Next`, `Skip tour`, dot indicators. The final card's primary button is `Done`.
 
 Cards (locked sequence; reordering means a key bump):
 
 1. **Welcome to Kookr** — what Kookr is: a smart attention router for multiple AI coding agents. It does not write code; it watches your agents and tells you which one to look at next. *Card 1 footer line:* "You can re-open this tour from the `?` Help button at the top right anytime."
 2. **The four panes** — a single inlined SVG (`src/frontend/components/OnboardingLayoutDiagram.tsx`, an SVG-as-React-component, not an `<img>`) labels sidebar, terminal, detail, top bar. While this card is active, the live pane containers gain a pulsing outline ring.
-3. **Launching an agent** — explains that the `+ Launch` button (or `Alt+L`) spawns a Claude Code or Codex CLI session in a managed dtach terminal. Outline ring on the `+ Launch` button while active. (Card 5's `Alt+L` mention folded in.)
-4. **Findings and routing** — when the supervisor detects a stuck loop, repeated error, permission block, or budget burn, it surfaces a finding. The dashboard routes you to the most urgent one. Outline ring on the FindingsPanel.
+3. **Launching an agent** — explains that the `+ Launch` button (or `Alt+L`) spawns a Claude Code or Codex CLI session in a managed dtach terminal. Outline ring on the `+ Launch` button while active.
+4. **First-launch readiness** — if the first agent fails to start, connect the user to `pnpm run doctor`, missing or unauthenticated Claude Code / Codex CLI binaries, launch preflight messages, and the dev/prod port split.
+5. **Findings and routing** — when the supervisor detects a stuck loop, repeated error, permission block, or budget burn, it surfaces a finding. The dashboard routes you to the most urgent one. Outline ring on the FindingsPanel.
 
 The modal reuses the existing `dialog-overlay` / dialog container CSS pattern. `useEscapeToClose` is the escape-key hook. Closing via any vector (Esc, Skip, Done, backdrop click) calls `markSeen()` and unmounts. Backdrop click is isolated via `pointer-events` + `stopPropagation` (round-2 finding) — Playwright spec asserts no LaunchDialog opens after a backdrop click on Card 3.
 
@@ -112,7 +113,7 @@ export function maybeOpenForFirstRun(): void {
 `src/frontend/store/onboarding-status.ts` — two-tier (localStorage → in-memory). `markSeen` wraps the write in try/catch for late quota exhaustion:
 
 ```ts
-const KEY = 'kookr:onboarding:seen-v1';
+const KEY = 'kookr:onboarding:seen-v2';
 
 let inMemorySeen = false;
 
@@ -220,9 +221,9 @@ A `useLayoutEffect` in `OnboardingTour` synchronizes the `body.kookr-tour-active
 - **Contract test self-contradiction** (round-3 boundary + failure-mode + socratic): relaxed to `>= 1`.
 - **Class-name namespace collision** (round-3 failure-mode #3): all class names prefixed with `kookr-`.
 - **Cross-component label drift** (round-3 failure-mode #6 + socratic #3): copy reworded.
-- **Card 5 was a one-sentence card** (round-3 socratic #4): dissolved into Card 1 footer + Card 3 mention of `Alt+L`.
+- **Original Help card was a one-sentence card** (round-3 socratic #4): dissolved into Card 1 footer + Card 3 mention of `Alt+L`.
 - **Atomicity** (round-3 delivery #3): `onboarding-store.ts` + `App.tsx` call to `maybeOpenForFirstRun` + `ShortcutsHelp.tsx` import of `open` must land in one PR. Stated explicitly in Files to change.
-- **Mobile compact mode**: `?` button hidden, Card 5 dissolved so the gap is no longer load-bearing. Mobile-specific re-open is out of scope per Non-goals.
+- **Mobile compact mode**: `?` button hidden. Mobile-specific re-open is out of scope per Non-goals.
 - **SVG embedding** (round-3 delivery #6): SVG inlined as React component, not `<img src>`. Vitest jsdom and Playwright both work without a static-file pipeline.
 - **HMR resets `inMemorySeen`**: dev-only, accepted.
 - **React strict-mode double-mount**: storage reads are idempotent; `markSeen` is user-triggered.
@@ -312,7 +313,7 @@ Rejected (was v2) — cosmetic churn.
 
 Rejected (was v3) — hand-rolled multi-subscriber sync prone to React 18 tearing; only one true subscriber. Replaced by external store + `useSyncExternalStore`.
 
-### Card 5 ("Help and shortcuts")
+### Original help/shortcuts card
 
 Rejected (was v1-v3) — one-sentence content (round-3 socratic #4). Folded into Card 1 footer + Card 3 hotkey mention.
 
@@ -322,7 +323,7 @@ Rejected (was v3) — unenforced vibes (round-3 multiple critics). Moved to Proc
 
 ### Hash-derived storage key version
 
-Rejected (round-3 socratic #5) — would invalidate on every typo fix. Kept `seen-v1` with deliberate discipline rule; "material rewrite" is a judgment, not a hash.
+Rejected (round-3 socratic #5) — would invalidate on every typo fix. Kept a versioned storage key with deliberate discipline rule; "material rewrite" is a judgment, not a hash.
 
 ### console.warn for zero target matches
 
@@ -334,13 +335,13 @@ Three rounds, five critics each (boundary, failure-mode, design-minimalist, socr
 
 **Round 1** absorbed: `useOnboarding` hook for ownership consolidation; rename `ShortcutsHelp` → `HelpDialog` (later reverted in round 2); free-function persistence; single `seen` boolean (replaced `completed`/`dismissed`); no version mechanism; no focus trap; sessionStorage fallback (later cut in round 2); CSS spotlight; one SVG; single re-open path; "Got it" close button (later renamed "Done" in round 2).
 
-**Round 2** absorbed: hook directly consumable (no prop threading); `vi.resetModules()` for module-singleton tests; body-class + per-element class (flatter than `data-tour-active`); storage key carries version (`seen-v1`); `useLayoutEffect` cleanup; pointer-events backdrop isolation; conditional-target ring is best-effort; corrected replay-then-reload reasoning; cut sessionStorage tier; cut rename; reverted Got it→Done; added FindingsPanel empty-state copy; added naive-participant acceptance criterion; rewrote spotlight as flatter contract.
+**Round 2** absorbed: hook directly consumable (no prop threading); `vi.resetModules()` for module-singleton tests; body-class + per-element class (flatter than `data-tour-active`); storage key carries version; `useLayoutEffect` cleanup; pointer-events backdrop isolation; conditional-target ring is best-effort; corrected replay-then-reload reasoning; cut sessionStorage tier; cut rename; reverted Got it→Done; added FindingsPanel empty-state copy; added naive-participant acceptance criterion; rewrote spotlight as flatter contract.
 
 **Round 3** absorbed in v4:
 - **Boundary**: replace hand-rolled subscriber Set with `useSyncExternalStore`-compatible store; export `TOUR_TARGET_CLASSES` constant for contract test; `ShortcutsHelp` keeps name but re-open mechanism stops being prop-threaded; contract test gets a real owner.
 - **Failure-mode**: `markSeen` wraps write in try/catch; `kookr-` prefix all class names; contract test relaxed to `>= 1`; rephrased FindingsPanel copy to remove `+ Launch` reference.
-- **Design-minimalist**: cut subscriber Set; cut console.warn; cut Card 5; left V2 deferred items intact.
-- **Socratic**: dissolved Card 5 (#4); rephrased FindingsPanel copy (#3); kept `seen-v1` discipline rule with explicit acknowledgment (#5); moved naive-participant from Requirements to Process commitments (#2).
+- **Design-minimalist**: cut subscriber Set; cut console.warn; cut the original help/shortcuts card; left V2 deferred items intact.
+- **Socratic**: dissolved the original Help card (#4); rephrased FindingsPanel copy (#3); kept versioned-key discipline rule with explicit acknowledgment (#5); moved naive-participant from Requirements to Process commitments (#2).
 - **Delivery-pragmatist**: existing-user interrupt accepted as one-button cost (cut bootstrap heuristic after convergence-check pushback) (#2); no kill-switch — one-line patch is the equivalent (cut constant after convergence-check pushback) (#1); atomicity stated explicitly (#3); SVG inlined as React component (#6); update existing Playwright selectors for `?` button label change in same PR (low).
 - **Convergence check** (after v4): cut `bootstrapForExistingUsers` and `ONBOARDING_TOUR_ENABLED` per agreement between failure-mode and design-minimalist. Both were permanent runtime code for one-shot operational concerns; the equivalent actions (accept one-time interrupt, one-line patch) carry the same cost without the named concepts.
 

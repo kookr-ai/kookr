@@ -37,6 +37,7 @@ import { fork, type ChildProcess } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from '../src/frontend/store/onboarding-status.js';
 import {
   jwtFixContent,
   paginationContent,
@@ -1110,8 +1111,8 @@ async function record() {
     deviceScaleFactor: DEVICE_SCALE_FACTOR,
     recordVideo: { dir: videoTmpDir, size: VIEWPORT },
   });
-  await context.addInitScript(() => {
-    window.localStorage.setItem('kookr:onboarding:seen-v1', 'true');
+  await context.addInitScript((storageKey) => {
+    window.localStorage.setItem(storageKey, 'true');
     // Hide the dashboard at startup so the recording shows a clean dark
     // frame until the imperative intro overlay is mounted. The intro overlay
     // sets its own visibility:visible and overrides this.
@@ -1122,7 +1123,7 @@ async function record() {
       body > *:not(#demo-intro-logo):not(style):not(script) { visibility: hidden !important; }
     `;
     document.documentElement.appendChild(style);
-  });
+  }, ONBOARDING_STORAGE_KEY);
 
   // Serve the animated Kookr logo from the repo to the recorded page. Used
   // by the intro screen and the closing card. Keeps the asset out of the

@@ -5,6 +5,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { App } from './App.js';
+import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from './store/onboarding-status.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
 
 vi.mock('./hooks/useWebSocket.js', () => ({
@@ -63,7 +64,7 @@ describe('App operations modal shortcuts', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    localStorage.setItem('kookr:onboarding:seen-v1', 'true');
+    localStorage.setItem(ONBOARDING_STORAGE_KEY, 'true');
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/anomaly-stats')) {

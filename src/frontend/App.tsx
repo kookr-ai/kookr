@@ -132,8 +132,8 @@ export function App() {
     }
   }, [relaunchTask]);
 
-  // First-run onboarding tour: opens once per browser when localStorage has
-  // no `kookr:onboarding:seen-v1` key. Idempotent on subsequent reloads.
+  // First-run onboarding tour: opens once per browser when the versioned
+  // onboarding seen key is absent. Idempotent on subsequent reloads.
   useEffect(() => {
     maybeOpenForFirstRun();
   }, []);
