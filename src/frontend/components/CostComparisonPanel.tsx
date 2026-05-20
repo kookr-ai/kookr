@@ -64,12 +64,13 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
     setError(null);
     const params = new URLSearchParams({ window: windowChoice });
     if (agentFilter !== 'all') params.set('agent', agentFilter);
     if (debouncedSearch) params.set('q', debouncedSearch);
-    fetch(`/api/cost-comparison?${params.toString()}`)
+    fetch(`/api/cost-comparison?${params.toString()}`, { signal: controller.signal })
       .then(async (r) => {
         if (!r.ok) {
           throw new Error(`HTTP ${r.status}`);
@@ -83,10 +84,14 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
       })
       .catch((err) => {
         if (cancelled) return;
+        if (err instanceof Error && err.name === 'AbortError') return;
         setError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
   }, [windowChoice, agentFilter, debouncedSearch]);
 
   const visibleNotes = useMemo(() => {

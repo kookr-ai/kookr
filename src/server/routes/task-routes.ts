@@ -316,7 +316,15 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     const effectiveScanStartMs = clampScanStart(windowStartMs, windowEndMs, tasks);
 
     const scanStart = Date.now();
-    const scan = await scanner.scan(effectiveScanStartMs, windowEndMs);
+    let scan;
+    try {
+      scan = await scanner.scan(effectiveScanStartMs, windowEndMs, { signal: c.req.raw.signal });
+    } catch (err) {
+      if (isAbortError(err)) {
+        return new Response(null, { status: 499 });
+      }
+      throw err;
+    }
     const { outcomes, orphanBindings } = scanner.bindTasks(scan.rollouts, codexTasks);
 
     // Claude side: pull live token usage and the resolved model id (used by the aggregator
@@ -371,6 +379,10 @@ function normalizeTaskForApi(task: Task): Task {
   });
 
   return changed ? { ...task, sessions } : task;
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
 }
 
 // Singleton scanner — its in-memory (path, mtime) cache outlives a single

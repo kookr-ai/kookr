@@ -136,6 +136,13 @@ describe('CodexRolloutScanner — parsing', () => {
     expect(r.stats.parseErrorCount).toBe(0);
   });
 
+  test('aborts before starting a scan', async () => {
+    const s = new CodexRolloutScanner({ codexHome });
+    const start = new Date('2026-05-08T00:00:00Z').getTime();
+    const end = new Date('2026-05-08T23:59:59Z').getTime();
+    await expect(s.scan(start, end, { signal: AbortSignal.abort() })).rejects.toThrow();
+  });
+
   test('multi-turn: only the LAST total_token_usage value is retained', async () => {
     writeRollout(codexHome, {
       id: 'multi', cwd: '/cwd', startedAt: '2026-05-08T10:00:00.000Z',

@@ -17,7 +17,10 @@
  * and a token-aggregated binding map. Pricing lookup, dataQuality discriminant,
  * and per-playbook bucketing live in `cost-comparison-aggregator.ts`.
  */
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { open, readdir, stat } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
+import { setImmediate as yieldImmediate } from 'node:timers/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Stats } from 'node:fs';
@@ -90,6 +93,9 @@ const FRESH_MTIME_WINDOW_MS = 5_000;
  */
 const ABANDON_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
+const SCAN_FILE_YIELD_INTERVAL = 10;
+const PARSE_LINE_YIELD_INTERVAL = 1_000;
+
 /** Input to the binder: the Kookr-side view of a Codex task. */
 export interface KookrCodexTaskInput {
   taskId: string;
@@ -146,28 +152,34 @@ export class CodexRolloutScanner {
    * window or finished just after it (rollout files are filed by start time, not
    * end time).
    */
-  async scan(windowStartMs: number, windowEndMs: number): Promise<ScanResult> {
+  async scan(windowStartMs: number, windowEndMs: number, options: { signal?: AbortSignal } = {}): Promise<ScanResult> {
+    const { signal } = options;
+    signal?.throwIfAborted();
     const startedAt = this.now();
-    const paths = await this.collectPaths(windowStartMs, windowEndMs);
+    const paths = await this.collectPaths(windowStartMs, windowEndMs, signal);
 
     const rollouts: CodexRolloutMeta[] = [];
     let parseErrorCount = 0;
     let abandonedCount = 0;
     const seenPaths = new Set<string>();
 
-    for (const path of paths) {
+    for (let i = 0; i < paths.length; i++) {
+      const path = paths[i];
+      signal?.throwIfAborted();
       seenPaths.add(path);
       let meta: CodexRolloutMeta;
       try {
         const st = await stat(path);
+        signal?.throwIfAborted();
         const cached = this.cache.get(path);
         if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
           meta = cached.meta;
         } else {
-          meta = await this.parseRollout(path, st);
+          meta = await this.parseRollout(path, st, signal);
           this.cache.set(path, { mtimeMs: st.mtimeMs, size: st.size, meta });
         }
       } catch (err) {
+        if (isAbortError(err)) throw err;
         meta = {
           path, id: '', cwd: '', startedAt: new Date(0), cliVersion: null,
           forkedFromId: null, parentThreadId: null, agentNickname: null,
@@ -178,6 +190,9 @@ export class CodexRolloutScanner {
       rollouts.push(meta);
       if (meta.parseError) parseErrorCount++;
       if (this.isAbandoned(meta)) abandonedCount++;
+      if ((i + 1) % SCAN_FILE_YIELD_INTERVAL === 0) {
+        await cooperativeYield(signal);
+      }
     }
 
     // Evict cache entries whose paths are no longer on disk (rotated / deleted).
@@ -341,7 +356,7 @@ export class CodexRolloutScanner {
   }
 
   /** Walk every YYYY/MM/DD directory in [windowStart - 1d, windowEnd + 1d] UTC. */
-  private async collectPaths(windowStartMs: number, windowEndMs: number): Promise<string[]> {
+  private async collectPaths(windowStartMs: number, windowEndMs: number, signal?: AbortSignal): Promise<string[]> {
     const paths: string[] = [];
     const start = windowStartMs - ONE_DAY_MS;
     const end = windowEndMs + ONE_DAY_MS;
@@ -350,6 +365,7 @@ export class CodexRolloutScanner {
     let cursor = Date.UTC(startUtc.getUTCFullYear(), startUtc.getUTCMonth(), startUtc.getUTCDate());
     const limit = Date.UTC(endUtc.getUTCFullYear(), endUtc.getUTCMonth(), endUtc.getUTCDate());
     while (cursor <= limit) {
+      signal?.throwIfAborted();
       const d = new Date(cursor);
       const yyyy = String(d.getUTCFullYear());
       const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -362,12 +378,14 @@ export class CodexRolloutScanner {
         }
       }
       cursor += ONE_DAY_MS;
+      await cooperativeYield(signal);
     }
     return paths;
   }
 
   /** Read a rollout file once. Returns a `parseError`-flagged record on any structural problem. */
-  private async parseRollout(path: string, st: Stats): Promise<CodexRolloutMeta> {
+  private async parseRollout(path: string, st: Stats, signal?: AbortSignal): Promise<CodexRolloutMeta> {
+    signal?.throwIfAborted();
     const out: CodexRolloutMeta = {
       path, id: '', cwd: '', startedAt: new Date(0), cliVersion: null,
       forkedFromId: null, parentThreadId: null, agentNickname: null,
@@ -375,16 +393,43 @@ export class CodexRolloutScanner {
       mtimeMs: st.mtimeMs, parseError: null,
     };
 
-    let raw: string;
+    const isFresh = (this.now() - st.mtimeMs) < FRESH_MTIME_WINDOW_MS;
+    const skipLastLine = isFresh && st.size > 0 && !(await fileEndsWithNewline(path));
+    const stream = createReadStream(path, { encoding: 'utf-8', signal });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    let firstLine: string | null = null;
+    let pendingLine: string | null = null;
+    let lineCount = 0;
+    let processedAnyEventLine = false;
+
     try {
-      raw = await readFile(path, 'utf-8');
+      for await (const line of rl) {
+        signal?.throwIfAborted();
+        lineCount++;
+        if (firstLine == null) {
+          firstLine = line;
+          pendingLine = line;
+          continue;
+        }
+        if (pendingLine != null) {
+          processRolloutEventLine(out, pendingLine, processedAnyEventLine);
+          processedAnyEventLine = true;
+        }
+        pendingLine = line;
+        if (lineCount % PARSE_LINE_YIELD_INTERVAL === 0) {
+          await cooperativeYield(signal);
+        }
+      }
     } catch (err) {
+      if (isAbortError(err)) throw err;
       out.parseError = `read: ${(err as Error).message}`;
       return out;
+    } finally {
+      rl.close();
+      stream.destroy();
     }
 
-    const lines = raw.split('\n');
-    if (!lines[0]?.trim()) {
+    if (!firstLine?.trim()) {
       out.parseError = 'empty file';
       return out;
     }
@@ -392,7 +437,7 @@ export class CodexRolloutScanner {
     // First line MUST be session_meta.
     let metaJson: Record<string, unknown>;
     try {
-      metaJson = JSON.parse(lines[0]) as Record<string, unknown>;
+      metaJson = JSON.parse(firstLine) as Record<string, unknown>;
     } catch (err) {
       out.parseError = `session_meta parse: ${(err as Error).message}`;
       return out;
@@ -425,63 +470,81 @@ export class CodexRolloutScanner {
       }
     }
 
-    // Determine whether to skip the last line (Codex may still be writing it).
-    const isFresh = (this.now() - st.mtimeMs) < FRESH_MTIME_WINDOW_MS;
-    const lastIdx = lines.length - 1;
-    const skipLastLine = isFresh && lines[lastIdx] !== '';                 // empty trailing line is fine
-
-    // Walk events: capture last token_count.info, first turn_context.model, any terminal event.
-    for (let i = 0; i < lines.length; i++) {
-      if (skipLastLine && i === lastIdx) break;
-      const line = lines[i];
-      if (!line || !line.trim()) continue;
-      let evt: Record<string, unknown>;
-      try {
-        evt = JSON.parse(line) as Record<string, unknown>;
-      } catch {
-        continue;                                                          // single garbled line is not a fatal parse error
-      }
-      const t = evt.type as string | undefined;
-      const p = (evt.payload as Record<string, unknown> | undefined) ?? {};
-
-      if (t === 'turn_context' && !out.model) {
-        const m = p.model;
-        if (typeof m === 'string') out.model = m;
-      }
-
-      if (t === 'event_msg' && (p.type as string | undefined) === 'token_count') {
-        const info = p.info;
-        if (info && typeof info === 'object') {
-          const total = (info as Record<string, unknown>).total_token_usage;
-          if (total && typeof total === 'object') {
-            const ttu = total as Record<string, unknown>;
-            // R10 schema assertion: input_tokens + output_tokens + cached_input_tokens MUST all be numeric.
-            // Missing/non-numeric → parseError stamped on first encounter (the canonical token keys are the contract).
-            if (typeof ttu.input_tokens === 'number'
-              && typeof ttu.output_tokens === 'number'
-              && typeof ttu.cached_input_tokens === 'number') {
-              out.totalUsage = {
-                inputTokens: ttu.input_tokens,
-                outputTokens: ttu.output_tokens,
-                cachedInputTokens: ttu.cached_input_tokens,
-                reasoningOutputTokens: typeof ttu.reasoning_output_tokens === 'number' ? ttu.reasoning_output_tokens : 0,
-              };
-            } else if (out.parseError == null) {
-              out.parseError = 'token_count.total_token_usage missing canonical keys';
-            }
-          }
-        }
-      }
-
-      if (t === 'event_msg') {
-        const eType = p.type as string | undefined;
-        if (eType === 'task_complete' || eType === 'session_end') {
-          out.hasTerminalEvent = true;
-        }
-      }
+    if (pendingLine != null && !skipLastLine) {
+      processRolloutEventLine(out, pendingLine, processedAnyEventLine);
     }
 
     return out;
+  }
+}
+
+function processRolloutEventLine(out: CodexRolloutMeta, line: string, alreadyProcessedFirstLine: boolean): void {
+  if (!line || !line.trim()) return;
+  let evt: Record<string, unknown>;
+  try {
+    evt = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return;                                                                // single garbled line is not a fatal parse error
+  }
+  if (!alreadyProcessedFirstLine && (evt as { type?: string }).type === 'session_meta') {
+    return;
+  }
+  const t = evt.type as string | undefined;
+  const p = (evt.payload as Record<string, unknown> | undefined) ?? {};
+
+  if (t === 'turn_context' && !out.model) {
+    const m = p.model;
+    if (typeof m === 'string') out.model = m;
+  }
+
+  if (t === 'event_msg' && (p.type as string | undefined) === 'token_count') {
+    const info = p.info;
+    if (info && typeof info === 'object') {
+      const total = (info as Record<string, unknown>).total_token_usage;
+      if (total && typeof total === 'object') {
+        const ttu = total as Record<string, unknown>;
+        // R10 schema assertion: input_tokens + output_tokens + cached_input_tokens MUST all be numeric.
+        // Missing/non-numeric → parseError stamped on first encounter (the canonical token keys are the contract).
+        if (typeof ttu.input_tokens === 'number'
+          && typeof ttu.output_tokens === 'number'
+          && typeof ttu.cached_input_tokens === 'number') {
+          out.totalUsage = {
+            inputTokens: ttu.input_tokens,
+            outputTokens: ttu.output_tokens,
+            cachedInputTokens: ttu.cached_input_tokens,
+            reasoningOutputTokens: typeof ttu.reasoning_output_tokens === 'number' ? ttu.reasoning_output_tokens : 0,
+          };
+        } else if (out.parseError == null) {
+          out.parseError = 'token_count.total_token_usage missing canonical keys';
+        }
+      }
+    }
+  }
+
+  if (t === 'event_msg') {
+    const eType = p.type as string | undefined;
+    if (eType === 'task_complete' || eType === 'session_end') {
+      out.hasTerminalEvent = true;
+    }
+  }
+}
+
+async function cooperativeYield(signal?: AbortSignal): Promise<void> {
+  await yieldImmediate(undefined, { signal });
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
+}
+
+async function fileEndsWithNewline(path: string): Promise<boolean> {
+  const fh = await open(path, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(1);
+    const { bytesRead } = await fh.read(buffer, 0, 1, (await fh.stat()).size - 1);
+    return bytesRead === 1 && buffer[0] === 0x0a;
+  } finally {
+    await fh.close();
   }
 }
 
