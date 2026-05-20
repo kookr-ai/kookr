@@ -69,8 +69,8 @@ const KNOWN_HOOK_EVENTS: Set<string> = new Set([
 
 /**
  * Header-only inspector for activity-ledger envelopes. Pulls `session_id`,
- * `turn_id`, and `hook_event_name` without enforcing them to be a known
- * event type. Throws {@link HookParseError} on malformed JSON. Used by
+ * `turn_id`, `hook_event_name`, and `transcript_path` without enforcing them
+ * to be a known event type. Throws {@link HookParseError} on malformed JSON. Used by
  * HookIngestion to populate {@link HookEnvelopeV1} fields even when the
  * payload's hook_event_name is unknown to Kookr.
  */
@@ -78,10 +78,11 @@ export interface RawHookHeader {
   rawSessionId?: string;
   rawTurnId?: string;
   rawHookEventName?: string;
+  rawTranscriptPath?: string;
 }
 
 export function extractRawHookHeader(raw: string): RawHookHeader {
-  let parsed: { session_id?: unknown; turn_id?: unknown; hook_event_name?: unknown };
+  let parsed: { session_id?: unknown; turn_id?: unknown; hook_event_name?: unknown; transcript_path?: unknown };
   try {
     parsed = JSON.parse(raw);
   } catch {
@@ -91,6 +92,7 @@ export function extractRawHookHeader(raw: string): RawHookHeader {
     rawSessionId: typeof parsed.session_id === 'string' ? parsed.session_id : undefined,
     rawTurnId: typeof parsed.turn_id === 'string' ? parsed.turn_id : undefined,
     rawHookEventName: typeof parsed.hook_event_name === 'string' ? parsed.hook_event_name : undefined,
+    rawTranscriptPath: typeof parsed.transcript_path === 'string' ? parsed.transcript_path : undefined,
   };
 }
 

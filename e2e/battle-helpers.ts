@@ -72,9 +72,13 @@ export async function injectEvent(
   });
 }
 
+export function testSessionIdForTmux(tmuxName: string): string {
+  return `sess-${tmuxName}`;
+}
+
 export async function injectSessionStart(request: APIRequestContext, tmuxName: string, cwd = '/test/project') {
   await injectEvent(request, tmuxName, {
-    session_id: `sess-${Date.now()}`,
+    session_id: testSessionIdForTmux(tmuxName),
     transcript_path: '/tmp/transcript.jsonl',
     cwd,
     hook_event_name: 'SessionStart',
@@ -83,7 +87,7 @@ export async function injectSessionStart(request: APIRequestContext, tmuxName: s
 
 export async function injectStopEvent(request: APIRequestContext, tmuxName: string, message?: string, cwd = '/test/project') {
   await injectEvent(request, tmuxName, {
-    session_id: `sess-${Date.now()}`,
+    session_id: testSessionIdForTmux(tmuxName),
     transcript_path: '/tmp/transcript.jsonl',
     cwd,
     hook_event_name: 'Stop',
@@ -94,7 +98,7 @@ export async function injectStopEvent(request: APIRequestContext, tmuxName: stri
 
 export async function injectPermissionEvent(request: APIRequestContext, tmuxName: string, toolName?: string) {
   await injectEvent(request, tmuxName, {
-    session_id: `sess-${Date.now()}`,
+    session_id: testSessionIdForTmux(tmuxName),
     transcript_path: '/tmp/transcript.jsonl',
     cwd: '/test/project',
     hook_event_name: 'PermissionRequest',
@@ -110,7 +114,7 @@ export async function injectToolUse(
   toolName = 'Read',
 ) {
   await injectEvent(request, tmuxName, {
-    session_id: `sess-${Date.now()}`,
+    session_id: testSessionIdForTmux(tmuxName),
     transcript_path: '/tmp/transcript.jsonl',
     cwd: '/test/project',
     hook_event_name: 'PreToolUse',
@@ -124,7 +128,7 @@ export async function injectPostToolUse(
   toolName = 'Read',
 ) {
   await injectEvent(request, tmuxName, {
-    session_id: `sess-${Date.now()}`,
+    session_id: testSessionIdForTmux(tmuxName),
     transcript_path: '/tmp/transcript.jsonl',
     cwd: '/test/project',
     hook_event_name: 'PostToolUse',
@@ -143,7 +147,7 @@ export async function injectEditEvent(
   oldString = 'foo',
   newString = 'bar',
 ) {
-  const sessionId = `sess-${Date.now()}`;
+  const sessionId = testSessionIdForTmux(tmuxName);
   await injectEvent(request, tmuxName, {
     session_id: sessionId,
     transcript_path: '/tmp/transcript.jsonl',
@@ -186,7 +190,7 @@ export async function injectAgentMessage(
   message: string,
 ) {
   await injectEvent(request, tmuxName, {
-    session_id: `sess-${Date.now()}`,
+    session_id: testSessionIdForTmux(tmuxName),
     transcript_path: '/tmp/transcript.jsonl',
     cwd: '/test/project',
     hook_event_name: 'Stop',
@@ -203,7 +207,7 @@ export async function injectErrorEvent(
   // Errors come through as tool results with error content
   // Use PostToolUse with a failing result pattern
   await injectEvent(request, tmuxName, {
-    session_id: `sess-${Date.now()}`,
+    session_id: testSessionIdForTmux(tmuxName),
     transcript_path: '/tmp/transcript.jsonl',
     cwd: '/test/project',
     hook_event_name: 'PostToolUse',
@@ -215,7 +219,7 @@ export async function injectErrorEvent(
 
 export async function injectAskUserQuestion(request: APIRequestContext, tmuxName: string) {
   await injectEvent(request, tmuxName, {
-    session_id: `sess-${Date.now()}`,
+    session_id: testSessionIdForTmux(tmuxName),
     transcript_path: '/tmp/transcript.jsonl',
     cwd: '/test/project',
     hook_event_name: 'PreToolUse',

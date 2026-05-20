@@ -12,6 +12,7 @@ import {
   injectEditEvent,
   injectStopEvent,
   injectEvent,
+  testSessionIdForTmux,
 } from './battle-helpers.js';
 
 test.describe('Activity panel → diff pane', () => {
@@ -98,7 +99,7 @@ test.describe('Activity panel → diff pane', () => {
     await injectEditEvent(request, tmux, '/test/project/foo.ts', 'tu_first', 'X', 'Y');
     // Flush into a separate group via a user prompt
     await injectEvent(request, tmux, {
-      session_id: `sess-${Date.now()}`,
+      session_id: testSessionIdForTmux(tmux),
       transcript_path: '/tmp/t.jsonl',
       cwd: '/test/project',
       hook_event_name: 'UserPromptSubmit',

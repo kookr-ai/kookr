@@ -15,8 +15,9 @@ import type {
   PreflightResult,
 } from './agent-adapter.js';
 import { probeAgentBinary, probeBinaryFlagSupport, type ProbeExecRunner } from './probe-agent-binary.js';
-import { extractRawHookHeader, parseHookEvent, HookParseError } from '../core/hook-parser.js';
+import { extractRawHookHeader, parseHookEvent, HookParseError, type RawHookHeader } from '../core/hook-parser.js';
 import {
+  childSessionStorageKey,
   classifyHookParentage,
   createSessionRuntimeIdentity,
   recordSessionStart,
@@ -421,7 +422,7 @@ export class CodexCliAdapter implements AgentAdapter {
     const observedAt = Date.now();
     const observedAtIso = new Date(observedAt).toISOString();
 
-    let header: { rawSessionId?: string; rawTurnId?: string; rawHookEventName?: string };
+    let header: RawHookHeader;
     try {
       header = extractRawHookHeader(rawJson);
     } catch (err) {
@@ -478,7 +479,7 @@ export class CodexCliAdapter implements AgentAdapter {
             });
           }
         } else if (parentage === 'child') {
-          this.taskStore.recordChildSession(taskId, tmuxName, rawSessionId, {
+          this.taskStore.recordChildSession(taskId, tmuxName, childSessionStorageKey(identity, rawSessionId, event.transcriptPath), {
             firstSeenAt: observedAtIso,
             transcriptPath: event.transcriptPath,
             reason: 'inherited_settings',
@@ -486,7 +487,7 @@ export class CodexCliAdapter implements AgentAdapter {
         }
       }
     } else {
-      parentage = classifyHookParentage(rawSessionId, identity);
+      parentage = classifyHookParentage(rawSessionId, identity, header.rawTranscriptPath);
     }
 
     if (parentage === 'parent' && taskId && 'cwd' in event && event.cwd) {
