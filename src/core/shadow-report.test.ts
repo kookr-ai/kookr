@@ -319,7 +319,8 @@ describe('parseShadowLogFromFile / generateReportFromFile', () => {
       const report = await generateReportFromFile(path);
       expect(report.totalEntries).toBe(3);
       expect(report.parseErrors).toBe(1);
-      expect(report.strategies[0].realIntervals).toBe(1);
+      const pane = report.strategies.find((s) => s.source === 'pane_semantics')!;
+      expect(pane.realIntervals).toBe(1);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

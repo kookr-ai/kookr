@@ -6,7 +6,7 @@
  */
 
 import { createReadStream } from 'node:fs';
-import { createInterface } from 'node:readline';
+import { createInterface } from 'node:readline/promises';
 import type { ShadowLogEntry, ShadowTransition, ShadowHeartbeat, ShadowSource } from './shadow-detector.js';
 import type { AnomalyType } from './types.js';
 
@@ -231,10 +231,8 @@ export function generateReport(entries: ShadowLogEntry[]): ShadowReport {
     };
   }
 
-  // Determine observation window. Iterate instead of spreading into Math.min/max:
-  // entries.length above ~100k overflows JS's spread-args limit and throws
-  // RangeError("Maximum call stack size exceeded"), which made multi-day logs
-  // silently unanalyzable.
+  // Math.min(...arr) overflows V8's spread-args limit (RangeError) once
+  // entries.length passes ~100k; iterate instead.
   let startMs = Number.POSITIVE_INFINITY;
   let endMs = Number.NEGATIVE_INFINITY;
   for (const e of entries) {
@@ -306,15 +304,11 @@ export async function parseShadowLogFromFile(
   const entries: ShadowLogEntry[] = [];
   let errors = 0;
 
-  let stream;
+  const rl = createInterface({
+    input: createReadStream(filePath, { encoding: 'utf-8' }),
+    crlfDelay: Infinity,
+  });
   try {
-    stream = createReadStream(filePath, { encoding: 'utf-8' });
-  } catch {
-    return { entries, errors };
-  }
-
-  try {
-    const rl = createInterface({ input: stream, crlfDelay: Infinity });
     for await (const line of rl) {
       if (!line.trim()) continue;
       try {
@@ -329,7 +323,7 @@ export async function parseShadowLogFromFile(
       }
     }
   } catch {
-    // ENOENT or stream error: return whatever was parsed.
+    // ENOENT or mid-stream I/O failure: return whatever was parsed.
   }
 
   return { entries, errors };
