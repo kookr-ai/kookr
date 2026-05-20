@@ -16,6 +16,7 @@ function makeSchedule(overrides: Partial<ScheduleResponse> = {}): ScheduleRespon
     playbook: { path: '/p.md', parameters: {} },
     cwd: '/repo',
     agentType: 'claude-code',
+    executionLedger: [],
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     nextRunAt: '2026-01-02T03:00:00Z',

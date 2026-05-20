@@ -124,6 +124,7 @@ export class ScheduleRunner {
     schedule: Schedule,
     trigger: 'cron' | 'manual',
     scheduledNextRun?: Date,
+    decision: 'cron_due' | 'manual_run' | 'catch_up' = trigger === 'manual' ? 'manual_run' : 'cron_due',
   ): Promise<{ taskId?: string; error?: string; queued?: boolean }> {
     if (trigger === 'cron' && isTriggerLimitExhausted(schedule)) {
       await this.deps.service.markCronLimitExhausted(schedule.id);
@@ -134,16 +135,19 @@ export class ScheduleRunner {
       schedule,
       trigger,
       scheduledNextRun?.toISOString(),
+      decision,
     );
 
-    if (schedule.latestExecution?.taskId && this.deps.isTaskBlockingSchedule(schedule.latestExecution.taskId)) {
-      console.warn(`[schedule] Skipping "${schedule.name}" — previous run still active (task ${schedule.latestExecution.taskId})`);
+    const blockingTaskId = schedule.latestExecution?.taskId;
+    if (blockingTaskId && this.deps.isTaskBlockingSchedule(blockingTaskId)) {
+      console.warn(`[schedule] Skipping "${schedule.name}" — previous run still active (task ${blockingTaskId})`);
       await this.deps.service.markExecutionOutcome(
         schedule.id,
         receipt.id,
         'skipped_active',
         'previous_run_active',
         'Previous run still active',
+        { blockingTaskId },
       );
       return { error: 'Previous run still active' };
     }
@@ -207,9 +211,11 @@ export class ScheduleRunner {
 
       if (scheduledNext < now && scheduledNext >= cutoff) {
         console.log(`[schedule] Catching up "${schedule.name}" (was due ${scheduledNext.toISOString()})`);
-        await this.fire(schedule, 'cron', scheduledNext);
+        await this.fire(schedule, 'cron', scheduledNext, 'catch_up');
       } else if (scheduledNext < cutoff) {
+        const message = `Due ${scheduledNext.toISOString()} is outside the 24h catch-up window`;
         console.log(`[schedule] Skipping stale catch-up for "${schedule.name}" (due ${scheduledNext.toISOString()}, > 24h ago)`);
+        await this.deps.service.recordCatchUpSkipped(schedule.id, scheduledNext.toISOString(), message);
       }
     }
   }

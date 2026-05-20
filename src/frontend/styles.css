@@ -4047,6 +4047,26 @@ textarea::-webkit-resizer { background: transparent; }
   color: var(--text-secondary);
 }
 
+.schedule-ledger {
+  display: grid;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.schedule-ledger-entry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.schedule-ledger-time {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
 .schedule-task-ref {
   font-family: var(--font-mono);
   color: var(--teal);

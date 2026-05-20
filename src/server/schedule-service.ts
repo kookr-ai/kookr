@@ -3,6 +3,8 @@ import type { TaskStore } from '../core/tasks.js';
 import {
   type CreateScheduleInput,
   type Schedule,
+  type ScheduleExecutionDecision,
+  type ScheduleExecutionLedgerEntry,
   type ScheduleExecutionOutcome,
   type ScheduleExecutionReasonCode,
   type ScheduleListResponse,
@@ -115,7 +117,12 @@ export class ScheduleService {
     this.broadcastSchedules();
   }
 
-  async reserveExecution(schedule: Schedule, trigger: 'cron' | 'manual', scheduledFor?: string) {
+  async reserveExecution(
+    schedule: Schedule,
+    trigger: 'cron' | 'manual',
+    scheduledFor?: string,
+    decision: ScheduleExecutionDecision = trigger === 'manual' ? 'manual_run' : 'cron_due',
+  ) {
     const receiptId = randomUUID();
     const executionToken = randomUUID();
     const evaluatedAt = new Date().toISOString();
@@ -128,6 +135,7 @@ export class ScheduleService {
         scheduleId: schedule.id,
         executionToken,
         trigger,
+        decision,
         ...(scheduledFor ? { scheduledFor } : {}),
         evaluatedAt,
         status: 'reserved',
@@ -154,6 +162,39 @@ export class ScheduleService {
     this.broadcastSchedules();
   }
 
+  async recordCatchUpSkipped(scheduleId: string, scheduledFor: string, message: string): Promise<void> {
+    const schedule = this.requireSchedule(scheduleId);
+    const evaluatedAt = new Date().toISOString();
+    this.store.replace({
+      ...schedule,
+      lastScheduledFor: evaluatedAt,
+      lastCronEvaluatedAt: evaluatedAt,
+      latestExecution: {
+        executionToken: ledgerKeyFor(schedule.id, 'cron', scheduledFor),
+        scheduledFor,
+        evaluatedAt,
+        trigger: 'cron',
+        outcome: 'skipped_stale',
+        reasonCode: 'stale_catch_up',
+        message,
+      },
+      executionLedger: upsertLedgerEntry(schedule.executionLedger, {
+        id: ledgerKeyFor(schedule.id, 'cron', scheduledFor),
+        scheduleId: schedule.id,
+        trigger: 'cron',
+        decision: 'stale_catch_up',
+        scheduledFor,
+        evaluatedAt,
+        completedAt: evaluatedAt,
+        outcome: 'skipped_stale',
+        reasonCode: 'stale_catch_up',
+        message,
+      }),
+    });
+    await this.store.persist();
+    this.broadcastSchedules();
+  }
+
   async markExecutionAccepted(scheduleId: string, receiptId: string, taskId: string, queued: boolean): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
     const receipt = this.requireReceipt(schedule, receiptId);
@@ -175,6 +216,16 @@ export class ScheduleService {
       lastRunTaskId: taskId,
       ...consumeCronTrigger(schedule, receipt.trigger, true, triggeredAt),
       latestExecution,
+      executionLedger: upsertLedgerEntry(schedule.executionLedger, ledgerEntryFromReceipt(
+        schedule,
+        receipt,
+        latestExecution.outcome,
+        'none',
+        {
+          completedAt: triggeredAt,
+          taskId,
+        },
+      )),
       currentExecution: {
         ...receipt,
         taskId,
@@ -191,6 +242,7 @@ export class ScheduleService {
     outcome: Exclude<ScheduleExecutionOutcome, 'completed' | 'cancelled' | 'running' | 'queued'>,
     reasonCode: ScheduleExecutionReasonCode,
     message?: string,
+    details: { blockingTaskId?: string } = {},
   ): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
     const receipt = this.requireReceipt(schedule, receiptId);
@@ -212,6 +264,18 @@ export class ScheduleService {
         reasonCode,
         ...(message ? { message } : {}),
       },
+      executionLedger: upsertLedgerEntry(schedule.executionLedger, ledgerEntryFromReceipt(
+        schedule,
+        receipt,
+        outcome,
+        reasonCode,
+        {
+          completedAt: evaluatedAt,
+          ...(receipt.taskId ? { taskId: receipt.taskId } : {}),
+          ...(details.blockingTaskId ? { blockingTaskId: details.blockingTaskId } : {}),
+          ...(message ? { message } : {}),
+        },
+      )),
       currentExecution: {
         ...receipt,
         status: outcome === 'unknown_after_restart' ? 'unknown_after_restart' : 'terminal',
@@ -238,6 +302,11 @@ export class ScheduleService {
         outcome: status,
         reasonCode: 'none',
       },
+      executionLedger: updateLedgerEntryForTask(schedule.executionLedger, taskId, {
+        outcome: status,
+        reasonCode: 'none',
+        completedAt: new Date().toISOString(),
+      }),
       ...(currentReceipt ? {
         currentExecution: {
           ...currentReceipt,
@@ -268,6 +337,16 @@ export class ScheduleService {
               reasonCode: 'unknown_after_restart',
               message: 'Execution could not be reconciled after restart',
             },
+            executionLedger: upsertLedgerEntry(schedule.executionLedger, ledgerEntryFromReceipt(
+              schedule,
+              schedule.currentExecution,
+              'unknown_after_restart',
+              'unknown_after_restart',
+              {
+                completedAt: new Date().toISOString(),
+                message: 'Execution could not be reconciled after restart',
+              },
+            )),
             currentExecution: {
               ...schedule.currentExecution,
               status: 'unknown_after_restart',
@@ -293,6 +372,12 @@ export class ScheduleService {
             reasonCode: 'unknown_after_restart',
             message: 'Task state could not be reconciled after restart',
           },
+          executionLedger: updateLedgerEntryForTask(schedule.executionLedger, latest.taskId, {
+            outcome: 'unknown_after_restart',
+            reasonCode: 'unknown_after_restart',
+            message: 'Task state could not be reconciled after restart',
+            completedAt: new Date().toISOString(),
+          }),
           ...(schedule.currentExecution ? {
             currentExecution: {
               ...schedule.currentExecution,
@@ -320,6 +405,11 @@ export class ScheduleService {
             outcome: scheduleOutcome,
             reasonCode: 'reconciled_after_restart',
           },
+          executionLedger: updateLedgerEntryForTask(schedule.executionLedger, task.id, {
+            outcome: scheduleOutcome,
+            reasonCode: 'reconciled_after_restart',
+            completedAt: task.updatedAt.toISOString(),
+          }),
           ...(schedule.currentExecution ? {
             currentExecution: {
               ...schedule.currentExecution,
@@ -405,4 +495,65 @@ function consumeCronTrigger(
       exhaustedAt: undefined,
     }),
   };
+}
+
+function ledgerEntryFromReceipt(
+  schedule: Schedule,
+  receipt: NonNullable<Schedule['currentExecution']>,
+  outcome: ScheduleExecutionOutcome,
+  reasonCode: ScheduleExecutionReasonCode,
+  details: {
+    completedAt: string;
+    taskId?: string;
+    blockingTaskId?: string;
+    message?: string;
+  },
+): ScheduleExecutionLedgerEntry {
+  return {
+    id: ledgerKeyFor(schedule.id, receipt.trigger, receipt.scheduledFor ?? receipt.id),
+    scheduleId: schedule.id,
+    receiptId: receipt.id,
+    executionToken: receipt.executionToken,
+    trigger: receipt.trigger,
+    decision: receipt.decision,
+    ...(receipt.scheduledFor ? { scheduledFor: receipt.scheduledFor } : {}),
+    evaluatedAt: receipt.evaluatedAt,
+    completedAt: details.completedAt,
+    outcome,
+    reasonCode,
+    ...(details.taskId ? { taskId: details.taskId } : {}),
+    ...(details.blockingTaskId ? { blockingTaskId: details.blockingTaskId } : {}),
+    ...(details.message ? { message: details.message } : {}),
+  };
+}
+
+function updateLedgerEntryForTask(
+  ledger: ScheduleExecutionLedgerEntry[],
+  taskId: string,
+  patch: Pick<ScheduleExecutionLedgerEntry, 'outcome' | 'reasonCode' | 'completedAt'> & Partial<Pick<ScheduleExecutionLedgerEntry, 'message'>>,
+): ScheduleExecutionLedgerEntry[] {
+  let updated = false;
+  const next = ledger.map((entry) => {
+    if (entry.taskId !== taskId) return entry;
+    updated = true;
+    return { ...entry, ...patch };
+  });
+  return updated ? next : ledger;
+}
+
+function upsertLedgerEntry(
+  ledger: ScheduleExecutionLedgerEntry[],
+  entry: ScheduleExecutionLedgerEntry,
+): ScheduleExecutionLedgerEntry[] {
+  const index = ledger.findIndex((candidate) => candidate.id === entry.id);
+  if (index === -1) return [...ledger, entry];
+  return [
+    ...ledger.slice(0, index),
+    { ...ledger[index], ...entry },
+    ...ledger.slice(index + 1),
+  ];
+}
+
+function ledgerKeyFor(scheduleId: string, trigger: 'cron' | 'manual', key: string): string {
+  return `${scheduleId}:${trigger}:${key}`;
 }
