@@ -54,6 +54,7 @@ export interface ScheduleRunnerDeps {
 
 export class ScheduleRunner {
   private tickInterval: ReturnType<typeof setInterval> | null = null;
+  private pendingWork = new Set<Promise<void>>();
   private firing = false;
   private deps: ScheduleRunnerDeps;
 
@@ -66,31 +67,39 @@ export class ScheduleRunner {
     this.deps.service.recordRunnerStarted(catchUpEnabled);
 
     if (catchUpEnabled) {
-      this.catchUp().catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        this.deps.service.recordRunnerError(`[schedule] Catch-up error: ${message}`);
-        console.error('[schedule] Catch-up error:', err);
-      });
+      this.trackBackgroundWork('Catch-up', this.catchUp());
     } else {
       console.log('[schedule] Catch-up disabled (KOOKR_NO_CATCHUP)');
     }
 
     this.tickInterval = setInterval(() => {
-      this.tick().catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        this.deps.service.recordRunnerError(`[schedule] Tick error: ${message}`);
-        console.error('[schedule] Tick error:', err);
-      });
+      this.trackBackgroundWork('Tick', this.tick());
     }, TICK_INTERVAL_MS);
 
     console.log(`[schedule] Runner started (${this.deps.store.list().length} schedule(s), tick=${TICK_INTERVAL_MS / 1000}s)`);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.tickInterval) {
       clearInterval(this.tickInterval);
       this.tickInterval = null;
     }
+
+    if (this.pendingWork.size > 0) {
+      await Promise.allSettled([...this.pendingWork]);
+    }
+  }
+
+  private trackBackgroundWork(label: 'Catch-up' | 'Tick', work: Promise<void>): void {
+    const tracked = work.catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      this.deps.service.recordRunnerError(`[schedule] ${label} error: ${message}`);
+      console.error(`[schedule] ${label} error:`, err);
+    }).finally(() => {
+      this.pendingWork.delete(tracked);
+    });
+
+    this.pendingWork.add(tracked);
   }
 
   async tick(): Promise<void> {
