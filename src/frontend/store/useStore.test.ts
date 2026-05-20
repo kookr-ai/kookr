@@ -129,6 +129,12 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().alerts[0].summary).toBe('Agent is stuck in a loop');
   });
 
+  test('handleAlert stores optional details for recovery guidance', () => {
+    store.getState().handleAlert('agent-1', 'Error: launch failed', 'error', 'Run `pnpm run doctor`.');
+
+    expect(store.getState().alerts[0].details).toBe('Run `pnpm run doctor`.');
+  });
+
   test('handleAlert defaults to info severity for non-error messages', () => {
     store.getState().handleAlert('agent-1', 'PR merged');
 

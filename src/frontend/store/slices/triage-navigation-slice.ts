@@ -16,13 +16,13 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
     respondAllAgentIds: null,
     shortcutsArmed: true,
 
-    handleAlert: (agentId, summary, severity) => {
+    handleAlert: (agentId, summary, severity, details) => {
       // DND silences in-app toasts at the emit site so anomaly detection keeps
       // running and findings still update; only the visual alert is suppressed.
       if (isDndEnabled()) return;
       const resolved = severity ?? (summary.startsWith('Error:') ? 'error' : 'info');
       set((prev) => ({
-        alerts: [...prev.alerts, { agentId, summary, severity: resolved, timestamp: new Date() }],
+        alerts: [...prev.alerts, { agentId, summary, details, severity: resolved, timestamp: new Date() }],
       }));
     },
 

@@ -392,6 +392,7 @@ describe('WebSocket MessageRouter', () => {
     expect(alerts[0].severity).toBe('critical');
     // Exact format — catches any drift in ordering or phrasing.
     expect(alerts[0].summary).toBe('Error starting "Add pagination to /users": spawn boom');
+    expect(alerts[0].details).toContain('pnpm run doctor');
   });
 
   test('launch prompt excerpt is truncated at 40 chars in the server error alert', async () => {

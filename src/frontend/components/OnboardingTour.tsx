@@ -62,6 +62,26 @@ export const ONBOARDING_CARDS: Card[] = [
     ),
   },
   {
+    title: 'First-launch readiness',
+    body: (
+      <>
+        <p>
+          Before your first agent launch, run <code className="onboarding-command">pnpm run doctor</code> from
+          the Kookr checkout. It checks the local pieces that most often block startup: Node, pnpm,
+          build tools, dtach, optional Docker/GPU support, and port conflicts.
+        </p>
+        <ul className="onboarding-readiness-list" aria-label="First-launch recovery checks">
+          <li>Missing agent binary or auth: install/sign in to Claude Code or Codex, then retry.</li>
+          <li>
+            Port conflict: free the reported port, use <code className="onboarding-command">pnpm dev</code> on
+            4801, or keep daily use on 4800.
+          </li>
+          <li>Native build or dtach issue: follow the doctor output before launching more tasks.</li>
+        </ul>
+      </>
+    ),
+  },
+  {
     title: 'Findings and routing',
     targetClass: 'findings',
     body: (

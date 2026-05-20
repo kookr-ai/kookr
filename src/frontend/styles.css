@@ -3013,7 +3013,20 @@ textarea::-webkit-resizer { background: transparent; }
   color: var(--text-bright);
 }
 
-.toast-message { flex: 1; word-break: break-word; }
+.toast-message {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  word-break: break-word;
+}
+
+.toast-details {
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
 
 .toast-dismiss {
   background: none;
@@ -8595,6 +8608,27 @@ button.act-tool-entry:focus-visible {
   border-radius: 3px;
   color: var(--text-bright);
   font-family: var(--font-mono);
+}
+
+.onboarding-card-body code,
+.onboarding-command {
+  font-size: 12px;
+  padding: 2px 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+}
+
+.onboarding-readiness-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+}
+
+.onboarding-readiness-list li + li {
+  margin-top: 6px;
 }
 
 .onboarding-card-footer-hint {
