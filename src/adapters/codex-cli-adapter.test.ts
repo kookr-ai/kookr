@@ -769,6 +769,57 @@ describe('CodexCliAdapter', () => {
       ]);
     });
 
+    test('classifies same-session-id subagent prompts by transcript path', async () => {
+      const a = new CodexCliAdapter(backend, taskStore, { trustWorkspace: false, probeExec: forkProbeExec });
+      const task = taskStore.createTask('reviewer-bug', '/cwd');
+      const sessionId = await a.launch(task.id, 'do work', '/cwd');
+      const parentTranscript = '/home/jean/.codex/sessions/rollout-2026-05-20T21-10-13-codex-parent.jsonl';
+      const childTranscript = '/home/jean/.codex/sessions/rollout-2026-05-20T21-10-24-codex-child.jsonl';
+
+      const observed: Array<{ type: string; prompt?: string; parentage: string; raw?: string }> = [];
+      a.onEvent((_id, event, meta) => {
+        observed.push({
+          type: event.type,
+          prompt: event.type === 'user_prompt' ? event.prompt : undefined,
+          parentage: meta.parentage,
+          raw: meta.rawSessionId,
+        });
+      });
+
+      a.injectHookEvent(sessionId, JSON.stringify({
+        session_id: 'codex-parent',
+        transcript_path: parentTranscript,
+        cwd: '/cwd',
+        hook_event_name: 'SessionStart',
+      }));
+      a.injectHookEvent(sessionId, JSON.stringify({
+        session_id: 'codex-parent',
+        transcript_path: childTranscript,
+        cwd: '/cwd',
+        hook_event_name: 'SessionStart',
+      }));
+      a.injectHookEvent(sessionId, JSON.stringify({
+        session_id: 'codex-parent',
+        transcript_path: childTranscript,
+        cwd: '/cwd',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'You are the subagent. Report findings.',
+      }));
+
+      expect(observed).toEqual([
+        { type: 'session_start', parentage: 'parent', raw: 'codex-parent', prompt: undefined },
+        { type: 'session_start', parentage: 'child', raw: 'codex-parent', prompt: undefined },
+        { type: 'user_prompt', parentage: 'child', raw: 'codex-parent', prompt: 'You are the subagent. Report findings.' },
+      ]);
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.claudeSessionId).toBe('codex-parent');
+      expect(session.transcriptPath).toBe(parentTranscript);
+      expect(session.childSessionIds?.[`transcript:${childTranscript}`]).toMatchObject({
+        transcriptPath: childTranscript,
+        reason: 'inherited_settings',
+      });
+    });
+
     test('hydrates parent/child identity from TaskStore after restart without launch map', () => {
       const a = new CodexCliAdapter(backend, taskStore, { trustWorkspace: false });
       const task = taskStore.createTask('reviewer-bug', '/cwd');

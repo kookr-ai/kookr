@@ -889,6 +889,41 @@ describe('ClaudeCodeAdapter', () => {
       ]);
     });
 
+    test('classifies same-session-id child prompts by transcript path', async () => {
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+      const parentTranscript = '/home/jean/.claude/projects/-cwd/parent-1.jsonl';
+      const childTranscript = '/home/jean/.claude/projects/-cwd/child-1.jsonl';
+
+      const observed: Array<{ raw?: string; parentage: string; type: string }> = [];
+      adapter.onEvent((_id, event, meta) => {
+        observed.push({ raw: meta.rawSessionId, parentage: meta.parentage, type: event.type });
+      });
+
+      adapter.injectHookEvent(sessionId, sessionStart('parent-1', parentTranscript));
+      adapter.injectHookEvent(sessionId, sessionStart('parent-1', childTranscript));
+      adapter.injectHookEvent(sessionId, JSON.stringify({
+        session_id: 'parent-1',
+        transcript_path: childTranscript,
+        cwd: '/cwd',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'Subagent prompt body',
+      }));
+
+      expect(observed).toEqual([
+        { raw: 'parent-1', parentage: 'parent', type: 'session_start' },
+        { raw: 'parent-1', parentage: 'child', type: 'session_start' },
+        { raw: 'parent-1', parentage: 'child', type: 'user_prompt' },
+      ]);
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.claudeSessionId).toBe('parent-1');
+      expect(session.transcriptPath).toBe(parentTranscript);
+      expect(session.childSessionIds?.[`transcript:${childTranscript}`]).toMatchObject({
+        transcriptPath: childTranscript,
+        reason: 'inherited_settings',
+      });
+    });
+
     test('hydrates parent/child identity from TaskStore after restart without launch map', () => {
       const task = taskStore.createTask('Fix bug', '/cwd');
       taskStore.addSession(task.id, {

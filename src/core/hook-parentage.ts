@@ -12,6 +12,8 @@ export interface SessionRuntimeIdentity {
   parentSessionId?: string;
   parentTranscriptPath?: string;
   parentSeenAt?: string;
+  // Usually keyed by raw child session id. If a provider reuses the parent's
+  // session id for subagents, the child is keyed as `transcript:<path>`.
   childSessionIds: Map<string, ChildSessionInfo>;
 }
 
@@ -30,10 +32,13 @@ export function createSessionRuntimeIdentity(): SessionRuntimeIdentity {
 export function classifyHookParentage(
   rawSessionId: string | undefined,
   identity: SessionRuntimeIdentity,
+  transcriptPath?: string,
 ): EventParentage {
   if (!rawSessionId) return 'unknown';
   if (!identity.parentSessionId) return 'unknown';
-  if (rawSessionId === identity.parentSessionId) return 'parent';
+  if (rawSessionId === identity.parentSessionId) {
+    return isKnownChildTranscript(identity, transcriptPath) ? 'child' : 'parent';
+  }
   // A known child id, or a new distinct id that arrives before its own
   // SessionStart — either way classify as `child` so the event is gated out
   // of parent anomaly state. The `childSessionIds.has(...)` check is kept
@@ -62,7 +67,18 @@ export function recordSessionStart(
     identity.parentSeenAt = observedAtIso;
     return 'parent';
   }
-  if (rawSessionId === identity.parentSessionId) return 'parent';
+  if (rawSessionId === identity.parentSessionId) {
+    if (!isChildTranscript(identity, rawSessionId, transcriptPath)) return 'parent';
+    const key = childTranscriptKey(transcriptPath);
+    if (key && !identity.childSessionIds.has(key)) {
+      identity.childSessionIds.set(key, {
+        firstSeenAt: observedAtIso,
+        transcriptPath,
+        reason: 'inherited_settings',
+      });
+    }
+    return 'child';
+  }
   if (!identity.childSessionIds.has(rawSessionId)) {
     identity.childSessionIds.set(rawSessionId, {
       firstSeenAt: observedAtIso,
@@ -71,4 +87,43 @@ export function recordSessionStart(
     });
   }
   return 'child';
+}
+
+function isKnownChildTranscript(identity: SessionRuntimeIdentity, transcriptPath: string | undefined): boolean {
+  if (!transcriptPath) return false;
+  return identity.childSessionIds.has(childTranscriptKey(transcriptPath));
+}
+
+function isChildTranscript(
+  identity: SessionRuntimeIdentity,
+  rawSessionId: string,
+  transcriptPath: string | undefined,
+): boolean {
+  if (!transcriptPath) return false;
+  if (isKnownChildTranscript(identity, transcriptPath)) return true;
+  return Boolean(
+    identity.parentTranscriptPath
+      && transcriptPath !== identity.parentTranscriptPath
+      && transcriptBelongsToSession(identity.parentTranscriptPath, rawSessionId)
+      && !transcriptBelongsToSession(transcriptPath, rawSessionId),
+  );
+}
+
+function childTranscriptKey(transcriptPath: string | undefined): string {
+  return transcriptPath ? `transcript:${transcriptPath}` : '';
+}
+
+export function childSessionStorageKey(
+  identity: SessionRuntimeIdentity,
+  rawSessionId: string,
+  transcriptPath: string | undefined,
+): string {
+  if (rawSessionId === identity.parentSessionId && transcriptPath && transcriptPath !== identity.parentTranscriptPath) {
+    return childTranscriptKey(transcriptPath);
+  }
+  return rawSessionId;
+}
+
+function transcriptBelongsToSession(transcriptPath: string | undefined, rawSessionId: string): boolean {
+  return Boolean(transcriptPath && transcriptPath.includes(rawSessionId));
 }
