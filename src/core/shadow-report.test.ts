@@ -1,7 +1,12 @@
 import { describe, test, expect } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   parseShadowLog,
+  parseShadowLogFromFile,
   generateReport,
+  generateReportFromFile,
   formatReport,
   type ShadowReport,
 } from './shadow-report.js';
@@ -268,6 +273,63 @@ describe('generateReport', () => {
       expect(pane.matchedIntervals).toBe(1);
       expect(pid.matchedIntervals).toBe(0); // pid didn't detect the anomaly
     });
+  });
+});
+
+describe('large input (regression: Math.min/max spread overflow)', () => {
+  test('handles >100k entries without RangeError', () => {
+    // Math.min(...arr) overflows the spread-args limit around 65-120k entries
+    // depending on V8 build. Multi-day logs hit this immediately.
+    const N = 150_000;
+    const entries: ShadowLogEntry[] = new Array(N);
+    const base = Date.parse('2026-03-28T12:00:00Z');
+    for (let i = 0; i < N; i++) {
+      entries[i] = {
+        kind: 'heartbeat',
+        timestamp: new Date(base + i * 1000).toISOString(),
+        agentId: 'a1',
+        source: 'pane_semantics',
+        shadowState: null,
+        realState: null,
+      };
+    }
+    const report = generateReport(entries);
+    expect(report.observationWindow).not.toBeNull();
+    expect(report.observationWindow!.startMs).toBe(base);
+    expect(report.observationWindow!.endMs).toBe(base + (N - 1) * 1000);
+  });
+});
+
+describe('parseShadowLogFromFile / generateReportFromFile', () => {
+  test('streams a JSONL file without loading it as one string', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'shadow-report-'));
+    try {
+      const path = join(dir, 'log.jsonl');
+      const lines: string[] = [];
+      lines.push(JSON.stringify(hb('2026-03-28T12:00:00Z', 'a1', null, null)));
+      lines.push(JSON.stringify(hb('2026-03-28T12:00:05Z', 'a1', 'needs_input', 'needs_input')));
+      lines.push('this is not json');
+      lines.push(JSON.stringify(hb('2026-03-28T12:00:10Z', 'a1', null, null)));
+      await writeFile(path, lines.join('\n') + '\n', 'utf-8');
+
+      const { entries, errors } = await parseShadowLogFromFile(path);
+      expect(entries).toHaveLength(3);
+      expect(errors).toBe(1);
+
+      const report = await generateReportFromFile(path);
+      expect(report.totalEntries).toBe(3);
+      expect(report.parseErrors).toBe(1);
+      const pane = report.strategies.find((s) => s.source === 'pane_semantics')!;
+      expect(pane.realIntervals).toBe(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('returns empty report when file does not exist', async () => {
+    const report = await generateReportFromFile('/tmp/definitely-not-a-real-shadow-log.jsonl');
+    expect(report.totalEntries).toBe(0);
+    expect(report.strategies).toHaveLength(0);
   });
 });
 
