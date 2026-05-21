@@ -7,6 +7,7 @@ checklist:
   - Fetched origin and upstream/main
   - If upstream/main is already contained in origin/feat/claude-compat, stopped early with "no upstream changes" (success)
   - Created a fresh sync worktree from origin/feat/claude-compat
+  - Recovered an interrupted same-day sync worktree autonomously when it was task-owned and safe to abort
   - Merged upstream/main into the sync branch with a normal merge commit
   - Tier 1/2 conflicts auto-resolved, Tier 3 conflicts aborted with report
   - HOOK_EVENT_NAMES* arrays in hooks/src/lib.rs reconciled against matcher_pattern_for_event
@@ -181,17 +182,54 @@ If `RECOVER_INSTALL_ONLY=0`, continue to Phase 3.
    ```
 
    If the branch or worktree already exists from a same-day retry, inspect it
-   before reusing it. Reuse is allowed only if the worktree is clean and the
-   existing sync branch already contains the captured base SHA:
+   before reusing it.
+
+   Clean reuse is allowed only if the worktree is clean and the existing sync
+   branch already contains the captured base SHA:
 
    ```bash
    git merge-base --is-ancestor "$BASE_SHA" HEAD
    ```
 
+   If the same-day worktree exists and is dirty because an earlier run was
+   interrupted during `git merge --no-ff upstream/main`, recover autonomously
+   instead of asking the user, but only when all of these checks pass:
+
+   - `git rev-parse --abbrev-ref HEAD` equals `$SYNC_BRANCH`.
+   - `git rev-parse --git-common-dir` points at the canonical checkout's
+     `.git` directory.
+   - `git rev-parse -q --verify MERGE_HEAD` succeeds, proving this is an
+     in-progress merge rather than arbitrary edits.
+   - `git merge-base --is-ancestor "$BASE_SHA" HEAD` succeeds.
+   - `git status --porcelain` contains no untracked paths and no changes outside
+     the merge result.
+
+   For that task-owned interrupted merge, record a conflict-log line such as
+   `recovered stale same-day merge attempt: aborted MERGE_HEAD <sha> and retried
+   current upstream/main <sha>`, then run:
+
+   ```bash
+   STALE_MERGE_HEAD=$(git rev-parse MERGE_HEAD)
+   git merge --abort
+   git status --porcelain
+   git merge-base --is-ancestor "$BASE_SHA" HEAD
+   ```
+
+   If the abort leaves the worktree clean and the base check still passes,
+   continue with the current `upstream/main` merge below. Do not ask the user
+   just because the aborted stale merge had unresolved Tier 1/Tier 2 conflicts;
+   those resolutions are reproducible from `origin/feat/claude-compat` and
+   `upstream/main`.
+
    If that check fails, the base branch moved since the sync branch was created.
    Stop and report. Do not merge the PR until the sync branch has merged the
    current `origin/feat/claude-compat` base and Phase 4 verification has run
    again. Do not delete worktrees or branches blindly.
+
+   Stop and report instead of aborting if the existing worktree is not the
+   dated sync worktree, is not on `$SYNC_BRANCH`, has untracked source/config
+   files, has no `MERGE_HEAD`, or contains local commits that do not contain the
+   captured base SHA.
 
 2. Merge upstream with a normal merge commit:
 
@@ -350,6 +388,12 @@ branch. Do not amend fork commits and do not rewrite `feat/claude-compat`.
    echo "$PR_URL"
    ```
 
+   If `gh pr create` fails with a permission error but the GitHub connector is
+   available, use the connector to create the same PR instead of stopping. Keep
+   the same base, head, title, and verification/conflict-resolution body. Record
+   in the final report that the connector was used because the `gh` token lacked
+   `CreatePullRequest` permission.
+
 3. Merge the PR only after local verification has passed.
 
    Use a normal merge commit. Never squash merge and never rebase merge this PR:
@@ -367,6 +411,12 @@ branch. Do not amend fork commits and do not rewrite `feat/claude-compat`.
 
    This base-SHA guard prevents GitHub from creating a final merge commit from a
    different integration-branch tree than the one verified locally.
+
+   If `gh pr merge` cannot see a connector-created PR but the GitHub connector is
+   available, use the connector merge operation with `merge_method=merge` and
+   `expected_head_sha=$(git rev-parse HEAD)`. After a connector merge succeeds,
+   delete the short-lived remote sync branch with `git push origin --delete
+   "$SYNC_BRANCH"` to match `gh pr merge --delete-branch` cleanup.
 
    If GitHub refuses to merge because checks, permissions, or branch protection
    block it, stop and report the PR URL. Do not bypass protections.
@@ -443,8 +493,11 @@ State clearly in the final summary:
   the installed binary matches that branch, the run is a no-op.
 - If `upstream/main` is already contained but the installed binary is stale or
   missing, the run skips the PR workflow and performs install-only recovery.
-- Same-day retries reuse or report the dated sync branch/worktree rather than
-  deleting them blindly.
+- Same-day retries reuse clean dated sync branches/worktrees. If the dated
+  task-owned sync worktree is only dirty because an earlier `git merge --no-ff
+  upstream/main` was interrupted, abort that stale merge and retry against the
+  current fetched `upstream/main` without asking. Report only when the worktree
+  fails the explicit recovery checks.
 - The persistent branch is never force-pushed.
 - The local main checkout is updated only by `git pull --ff-only` after the PR is
   merged.
