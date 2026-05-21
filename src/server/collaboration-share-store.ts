@@ -13,6 +13,7 @@ import {
   type CollaborationGrantRecord,
   type CollaborationGrantRevocationTombstone,
   type CollaborationPrincipal,
+  type CollaborationSharedTaskRemoval,
   type CreateCollaborationContactShareInviteRequest,
   type DecideCollaborationContactShareRequest,
 } from '../shared/contracts/collaboration-share.js';
@@ -25,6 +26,11 @@ type CollaborationShareAuditKind =
   | 'share.accepted'
   | 'share.declined'
   | 'share.revoked';
+
+export interface ActiveCollaborationTaskShare {
+  invite: CollaborationContactShareInvite;
+  grant: CollaborationGrantRecord;
+}
 
 interface CollaborationShareStoreFile {
   version: number;
@@ -422,6 +428,65 @@ export class CollaborationShareStore {
     const grant = this.grants.get(grantId);
     if (!grant || grant.revokedAt || this.isGrantTombstoned(grant) || this.isExpired(grant.expiresAt)) return undefined;
     return cloneGrant(grant);
+  }
+
+  listActiveTaskSharesForPrincipal(principal: VerifiedDevicePrincipal): ActiveCollaborationTaskShare[] {
+    const normalized: CollaborationPrincipal = {
+      kind: 'contact-device',
+      contactId: principal.contactId,
+      deviceId: principal.deviceId,
+    };
+    return [...this.invites.values()].flatMap((invite) => {
+      if (
+        invite.direction !== 'outbound'
+        || invite.status !== 'accepted'
+        || !invite.grantId
+        || !samePrincipal(invite.principal, normalized)
+      ) {
+        return [];
+      }
+      const grant = this.getGrant(invite.grantId);
+      if (!grant || !grant.capabilities.includes('viewTask')) return [];
+      return [{ invite: cloneInvite(invite), grant }];
+    });
+  }
+
+  listRemovedTaskSharesForPrincipal(principal: VerifiedDevicePrincipal): CollaborationSharedTaskRemoval[] {
+    const normalized: CollaborationPrincipal = {
+      kind: 'contact-device',
+      contactId: principal.contactId,
+      deviceId: principal.deviceId,
+    };
+    return [...this.invites.values()].flatMap<CollaborationSharedTaskRemoval>((invite) => {
+      if (
+        invite.direction !== 'outbound'
+        || !samePrincipal(invite.principal, normalized)
+      ) {
+        return [];
+      }
+      const tombstone = this.tombstoneForInvite(invite);
+      if (tombstone) {
+        const removal: CollaborationSharedTaskRemoval = {
+          inviteId: invite.inviteId,
+          reason: 'revoked',
+          policyVersion: tombstone.policyVersion,
+          removedAt: tombstone.revokedAt,
+        };
+        return [removal];
+      }
+      if (!invite.grantId) return [];
+      const grant = this.grants.get(invite.grantId);
+      if (grant && this.isExpired(grant.expiresAt)) {
+        const removal: CollaborationSharedTaskRemoval = {
+          inviteId: invite.inviteId,
+          reason: 'expired',
+          policyVersion: grant.policyVersion,
+          removedAt: grant.expiresAt,
+        };
+        return [removal];
+      }
+      return [];
+    });
   }
 
   listTombstones(): CollaborationGrantRevocationTombstone[] {

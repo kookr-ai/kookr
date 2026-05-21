@@ -1,4 +1,7 @@
+import type { RemoteTaskProjectionV1 } from '../../remote/share-contract.js';
+
 export const COLLABORATION_CONTACT_SHARE_INVITE_SCHEMA_VERSION = 'collaboration-contact-share-invite.v1' as const;
+export const COLLABORATION_SHARED_TASK_UPDATES_SCHEMA_VERSION = 'collaboration-shared-task-updates.v1' as const;
 
 export type CollaborationGrantCapability = 'viewTask';
 export type CollaborationContactShareDecision = 'accept' | 'decline' | 'revoke';
@@ -64,4 +67,25 @@ export interface CreateCollaborationContactShareInviteRequest {
 export interface DecideCollaborationContactShareRequest {
   inviteId: string;
   decision: CollaborationContactShareDecision;
+}
+
+export interface CollaborationSharedTaskUpdate {
+  inviteId: string;
+  grantId: string;
+  policyVersion: number;
+  expiresAt?: string;
+  projection: RemoteTaskProjectionV1;
+}
+
+export interface CollaborationSharedTaskRemoval {
+  inviteId: string;
+  reason: 'revoked' | 'expired';
+  policyVersion?: number;
+  removedAt?: string;
+}
+
+export interface ListCollaborationSharedTaskUpdatesResponse {
+  schemaVersion: typeof COLLABORATION_SHARED_TASK_UPDATES_SCHEMA_VERSION;
+  updates: CollaborationSharedTaskUpdate[];
+  removals: CollaborationSharedTaskRemoval[];
 }

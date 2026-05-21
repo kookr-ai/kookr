@@ -7,6 +7,12 @@ import { Hono } from 'hono';
 import { WebSocket } from 'ws';
 
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
+import { ContactShareReadModel } from '../core/contact-share.js';
+import { saveTasks } from '../core/task-persistence.js';
+import { TaskStore } from '../core/tasks.js';
+import { asNodeId } from '../remote/ids.js';
+import type { ListCollaborationSharedTaskUpdatesResponse } from '../shared/contracts/collaboration-share.js';
+import type { ContactShareEnvelope, ListSharedTasksApiResponse } from '../shared/contracts/contact-share.js';
 import { startHttpAndWebSockets, type HttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import {
   buildCollaborationHealthResponse,
@@ -15,15 +21,21 @@ import {
   type CollaborationListenerHandle,
 } from './collaboration-listener.js';
 import { readPrivateNetworkCollaborationConfig } from './collaboration-config.js';
+import { startPrivateNetworkSharedTaskUpdatePoller } from './collaboration-update-poller.js';
 import {
   collaborationDeviceRequestPayload,
   ContactIdentityStore,
 } from './contact-identity-store.js';
 import { CollaborationShareStore } from './collaboration-share-store.js';
+import { createKookrServerInternal } from './index.js';
 import { registerCollaborationPairingRoutes } from './routes/collaboration-pairing-routes.js';
+import { registerContactShareRoutes } from './routes/contact-share-routes.js';
+import type { KookrServerInternal } from './server-test-helpers.js';
+import { projectTaskForRemoteShare } from './share-projection.js';
 
 let normalServer: HttpAndWebSockets | undefined;
 let collaborationListener: CollaborationListenerHandle | undefined;
+let kookrServer: KookrServerInternal | undefined;
 
 async function closeNormalServer(): Promise<void> {
   if (!normalServer) return;
@@ -31,6 +43,12 @@ async function closeNormalServer(): Promise<void> {
   normalServer.wss.close();
   await new Promise<void>((resolve) => normalServer?.httpServer.close(() => resolve()));
   normalServer = undefined;
+}
+
+async function closeKookrServer(): Promise<void> {
+  if (!kookrServer) return;
+  await kookrServer.close();
+  kookrServer = undefined;
 }
 
 async function closeCollaborationListener(): Promise<void> {
@@ -168,6 +186,63 @@ async function signedJson(input: {
   });
 }
 
+async function signedGet(input: {
+  baseUrl: string;
+  path: string;
+  privateKey: string;
+  contactId: string;
+  deviceId: string;
+  timestamp: string;
+  nonce: string;
+}): Promise<Response> {
+  return fetch(`${input.baseUrl}${input.path}`, {
+    headers: authHeaders({
+      privateKey: input.privateKey,
+      contactId: input.contactId,
+      deviceId: input.deviceId,
+      audience: input.baseUrl,
+      method: 'GET',
+      path: input.path,
+      bodySha256: emptyBodySha256(),
+      timestamp: input.timestamp,
+      nonce: input.nonce,
+    }),
+  });
+}
+
+async function startRecipientContactShareServer(contactShare: ContactShareReadModel): Promise<HttpAndWebSockets> {
+  const app = new Hono();
+  registerContactShareRoutes(app, {
+    contactShare,
+    remoteShare: { csrfToken: 'csrf-private-network', client: null },
+  } as never);
+  return startHttpAndWebSockets({
+    app,
+    port: 0,
+    host: '127.0.0.1',
+    tasksFile: '/tmp/tasks.json',
+    hooksDir: '/tmp/hooks',
+    terminalBackend: new FakeTerminalBackend(),
+    terminalDeps: {
+      monitor: {} as never,
+      abortPendingSuggestion: () => {},
+      broadcastToAll: () => {},
+      serverCwd: '/repo',
+    },
+    onDashboardConnection: (ws) => ws.close(),
+  });
+}
+
+function disabledTestInterval(): {
+  setIntervalImpl: typeof setInterval;
+  clearIntervalImpl: typeof clearInterval;
+} {
+  return {
+    setIntervalImpl: (() => 0 as unknown as ReturnType<typeof setInterval>) as typeof setInterval,
+    clearIntervalImpl: (() => undefined) as typeof clearInterval,
+  };
+}
+
 async function verifiedContact(input: {
   baseUrl: string;
   identityStore: ContactIdentityStore;
@@ -212,6 +287,7 @@ async function verifiedContact(input: {
 }
 
 afterEach(async () => {
+  await closeKookrServer();
   await closeCollaborationListener();
   await closeNormalServer();
 });
@@ -461,8 +537,8 @@ describe('private-network collaboration listener', () => {
     const signed = await fetch(`${baseUrl}${auth.path}`, {
       headers: authHeaders({ privateKey: recipient.privateKey, ...auth }),
     });
-    expect(signed.status).toBe(501);
-    await expect(signed.json()).resolves.toEqual({ error: 'collaboration-route-not-implemented' });
+    expect(signed.status).toBe(404);
+    await expect(signed.json()).resolves.toEqual({ error: 'contact-share-view-only-disabled' });
 
     const replayed = await fetch(`${baseUrl}${auth.path}`, {
       headers: authHeaders({ privateKey: recipient.privateKey, ...auth }),
@@ -655,8 +731,8 @@ describe('private-network collaboration listener', () => {
     const signed = await fetch(`${baseUrl}${auth.path}`, {
       headers: authHeaders({ privateKey: recipient.privateKey, ...auth }),
     });
-    expect(signed.status).toBe(501);
-    await expect(signed.json()).resolves.toEqual({ error: 'collaboration-route-not-implemented' });
+    expect(signed.status).toBe(404);
+    await expect(signed.json()).resolves.toEqual({ error: 'contact-share-view-only-disabled' });
   });
 
   it('creates a view-only Contact Share grant for a verified device and persists audit metadata', async () => {
@@ -773,6 +849,316 @@ describe('private-network collaboration listener', () => {
     expect(audit).not.toContain('privateKey');
   });
 
+  it('exchanges safe task projections between two local servers without loading the relay path', async () => {
+    let currentTime = new Date('2026-05-21T00:00:00.000Z');
+    const now = () => currentTime;
+    const ownerTaskStore = new TaskStore();
+    const ownerTask = ownerTaskStore.createTask({ prompt: 'do not leak github_pat_secret', cwd: '/private/project' });
+    ownerTaskStore.renameTask(ownerTask.id, 'Fix auth regression');
+    ownerTaskStore.startTask(ownerTask.id);
+    const identityStore = new ContactIdentityStore({ now });
+    const shareStore = new CollaborationShareStore({ now, taskExists: (taskId) => Boolean(ownerTaskStore.getTask(taskId)) });
+    const collaborationPort = await reservePort();
+    const config = readPrivateNetworkCollaborationConfig({
+      env: {
+        KOOKR_COLLABORATION_PROFILES: 'true',
+        KOOKR_COLLABORATION_LISTENER: 'true',
+        KOOKR_COLLABORATION_PRIVATE_NETWORK: 'true',
+        KOOKR_COLLABORATION_CONTACT_SHARE_VIEW_ONLY: 'true',
+        KOOKR_COLLABORATION_PORT: String(collaborationPort),
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      now,
+    });
+    collaborationListener = await startPrivateNetworkCollaborationListener(config, {
+      identityStore,
+      shareStore,
+      taskExists: (taskId) => Boolean(ownerTaskStore.getTask(taskId)),
+      projectTaskForShare: (taskId) => {
+        const task = ownerTaskStore.getTask(taskId);
+        return task ? projectTaskForRemoteShare(task, { nodeId: asNodeId('kookr-node-owner') }) : null;
+      },
+    });
+    const ownerBaseUrl = `http://127.0.0.1:${listeningPort(collaborationListener)}`;
+    const initiator = keyPair();
+    const recipient = keyPair();
+    const principal = await verifiedContact({
+      baseUrl: ownerBaseUrl,
+      identityStore,
+      initiatorPublicKey: initiator.publicKey,
+      recipientPublicKey: recipient.publicKey,
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      offerNonce: 'updates-offer',
+      acceptNonce: 'updates-accept',
+    });
+    const invite = await shareStore.createOutboundInvite(principal, {
+      taskId: ownerTask.id,
+      capabilities: ['viewTask'],
+    });
+    const accept = await signedJson({
+      baseUrl: ownerBaseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'updates-accept-decision',
+      body: { inviteId: invite.inviteId, decision: 'accept' },
+    });
+    expect(accept.status).toBe(200);
+
+    const recipientContactShare = new ContactShareReadModel();
+    const envelope: ContactShareEnvelope = {
+      schemaVersion: 'contact-share-envelope.v1',
+      envelopeId: 'env-private-network-share',
+      shareId: invite.inviteId,
+      decisionVersion: 1,
+      senderContactId: 'owner-contact',
+      recipientContactId: principal.contactId,
+      recipientDeviceId: principal.deviceId,
+      kind: 'share.invite',
+      createdAt: '2026-05-21T00:00:00.000Z',
+      ciphertext: 'sealed:private-network-invite',
+      senderSignature: 'sig:private-network-owner',
+      ...(invite.expiresAt ? { expiresAt: invite.expiresAt } : {}),
+    };
+    recipientContactShare.ingestEncryptedEnvelope(envelope);
+    recipientContactShare.recordDecryptedInvite({
+      shareId: invite.inviteId,
+      ownerContactId: 'owner-contact',
+      ownerDisplayName: 'Jean',
+      ownerNodeLabel: 'desktop',
+      originNodeId: asNodeId('kookr-node-owner'),
+      remoteTaskId: ownerTask.id,
+      taskLabel: 'Waiting for first update',
+      grants: ['view'],
+      remoteStatus: 'open',
+    });
+    expect(recipientContactShare.acceptShare(invite.inviteId, principal.deviceId, now())).toEqual(expect.objectContaining({
+      sharedTaskId: `shared:${invite.inviteId}`,
+    }));
+    normalServer = await startRecipientContactShareServer(recipientContactShare);
+    const recipientBaseUrl = `http://127.0.0.1:${listeningPort(normalServer)}`;
+    const recipientConfig = readPrivateNetworkCollaborationConfig({
+      env: {
+        KOOKR_COLLABORATION_PROFILES: 'true',
+        KOOKR_COLLABORATION_LISTENER: 'true',
+        KOOKR_COLLABORATION_PRIVATE_NETWORK: 'true',
+        KOOKR_COLLABORATION_PEER_BASE_URL: ownerBaseUrl,
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: listeningPort(normalServer),
+      now,
+    });
+    const recipientPoller = startPrivateNetworkSharedTaskUpdatePoller({
+      config: recipientConfig,
+      env: {
+        KOOKR_COLLABORATION_UPDATE_POLLING: 'true',
+        KOOKR_COLLABORATION_LOCAL_CONTACT_ID: principal.contactId,
+        KOOKR_COLLABORATION_LOCAL_DEVICE_ID: principal.deviceId,
+        KOOKR_COLLABORATION_LOCAL_PRIVATE_KEY_PEM: recipient.privateKey,
+      },
+      contactShare: recipientContactShare,
+      now,
+      ...disabledTestInterval(),
+    });
+
+    const firstUpdateRes = await signedGet({
+      baseUrl: ownerBaseUrl,
+      path: '/api/collaboration/shared-task-updates',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'updates-get-1',
+    });
+    expect(firstUpdateRes.status).toBe(200);
+    const firstUpdate = await firstUpdateRes.json() as ListCollaborationSharedTaskUpdatesResponse;
+    expect(firstUpdate).toEqual({
+      schemaVersion: 'collaboration-shared-task-updates.v1',
+      updates: [
+        expect.objectContaining({
+          inviteId: invite.inviteId,
+          projection: expect.objectContaining({
+            schemaVersion: 'remote-task-projection.v1',
+            taskId: ownerTask.id,
+            taskLabel: 'Fix auth regression',
+            status: 'inProgress',
+          }),
+        }),
+      ],
+      removals: [],
+    });
+    expect(JSON.stringify(firstUpdate)).not.toContain('/private/project');
+    expect(JSON.stringify(firstUpdate)).not.toContain('github_pat_secret');
+    expect(JSON.stringify(firstUpdate)).not.toContain('terminal');
+    await expect(recipientPoller.pollOnce()).resolves.toBe(1);
+    const listedAfterFirst = await fetch(`${recipientBaseUrl}/api/contact-share/shared-tasks`);
+    await expect(listedAfterFirst.json() as Promise<ListSharedTasksApiResponse>).resolves.toEqual({
+      sharedTasks: [
+        expect.objectContaining({
+          kind: 'shared-task',
+          sharedTaskId: `shared:${invite.inviteId}`,
+          remoteTaskId: ownerTask.id,
+          localDisplayLabel: 'Fix auth regression',
+          remoteStatus: 'inProgress',
+        }),
+      ],
+    });
+
+    ownerTaskStore.completeTask(ownerTask.id);
+    currentTime = new Date('2026-05-21T00:01:00.000Z');
+    const completedRes = await signedGet({
+      baseUrl: ownerBaseUrl,
+      path: '/api/collaboration/shared-task-updates',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:01:00.000Z',
+      nonce: 'updates-get-2',
+    });
+    const completed = await completedRes.json() as ListCollaborationSharedTaskUpdatesResponse;
+    expect(completed.updates[0]?.projection.status).toBe('completed');
+    await expect(recipientPoller.pollOnce()).resolves.toBe(1);
+
+    const revoke = await signedJson({
+      baseUrl: ownerBaseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:01:00.000Z',
+      nonce: 'updates-revoke',
+      body: { inviteId: invite.inviteId, decision: 'revoke' },
+    });
+    expect(revoke.status).toBe(200);
+    ownerTaskStore.reopenTask(ownerTask.id);
+    currentTime = new Date('2026-05-21T00:02:00.000Z');
+    const revokedRes = await signedGet({
+      baseUrl: ownerBaseUrl,
+      path: '/api/collaboration/shared-task-updates',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:02:00.000Z',
+      nonce: 'updates-get-revoked',
+    });
+    const revokedUpdates = await revokedRes.json() as ListCollaborationSharedTaskUpdatesResponse;
+    expect(revokedUpdates.updates).toEqual([]);
+    expect(revokedUpdates.removals).toEqual([
+      expect.objectContaining({
+        inviteId: invite.inviteId,
+        reason: 'revoked',
+      }),
+    ]);
+    await expect(recipientPoller.pollOnce()).resolves.toBe(1);
+    recipientPoller.stop();
+    expect(recipientContactShare.listSharedTasks(now())).toEqual([]);
+  });
+
+  it('projects persisted task shares through the configured Kookr server listener', async () => {
+    const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-collaboration-server-'));
+    const tasksFile = join(kookrDir, 'tasks.json');
+    const collaborationPort = await reservePort();
+    const now = () => new Date('2026-05-21T00:00:00.000Z');
+    const ownerTasks = new TaskStore();
+    const ownerTask = ownerTasks.createTask({ prompt: 'secret prompt', cwd: '/private/project' });
+    ownerTasks.renameTask(ownerTask.id, 'Production-wired task');
+    ownerTasks.startTask(ownerTask.id);
+    await saveTasks(ownerTasks.listTasks(), tasksFile);
+
+    const identityStore = new ContactIdentityStore({ kookrDir, now });
+    const initiator = keyPair();
+    const recipient = keyPair();
+    const offer = await identityStore.createPairingOffer({
+      publicKey: initiator.publicKey,
+      nonce: 'server-offer',
+      commitment: 'server-offer-commitment',
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      label: 'Jean desktop',
+    });
+    const accepted = await identityStore.acceptPairingOffer({
+      pairingId: offer.pairingId,
+      publicKey: recipient.publicKey,
+      nonce: 'server-accept',
+      commitment: 'server-accept-commitment',
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      label: 'Alice laptop',
+    });
+    const verified = await identityStore.verifyAcceptedPairing({
+      pairingId: accepted.pairingId,
+      verifiedFingerprint: accepted.verifiedFingerprint,
+      verificationCode: accepted.verificationCode,
+    });
+    const principal = {
+      contactId: verified.contact.contactId,
+      deviceId: verified.device.deviceId,
+    };
+    const shareStore = new CollaborationShareStore({ kookrDir, now, taskExists: (taskId) => taskId === ownerTask.id });
+    const invite = await shareStore.createOutboundInvite(principal, {
+      taskId: ownerTask.id,
+      capabilities: ['viewTask'],
+    });
+    await shareStore.decide(principal, { inviteId: invite.inviteId, decision: 'accept' });
+
+    const previousEnv = {
+      KOOKR_COLLABORATION_PROFILES: process.env.KOOKR_COLLABORATION_PROFILES,
+      KOOKR_COLLABORATION_LISTENER: process.env.KOOKR_COLLABORATION_LISTENER,
+      KOOKR_COLLABORATION_PRIVATE_NETWORK: process.env.KOOKR_COLLABORATION_PRIVATE_NETWORK,
+      KOOKR_COLLABORATION_CONTACT_SHARE_VIEW_ONLY: process.env.KOOKR_COLLABORATION_CONTACT_SHARE_VIEW_ONLY,
+      KOOKR_COLLABORATION_PORT: process.env.KOOKR_COLLABORATION_PORT,
+    };
+    try {
+      process.env.KOOKR_COLLABORATION_PROFILES = 'true';
+      process.env.KOOKR_COLLABORATION_LISTENER = 'true';
+      process.env.KOOKR_COLLABORATION_PRIVATE_NETWORK = 'true';
+      process.env.KOOKR_COLLABORATION_CONTACT_SHARE_VIEW_ONLY = 'true';
+      process.env.KOOKR_COLLABORATION_PORT = String(collaborationPort);
+      kookrServer = await createKookrServerInternal({
+        port: 0,
+        host: '127.0.0.1',
+        kookrDir,
+        tasksFile,
+        hooksDir: join(kookrDir, 'hooks'),
+        settingsDir: join(kookrDir, 'settings'),
+        serverCwd: '/test/cwd',
+        frontendDir: join(kookrDir, 'frontend'),
+        saveIntervalMs: 600_000,
+        livenessIntervalMs: 600_000,
+        terminalBackend: new FakeTerminalBackend(),
+        claudeDir: join(kookrDir, 'claude'),
+      });
+    } finally {
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+
+    const baseUrl = `http://127.0.0.1:${collaborationPort}`;
+    const updatesRes = await signedGet({
+      baseUrl,
+      path: '/api/collaboration/shared-task-updates',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: new Date().toISOString(),
+      nonce: 'server-wiring-updates',
+    });
+    expect(updatesRes.status).toBe(200);
+    const updates = await updatesRes.json() as ListCollaborationSharedTaskUpdatesResponse;
+    expect(updates.updates).toEqual([
+      expect.objectContaining({
+        inviteId: invite.inviteId,
+        projection: expect.objectContaining({
+          nodeId: expect.stringMatching(/^kookr-private-node-/),
+          taskId: ownerTask.id,
+          taskLabel: 'Production-wired task',
+          status: 'inProgress',
+        }),
+      }),
+    ]);
+    expect(updates.removals).toEqual([]);
+    expect(updates.updates[0]?.projection.nodeId).toBeDefined();
+    expect(JSON.stringify(updates)).not.toContain('/private/project');
+    expect(JSON.stringify(updates)).not.toContain('secret prompt');
+  }, 15_000);
+
   it('rejects unpaired devices and prevents declined or expired invites from creating grants', async () => {
     let currentTime = new Date('2026-05-21T00:00:00.000Z');
     const now = () => currentTime;
@@ -884,6 +1270,23 @@ describe('private-network collaboration listener', () => {
     const acceptedGrantBody = await acceptedGrant.json() as { grant: { grantId: string } };
     currentTime = new Date('2026-05-21T00:02:00.000Z');
     expect(shareStore.getGrant(acceptedGrantBody.grant.grantId)).toBeUndefined();
+    const expiredUpdates = await signedGet({
+      baseUrl,
+      path: '/api/collaboration/shared-task-updates',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:02:00.000Z',
+      nonce: 'short-lived-updates',
+    });
+    expect(expiredUpdates.status).toBe(200);
+    const expiredUpdatesBody = await expiredUpdates.json() as ListCollaborationSharedTaskUpdatesResponse;
+    expect(expiredUpdatesBody.updates).toEqual([]);
+    expect(expiredUpdatesBody.removals).toEqual([
+      expect.objectContaining({
+        inviteId: acceptedInvite.inviteId,
+        reason: 'expired',
+      }),
+    ]);
   });
 
   it('persists revocation tombstones so stale invites and cached grants cannot resurrect access', async () => {
@@ -978,6 +1381,74 @@ describe('private-network collaboration listener', () => {
 
     const audit = await readFile(join(kookrDir, 'collaboration-audit.jsonl'), 'utf-8');
     expect(audit).toContain('"kind":"share.revoked"');
+  });
+
+  it('streams removals for revoked pending private-network shares', async () => {
+    const now = () => new Date('2026-05-21T00:00:00.000Z');
+    const identityStore = new ContactIdentityStore({ now });
+    const shareStore = new CollaborationShareStore({ now, taskExists: () => true });
+    const collaborationPort = await reservePort();
+    const config = readPrivateNetworkCollaborationConfig({
+      env: {
+        KOOKR_COLLABORATION_PROFILES: 'true',
+        KOOKR_COLLABORATION_LISTENER: 'true',
+        KOOKR_COLLABORATION_PRIVATE_NETWORK: 'true',
+        KOOKR_COLLABORATION_CONTACT_SHARE_VIEW_ONLY: 'true',
+        KOOKR_COLLABORATION_PORT: String(collaborationPort),
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      now,
+    });
+    collaborationListener = await startPrivateNetworkCollaborationListener(config, {
+      identityStore,
+      shareStore,
+    });
+    const baseUrl = `http://127.0.0.1:${listeningPort(collaborationListener)}`;
+    const initiator = keyPair();
+    const recipient = keyPair();
+    const principal = await verifiedContact({
+      baseUrl,
+      identityStore,
+      initiatorPublicKey: initiator.publicKey,
+      recipientPublicKey: recipient.publicKey,
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      offerNonce: 'pending-revoke-offer',
+      acceptNonce: 'pending-revoke-accept',
+    });
+
+    const invite = await shareStore.createOutboundInvite(principal, {
+      taskId: 'task-1',
+      capabilities: ['viewTask'],
+    });
+    const revokeRes = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'pending-revoke-decision',
+      body: { inviteId: invite.inviteId, decision: 'revoke' },
+    });
+    expect(revokeRes.status).toBe(200);
+
+    const updatesRes = await signedGet({
+      baseUrl,
+      path: '/api/collaboration/shared-task-updates',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'pending-revoke-updates',
+    });
+    expect(updatesRes.status).toBe(200);
+    const updates = await updatesRes.json() as ListCollaborationSharedTaskUpdatesResponse;
+    expect(updates.updates).toEqual([]);
+    expect(updates.removals).toEqual([
+      expect.objectContaining({
+        inviteId: invite.inviteId,
+        reason: 'revoked',
+      }),
+    ]);
   });
 
 });

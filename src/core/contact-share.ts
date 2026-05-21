@@ -7,6 +7,7 @@ import type {
   KookrContact,
   SharedTask,
 } from '../shared/contracts/contact-share.js';
+import type { RemoteTaskProjectionV1 } from '../remote/share-contract.js';
 import {
   isContactShareEnvelope,
   sharedTaskIdForShare,
@@ -172,6 +173,49 @@ export class ContactShareReadModel {
     return cloneSharedTask(task);
   }
 
+  applyRemoteTaskProjection(
+    shareId: string,
+    projection: RemoteTaskProjectionV1,
+    now = new Date(),
+  ): SharedTask | null {
+    const sharedTaskId = sharedTaskIdForShare(shareId);
+    const current = this.sharedTasks.get(sharedTaskId);
+    if (!current) return null;
+    const active = this.pruneInactiveSharedTaskForRead(current, now);
+    if (!active) return null;
+    if (projection.nodeId !== active.originNodeId || projection.taskId !== active.remoteTaskId) {
+      return null;
+    }
+    const currentUpdatedAtMs = active.remoteProjectionUpdatedAt ? Date.parse(active.remoteProjectionUpdatedAt) : Number.NaN;
+    const projectionUpdatedAtMs = Date.parse(projection.updatedAt);
+    if (
+      !Number.isFinite(projectionUpdatedAtMs)
+      || (Number.isFinite(currentUpdatedAtMs) && projectionUpdatedAtMs < currentUpdatedAtMs)
+    ) {
+      return cloneSharedTask(active);
+    }
+    const updated: SharedTask = {
+      ...active,
+      localDisplayLabel: projection.taskLabel,
+      remoteStatus: projection.status,
+      remoteProjectionUpdatedAt: projection.updatedAt,
+      updatedAt: projection.updatedAt,
+    };
+    this.sharedTasks.set(sharedTaskId, cloneSharedTask(updated));
+    return cloneSharedTask(updated);
+  }
+
+  revokeRemoteSharedTask(shareId: string, now = new Date()): boolean {
+    const decision: ShareDecision = {
+      kind: 'share.revoke',
+      decisionVersion: this.nextDecisionVersionForShare(shareId),
+      envelopeId: `remote-revoke-${shareId}-${now.getTime()}`,
+      createdAt: now.toISOString(),
+    };
+    this.decisionsByDeviceShare.set(this.decisionKey(shareId, 'remote-owner'), decision);
+    return this.sharedTasks.delete(sharedTaskIdForShare(shareId));
+  }
+
   refuseShare(shareId: string, recipientDeviceId: string, now = new Date()): void {
     const decision: ShareDecision = {
       kind: 'share.refuse',
@@ -207,6 +251,15 @@ export class ContactShareReadModel {
 
   private nextDecisionVersion(shareId: string, recipientDeviceId: string): number {
     return (this.decisionsByDeviceShare.get(this.decisionKey(shareId, recipientDeviceId))?.decisionVersion ?? 0) + 1;
+  }
+
+  private nextDecisionVersionForShare(shareId: string): number {
+    let maxVersion = 0;
+    for (const [key, decision] of this.decisionsByDeviceShare) {
+      if (!key.startsWith(`${shareId}\0`)) continue;
+      maxVersion = Math.max(maxVersion, decision.decisionVersion);
+    }
+    return maxVersion + 1;
   }
 
   private pruneInactiveSharedTaskForRead(task: SharedTask, now: Date): SharedTask | null {

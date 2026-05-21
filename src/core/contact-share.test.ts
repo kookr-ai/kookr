@@ -228,4 +228,132 @@ describe('ContactShareReadModel', () => {
     expect(model.listSharedTasks(new Date('2026-05-18T10:02:01.000Z'))).toEqual([]);
     expect(model.acceptShare('share-1', 'device-recipient-a', new Date('2026-05-18T10:02:02.000Z'))).toBeNull();
   });
+
+  it('removes an accepted shared task when the remote owner reports removal', () => {
+    const model = new ContactShareReadModel();
+    model.ingestEncryptedEnvelope(envelope());
+    model.recordDecryptedInvite(invite());
+
+    expect(model.acceptShare('share-1', 'device-recipient-a', new Date('2026-05-18T10:01:00.000Z'))).toEqual(expect.objectContaining({
+      lifecycle: 'accepted',
+    }));
+
+    expect(model.revokeRemoteSharedTask('share-1', new Date('2026-05-18T10:02:00.000Z'))).toBe(true);
+    expect(model.listSharedTasks(new Date('2026-05-18T10:02:01.000Z'))).toEqual([]);
+    expect(model.acceptShare('share-1', 'device-recipient-a', new Date('2026-05-18T10:02:02.000Z'))).toBeNull();
+  });
+
+  it('blocks local accept when the remote owner reports removal before accept', () => {
+    const model = new ContactShareReadModel();
+    model.ingestEncryptedEnvelope(envelope());
+    model.recordDecryptedInvite(invite());
+
+    expect(model.revokeRemoteSharedTask('share-1', new Date('2026-05-18T10:02:00.000Z'))).toBe(false);
+    expect(model.acceptShare('share-1', 'device-recipient-a', new Date('2026-05-18T10:02:02.000Z'))).toBeNull();
+    expect(model.listSharedTasks(new Date('2026-05-18T10:02:03.000Z'))).toEqual([]);
+  });
+
+  it('applies safe remote task projections to accepted shared tasks only', () => {
+    const model = new ContactShareReadModel();
+    model.ingestEncryptedEnvelope(envelope());
+    model.recordDecryptedInvite(invite({ remoteStatus: 'open' }));
+
+    expect(model.applyRemoteTaskProjection('share-1', {
+      schemaVersion: 'remote-task-projection.v1',
+      nodeId: asNodeId('kookr-node-owner'),
+      taskId: 'task-origin',
+      taskLabel: 'Fix auth regression',
+      status: 'needsInput',
+      hasFinding: true,
+      needsInput: true,
+      updatedAt: '2026-05-18T10:01:00.000Z',
+    })).toBeNull();
+
+    expect(model.acceptShare('share-1', 'device-recipient-a', new Date('2026-05-18T10:01:00.000Z'))).toBeTruthy();
+    const updated = model.applyRemoteTaskProjection('share-1', {
+      schemaVersion: 'remote-task-projection.v1',
+      nodeId: asNodeId('kookr-node-owner'),
+      taskId: 'task-origin',
+      taskLabel: 'Fixed display label',
+      status: 'completed',
+      hasFinding: false,
+      needsInput: false,
+      activePermissionRequest: {
+        sessionId: asSessionId('permission-session'),
+        defaultKeystroke: '1',
+        permissionRequest: {
+          requestId: 'req-1',
+          toolName: 'Bash',
+          toolInputHash: 'hash-only',
+          detectedAt: '2026-05-18T10:01:00.000Z',
+          ttlMs: 300_000,
+        },
+      },
+      updatedAt: '2026-05-18T10:02:00.000Z',
+    });
+
+    expect(updated).toEqual(expect.objectContaining({
+      sharedTaskId: 'shared:share-1',
+      localDisplayLabel: 'Fixed display label',
+      remoteStatus: 'completed',
+      remoteProjectionUpdatedAt: '2026-05-18T10:02:00.000Z',
+      updatedAt: '2026-05-18T10:02:00.000Z',
+    }));
+    expect(updated).not.toHaveProperty('activePermissionRequest');
+
+    expect(model.applyRemoteTaskProjection('share-1', {
+      schemaVersion: 'remote-task-projection.v1',
+      nodeId: asNodeId('kookr-node-owner'),
+      taskId: 'task-origin',
+      taskLabel: 'Stale label',
+      status: 'inProgress',
+      hasFinding: true,
+      needsInput: false,
+      updatedAt: '2026-05-18T10:01:30.000Z',
+    })).toEqual(expect.objectContaining({
+      localDisplayLabel: 'Fixed display label',
+      remoteStatus: 'completed',
+      updatedAt: '2026-05-18T10:02:00.000Z',
+    }));
+
+    expect(model.applyRemoteTaskProjection('share-1', {
+      schemaVersion: 'remote-task-projection.v1',
+      nodeId: asNodeId('wrong-node'),
+      taskId: 'task-origin',
+      taskLabel: 'Wrong node',
+      status: 'failed',
+      hasFinding: true,
+      needsInput: false,
+      updatedAt: '2026-05-18T10:03:00.000Z',
+    })).toBeNull();
+    expect(model.applyRemoteTaskProjection('share-1', {
+      schemaVersion: 'remote-task-projection.v1',
+      nodeId: asNodeId('kookr-node-owner'),
+      taskId: 'wrong-task',
+      taskLabel: 'Wrong task',
+      status: 'failed',
+      hasFinding: true,
+      needsInput: false,
+      updatedAt: '2026-05-18T10:03:00.000Z',
+    })).toBeNull();
+
+    model.ingestEncryptedEnvelope(envelope({
+      envelopeId: 'env-revoke-v2',
+      kind: 'share.revoke',
+      decisionVersion: 2,
+      createdAt: '2026-05-18T10:03:00.000Z',
+      ciphertext: 'sealed:revoke:opaque',
+    }));
+    expect(model.applyRemoteTaskProjection('share-1', {
+      schemaVersion: 'remote-task-projection.v1',
+      nodeId: asNodeId('kookr-node-owner'),
+      taskId: 'task-origin',
+      taskLabel: 'Should not revive',
+      status: 'failed',
+      hasFinding: true,
+      needsInput: false,
+      updatedAt: '2026-05-18T10:04:00.000Z',
+    }, new Date('2026-05-18T10:04:00.000Z'))).toBeNull();
+    expect(model.listSharedTasks(new Date('2026-05-18T10:04:01.000Z'))).toEqual([]);
+  });
 });
