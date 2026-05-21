@@ -1298,6 +1298,230 @@ kbd {
 .action-btn--danger { border-color: var(--red); color: var(--red); }
 .action-btn--danger:hover { background: rgba(248,113,113,0.12); }
 
+.task-dependencies {
+  flex-shrink: 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-dim);
+  background: var(--bg-panel);
+}
+.task-dependencies-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.task-dependencies-title {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.dependency-edge-row {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  min-height: 24px;
+  font-size: 12px;
+}
+.dependency-edge-label {
+  color: var(--text-muted);
+  padding-top: 3px;
+}
+.dependency-edge-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.dependency-edge-empty {
+  color: var(--text-muted);
+  opacity: 0.75;
+  padding-top: 3px;
+}
+.dependency-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 24px;
+  padding: 2px 4px 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+}
+.dependency-chip > span:last-of-type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dependency-chip-kind {
+  color: var(--teal);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.dependency-chip button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.dependency-chip button:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-bright);
+}
+.dependency-chip button:focus-visible,
+.dependency-modal-close:focus-visible,
+.dependency-field-toggle button:focus-visible,
+.dependency-result:focus-visible,
+.dependency-free-text:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+.dependency-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(10,12,18,0.74);
+}
+.dependency-modal {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.42);
+}
+.dependency-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.dependency-modal-header h3 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text-bright);
+}
+.dependency-modal-close {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.dependency-field-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding: 3px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: var(--bg-card);
+}
+.dependency-field-toggle button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+}
+.dependency-field-toggle button.active {
+  background: var(--bg-card-hover);
+  color: var(--text-bright);
+}
+.dependency-search-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.dependency-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+}
+.dependency-search-input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+.dependency-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  max-height: 260px;
+  overflow: auto;
+}
+.dependency-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.dependency-result:hover {
+  background: var(--bg-card);
+  border-color: var(--border);
+}
+.dependency-result:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.dependency-result span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dependency-result code {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.dependency-free-text {
+  margin-top: 10px;
+}
+.dependency-error {
+  margin-top: 10px;
+  color: var(--red);
+  font-size: 12px;
+}
+
 /* --- Mini task action buttons (findings panel healthy rows) --- */
 .task-actions-mini {
   display: inline-flex;
@@ -7805,6 +8029,17 @@ a.project-drawer-stat-row-link:focus-visible {
   .detail-header-left,
   .detail-header-right {
     width: 100%;
+  }
+  .task-dependencies-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .task-dependencies-header .action-btn {
+    justify-content: center;
+  }
+  .dependency-edge-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
   }
 
   .detail-tabs-narrow {

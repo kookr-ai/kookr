@@ -1,5 +1,6 @@
 import type { AgentActivityMeta, AgentEvent, Anomaly, AnomalyType, TokenUsage, TurnState, WorktreeHealth } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
+import type { TaskDependencyEdge } from '../shared/contracts/task.js';
 import { isTerminalStatus, type TaskLaunchHealthSummary, type TaskStore } from './tasks.js';
 import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
@@ -37,6 +38,8 @@ export interface AgentState {
   taskId?: string;
   taskName?: string;
   taskStatus?: import('./types.js').TaskStatus;
+  blocks?: TaskDependencyEdge[];
+  blocked_by?: TaskDependencyEdge[];
   description?: string; // full task prompt, shown on hover
   cwd?: string;
   agentType?: import('../core/agent-types.js').AgentType;
@@ -619,6 +622,8 @@ export class Monitor {
         const task = this.taskStore.getTask(meta.taskId);
         if (task) {
           state.taskStatus = task.status;
+          state.blocks = task.blocks;
+          state.blocked_by = task.blocked_by;
           state.ralphLoop = task.ralphLoop;
           if (task.tokenUsage) {
             state.tokenUsage = task.tokenUsage;
@@ -639,6 +644,8 @@ export class Monitor {
           taskId: task.id,
           taskName: task.name ?? truncatePrompt(task.prompt, 60),
           taskStatus: 'pending',
+          blocks: task.blocks,
+          blocked_by: task.blocked_by,
           description: task.prompt,
           cwd: task.cwd,
           agentType: task.agentType,
@@ -666,6 +673,8 @@ export class Monitor {
             taskId: task.id,
             taskName: task.name ?? truncatePrompt(task.prompt, 60),
             taskStatus: task.status,
+            blocks: task.blocks,
+            blocked_by: task.blocked_by,
             description: task.prompt,
             cwd: lastSession?.cwd ?? task.cwd,
             agentType: lastSession?.agentType ?? task.agentType,

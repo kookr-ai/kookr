@@ -13,6 +13,7 @@ import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
 import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../remote/share-contract.js';
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
+import { TaskDependencyEditor } from './TaskDependencyEditor.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -682,6 +683,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
           onSharesChanged={setShareHeaderShares}
         />
       )}
+      {agent.taskId && <TaskDependencyEditor agent={agent} />}
 
       {/* Side-by-side split (wide) + tab fallback (narrow) */}
       {(() => {

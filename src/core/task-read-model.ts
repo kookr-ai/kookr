@@ -4,6 +4,7 @@ import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
+import type { TaskDependencyEdge } from '../shared/contracts/task.js';
 
 export type {
   BurnedOutTarget,
@@ -88,6 +89,10 @@ export interface Task {
   launchNote?: string;
   parentTaskId?: string;
   childTaskIds?: string[];
+  /** User-declared dependency edges for tasks this task blocks. */
+  blocks?: TaskDependencyEdge[];
+  /** User-declared dependency edges for tasks or milestones blocking this task. */
+  blocked_by?: TaskDependencyEdge[];
   /** Normalized project identifier (e.g. "github.com/owner/repo" or "local/dirname"). */
   projectId?: string;
   status: TaskStatus;
