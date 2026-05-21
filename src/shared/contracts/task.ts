@@ -1,5 +1,7 @@
 import type { RalphLoopState } from './ralph.js';
 
+export type TaskDependencyEdge = `task:${string}` | `milestone:${string}`;
+
 export interface TaskCompletionFeedback {
   rating: 'up' | 'down';
   note?: string;

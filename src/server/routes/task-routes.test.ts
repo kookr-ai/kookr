@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
+import { loadTasks } from '../../core/task-persistence.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
 import type { RouteDeps } from './shared.js';
@@ -40,10 +41,12 @@ function broadcastNoop(_msg: ServerMessage): void {
 }
 
 function mkLoopDeps(taskStore = new TaskStore()): RouteDeps {
-  const monitor = new Monitor(taskStore, new AttentionQueue());
+  const queue = new AttentionQueue();
+  const monitor = new Monitor(taskStore, queue);
   return {
     taskStore,
     monitor,
+    queue,
     broadcastToAll: broadcastNoop,
     serverCwd: '/server',
     launchServiceDeps: { taskStore, adapterRegistry: {}, lifecycleDeps: {} } as never,
@@ -203,6 +206,84 @@ describe('PATCH /api/tasks/:id/name', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe('PATCH /api/tasks/:id/edges', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'task-edges-route-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('updates declared edges, broadcasts, and persists them to tasks.json', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Current task', cwd: '/repo' });
+    const broadcastToAll = vi.fn();
+    const tasksFile = join(tempDir, 'tasks.json');
+    const app = mkApp({ ...mkLoopDeps(taskStore), broadcastToAll, tasksFile });
+
+    const res = await app.request(`/api/tasks/${task.id}/edges`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        blocks: ['task:downstream', 'milestone: docs published', 'task:downstream'],
+        blocked_by: ['task:upstream'],
+      }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      blocks: ['task:downstream', 'milestone:docs published'],
+      blocked_by: ['task:upstream'],
+    });
+    expect(broadcastToAll).toHaveBeenCalledOnce();
+
+    const persisted = await loadTasks(tasksFile);
+    expect(persisted.tasks[0]).toMatchObject({
+      id: task.id,
+      blocks: ['task:downstream', 'milestone:docs published'],
+      blocked_by: ['task:upstream'],
+    });
+  });
+
+  test('patches only the supplied edge side', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Current task', cwd: '/repo' });
+    taskStore.setTaskEdges(task.id, { blocks: ['task:old'], blocked_by: ['task:upstream'] });
+    const app = mkApp(mkLoopDeps(taskStore));
+
+    const res = await app.request(`/api/tasks/${task.id}/edges`, {
+      method: 'PATCH',
+      body: JSON.stringify({ blocks: [] }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      blocks: [],
+      blocked_by: ['task:upstream'],
+    });
+  });
+
+  test('rejects malformed edge payloads', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Current task', cwd: '/repo' });
+    const app = mkApp(mkLoopDeps(taskStore));
+
+    const res = await app.request(`/api/tasks/${task.id}/edges`, {
+      method: 'PATCH',
+      body: JSON.stringify({ blocked_by: ['not-prefixed'] }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toContain('blocked_by entries must start with task: or milestone:');
   });
 });
 

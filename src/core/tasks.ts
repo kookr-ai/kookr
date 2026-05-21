@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import type { CompletionDigest } from './completion-digest.js';
+import type { TaskDependencyEdge } from '../shared/contracts/task.js';
 import type { ChildSessionInfo, GitInfo, SessionInfo, WorktreeHealth } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
@@ -262,6 +263,21 @@ export class TaskStore {
       throw new Error(`Task not found: ${id}`);
     }
     task.name = name.trim() || undefined;
+    task.updatedAt = new Date();
+    return cloneTask(task);
+  }
+
+  setTaskEdges(id: string, patch: { blocks?: TaskDependencyEdge[]; blocked_by?: TaskDependencyEdge[] }): Task {
+    const task = this.tasks.get(id);
+    if (!task) {
+      throw new Error(`Task not found: ${id}`);
+    }
+    if (patch.blocks !== undefined) {
+      task.blocks = [...patch.blocks];
+    }
+    if (patch.blocked_by !== undefined) {
+      task.blocked_by = [...patch.blocked_by];
+    }
     task.updatedAt = new Date();
     return cloneTask(task);
   }

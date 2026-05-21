@@ -1,5 +1,6 @@
 import type { Hono } from 'hono';
 import { discoverPlaybooks } from '../../core/playbook-discovery.js';
+import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
 import { normalizeAgentSelection } from '../../core/agent-types.js';
 import { CodexRolloutScanner } from '../../adapters/codex-rollout-scanner.js';
 import { aggregate as aggregateCostComparison } from '../../core/cost-comparison-aggregator.js';
@@ -12,6 +13,7 @@ import { launchTask } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import type { LaunchDependency } from '../../core/playbook.js';
 import type { Task } from '../../core/tasks.js';
+import type { TaskDependencyEdge } from '../../shared/contracts/task.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 import type { RouteDeps } from './shared.js';
@@ -31,6 +33,8 @@ type EditEventMiss =
 /** Regex used to validate the `:agentId` and `:toolUseId` path params. Length
  *  is capped so oversize inputs 400 before any lookup work. */
 const EDIT_EVENT_PARAM_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const MAX_TASK_EDGE_COUNT = 64;
+const MAX_TASK_EDGE_LENGTH = 240;
 
 /** Same shape as EDIT_EVENT_PARAM_RE — reused for session id params that must
  *  not carry path-separator characters. Defense in depth against any future
@@ -69,6 +73,46 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
     }
 
     const updated = taskStore.renameTask(id, body.name);
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+    return c.json({ ok: true, task: updated });
+  });
+
+  app.patch('/api/tasks/:id/edges', async (c) => {
+    const id = c.req.param('id');
+    if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+
+    let body: { blocks?: unknown; blocked_by?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    const patch: { blocks?: TaskDependencyEdge[]; blocked_by?: TaskDependencyEdge[] } = {};
+    try {
+      if (body.blocks !== undefined) patch.blocks = normalizeTaskEdges(body.blocks, 'blocks');
+      if (body.blocked_by !== undefined) patch.blocked_by = normalizeTaskEdges(body.blocked_by, 'blocked_by');
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    if (patch.blocks === undefined && patch.blocked_by === undefined) {
+      return c.json({ error: 'at least one of blocks or blocked_by is required' }, 400);
+    }
+
+    const updated = taskStore.setTaskEdges(id, patch);
+    if (deps.tasksFile) {
+      const snoozes = deps.queue ? serializeSnoozed(deps.queue, taskStore) : undefined;
+      const suppressionState = deps.suppressionTracker?.export();
+      await saveTasks(
+        taskStore.getAllTasks(),
+        deps.tasksFile,
+        taskStore.getLifetimeSpendUsd(),
+        snoozes,
+        suppressionState,
+      );
+    }
     broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
     return c.json({ ok: true, task: updated });
   });
@@ -379,6 +423,50 @@ function normalizeTaskForApi(task: Task): Task {
   });
 
   return changed ? { ...task, sessions } : task;
+}
+
+function normalizeTaskEdges(value: unknown, field: 'blocks' | 'blocked_by'): TaskDependencyEdge[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${field} must be an array`);
+  }
+  if (value.length > MAX_TASK_EDGE_COUNT) {
+    throw new Error(`${field} cannot contain more than ${MAX_TASK_EDGE_COUNT} edges`);
+  }
+
+  const out: TaskDependencyEdge[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (typeof raw !== 'string') {
+      throw new Error(`${field} entries must be strings`);
+    }
+    const edge = normalizeTaskEdge(raw, field);
+    if (seen.has(edge)) continue;
+    seen.add(edge);
+    out.push(edge);
+  }
+  return out;
+}
+
+function normalizeTaskEdge(raw: string, field: 'blocks' | 'blocked_by'): TaskDependencyEdge {
+  const edge = raw.trim();
+  if (edge.length === 0) {
+    throw new Error(`${field} entries must not be empty`);
+  }
+  if (edge.length > MAX_TASK_EDGE_LENGTH) {
+    throw new Error(`${field} entries must be ${MAX_TASK_EDGE_LENGTH} characters or fewer`);
+  }
+  if (edge.startsWith('task:')) {
+    const id = edge.slice('task:'.length).trim();
+    if (!id) throw new Error(`${field} task edges must include an id`);
+    if (id !== edge.slice('task:'.length)) throw new Error(`${field} task edge ids must not have surrounding whitespace`);
+    return `task:${id}`;
+  }
+  if (edge.startsWith('milestone:')) {
+    const text = edge.slice('milestone:'.length).trim();
+    if (!text) throw new Error(`${field} milestone edges must include text`);
+    return `milestone:${text}`;
+  }
+  throw new Error(`${field} entries must start with task: or milestone:`);
 }
 
 function isAbortError(err: unknown): boolean {
