@@ -2,6 +2,30 @@ import type { TriageNavigationSlice, StoreGet, StoreSet } from '../store-types.j
 import { SEVERITY_ORDER } from '../store-types.js';
 import { isDndEnabled } from '../../hooks/useDnd.js';
 
+const TERMINAL_FOCUS_STORAGE_KEY = 'kookr-terminal-focus-mode';
+
+function loadTerminalFocusMode(): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    return localStorage.getItem(TERMINAL_FOCUS_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveTerminalFocusMode(enabled: boolean): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    if (enabled) {
+      localStorage.setItem(TERMINAL_FOCUS_STORAGE_KEY, '1');
+    } else {
+      localStorage.removeItem(TERMINAL_FOCUS_STORAGE_KEY);
+    }
+  } catch {
+    // Persistence is best-effort; focus mode should still toggle in memory.
+  }
+}
+
 export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): TriageNavigationSlice {
   return {
     selectedAgentId: null,
@@ -11,6 +35,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
     githubState: {},
     leftPane: 'activity',
     narrowTab: 'activity',
+    terminalFocusMode: loadTerminalFocusMode(),
     suggestions: {},
     focusZone: 'none',
     respondAllAgentIds: null,
@@ -151,6 +176,23 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
     setNarrowTab: (tab) => {
       set({ narrowTab: tab });
+    },
+
+    setTerminalFocusMode: (enabled) => {
+      saveTerminalFocusMode(enabled);
+      set({
+        terminalFocusMode: enabled,
+        ...(enabled ? { narrowTab: 'terminal' as const } : {}),
+      });
+    },
+
+    toggleTerminalFocusMode: () => {
+      const enabled = !get().terminalFocusMode;
+      saveTerminalFocusMode(enabled);
+      set({
+        terminalFocusMode: enabled,
+        ...(enabled ? { narrowTab: 'terminal' as const } : {}),
+      });
     },
 
     setFocusZone: (zone) => {

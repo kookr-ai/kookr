@@ -98,6 +98,7 @@ export function App() {
   const [launchInitialTab, setLaunchInitialTab] = useState<LaunchInitialTab | null>(null);
   const [reflectionSuggestion, setReflectionSuggestion] = useState<ReflectionSuggestion | null>(null);
   const operationsPopoverRef = useRef<HTMLDivElement>(null);
+  const terminalFocusTriggerRef = useRef<HTMLButtonElement>(null);
   const {
     agents,
     agentsHydrated,
@@ -122,6 +123,9 @@ export function App() {
     closeOssView,
     toggleOssView,
     coordinator,
+    terminalFocusMode,
+    setNarrowTab,
+    toggleTerminalFocusMode,
   } = useKookrStore();
 
   useEffect(() => {
@@ -178,6 +182,21 @@ export function App() {
   const selectedProjectSummary = selectedProject
     ? projectSummaries.find((p) => p.project === selectedProject) ?? null
     : null;
+  const terminalFocusActive = terminalFocusMode && !isMobileViewport;
+
+  useEffect(() => {
+    if (isMobileViewport && terminalFocusMode) {
+      setNarrowTab('activity');
+    }
+  }, [isMobileViewport, setNarrowTab, terminalFocusMode]);
+
+  useEffect(() => {
+    if (!terminalFocusActive) return;
+    const raf = window.requestAnimationFrame(() => {
+      terminalFocusTriggerRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [terminalFocusActive]);
 
   function handleCloseLaunch() {
     setShowLaunch(false);
@@ -298,6 +317,12 @@ export function App() {
         track({ type: 'shortcut_used', key: 'Alt+P', action: 'toggle_project_sidebar', context: 'global' });
         toggleProjectSidebar();
       }
+      if (e.altKey && e.key === 't') {
+        e.preventDefault();
+        if (isMobileViewport) return;
+        track({ type: 'shortcut_used', key: 'Alt+T', action: 'toggle_terminal_focus', context: 'global' });
+        toggleTerminalFocusMode();
+      }
       // Alt+A toggles achievements panel
       if (e.altKey && e.key === 'a') {
         e.preventDefault();
@@ -360,7 +385,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nextBottleneck, nextTask, previousTask, send, showOperations, toggleProjectSidebar, selectProject, toggleAchievementsPanel]);
+  }, [isMobileViewport, nextBottleneck, nextTask, previousTask, send, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;
@@ -485,6 +510,7 @@ export function App() {
       send={send}
       onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'empty_panel' }); setShowLaunch(true); }}
       collapsed={!isMobileViewport && !selectedAgent}
+      terminalFocusMode={terminalFocusActive}
     />
   );
 
@@ -492,14 +518,14 @@ export function App() {
     setSettingsFocus('maxActiveTasks');
     setShowSettings(true);
   };
-  const projectSidebar = (
+  const projectSidebar = !terminalFocusActive && (
     <ProjectSidebar
       onManage={() => setShowProjectSidebarManager(true)}
       onAdjustCap={openSettingsAtMaxActiveTasks}
     />
   );
 
-  const projectDetailDrawer = selectedProjectSummary && (
+  const projectDetailDrawer = !terminalFocusActive && selectedProjectSummary && (
     <ProjectDetailDrawer
       key={selectedProjectSummary.project}
       project={selectedProjectSummary}
@@ -532,6 +558,12 @@ export function App() {
         operationsOpen={showOperations}
         onCoordinatorFindings={() => setShowCoordinatorFindings((value) => !value)}
         coordinatorFindingsOpen={showCoordinatorFindings}
+        terminalFocusMode={terminalFocusMode}
+        terminalFocusTriggerRef={terminalFocusTriggerRef}
+        onTerminalFocusToggle={() => {
+          track({ type: 'shortcut_used', key: 'TopBar Terminal Focus', action: 'toggle_terminal_focus', context: 'click' });
+          toggleTerminalFocusMode();
+        }}
         onCostComparison={() => setShowCostComparison(true)}
         sweepSlot={workspaceEnabled ? <SweepButton send={send} projectCount={projectSummaries.length} /> : undefined}
       />
@@ -567,7 +599,7 @@ export function App() {
           </div>
           <div className="main main-mobile">
             {projectDetailDrawer}
-            <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />
+            {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
             {mobileTab === 'findings' ? findingsPanel : detailPanel}
           </div>
           <div className="mobile-quick-actions" data-testid="mobile-quick-actions">
@@ -627,7 +659,7 @@ export function App() {
         <div className="main">
           {projectSidebar}
           {projectDetailDrawer}
-          <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />
+          {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
           {findingsPanel}
           {detailPanel}
         </div>

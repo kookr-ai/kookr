@@ -113,6 +113,11 @@ code, kbd { font-family: var(--font-mono); }
   height: 28px;
   border-radius: 5px;
 }
+.terminal-focus-trigger.active {
+  color: var(--teal);
+  border-color: rgba(45, 212, 191, 0.55);
+  background: rgba(45, 212, 191, 0.10);
+}
 
 .btn-launch,
 .btn-primary {
@@ -278,6 +283,7 @@ code, kbd { font-family: var(--font-mono); }
   flex-direction: column;
   overflow: hidden;
 }
+.detail-panel.terminal-focus { flex: 3; }
 
 .detail-panel.collapsed { display: none; }
 .detail-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
