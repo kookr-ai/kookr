@@ -1161,6 +1161,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     env: process.env,
     dashboardHost: host,
     dashboardPort: port,
+    kookrDir,
   });
   if (collaborationListener.status === 'disabled') {
     const health = collaborationListener.config.health;

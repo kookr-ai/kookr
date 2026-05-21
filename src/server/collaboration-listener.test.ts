@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { createHash, createSign, generateKeyPairSync } from 'node:crypto';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Hono } from 'hono';
 import { WebSocket } from 'ws';
 
@@ -6,10 +10,16 @@ import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { startHttpAndWebSockets, type HttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import {
   buildCollaborationHealthResponse,
+  startConfiguredPrivateNetworkCollaborationListener,
   startPrivateNetworkCollaborationListener,
   type CollaborationListenerHandle,
 } from './collaboration-listener.js';
 import { readPrivateNetworkCollaborationConfig } from './collaboration-config.js';
+import {
+  collaborationDeviceRequestPayload,
+  ContactIdentityStore,
+} from './contact-identity-store.js';
+import { registerCollaborationPairingRoutes } from './routes/collaboration-pairing-routes.js';
 
 let normalServer: HttpAndWebSockets | undefined;
 let collaborationListener: CollaborationListenerHandle | undefined;
@@ -60,6 +70,69 @@ async function expectWebSocketRejected(url: string): Promise<void> {
     ws.on('close', () => {
       if (!opened) resolve();
     });
+  });
+}
+
+function keyPair(): { publicKey: string; privateKey: string } {
+  const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  return {
+    publicKey: pair.publicKey.export({ type: 'spki', format: 'pem' }).toString().trim(),
+    privateKey: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+  };
+}
+
+function signDeviceRequest(input: {
+  privateKey: string;
+  contactId: string;
+  deviceId: string;
+  audience: string;
+  method: string;
+  path: string;
+  query?: string;
+  bodySha256?: string;
+  timestamp: string;
+  nonce: string;
+}): string {
+  const signer = createSign('sha256');
+  signer.update(collaborationDeviceRequestPayload({
+    ...input,
+    query: input.query ?? '',
+    bodySha256: input.bodySha256 ?? createHash('sha256').update('').digest('hex'),
+  }));
+  signer.end();
+  return signer.sign(input.privateKey, 'base64url');
+}
+
+function emptyBodySha256(): string {
+  return createHash('sha256').update('').digest('hex');
+}
+
+function authHeaders(input: {
+  privateKey: string;
+  contactId: string;
+  deviceId: string;
+  audience: string;
+  method: string;
+  path: string;
+  query?: string;
+  bodySha256?: string;
+  timestamp: string;
+  nonce: string;
+}): Record<string, string> {
+  return {
+    'x-kookr-contact-id': input.contactId,
+    'x-kookr-device-id': input.deviceId,
+    'x-kookr-request-timestamp': input.timestamp,
+    'x-kookr-request-nonce': input.nonce,
+    'x-kookr-request-signature': signDeviceRequest(input),
+  };
+}
+
+async function postJson(baseUrl: string, path: string, body: unknown): Promise<Response> {
+  return fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
   });
 }
 
@@ -192,24 +265,12 @@ describe('private-network collaboration listener', () => {
     await expect(fetch(`${baseUrl}/api/collaboration/pairing/offers`, { method: 'POST' }).then(async (r) => ({
       status: r.status,
       body: await r.json(),
-    }))).resolves.toEqual({
-      status: 501,
-      body: {
-        error: 'pairing-bootstrap-not-implemented',
-        allowedFields: ['publicKey', 'nonce', 'commitment', 'expiresAt', 'label'],
-      },
-    });
+    }))).resolves.toEqual({ status: 400, body: { error: 'invalid-pairing-offer' } });
 
     await expect(fetch(`${baseUrl}/api/collaboration/pairing/accept`, { method: 'POST' }).then(async (r) => ({
       status: r.status,
       body: await r.json(),
-    }))).resolves.toEqual({
-      status: 501,
-      body: {
-        error: 'pairing-bootstrap-not-implemented',
-        allowedFields: ['pairingId', 'publicKey', 'nonce', 'commitment', 'expiresAt', 'label'],
-      },
-    });
+    }))).resolves.toEqual({ status: 400, body: { error: 'invalid-pairing-accept' } });
 
     for (const request of [
       { path: '/api/collaboration/contact-share/invites', init: { method: 'POST' } },
@@ -218,7 +279,308 @@ describe('private-network collaboration listener', () => {
     ]) {
       const res = await fetch(`${baseUrl}${request.path}`, request.init);
       expect(res.status).toBe(401);
-      await expect(res.json()).resolves.toEqual({ error: 'verified-device-required' });
+      await expect(res.json()).resolves.toEqual({ error: 'unverified-device' });
     }
+  });
+
+  it('pairs only after explicit fingerprint verification and gates peer routes by verified device signature', async () => {
+    const now = () => new Date('2026-05-21T00:00:00.000Z');
+    const identityStore = new ContactIdentityStore({ now });
+    const config = readPrivateNetworkCollaborationConfig({
+      env: {
+        KOOKR_COLLABORATION_PROFILES: 'true',
+        KOOKR_COLLABORATION_LISTENER: 'true',
+        KOOKR_COLLABORATION_PRIVATE_NETWORK: 'true',
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      now,
+    });
+    collaborationListener = await startPrivateNetworkCollaborationListener(config, { identityStore });
+    const baseUrl = `http://127.0.0.1:${listeningPort(collaborationListener)}`;
+    const initiator = keyPair();
+    const recipient = keyPair();
+
+    const offerRes = await postJson(baseUrl, '/api/collaboration/pairing/offers', {
+      publicKey: initiator.publicKey,
+      nonce: 'offer-nonce',
+      commitment: 'offer-commitment',
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      label: 'Jean desktop',
+    });
+    expect(offerRes.status).toBe(201);
+    const offer = await offerRes.json() as { pairingId: string; publicKey: string };
+    expect(offer).toEqual(expect.objectContaining({
+      schemaVersion: 'collaboration-pairing-offer.v1',
+      publicKey: initiator.publicKey,
+      nonce: 'offer-nonce',
+      commitment: 'offer-commitment',
+      label: 'Jean desktop',
+    }));
+    expect(JSON.stringify(offer)).not.toContain('private');
+
+    const acceptDraft = {
+      pairingId: offer.pairingId,
+      publicKey: recipient.publicKey,
+      nonce: 'accept-nonce',
+      commitment: 'accept-commitment',
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      label: 'Alice laptop',
+    };
+    const acceptedRes = await postJson(baseUrl, '/api/collaboration/pairing/accept', {
+      ...acceptDraft,
+    });
+    expect(acceptedRes.status).toBe(201);
+    const pending = await acceptedRes.json() as {
+      pairingId: string;
+      verifiedFingerprint: string;
+      verificationCode: string;
+      trustState: string;
+    };
+    expect(pending).toEqual(expect.objectContaining({ trustState: 'pending-local-verification' }));
+    const peerVerify = await postJson(baseUrl, '/api/collaboration/pairing/verify', {
+      pairingId: pending.pairingId,
+      verifiedFingerprint: pending.verifiedFingerprint,
+      verificationCode: pending.verificationCode,
+    });
+    expect(peerVerify.status).toBe(404);
+
+    const secondOffer = await identityStore.createPairingOffer({
+      publicKey: initiator.publicKey,
+      nonce: 'offer-nonce-2',
+      commitment: 'offer-commitment-2',
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      label: 'Jean desktop',
+    });
+    const verifiedDraft = {
+      ...acceptDraft,
+      pairingId: secondOffer.pairingId,
+      nonce: 'accept-nonce-2',
+      commitment: 'accept-commitment-2',
+    };
+    const acceptedRes2 = await postJson(baseUrl, '/api/collaboration/pairing/accept', {
+      ...verifiedDraft,
+    });
+    expect(acceptedRes2.status).toBe(201);
+    const pending2 = await acceptedRes2.json() as {
+      pairingId: string;
+      verifiedFingerprint: string;
+      verificationCode: string;
+    };
+    const verified = await identityStore.verifyAcceptedPairing({
+      pairingId: pending2.pairingId,
+      verifiedFingerprint: pending2.verifiedFingerprint,
+      verificationCode: pending2.verificationCode,
+    });
+
+    const auth = {
+      contactId: verified.contact.contactId,
+      deviceId: verified.device.deviceId,
+      audience: baseUrl,
+      method: 'GET',
+      path: '/api/collaboration/shared-task-updates',
+      bodySha256: emptyBodySha256(),
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'peer-route-nonce-1',
+    };
+    const signed = await fetch(`${baseUrl}${auth.path}`, {
+      headers: authHeaders({ privateKey: recipient.privateKey, ...auth }),
+    });
+    expect(signed.status).toBe(501);
+    await expect(signed.json()).resolves.toEqual({ error: 'collaboration-route-not-implemented' });
+
+    const replayed = await fetch(`${baseUrl}${auth.path}`, {
+      headers: authHeaders({ privateKey: recipient.privateKey, ...auth }),
+    });
+    expect(replayed.status).toBe(401);
+    await expect(replayed.json()).resolves.toEqual({ error: 'replayed-device-signature' });
+
+    const stale = await fetch(`${baseUrl}${auth.path}`, {
+      headers: authHeaders({
+        privateKey: recipient.privateKey,
+        ...auth,
+        timestamp: '2026-05-20T23:00:00.000Z',
+        nonce: 'peer-route-stale',
+      }),
+    });
+    expect(stale.status).toBe(401);
+    await expect(stale.json()).resolves.toEqual({ error: 'stale-device-signature' });
+
+    const wrongPath = await fetch(`${baseUrl}${auth.path}`, {
+      headers: authHeaders({
+        privateKey: recipient.privateKey,
+        ...auth,
+        path: '/api/collaboration/contact-share/invites',
+        nonce: 'peer-route-wrong-path',
+      }),
+    });
+    expect(wrongPath.status).toBe(401);
+    await expect(wrongPath.json()).resolves.toEqual({ error: 'unverified-device' });
+
+    const postBody = JSON.stringify({ envelope: 'ciphertext-only' });
+    const postAuth = {
+      contactId: verified.contact.contactId,
+      deviceId: verified.device.deviceId,
+      audience: baseUrl,
+      method: 'POST',
+      path: '/api/collaboration/contact-share/invites',
+      bodySha256: createHash('sha256').update(postBody).digest('hex'),
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'peer-route-post',
+    };
+    const signedPost = await fetch(`${baseUrl}${postAuth.path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...authHeaders({ privateKey: recipient.privateKey, ...postAuth }),
+      },
+      body: postBody,
+    });
+    expect(signedPost.status).toBe(501);
+    await expect(signedPost.json()).resolves.toEqual({ error: 'collaboration-route-not-implemented' });
+
+    const tamperedPost = await fetch(`${baseUrl}${postAuth.path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...authHeaders({ privateKey: recipient.privateKey, ...postAuth, nonce: 'peer-route-post-tampered' }),
+      },
+      body: JSON.stringify({ envelope: 'different-ciphertext' }),
+    });
+    expect(tamperedPost.status).toBe(401);
+    await expect(tamperedPost.json()).resolves.toEqual({ error: 'unverified-device' });
+
+    await identityStore.revokeDevice(auth.contactId, auth.deviceId);
+    const revokedAuth = { ...auth, nonce: 'peer-route-nonce-2' };
+    const revoked = await fetch(`${baseUrl}${auth.path}`, {
+      headers: authHeaders({ privateKey: recipient.privateKey, ...revokedAuth }),
+    });
+    expect(revoked.status).toBe(401);
+    await expect(revoked.json()).resolves.toEqual({ error: 'unverified-device' });
+  });
+
+  it('loads persisted trust when the configured listener restarts', async () => {
+    const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-collaboration-listener-'));
+    const collaborationPort = await reservePort();
+    const now = () => new Date('2026-05-21T00:00:00.000Z');
+    const initiator = keyPair();
+    const recipient = keyPair();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    collaborationListener = await startConfiguredPrivateNetworkCollaborationListener({
+      env: {
+        KOOKR_COLLABORATION_PROFILES: 'true',
+        KOOKR_COLLABORATION_LISTENER: 'true',
+        KOOKR_COLLABORATION_PRIVATE_NETWORK: 'true',
+        KOOKR_COLLABORATION_PORT: String(collaborationPort),
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      kookrDir,
+    });
+    const baseUrl = `http://127.0.0.1:${collaborationPort}`;
+
+    const offerRes = await postJson(baseUrl, '/api/collaboration/pairing/offers', {
+      publicKey: initiator.publicKey,
+      nonce: 'persisted-offer-nonce',
+      commitment: 'persisted-offer-commitment',
+      expiresAt,
+      label: 'Jean desktop',
+    });
+    expect(offerRes.status).toBe(201);
+    const offer = await offerRes.json() as { pairingId: string };
+    const acceptedRes = await postJson(baseUrl, '/api/collaboration/pairing/accept', {
+      pairingId: offer.pairingId,
+      publicKey: recipient.publicKey,
+      nonce: 'persisted-accept-nonce',
+      commitment: 'persisted-accept-commitment',
+      expiresAt,
+      label: 'Alice laptop',
+    });
+    expect(acceptedRes.status).toBe(201);
+    const pending = await acceptedRes.json() as {
+      pairingId: string;
+      verifiedFingerprint: string;
+      verificationCode: string;
+    };
+
+    const localApp = new Hono();
+    registerCollaborationPairingRoutes(localApp, {
+      kookrDir,
+      remoteShare: { csrfToken: 'csrf-local', client: null },
+    } as never);
+    const missingCsrf = await localApp.request('http://localhost/api/collaboration/pairing/verify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Origin: 'http://localhost' },
+      body: JSON.stringify({
+        pairingId: pending.pairingId,
+        verifiedFingerprint: pending.verifiedFingerprint,
+        verificationCode: pending.verificationCode,
+      }),
+    });
+    expect(missingCsrf.status).toBe(403);
+    await expect(missingCsrf.json()).resolves.toEqual({ error: 'invalid-csrf-token' });
+
+    const localVerify = await localApp.request('http://localhost/api/collaboration/pairing/verify', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Origin: 'http://localhost',
+        'x-kookr-csrf': 'csrf-local',
+      },
+      body: JSON.stringify({
+        pairingId: pending.pairingId,
+        verifiedFingerprint: pending.verifiedFingerprint,
+        verificationCode: pending.verificationCode,
+      }),
+    });
+    expect(localVerify.status).toBe(201);
+    const verified = await localVerify.json() as {
+      contact: { contactId: string };
+      device: { deviceId: string };
+    };
+
+    const repeatVerify = await localApp.request('http://localhost/api/collaboration/pairing/verify', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Origin: 'http://localhost',
+        'x-kookr-csrf': 'csrf-local',
+      },
+      body: JSON.stringify({
+        pairingId: pending.pairingId,
+        verifiedFingerprint: pending.verifiedFingerprint,
+        verificationCode: pending.verificationCode,
+      }),
+    });
+    expect(repeatVerify.status).toBe(409);
+    await closeCollaborationListener();
+
+    collaborationListener = await startConfiguredPrivateNetworkCollaborationListener({
+      env: {
+        KOOKR_COLLABORATION_PROFILES: 'true',
+        KOOKR_COLLABORATION_LISTENER: 'true',
+        KOOKR_COLLABORATION_PRIVATE_NETWORK: 'true',
+        KOOKR_COLLABORATION_PORT: String(collaborationPort),
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      kookrDir,
+    });
+
+    const auth = {
+      contactId: verified.contact.contactId,
+      deviceId: verified.device.deviceId,
+      audience: baseUrl,
+      method: 'GET',
+      path: '/api/collaboration/shared-task-updates',
+      bodySha256: emptyBodySha256(),
+      timestamp: new Date().toISOString(),
+      nonce: 'persisted-route-nonce',
+    };
+    const signed = await fetch(`${baseUrl}${auth.path}`, {
+      headers: authHeaders({ privateKey: recipient.privateKey, ...auth }),
+    });
+    expect(signed.status).toBe(501);
+    await expect(signed.json()).resolves.toEqual({ error: 'collaboration-route-not-implemented' });
   });
 });

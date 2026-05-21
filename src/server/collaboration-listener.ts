@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 
 import { getRequestListener } from '@hono/node-server';
@@ -12,12 +13,20 @@ import {
   type CollaborationConfigEnv,
   type CollaborationListenerConfig,
 } from './collaboration-config.js';
+import {
+  CollaborationPairingError,
+  ContactIdentityStore,
+} from './contact-identity-store.js';
 
 export interface CollaborationListenerHandle {
   status: 'disabled' | 'listening';
   config: CollaborationListenerConfig;
   httpServer?: Server;
   close(): Promise<void>;
+}
+
+export interface CollaborationListenerDeps {
+  identityStore?: ContactIdentityStore;
 }
 
 export function buildCollaborationHealthResponse(config: CollaborationListenerConfig): CollaborationHealthResponse {
@@ -40,24 +49,71 @@ export function buildCollaborationHealthResponse(config: CollaborationListenerCo
   };
 }
 
-function createCollaborationApp(config: CollaborationListenerConfig): Hono {
+async function readJsonBody(c: Context): Promise<unknown> {
+  try {
+    return await c.req.json();
+  } catch {
+    return null;
+  }
+}
+
+async function requestBodySha256(c: Context): Promise<string> {
+  if (c.req.method === 'GET' || c.req.method === 'HEAD') {
+    return createHash('sha256').update('').digest('hex');
+  }
+  const body = Buffer.from(await c.req.raw.clone().arrayBuffer());
+  return createHash('sha256').update(body).digest('hex');
+}
+
+function pairingErrorResponse(c: Context, err: unknown): Response {
+  if (err instanceof CollaborationPairingError) {
+    return c.json({ error: err.code }, err.status as never);
+  }
+  throw err;
+}
+
+function createCollaborationApp(config: CollaborationListenerConfig, deps: Required<CollaborationListenerDeps>): Hono {
   const app = new Hono();
 
   app.get('/api/collaboration/health', (c) => c.json(buildCollaborationHealthResponse(config)));
 
-  app.post('/api/collaboration/pairing/offers', (c) => c.json({
-    error: 'pairing-bootstrap-not-implemented',
-    allowedFields: ['publicKey', 'nonce', 'commitment', 'expiresAt', 'label'],
-  }, 501));
+  app.post('/api/collaboration/pairing/offers', async (c) => {
+    try {
+      return c.json(await deps.identityStore.createPairingOffer(await readJsonBody(c)), 201);
+    } catch (err) {
+      return pairingErrorResponse(c, err);
+    }
+  });
 
-  app.post('/api/collaboration/pairing/accept', (c) => c.json({
-    error: 'pairing-bootstrap-not-implemented',
-    allowedFields: ['pairingId', 'publicKey', 'nonce', 'commitment', 'expiresAt', 'label'],
-  }, 501));
+  app.post('/api/collaboration/pairing/accept', async (c) => {
+    try {
+      return c.json(await deps.identityStore.acceptPairingOffer(await readJsonBody(c)), 201);
+    } catch (err) {
+      return pairingErrorResponse(c, err);
+    }
+  });
 
-  const requireVerifiedDevice = (c: Context) => c.json({
-    error: 'verified-device-required',
-  }, 401);
+  const requireVerifiedDevice = async (c: Context) => {
+    try {
+      const url = new URL(c.req.url);
+      await deps.identityStore.verifyDeviceRequest({
+        contactId: c.req.header('x-kookr-contact-id'),
+        deviceId: c.req.header('x-kookr-device-id'),
+        audience: config.url,
+        method: c.req.method,
+        path: c.req.path,
+        query: url.search,
+        bodySha256: await requestBodySha256(c),
+        timestamp: c.req.header('x-kookr-request-timestamp'),
+        nonce: c.req.header('x-kookr-request-nonce'),
+        signature: c.req.header('x-kookr-request-signature'),
+      });
+      return c.json({ error: 'collaboration-route-not-implemented' }, 501);
+    } catch (err) {
+      if (err instanceof CollaborationPairingError) return c.json({ error: err.code }, err.status as never);
+      throw err;
+    }
+  };
 
   app.post('/api/collaboration/contact-share/invites', requireVerifiedDevice);
   app.post('/api/collaboration/contact-share/decisions', requireVerifiedDevice);
@@ -73,6 +129,7 @@ function createCollaborationApp(config: CollaborationListenerConfig): Hono {
 
 export async function startPrivateNetworkCollaborationListener(
   config: CollaborationListenerConfig,
+  deps: CollaborationListenerDeps = {},
 ): Promise<CollaborationListenerHandle> {
   if (!config.shouldStartListener) {
     return {
@@ -82,7 +139,9 @@ export async function startPrivateNetworkCollaborationListener(
     };
   }
 
-  const app = createCollaborationApp(config);
+  const identityStore = deps.identityStore ?? new ContactIdentityStore();
+  await identityStore.load();
+  const app = createCollaborationApp(config, { identityStore });
   const httpServer = createServer(getRequestListener(app.fetch));
 
   await new Promise<void>((resolve, reject) => {
@@ -115,6 +174,7 @@ export async function startConfiguredPrivateNetworkCollaborationListener(opts: {
   env: CollaborationConfigEnv;
   dashboardHost: string;
   dashboardPort: number;
+  kookrDir?: string;
 }): Promise<CollaborationListenerHandle> {
   const config = readPrivateNetworkCollaborationConfig({
     env: opts.env,
@@ -123,7 +183,9 @@ export async function startConfiguredPrivateNetworkCollaborationListener(opts: {
   });
 
   try {
-    return await startPrivateNetworkCollaborationListener(config);
+    return await startPrivateNetworkCollaborationListener(config, {
+      identityStore: new ContactIdentityStore({ kookrDir: opts.kookrDir }),
+    });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     console.warn(`[collaboration] listener unavailable: ${detail}`);
