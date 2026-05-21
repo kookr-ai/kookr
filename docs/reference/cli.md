@@ -60,6 +60,16 @@ kookr-spawn "please gh pr create for this branch"
 kookr-spawn --criteria "ensure gh pr create succeeds"
 ```
 
+## Dense Supervision From The Shell
+
+For multi-agent sessions, keep long prompts and command-heavy task descriptions in files:
+
+```bash
+kookr-spawn --prompt-file /tmp/prompt.md
+```
+
+This keeps the shell command short, avoids hook false positives, and leaves the dashboard as the main supervision surface. After spawning several tasks, use `kookr-status` for a quick terminal snapshot and use the dashboard's dense-supervision controls for routing: `Alt+N` for the next finding, `Alt+T` for desktop terminal focus mode, `Alt+P` for the project sidebar, and `?` for the full shortcut list.
+
 ## Server Discovery
 
 `kookr-spawn` discovers the active Kookr instance with this precedence:
