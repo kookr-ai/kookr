@@ -10,6 +10,7 @@ import {
   CollaborationPairingError,
   ContactIdentityStore,
 } from './contact-identity-store.js';
+import type { CollaborationAuditEvent } from '../shared/contracts/collaboration-audit.js';
 
 function keyPair(): { publicKey: string; privateKey: string } {
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -46,9 +47,9 @@ async function tempKookrDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'kookr-contact-identity-'));
 }
 
-async function auditRows(kookrDir: string): Promise<Array<{ kind: string; detail: Record<string, unknown> }>> {
+async function auditRows(kookrDir: string): Promise<CollaborationAuditEvent[]> {
   const raw = await readFile(join(kookrDir, 'collaboration-audit.jsonl'), 'utf-8');
-  return raw.trim().split('\n').map((line) => JSON.parse(line) as { kind: string; detail: Record<string, unknown> });
+  return raw.trim().split('\n').map((line) => JSON.parse(line) as CollaborationAuditEvent);
 }
 
 async function createVerifiedPairing(opts: {
@@ -129,12 +130,36 @@ describe('ContactIdentityStore', () => {
 
     await expect(auditRows(kookrDir)).resolves.toEqual([
       expect.objectContaining({
-        kind: 'pairing.created',
-        detail: expect.objectContaining({ pairingId: verified.pairingId, label: 'Jean desktop' }),
+        schemaVersion: 'collaboration-audit.v1',
+        event: 'pairing.created',
+        pairingId: verified.pairingId,
+        actor: { kind: 'local-owner' },
       }),
-      expect.objectContaining({ kind: 'pairing.accepted' }),
-      expect.objectContaining({ kind: 'pairing.verified' }),
+      expect.objectContaining({
+        schemaVersion: 'collaboration-audit.v1',
+        event: 'pairing.accepted',
+        pairingId: verified.pairingId,
+        decision: 'allowed',
+        actor: { kind: 'peer-bootstrap' },
+      }),
+      expect.objectContaining({
+        schemaVersion: 'collaboration-audit.v1',
+        event: 'contact.paired',
+        pairingId: verified.pairingId,
+        actor: expect.objectContaining({
+          kind: 'contact-device',
+          contactId: verified.contact.contactId,
+          deviceId: verified.device.deviceId,
+        }),
+      }),
     ]);
+    const rows = await auditRows(kookrDir);
+    for (const row of rows) {
+      expect(row.auditEventId).toMatch(/^collab-audit-/);
+      expect(row.ts).toBe('2026-05-21T00:00:00.000Z');
+      expect(row.ownerNodeId).toBe('local-owner-node');
+      expect(row.transportKind).toBe('privateNetwork');
+    }
   });
 
   it('rejects mismatched, replayed, and expired pairing messages with audit evidence', async () => {
@@ -198,18 +223,18 @@ describe('ContactIdentityStore', () => {
     })).rejects.toMatchObject({ code: 'pairing-expired', status: 410 });
 
     const rows = await auditRows(kookrDir);
-    expect(rows.map((row) => row.kind)).toEqual([
+    expect(rows.map((row) => row.event)).toEqual([
       'pairing.created',
       'pairing.accepted',
       'pairing.rejected',
       'pairing.created',
       'pairing.accepted',
-      'pairing.verified',
+      'contact.paired',
       'pairing.rejected',
       'pairing.created',
       'pairing.expired',
     ]);
-    expect(rows.filter((row) => row.kind === 'pairing.rejected').map((row) => row.detail.reason))
+    expect(rows.filter((row) => row.event === 'pairing.rejected').map((row) => row.reason))
       .toEqual(['pairing-verification-mismatch', 'pairing-replay']);
   });
 
@@ -277,9 +302,9 @@ describe('ContactIdentityStore', () => {
     })).rejects.toMatchObject({ code: 'device-revoked' });
 
     const rows = await auditRows(kookrDir);
-    expect(rows.find((row) => row.kind === 'pairing.revoked')).toEqual(expect.objectContaining({
-      kind: 'pairing.revoked',
-      detail: expect.objectContaining({
+    expect(rows.find((row) => row.event === 'device.revoked')).toEqual(expect.objectContaining({
+      event: 'device.revoked',
+      actor: expect.objectContaining({
         contactId: verified.contact.contactId,
         deviceId: verified.device.deviceId,
       }),

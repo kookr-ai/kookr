@@ -44,6 +44,60 @@ export interface CollaborationListenerStatus {
   url: string;
 }
 
+export interface CollaborationOperatorError {
+  code: string;
+  message: string;
+}
+
+export interface CollaborationAuthFailureDiagnostic {
+  at: string;
+  method: string;
+  path: string;
+  reason: string;
+  contactIdPresent: boolean;
+  deviceIdPresent: boolean;
+}
+
+export interface CollaborationDiagnostics {
+  summary: {
+    state: 'disabled' | 'unhealthy' | 'unpaired' | 'configured' | 'sharing';
+    checkedAt: string;
+  };
+  listener: CollaborationListenerStatus & {
+    status: 'disabled' | 'listening' | 'unhealthy';
+  };
+  profile: {
+    configured: boolean;
+    profileId?: string;
+    label?: string;
+    peerBaseUrl?: string;
+    networkHint?: PrivateNetworkHint;
+    transportSecurity?: PrivateNetworkTransportSecurity;
+    expectedPeerFingerprintConfigured: boolean;
+    health: CollaborationProfileHealth;
+  };
+  trust: {
+    trustedContacts: number;
+    blockedContacts: number;
+    verifiedDevices: number;
+    revokedDevices: number;
+  };
+  shares: {
+    pendingInvites: number;
+    activeGrants: number;
+    expiredGrants: number;
+    revokedShares: number;
+    tombstones: number;
+  };
+  audit: {
+    configured: boolean;
+    writable: boolean;
+    lastFailure?: { at: string; reason: string };
+  };
+  lastAuthFailure?: CollaborationAuthFailureDiagnostic;
+  operatorErrors: CollaborationOperatorError[];
+}
+
 export interface CollaborationHealthResponse {
   schemaVersion: typeof COLLABORATION_HEALTH_SCHEMA_VERSION;
   profileKind: 'privateNetwork';
@@ -55,4 +109,5 @@ export interface CollaborationHealthResponse {
     disableFlags: Array<keyof CollaborationFeatureFlags>;
     behavior: 'reject-new-collaboration-requests-preserve-state';
   };
+  diagnostics?: CollaborationDiagnostics;
 }

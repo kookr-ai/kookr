@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
@@ -18,6 +18,7 @@ import {
   type DecideCollaborationContactShareRequest,
 } from '../shared/contracts/collaboration-share.js';
 import type { VerifiedDevicePrincipal } from '../shared/contracts/collaboration-pairing.js';
+import { CollaborationAuditLog } from './collaboration-audit-log.js';
 
 const COLLABORATION_SHARE_STORE_VERSION = 1;
 
@@ -304,7 +305,7 @@ function normalizeStoreFile(raw: unknown): CollaborationShareStoreFile {
 
 export class CollaborationShareStore {
   private readonly filePath: string | null;
-  private readonly auditPath: string | null;
+  private readonly auditLog: CollaborationAuditLog | null;
   private readonly now: () => Date;
   private readonly idGenerator: () => string;
   private readonly taskExists: (taskId: string) => boolean;
@@ -317,15 +318,22 @@ export class CollaborationShareStore {
     kookrDir?: string;
     filePath?: string;
     auditPath?: string;
+    auditLog?: CollaborationAuditLog | null;
     now?: () => Date;
     idGenerator?: () => string;
     taskExists?: (taskId: string) => boolean;
   } = {}) {
     this.filePath = opts.filePath ?? (opts.kookrDir ? join(opts.kookrDir, 'collaboration-shares.json') : null);
-    this.auditPath = opts.auditPath ?? (opts.kookrDir ? join(opts.kookrDir, 'collaboration-audit.jsonl') : null);
     this.now = opts.now ?? (() => new Date());
     this.idGenerator = opts.idGenerator ?? (() => randomUUID());
     this.taskExists = opts.taskExists ?? (() => true);
+    this.auditLog = opts.auditLog === undefined
+      ? new CollaborationAuditLog({
+          filePath: opts.auditPath ?? (opts.kookrDir ? join(opts.kookrDir, 'collaboration-audit.jsonl') : null),
+          now: this.now,
+          idGenerator: this.idGenerator,
+        })
+      : opts.auditLog;
   }
 
   async load(): Promise<void> {
@@ -493,6 +501,23 @@ export class CollaborationShareStore {
     return [...this.tombstones.values()].map(cloneTombstone);
   }
 
+  diagnostics(): {
+    pendingInvites: number;
+    activeGrants: number;
+    expiredGrants: number;
+    revokedShares: number;
+    tombstones: number;
+  } {
+    const grants = [...this.grants.values()];
+    return {
+      pendingInvites: [...this.invites.values()].filter((invite) => invite.status === 'pending').length,
+      activeGrants: grants.filter((grant) => this.getGrant(grant.grantId)).length,
+      expiredGrants: grants.filter((grant) => this.isExpired(grant.expiresAt)).length,
+      revokedShares: [...this.invites.values()].filter((invite) => invite.status === 'revoked').length,
+      tombstones: this.tombstones.size,
+    };
+  }
+
   private async acceptInvite(invite: CollaborationContactShareInvite): Promise<{ invite: CollaborationContactShareInvite; grant: CollaborationGrantRecord }> {
     if (this.isInviteTombstoned(invite) || invite.status === 'revoked') {
       throw new CollaborationShareError('contact-share-revoked', 410);
@@ -636,14 +661,20 @@ export class CollaborationShareStore {
   }
 
   private async appendAudit(kind: CollaborationShareAuditKind, detail: Record<string, unknown>): Promise<void> {
-    if (!this.auditPath) return;
-    await mkdir(dirname(this.auditPath), { recursive: true });
-    await appendFile(this.auditPath, `${JSON.stringify({
-      schemaVersion: 'collaboration-audit.v1',
-      eventId: this.idGenerator(),
-      kind,
-      createdAt: this.now().toISOString(),
-      detail,
-    })}\n`, 'utf-8');
+    if (!this.auditLog) return;
+    const event = kind === 'share.declined' ? 'share.refused' : kind;
+    await this.auditLog.append({
+      actor: {
+        kind: 'contact-device',
+        contactId: String(detail.contactId),
+        deviceId: String(detail.deviceId),
+      },
+      event,
+      taskId: typeof detail.taskId === 'string' ? detail.taskId : undefined,
+      shareId: typeof detail.inviteId === 'string' ? detail.inviteId : undefined,
+      grantId: typeof detail.grantId === 'string' ? detail.grantId : undefined,
+      policyVersion: typeof detail.policyVersion === 'number' ? detail.policyVersion : undefined,
+      decision: kind === 'share.declined' ? 'denied' : 'allowed',
+    });
   }
 }

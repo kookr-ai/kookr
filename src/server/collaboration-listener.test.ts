@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHash, createSign, generateKeyPairSync } from 'node:crypto';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
@@ -12,9 +12,12 @@ import { saveTasks } from '../core/task-persistence.js';
 import { TaskStore } from '../core/tasks.js';
 import { asNodeId } from '../remote/ids.js';
 import type { ListCollaborationSharedTaskUpdatesResponse } from '../shared/contracts/collaboration-share.js';
+import type { CollaborationAuthFailureDiagnostic } from '../shared/contracts/collaboration-profile.js';
+import type { CollaborationAuditEvent } from '../shared/contracts/collaboration-audit.js';
 import type { ContactShareEnvelope, ListSharedTasksApiResponse } from '../shared/contracts/contact-share.js';
 import { startHttpAndWebSockets, type HttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import {
+  buildCollaborationDiagnostics,
   buildCollaborationHealthResponse,
   startConfiguredPrivateNetworkCollaborationListener,
   startPrivateNetworkCollaborationListener,
@@ -22,6 +25,7 @@ import {
 } from './collaboration-listener.js';
 import { readPrivateNetworkCollaborationConfig } from './collaboration-config.js';
 import { startPrivateNetworkSharedTaskUpdatePoller } from './collaboration-update-poller.js';
+import { CollaborationAuditLog } from './collaboration-audit-log.js';
 import {
   collaborationDeviceRequestPayload,
   ContactIdentityStore,
@@ -153,6 +157,11 @@ async function postJson(baseUrl: string, path: string, body: unknown): Promise<R
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+async function auditEvents(path: string): Promise<CollaborationAuditEvent[]> {
+  const raw = await readFile(path, 'utf-8');
+  return raw.trim().split('\n').map((line) => JSON.parse(line) as CollaborationAuditEvent);
 }
 
 async function signedJson(input: {
@@ -735,13 +744,190 @@ describe('private-network collaboration listener', () => {
     await expect(signed.json()).resolves.toEqual({ error: 'contact-share-view-only-disabled' });
   });
 
+  it('reports sanitized diagnostics for pairing, sharing, and auth failures', async () => {
+    const now = () => new Date('2026-05-21T00:00:00.000Z');
+    const identityStore = new ContactIdentityStore({ now });
+    const shareStore = new CollaborationShareStore({ now, taskExists: (taskId) => taskId === 'task-1' });
+    const auditLog = new CollaborationAuditLog({ now });
+    let lastAuthFailure: CollaborationAuthFailureDiagnostic | undefined;
+    const collaborationPort = await reservePort();
+    const config = readPrivateNetworkCollaborationConfig({
+      env: {
+        KOOKR_COLLABORATION_PROFILES: 'true',
+        KOOKR_COLLABORATION_LISTENER: 'true',
+        KOOKR_COLLABORATION_PRIVATE_NETWORK: 'true',
+        KOOKR_COLLABORATION_CONTACT_SHARE_VIEW_ONLY: 'true',
+        KOOKR_COLLABORATION_PORT: String(collaborationPort),
+        KOOKR_COLLABORATION_PEER_BASE_URL: 'https://peer.example.test',
+        KOOKR_COLLABORATION_EXPECTED_PEER_FINGERPRINT: 'expected-fingerprint',
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      now,
+    });
+    collaborationListener = await startPrivateNetworkCollaborationListener(config, {
+      identityStore,
+      shareStore,
+      auditLog,
+      recordAuthFailure: (failure) => {
+        lastAuthFailure = failure;
+      },
+    });
+    const baseUrl = `http://127.0.0.1:${listeningPort(collaborationListener)}`;
+    const diagnostics = () => buildCollaborationDiagnostics({
+      config,
+      listenerStatus: 'listening',
+      trust: identityStore.diagnostics(),
+      shares: shareStore.diagnostics(),
+      audit: auditLog.status(),
+      ...(lastAuthFailure ? { lastAuthFailure } : {}),
+      now,
+    });
+
+    const unauthenticatedHealth = await fetch(`${baseUrl}/api/collaboration/health`);
+    const healthBody = await unauthenticatedHealth.json() as { diagnostics?: unknown; health: { state: string } };
+    expect(healthBody.health.state).toBe('ok');
+    expect(healthBody.diagnostics).toBeUndefined();
+
+    const initial = diagnostics();
+    expect(initial.summary.state).toBe('unpaired');
+    expect(initial.listener).toMatchObject({ status: 'listening', url: baseUrl });
+    expect(initial.profile).toMatchObject({
+      peerBaseUrl: 'https://peer.example.test',
+      expectedPeerFingerprintConfigured: true,
+    });
+    expect(initial.trust.verifiedDevices).toBe(0);
+    expect(initial.shares.activeGrants).toBe(0);
+    const localApp = new Hono();
+    registerCollaborationPairingRoutes(localApp, {
+      collaborationDiagnostics: { get: async () => diagnostics() },
+      remoteShare: { csrfToken: 'csrf-local', client: null },
+    } as never);
+    const localDiagnostics = await localApp.request('http://localhost/api/collaboration/diagnostics');
+    expect(localDiagnostics.status).toBe(200);
+    await expect(localDiagnostics.json()).resolves.toMatchObject({
+      summary: { state: 'unpaired' },
+      profile: { peerBaseUrl: 'https://peer.example.test' },
+    });
+
+    const rejected = await fetch(`${baseUrl}/api/collaboration/shared-task-updates`);
+    expect(rejected.status).toBe(401);
+    const rejectedDiagnostics = diagnostics();
+    expect(rejectedDiagnostics.lastAuthFailure).toEqual(expect.objectContaining({
+      reason: 'unverified-device',
+      path: '/api/collaboration/shared-task-updates',
+      contactIdPresent: false,
+      deviceIdPresent: false,
+    }));
+
+    const initiator = keyPair();
+    const recipient = keyPair();
+    const principal = await verifiedContact({
+      baseUrl,
+      identityStore,
+      initiatorPublicKey: initiator.publicKey,
+      recipientPublicKey: recipient.publicKey,
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      offerNonce: 'diagnostics-offer',
+      acceptNonce: 'diagnostics-accept',
+    });
+    const pairedDiagnostics = diagnostics();
+    expect(pairedDiagnostics.summary.state).toBe('configured');
+    expect(pairedDiagnostics.trust.verifiedDevices).toBe(1);
+
+    const invite = await shareStore.createOutboundInvite(principal, {
+      taskId: 'task-1',
+      capabilities: ['viewTask'],
+    });
+    const acceptRes = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'diagnostics-accept-invite',
+      body: { inviteId: invite.inviteId, decision: 'accept' },
+    });
+    expect(acceptRes.status).toBe(200);
+
+    const sharingDiagnostics = diagnostics();
+    expect(sharingDiagnostics.summary.state).toBe('sharing');
+    expect(sharingDiagnostics.shares.activeGrants).toBe(1);
+    expect(sharingDiagnostics.audit.writable).toBe(true);
+    expect(JSON.stringify(sharingDiagnostics)).not.toContain(recipient.privateKey);
+    expect(JSON.stringify(sharingDiagnostics)).not.toContain('BEGIN PRIVATE KEY');
+  });
+
+  it('surfaces auditUnavailable diagnostics when metadata audit writes fail', async () => {
+    const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-collaboration-audit-fail-'));
+    const invalidParent = join(kookrDir, 'audit-parent-is-file');
+    await writeFile(invalidParent, 'not a directory');
+    const now = () => new Date('2026-05-21T00:00:00.000Z');
+    const auditLog = new CollaborationAuditLog({
+      filePath: join(invalidParent, 'collaboration-audit.jsonl'),
+      now,
+    });
+    const identityStore = new ContactIdentityStore({ now, auditLog });
+    const shareStore = new CollaborationShareStore({ now, auditLog, taskExists: () => true });
+    const collaborationPort = await reservePort();
+    const config = readPrivateNetworkCollaborationConfig({
+      env: {
+        KOOKR_COLLABORATION_PROFILES: 'true',
+        KOOKR_COLLABORATION_LISTENER: 'true',
+        KOOKR_COLLABORATION_PRIVATE_NETWORK: 'true',
+        KOOKR_COLLABORATION_CONTACT_SHARE_VIEW_ONLY: 'true',
+        KOOKR_COLLABORATION_PORT: String(collaborationPort),
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      now,
+    });
+    collaborationListener = await startPrivateNetworkCollaborationListener(config, {
+      identityStore,
+      shareStore,
+      auditLog,
+    });
+    const baseUrl = `http://127.0.0.1:${listeningPort(collaborationListener)}`;
+    const initiator = keyPair();
+
+    const offerRes = await postJson(baseUrl, '/api/collaboration/pairing/offers', {
+      publicKey: initiator.publicKey,
+      nonce: 'audit-fail-offer',
+      commitment: 'audit-fail-offer-commitment',
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      label: 'Jean desktop',
+    });
+    expect(offerRes.status).toBe(201);
+
+    const health = await fetch(`${baseUrl}/api/collaboration/health`);
+    const healthBody = await health.json() as { diagnostics?: unknown; health: { state: string } };
+    expect(healthBody.health.state).toBe('notConfigured');
+    expect(healthBody.diagnostics).toBeUndefined();
+
+    const diagnostics = buildCollaborationDiagnostics({
+      config,
+      listenerStatus: 'listening',
+      trust: identityStore.diagnostics(),
+      shares: shareStore.diagnostics(),
+      audit: auditLog.status(),
+      now,
+    });
+    expect(diagnostics.profile.health.state).toBe('auditUnavailable');
+    expect(diagnostics.summary.state).toBe('unhealthy');
+    expect(diagnostics.audit.writable).toBe(false);
+    expect(diagnostics.audit.lastFailure?.reason).toMatch(/EEXIST|ENOTDIR/);
+    expect(diagnostics.operatorErrors).toContainEqual(expect.objectContaining({ code: 'audit-unavailable' }));
+  });
+
   it('creates a view-only Contact Share grant for a verified device and persists audit metadata', async () => {
     const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-collaboration-share-'));
     const now = () => new Date('2026-05-21T00:00:00.000Z');
-    const identityStore = new ContactIdentityStore({ kookrDir, now });
+    const auditLog = new CollaborationAuditLog({ kookrDir, now });
+    const identityStore = new ContactIdentityStore({ kookrDir, now, auditLog });
     const shareStore = new CollaborationShareStore({
       kookrDir,
       now,
+      auditLog,
       taskExists: (taskId) => taskId === 'task-1',
     });
     const collaborationPort = await reservePort();
@@ -760,6 +946,7 @@ describe('private-network collaboration listener', () => {
     collaborationListener = await startPrivateNetworkCollaborationListener(config, {
       identityStore,
       shareStore,
+      auditLog,
       taskExists: (taskId) => taskId === 'task-1',
     });
     const baseUrl = `http://127.0.0.1:${listeningPort(collaborationListener)}`;
@@ -774,6 +961,13 @@ describe('private-network collaboration listener', () => {
       offerNonce: 'share-offer',
       acceptNonce: 'share-accept',
     });
+
+    const rejectedRequest = await fetch(`${baseUrl}/api/collaboration/contact-share/invites`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskId: 'task-1', capabilities: ['viewTask'] }),
+    });
+    expect(rejectedRequest.status).toBe(401);
 
     const inviteRes = await signedJson({
       baseUrl,
@@ -842,11 +1036,38 @@ describe('private-network collaboration listener', () => {
       grantId: accepted.grant.grantId,
       capabilities: ['viewTask'],
     }));
-    const audit = await readFile(join(kookrDir, 'collaboration-audit.jsonl'), 'utf-8');
-    expect(audit).toContain('"kind":"share.sent"');
-    expect(audit).toContain('"kind":"share.accepted"');
-    expect(audit).toContain('"taskId":"task-1"');
-    expect(audit).not.toContain('privateKey');
+    const audit = await auditEvents(join(kookrDir, 'collaboration-audit.jsonl'));
+    expect(audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        schemaVersion: 'collaboration-audit.v1',
+        event: 'policy.denied',
+        decision: 'denied',
+        actor: { kind: 'unknown-peer', contactIdPresent: false, deviceIdPresent: false },
+        reason: 'unverified-device',
+      }),
+      expect.objectContaining({
+        schemaVersion: 'collaboration-audit.v1',
+        event: 'share.sent',
+        taskId: 'task-1',
+        shareId: outboundInvite.inviteId,
+        actor: { kind: 'contact-device', ...principal },
+      }),
+      expect.objectContaining({
+        schemaVersion: 'collaboration-audit.v1',
+        event: 'share.accepted',
+        taskId: 'task-1',
+        shareId: outboundInvite.inviteId,
+        grantId: accepted.grant.grantId,
+        actor: { kind: 'contact-device', ...principal },
+      }),
+    ]));
+    for (const row of audit) {
+      expect(row.auditEventId).toMatch(/^collab-audit-/);
+      expect(row.ts).toBe('2026-05-21T00:00:00.000Z');
+      expect(row.ownerNodeId).toBe('local-owner-node');
+      expect(row.transportKind).toBe('privateNetwork');
+    }
+    expect(JSON.stringify(audit)).not.toContain('privateKey');
   });
 
   it('exchanges safe task projections between two local servers without loading the relay path', async () => {
@@ -1380,7 +1601,7 @@ describe('private-network collaboration listener', () => {
     await expect(staleAccept.json()).resolves.toEqual({ error: 'contact-share-revoked' });
 
     const audit = await readFile(join(kookrDir, 'collaboration-audit.jsonl'), 'utf-8');
-    expect(audit).toContain('"kind":"share.revoked"');
+    expect(audit).toContain('"event":"share.revoked"');
   });
 
   it('streams removals for revoked pending private-network shares', async () => {

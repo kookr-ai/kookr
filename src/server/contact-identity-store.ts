@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { createHash, createPublicKey, createVerify, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
@@ -17,6 +17,7 @@ import {
   type VerifyPairingResult,
   type VerifiedDevicePrincipal,
 } from '../shared/contracts/collaboration-pairing.js';
+import { CollaborationAuditLog } from './collaboration-audit-log.js';
 
 const CONTACT_IDENTITY_STORE_VERSION = 1;
 const MAX_PAIRING_TTL_MS = 30 * 60 * 1000;
@@ -30,6 +31,17 @@ type PairingAuditEventKind =
   | 'pairing.verified'
   | 'pairing.expired'
   | 'pairing.revoked';
+
+interface PairingAuditDetail {
+  pairingId?: string;
+  contactId?: string;
+  deviceId?: string;
+  reason?: string;
+  label?: string;
+  expiresAt?: string;
+  revokedAt?: string;
+  verifiedFingerprint?: string;
+}
 
 interface PairingPartyMaterial {
   publicKey: string;
@@ -349,7 +361,7 @@ export function collaborationDeviceRequestPayload(input: {
 
 export class ContactIdentityStore {
   private readonly filePath: string | null;
-  private readonly auditPath: string | null;
+  private readonly auditLog: CollaborationAuditLog | null;
   private readonly now: () => Date;
   private readonly idGenerator: () => string;
   private contacts = new Map<string, ContactIdentity>();
@@ -360,13 +372,20 @@ export class ContactIdentityStore {
     kookrDir?: string;
     filePath?: string;
     auditPath?: string;
+    auditLog?: CollaborationAuditLog | null;
     now?: () => Date;
     idGenerator?: () => string;
   } = {}) {
     this.filePath = opts.filePath ?? (opts.kookrDir ? join(opts.kookrDir, 'collaboration-identities.json') : null);
-    this.auditPath = opts.auditPath ?? (opts.kookrDir ? join(opts.kookrDir, 'collaboration-audit.jsonl') : null);
     this.now = opts.now ?? (() => new Date());
     this.idGenerator = opts.idGenerator ?? (() => randomUUID());
+    this.auditLog = opts.auditLog === undefined
+      ? new CollaborationAuditLog({
+          filePath: opts.auditPath ?? (opts.kookrDir ? join(opts.kookrDir, 'collaboration-audit.jsonl') : null),
+          now: this.now,
+          idGenerator: this.idGenerator,
+        })
+      : opts.auditLog;
   }
 
   async load(): Promise<void> {
@@ -560,6 +579,25 @@ export class ContactIdentityStore {
     return [...this.contacts.values()].map(cloneContact);
   }
 
+  diagnostics(): {
+    trustedContacts: number;
+    blockedContacts: number;
+    verifiedDevices: number;
+    revokedDevices: number;
+  } {
+    const contacts = [...this.contacts.values()];
+    return {
+      trustedContacts: contacts.filter((contact) => contact.trustState === 'verified').length,
+      blockedContacts: contacts.filter((contact) => contact.trustState === 'blocked').length,
+      verifiedDevices: contacts.reduce((count, contact) => (
+        count + contact.devices.filter((device) => device.trustState === 'verified').length
+      ), 0),
+      revokedDevices: contacts.reduce((count, contact) => (
+        count + contact.devices.filter((device) => device.trustState === 'revoked').length
+      ), 0),
+    };
+  }
+
   async revokeDevice(contactId: string, deviceId: string): Promise<ContactDeviceIdentity | null> {
     const contact = this.contacts.get(contactId);
     const device = contact?.devices.find((candidate) => candidate.deviceId === deviceId);
@@ -660,15 +698,24 @@ export class ContactIdentityStore {
     await atomicWriteFile(this.filePath, JSON.stringify(data, null, 2));
   }
 
-  private async appendAudit(kind: PairingAuditEventKind, detail: Record<string, unknown>): Promise<void> {
-    if (!this.auditPath) return;
-    await mkdir(dirname(this.auditPath), { recursive: true });
-    await appendFile(this.auditPath, `${JSON.stringify({
-      schemaVersion: 'collaboration-audit.v1',
-      eventId: this.idGenerator(),
-      kind,
-      createdAt: this.now().toISOString(),
-      detail,
-    })}\n`, 'utf-8');
+  private async appendAudit(kind: PairingAuditEventKind, detail: PairingAuditDetail): Promise<void> {
+    if (!this.auditLog) return;
+    const actor = detail.contactId && detail.deviceId
+      ? { kind: 'contact-device' as const, contactId: String(detail.contactId), deviceId: String(detail.deviceId) }
+      : kind === 'pairing.accepted'
+        ? { kind: 'peer-bootstrap' as const }
+        : { kind: 'local-owner' as const };
+    const event = kind === 'pairing.verified'
+      ? 'contact.paired'
+      : kind === 'pairing.revoked'
+        ? 'device.revoked'
+        : kind;
+    await this.auditLog.append({
+      actor,
+      event,
+      pairingId: detail.pairingId,
+      decision: kind === 'pairing.rejected' || kind === 'pairing.expired' ? 'denied' : 'allowed',
+      reason: detail.reason,
+    });
   }
 }

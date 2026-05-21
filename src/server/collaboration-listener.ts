@@ -6,7 +6,11 @@ import { Hono, type Context } from 'hono';
 
 import {
   COLLABORATION_HEALTH_SCHEMA_VERSION,
+  type CollaborationAuthFailureDiagnostic,
+  type CollaborationDiagnostics,
   type CollaborationHealthResponse,
+  type CollaborationOperatorError,
+  type CollaborationProfileHealth,
 } from '../shared/contracts/collaboration-profile.js';
 import {
   COLLABORATION_SHARED_TASK_UPDATES_SCHEMA_VERSION,
@@ -23,6 +27,7 @@ import {
   CollaborationPairingError,
   ContactIdentityStore,
 } from './contact-identity-store.js';
+import { CollaborationAuditLog, type CollaborationAuditStatus } from './collaboration-audit-log.js';
 import {
   CollaborationShareError,
   CollaborationShareStore,
@@ -38,11 +43,110 @@ export interface CollaborationListenerHandle {
 export interface CollaborationListenerDeps {
   identityStore?: ContactIdentityStore;
   shareStore?: CollaborationShareStore;
+  auditLog?: CollaborationAuditLog;
+  recordAuthFailure?: (failure: CollaborationAuthFailureDiagnostic) => void;
   taskExists?: (taskId: string) => boolean;
   projectTaskForShare?: (taskId: string) => RemoteTaskProjectionV1 | null | undefined;
 }
 
-export function buildCollaborationHealthResponse(config: CollaborationListenerConfig): CollaborationHealthResponse {
+function effectiveHealth(
+  config: CollaborationListenerConfig,
+  auditStatus?: CollaborationAuditStatus,
+): CollaborationProfileHealth {
+  if (auditStatus?.lastFailure) {
+    return { state: 'auditUnavailable', checkedAt: auditStatus.lastFailure.at };
+  }
+  return config.health;
+}
+
+function operatorErrorsForHealth(health: CollaborationProfileHealth): CollaborationOperatorError[] {
+  switch (health.state) {
+    case 'disabled':
+      return [{
+        code: health.reason,
+        message: health.reason === 'cleartext-listener-requires-loopback-host'
+          ? 'Private-network collaboration must use loopback HTTP through a tunnel, HTTPS, or an authenticated secure tunnel.'
+          : health.reason === 'collaboration-listener-must-not-use-kookr-port'
+            ? 'The collaboration listener must not use the normal Kookr dashboard port.'
+            : 'A collaboration feature flag is disabled.',
+      }];
+    case 'unreachable':
+      return [{
+        code: 'listener-unreachable',
+        message: health.detail ?? 'The collaboration listener could not be started or reached.',
+      }];
+    case 'identityMismatch':
+      return [{ code: 'identity-mismatch', message: 'The peer fingerprint does not match the configured profile.' }];
+    case 'unverifiedDevice':
+      return [{ code: 'unverified-device', message: 'The peer device has not completed manual fingerprint verification.' }];
+    case 'auditUnavailable':
+      return [{ code: 'audit-unavailable', message: 'Collaboration audit events cannot be written.' }];
+    case 'notConfigured':
+      return [{ code: 'profile-not-configured', message: 'Configure a private-network peer profile before sharing.' }];
+    case 'ok':
+      return [];
+  }
+}
+
+export function buildCollaborationDiagnostics(input: {
+  config: CollaborationListenerConfig;
+  listenerStatus: 'disabled' | 'listening' | 'unhealthy';
+  trust: CollaborationDiagnostics['trust'];
+  shares: CollaborationDiagnostics['shares'];
+  audit: CollaborationDiagnostics['audit'];
+  lastAuthFailure?: CollaborationAuthFailureDiagnostic;
+  now: () => Date;
+}): CollaborationDiagnostics {
+  const health = effectiveHealth(input.config, input.audit);
+  const unhealthy = health.state === 'unreachable'
+    || health.state === 'identityMismatch'
+    || health.state === 'unverifiedDevice'
+    || health.state === 'auditUnavailable';
+  const summaryState: CollaborationDiagnostics['summary']['state'] = !input.config.shouldStartListener
+    ? 'disabled'
+    : unhealthy
+      ? 'unhealthy'
+      : input.shares.activeGrants > 0
+        ? 'sharing'
+        : input.trust.verifiedDevices === 0
+          ? 'unpaired'
+          : 'configured';
+  return {
+    summary: {
+      state: summaryState,
+      checkedAt: input.now().toISOString(),
+    },
+    listener: {
+      enabled: input.config.shouldStartListener,
+      host: input.config.host,
+      port: input.config.port,
+      url: input.config.url,
+      status: input.listenerStatus,
+    },
+    profile: {
+      configured: Boolean(input.config.profile),
+      ...(input.config.profile ? {
+        profileId: input.config.profile.profileId,
+        label: input.config.profile.label,
+        peerBaseUrl: input.config.profile.peerBaseUrl,
+        networkHint: input.config.profile.networkHint,
+        transportSecurity: input.config.profile.transportSecurity,
+      } : {}),
+      expectedPeerFingerprintConfigured: Boolean(input.config.profile?.expectedPeerFingerprint),
+      health,
+    },
+    trust: input.trust,
+    shares: input.shares,
+    audit: input.audit,
+    ...(input.lastAuthFailure ? { lastAuthFailure: input.lastAuthFailure } : {}),
+    operatorErrors: operatorErrorsForHealth(health),
+  };
+}
+
+export function buildCollaborationHealthResponse(
+  config: CollaborationListenerConfig,
+  diagnostics?: CollaborationDiagnostics,
+): CollaborationHealthResponse {
   return {
     schemaVersion: COLLABORATION_HEALTH_SCHEMA_VERSION,
     profileKind: 'privateNetwork',
@@ -54,11 +158,12 @@ export function buildCollaborationHealthResponse(config: CollaborationListenerCo
       url: config.url,
     },
     profile: config.profile,
-    health: config.health,
+    health: diagnostics?.profile.health ?? config.health,
     rollback: {
       disableFlags: ['privateNetwork', 'listener'],
       behavior: 'reject-new-collaboration-requests-preserve-state',
     },
+    ...(diagnostics ? { diagnostics } : {}),
   };
 }
 
@@ -116,7 +221,7 @@ function createCollaborationApp(config: CollaborationListenerConfig, deps: Requi
 
   const verifyDevice = async (c: Context) => {
     const url = new URL(c.req.url);
-    return deps.identityStore.verifyDeviceRequest({
+    const input = {
       contactId: c.req.header('x-kookr-contact-id'),
       deviceId: c.req.header('x-kookr-device-id'),
       audience: config.url,
@@ -127,7 +232,32 @@ function createCollaborationApp(config: CollaborationListenerConfig, deps: Requi
       timestamp: c.req.header('x-kookr-request-timestamp'),
       nonce: c.req.header('x-kookr-request-nonce'),
       signature: c.req.header('x-kookr-request-signature'),
-    });
+    };
+    try {
+      return await deps.identityStore.verifyDeviceRequest(input);
+    } catch (err) {
+      if (err instanceof CollaborationPairingError) {
+        deps.recordAuthFailure({
+          at: new Date().toISOString(),
+          method: c.req.method,
+          path: c.req.path,
+          reason: err.code,
+          contactIdPresent: Boolean(input.contactId),
+          deviceIdPresent: Boolean(input.deviceId),
+        });
+        await deps.auditLog.append({
+          actor: {
+            kind: 'unknown-peer',
+            contactIdPresent: Boolean(input.contactId),
+            deviceIdPresent: Boolean(input.deviceId),
+          },
+          event: 'policy.denied',
+          decision: 'denied',
+          reason: err.code,
+        });
+      }
+      throw err;
+    }
   };
 
   app.post('/api/collaboration/contact-share/invites', async (c) => {
@@ -201,12 +331,15 @@ export async function startPrivateNetworkCollaborationListener(
   }
 
   const identityStore = deps.identityStore ?? new ContactIdentityStore();
-  const shareStore = deps.shareStore ?? new CollaborationShareStore({ taskExists: deps.taskExists });
+  const auditLog = deps.auditLog ?? new CollaborationAuditLog();
+  const shareStore = deps.shareStore ?? new CollaborationShareStore({ taskExists: deps.taskExists, auditLog });
   await identityStore.load();
   await shareStore.load();
   const app = createCollaborationApp(config, {
     identityStore,
     shareStore,
+    auditLog,
+    recordAuthFailure: deps.recordAuthFailure ?? (() => {}),
     taskExists: deps.taskExists ?? (() => true),
     projectTaskForShare: deps.projectTaskForShare ?? (() => null),
   });
@@ -245,6 +378,8 @@ export async function startConfiguredPrivateNetworkCollaborationListener(opts: {
   kookrDir?: string;
   taskExists?: (taskId: string) => boolean;
   projectTaskForShare?: (taskId: string) => RemoteTaskProjectionV1 | null | undefined;
+  auditLog?: CollaborationAuditLog;
+  recordAuthFailure?: (failure: CollaborationAuthFailureDiagnostic) => void;
 }): Promise<CollaborationListenerHandle> {
   const config = readPrivateNetworkCollaborationConfig({
     env: opts.env,
@@ -253,9 +388,12 @@ export async function startConfiguredPrivateNetworkCollaborationListener(opts: {
   });
 
   try {
+    const auditLog = opts.auditLog ?? new CollaborationAuditLog({ kookrDir: opts.kookrDir });
     return await startPrivateNetworkCollaborationListener(config, {
-      identityStore: new ContactIdentityStore({ kookrDir: opts.kookrDir }),
-      shareStore: new CollaborationShareStore({ kookrDir: opts.kookrDir, taskExists: opts.taskExists }),
+      auditLog,
+      identityStore: new ContactIdentityStore({ kookrDir: opts.kookrDir, auditLog }),
+      shareStore: new CollaborationShareStore({ kookrDir: opts.kookrDir, taskExists: opts.taskExists, auditLog }),
+      recordAuthFailure: opts.recordAuthFailure,
       taskExists: opts.taskExists,
       projectTaskForShare: opts.projectTaskForShare,
     });
