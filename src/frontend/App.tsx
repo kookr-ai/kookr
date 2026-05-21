@@ -25,6 +25,7 @@ import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
 import type { SettingsFocusField } from './components/SettingsDialog.js';
 import { SweepButton } from './components/SweepButton.js';
 import { OnboardingTour } from './components/OnboardingTour.js';
+import { CoordinatorFindingsPane } from './components/CoordinatorSurfaces.js';
 import { maybeOpenForFirstRun } from './store/onboarding-store.js';
 import './critical.css';
 
@@ -91,6 +92,7 @@ export function App() {
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showCostComparison, setShowCostComparison] = useState(false);
   const [showOperations, setShowOperations] = useState(false);
+  const [showCoordinatorFindings, setShowCoordinatorFindings] = useState(false);
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
   const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
   const [launchInitialTab, setLaunchInitialTab] = useState<LaunchInitialTab | null>(null);
@@ -119,6 +121,7 @@ export function App() {
     ossShowView,
     closeOssView,
     toggleOssView,
+    coordinator,
   } = useKookrStore();
 
   useEffect(() => {
@@ -387,7 +390,7 @@ export function App() {
     healthy,
     activeTaskCount,
     completedTaskCount,
-  } = useMemo(() => buildAgentBuckets(agents, selectedProject), [agents, selectedProject]);
+  } = useMemo(() => buildAgentBuckets(agents, selectedProject, coordinator), [agents, selectedProject, coordinator]);
 
   useEffect(() => {
     if (!isMobileViewport) {
@@ -527,6 +530,8 @@ export function App() {
         onOssView={toggleOssView}
         onOperations={() => setShowOperations((value) => !value)}
         operationsOpen={showOperations}
+        onCoordinatorFindings={() => setShowCoordinatorFindings((value) => !value)}
+        coordinatorFindingsOpen={showCoordinatorFindings}
         onCostComparison={() => setShowCostComparison(true)}
         sweepSlot={workspaceEnabled ? <SweepButton send={send} projectCount={projectSummaries.length} /> : undefined}
       />
@@ -562,6 +567,7 @@ export function App() {
           </div>
           <div className="main main-mobile">
             {projectDetailDrawer}
+            <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />
             {mobileTab === 'findings' ? findingsPanel : detailPanel}
           </div>
           <div className="mobile-quick-actions" data-testid="mobile-quick-actions">
@@ -621,6 +627,7 @@ export function App() {
         <div className="main">
           {projectSidebar}
           {projectDetailDrawer}
+          <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />
           {findingsPanel}
           {detailPanel}
         </div>

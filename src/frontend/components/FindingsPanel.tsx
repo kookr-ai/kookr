@@ -12,6 +12,7 @@ import { useDnd } from '../hooks/useDnd.js';
 import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { sendRalphLoopCommand, type RalphLoopCommand } from '../ralph-loop-api.js';
+import { CoordinatorTaskChipView, coordinatorChipForTask } from './CoordinatorSurfaces.js';
 
 export const HEALTHY_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.healthy';
 export const PENDING_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.pending';
@@ -255,6 +256,7 @@ function FindingCard({ agent, selected, send }: {
 
   const tooltipText = [agent.description, agent.anomaly?.explanation].filter(Boolean).join('\n\n');
   const showProjectBadge = !selectedProject || agent.projectId !== selectedProject;
+  const coordinatorChip = coordinatorChipForTask(useKookrStore((s) => s.coordinator), agent.taskId);
 
   return (
     <Tooltip text={tooltipText}>
@@ -355,6 +357,7 @@ function FindingCard({ agent, selected, send }: {
         {agent.anomaly && (
           <div className="finding-explanation">{agent.anomaly.explanation}</div>
         )}
+        <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
         {(agent.tokenUsage || agent.startedAt) && (
           <div className="finding-cost">
             {formatTokenUsage(agent.tokenUsage)}
@@ -387,6 +390,7 @@ function HealthyRow({ agent, selected, send }: {
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
   const selectedProject = useKookrStore((s) => s.selectedProject);
+  const coordinatorChip = coordinatorChipForTask(useKookrStore((s) => s.coordinator), agent.taskId);
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
   const showProjectBadge = !selectedProject || agent.projectId !== selectedProject;
@@ -472,6 +476,7 @@ function HealthyRow({ agent, selected, send }: {
                 )}
               </div>
             </div>
+            <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
           </div>
         </div>
         {showSnooze && (
@@ -609,6 +614,7 @@ function PendingRow({ agent, selected, send }: {
 }) {
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
+  const coordinatorChip = coordinatorChipForTask(useKookrStore((s) => s.coordinator), agent.taskId);
   return (
     <Tooltip text={agent.description}>
       <div
@@ -640,6 +646,7 @@ function PendingRow({ agent, selected, send }: {
             }}>Cancel</button>
           )}
         </div>
+        <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
       </div>
     </Tooltip>
   );
@@ -781,6 +788,7 @@ function CompletedRow({ agent, selected, send }: {
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
   const isCancelled = agent.taskStatus === 'cancelled';
   const isTerminated = agent.taskStatus === 'terminated';
+  const coordinatorChip = coordinatorChipForTask(useKookrStore((s) => s.coordinator), agent.taskId);
   // The row's style variant: cancelled (user stopped), terminated (session died
   // without ack), or completed (default / user acknowledged). Keep CSS variants
   // aligned with rfc-task-loss-prevention D1.
@@ -824,6 +832,7 @@ function CompletedRow({ agent, selected, send }: {
         {agent.ralphLoop && (
           <RalphLoopBadge agent={agent} />
         )}
+        <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
         {agent.completionDigest && agent.completionDigest.bullets.length > 0 && (
           <ul className="completed-digest">
             {agent.completionDigest.bullets.map((bullet, i) => (

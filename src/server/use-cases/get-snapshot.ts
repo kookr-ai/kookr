@@ -14,7 +14,8 @@ import type { AgentActivityMeta } from '../../core/types.js';
 import { buildGithubTaskOverlay } from './github-task-overlay.js';
 import type { FindingEvidenceAuditRecord } from '../../shared/contracts/anomalies.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
-import { runDetectors, type CoordinatorAuditTailProvider, type CoordinatorTask } from '../coordinator/detectors.js';
+import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider, type CoordinatorTask } from '../coordinator/detectors.js';
+import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
 
 export interface SnapshotQueryDeps {
   monitor: Pick<Monitor, 'getSnapshot'>;
@@ -54,6 +55,7 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   coordinator?: {
     taskStore: Pick<TaskStore, 'listTasks'>;
     auditTailProvider?: CoordinatorAuditTailProvider;
+    suppressions?: CoordinatorSuppressionReader;
   };
 }
 
@@ -213,13 +215,14 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ...(deps.sweepRunning ? { sweepRunning: true } : {}),
     ...(deps.getMaxActiveTasks ? { maxActiveTasks: deps.getMaxActiveTasks() } : {}),
     ...(deps.coordinator ? {
-      coordinator: {
-        outputs: runDetectors(
-          { tasks: buildCoordinatorDetectorTasks(deps.coordinator.taskStore.listTasks(), agents) },
-          deps.coordinator.auditTailProvider?.getCoordinatorAuditTail() ?? [],
-          deps.now ? { now: deps.now() } : {},
-        ),
-      },
+      coordinator: buildCoordinatorSnapshotState(
+        { tasks: buildCoordinatorDetectorTasks(deps.coordinator.taskStore.listTasks(), agents) },
+        deps.coordinator.auditTailProvider?.getCoordinatorAuditTail() ?? [],
+        {
+          ...(deps.now ? { now: deps.now() } : {}),
+          ...(deps.coordinator.suppressions ? { suppressions: deps.coordinator.suppressions } : {}),
+        },
+      ),
     } : {}),
   };
 }

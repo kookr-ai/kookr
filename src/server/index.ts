@@ -87,6 +87,7 @@ import type { NodeId, ServerRevision, SessionEpoch, SessionId } from '../remote/
 import type { RemotePolicyCache } from '../remote/policy-cache.js';
 import type { RemoteInputAdapter } from './remote-input-adapter.js';
 import { RuntimeAttentionMissSampler } from './attention-miss-runtime-sampler.js';
+import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
 
 // --- Exported types ---
 
@@ -205,6 +206,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   } = config;
 
   const coreStores = await createCoreStores({ kookrDir, hooksDir, settingsDir, frontendDir });
+  const coordinatorSuppressions = new CoordinatorSuppressionStore(kookrDir);
   let currentSettings = coreStores.currentSettings;
   let settingsLoadedFromDefaults = coreStores.settingsLoadedFromDefaults;
   const {
@@ -337,6 +339,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getRegistryActiveRepos,
     ossAttemptStore,
     getDefaultAgentType,
+    coordinatorSuppressions,
   });
   const {
     clients,
@@ -531,7 +534,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       sttUrl,
       ttsUrl,
       activityMetaProvider: hookIngestion,
-      coordinator: { taskStore, auditTailProvider: hookIngestion },
+      coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
       getMaxActiveTasks,
     }));
     broadcastProjectSummaries();
@@ -567,7 +570,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             sttUrl,
             ttsUrl,
             activityMetaProvider: hookIngestion,
-            coordinator: { taskStore, auditTailProvider: hookIngestion },
+            coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
             getMaxActiveTasks,
           }));
         }
@@ -789,7 +792,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         monitor,
         serverCwd,
         activityMetaProvider: hookIngestion,
-        coordinator: { taskStore, auditTailProvider: hookIngestion },
+        coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
       });
       return JSON.stringify(msg).length;
     },
@@ -1084,6 +1087,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     suppressionTracker, scheduleService, scheduleRunner,
     diagnosticRunner,
     terminalBackend,
+    coordinatorSuppressions,
     startupRecoverySummary,
     ralphCycler,
     tokenTracker,
@@ -1196,6 +1200,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDefaultAgentType,
     activityMetaProvider: hookIngestion,
     coordinatorAuditTailProvider: hookIngestion,
+    coordinatorSuppressions,
     scheduleService,
     ralphLoopService,
     getDiagnosticStatus: () => diagnosticRunner.getStatus(),

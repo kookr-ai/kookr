@@ -85,13 +85,17 @@ describe('createRealtimeServices', () => {
 
     realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
 
-    expect(sent).toHaveLength(1);
+    expect(sent).toHaveLength(2);
     expect(sent[0]).toEqual(expect.objectContaining({
       type: 'snapshot',
       totalSpendUsd: 0,
       achievements: expect.any(Object),
       defaultAgentType: 'claude-code',
     }));
+    expect(sent[1]).toEqual({
+      type: 'coordinator.snapshot',
+      coordinator: (sent[0] as SnapshotMessage).coordinator,
+    });
     expect((sent[0] as SnapshotMessage).availableAgentTypes?.map((item) => item.type)).toEqual([
       'claude-code',
       'codex-cli',

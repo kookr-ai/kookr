@@ -199,6 +199,13 @@ export class GitHubScannerService {
     return this.stateStore;
   }
 
+  /** Refresh GitHub references for one task on demand. Used by click-time coordinator checks. */
+  async refreshTaskState(taskId: string): Promise<void> {
+    if (!this.ghAvailable) return;
+    await this.processTaskPrompt(taskId);
+    await this.fetchReferences(this.stateStore.getReferences(taskId));
+  }
+
   /**
    * Process events from an agent — called on every hook event.
    * Does a quick regex-only scan for immediate reference detection.

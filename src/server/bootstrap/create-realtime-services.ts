@@ -16,7 +16,8 @@ import { MAX_TRACKED_REPOS, type ProjectRepoHealth } from '../../core/project-su
 import type { SkillDiscoveryStateHolder } from '../../core/skill-tracked-repo-discovery.js';
 import type { TaskStore } from '../../core/tasks.js';
 import type { ServerMessage, SnapshotMessage } from '../../shared/contracts/messages.js';
-import { runDetectors, type CoordinatorAuditTailProvider } from '../coordinator/detectors.js';
+import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider } from '../coordinator/detectors.js';
+import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
 import { AchievementWatcher, loadAchievements } from '../achievement-watcher.js';
 import type { ScheduleStore } from '../../core/schedule.js';
 import { toOssAttemptsSnapshot } from '../oss-attempts-snapshot.js';
@@ -41,6 +42,7 @@ export interface RealtimeServicesDeps {
   ossAttemptStore: OssAttemptStore;
   getDefaultAgentType: () => AgentSelection;
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
+  coordinatorSuppressions?: CoordinatorSuppressionReader;
 }
 
 export interface RealtimeServices {
@@ -102,12 +104,11 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
       }
       msg = {
         ...msg,
-        coordinator: msg.coordinator ?? {
-          outputs: runDetectors(
+        coordinator: msg.coordinator ?? buildCoordinatorSnapshotState(
             { tasks: buildCoordinatorDetectorTasks(deps.taskStore.listTasks(), snapshotAgentsForCoordinator(msg)) },
             coordinatorAuditTailProvider?.getCoordinatorAuditTail() ?? [],
-          ),
-        },
+            deps.coordinatorSuppressions ? { suppressions: deps.coordinatorSuppressions } : {},
+        ),
         totalSpendUsd: deps.taskStore.getLifetimeSpendUsd(),
         achievements: achievementWatcher?.getUnlocked(),
         ...(achievementWatcher
@@ -124,9 +125,13 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
       };
     }
     const data = JSON.stringify(msg);
+    const coordinatorData = msg.type === 'snapshot' && msg.coordinator
+      ? JSON.stringify({ type: 'coordinator.snapshot', coordinator: msg.coordinator } satisfies ServerMessage)
+      : null;
     for (const ws of clients) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(data);
+        if (coordinatorData) ws.send(coordinatorData);
       }
     }
   }

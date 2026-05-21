@@ -40,6 +40,7 @@ import type { ContactShareReadModel } from '../../core/contact-share.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sampler.js';
 import type { CollaborationDiagnostics } from '../../shared/contracts/collaboration-profile.js';
+import type { CoordinatorSuppressionRegistry } from '../coordinator/suppression-store.js';
 
 /**
  * Phase A0 easy connection sharing config. The server always provides it;
@@ -168,4 +169,6 @@ export interface RouteDeps {
   findingEvidenceReviewHmacKey?: Buffer;
   /** Disabled-by-default M2 finding-evidence background sampler. */
   findingEvidenceReviewSampler?: Pick<FindingEvidenceReviewSampler, 'getStatus'>;
+  /** Shared coordinator recommendation suppressions; routes may write it and snapshots read it. */
+  coordinatorSuppressions?: CoordinatorSuppressionRegistry;
 }

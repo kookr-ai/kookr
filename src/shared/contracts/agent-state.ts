@@ -24,6 +24,8 @@ export interface AgentState {
   taskId?: string;
   taskName?: string;
   taskStatus?: TaskStatus;
+  parentTaskId?: string;
+  childTaskIds?: string[];
   blocks?: TaskDependencyEdge[];
   blocked_by?: TaskDependencyEdge[];
   description?: string;

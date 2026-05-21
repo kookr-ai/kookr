@@ -6,6 +6,7 @@ import { describe, expect, test } from 'vitest';
 import { hashPrompt } from '../hash-prompt.js';
 import type { CoordinatorDetectorOutput } from '../../shared/contracts/coordinator.js';
 import {
+  buildCoordinatorSnapshotState,
   runDetectors,
   type CoordinatorAuditTailRow,
   type CoordinatorTask,
@@ -30,6 +31,10 @@ function task(overrides: Partial<CoordinatorTask> & Pick<CoordinatorTask, 'id'>)
     followUpRequired: overrides.followUpRequired,
     nextAction: overrides.nextAction,
     metadata: overrides.metadata,
+    parentTaskId: overrides.parentTaskId,
+    childTaskIds: overrides.childTaskIds,
+    blocks: overrides.blocks,
+    blocked_by: overrides.blocked_by,
   }) as CoordinatorTask;
 }
 
@@ -45,6 +50,48 @@ function pruneUndefined<T extends Record<string, unknown>>(input: T): Partial<T>
 }
 
 describe('runDetectors', () => {
+  test('builds one chip for every detector class using coordinator precedence', () => {
+    const edge = task({ id: 'edge', blocks: ['task:downstream'] });
+    const downstream = task({ id: 'downstream' });
+    const stale = task({ id: 'stale' });
+    const duplicateA = task({ id: 'duplicate-a', prompt: 'same prompt', cwd: '/tmp/repo' });
+    const duplicateB = task({ id: 'duplicate-b', prompt: 'same prompt', cwd: '/tmp/repo' });
+    const done = task({
+      id: 'done',
+      status: 'completed',
+      completionDigest: { bullets: ['done'], filesChanged: [] },
+    });
+
+    const state = buildCoordinatorSnapshotState(
+      { tasks: [edge, downstream, stale, duplicateA, duplicateB, done] },
+      [{ taskId: 'stale', rawHookEventName: 'PostToolUse', observedAt: '2026-05-21T11:00:00.000Z' }],
+      { now: NOW },
+    );
+
+    expect(state.chips.map((chip) => [chip.taskId, chip.detectorId, chip.verb])).toEqual(expect.arrayContaining([
+      ['edge', 'declared_edge', 'Nudge'],
+      ['stale', 'stale', 'Nudge'],
+      ['duplicate-a', 'duplicate', 'Compare'],
+      ['duplicate-b', 'duplicate', 'Compare'],
+      ['done', 'done_not_cleared', 'Acknowledge'],
+    ]));
+  });
+
+  test('emits declared-edge outputs and chain strips for related tasks', () => {
+    const source = task({ id: 'source', blocks: ['task:target'] });
+    const target = task({ id: 'target', blocked_by: ['task:source'], parentTaskId: 'source' });
+    const state = buildCoordinatorSnapshotState({ tasks: [source, target] }, [], { now: NOW });
+
+    expect(outputsByDetector(state.outputs, 'declared_edge').map((output) => output.taskId).sort()).toEqual(['source', 'target']);
+    expect(state.chains.source?.members.map((member) => [member.taskId, member.relation])).toEqual([
+      ['target', 'blocks'],
+    ]);
+    expect(state.chains.target?.members.map((member) => [member.taskId, member.relation])).toEqual([
+      ['source', 'parent'],
+    ]);
+    expect(state.chains.target?.priorTaskIds).toEqual(['source']);
+  });
+
   test.each([
     {
       name: 'flags in-progress task whose last PostToolUse is older than the threshold',

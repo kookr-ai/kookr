@@ -46,6 +46,10 @@ export function dispatchAlertMessageForClient(
   handleAlert(msg.agentId, msg.summary, severity, msg.details || undefined);
 }
 
+export function dispatchCoordinatorSnapshotMessageForClient(msg: Record<string, any>): void {
+  useKookrStore.setState({ coordinator: msg.coordinator });
+}
+
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -144,6 +148,9 @@ export function useWebSocket() {
             break;
           case 'projectSummaries':
             handleProjectSummaries(msg.projects);
+            break;
+          case 'coordinator.snapshot':
+            dispatchCoordinatorSnapshotMessageForClient(msg);
             break;
           case 'contributionWarning':
             handleAlert('', msg.message, msg.severity === 'exceeded' ? 'error' : 'info');
