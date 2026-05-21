@@ -46,6 +46,18 @@ http://localhost:5173
 
 The backend runs on `4801` in dev mode, but the browser app is served by Vite on `5173`.
 
+## Terminal Panel Feels Too Small
+
+Use the dense-supervision controls before resizing your browser:
+
+1. Press `Alt+T` on desktop to enter terminal focus mode.
+2. Press `Alt+P` if the project sidebar is still visible and you want it hidden.
+3. On narrow desktop windows, select the **Terminal** detail tab.
+4. On mobile, use the **Task** tab; terminal focus mode is intentionally desktop-only.
+5. Press `?` for the current shortcut list.
+
+See [Dense Supervision Workflow](user-guide.md#dense-supervision-workflow) for the full operator loop.
+
 ## Port Conflicts
 
 Defaults:
