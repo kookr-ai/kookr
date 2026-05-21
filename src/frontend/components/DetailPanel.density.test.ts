@@ -11,7 +11,12 @@ import { DetailPanel } from './DetailPanel.js';
 vi.mock('../telemetry.js', () => ({ track: vi.fn(), trackClick: vi.fn() }));
 vi.mock('./ActivityPanel.js', () => ({ ActivityPanel: () => React.createElement('div', { 'data-testid': 'activity-panel' }) }));
 vi.mock('./GitHubPanel.js', () => ({ GitHubPanel: () => React.createElement('div', { 'data-testid': 'github-panel' }) }));
-vi.mock('./TerminalPanel.js', () => ({ TerminalPanel: () => React.createElement('div', { 'data-testid': 'terminal-panel' }) }));
+vi.mock('./TerminalPanel.js', () => ({
+  TerminalPanel: ({ visible }: { visible?: boolean }) => React.createElement('div', {
+    'data-testid': 'terminal-panel',
+    'data-visible': String(Boolean(visible)),
+  }),
+}));
 vi.mock('./DiffPane.js', () => ({ DiffPane: () => React.createElement('div', { 'data-testid': 'diff-pane' }) }));
 vi.mock('./SnoozeDialog.js', () => ({ SnoozeDialog: () => null }));
 vi.mock('./EffectiveHookSettingsModal.js', () => ({ EffectiveHookSettingsModal: () => null }));
@@ -64,6 +69,21 @@ function renderDetailPanel(container: HTMLElement, agent: AgentState): Root {
   return root;
 }
 
+function renderFocusedDetailPanel(container: HTMLElement, agent: AgentState): Root {
+  const root = createRoot(container);
+  act(() => {
+    root.render(
+      React.createElement(DetailPanel, {
+        agent,
+        send: vi.fn(() => true),
+        onLaunch: vi.fn(),
+        terminalFocusMode: true,
+      }),
+    );
+  });
+  return root;
+}
+
 describe('DetailPanel dense metadata', () => {
   let container: HTMLDivElement;
   let root: Root | null;
@@ -103,5 +123,15 @@ describe('DetailPanel dense metadata', () => {
     expect(metaMenu.querySelector('.detail-branch')?.textContent).toContain('main');
     expect(metaMenu.textContent).toContain('$0.42');
     expect(metaMenu.textContent).toContain('1.5k tok');
+  });
+
+  test('terminal focus mode removes secondary detail chrome while keeping terminal active', () => {
+    root = renderFocusedDetailPanel(container, makeAgent());
+
+    expect(container.querySelector('.detail-panel.terminal-focus')).not.toBeNull();
+    expect(container.querySelector('[data-testid="terminal-panel"]')?.getAttribute('data-visible')).toBe('true');
+    expect(container.querySelector('.detail-split-left')).toBeNull();
+    expect(container.querySelector('.detail-tabs-narrow')).toBeNull();
+    expect(container.querySelector('[data-testid="task-dependencies"]')).toBeNull();
   });
 });

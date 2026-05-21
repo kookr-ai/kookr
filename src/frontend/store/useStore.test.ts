@@ -214,6 +214,41 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().narrowTab).toBe('github');
   });
 
+  test('terminal focus mode persists and moves narrow detail view to terminal', () => {
+    expect(store.getState().terminalFocusMode).toBe(false);
+
+    store.getState().setNarrowTab('activity');
+    store.getState().setTerminalFocusMode(true);
+
+    expect(store.getState().terminalFocusMode).toBe(true);
+    expect(store.getState().narrowTab).toBe('terminal');
+    expect(localStore.get('kookr-terminal-focus-mode')).toBe('1');
+
+    const freshStore = createKookrStore();
+    expect(freshStore.getState().terminalFocusMode).toBe(true);
+
+    freshStore.getState().toggleTerminalFocusMode();
+    expect(freshStore.getState().terminalFocusMode).toBe(false);
+    expect(localStore.has('kookr-terminal-focus-mode')).toBe(false);
+  });
+
+  test('terminal focus mode still toggles when localStorage persistence fails', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => null,
+      setItem: () => { throw new Error('quota exceeded'); },
+      removeItem: () => { throw new Error('blocked'); },
+      clear: () => {},
+    });
+    const freshStore = createKookrStore();
+
+    freshStore.getState().setTerminalFocusMode(true);
+    expect(freshStore.getState().terminalFocusMode).toBe(true);
+    expect(freshStore.getState().narrowTab).toBe('terminal');
+
+    freshStore.getState().toggleTerminalFocusMode();
+    expect(freshStore.getState().terminalFocusMode).toBe(false);
+  });
+
   test('setRelaunchTask stores task data for dialog pre-fill', () => {
     store.getState().setRelaunchTask({
       prompt: 'Fix the auth bug',

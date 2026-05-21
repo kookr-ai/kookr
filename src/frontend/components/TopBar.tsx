@@ -17,6 +17,9 @@ interface Props {
   operationsOpen?: boolean;
   onCoordinatorFindings: () => void;
   coordinatorFindingsOpen?: boolean;
+  terminalFocusMode?: boolean;
+  terminalFocusTriggerRef?: React.RefObject<HTMLButtonElement | null>;
+  onTerminalFocusToggle: () => void;
   /** Open the Cost Comparison panel. Optional — the icon is hidden when undefined. */
   onCostComparison?: () => void;
   /** Optional slot rendered in the right-side action cluster, hidden in compact mode. */
@@ -61,7 +64,7 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, onCostComparison, sweepSlot }: Props) {
+export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusTriggerRef, onTerminalFocusToggle, onCostComparison, sweepSlot }: Props) {
   const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
@@ -370,6 +373,18 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
             </svg>
             {operationsNeedsAttention && <span className="operations-alert-dot" />}
           </button>
+          {!compact && (
+            <button
+              ref={terminalFocusTriggerRef}
+              className={`btn-icon terminal-focus-trigger${terminalFocusMode ? ' active' : ''}`}
+              onClick={onTerminalFocusToggle}
+              title="Terminal focus"
+              aria-label="Terminal focus"
+              aria-pressed={terminalFocusMode}
+            >
+              <span aria-hidden="true">&gt;_</span>
+            </button>
+          )}
           {!compact && (
             <button
               className={`btn-icon coordinator-findings-trigger${coordinatorFindingsOpen ? ' active' : ''}`}

@@ -65,6 +65,7 @@ interface Props {
   send: (msg: ClientMessage) => boolean;
   onLaunch: () => void;
   collapsed?: boolean;
+  terminalFocusMode?: boolean;
 }
 
 function EditableHeading({ agent, send }: { agent: AgentState; send: (msg: ClientMessage) => boolean }) {
@@ -222,7 +223,7 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
+export function DetailPanel({ agent, send, onLaunch, collapsed, terminalFocusMode = false }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -291,6 +292,12 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
       window.clearInterval(timer);
     };
   }, [agent?.taskId]);
+
+  useEffect(() => {
+    if (!terminalFocusMode) return;
+    setRightPane('terminal');
+    setNarrowTab('terminal');
+  }, [setNarrowTab, terminalFocusMode]);
 
   // Clear diff state when the selected agent changes. Avoids showing stale diff
   // content bound to a different agent's toolUseId.
@@ -382,7 +389,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
     const totalCount = allAgents.length;
 
     return (
-      <div className={`detail-panel kookr-tour-target-layout${collapsed ? ' collapsed' : ''}`}>
+      <div className={`detail-panel kookr-tour-target-layout${collapsed ? ' collapsed' : ''}${terminalFocusMode ? ' terminal-focus' : ''}`}>
         <div className="detail-empty">
           {findingsCount > 0 ? (
             <p>{findingsCount} finding{findingsCount > 1 ? 's' : ''} need{findingsCount === 1 ? 's' : ''} attention.</p>
@@ -611,7 +618,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
   const shareHeaderStatus = deriveTaskShareHeaderStatus(agent.taskId, shareHeaderShares);
 
   return (
-    <div className="detail-panel kookr-tour-target-layout">
+    <div className={`detail-panel kookr-tour-target-layout${terminalFocusMode ? ' terminal-focus' : ''}`} data-testid="detail-panel">
       <div className="detail-header">
         <div className="detail-header-left">
           <EditableHeading agent={agent} send={send} />
@@ -684,8 +691,8 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
           onSharesChanged={setShareHeaderShares}
         />
       )}
-      {agent.taskId && <CoordinatorChainStripView agent={agent} />}
-      {agent.taskId && <TaskDependencyEditor agent={agent} />}
+      {!terminalFocusMode && agent.taskId && <CoordinatorChainStripView agent={agent} />}
+      {!terminalFocusMode && agent.taskId && <TaskDependencyEditor agent={agent} />}
 
       {/* Side-by-side split (wide) + tab fallback (narrow) */}
       {(() => {
@@ -723,7 +730,7 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
         return (
           <>
             {/* Narrow-mode tab bar (hidden on wide viewports via CSS) */}
-            <div className="detail-tabs-narrow">
+            {!terminalFocusMode && <div className="detail-tabs-narrow">
               <button
                 className={`detail-tab ${narrowTab === 'activity' ? 'active' : ''}`}
                 onClick={() => { track({ type: 'tab_switched', from: narrowTab, to: 'activity' }); setNarrowTab('activity'); setLeftPane('activity'); }}
@@ -744,12 +751,12 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
                   GitHub ({ghCount})
                 </button>
               )}
-            </div>
+            </div>}
 
             {/* Side-by-side split container */}
-            <div className="detail-split">
+            <div className={`detail-split${terminalFocusMode ? ' detail-split-terminal-focus' : ''}`}>
               {/* Left pane: Activity or GitHub */}
-              <div className={`detail-split-left${narrowTab !== 'activity' && narrowTab !== 'github' ? ' pane-hidden-narrow' : ''}`}>
+              {!terminalFocusMode && <div className={`detail-split-left${narrowTab !== 'activity' && narrowTab !== 'github' ? ' pane-hidden-narrow' : ''}`}>
                 <div className="detail-pane-header">
                   <button
                     className={`pane-tab ${leftPane === 'activity' ? 'active' : ''}`}
@@ -783,11 +790,11 @@ export function DetailPanel({ agent, send, onLaunch, collapsed }: Props) {
                     />
                   </Suspense>
                 )}
-              </div>
+              </div>}
 
               {/* Right pane: Terminal or Diff (terminal is always mounted so
                   xterm state and WebSocket connection survive mode toggles) */}
-              <div className={`detail-split-right${narrowTab !== 'terminal' ? ' pane-hidden-narrow' : ''}`}>
+              <div className={`detail-split-right${!terminalFocusMode && narrowTab !== 'terminal' ? ' pane-hidden-narrow' : ''}`}>
                 <div className="detail-pane-header">
                   <button
                     type="button"

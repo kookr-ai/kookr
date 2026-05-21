@@ -40,6 +40,7 @@ const SHORTCUT_GROUPS: { title: string; shortcuts: Shortcut[] }[] = [
     title: 'Terminal',
     shortcuts: [
       { keys: ['Alt', '1-3'], description: 'Send number to terminal and skip to next task' },
+      { keys: ['Alt', 'T'], description: 'Toggle terminal focus mode' },
     ],
   },
   {

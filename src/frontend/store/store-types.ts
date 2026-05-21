@@ -162,6 +162,7 @@ export interface TriageNavigationSlice {
   githubState: Record<string, TaskGitHub>;
   leftPane: LeftPane;
   narrowTab: NarrowTab;
+  terminalFocusMode: boolean;
   suggestions: Record<string, ResponseSuggestion>;
   focusZone: FocusZone;
   respondAllAgentIds: string[] | null;
@@ -183,6 +184,8 @@ export interface TriageNavigationSlice {
   clearSentOverlay: () => void;
   setLeftPane: (pane: LeftPane) => void;
   setNarrowTab: (tab: NarrowTab) => void;
+  setTerminalFocusMode: (enabled: boolean) => void;
+  toggleTerminalFocusMode: () => void;
   setFocusZone: (zone: FocusZone) => void;
   setRespondAllAgentIds: (agentIds: string[] | null) => void;
   armShortcuts: () => void;

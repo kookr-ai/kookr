@@ -347,6 +347,11 @@ kbd {
   outline: 2px solid var(--teal);
   outline-offset: 1px;
 }
+.terminal-focus-trigger.active {
+  color: var(--teal);
+  border-color: rgba(45, 212, 191, 0.55);
+  background: rgba(45, 212, 191, 0.10);
+}
 
 .btn-launch {
   background: var(--teal);
@@ -1108,6 +1113,9 @@ kbd {
 }
 .detail-panel.collapsed {
   display: none;
+}
+.detail-panel.terminal-focus {
+  flex: 3;
 }
 
 .detail-empty {
@@ -3356,6 +3364,9 @@ textarea::-webkit-resizer { background: transparent; }
   display: flex;
   overflow: hidden;
 }
+.detail-split-terminal-focus {
+  background: var(--bg-terminal);
+}
 .detail-split-left {
   flex: 2;
   display: flex;
@@ -3370,6 +3381,9 @@ textarea::-webkit-resizer { background: transparent; }
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+}
+.detail-split-terminal-focus .detail-split-right {
+  flex: 1 1 auto;
 }
 
 /* Pane headers */
