@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { formatDiagnosticIdentifier } from './diagnostics-format.js';
 
 interface FindingEvidenceReviewSamplerStatus {
   enabled?: boolean;
@@ -77,25 +78,6 @@ const EMPTY_STATE: FindingEvidenceDiagnosticsState = {
 
 const OPERATIONS_DIAGNOSTICS_URL = '/api/finding-evidence-operations-diagnostics';
 
-const DISPLAY_LABEL: Record<string, string> = {
-  failed_retryable: 'Retryable failure',
-  failed_terminal: 'Terminal failure',
-  false_positive: 'False positive',
-  false_negative: 'False negative',
-  in_progress: 'In progress',
-  invalid_attempt: 'Invalid attempt',
-  likely_false_positive: 'Likely false positive',
-  model_review: 'Model review',
-  persisted_review: 'Persisted review',
-  queued: 'Queued',
-  reviewed: 'Reviewed',
-  sampler_disabled: 'Sampler disabled',
-  supports_finding: 'Supports finding',
-  timing_false_positive: 'Timing false positive',
-  unclear: 'Unclear',
-  unknown: 'Unknown',
-};
-
 function formatCompactDate(value: string | null | undefined): string {
   if (!value) return 'never';
   const date = new Date(value);
@@ -123,17 +105,6 @@ function topEntries(values: Record<string, number> | undefined, limit = 4): Arra
     .filter(([, count]) => count > 0)
     .sort(([, a], [, b]) => b - a)
     .slice(0, limit);
-}
-
-function formatIdentifier(value: string | null | undefined): string {
-  if (!value) return 'Unknown';
-  const label = DISPLAY_LABEL[value];
-  if (label) return label;
-  return value
-    .split(/[_-]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ') || 'Unknown';
 }
 
 function isAbortError(err: unknown): boolean {
@@ -248,7 +219,7 @@ export function FindingEvidenceDiagnosticsPanel() {
                     {queueEntries(sampler).length === 0 ? (
                       <span className="muted">empty</span>
                     ) : queueEntries(sampler).map(([stateName, count]) => (
-                      <span key={stateName}>{formatIdentifier(stateName)} {count}</span>
+                      <span key={stateName}>{formatDiagnosticIdentifier(stateName)} {count}</span>
                     ))}
                   </div>
                   <span className="finding-evidence-note">
@@ -273,7 +244,7 @@ export function FindingEvidenceDiagnosticsPanel() {
               {topEntries(summary.verdictCounts).length > 0 && (
                 <div className="finding-evidence-chip-row" aria-label="Finding evidence review verdict counts">
                   {topEntries(summary.verdictCounts).map(([verdict, count]) => (
-                    <span key={verdict} className="finding-evidence-chip">{formatIdentifier(verdict)} {count}</span>
+                    <span key={verdict} className="finding-evidence-chip">{formatDiagnosticIdentifier(verdict)} {count}</span>
                   ))}
                 </div>
               )}
@@ -282,8 +253,8 @@ export function FindingEvidenceDiagnosticsPanel() {
                 <div className="finding-evidence-proposals">
                   {state.diagnostics.proposals.reports.slice(0, 3).map((report, index) => (
                     <div key={`${report.detectorTarget ?? 'unknown'}-${index}`} className="finding-evidence-proposal-row">
-                      <span className="finding-evidence-proposal-target">{formatIdentifier(report.detectorTarget)}</span>
-                      <span className="finding-evidence-proposal-status">{formatIdentifier(report.proposal?.status)}</span>
+                      <span className="finding-evidence-proposal-target">{formatDiagnosticIdentifier(report.detectorTarget)}</span>
+                      <span className="finding-evidence-proposal-status">{formatDiagnosticIdentifier(report.proposal?.status)}</span>
                       <span className="finding-evidence-proposal-summary">{report.proposal?.summary ?? `${report.reviewCounts?.total ?? 0} reviews`}</span>
                     </div>
                   ))}

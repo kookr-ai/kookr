@@ -157,15 +157,27 @@ export async function configureRemoteCommandHandler(deps: RemoteCommandHandlerDe
             execute: async () => {
               const presetId = (command.payload as { presetId: Parameters<typeof sendPresetReply>[2] }).presetId;
               const result = await runtime.sendPresetReply(adapter, command.sessionId, presetId);
+              const preAnomaly = queue.getAnomaly(command.sessionId);
               monitor.markInputReceived(command.sessionId);
               queue.respondAndAdvance(command.sessionId);
               abortPendingSuggestion(command.sessionId, 'used');
+              const timestamp = (now?.() ?? new Date()).toISOString();
               await interactionLog.append({
                 type: 'user_input',
                 agentId: command.sessionId,
                 content: result.text,
-                timestamp: new Date().toISOString(),
+                timestamp,
               });
+              if (preAnomaly) {
+                await interactionLog.append({
+                  type: 'finding_resolved',
+                  agentId: command.sessionId,
+                  anomalyType: preAnomaly.type,
+                  method: 'input',
+                  durationMs: new Date(timestamp).getTime() - preAnomaly.detectedAt.getTime(),
+                  timestamp,
+                });
+              }
               return result;
             },
           },
@@ -400,15 +412,27 @@ export async function configureRemoteCommandHandler(deps: RemoteCommandHandlerDe
             execute: async () => {
               if (!isSubmitMessageCommand(command)) throw new Error('invalid submit message');
               const result = await remoteInputAdapter.submit(command);
+              const preAnomaly = queue.getAnomaly(command.sessionId);
               monitor.markInputReceived(command.sessionId);
               queue.respondAndAdvance(command.sessionId);
               abortPendingSuggestion(command.sessionId, 'used');
+              const timestamp = (now?.() ?? new Date()).toISOString();
               await interactionLog.append({
                 type: 'user_input',
                 agentId: command.sessionId,
                 content: command.payload.text,
-                timestamp: new Date().toISOString(),
+                timestamp,
               });
+              if (preAnomaly) {
+                await interactionLog.append({
+                  type: 'finding_resolved',
+                  agentId: command.sessionId,
+                  anomalyType: preAnomaly.type,
+                  method: 'input',
+                  durationMs: new Date(timestamp).getTime() - preAnomaly.detectedAt.getTime(),
+                  timestamp,
+                });
+              }
               return result;
             },
           },

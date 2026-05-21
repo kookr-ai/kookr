@@ -215,4 +215,132 @@ describe('configureRemoteCommandHandler', () => {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  test('logs finding resolutions for remote preset replies and submitted messages', async () => {
+    let commandHandler: ((command: CommandEnvelope) => Promise<CommandResult>) | null = null;
+    const append = vi.fn(async () => {});
+    const sendPresetReply = vi.fn(async () => ({ text: 'continue' }));
+    const submit = vi.fn(async () => ({ accepted: true }));
+    const anomaly = {
+      agentId: 'session-1',
+      type: 'needs_input',
+      severity: 'info',
+      confidence: 'high',
+      explanation: 'waiting',
+      detectedAt: new Date('2026-05-15T19:00:00.000Z'),
+    };
+
+    await configureRemoteCommandHandler({
+      runtime: {
+        executeWithPipeline: async ({ handler, request }) => {
+          const authorization = await handler.authorize(request);
+          expect(authorization).toEqual({ ok: true });
+          const validation = await handler.validate(request);
+          expect(validation).toEqual({ ok: true });
+          return {
+            commandId: request.commandId,
+            action: request.action,
+            outcome: 'accepted',
+            result: await handler.execute(request),
+          };
+        },
+        grantForRemoteCommandAction: vi.fn(),
+        RemotePermissionBroker: vi.fn(),
+        evaluateGrantById: vi.fn(),
+        isPresetReplyId: vi.fn(() => true),
+        sendPresetReply,
+      } as unknown as RemoteCommandHandlerDeps['runtime'],
+      remoteNodeClient: {
+        setCommandHandler: (handler) => { commandHandler = handler; },
+      } as unknown as RemoteCommandHandlerDeps['remoteNodeClient'],
+      commandJournal: {} as unknown as RemoteCommandHandlerDeps['commandJournal'],
+      adapter: {} as unknown as RemoteCommandHandlerDeps['adapter'],
+      monitor: {
+        markInputReceived: vi.fn(),
+      } as unknown as RemoteCommandHandlerDeps['monitor'],
+      queue: {
+        getAnomaly: vi.fn(() => anomaly),
+        respondAndAdvance: vi.fn(),
+      } as unknown as RemoteCommandHandlerDeps['queue'],
+      interactionLog: { append } as unknown as RemoteCommandHandlerDeps['interactionLog'],
+      abortPendingSuggestion: vi.fn(),
+      taskStore: {
+        findTaskBySession: vi.fn(() => ({
+          id: 'task-1',
+          sessions: [{ tmuxSession: 'session-1' }],
+        })),
+      } as unknown as RemoteCommandHandlerDeps['taskStore'],
+      remotePolicyCache: null,
+      markDone: vi.fn(),
+      remoteInputAdapter: { submit } as unknown as RemoteCommandHandlerDeps['remoteInputAdapter'],
+      controllerLeaseManager: null,
+      now: () => new Date('2026-05-15T19:01:00.000Z'),
+    });
+
+    expect(commandHandler).toBeTypeOf('function');
+    await commandHandler!({
+      commandId: 'cmd-preset',
+      actorId: LOCAL_OWNER_ID,
+      clientId: 'client-1',
+      nodeId: 'node-1',
+      nodeEpoch: '1',
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      grantId: 'owner-local:node-1',
+      idempotencyKey: 'idem-preset',
+      action: 'presetReply',
+      baseRevision: 1,
+      payload: { presetId: 'continue' },
+    } as unknown as CommandEnvelope);
+    await commandHandler!({
+      commandId: 'cmd-submit',
+      actorId: LOCAL_OWNER_ID,
+      clientId: 'client-1',
+      nodeId: 'node-1',
+      nodeEpoch: '1',
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      grantId: 'owner-local:node-1',
+      idempotencyKey: 'idem-submit',
+      action: 'submitMessage',
+      leaseId: 'lease-1',
+      baseRevision: 1,
+      lastSeenSeq: 0,
+      payload: {
+        type: 'submit-message',
+        sessionId: 'session-1',
+        sessionEpoch: '1',
+        leaseId: 'lease-1',
+        commandId: 'cmd-submit',
+        idempotencyKey: 'idem-submit',
+        text: 'hello remote',
+        appendNewline: true,
+        baseRevision: 1,
+        lastSeenSeq: 0,
+        maxAgeMs: 10_000,
+      },
+    } as unknown as CommandEnvelope);
+
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'user_input',
+      agentId: 'session-1',
+      content: 'continue',
+      timestamp: '2026-05-15T19:01:00.000Z',
+    }));
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'user_input',
+      agentId: 'session-1',
+      content: 'hello remote',
+      timestamp: '2026-05-15T19:01:00.000Z',
+    }));
+    expect(append).toHaveBeenCalledTimes(4);
+    expect(append).toHaveBeenCalledWith({
+      type: 'finding_resolved',
+      agentId: 'session-1',
+      anomalyType: 'needs_input',
+      method: 'input',
+      durationMs: 60_000,
+      timestamp: '2026-05-15T19:01:00.000Z',
+    });
+  });
 });

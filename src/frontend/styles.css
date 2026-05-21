@@ -2575,6 +2575,7 @@ kbd {
 }
 .operations-panel-body .audio-alerts-section,
 .operations-panel-body .detection-stats-section,
+.operations-panel-body .live-calibration-section,
 .operations-panel-body .finding-evidence-section,
 .operations-panel-body .circuit-breaker-section {
   border-top: 0;
@@ -2624,6 +2625,86 @@ kbd {
   .operations-panel .finding-evidence-proposal-row {
     grid-template-columns: minmax(0, 1fr);
   }
+  .operations-panel .live-calibration-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.live-calibration-section {
+  border-top: 1px solid var(--border-dim);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.live-calibration-header {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.live-calibration-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.live-calibration-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 6px;
+}
+.live-calibration-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.live-calibration-pill {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.08);
+}
+.live-calibration-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.live-calibration-row {
+  display: grid;
+  grid-template-columns: 130px 150px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.05);
+}
+.live-calibration-target,
+.live-calibration-action,
+.live-calibration-reason {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.live-calibration-target {
+  font-weight: 700;
+  color: var(--text-bright);
+}
+.live-calibration-action {
+  color: var(--text-muted);
+}
+.live-calibration-error {
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--orange, #f59e0b);
+  background: rgba(245, 158, 11, 0.08);
 }
 
 .dialog label {

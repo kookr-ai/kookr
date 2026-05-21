@@ -70,6 +70,21 @@ function findingEvidenceOperationsDiagnostics(overrides: Record<string, unknown>
   };
 }
 
+function liveFrictionCalibration(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 'live-friction-calibration.v1',
+    mode: 'diagnostics_only',
+    generatedAt: '2026-05-21T12:00:00.000Z',
+    routingMutationAllowed: false,
+    interactionCount: 0,
+    activeFindingCount: 0,
+    signalCount: 0,
+    signals: [],
+    recommendations: [],
+    ...overrides,
+  };
+}
+
 async function flush() {
   await act(async () => {
     await Promise.resolve();
@@ -83,6 +98,9 @@ beforeEach(() => {
     const url = String(input);
     if (url.startsWith('/api/anomaly-stats')) {
       return Promise.resolve(fetchResponse({ checks: {}, fires: {}, falsePositives: {} }));
+    }
+    if (url.startsWith('/api/live-friction-calibration')) {
+      return Promise.resolve(fetchResponse(liveFrictionCalibration()));
     }
     if (url.startsWith('/api/finding-evidence-operations-diagnostics')) {
       return Promise.resolve(fetchResponse(findingEvidenceOperationsDiagnostics()));
@@ -118,6 +136,7 @@ describe('OperationsPanel', () => {
     expect(el.textContent).toContain('Audio Alerts');
     expect(el.textContent).toContain('No audio alert decisions recorded yet');
     expect(el.textContent).toContain('No detection checks recorded yet');
+    expect(el.textContent).toContain('Friction Calibration');
     expect(el.textContent).toContain('Finding Evidence');
     expect(el.textContent).toContain('Sampler disabled');
     expect(el.textContent).toContain('Review candidates');
@@ -134,6 +153,29 @@ describe('OperationsPanel', () => {
       const url = String(input);
       if (url.startsWith('/api/anomaly-stats')) {
         return Promise.resolve(fetchResponse({ checks: {}, fires: {}, falsePositives: {} }));
+      }
+      if (url.startsWith('/api/live-friction-calibration')) {
+        return Promise.resolve(fetchResponse(liveFrictionCalibration({
+          interactionCount: 6,
+          activeFindingCount: 1,
+          signalCount: 2,
+          signals: [{
+            kind: 'skipped_finding',
+            target: 'needs_input',
+            count: 2,
+            agentCount: 2,
+            evidence: [],
+          }],
+          recommendations: [{
+            id: 'down-weight:needs_input',
+            target: 'needs_input',
+            direction: 'down_weight_candidate',
+            reason: 'needs_input is being skipped frequently in this session.',
+            evidence: [],
+            affectedActiveAgentIds: ['agent-3'],
+            wouldMutateQueue: false,
+          }],
+        })));
       }
       if (url.startsWith('/api/finding-evidence-operations-diagnostics')) {
         return Promise.resolve(fetchResponse(findingEvidenceOperationsDiagnostics({
@@ -205,6 +247,88 @@ describe('OperationsPanel', () => {
     expect(el.textContent).toContain('Likely false positive 1');
     expect(el.textContent).toContain('Needs Input');
     expect(el.textContent).toContain('Candidate');
+
+    const calibrationHeader = Array.from(el.querySelectorAll('button')).find((button) => (
+      button.textContent?.includes('Friction Calibration')
+    ));
+    await act(async () => {
+      calibrationHeader?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(el.textContent).toContain('Diagnostics only');
+    expect(el.textContent).toContain('Does not reorder findings');
+    expect(el.textContent).toContain('Down-weight candidate');
+  });
+
+  test('renders signal-only live friction calibration diagnostics', async () => {
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/anomaly-stats')) {
+        return Promise.resolve(fetchResponse({ checks: {}, fires: {}, falsePositives: {} }));
+      }
+      if (url.startsWith('/api/live-friction-calibration')) {
+        return Promise.resolve(fetchResponse(liveFrictionCalibration({
+          interactionCount: 4,
+          activeFindingCount: 2,
+          signalCount: 2,
+          signals: [{
+            kind: 'skipped_finding',
+            target: 'needs_input',
+            count: 2,
+            agentCount: 2,
+            evidence: [],
+          }],
+          recommendations: [],
+        })));
+      }
+      if (url.startsWith('/api/finding-evidence-operations-diagnostics')) {
+        return Promise.resolve(fetchResponse(findingEvidenceOperationsDiagnostics()));
+      }
+      return Promise.resolve(fetchResponse({}, false, 404));
+    });
+
+    const { el } = mount();
+    await flush();
+
+    expect(el.textContent).toContain('2 signals');
+    const calibrationHeader = Array.from(el.querySelectorAll('button')).find((button) => (
+      button.textContent?.includes('Friction Calibration')
+    ));
+    await act(async () => {
+      calibrationHeader?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(el.textContent).toContain('Needs Input');
+    expect(el.textContent).toContain('Skipped finding');
+    expect(el.textContent).toContain('2 signals across 2 agents');
+  });
+
+  test('renders live friction calibration fetch errors inside the diagnostics panel', async () => {
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/anomaly-stats')) {
+        return Promise.resolve(fetchResponse({ checks: {}, fires: {}, falsePositives: {} }));
+      }
+      if (url.startsWith('/api/live-friction-calibration')) {
+        return Promise.resolve(fetchResponse({}, false, 500));
+      }
+      if (url.startsWith('/api/finding-evidence-operations-diagnostics')) {
+        return Promise.resolve(fetchResponse(findingEvidenceOperationsDiagnostics()));
+      }
+      return Promise.resolve(fetchResponse({}, false, 404));
+    });
+
+    const { el } = mount();
+    await flush();
+
+    const calibrationHeader = Array.from(el.querySelectorAll('button')).find((button) => (
+      button.textContent?.includes('Friction Calibration')
+    ));
+    await act(async () => {
+      calibrationHeader?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(el.textContent).toContain('Live friction calibration returned HTTP 500');
   });
 
   test('keeps finding evidence diagnostics visible when sampler status is unavailable', async () => {
@@ -212,6 +336,9 @@ describe('OperationsPanel', () => {
       const url = String(input);
       if (url.startsWith('/api/anomaly-stats')) {
         return Promise.resolve(fetchResponse({ checks: {}, fires: {}, falsePositives: {} }));
+      }
+      if (url.startsWith('/api/live-friction-calibration')) {
+        return Promise.resolve(fetchResponse(liveFrictionCalibration()));
       }
       if (url.startsWith('/api/finding-evidence-operations-diagnostics')) {
         return Promise.resolve(fetchResponse(findingEvidenceOperationsDiagnostics({

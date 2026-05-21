@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
+import { AttentionQueue } from '../../core/attention-queue.js';
 import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
 import { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import { GitHubStateStore } from '../../core/github-state-store.js';
@@ -82,6 +83,65 @@ describe('diagnostics routes', () => {
         subagentSessionsWithOrphans: expect.any(Number),
         subagentTtlEvictions: expect.any(Number),
       }));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/live-friction-calibration
+  // ---------------------------------------------------------------------------
+  describe('GET /api/live-friction-calibration', () => {
+    test('returns diagnostics-only calibration without mutating the active queue', async () => {
+      const logPath = join(tempDir, 'session', 'interactions.jsonl');
+      mkdirSync(join(tempDir, 'session'), { recursive: true });
+      writeFileSync(logPath, [
+        JSON.stringify({ type: 'finding_skipped', agentId: 'agent-1', anomalyType: 'needs_input', timestamp: '2026-05-21T12:01:00.000Z' }),
+        JSON.stringify({ type: 'finding_resolved', agentId: 'agent-1', anomalyType: 'needs_input', method: 'skip', durationMs: 1000, timestamp: '2026-05-21T12:01:00.000Z' }),
+        JSON.stringify({ type: 'finding_skipped', agentId: 'agent-2', anomalyType: 'needs_input', timestamp: '2026-05-21T12:02:00.000Z' }),
+        JSON.stringify({ type: 'finding_resolved', agentId: 'agent-2', anomalyType: 'needs_input', method: 'skip', durationMs: 1000, timestamp: '2026-05-21T12:02:00.000Z' }),
+      ].join('\n'));
+
+      const queue = new AttentionQueue();
+      queue.enqueue('agent-3', {
+        type: 'needs_input',
+        severity: 'info',
+        confidence: 'high',
+        explanation: 'waiting',
+        agentId: 'agent-3',
+        detectedAt: new Date('2026-05-21T12:00:00.000Z'),
+      });
+      queue.enqueue('agent-4', {
+        type: 'permission_blocked',
+        severity: 'warning',
+        confidence: 'high',
+        explanation: 'permission',
+        agentId: 'agent-4',
+        detectedAt: new Date('2026-05-21T11:55:00.000Z'),
+      });
+      queue.snooze('agent-4', -1);
+      const beforeActive = queue.inspectActive().map((entry) => entry.agentId);
+      const beforeSnoozed = queue.getSnoozed().map((entry) => entry.agentId);
+      const interactionLog = { getFilePath: () => logPath };
+
+      const res = await mkApp({ queue, interactionLog: interactionLog as never }).request('/api/live-friction-calibration');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual(expect.objectContaining({
+        schemaVersion: 'live-friction-calibration.v1',
+        mode: 'diagnostics_only',
+        routingMutationAllowed: false,
+        interactionCount: 4,
+        activeFindingCount: 1,
+      }));
+      expect(body.recommendations).toEqual([
+        expect.objectContaining({
+          id: 'down-weight:needs_input',
+          affectedActiveAgentIds: ['agent-3'],
+          wouldMutateQueue: false,
+        }),
+      ]);
+      expect(queue.inspectActive().map((entry) => entry.agentId)).toEqual(beforeActive);
+      expect(queue.getSnoozed().map((entry) => entry.agentId)).toEqual(beforeSnoozed);
     });
   });
 
