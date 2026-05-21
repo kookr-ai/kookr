@@ -64,6 +64,7 @@ import { createRealtimeServices } from './bootstrap/create-realtime-services.js'
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
+import { startConfiguredPrivateNetworkCollaborationListener } from './collaboration-listener.js';
 import { configureRemoteCommandHandler } from './remote-command-handler.js';
 import type { RemoteNodeClient } from '../remote/node-client.js';
 import type { CommandJournal } from '../remote/command-journal.js';
@@ -1156,6 +1157,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     onLocalTerminalActivity: recordLocalTerminalActivity,
     onDashboardConnection: (ws) => handleWsConnection(ws, clients, wsConnectionDeps),
   });
+  const collaborationListener = await startConfiguredPrivateNetworkCollaborationListener({
+    env: process.env,
+    dashboardHost: host,
+    dashboardPort: port,
+  });
+  if (collaborationListener.status === 'disabled') {
+    const health = collaborationListener.config.health;
+    const detail = health.state === 'disabled'
+      ? health.reason
+      : health.state === 'unreachable'
+        ? health.detail ?? health.state
+        : health.state;
+    console.log(`[collaboration] private-network listener disabled (${detail})`);
+  }
 
   // Start background services that should wait for the server to be listening.
   backgroundServices.startAfterListen();
@@ -1225,6 +1240,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
 
     // Close servers
+    await collaborationListener.close();
     terminalWss.close();
     wss.close();
 
