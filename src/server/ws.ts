@@ -32,6 +32,7 @@ import type { WorkspaceAttemptRepository } from '../core/workspace-attempt-repos
 import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
 import type { CoordinatorAuditTailProvider } from './coordinator/detectors.js';
+import type { CoordinatorSuppressionReader } from './coordinator/suppression-store.js';
 
 export interface MessageRouterDeps {
   taskStore: TaskStore;
@@ -66,6 +67,7 @@ export interface MessageRouterDeps {
   getDefaultAgentType?: () => AgentSelection;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
+  coordinatorSuppressions?: CoordinatorSuppressionReader;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   /** Workspace services (Phase 1a). */
@@ -216,6 +218,7 @@ export class MessageRouter {
       coordinator: {
         taskStore: this.deps.taskStore,
         auditTailProvider: this.deps.coordinatorAuditTailProvider,
+        suppressions: this.deps.coordinatorSuppressions,
       },
       getMaxActiveTasks: this.deps.getMaxActiveTasks,
     }));

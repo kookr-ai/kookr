@@ -15,6 +15,8 @@ interface Props {
   onOssView: () => void;
   onOperations: () => void;
   operationsOpen?: boolean;
+  onCoordinatorFindings: () => void;
+  coordinatorFindingsOpen?: boolean;
   /** Open the Cost Comparison panel. Optional — the icon is hidden when undefined. */
   onCostComparison?: () => void;
   /** Optional slot rendered in the right-side action cluster, hidden in compact mode. */
@@ -59,8 +61,8 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, operationsOpen = false, onCostComparison, sweepSlot }: Props) {
-  const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport } = useKookrStore();
+export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, onCostComparison, sweepSlot }: Props) {
+  const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
@@ -187,6 +189,10 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
   const operationsNeedsAttention =
     circuitBreakers.some((breaker) => breaker.state !== 'closed') ||
     Boolean(diagnosticReport?.findings.length);
+  const coordinatorFindingCount = coordinator?.findings.length ?? 0;
+  const coordinatorFindingsLabel = coordinatorFindingCount > 0
+    ? `Coordinator findings, ${coordinatorFindingCount} finding${coordinatorFindingCount === 1 ? '' : 's'}`
+    : 'Coordinator findings';
   const hasQueueInfo = totalFindings > 0;
   const queueTitle = hasQueueInfo
     ? currentIndex >= 0
@@ -364,6 +370,18 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
             </svg>
             {operationsNeedsAttention && <span className="operations-alert-dot" />}
           </button>
+          {!compact && (
+            <button
+              className={`btn-icon coordinator-findings-trigger${coordinatorFindingsOpen ? ' active' : ''}`}
+              onClick={onCoordinatorFindings}
+              title="Coordinator findings"
+              aria-label={coordinatorFindingsLabel}
+              aria-pressed={coordinatorFindingsOpen}
+            >
+              ⛓
+              {coordinatorFindingCount > 0 && <span className="coordinator-nav-badge">{coordinatorFindingCount}</span>}
+            </button>
+          )}
           {!compact && (
             <button className="btn-icon" onClick={onShowShortcuts} title="Help" aria-label="Help">
               ?

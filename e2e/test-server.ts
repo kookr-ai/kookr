@@ -343,6 +343,23 @@ async function main() {
     return c.json({ ok: true });
   });
 
+  server.app.post('/api/test/backdate-session/:taskId', async (c) => {
+    const taskId = c.req.param('taskId');
+    const { minutesAgo } = await c.req.json() as { minutesAgo?: number };
+    const task = server.taskStore.getTaskForMutation(taskId);
+    if (!task) return c.json({ error: `Task not found: ${taskId}` }, 404);
+    const createdAt = new Date(Date.now() - (minutesAgo ?? 60) * 60_000);
+    for (const session of task.sessions) {
+      if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {
+        session.createdAt = createdAt;
+      }
+    }
+    task.updatedAt = createdAt;
+    const snapshot = server.monitor.getSnapshot();
+    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/repo' });
+    return c.json({ ok: true });
+  });
+
   // Reset all server state (clean slate between tests)
   server.app.post('/api/test/reset', async (c) => {
     // Unregister all agents from monitor
@@ -375,6 +392,8 @@ async function main() {
     terminal.sessions.clear();
     FakeTerminalBridge.clearContent();
     injectedSessionIds.clear();
+    rmSync(join(tempDir, 'coordinator-suppressions.json'), { force: true });
+    rmSync(join(tempDir, 'coordinator-feedback.jsonl'), { force: true });
 
     server.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/home/user/projects' });
     server.broadcastToAll({ type: 'projectSummaries', projects: [] });

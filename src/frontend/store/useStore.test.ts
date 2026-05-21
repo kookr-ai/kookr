@@ -1024,10 +1024,13 @@ describe('Kookr Zustand Store', () => {
       undefined,
       undefined,
       undefined,
-      { outputs: [{ detectorId: 'duplicate', taskId: 'task-1', evidence: { peerTaskIds: ['task-2'] } }] },
+      { outputs: [{ detectorId: 'duplicate', taskId: 'task-1', evidence: { peerTaskIds: ['task-2'] } }], chips: [], findings: [], chains: {} },
     );
     expect(store.getState().coordinator).toEqual({
       outputs: [{ detectorId: 'duplicate', taskId: 'task-1', evidence: { peerTaskIds: ['task-2'] } }],
+      chips: [],
+      findings: [],
+      chains: {},
     });
   });
 

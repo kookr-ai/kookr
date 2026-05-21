@@ -9254,3 +9254,195 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
     gap: 2px;
   }
 }
+.coordinator-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.coordinator-chip-action,
+.coordinator-chip-dismiss {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.coordinator-chip-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+
+.coordinator-chip-verb {
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.coordinator-chip-evidence {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.coordinator-chip-dismiss {
+  width: 24px;
+  align-self: stretch;
+  border-left: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.coordinator-chain-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 16px 10px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+}
+
+.coordinator-chain-members {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.coordinator-chain-member {
+  display: inline-grid;
+  grid-template-columns: auto minmax(80px, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  max-width: 320px;
+  min-height: 28px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+}
+
+.coordinator-chain-relation,
+.coordinator-chain-state {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.coordinator-chain-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coordinator-chain-status {
+  flex-basis: 100%;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.coordinator-findings-trigger {
+  position: relative;
+}
+
+.coordinator-nav-badge {
+  position: absolute;
+  top: -5px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--red);
+  color: white;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.coordinator-findings-pane {
+  width: 300px;
+  min-width: 260px;
+  max-width: 340px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-panel);
+  overflow: auto;
+}
+
+.coordinator-findings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.coordinator-findings-header h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.coordinator-finding-empty,
+.coordinator-finding-list {
+  padding: 10px;
+}
+
+.coordinator-finding-card {
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+}
+
+.coordinator-finding-card + .coordinator-finding-card {
+  margin-top: 8px;
+}
+
+.coordinator-finding-title,
+.coordinator-finding-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.coordinator-finding-count {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.coordinator-finding-tasks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0;
+}
+
+.coordinator-finding-tasks code {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 768px) {
+  .coordinator-findings-pane {
+    width: 100%;
+    max-width: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+}

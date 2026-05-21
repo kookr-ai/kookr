@@ -38,6 +38,8 @@ export interface AgentState {
   taskId?: string;
   taskName?: string;
   taskStatus?: import('./types.js').TaskStatus;
+  parentTaskId?: string;
+  childTaskIds?: string[];
   blocks?: TaskDependencyEdge[];
   blocked_by?: TaskDependencyEdge[];
   description?: string; // full task prompt, shown on hover
@@ -622,6 +624,8 @@ export class Monitor {
         const task = this.taskStore.getTask(meta.taskId);
         if (task) {
           state.taskStatus = task.status;
+          state.parentTaskId = task.parentTaskId;
+          state.childTaskIds = task.childTaskIds;
           state.blocks = task.blocks;
           state.blocked_by = task.blocked_by;
           state.ralphLoop = task.ralphLoop;
@@ -644,6 +648,8 @@ export class Monitor {
           taskId: task.id,
           taskName: task.name ?? truncatePrompt(task.prompt, 60),
           taskStatus: 'pending',
+          parentTaskId: task.parentTaskId,
+          childTaskIds: task.childTaskIds,
           blocks: task.blocks,
           blocked_by: task.blocked_by,
           description: task.prompt,
@@ -673,6 +679,8 @@ export class Monitor {
             taskId: task.id,
             taskName: task.name ?? truncatePrompt(task.prompt, 60),
             taskStatus: task.status,
+            parentTaskId: task.parentTaskId,
+            childTaskIds: task.childTaskIds,
             blocks: task.blocks,
             blocked_by: task.blocked_by,
             description: task.prompt,

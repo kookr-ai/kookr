@@ -1,4 +1,5 @@
 import type { AgentState } from '../shared/protocol.js';
+import type { CoordinatorSnapshotState } from '../shared/contracts/coordinator.js';
 import type { TaskStatus } from '../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { isActiveFinding } from './store/finding-helpers.js';
@@ -26,10 +27,23 @@ export function isHealthyRunningAgent(agent: AgentState): boolean {
     && !isTerminalTaskStatus(agent.taskStatus);
 }
 
-export function buildAgentBuckets(agents: AgentState[], selectedProject: string | null): AgentBuckets {
-  const filteredAgents = selectedProject
+export function buildAgentBuckets(
+  agents: AgentState[],
+  selectedProject: string | null,
+  coordinator?: CoordinatorSnapshotState | null,
+): AgentBuckets {
+  const chipTaskIds = new Set((coordinator?.chips ?? []).map((chip) => chip.taskId));
+  const filteredAgents = (selectedProject
     ? agents.filter((agent) => agent.projectId === selectedProject)
-    : agents;
+    : agents)
+    .map((agent, index) => ({ agent, index }))
+    .sort((left, right) => {
+      const leftHasChip = left.agent.taskId ? chipTaskIds.has(left.agent.taskId) : false;
+      const rightHasChip = right.agent.taskId ? chipTaskIds.has(right.agent.taskId) : false;
+      if (leftHasChip !== rightHasChip) return leftHasChip ? -1 : 1;
+      return left.index - right.index;
+    })
+    .map(({ agent }) => agent);
 
   return {
     filteredAgents,

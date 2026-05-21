@@ -202,6 +202,7 @@ export type ServerMessage =
     }
   | { type: 'suggestion'; agentId: string; suggestionId?: string; suggestions: string[]; quickActions: QuickAction[] }
   | { type: 'projectSummaries'; projects: ProjectSummary[] }
+  | { type: 'coordinator.snapshot'; coordinator: CoordinatorSnapshotState }
   | { type: 'contributionWarning'; project: string; message: string; severity: 'approaching' | 'exceeded' }
   | { type: 'achievement:unlocked'; id: string; name: string; emoji: string; description: string; unlockedAt: string }
   | { type: 'achievement:reset:ack'; success: boolean; error?: string }

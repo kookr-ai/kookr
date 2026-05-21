@@ -2,7 +2,17 @@ import { hashPrompt } from '../hash-prompt.js';
 import { canonicalizeCwd } from '../launch-service.js';
 import { normalizePromptFileReferences } from '../prompt-file-paths.js';
 import type { Task } from '../../core/tasks.js';
-import type { CoordinatorDetectorOutput } from '../../shared/contracts/coordinator.js';
+import type { AgentType } from '../../shared/contracts/agent-types.js';
+import type {
+  CoordinatorChainMember,
+  CoordinatorChainStrip,
+  CoordinatorDetectorId,
+  CoordinatorDetectorOutput,
+  CoordinatorFinding,
+  CoordinatorSnapshotState,
+  CoordinatorTaskChip,
+} from '../../shared/contracts/coordinator.js';
+import type { CoordinatorSuppressionReader } from './suppression-store.js';
 
 export interface CoordinatorAuditTailProvider {
   getCoordinatorAuditTail(): CoordinatorAuditTailRow[];
@@ -44,6 +54,7 @@ export interface CoordinatorAuditTailRow {
 export interface RunDetectorsOptions {
   now?: Date;
   staleAfterMs?: number;
+  suppressions?: CoordinatorSuppressionReader;
 }
 
 const DEFAULT_STALE_AFTER_MS = 30 * 60 * 1000;
@@ -59,10 +70,60 @@ export function runDetectors(
   const staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
 
   return [
+    ...detectDeclaredEdges(tasks),
     ...detectStaleTasks(tasks, auditTail, now, staleAfterMs),
     ...detectDuplicateTasks(tasks),
     ...detectDoneNotClearedTasks(tasks),
-  ];
+  ].filter((output) => !isSuppressed(output, tasks, now, opts.suppressions));
+}
+
+export function buildCoordinatorSnapshotState(
+  snapshot: CoordinatorSnapshot,
+  auditTail: readonly CoordinatorAuditTailRow[],
+  opts: RunDetectorsOptions = {},
+): CoordinatorSnapshotState {
+  const now = opts.now ?? new Date();
+  const outputs = runDetectors(snapshot, auditTail, { ...opts, now });
+  return {
+    outputs,
+    chips: buildTaskChips(snapshot.tasks, outputs),
+    findings: buildFleetFindings(snapshot.tasks, outputs),
+    chains: buildChainStrips(snapshot.tasks),
+  };
+}
+
+function isSuppressed(
+  output: CoordinatorDetectorOutput,
+  tasks: readonly CoordinatorTask[],
+  now: Date,
+  suppressions?: CoordinatorSuppressionReader,
+): boolean {
+  if (!suppressions) return false;
+  const task = tasks.find((candidate) => candidate.id === output.taskId);
+  return task ? suppressions.isSuppressed(output.detectorId, task.agentType, now, task.id) : false;
+}
+
+function detectDeclaredEdges(tasks: readonly CoordinatorTask[]): CoordinatorDetectorOutput[] {
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const out: CoordinatorDetectorOutput[] = [];
+  for (const task of tasks) {
+    const blocks = task.blocks ?? [];
+    const blockedBy = task.blocked_by ?? [];
+    const meaningfulBlocks = blocks.filter((edge) => edge.startsWith('task:') ? taskIds.has(edge.slice('task:'.length)) : true);
+    const meaningfulBlockedBy = blockedBy.filter((edge) => edge.startsWith('task:') ? taskIds.has(edge.slice('task:'.length)) : true);
+    const orphanEdges = [...blocks, ...blockedBy].filter((edge) => edge.startsWith('task:') && !taskIds.has(edge.slice('task:'.length)));
+    if (meaningfulBlocks.length === 0 && meaningfulBlockedBy.length === 0 && orphanEdges.length === 0) continue;
+    out.push({
+      detectorId: 'declared_edge',
+      taskId: task.id,
+      evidence: {
+        blocksCount: meaningfulBlocks.length,
+        blockedByCount: meaningfulBlockedBy.length,
+        orphanCount: orphanEdges.length,
+      },
+    });
+  }
+  return out;
 }
 
 function detectStaleTasks(
@@ -161,6 +222,194 @@ function detectDoneNotClearedTasks(tasks: readonly CoordinatorTask[]): Coordinat
     });
   }
   return out;
+}
+
+function buildTaskChips(
+  tasks: readonly CoordinatorTask[],
+  outputs: readonly CoordinatorDetectorOutput[],
+): CoordinatorTaskChip[] {
+  const tasksById = new Map(tasks.map((task) => [task.id, task]));
+  const byTask = new Map<string, CoordinatorDetectorOutput[]>();
+  for (const output of outputs) {
+    const list = byTask.get(output.taskId) ?? [];
+    list.push(output);
+    byTask.set(output.taskId, list);
+  }
+
+  const chips: CoordinatorTaskChip[] = [];
+  for (const [taskId, candidates] of byTask) {
+    const task = tasksById.get(taskId);
+    if (!task) continue;
+    const output = [...candidates].sort((left, right) => detectorRank(left.detectorId) - detectorRank(right.detectorId))[0];
+    chips.push(chipForOutput(task, output));
+  }
+  return chips;
+}
+
+function detectorRank(detectorId: CoordinatorDetectorId): number {
+  switch (detectorId) {
+    case 'declared_edge': return 0;
+    case 'stale': return 1;
+    case 'duplicate': return 2;
+    case 'done_not_cleared': return 3;
+  }
+}
+
+function chipForOutput(task: CoordinatorTask, output: CoordinatorDetectorOutput): CoordinatorTaskChip {
+  const base = {
+    taskId: task.id,
+    detectorId: output.detectorId,
+    agentType: task.agentType as AgentType,
+  };
+  switch (output.detectorId) {
+    case 'declared_edge': {
+      const blocksCount = evidenceNumber(output, 'blocksCount');
+      const blockedByCount = evidenceNumber(output, 'blockedByCount');
+      const count = blocksCount + blockedByCount + evidenceNumber(output, 'orphanCount');
+      return {
+        ...base,
+        action: blockedByCount > 0 ? 'snooze' : 'nudge',
+        verb: blockedByCount > 0 ? 'Snooze' : 'Nudge',
+        evidenceGlyph: 'chain',
+        evidenceCount: count,
+        title: `${blocksCount} downstream, ${blockedByCount} upstream, ${evidenceNumber(output, 'orphanCount')} orphan edge(s)`,
+      };
+    }
+    case 'stale':
+      return {
+        ...base,
+        action: 'nudge',
+        verb: 'Nudge',
+        evidenceGlyph: 'clock',
+        evidenceCount: Math.max(1, Math.round(evidenceNumber(output, 'ageMs') / 60_000)),
+        title: `No recent tool activity for ${Math.round(evidenceNumber(output, 'ageMs') / 60_000)} minute(s)`,
+      };
+    case 'duplicate': {
+      const peerTaskIds = evidenceStringArray(output, 'peerTaskIds');
+      return {
+        ...base,
+        action: 'compare',
+        verb: 'Compare',
+        evidenceGlyph: 'match',
+        evidenceCount: peerTaskIds.length + 1,
+        peerTaskIds,
+        title: `Matches ${peerTaskIds.length} active task(s) with the same prompt, cwd, and agent`,
+      };
+    }
+    case 'done_not_cleared':
+      return {
+        ...base,
+        action: 'acknowledge',
+        verb: 'Acknowledge',
+        evidenceGlyph: 'check',
+        evidenceCount: 1,
+        title: 'Completed task has a digest and no active follow-up signal',
+      };
+  }
+}
+
+function buildFleetFindings(
+  tasks: readonly CoordinatorTask[],
+  outputs: readonly CoordinatorDetectorOutput[],
+): CoordinatorFinding[] {
+  const findings: CoordinatorFinding[] = [];
+  const duplicateClusters = new Map<string, Set<string>>();
+  for (const output of outputs) {
+    if (output.detectorId !== 'duplicate') continue;
+    const clusterTaskIds = evidenceStringArray(output, 'clusterTaskIds');
+    if (clusterTaskIds.length < 2) continue;
+    const key = clusterTaskIds.join(':');
+    duplicateClusters.set(key, new Set(clusterTaskIds));
+  }
+  for (const [key, taskIds] of duplicateClusters) {
+    findings.push({
+      id: `duplicate:${key}`,
+      kind: 'duplicate_cluster',
+      title: 'Duplicate task cluster',
+      taskIds: [...taskIds],
+      evidenceGlyph: 'match',
+      evidenceCount: taskIds.size,
+    });
+  }
+
+  const taskIds = new Set(tasks.map((task) => task.id));
+  for (const task of tasks) {
+    const orphanEdges = [...(task.blocks ?? []), ...(task.blocked_by ?? [])]
+      .filter((edge) => edge.startsWith('task:') && !taskIds.has(edge.slice('task:'.length)));
+    if (orphanEdges.length === 0) continue;
+    findings.push({
+      id: `orphan:${task.id}`,
+      kind: 'orphan_blocker',
+      title: 'Orphan dependency edge',
+      taskIds: [task.id],
+      evidenceGlyph: 'chain',
+      evidenceCount: orphanEdges.length,
+    });
+  }
+  return findings;
+}
+
+function buildChainStrips(tasks: readonly CoordinatorTask[]): Record<string, CoordinatorChainStrip> {
+  const tasksById = new Map(tasks.map((task) => [task.id, task]));
+  const out: Record<string, CoordinatorChainStrip> = {};
+  for (const task of tasks) {
+    const members: CoordinatorChainMember[] = [];
+    addMember(members, tasksById, task.parentTaskId, 'parent');
+    for (const childTaskId of task.childTaskIds ?? []) addMember(members, tasksById, childTaskId, 'child');
+    for (const edge of task.blocks ?? []) {
+      if (edge.startsWith('task:')) addMember(members, tasksById, edge.slice('task:'.length), 'blocks');
+    }
+    for (const edge of task.blocked_by ?? []) {
+      if (edge.startsWith('task:')) addMember(members, tasksById, edge.slice('task:'.length), 'blocked_by');
+    }
+    if (members.length === 0) continue;
+    const priorTaskIds = members
+      .filter((member) => member.relation === 'parent' || member.relation === 'blocked_by')
+      .map((member) => member.taskId);
+    out[task.id] = {
+      members,
+      priorTaskIds,
+      concurrencyToken: buildConcurrencyToken(task, members, tasksById),
+    };
+  }
+  return out;
+}
+
+function addMember(
+  members: CoordinatorChainMember[],
+  tasksById: ReadonlyMap<string, CoordinatorTask>,
+  taskId: string | undefined,
+  relation: CoordinatorChainMember['relation'],
+): void {
+  if (!taskId || members.some((member) => member.taskId === taskId)) return;
+  const task = tasksById.get(taskId);
+  if (!task) return;
+  members.push({
+    taskId,
+    label: task.name ?? task.prompt.slice(0, 60),
+    status: task.status,
+    relation,
+  });
+}
+
+function buildConcurrencyToken(
+  task: CoordinatorTask,
+  members: readonly CoordinatorChainMember[],
+  tasksById: ReadonlyMap<string, CoordinatorTask>,
+): string {
+  const parts = [task, ...members.map((member) => tasksById.get(member.taskId)).filter((member): member is CoordinatorTask => Boolean(member))]
+    .map((member) => `${member.id}:${member.status}:${member.updatedAt instanceof Date ? member.updatedAt.toISOString() : String(member.updatedAt)}`);
+  return hashPrompt(parts.sort().join('|'));
+}
+
+function evidenceNumber(output: CoordinatorDetectorOutput, key: string): number {
+  const value = output.evidence[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function evidenceStringArray(output: CoordinatorDetectorOutput, key: string): string[] {
+  const value = output.evidence[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
 function hasFollowUpSignal(task: CoordinatorTask): boolean {

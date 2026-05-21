@@ -26,6 +26,7 @@ import type { ScheduleService } from './schedule-service.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
 import type { AgentActivityMeta } from '../core/types.js';
 import type { CoordinatorAuditTailProvider } from './coordinator/detectors.js';
+import type { CoordinatorSuppressionReader } from './coordinator/suppression-store.js';
 import type { WorkspaceAttemptRepository } from '../core/workspace-attempt-repository.js';
 import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
@@ -73,6 +74,7 @@ export interface WsConnectionDeps {
   getDefaultAgentType?: () => AgentSelection;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
+  coordinatorSuppressions?: CoordinatorSuppressionReader;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   /** Get latest self-diagnostic status (for initial connection burst). */
@@ -130,6 +132,7 @@ export function handleWsConnection(
     getDefaultAgentType: deps.getDefaultAgentType,
     activityMetaProvider: deps.activityMetaProvider,
     coordinatorAuditTailProvider: deps.coordinatorAuditTailProvider,
+    coordinatorSuppressions: deps.coordinatorSuppressions,
     scheduleService: deps.scheduleService,
     ralphLoopService: deps.ralphLoopService,
     workspaceEnabled: deps.workspaceEnabled,
@@ -259,6 +262,7 @@ export function handleWsConnection(
             coordinator: {
               taskStore,
               auditTailProvider: deps.coordinatorAuditTailProvider,
+              suppressions: deps.coordinatorSuppressions,
             },
             getMaxActiveTasks: deps.getMaxActiveTasks,
           }));
@@ -337,6 +341,7 @@ export function handleWsConnection(
         coordinator: {
           taskStore,
           auditTailProvider: deps.coordinatorAuditTailProvider,
+          suppressions: deps.coordinatorSuppressions,
         },
         getMaxActiveTasks: deps.getMaxActiveTasks,
       }));
