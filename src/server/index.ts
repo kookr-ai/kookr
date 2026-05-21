@@ -1162,6 +1162,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     dashboardHost: host,
     dashboardPort: port,
     kookrDir,
+    taskExists: (taskId) => Boolean(taskStore.getTask(taskId)),
   });
   if (collaborationListener.status === 'disabled') {
     const health = collaborationListener.config.health;
