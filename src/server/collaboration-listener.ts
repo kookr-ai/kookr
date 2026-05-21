@@ -17,6 +17,10 @@ import {
   CollaborationPairingError,
   ContactIdentityStore,
 } from './contact-identity-store.js';
+import {
+  CollaborationShareError,
+  CollaborationShareStore,
+} from './collaboration-share-store.js';
 
 export interface CollaborationListenerHandle {
   status: 'disabled' | 'listening';
@@ -27,6 +31,8 @@ export interface CollaborationListenerHandle {
 
 export interface CollaborationListenerDeps {
   identityStore?: ContactIdentityStore;
+  shareStore?: CollaborationShareStore;
+  taskExists?: (taskId: string) => boolean;
 }
 
 export function buildCollaborationHealthResponse(config: CollaborationListenerConfig): CollaborationHealthResponse {
@@ -72,6 +78,14 @@ function pairingErrorResponse(c: Context, err: unknown): Response {
   throw err;
 }
 
+function shareErrorResponse(c: Context, err: unknown): Response {
+  if (err instanceof CollaborationShareError) {
+    return c.json({ error: err.code }, err.status as never);
+  }
+  if (err instanceof CollaborationPairingError) return c.json({ error: err.code }, err.status as never);
+  throw err;
+}
+
 function createCollaborationApp(config: CollaborationListenerConfig, deps: Required<CollaborationListenerDeps>): Hono {
   const app = new Hono();
 
@@ -93,21 +107,46 @@ function createCollaborationApp(config: CollaborationListenerConfig, deps: Requi
     }
   });
 
+  const verifyDevice = async (c: Context) => {
+    const url = new URL(c.req.url);
+    return deps.identityStore.verifyDeviceRequest({
+      contactId: c.req.header('x-kookr-contact-id'),
+      deviceId: c.req.header('x-kookr-device-id'),
+      audience: config.url,
+      method: c.req.method,
+      path: c.req.path,
+      query: url.search,
+      bodySha256: await requestBodySha256(c),
+      timestamp: c.req.header('x-kookr-request-timestamp'),
+      nonce: c.req.header('x-kookr-request-nonce'),
+      signature: c.req.header('x-kookr-request-signature'),
+    });
+  };
+
+  app.post('/api/collaboration/contact-share/invites', async (c) => {
+    try {
+      const principal = await verifyDevice(c);
+      if (!config.featureFlags.contactShareViewOnly) return c.json({ error: 'contact-share-view-only-disabled' }, 404);
+      const invite = await deps.shareStore.receiveInvite(principal, await readJsonBody(c));
+      return c.json({ invite }, 201);
+    } catch (err) {
+      return shareErrorResponse(c, err);
+    }
+  });
+
+  app.post('/api/collaboration/contact-share/decisions', async (c) => {
+    try {
+      const principal = await verifyDevice(c);
+      if (!config.featureFlags.contactShareViewOnly) return c.json({ error: 'contact-share-view-only-disabled' }, 404);
+      return c.json(await deps.shareStore.decide(principal, await readJsonBody(c)));
+    } catch (err) {
+      return shareErrorResponse(c, err);
+    }
+  });
+
   const requireVerifiedDevice = async (c: Context) => {
     try {
-      const url = new URL(c.req.url);
-      await deps.identityStore.verifyDeviceRequest({
-        contactId: c.req.header('x-kookr-contact-id'),
-        deviceId: c.req.header('x-kookr-device-id'),
-        audience: config.url,
-        method: c.req.method,
-        path: c.req.path,
-        query: url.search,
-        bodySha256: await requestBodySha256(c),
-        timestamp: c.req.header('x-kookr-request-timestamp'),
-        nonce: c.req.header('x-kookr-request-nonce'),
-        signature: c.req.header('x-kookr-request-signature'),
-      });
+      await verifyDevice(c);
       return c.json({ error: 'collaboration-route-not-implemented' }, 501);
     } catch (err) {
       if (err instanceof CollaborationPairingError) return c.json({ error: err.code }, err.status as never);
@@ -115,8 +154,6 @@ function createCollaborationApp(config: CollaborationListenerConfig, deps: Requi
     }
   };
 
-  app.post('/api/collaboration/contact-share/invites', requireVerifiedDevice);
-  app.post('/api/collaboration/contact-share/decisions', requireVerifiedDevice);
   app.get('/api/collaboration/shared-task-updates', requireVerifiedDevice);
 
   app.notFound((c) => {
@@ -140,8 +177,14 @@ export async function startPrivateNetworkCollaborationListener(
   }
 
   const identityStore = deps.identityStore ?? new ContactIdentityStore();
+  const shareStore = deps.shareStore ?? new CollaborationShareStore({ taskExists: deps.taskExists });
   await identityStore.load();
-  const app = createCollaborationApp(config, { identityStore });
+  await shareStore.load();
+  const app = createCollaborationApp(config, {
+    identityStore,
+    shareStore,
+    taskExists: deps.taskExists ?? (() => true),
+  });
   const httpServer = createServer(getRequestListener(app.fetch));
 
   await new Promise<void>((resolve, reject) => {
@@ -175,6 +218,7 @@ export async function startConfiguredPrivateNetworkCollaborationListener(opts: {
   dashboardHost: string;
   dashboardPort: number;
   kookrDir?: string;
+  taskExists?: (taskId: string) => boolean;
 }): Promise<CollaborationListenerHandle> {
   const config = readPrivateNetworkCollaborationConfig({
     env: opts.env,
@@ -185,6 +229,8 @@ export async function startConfiguredPrivateNetworkCollaborationListener(opts: {
   try {
     return await startPrivateNetworkCollaborationListener(config, {
       identityStore: new ContactIdentityStore({ kookrDir: opts.kookrDir }),
+      shareStore: new CollaborationShareStore({ kookrDir: opts.kookrDir, taskExists: opts.taskExists }),
+      taskExists: opts.taskExists,
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);

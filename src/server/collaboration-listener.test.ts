@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHash, createSign, generateKeyPairSync } from 'node:crypto';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
@@ -19,6 +19,7 @@ import {
   collaborationDeviceRequestPayload,
   ContactIdentityStore,
 } from './contact-identity-store.js';
+import { CollaborationShareStore } from './collaboration-share-store.js';
 import { registerCollaborationPairingRoutes } from './routes/collaboration-pairing-routes.js';
 
 let normalServer: HttpAndWebSockets | undefined;
@@ -134,6 +135,80 @@ async function postJson(baseUrl: string, path: string, body: unknown): Promise<R
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+async function signedJson(input: {
+  baseUrl: string;
+  path: string;
+  privateKey: string;
+  contactId: string;
+  deviceId: string;
+  timestamp: string;
+  nonce: string;
+  body: unknown;
+}): Promise<Response> {
+  const body = JSON.stringify(input.body);
+  return fetch(`${input.baseUrl}${input.path}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...authHeaders({
+        privateKey: input.privateKey,
+        contactId: input.contactId,
+        deviceId: input.deviceId,
+        audience: input.baseUrl,
+        method: 'POST',
+        path: input.path,
+        bodySha256: createHash('sha256').update(body).digest('hex'),
+        timestamp: input.timestamp,
+        nonce: input.nonce,
+      }),
+    },
+    body,
+  });
+}
+
+async function verifiedContact(input: {
+  baseUrl: string;
+  identityStore: ContactIdentityStore;
+  initiatorPublicKey: string;
+  recipientPublicKey: string;
+  expiresAt: string;
+  offerNonce: string;
+  acceptNonce: string;
+}): Promise<{ contactId: string; deviceId: string }> {
+  const offerRes = await postJson(input.baseUrl, '/api/collaboration/pairing/offers', {
+    publicKey: input.initiatorPublicKey,
+    nonce: input.offerNonce,
+    commitment: `${input.offerNonce}-commitment`,
+    expiresAt: input.expiresAt,
+    label: 'Jean desktop',
+  });
+  expect(offerRes.status).toBe(201);
+  const offer = await offerRes.json() as { pairingId: string };
+  const acceptedRes = await postJson(input.baseUrl, '/api/collaboration/pairing/accept', {
+    pairingId: offer.pairingId,
+    publicKey: input.recipientPublicKey,
+    nonce: input.acceptNonce,
+    commitment: `${input.acceptNonce}-commitment`,
+    expiresAt: input.expiresAt,
+    label: 'Alice laptop',
+  });
+  expect(acceptedRes.status).toBe(201);
+  const pending = await acceptedRes.json() as {
+    pairingId: string;
+    verifiedFingerprint: string;
+    verificationCode: string;
+  };
+  const verified = await input.identityStore.verifyAcceptedPairing({
+    pairingId: pending.pairingId,
+    verifiedFingerprint: pending.verifiedFingerprint,
+    verificationCode: pending.verificationCode,
+  });
+  return {
+    contactId: verified.contact.contactId,
+    deviceId: verified.device.deviceId,
+  };
 }
 
 afterEach(async () => {
@@ -436,8 +511,8 @@ describe('private-network collaboration listener', () => {
       },
       body: postBody,
     });
-    expect(signedPost.status).toBe(501);
-    await expect(signedPost.json()).resolves.toEqual({ error: 'collaboration-route-not-implemented' });
+    expect(signedPost.status).toBe(404);
+    await expect(signedPost.json()).resolves.toEqual({ error: 'contact-share-view-only-disabled' });
 
     const tamperedPost = await fetch(`${baseUrl}${postAuth.path}`, {
       method: 'POST',
@@ -583,4 +658,326 @@ describe('private-network collaboration listener', () => {
     expect(signed.status).toBe(501);
     await expect(signed.json()).resolves.toEqual({ error: 'collaboration-route-not-implemented' });
   });
+
+  it('creates a view-only Contact Share grant for a verified device and persists audit metadata', async () => {
+    const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-collaboration-share-'));
+    const now = () => new Date('2026-05-21T00:00:00.000Z');
+    const identityStore = new ContactIdentityStore({ kookrDir, now });
+    const shareStore = new CollaborationShareStore({
+      kookrDir,
+      now,
+      taskExists: (taskId) => taskId === 'task-1',
+    });
+    const collaborationPort = await reservePort();
+    const config = readPrivateNetworkCollaborationConfig({
+      env: {
+        KOOKR_COLLABORATION_PROFILES: 'true',
+        KOOKR_COLLABORATION_LISTENER: 'true',
+        KOOKR_COLLABORATION_PRIVATE_NETWORK: 'true',
+        KOOKR_COLLABORATION_CONTACT_SHARE_VIEW_ONLY: 'true',
+        KOOKR_COLLABORATION_PORT: String(collaborationPort),
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      now,
+    });
+    collaborationListener = await startPrivateNetworkCollaborationListener(config, {
+      identityStore,
+      shareStore,
+      taskExists: (taskId) => taskId === 'task-1',
+    });
+    const baseUrl = `http://127.0.0.1:${listeningPort(collaborationListener)}`;
+    const initiator = keyPair();
+    const recipient = keyPair();
+    const principal = await verifiedContact({
+      baseUrl,
+      identityStore,
+      initiatorPublicKey: initiator.publicKey,
+      recipientPublicKey: recipient.publicKey,
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      offerNonce: 'share-offer',
+      acceptNonce: 'share-accept',
+    });
+
+    const inviteRes = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/invites',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'invite-nonce',
+      body: { taskId: 'remote-task-1', capabilities: ['viewTask'] },
+    });
+    expect(inviteRes.status).toBe(201);
+    const inboundInviteBody = await inviteRes.json() as { invite: { inviteId: string; capabilities: string[]; direction: string; status: string } };
+    expect(inboundInviteBody.invite).toEqual(expect.objectContaining({
+      direction: 'inbound',
+      status: 'pending',
+      capabilities: ['viewTask'],
+    }));
+    const inboundAccept = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'inbound-accept-nonce',
+      body: { inviteId: inboundInviteBody.invite.inviteId, decision: 'accept' },
+    });
+    expect(inboundAccept.status).toBe(409);
+    await expect(inboundAccept.json()).resolves.toEqual({ error: 'contact-share-grant-not-local' });
+
+    await expect(shareStore.createOutboundInvite(principal, {
+      taskId: 'missing-task',
+      capabilities: ['viewTask'],
+    })).rejects.toMatchObject({ code: 'task-not-found', status: 404 });
+
+    const outboundInvite = await shareStore.createOutboundInvite(principal, {
+      taskId: 'task-1',
+      expiresAt: '2026-05-21T00:05:00.000Z',
+      capabilities: ['viewTask'],
+    });
+    expect(JSON.stringify(outboundInvite)).not.toContain('terminal');
+
+    const acceptRes = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'accept-invite-nonce',
+      body: { inviteId: outboundInvite.inviteId, decision: 'accept' },
+    });
+    expect(acceptRes.status).toBe(200);
+    const accepted = await acceptRes.json() as {
+      invite: { status: string; grantId: string };
+      grant: { grantId: string; capabilities: string[]; principal: { contactId: string; deviceId: string }; subject: { taskId: string } };
+    };
+    expect(accepted.invite.status).toBe('accepted');
+    expect(accepted.grant).toEqual(expect.objectContaining({
+      capabilities: ['viewTask'],
+      principal: { kind: 'contact-device', ...principal },
+      subject: { kind: 'task', taskId: 'task-1' },
+    }));
+
+    const reloaded = new CollaborationShareStore({ kookrDir, now });
+    await reloaded.load();
+    expect(reloaded.getGrant(accepted.grant.grantId)).toEqual(expect.objectContaining({
+      grantId: accepted.grant.grantId,
+      capabilities: ['viewTask'],
+    }));
+    const audit = await readFile(join(kookrDir, 'collaboration-audit.jsonl'), 'utf-8');
+    expect(audit).toContain('"kind":"share.sent"');
+    expect(audit).toContain('"kind":"share.accepted"');
+    expect(audit).toContain('"taskId":"task-1"');
+    expect(audit).not.toContain('privateKey');
+  });
+
+  it('rejects unpaired devices and prevents declined or expired invites from creating grants', async () => {
+    let currentTime = new Date('2026-05-21T00:00:00.000Z');
+    const now = () => currentTime;
+    const identityStore = new ContactIdentityStore({ now });
+    const shareStore = new CollaborationShareStore({ now, taskExists: () => true });
+    const collaborationPort = await reservePort();
+    const config = readPrivateNetworkCollaborationConfig({
+      env: {
+        KOOKR_COLLABORATION_PROFILES: 'true',
+        KOOKR_COLLABORATION_LISTENER: 'true',
+        KOOKR_COLLABORATION_PRIVATE_NETWORK: 'true',
+        KOOKR_COLLABORATION_CONTACT_SHARE_VIEW_ONLY: 'true',
+        KOOKR_COLLABORATION_PORT: String(collaborationPort),
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      now,
+    });
+    collaborationListener = await startPrivateNetworkCollaborationListener(config, { identityStore, shareStore });
+    const baseUrl = `http://127.0.0.1:${listeningPort(collaborationListener)}`;
+    const initiator = keyPair();
+    const recipient = keyPair();
+    const stranger = keyPair();
+    const principal = await verifiedContact({
+      baseUrl,
+      identityStore,
+      initiatorPublicKey: initiator.publicKey,
+      recipientPublicKey: recipient.publicKey,
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      offerNonce: 'reject-offer',
+      acceptNonce: 'reject-accept',
+    });
+
+    const unpaired = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/invites',
+      privateKey: stranger.privateKey,
+      contactId: 'contact-missing',
+      deviceId: 'device-missing',
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'unpaired-nonce',
+      body: { taskId: 'task-1', capabilities: ['viewTask'] },
+    });
+    expect(unpaired.status).toBe(401);
+    await expect(unpaired.json()).resolves.toEqual({ error: 'unverified-device' });
+
+    const declinedInvite = await shareStore.createOutboundInvite(principal, {
+      taskId: 'task-1',
+      capabilities: ['viewTask'],
+    });
+    const decline = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'decline-decision',
+      body: { inviteId: declinedInvite.inviteId, decision: 'decline' },
+    });
+    expect(decline.status).toBe(200);
+    await expect(decline.json()).resolves.toEqual({
+      invite: expect.objectContaining({ status: 'declined' }),
+    });
+    const acceptDeclined = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'accept-declined',
+      body: { inviteId: declinedInvite.inviteId, decision: 'accept' },
+    });
+    expect(acceptDeclined.status).toBe(409);
+    await expect(acceptDeclined.json()).resolves.toEqual({ error: 'contact-share-declined' });
+
+    const expiringInvite = await shareStore.createOutboundInvite(principal, {
+      taskId: 'task-1',
+      expiresAt: '2026-05-21T00:01:00.000Z',
+      capabilities: ['viewTask'],
+    });
+    currentTime = new Date('2026-05-21T00:02:00.000Z');
+    const expiredAccept = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:02:00.000Z',
+      nonce: 'expired-accept',
+      body: { inviteId: expiringInvite.inviteId, decision: 'accept' },
+    });
+    expect(expiredAccept.status).toBe(410);
+    await expect(expiredAccept.json()).resolves.toEqual({ error: 'contact-share-invite-expired' });
+
+    currentTime = new Date('2026-05-21T00:00:00.000Z');
+    const acceptedInvite = await shareStore.createOutboundInvite(principal, {
+      taskId: 'task-1',
+      expiresAt: '2026-05-21T00:01:00.000Z',
+      capabilities: ['viewTask'],
+    });
+    const acceptedGrant = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'short-lived-accept',
+      body: { inviteId: acceptedInvite.inviteId, decision: 'accept' },
+    });
+    const acceptedGrantBody = await acceptedGrant.json() as { grant: { grantId: string } };
+    currentTime = new Date('2026-05-21T00:02:00.000Z');
+    expect(shareStore.getGrant(acceptedGrantBody.grant.grantId)).toBeUndefined();
+  });
+
+  it('persists revocation tombstones so stale invites and cached grants cannot resurrect access', async () => {
+    const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-collaboration-revoke-'));
+    const now = () => new Date('2026-05-21T00:00:00.000Z');
+    const identityStore = new ContactIdentityStore({ kookrDir, now });
+    const collaborationPort = await reservePort();
+    const config = readPrivateNetworkCollaborationConfig({
+      env: {
+        KOOKR_COLLABORATION_PROFILES: 'true',
+        KOOKR_COLLABORATION_LISTENER: 'true',
+        KOOKR_COLLABORATION_PRIVATE_NETWORK: 'true',
+        KOOKR_COLLABORATION_CONTACT_SHARE_VIEW_ONLY: 'true',
+        KOOKR_COLLABORATION_PORT: String(collaborationPort),
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      now,
+    });
+    const shareStore = new CollaborationShareStore({ kookrDir, now, taskExists: () => true });
+    collaborationListener = await startPrivateNetworkCollaborationListener(config, {
+      identityStore,
+      shareStore,
+    });
+    const baseUrl = `http://127.0.0.1:${listeningPort(collaborationListener)}`;
+    const initiator = keyPair();
+    const recipient = keyPair();
+    const principal = await verifiedContact({
+      baseUrl,
+      identityStore,
+      initiatorPublicKey: initiator.publicKey,
+      recipientPublicKey: recipient.publicKey,
+      expiresAt: '2026-05-21T00:10:00.000Z',
+      offerNonce: 'revoke-offer',
+      acceptNonce: 'revoke-accept',
+    });
+
+    const invite = await shareStore.createOutboundInvite(principal, {
+      taskId: 'task-1',
+      capabilities: ['viewTask'],
+    });
+    const acceptRes = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'revoke-accept-invite',
+      body: { inviteId: invite.inviteId, decision: 'accept' },
+    });
+    const accepted = await acceptRes.json() as { grant: { grantId: string } };
+    const revokeRes = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'revoke-decision',
+      body: { inviteId: invite.inviteId, decision: 'revoke' },
+    });
+    expect(revokeRes.status).toBe(200);
+    const revoked = await revokeRes.json() as { invite: { status: string }; tombstone: { grantId: string; policyVersion: number } };
+    expect(revoked.invite.status).toBe('revoked');
+    expect(revoked.tombstone).toEqual(expect.objectContaining({
+      grantId: accepted.grant.grantId,
+      policyVersion: 2,
+    }));
+
+    await closeCollaborationListener();
+    const reloaded = new CollaborationShareStore({ kookrDir });
+    await reloaded.load();
+    expect(reloaded.getGrant(accepted.grant.grantId)).toBeUndefined();
+    expect(reloaded.listTombstones()).toEqual([
+      expect.objectContaining({ grantId: accepted.grant.grantId, inviteId: invite.inviteId }),
+    ]);
+
+    collaborationListener = await startPrivateNetworkCollaborationListener(config, {
+      identityStore,
+      shareStore: new CollaborationShareStore({ kookrDir, now, taskExists: () => true }),
+    });
+    const staleAccept = await signedJson({
+      baseUrl,
+      path: '/api/collaboration/contact-share/decisions',
+      privateKey: recipient.privateKey,
+      ...principal,
+      timestamp: '2026-05-21T00:00:00.000Z',
+      nonce: 'stale-reaccept',
+      body: { inviteId: invite.inviteId, decision: 'accept' },
+    });
+    expect(staleAccept.status).toBe(410);
+    await expect(staleAccept.json()).resolves.toEqual({ error: 'contact-share-revoked' });
+
+    const audit = await readFile(join(kookrDir, 'collaboration-audit.jsonl'), 'utf-8');
+    expect(audit).toContain('"kind":"share.revoked"');
+  });
+
 });
