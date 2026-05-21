@@ -287,6 +287,14 @@ export class AttentionQueue {
     }));
   }
 
+  /** Read active queue entries without restoring expired snoozes or changing ordering state. */
+  inspectActive(): Array<{ agentId: string; anomaly: Anomaly }> {
+    return this.getSorted().map((e) => ({
+      agentId: e.agentId,
+      anomaly: e.anomaly,
+    }));
+  }
+
   /** Remove all entries, snoozed, and lastRemoved state. Used by test reset. */
   clear(): void {
     this.entries.clear();

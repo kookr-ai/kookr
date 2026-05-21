@@ -185,6 +185,7 @@ After a supervision session, Kookr can analyze its own interaction data to ident
 | F8.1 | **Interaction event log** | Append-only JSONL log capturing developer actions: inputs sent, findings skipped/snoozed, agents selected, agents launched/stopped. Stored in `~/.kookr/sessions/`. |
 | F8.2 | **Friction pattern detection** | Rule-based analysis of the interaction log detecting: repeated inputs, interventions without findings, rapid skip cycles, question-shaped inputs, long resolution times, always-skipped anomaly types. |
 | F8.3 | **Reflection report** | Triggered via "Reflect" button or `GET /api/reflect`. Produces a structured report with friction findings, categories, evidence, and suggested fixes. |
+| F8.4 | **Live friction calibration diagnostics** | During a session, summarize skips, snoozes, false-positive feedback, and direct interventions without findings as diagnostics-only attention-routing calibration signals. These signals are visible in diagnostics but do not reorder, suppress, or down-rank findings until a later explicit policy change. |
 
 **V1 scope:** Rule-based friction analysis (Phase 1 of ADR-010). No LLM summarization yet.
 

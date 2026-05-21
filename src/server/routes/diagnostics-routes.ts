@@ -3,6 +3,7 @@ import { getConnInfo } from '@hono/node-server/conninfo';
 import { readInteractionLog } from '../../core/interaction-log.js';
 import { readTelemetryLog } from '../../core/telemetry.js';
 import { analyzeSession } from '../../core/friction-analyzer.js';
+import { buildLiveFrictionCalibrationSnapshot } from '../../core/live-friction-calibration.js';
 import { getDetectionStats } from '../../core/detection-stats.js';
 import { generateReportFromFile, formatReport } from '../../core/shadow-report.js';
 import { getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
@@ -88,6 +89,20 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/queue', (c) => c.json(queue.getAll()));
 
   app.get('/api/anomaly-stats', (c) => c.json(getDetectionStats()));
+
+  app.get('/api/live-friction-calibration', async (c) => {
+    try {
+      const logPath = interactionLog.getFilePath();
+      const events = logPath ? await readInteractionLog(logPath) : [];
+      const activeFindings = queue.inspectActive().map((entry) => ({
+        agentId: entry.agentId,
+        anomalyType: entry.anomaly.type,
+      }));
+      return c.json(buildLiveFrictionCalibrationSnapshot(events, activeFindings));
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
 
   app.get('/api/finding-evidence-audit', (c) => c.json({
     records: deps.monitor.getFindingEvidenceAuditRecords(),
