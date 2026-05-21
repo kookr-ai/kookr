@@ -15,6 +15,7 @@ import { registerShareRoutes } from './routes/share-routes.js';
 import { registerContactShareRoutes } from './routes/contact-share-routes.js';
 import { registerRelayConnectionRoutes } from './routes/relay-connection-routes.js';
 import { registerSessionSharingRecoveryRoutes } from './routes/session-sharing-recovery-routes.js';
+import { registerCollaborationPairingRoutes } from './routes/collaboration-pairing-routes.js';
 import type { RouteDeps } from './routes/shared.js';
 
 export type { RouteDeps } from './routes/shared.js';
@@ -34,6 +35,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerShareRoutes(app, deps);
   registerRelayConnectionRoutes(app, deps);
   registerSessionSharingRecoveryRoutes(app, deps);
+  registerCollaborationPairingRoutes(app, deps);
 
   // Cache headers for frontend assets:
   // - /assets/* have content hashes in filenames → cache forever
