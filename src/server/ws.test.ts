@@ -97,6 +97,31 @@ describe('WebSocket MessageRouter', () => {
     }
   });
 
+  test('client connects - snapshot includes coordinator detector outputs', () => {
+    const task = taskStore.createTask('Ship it', '/test/cwd');
+    const mutableTask = taskStore.getTaskForMutation(task.id)!;
+    mutableTask.sessions.push({
+      tmuxSession: 'kookr-stale',
+      agentType: 'claude-code',
+      cwd: '/test/cwd',
+      createdAt: new Date('2000-01-01T00:00:00.000Z'),
+    });
+    taskStore.startTask(task.id);
+
+    router.handleConnect();
+
+    const msg = sentMessages[0];
+    expect(msg.type).toBe('snapshot');
+    if (msg.type === 'snapshot') {
+      expect(msg.coordinator?.outputs).toEqual([
+        expect.objectContaining({
+          detectorId: 'stale',
+          taskId: task.id,
+        }),
+      ]);
+    }
+  });
+
   test('client connects - snapshot includes Phase 6 speech capability descriptors', () => {
     const routerWithSpeech = new MessageRouter({
       taskStore, queue, monitor, adapter,

@@ -22,6 +22,7 @@ import type {
   CleanupResultSummary,
   SystemResourceStatus,
   CollaborationCapabilities,
+  CoordinatorSnapshotState,
   LaunchDependency,
 } from '../../shared/protocol.js';
 import type {
@@ -122,6 +123,7 @@ export interface TransportSessionSlice {
    * getter through.
    */
   maxActiveTasks: number;
+  coordinator: CoordinatorSnapshotState | null;
 
   handleSnapshot: (
     agents: AgentState[],
@@ -138,6 +140,7 @@ export interface TransportSessionSlice {
     sweepRunning?: boolean,
     maxActiveTasks?: number,
     speechCapabilities?: CollaborationCapabilities,
+    coordinator?: CoordinatorSnapshotState,
   ) => void;
   handleUpdate: (agentId: string, state: AgentState) => void;
   handlePlaybooks: (

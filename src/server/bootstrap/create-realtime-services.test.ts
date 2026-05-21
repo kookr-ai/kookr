@@ -43,6 +43,15 @@ describe('createRealtimeServices', () => {
   test('broadcastToAll enriches snapshots before sending to connected clients', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
     const taskStore = new TaskStore();
+    const staleTask = taskStore.createTask('Ship it', '/repo');
+    const mutableTask = taskStore.getTaskForMutation(staleTask.id)!;
+    mutableTask.sessions.push({
+      tmuxSession: 'kookr-stale',
+      agentType: 'codex-cli',
+      cwd: '/repo',
+      createdAt: new Date('2000-01-01T00:00:00.000Z'),
+    });
+    taskStore.startTask(staleTask.id);
     const queue = new AttentionQueue();
     const monitor = new Monitor(taskStore, queue);
     const adapterRegistry = new AdapterRegistry();
@@ -86,6 +95,12 @@ describe('createRealtimeServices', () => {
     expect((sent[0] as SnapshotMessage).availableAgentTypes?.map((item) => item.type)).toEqual([
       'claude-code',
       'codex-cli',
+    ]);
+    expect((sent[0] as SnapshotMessage).coordinator?.outputs).toEqual([
+      expect.objectContaining({
+        detectorId: 'stale',
+        taskId: staleTask.id,
+      }),
     ]);
     expect(realtime.getWsBroadcastCount()).toBe(1);
   });

@@ -31,6 +31,7 @@ import { isSweepInProgress } from './use-cases/cross-project-cleanup-sweep.js';
 import type { WorkspaceAttemptRepository } from '../core/workspace-attempt-repository.js';
 import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
+import type { CoordinatorAuditTailProvider } from './coordinator/detectors.js';
 
 export interface MessageRouterDeps {
   taskStore: TaskStore;
@@ -64,6 +65,7 @@ export interface MessageRouterDeps {
   defaultAgentType?: AgentSelection;
   getDefaultAgentType?: () => AgentSelection;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
+  coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   /** Workspace services (Phase 1a). */
@@ -211,6 +213,10 @@ export class MessageRouter {
       workspaceEnabled: this.deps.workspaceEnabled,
       sweepRunning: isSweepInProgress(),
       activityMetaProvider: this.deps.activityMetaProvider,
+      coordinator: {
+        taskStore: this.deps.taskStore,
+        auditTailProvider: this.deps.coordinatorAuditTailProvider,
+      },
       getMaxActiveTasks: this.deps.getMaxActiveTasks,
     }));
   }

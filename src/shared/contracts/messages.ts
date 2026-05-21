@@ -14,6 +14,7 @@ import type { PermissionRequestBinding } from './permission-request-binding.js';
 import type { QuotaStatus } from './quota.js';
 import type { ScheduleResponse, ScheduleStatusSnapshot } from './schedule.js';
 import type { CollaborationCapabilities } from './speech.js';
+import type { CoordinatorSnapshotState } from './coordinator.js';
 import type { TaskCompletionFeedback } from './task.js';
 import type { TelemetryEvent } from './telemetry.js';
 import type {
@@ -142,6 +143,7 @@ export type SnapshotMessage = {
    * preserves the last-known value rather than dropping the indicator.
    */
   maxActiveTasks?: number;
+  coordinator?: CoordinatorSnapshotState;
 };
 
 type LaunchPlaybookBaseMessage = {
