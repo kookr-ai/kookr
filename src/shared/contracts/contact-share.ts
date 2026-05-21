@@ -68,6 +68,7 @@ export interface SharedTask {
   grants: ContactShareGrant[];
   source: 'contact-share';
   remoteStatus: RemoteTaskProjectionStatus;
+  remoteProjectionUpdatedAt?: string;
   updatedAt: string;
 }
 

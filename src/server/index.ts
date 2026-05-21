@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
 import { loadTasks, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
@@ -10,6 +11,7 @@ import { CircuitBreakerGitHubFetcher } from '../adapters/circuit-breaker-github-
 import { reconcile } from './reconciliation.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
+import { ContactShareReadModel } from '../core/contact-share.js';
 import { HookFileWatcher } from './hook-watcher.js';
 import { HookIngestion } from './hook-ingestion.js';
 import { ActivityLedger } from '../core/activity-ledger.js';
@@ -65,12 +67,14 @@ import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import { startConfiguredPrivateNetworkCollaborationListener } from './collaboration-listener.js';
+import { startPrivateNetworkSharedTaskUpdatePoller } from './collaboration-update-poller.js';
+import { projectTaskForRemoteShare } from './share-projection.js';
 import { configureRemoteCommandHandler } from './remote-command-handler.js';
 import type { RemoteNodeClient } from '../remote/node-client.js';
 import type { CommandJournal } from '../remote/command-journal.js';
 import type { SessionStreamPublisher } from '../remote/session-stream-publisher.js';
 import type { ControllerLeaseManager } from '../remote/controller-lease.js';
-import type { ServerRevision, SessionEpoch, SessionId } from '../remote/ids.js';
+import type { NodeId, ServerRevision, SessionEpoch, SessionId } from '../remote/ids.js';
 import type { RemotePolicyCache } from '../remote/policy-cache.js';
 import type { RemoteInputAdapter } from './remote-input-adapter.js';
 import { RuntimeAttentionMissSampler } from './attention-miss-runtime-sampler.js';
@@ -132,6 +136,20 @@ export interface KookrConfig {
   ossSourceWatcherDebounceMs?: number;
   /** Server-lifecycle abort signal — see `VoiceWarmupOpts.lifecycleSignal` and issue #188. */
   lifecycleSignal?: AbortSignal;
+}
+
+function getOrCreatePrivateNetworkNodeId(kookrDir: string): NodeId {
+  const nodeIdPath = join(kookrDir, 'private-network-node-id');
+  try {
+    const existing = readFileSync(nodeIdPath, 'utf-8').trim();
+    if (existing) return existing as NodeId;
+  } catch {
+    // Created below.
+  }
+  mkdirSync(kookrDir, { recursive: true });
+  const nodeId = `kookr-private-node-${randomBytes(16).toString('hex')}`;
+  writeFileSync(nodeIdPath, `${nodeId}\n`, { encoding: 'utf-8', mode: 0o600 });
+  return nodeId as NodeId;
 }
 
 /** Narrow public interface — only what production consumers need. */
@@ -962,6 +980,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const findingEvidenceReviewLogStore = ReviewLogStore.forKookrDir(kookrDir);
   const findingEvidenceReviewConfig = readFindingEvidenceReviewConfigFromEnv(process.env, findingEvidenceReviewHmacKey, buildInfo.commitHash);
   const findingEvidenceReviewSamplerConfig = readFindingEvidenceReviewSamplerConfigFromEnv(process.env);
+  const contactShare = new ContactShareReadModel();
+  let privateNetworkNodeId: NodeId | null = null;
   const findingEvidenceReviewSampler = new FindingEvidenceReviewSampler({
     candidateReader: {
       listReviewCandidates: (limit) => monitor.getFindingEvidenceReviewCandidates(limit),
@@ -990,6 +1010,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
     findingEvidenceReviewSampler,
     remoteShare, relayConnection,
+    contactShare,
     shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
@@ -1163,6 +1184,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     dashboardPort: port,
     kookrDir,
     taskExists: (taskId) => Boolean(taskStore.getTask(taskId)),
+    projectTaskForShare: (taskId) => {
+      const task = taskStore.getTask(taskId);
+      if (!task) return null;
+      privateNetworkNodeId ??= getOrCreatePrivateNetworkNodeId(kookrDir);
+      return projectTaskForRemoteShare(task, {
+        nodeId: privateNetworkNodeId,
+        queue,
+      });
+    },
+  });
+  const collaborationUpdatePoller = startPrivateNetworkSharedTaskUpdatePoller({
+    config: collaborationListener.config,
+    env: process.env,
+    contactShare,
   });
   if (collaborationListener.status === 'disabled') {
     const health = collaborationListener.config.health;
@@ -1242,6 +1277,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
 
     // Close servers
+    collaborationUpdatePoller.stop();
     await collaborationListener.close();
     terminalWss.close();
     wss.close();

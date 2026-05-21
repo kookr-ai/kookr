@@ -9,6 +9,12 @@ import {
   type CollaborationHealthResponse,
 } from '../shared/contracts/collaboration-profile.js';
 import {
+  COLLABORATION_SHARED_TASK_UPDATES_SCHEMA_VERSION,
+  type CollaborationSharedTaskUpdate,
+  type ListCollaborationSharedTaskUpdatesResponse,
+} from '../shared/contracts/collaboration-share.js';
+import type { RemoteTaskProjectionV1 } from '../remote/share-contract.js';
+import {
   readPrivateNetworkCollaborationConfig,
   type CollaborationConfigEnv,
   type CollaborationListenerConfig,
@@ -33,6 +39,7 @@ export interface CollaborationListenerDeps {
   identityStore?: ContactIdentityStore;
   shareStore?: CollaborationShareStore;
   taskExists?: (taskId: string) => boolean;
+  projectTaskForShare?: (taskId: string) => RemoteTaskProjectionV1 | null | undefined;
 }
 
 export function buildCollaborationHealthResponse(config: CollaborationListenerConfig): CollaborationHealthResponse {
@@ -144,17 +151,34 @@ function createCollaborationApp(config: CollaborationListenerConfig, deps: Requi
     }
   });
 
-  const requireVerifiedDevice = async (c: Context) => {
+  app.get('/api/collaboration/shared-task-updates', async (c) => {
     try {
-      await verifyDevice(c);
-      return c.json({ error: 'collaboration-route-not-implemented' }, 501);
+      const principal = await verifyDevice(c);
+      if (!config.featureFlags.contactShareViewOnly) return c.json({ error: 'contact-share-view-only-disabled' }, 404);
+      const updates: CollaborationSharedTaskUpdate[] = deps.shareStore
+        .listActiveTaskSharesForPrincipal(principal)
+        .flatMap(({ invite, grant }) => {
+          const projection = deps.projectTaskForShare(grant.subject.taskId);
+          if (!projection) return [];
+          return [{
+            inviteId: invite.inviteId,
+            grantId: grant.grantId,
+            policyVersion: grant.policyVersion,
+            ...(grant.expiresAt ? { expiresAt: grant.expiresAt } : {}),
+            projection,
+          }];
+        });
+      const response: ListCollaborationSharedTaskUpdatesResponse = {
+        schemaVersion: COLLABORATION_SHARED_TASK_UPDATES_SCHEMA_VERSION,
+        updates,
+        removals: deps.shareStore.listRemovedTaskSharesForPrincipal(principal),
+      };
+      return c.json(response);
     } catch (err) {
       if (err instanceof CollaborationPairingError) return c.json({ error: err.code }, err.status as never);
       throw err;
     }
-  };
-
-  app.get('/api/collaboration/shared-task-updates', requireVerifiedDevice);
+  });
 
   app.notFound((c) => {
     if (c.req.path.startsWith('/api/')) return c.json({ error: 'Not Found' }, 404);
@@ -184,6 +208,7 @@ export async function startPrivateNetworkCollaborationListener(
     identityStore,
     shareStore,
     taskExists: deps.taskExists ?? (() => true),
+    projectTaskForShare: deps.projectTaskForShare ?? (() => null),
   });
   const httpServer = createServer(getRequestListener(app.fetch));
 
@@ -219,6 +244,7 @@ export async function startConfiguredPrivateNetworkCollaborationListener(opts: {
   dashboardPort: number;
   kookrDir?: string;
   taskExists?: (taskId: string) => boolean;
+  projectTaskForShare?: (taskId: string) => RemoteTaskProjectionV1 | null | undefined;
 }): Promise<CollaborationListenerHandle> {
   const config = readPrivateNetworkCollaborationConfig({
     env: opts.env,
@@ -231,6 +257,7 @@ export async function startConfiguredPrivateNetworkCollaborationListener(opts: {
       identityStore: new ContactIdentityStore({ kookrDir: opts.kookrDir }),
       shareStore: new CollaborationShareStore({ kookrDir: opts.kookrDir, taskExists: opts.taskExists }),
       taskExists: opts.taskExists,
+      projectTaskForShare: opts.projectTaskForShare,
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);

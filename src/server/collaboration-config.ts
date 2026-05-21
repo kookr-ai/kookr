@@ -46,12 +46,12 @@ export interface ReadCollaborationConfigOptions {
   now?: () => Date;
 }
 
-function envFlag(env: CollaborationConfigEnv, name: string): boolean {
+export function envFlag(env: CollaborationConfigEnv, name: string): boolean {
   const raw = env[name]?.trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
-function optionalString(value: string | undefined): string | undefined {
+export function optionalString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
 }
