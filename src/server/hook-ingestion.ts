@@ -3,6 +3,7 @@ import type { HttpPushTracker } from '../core/http-push-tracker.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { ActivityLedger, ActivityLedgerRow, HookEnvelopeV1 } from '../core/activity-ledger.js';
 import type { AgentActivityMeta, InjectHookEventResult } from '../core/types.js';
+import type { CoordinatorAuditTailRow } from './coordinator/detectors.js';
 
 /**
  * Narrow surface the {@link HookIngestion} service needs from an adapter.
@@ -74,10 +75,14 @@ interface CacheEntry {
   hydrated?: boolean;
 }
 
+const COORDINATOR_AUDIT_TAIL_LIMIT = 1_000;
+
 export class HookIngestion implements HookEventInjector {
   private cache = new Map<string, CacheEntry>();
   private sequenceCounters = new Map<string, number>();
   private metaByKookrSession = new Map<string, AgentActivityMeta>();
+  private coordinatorAuditTail: CoordinatorAuditTailRow[] = [];
+  private latestCoordinatorPostToolUseRows = new Map<string, CoordinatorAuditTailRow>();
   private adapter: HookEventInjector;
   private httpPushTracker?: HttpPushTracker;
   private activityLedger?: ActivityLedger;
@@ -205,6 +210,19 @@ export class HookIngestion implements HookEventInjector {
       result,
       projection: ledgerProjection(result),
     });
+    const observedAt = new Date(now).toISOString();
+    const taskId = this.taskStore?.findTaskBySession(kookrSessionId)?.id;
+    this.appendCoordinatorAuditTail({
+      ...(taskId ? { taskId } : {}),
+      observedAt,
+      ...(result.rawHookEventName ? { rawHookEventName: result.rawHookEventName } : {}),
+      envelope: {
+        ...(taskId ? { taskId } : {}),
+        kookrSessionId,
+        observedAt,
+        ...(result.rawHookEventName ? { rawHookEventName: result.rawHookEventName } : {}),
+      },
+    });
     return { dispatched: result.parseStatus === 'ok', contentHash, injectResult: result };
   }
 
@@ -215,6 +233,33 @@ export class HookIngestion implements HookEventInjector {
   getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined {
     const meta = this.metaByKookrSession.get(kookrSessionId);
     return meta ? { ...meta } : undefined;
+  }
+
+  getCoordinatorAuditTail(): CoordinatorAuditTailRow[] {
+    const rowsByKey = new Map<string, CoordinatorAuditTailRow>();
+    for (const row of this.coordinatorAuditTail) rowsByKey.set(coordinatorAuditTailKey(row), row);
+    for (const row of this.latestCoordinatorPostToolUseRows.values()) {
+      rowsByKey.set(coordinatorAuditTailKey(row), row);
+    }
+    return [...rowsByKey.values()].map(cloneCoordinatorAuditTailRow);
+  }
+
+  private appendCoordinatorAuditTail(row: CoordinatorAuditTailRow): void {
+    if (isCoordinatorPostToolUseRow(row)) {
+      const key = row.taskId ?? row.envelope?.taskId ?? row.envelope?.kookrSessionId;
+      const observedAt = coordinatorRowObservedAt(row);
+      if (key && observedAt) {
+        const prior = this.latestCoordinatorPostToolUseRows.get(key);
+        const priorObservedAt = prior ? coordinatorRowObservedAt(prior) : undefined;
+        if (!priorObservedAt || observedAt > priorObservedAt) {
+          this.latestCoordinatorPostToolUseRows.set(key, cloneCoordinatorAuditTailRow(row));
+        }
+      }
+    }
+    this.coordinatorAuditTail.push(row);
+    if (this.coordinatorAuditTail.length > COORDINATOR_AUDIT_TAIL_LIMIT) {
+      this.coordinatorAuditTail.splice(0, this.coordinatorAuditTail.length - COORDINATOR_AUDIT_TAIL_LIMIT);
+    }
   }
 
   /**
@@ -265,6 +310,17 @@ export class HookIngestion implements HookEventInjector {
           sequence: envelope.sequence,
         },
       });
+      this.appendCoordinatorAuditTail({
+        ...(envelope.taskId ? { taskId: envelope.taskId } : {}),
+        observedAt: envelope.observedAt,
+        ...(envelope.rawHookEventName ? { rawHookEventName: envelope.rawHookEventName } : {}),
+        envelope: {
+          ...(envelope.taskId ? { taskId: envelope.taskId } : {}),
+          kookrSessionId: envelope.kookrSessionId,
+          observedAt: envelope.observedAt,
+          ...(envelope.rawHookEventName ? { rawHookEventName: envelope.rawHookEventName } : {}),
+        },
+      });
       hydratedHashes += 1;
     }
     if (maxSequence > 0) {
@@ -278,6 +334,14 @@ export class HookIngestion implements HookEventInjector {
   forgetSession(kookrSessionId: string): void {
     this.metaByKookrSession.delete(kookrSessionId);
     this.sequenceCounters.delete(kookrSessionId);
+    this.coordinatorAuditTail = this.coordinatorAuditTail.filter(
+      (row) => row.envelope?.kookrSessionId !== kookrSessionId,
+    );
+    for (const [key, row] of [...this.latestCoordinatorPostToolUseRows]) {
+      if (key === kookrSessionId || row.envelope?.kookrSessionId === kookrSessionId) {
+        this.latestCoordinatorPostToolUseRows.delete(key);
+      }
+    }
     // Drop dedup entries for this session.
     for (const key of [...this.cache.keys()]) {
       if (key.startsWith(`${kookrSessionId}::`)) this.cache.delete(key);
@@ -364,6 +428,43 @@ function ledgerProjection(result: InjectHookEventResult): ActivityLedgerRow['pro
   if (result.parentage === 'parent') return 'parent_activity';
   if (result.parentage === 'child') return 'child_activity';
   return 'diagnostic_only';
+}
+
+function cloneCoordinatorAuditTailRow(row: CoordinatorAuditTailRow): CoordinatorAuditTailRow {
+  const copy: CoordinatorAuditTailRow = { ...row };
+  if (row.envelope) copy.envelope = { ...row.envelope };
+  return copy;
+}
+
+function coordinatorAuditTailKey(row: CoordinatorAuditTailRow): string {
+  return [
+    row.taskId ?? '',
+    row.envelope?.taskId ?? '',
+    row.envelope?.kookrSessionId ?? '',
+    row.rawHookEventName ?? row.envelope?.rawHookEventName ?? '',
+    row.observedAt ?? row.envelope?.observedAt ?? row.timestamp ?? row.ts ?? '',
+  ].join('\0');
+}
+
+function isCoordinatorPostToolUseRow(row: CoordinatorAuditTailRow): boolean {
+  return row.rawHookEventName === 'PostToolUse'
+    || row.envelope?.rawHookEventName === 'PostToolUse'
+    || row.hook_event_name === 'PostToolUse'
+    || row.event?.type === 'tool_result'
+    || row.type === 'tool_result';
+}
+
+function coordinatorRowObservedAt(row: CoordinatorAuditTailRow): Date | undefined {
+  return parseCoordinatorDate(row.observedAt)
+    ?? parseCoordinatorDate(row.timestamp)
+    ?? parseCoordinatorDate(row.ts)
+    ?? parseCoordinatorDate(row.envelope?.observedAt);
+}
+
+function parseCoordinatorDate(value: string | number | Date | undefined): Date | undefined {
+  if (value === undefined) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 function emptyMeta(): AgentActivityMeta {

@@ -15,12 +15,13 @@ import type { ProjectSidebarStore } from '../../core/project-sidebar-store.js';
 import { MAX_TRACKED_REPOS, type ProjectRepoHealth } from '../../core/project-summary.js';
 import type { SkillDiscoveryStateHolder } from '../../core/skill-tracked-repo-discovery.js';
 import type { TaskStore } from '../../core/tasks.js';
-import type { ServerMessage } from '../../shared/contracts/messages.js';
+import type { ServerMessage, SnapshotMessage } from '../../shared/contracts/messages.js';
+import { runDetectors, type CoordinatorAuditTailProvider } from '../coordinator/detectors.js';
 import { AchievementWatcher, loadAchievements } from '../achievement-watcher.js';
 import type { ScheduleStore } from '../../core/schedule.js';
 import { toOssAttemptsSnapshot } from '../oss-attempts-snapshot.js';
 import type { OssAttemptStore } from '../../core/oss-attempt-store.js';
-import { createSnapshotMessage, getProjectSummaries } from '../use-cases/get-snapshot.js';
+import { buildCoordinatorDetectorTasks, createSnapshotMessage, getProjectSummaries, getSnapshotAgentsForClient } from '../use-cases/get-snapshot.js';
 
 export interface RealtimeServicesDeps {
   kookrDir: string;
@@ -39,6 +40,7 @@ export interface RealtimeServicesDeps {
   getRegistryActiveRepos: () => string[];
   ossAttemptStore: OssAttemptStore;
   getDefaultAgentType: () => AgentSelection;
+  coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
 }
 
 export interface RealtimeServices {
@@ -51,6 +53,7 @@ export interface RealtimeServices {
   setScheduleStore: (store: ScheduleStore) => void;
   setSnapshotAchievementsReady: (ready: boolean) => void;
   setProjectSummaryGitHubDeps: (deps: ProjectSummaryGitHubDeps) => void;
+  setCoordinatorAuditTailProvider: (provider: CoordinatorAuditTailProvider) => void;
 }
 
 export interface ProjectSummaryGitHubDeps {
@@ -68,6 +71,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
   let scheduleStore: ScheduleStore | null = null;
   let snapshotAchievementsReady = false;
   let projectSummaryGitHubDeps: ProjectSummaryGitHubDeps | null = null;
+  let coordinatorAuditTailProvider = deps.coordinatorAuditTailProvider;
 
   function broadcastToAll(msg: ServerMessage): void {
     wsBroadcastCount++;
@@ -98,6 +102,12 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
       }
       msg = {
         ...msg,
+        coordinator: msg.coordinator ?? {
+          outputs: runDetectors(
+            { tasks: buildCoordinatorDetectorTasks(deps.taskStore.listTasks(), snapshotAgentsForCoordinator(msg)) },
+            coordinatorAuditTailProvider?.getCoordinatorAuditTail() ?? [],
+          ),
+        },
         totalSpendUsd: deps.taskStore.getLifetimeSpendUsd(),
         achievements: achievementWatcher?.getUnlocked(),
         ...(achievementWatcher
@@ -119,6 +129,11 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
         ws.send(data);
       }
     }
+  }
+
+  function snapshotAgentsForCoordinator(msg: SnapshotMessage): SnapshotMessage['agents'] {
+    if (msg.agents.length > 0) return msg.agents;
+    return getSnapshotAgentsForClient({ monitor: deps.monitor });
   }
 
   achievementWatcher = new AchievementWatcher(achievementsFile, achievementState, (unlock) => {
@@ -181,6 +196,9 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
     },
     setProjectSummaryGitHubDeps: (githubDeps) => {
       projectSummaryGitHubDeps = githubDeps;
+    },
+    setCoordinatorAuditTailProvider: (provider) => {
+      coordinatorAuditTailProvider = provider;
     },
   };
 }

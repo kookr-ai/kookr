@@ -34,6 +34,7 @@ export function dispatchSnapshotMessageForClient(
     msg.sweepRunning,
     msg.maxActiveTasks,
     msg.speechCapabilities,
+    msg.coordinator,
   );
 }
 

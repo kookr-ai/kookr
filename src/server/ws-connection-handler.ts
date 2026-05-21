@@ -25,6 +25,7 @@ import type { AgentSelection, AvailableAgentType } from '../core/agent-types.js'
 import type { ScheduleService } from './schedule-service.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
 import type { AgentActivityMeta } from '../core/types.js';
+import type { CoordinatorAuditTailProvider } from './coordinator/detectors.js';
 import type { WorkspaceAttemptRepository } from '../core/workspace-attempt-repository.js';
 import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
@@ -71,6 +72,7 @@ export interface WsConnectionDeps {
   defaultAgentType?: AgentSelection;
   getDefaultAgentType?: () => AgentSelection;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
+  coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
   /** Get latest self-diagnostic status (for initial connection burst). */
@@ -127,6 +129,7 @@ export function handleWsConnection(
     defaultAgentType: deps.defaultAgentType,
     getDefaultAgentType: deps.getDefaultAgentType,
     activityMetaProvider: deps.activityMetaProvider,
+    coordinatorAuditTailProvider: deps.coordinatorAuditTailProvider,
     scheduleService: deps.scheduleService,
     ralphLoopService: deps.ralphLoopService,
     workspaceEnabled: deps.workspaceEnabled,
@@ -253,6 +256,10 @@ export function handleWsConnection(
             sttUrl,
             ttsUrl,
             activityMetaProvider: deps.activityMetaProvider,
+            coordinator: {
+              taskStore,
+              auditTailProvider: deps.coordinatorAuditTailProvider,
+            },
             getMaxActiveTasks: deps.getMaxActiveTasks,
           }));
         } catch (err) {
@@ -327,6 +334,10 @@ export function handleWsConnection(
         sttUrl,
         ttsUrl,
         activityMetaProvider: deps.activityMetaProvider,
+        coordinator: {
+          taskStore,
+          auditTailProvider: deps.coordinatorAuditTailProvider,
+        },
         getMaxActiveTasks: deps.getMaxActiveTasks,
       }));
       broadcastProjectSummaries();

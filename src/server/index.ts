@@ -470,6 +470,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // See rfc-activity-log-reliability §5, §7.
   const activityLedger = new ActivityLedger(join(kookrDir, 'activity'));
   const hookIngestion = new HookIngestion({ adapter, httpPushTracker, activityLedger, taskStore });
+  realtime.setCoordinatorAuditTailProvider(hookIngestion);
   const hookWatcher = new HookFileWatcher(hooksDir, hookIngestion);
 
   // Register transcripts for resumed sessions so token tracker picks up existing data
@@ -524,7 +525,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Metadata-only refresh (e.g. git info captured) — broadcast snapshot without injecting events
   adapter.onRefreshNeeded(() => {
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, ttsUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
+    broadcastToAll(createSnapshotMessage({
+      monitor,
+      serverCwd,
+      sttUrl,
+      ttsUrl,
+      activityMetaProvider: hookIngestion,
+      coordinator: { taskStore, auditTailProvider: hookIngestion },
+      getMaxActiveTasks,
+    }));
     broadcastProjectSummaries();
   });
 
@@ -552,7 +561,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         if (current && !current.name) {
           taskStore.renameTask(taskId, name);
           console.log(`[task-naming] Named task ${taskId}: "${name}"`);
-          broadcastToAll(createSnapshotMessage({ monitor, serverCwd, sttUrl, ttsUrl, activityMetaProvider: hookIngestion, getMaxActiveTasks }));
+          broadcastToAll(createSnapshotMessage({
+            monitor,
+            serverCwd,
+            sttUrl,
+            ttsUrl,
+            activityMetaProvider: hookIngestion,
+            coordinator: { taskStore, auditTailProvider: hookIngestion },
+            getMaxActiveTasks,
+          }));
         }
       })
       .catch((err) => {
@@ -768,7 +785,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getWsBroadcastCount: () => realtime.getWsBroadcastCount(),
     getEventCounts: () => monitor.getEventCounts(),
     measureSnapshotSizeBytes: () => {
-      const msg = createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion });
+      const msg = createSnapshotMessage({
+        monitor,
+        serverCwd,
+        activityMetaProvider: hookIngestion,
+        coordinator: { taskStore, auditTailProvider: hookIngestion },
+      });
       return JSON.stringify(msg).length;
     },
     onReport: (report) => {
@@ -1173,6 +1195,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     defaultAgentType: getDefaultAgentType(),
     getDefaultAgentType,
     activityMetaProvider: hookIngestion,
+    coordinatorAuditTailProvider: hookIngestion,
     scheduleService,
     ralphLoopService,
     getDiagnosticStatus: () => diagnosticRunner.getStatus(),

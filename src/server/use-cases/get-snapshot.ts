@@ -13,6 +13,8 @@ import { projectEventForClient } from '../event-projection.js';
 import type { AgentActivityMeta } from '../../core/types.js';
 import { buildGithubTaskOverlay } from './github-task-overlay.js';
 import type { FindingEvidenceAuditRecord } from '../../shared/contracts/anomalies.js';
+import type { Task, TaskStore } from '../../core/tasks.js';
+import { runDetectors, type CoordinatorAuditTailProvider, type CoordinatorTask } from '../coordinator/detectors.js';
 
 export interface SnapshotQueryDeps {
   monitor: Pick<Monitor, 'getSnapshot'>;
@@ -49,6 +51,10 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   sweepRunning?: boolean;
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
   getMaxActiveTasks?: () => number;
+  coordinator?: {
+    taskStore: Pick<TaskStore, 'listTasks'>;
+    auditTailProvider?: CoordinatorAuditTailProvider;
+  };
 }
 
 const LOCAL_NODE_DEVICE_ID = 'local-node';
@@ -186,9 +192,10 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ttsUrl: deps.ttsUrl,
     now: deps.now,
   });
+  const agents = getSnapshotAgentsForClient(deps);
   return {
     type: 'snapshot',
-    agents: getSnapshotAgentsForClient(deps),
+    agents,
     serverCwd: deps.serverCwd,
     ...(deps.serverRevision !== undefined ? { serverRevision: deps.serverRevision } : {}),
     ...(deps.buildInfo ? { build: deps.buildInfo } : {}),
@@ -205,7 +212,39 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ...(deps.workspaceEnabled ? { workspaceEnabled: true } : {}),
     ...(deps.sweepRunning ? { sweepRunning: true } : {}),
     ...(deps.getMaxActiveTasks ? { maxActiveTasks: deps.getMaxActiveTasks() } : {}),
+    ...(deps.coordinator ? {
+      coordinator: {
+        outputs: runDetectors(
+          { tasks: buildCoordinatorDetectorTasks(deps.coordinator.taskStore.listTasks(), agents) },
+          deps.coordinator.auditTailProvider?.getCoordinatorAuditTail() ?? [],
+          deps.now ? { now: deps.now() } : {},
+        ),
+      },
+    } : {}),
   };
+}
+
+export function buildCoordinatorDetectorTasks(
+  tasks: readonly Task[],
+  agents: readonly AgentState[],
+): CoordinatorTask[] {
+  const agentsByTaskId = new Map<string, AgentState>();
+  for (const agent of agents) {
+    if (!agent.taskId) continue;
+    const prior = agentsByTaskId.get(agent.taskId);
+    if (!prior || (!prior.anomaly && agent.anomaly)) agentsByTaskId.set(agent.taskId, agent);
+  }
+
+  return tasks.map((task) => {
+    const agent = agentsByTaskId.get(task.id);
+    if (!agent) return task;
+    return {
+      ...task,
+      ...(agent.anomaly ? { anomaly: agent.anomaly } : {}),
+      ...(agent.completionDigest && !task.completionDigest ? { completionDigest: agent.completionDigest } : {}),
+      ...(agent.completionFeedback && !task.completionFeedback ? { completionFeedback: agent.completionFeedback } : {}),
+    };
+  });
 }
 
 export function getProjectSummaries(deps: ProjectSummaryQueryDeps): ProjectSummary[] {

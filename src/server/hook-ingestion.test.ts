@@ -63,6 +63,108 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
     expect(adapter.calls).toEqual([{ tmux: 'kookr-1', raw }]);
   });
 
+  it('retains a metadata-only coordinator audit tail for detector evaluation', () => {
+    const adapter: HookEventInjector = {
+      injectHookEvent(_tmux, _raw, sequence) {
+        return {
+          parseStatus: 'ok',
+          agentType: 'claude-code',
+          parentage: 'parent',
+          rawHookEventName: 'PostToolUse',
+          sequence: sequence ?? 0,
+        };
+      },
+    };
+    const ingestion = new HookIngestion({
+      adapter,
+      taskStore: {
+        findTaskBySession: () => ({ id: 'task-1' }) as never,
+      },
+      now: () => Date.parse('2026-05-21T12:00:00.000Z'),
+    });
+
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({ session_id: 'x', hook_event_name: 'PostToolUse' }));
+
+    expect(ingestion.getCoordinatorAuditTail()).toEqual([{
+      taskId: 'task-1',
+      observedAt: '2026-05-21T12:00:00.000Z',
+      rawHookEventName: 'PostToolUse',
+      envelope: {
+        taskId: 'task-1',
+        kookrSessionId: 'kookr-1',
+        observedAt: '2026-05-21T12:00:00.000Z',
+        rawHookEventName: 'PostToolUse',
+      },
+    }]);
+  });
+
+  it('keeps latest PostToolUse rows available after unrelated audit-tail overflow', () => {
+    let clock = Date.parse('2026-05-21T12:00:00.000Z');
+    const adapter: HookEventInjector = {
+      injectHookEvent(_tmux, _raw, sequence) {
+        return {
+          parseStatus: 'ok',
+          agentType: 'claude-code',
+          parentage: 'parent',
+          rawHookEventName: 'PostToolUse',
+          sequence: sequence ?? 0,
+        };
+      },
+    };
+    const ingestion = new HookIngestion({
+      adapter,
+      taskStore: {
+        findTaskBySession: (sessionId: string) => ({ id: sessionId === 'kookr-keep' ? 'task-keep' : `task-${sessionId}` }) as never,
+      },
+      now: () => clock,
+    });
+
+    ingestion.ingestFromHttp('kookr-keep', JSON.stringify({ session_id: 'keep', hook_event_name: 'PostToolUse' }));
+    for (let i = 0; i < 1001; i++) {
+      clock += 1;
+      ingestion.ingestFromHttp(`kookr-noise-${i}`, JSON.stringify({ session_id: `noise-${i}`, hook_event_name: 'PostToolUse' }));
+    }
+
+    expect(ingestion.getCoordinatorAuditTail()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        taskId: 'task-keep',
+        observedAt: '2026-05-21T12:00:00.000Z',
+        rawHookEventName: 'PostToolUse',
+      }),
+    ]));
+  });
+
+  it('forgets task-keyed retained PostToolUse rows when the owning session is forgotten', () => {
+    const adapter: HookEventInjector = {
+      injectHookEvent(_tmux, _raw, sequence) {
+        return {
+          parseStatus: 'ok',
+          agentType: 'claude-code',
+          parentage: 'parent',
+          rawHookEventName: 'PostToolUse',
+          sequence: sequence ?? 0,
+        };
+      },
+    };
+    const ingestion = new HookIngestion({
+      adapter,
+      taskStore: {
+        findTaskBySession: () => ({ id: 'task-1' }) as never,
+      },
+      now: () => Date.parse('2026-05-21T12:00:00.000Z'),
+    });
+
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({ session_id: 'x', hook_event_name: 'PostToolUse' }));
+    ingestion.forgetSession('kookr-1');
+
+    expect(ingestion.getCoordinatorAuditTail()).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        taskId: 'task-1',
+        observedAt: '2026-05-21T12:00:00.000Z',
+      }),
+    ]));
+  });
+
   it('HTTP-then-file delivery produces exactly one adapter call', () => {
     const adapter = makeStubAdapter();
     const ingestion = new HookIngestion({ adapter });
@@ -223,6 +325,39 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       expect(result.parseStatus).toBe('ok');
       expect(adapter.calls).toHaveLength(1);
       expect(await ledger.readAll('kookr-1')).toHaveLength(initialRowCount);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('hydrates coordinator audit-tail metadata from durable ledger rows', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      await ledger.append(envelopeRow({
+        taskId: 'task-1',
+        kookrSessionId: 'kookr-1',
+        rawHookEventName: 'PostToolUse',
+        observedAt: '2026-05-21T11:45:00.000Z',
+        sequence: 3,
+        contentHash: 'c'.repeat(64),
+      }));
+      await ledger.flush();
+
+      const ingestion = new HookIngestion({ adapter: makeStubAdapter() });
+      await ingestion.hydrateFromLedger('kookr-1', ledger);
+
+      expect(ingestion.getCoordinatorAuditTail()).toEqual([{
+        taskId: 'task-1',
+        observedAt: '2026-05-21T11:45:00.000Z',
+        rawHookEventName: 'PostToolUse',
+        envelope: {
+          taskId: 'task-1',
+          kookrSessionId: 'kookr-1',
+          observedAt: '2026-05-21T11:45:00.000Z',
+          rawHookEventName: 'PostToolUse',
+        },
+      }]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -1008,6 +1008,29 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().maxActiveTasks).toBe(12);
   });
 
+  test('handleSnapshot stores coordinator detector output state', () => {
+    store.getState().handleSnapshot(
+      [],
+      '/cwd',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { outputs: [{ detectorId: 'duplicate', taskId: 'task-1', evidence: { peerTaskIds: ['task-2'] } }] },
+    );
+    expect(store.getState().coordinator).toEqual({
+      outputs: [{ detectorId: 'duplicate', taskId: 'task-1', evidence: { peerTaskIds: ['task-2'] } }],
+    });
+  });
+
   test('handleWorkspaceView stores view and clears loading', () => {
     store.getState().setWorkspaceLoading(true);
     store.getState().handleWorkspaceView({

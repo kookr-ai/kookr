@@ -34,6 +34,7 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
       agents: [],
       serverCwd: '/repo',
       maxActiveTasks: 7,
+      coordinator: { outputs: [{ detectorId: 'stale', taskId: 'task-1', evidence: {} }] },
       speechCapabilities: {
         capabilitiesByDevice: {
           'local-node': [],
@@ -46,6 +47,7 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0][12]).toBe(7);
     expect(calls[0][13]).toEqual({ capabilitiesByDevice: { 'local-node': [] } });
+    expect(calls[0][14]).toEqual({ outputs: [{ detectorId: 'stale', taskId: 'task-1', evidence: {} }] });
   });
 
   it('dispatches alert details through the WebSocket alert runtime path', () => {

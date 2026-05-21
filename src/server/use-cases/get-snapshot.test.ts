@@ -86,6 +86,87 @@ describe('snapshot use cases', () => {
     });
   });
 
+  it('runs coordinator detectors when task store and audit tail provider are wired', () => {
+    const monitor = {
+      getSnapshot: () => [] as any,
+    };
+
+    const msg = createSnapshotMessage({
+      monitor,
+      serverCwd: '/repo',
+      coordinator: {
+        taskStore: {
+          listTasks: () => [{
+            id: 'task-1',
+            prompt: 'Ship it',
+            cwd: '/repo',
+            agentType: 'codex-cli',
+            status: 'inProgress',
+            sessions: [{
+              tmuxSession: 'kookr-task-1',
+              agentType: 'codex-cli',
+              cwd: '/repo',
+              createdAt: new Date('2026-05-21T11:00:00.000Z'),
+            }],
+            createdAt: new Date('2026-05-21T11:00:00.000Z'),
+            updatedAt: new Date('2026-05-21T11:00:00.000Z'),
+          }],
+        },
+        auditTailProvider: {
+          getCoordinatorAuditTail: () => [],
+        },
+      },
+      now: () => new Date('2026-05-21T12:00:00.000Z'),
+    });
+
+    expect(msg.coordinator?.outputs).toEqual([
+      expect.objectContaining({
+        detectorId: 'stale',
+        taskId: 'task-1',
+      }),
+    ]);
+  });
+
+  it('uses monitor anomaly state when running coordinator done-not-cleared detectors', () => {
+    const monitor = {
+      getSnapshot: () => [{
+        agentId: 'done-agent',
+        taskId: 'task-1',
+        events: [],
+        anomaly: {
+          agentId: 'done-agent',
+          type: 'needs_input',
+          severity: 'warning',
+          explanation: 'Needs review',
+          detectedAt: new Date('2026-05-21T12:00:00.000Z'),
+        },
+      }] as any,
+    };
+
+    const msg = createSnapshotMessage({
+      monitor,
+      serverCwd: '/repo',
+      coordinator: {
+        taskStore: {
+          listTasks: () => [{
+            id: 'task-1',
+            prompt: 'Ship it',
+            cwd: '/repo',
+            agentType: 'codex-cli',
+            status: 'completed',
+            sessions: [],
+            completionDigest: { bullets: ['done'], filesChanged: [] },
+            createdAt: new Date('2026-05-21T11:00:00.000Z'),
+            updatedAt: new Date('2026-05-21T11:00:00.000Z'),
+          }],
+        },
+      },
+      now: () => new Date('2026-05-21T12:00:00.000Z'),
+    });
+
+    expect(msg.coordinator?.outputs).toEqual([]);
+  });
+
   it('delegates raw snapshot reads to the monitor', () => {
     const agents = [{ agentId: 'x' }] as any;
     expect(getSnapshotAgentsRaw({ monitor: { getSnapshot: () => agents } as any })).toBe(agents);
