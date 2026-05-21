@@ -102,6 +102,7 @@ export class TaskStore {
       launchHealthSummary,
       launchNote,
       projectId,
+      metadata,
     } = opts;
 
     // Validate parent exists if specified
@@ -132,6 +133,7 @@ export class TaskStore {
       task.launchHealthSummary = structuredClone(launchHealthSummary);
     }
     if (launchNote) task.launchNote = launchNote;
+    if (metadata) task.metadata = structuredClone(metadata);
     this.tasks.set(task.id, task);
 
     // Link child to parent

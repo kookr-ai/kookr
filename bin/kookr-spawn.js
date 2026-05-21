@@ -28,6 +28,8 @@ const EXIT_OK = 0;
 const EXIT_USER_ERROR = 2;
 const EXIT_NO_SERVER = 3;
 const EXIT_SERVER_ERROR = 4;
+const EXIT_DUPLICATE_BLOCKED = 5;
+const DEDUPE_MODES = new Set(['warn', 'block', 'skip']);
 
 // ---------- arg parsing ----------
 
@@ -42,6 +44,7 @@ Options:
   -C, --cwd <path>         Working directory for the task (default: cwd).
   -a, --agent <type>       claude-code or codex-cli (default: server default).
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
+      --dedupe <mode>      warn, block, or skip (default: warn).
   -f, --prompt-file <path> Read prompt from a file (hook-safe).
   -h, --help               Show this help.
 
@@ -64,7 +67,8 @@ Exit codes:
   0  Task created (or idempotent dedup against an already-active task).
   2  User error (bad flags, empty prompt, missing cwd, etc.).
   3  No Kookr server reachable.
-  4  Server returned an error.`;
+  4  Server returned an error.
+  5  Duplicate active prompt blocked.`;
 
 function parseArgs(argv) {
   const out = {
@@ -73,6 +77,7 @@ function parseArgs(argv) {
     cwd: null,
     agent: null,
     criteria: null,
+    dedupe: 'warn',
     promptFile: null,
     help: false,
   };
@@ -93,6 +98,10 @@ function parseArgs(argv) {
       out.agent = eat();
     } else if (tok === '--criteria') {
       out.criteria = eat();
+    } else if (tok === '--dedupe') {
+      out.dedupe = eat();
+    } else if (tok.startsWith('--dedupe=')) {
+      out.dedupe = tok.slice('--dedupe='.length);
     } else if (tok === '-f' || tok === '--prompt-file') {
       out.promptFile = eat();
     } else if (tok === '--') {
@@ -107,6 +116,9 @@ function parseArgs(argv) {
   }
   if (out.agent !== null && out.agent !== 'claude-code' && out.agent !== 'codex-cli') {
     throw new UsageError(`--agent must be "claude-code" or "codex-cli" (got: ${out.agent})`);
+  }
+  if (!DEDUPE_MODES.has(out.dedupe)) {
+    throw new UsageError(`--dedupe must be "warn", "block", or "skip" (got: ${out.dedupe})`);
   }
   return out;
 }
@@ -288,10 +300,12 @@ function defaultSleep(ms) {
 
 // ---------- HTTP POST ----------
 
-async function postTask({ baseUrl, prompt, cwd, agent, criteria }) {
+async function postTask({ baseUrl, prompt, cwd, agent, criteria, disableDedup = false, metadataIntent = null }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
+  if (disableDedup) body.disableDedup = true;
+  if (metadataIntent) body.metadata = { intent: metadataIntent };
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
     method: 'POST',
@@ -352,6 +366,88 @@ function formatDedup({ task, baseUrl }) {
     'ℹ active task already exists for this prompt + cwd',
     `   open: ${baseUrl}/#/tasks/${id}`,
   ].join('\n');
+}
+
+function formatDuplicateWarning({ task }) {
+  const id = task?.id ?? 'unknown';
+  const status = task?.status ?? 'active';
+  const cwd = task?.cwd ?? 'unknown cwd';
+  const age = formatTaskAge(task?.createdAt);
+  return `WARN: prompt matches active task ${id}${age ? ` (${status}, ${age}, repo: ${cwd})` : ` (${status}, repo: ${cwd})`}`;
+}
+
+function formatTaskAge(createdAt) {
+  if (typeof createdAt !== 'string' && typeof createdAt !== 'number') return '';
+  const then = new Date(createdAt).getTime();
+  if (!Number.isFinite(then)) return '';
+  const ageMs = Math.max(0, Date.now() - then);
+  const minutes = Math.floor(ageMs / 60_000);
+  if (minutes < 1) return 'running <1 min';
+  if (minutes < 60) return `running ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes % 60;
+  return rem === 0 ? `running ${hours}h` : `running ${hours}h ${rem}m`;
+}
+
+function formatPromptDiff(existingPrompt, newPrompt) {
+  const existingLines = String(existingPrompt ?? '').split('\n');
+  const newLines = String(newPrompt ?? '').split('\n');
+  const max = Math.max(existingLines.length, newLines.length);
+  const lines = ['--- existing active task prompt', '+++ requested prompt'];
+  for (let i = 0; i < max; i++) {
+    const oldLine = existingLines[i];
+    const newLine = newLines[i];
+    if (oldLine === newLine) {
+      if (oldLine !== undefined) lines.push(` ${oldLine}`);
+      continue;
+    }
+    if (oldLine !== undefined) lines.push(`-${oldLine}`);
+    if (newLine !== undefined) lines.push(`+${newLine}`);
+  }
+  return lines.join('\n');
+}
+
+function createLineReader(stdin) {
+  const iterator = stdin[Symbol.asyncIterator]();
+  let buffered = '';
+  return async function readPromptLine() {
+    for (;;) {
+      const newline = buffered.search(/\r?\n/);
+      if (newline !== -1) {
+        const line = buffered.slice(0, newline);
+        buffered = buffered.slice(buffered[newline] === '\r' && buffered[newline + 1] === '\n' ? newline + 2 : newline + 1);
+        return line;
+      }
+      const next = await iterator.next();
+      if (next.done) {
+        if (buffered.length === 0) return null;
+        const line = buffered;
+        buffered = '';
+        return line;
+      }
+      buffered += Buffer.isBuffer(next.value) ? next.value.toString('utf-8') : String(next.value);
+    }
+  };
+}
+
+async function confirmDuplicateSpawn({ task, prompt, stdin, out, err }) {
+  err.error(formatDuplicateWarning({ task }));
+  if (!stdin || stdin.isTTY !== true) {
+    err.error('kookr-spawn: duplicate active prompt blocked in non-interactive mode. Re-run with --dedupe=skip to keep it as an intentional duplicate.');
+    return false;
+  }
+
+  const readPromptLine = createLineReader(stdin);
+  for (;;) {
+    out.log('Continue spawning a duplicate? [y/N/show diff]');
+    const answer = (await readPromptLine())?.trim().toLowerCase() ?? '';
+    if (answer === 'y' || answer === 'yes') return true;
+    if (answer === 'show diff' || answer === 'diff' || answer === 'd') {
+      out.log(formatPromptDiff(task?.prompt, prompt));
+      continue;
+    }
+    return false;
+  }
 }
 
 // ---------- main ----------
@@ -438,6 +534,8 @@ async function main({
       cwd: cwdAbs,
       agent: args.agent,
       criteria: args.criteria,
+      disableDedup: args.dedupe === 'skip',
+      metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -452,8 +550,48 @@ async function main({
   }
 
   if (result.kind === 'duplicate') {
-    out.log(formatDedup({ task: result.task, baseUrl }));
-    return exit(EXIT_OK);
+    if (args.dedupe === 'skip') {
+      out.log(formatDedup({ task: result.task, baseUrl }));
+      return exit(EXIT_OK);
+    }
+    if (args.dedupe === 'block') {
+      err.error(formatDuplicateWarning({ task: result.task }));
+      err.error('kookr-spawn: duplicate active prompt blocked by --dedupe=block.');
+      return exit(EXIT_DUPLICATE_BLOCKED);
+    }
+    const confirmed = await confirmDuplicateSpawn({
+      task: result.task,
+      prompt,
+      stdin,
+      out,
+      err,
+    });
+    if (!confirmed) return exit(EXIT_DUPLICATE_BLOCKED);
+
+    try {
+      result = await postTask({
+        baseUrl,
+        prompt,
+        cwd: cwdAbs,
+        agent: args.agent,
+        criteria: args.criteria,
+        disableDedup: true,
+        metadataIntent: 'keep_as_duplicate',
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      err.error(`kookr-spawn: request failed: ${msg}`);
+      err.error(`Check the dashboard at ${baseUrl} before re-running to avoid duplicate launches.`);
+      return exit(EXIT_SERVER_ERROR);
+    }
+    if (result.kind === 'server_error') {
+      err.error(`kookr-spawn: server returned ${result.status}: ${result.message}`);
+      return exit(EXIT_SERVER_ERROR);
+    }
+    if (result.kind === 'duplicate') {
+      err.error('kookr-spawn: server still reported a duplicate after confirmation.');
+      return exit(EXIT_SERVER_ERROR);
+    }
   }
 
   out.log(formatSuccess({ task: result.task, baseUrl, queued: result.queued }));
@@ -482,6 +620,7 @@ if (isInvokedDirectly()) {
 
 export {
   CLI_VERSION,
+  EXIT_DUPLICATE_BLOCKED,
   EXIT_NO_SERVER,
   EXIT_OK,
   EXIT_SERVER_ERROR,

@@ -1251,6 +1251,92 @@ describe('createKookrServer', () => {
       expect(matchingTasks).toHaveLength(1);
     });
 
+    test('POST /api/tasks can bypass duplicate dedup with explicit duplicate intent', async () => {
+      const res1 = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
+        body: JSON.stringify({ prompt: 'Keep duplicate', cwd: '/cwd' }),
+      });
+      expect(res1.status).toBe(201);
+      const first = await res1.json();
+
+      const res2 = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
+        body: JSON.stringify({
+          prompt: 'Keep duplicate',
+          cwd: '/cwd',
+          disableDedup: true,
+          metadata: { intent: 'keep_as_duplicate' },
+        }),
+      });
+      expect(res2.status).toBe(201);
+      const second = await res2.json();
+      expect(second.id).not.toBe(first.id);
+      expect(second.metadata).toEqual({ intent: 'keep_as_duplicate' });
+
+      const listRes = await fetch(`${baseUrl}/api/tasks`);
+      const tasks = await listRes.json();
+      const matchingTasks = tasks.filter((t: any) => t.prompt === 'Keep duplicate');
+      expect(matchingTasks).toHaveLength(2);
+    });
+
+    test('POST /api/tasks rejects unmarked duplicate bypass requests', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
+        body: JSON.stringify({
+          prompt: 'Unmarked duplicate bypass',
+          cwd: '/cwd',
+          disableDedup: true,
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('disableDedup requires metadata.intent');
+    });
+
+    test.each([
+      {
+        name: 'non-boolean disableDedup',
+        payload: { disableDedup: 'true' },
+        expectedError: 'disableDedup must be a boolean',
+      },
+      {
+        name: 'non-object metadata',
+        payload: { metadata: 'keep_as_duplicate' },
+        expectedError: 'metadata must be an object',
+      },
+      {
+        name: 'array metadata',
+        payload: { metadata: [] },
+        expectedError: 'metadata must be an object',
+      },
+      {
+        name: 'invalid metadata intent',
+        payload: { metadata: { intent: 'other_intent' } },
+        expectedError: 'metadata.intent must be "keep_as_duplicate"',
+      },
+      {
+        name: 'duplicate intent without disableDedup',
+        payload: { metadata: { intent: 'keep_as_duplicate' } },
+        expectedError: 'metadata.intent "keep_as_duplicate" requires disableDedup true',
+      },
+    ])('POST /api/tasks rejects invalid duplicate metadata: $name', async ({ payload, expectedError }) => {
+      const res = await fetch(`${baseUrl}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
+        body: JSON.stringify({
+          prompt: `Invalid duplicate metadata: ${expectedError}`,
+          cwd: '/cwd',
+          ...payload,
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain(expectedError);
+    });
+
     test('POST /api/tasks allows re-submission after task is completed', async () => {
       // Create and complete a task
       const res1 = await fetch(`${baseUrl}/api/tasks`, {

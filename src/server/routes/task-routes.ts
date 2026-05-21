@@ -14,7 +14,7 @@ import { launchTask } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import type { LaunchDependency } from '../../core/playbook.js';
 import type { Task } from '../../core/tasks.js';
-import type { TaskDependencyEdge } from '../../shared/contracts/task.js';
+import type { TaskDependencyEdge, TaskMetadataIntent } from '../../shared/contracts/task.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -253,6 +253,8 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         criteria?: string;
         parentTaskId?: string;
         agentType?: string;
+        disableDedup?: unknown;
+        metadata?: unknown;
         dependencies?: unknown;
       };
 
@@ -270,6 +272,19 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
           return c.json({ error: `Parent task not found: ${body.parentTaskId}` }, 404);
         }
       }
+      if (body.disableDedup !== undefined && typeof body.disableDedup !== 'boolean') {
+        return c.json({ error: 'disableDedup must be a boolean' }, 400);
+      }
+      const metadataIntent = parseTaskMetadataIntent(body.metadata);
+      if (metadataIntent instanceof Error) {
+        return c.json({ error: metadataIntent.message }, 400);
+      }
+      if (body.disableDedup === true && metadataIntent !== 'keep_as_duplicate') {
+        return c.json({ error: 'disableDedup requires metadata.intent "keep_as_duplicate"' }, 400);
+      }
+      if (metadataIntent === 'keep_as_duplicate' && body.disableDedup !== true) {
+        return c.json({ error: 'metadata.intent "keep_as_duplicate" requires disableDedup true' }, 400);
+      }
 
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
@@ -280,6 +295,8 @@ export function registerTaskRoutes(app: Hono, deps: RouteDeps): void {
         criteria: body.criteria,
         parentTaskId: body.parentTaskId,
         agentType: body.agentType ? normalizeAgentSelection(body.agentType) : undefined,
+        disableDedup: body.disableDedup === true,
+        metadataIntent,
         dependencies: parseLaunchDependencies(body.dependencies),
         launchSource,
       });
@@ -599,6 +616,17 @@ function normalizeTaskEdge(raw: string, field: 'blocks' | 'blocked_by'): TaskDep
 
 function isCoordinatorDetectorId(value: unknown): value is 'declared_edge' | 'stale' | 'duplicate' | 'done_not_cleared' {
   return value === 'declared_edge' || value === 'stale' || value === 'duplicate' || value === 'done_not_cleared';
+}
+
+function parseTaskMetadataIntent(raw: unknown): TaskMetadataIntent | undefined | Error {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return new Error('metadata must be an object');
+  }
+  const intent = (raw as { intent?: unknown }).intent;
+  if (intent === undefined) return undefined;
+  if (intent === 'keep_as_duplicate') return intent;
+  return new Error('metadata.intent must be "keep_as_duplicate"');
 }
 
 function isAgentType(value: unknown): value is 'claude-code' | 'codex-cli' {

@@ -8,6 +8,7 @@ export const EXIT_OK: 0;
 export const EXIT_USER_ERROR: 2;
 export const EXIT_NO_SERVER: 3;
 export const EXIT_SERVER_ERROR: 4;
+export const EXIT_DUPLICATE_BLOCKED: 5;
 export const HELP_TEXT: string;
 
 export class UsageError extends Error {}
@@ -18,6 +19,7 @@ export interface ParsedArgs {
   cwd: string | null;
   agent: 'claude-code' | 'codex-cli' | null;
   criteria: string | null;
+  dedupe: 'warn' | 'block' | 'skip';
   promptFile: string | null;
   help: boolean;
 }
@@ -51,6 +53,8 @@ export interface PostTaskArgs {
   cwd: string;
   agent: 'claude-code' | 'codex-cli' | null;
   criteria: string | null;
+  disableDedup?: boolean;
+  metadataIntent?: 'keep_as_duplicate' | null;
 }
 
 export interface TaskPayload {
