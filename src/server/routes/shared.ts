@@ -39,6 +39,7 @@ import type { RelayConnectionManager } from '../relay-connection-manager.js';
 import type { ContactShareReadModel } from '../../core/contact-share.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sampler.js';
+import type { CollaborationDiagnostics } from '../../shared/contracts/collaboration-profile.js';
 
 /**
  * Phase A0 easy connection sharing config. The server always provides it;
@@ -155,6 +156,10 @@ export interface RouteDeps {
   remoteShare?: RemoteShareDeps;
   /** Phase 1 Contact Share recipient inbox/read-model. Optional in tests. */
   contactShare?: ContactShareReadModel;
+  /** Local-owner diagnostics for the private-network collaboration listener. */
+  collaborationDiagnostics?: {
+    get: () => Promise<CollaborationDiagnostics>;
+  };
   /** Phase B runtime relay connection manager. */
   relayConnection?: RelayConnectionManager;
   /** Shared LLM client used by optional AI-assisted diagnostics routes. */

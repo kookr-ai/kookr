@@ -5,6 +5,11 @@ import { evaluateShareMutationGuard, SHARE_CSRF_HEADER } from './share-routes.js
 import type { RouteDeps } from './shared.js';
 
 export function registerCollaborationPairingRoutes(app: Hono, deps: RouteDeps): void {
+  app.get('/api/collaboration/diagnostics', async (c) => {
+    if (!deps.collaborationDiagnostics) return c.json({ error: 'collaboration-diagnostics-not-configured' }, 404);
+    return c.json(await deps.collaborationDiagnostics.get());
+  });
+
   app.post('/api/collaboration/pairing/verify', async (c) => {
     const csrfToken = deps.remoteShare?.csrfToken;
     if (!csrfToken) return c.json({ error: 'share-csrf-not-configured' }, 500);

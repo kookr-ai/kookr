@@ -66,9 +66,18 @@ import { createRealtimeServices } from './bootstrap/create-realtime-services.js'
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
-import { startConfiguredPrivateNetworkCollaborationListener } from './collaboration-listener.js';
+import {
+  buildCollaborationDiagnostics,
+  startConfiguredPrivateNetworkCollaborationListener,
+  type CollaborationListenerHandle,
+} from './collaboration-listener.js';
 import { startPrivateNetworkSharedTaskUpdatePoller } from './collaboration-update-poller.js';
+import { readPrivateNetworkCollaborationConfig } from './collaboration-config.js';
 import { projectTaskForRemoteShare } from './share-projection.js';
+import { CollaborationAuditLog } from './collaboration-audit-log.js';
+import { ContactIdentityStore } from './contact-identity-store.js';
+import { CollaborationShareStore } from './collaboration-share-store.js';
+import type { CollaborationAuthFailureDiagnostic } from '../shared/contracts/collaboration-profile.js';
 import { configureRemoteCommandHandler } from './remote-command-handler.js';
 import type { RemoteNodeClient } from '../remote/node-client.js';
 import type { CommandJournal } from '../remote/command-journal.js';
@@ -982,6 +991,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const findingEvidenceReviewSamplerConfig = readFindingEvidenceReviewSamplerConfigFromEnv(process.env);
   const contactShare = new ContactShareReadModel();
   let privateNetworkNodeId: NodeId | null = null;
+  let collaborationListenerForDiagnostics: CollaborationListenerHandle | null = null;
+  let privateNetworkLastAuthFailure: CollaborationAuthFailureDiagnostic | undefined;
+  const privateNetworkAuditLog = new CollaborationAuditLog({
+    kookrDir,
+    ownerNodeId: () => {
+      privateNetworkNodeId ??= getOrCreatePrivateNetworkNodeId(kookrDir);
+      return privateNetworkNodeId;
+    },
+  });
   const findingEvidenceReviewSampler = new FindingEvidenceReviewSampler({
     candidateReader: {
       listReviewCandidates: (limit) => monitor.getFindingEvidenceReviewCandidates(limit),
@@ -1011,6 +1029,32 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     findingEvidenceReviewSampler,
     remoteShare, relayConnection,
     contactShare,
+    collaborationDiagnostics: {
+      get: async () => {
+        const config = collaborationListenerForDiagnostics?.config ?? readPrivateNetworkCollaborationConfig({
+          env: process.env,
+          dashboardHost: host,
+          dashboardPort: port,
+        });
+        const identityStore = new ContactIdentityStore({ kookrDir, auditLog: privateNetworkAuditLog });
+        const shareStore = new CollaborationShareStore({
+          kookrDir,
+          auditLog: privateNetworkAuditLog,
+          taskExists: (taskId) => Boolean(taskStore.getTask(taskId)),
+        });
+        await identityStore.load();
+        await shareStore.load();
+        return buildCollaborationDiagnostics({
+          config,
+          listenerStatus: collaborationListenerForDiagnostics?.status ?? 'disabled',
+          trust: identityStore.diagnostics(),
+          shares: shareStore.diagnostics(),
+          audit: privateNetworkAuditLog.status(),
+          ...(privateNetworkLastAuthFailure ? { lastAuthFailure: privateNetworkLastAuthFailure } : {}),
+          now: () => new Date(),
+        });
+      },
+    },
     shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
@@ -1183,6 +1227,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     dashboardHost: host,
     dashboardPort: port,
     kookrDir,
+    auditLog: privateNetworkAuditLog,
+    recordAuthFailure: (failure) => {
+      privateNetworkLastAuthFailure = failure;
+    },
     taskExists: (taskId) => Boolean(taskStore.getTask(taskId)),
     projectTaskForShare: (taskId) => {
       const task = taskStore.getTask(taskId);
@@ -1194,6 +1242,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       });
     },
   });
+  collaborationListenerForDiagnostics = collaborationListener;
   const collaborationUpdatePoller = startPrivateNetworkSharedTaskUpdatePoller({
     config: collaborationListener.config,
     env: process.env,
