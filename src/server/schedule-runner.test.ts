@@ -21,6 +21,7 @@ describe('ScheduleRunner', () => {
   let taskIdCounter: number;
   let activeTaskIds: Set<string>;
   let activeCount: number;
+  let runners: Set<ScheduleRunner>;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'runner-test-'));
@@ -31,6 +32,7 @@ describe('ScheduleRunner', () => {
     taskIdCounter = 0;
     activeTaskIds = new Set();
     activeCount = 0;
+    runners = new Set();
 
     await mkdir(join(dir, '.kookr', 'playbooks'), { recursive: true });
     await writeFile(join(dir, '.kookr', 'playbooks', 'test.md'), `---
@@ -46,12 +48,13 @@ Do the test thing.
   });
 
   afterEach(async () => {
+    await Promise.all([...runners].map((runner) => runner.stop()));
     delete process.env.KOOKR_NO_CATCHUP;
     await rm(dir, { recursive: true, force: true });
   });
 
   function createRunner(overrides: Partial<ScheduleRunnerDeps> = {}) {
-    return new ScheduleRunner({
+    const runner = new ScheduleRunner({
       store,
       service,
       validator,
@@ -67,6 +70,8 @@ Do the test thing.
       isTaskBlockingSchedule: (taskId) => activeTaskIds.has(taskId),
       ...overrides,
     });
+    runners.add(runner);
+    return runner;
   }
 
   function replaceSchedule(id: string, patch: Partial<ReturnType<ScheduleStore['get']> extends infer T ? NonNullable<T> : never>) {
@@ -357,7 +362,7 @@ Do the test thing.
     await vi.waitFor(() => {
       expect(launched).toHaveLength(1);
     });
-    runner.stop();
+    await runner.stop();
 
     expect(service.getStatusSnapshot().catchUpEnabled).toBe(true);
     expect(store.get(schedule.id)!.executionLedger[0]).toEqual(expect.objectContaining({
@@ -382,7 +387,7 @@ Do the test thing.
     await vi.waitFor(() => {
       expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_stale');
     });
-    runner.stop();
+    await runner.stop();
 
     expect(launched).toHaveLength(0);
     expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('stale_catch_up');
@@ -396,6 +401,48 @@ Do the test thing.
         scheduledFor: expect.any(String),
       }),
     ]);
+  });
+
+  it('waits for in-flight catch-up work on stop', async () => {
+    const schedule = store.create({
+      name: 'PendingCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    let releaseLaunch!: () => void;
+    let launchStarted = false;
+    const launchBlocked = new Promise<{ task: { id: string }; queued: boolean }>((resolve) => {
+      releaseLaunch = () => resolve({ task: { id: 'task-1' }, queued: false });
+    });
+    const runner = createRunner({
+      launcher: async () => {
+        launchStarted = true;
+        return launchBlocked;
+      },
+    });
+
+    runner.start();
+    await vi.waitFor(() => {
+      expect(launchStarted).toBe(true);
+    });
+
+    let stopped = false;
+    const stopPromise = runner.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(stopped).toBe(false);
+
+    releaseLaunch();
+    await stopPromise;
+
+    expect(stopped).toBe(true);
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
   });
 
   it('skips catch-up when KOOKR_NO_CATCHUP is set', async () => {
@@ -413,7 +460,7 @@ Do the test thing.
     const runner = createRunner();
     runner.start();
     await new Promise((resolve) => setTimeout(resolve, 50));
-    runner.stop();
+    await runner.stop();
 
     expect(launched).toHaveLength(0);
     expect(service.getStatusSnapshot().catchUpEnabled).toBe(false);

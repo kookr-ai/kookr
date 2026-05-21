@@ -28,7 +28,7 @@ export interface BackgroundServicesDeps {
 export interface BackgroundServices {
   timerHandles: TimerHandles;
   startAfterListen(): void;
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 export function startBackgroundServices(deps: BackgroundServicesDeps): BackgroundServices {
@@ -57,9 +57,9 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
       deps.scheduleRunner.start();
       deps.findingEvidenceReviewSampler?.start();
     },
-    stop(): void {
+    async stop(): Promise<void> {
       clearAllTimers(timerHandles);
-      deps.scheduleRunner.stop();
+      await deps.scheduleRunner.stop();
       deps.githubScanner.stop();
       deps.resourceStatusService?.stop();
       deps.findingEvidenceReviewSampler?.stop();

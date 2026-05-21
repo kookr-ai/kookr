@@ -1179,7 +1179,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     if (isClosed) return;
     isClosed = true;
 
-    backgroundServices.stop();
+    await backgroundServices.stop();
 
     // Final save
     try {
