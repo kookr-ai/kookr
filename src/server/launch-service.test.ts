@@ -415,6 +415,22 @@ describe('launchTask', () => {
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
   });
 
+  it('can intentionally bypass active duplicate dedup and persist duplicate intent', async () => {
+    const first = await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
+    const second = await launchTask(deps, {
+      prompt: 'hello',
+      cwd: '/tmp',
+      disableDedup: true,
+      metadataIntent: 'keep_as_duplicate',
+    });
+
+    expect(second.duplicate).toBeUndefined();
+    expect(second.task.id).not.toBe(first.task.id);
+    expect(second.task.metadata).toEqual({ intent: 'keep_as_duplicate' });
+    expect(store.getTask(second.task.id)?.metadata).toEqual({ intent: 'keep_as_duplicate' });
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledTimes(2);
+  });
+
   it('bypasses and reconciles a stale inProgress duplicate whose session is gone', async () => {
     const existing = store.createTask({ prompt: 'hello', cwd: '/tmp' });
     store.addSession(existing.id, {

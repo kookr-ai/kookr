@@ -32,6 +32,16 @@ kookr-spawn --prompt-file /tmp/prompt.md
 
 `--prompt-file` is the safest form inside Claude Code sessions because hooks inspect the bash command line, not the file contents.
 
+Duplicate prompt handling:
+
+```bash
+kookr-spawn --dedupe=warn "fix the auth bug"   # default: prompt on active duplicate; blocks when non-interactive
+kookr-spawn --dedupe=block "fix the auth bug"  # exit 5 on active duplicate
+kookr-spawn --dedupe=skip "fix the auth bug"   # create intentionally and suppress duplicate-cluster findings
+```
+
+In interactive `warn` mode, `show diff` prints the stored active prompt against the requested prompt before asking again.
+
 ## Hook-Safe Prompts
 
 Claude Code PreToolUse hooks may block commands whose argv contains strings such as `gh pr create`, `git push --force`, or `rm -rf`.

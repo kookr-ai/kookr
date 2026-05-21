@@ -11,6 +11,7 @@ import {
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { LaunchDependency } from '../core/playbook.js';
+import type { TaskMetadataIntent } from '../shared/contracts/task.js';
 import {
   redactDiagnosticText,
   type DependencyPreflightRunner,
@@ -88,6 +89,8 @@ export interface LaunchOpts {
   agentType?: AgentSelection;
   /** When true, always create a new task instead of returning an existing active duplicate. */
   disableDedup?: boolean;
+  /** Explicit operator intent for duplicate-preserving launches. */
+  metadataIntent?: TaskMetadataIntent;
   /** Explicit project ID (e.g., github.com/owner/repo) — skips CWD-based inference. */
   projectId?: string;
   /** Where the launch came from — for server-side log provenance. Default: 'api'. */
@@ -319,6 +322,7 @@ export async function launchTask(
     playbookId: opts.playbookId,
     projectId: opts.projectId,
     playbookParameterValues: opts.playbookParameterValues,
+    metadata: opts.metadataIntent ? { intent: opts.metadataIntent } : undefined,
     launchHealthSummary,
     launchNote,
   });
