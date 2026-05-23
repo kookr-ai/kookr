@@ -10,7 +10,7 @@ cd kookr
 pnpm install
 ```
 
-`pnpm install` runs the `prepare` script, which configures the repo pre-push hook path and builds the vendored dtach binary.
+`pnpm install` runs the `prepare` script, which configures the repo pre-push hook path and builds the vendored dtach binary. As a second line of defense, `pnpm dev` and `pnpm start` also build the dtach binary on demand (idempotent, ~50ms when already present), so the dev loop still works if `prepare` was skipped — e.g., under `ignore-scripts=true` in `~/.npmrc`, after a `git pull` that added the prepare hook, or after a partial install. See [RFC: Self-Healing Dev/Start Scripts](rfc/rfc-dev-dtach-onboarding.md).
 
 ## Common Commands
 
