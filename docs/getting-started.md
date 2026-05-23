@@ -47,6 +47,8 @@ Open `http://localhost:5173`.
 
 `pnpm dev` starts the backend on port `4801` and the Vite frontend on port `5173`. Port `4800` is reserved for the stable production-style instance described below.
 
+`pnpm dev` also builds the vendored dtach binary on demand if it is not already present (idempotent, fast when cached), so the first run works even if `pnpm install`'s `prepare` hook was skipped (e.g., under `ignore-scripts=true`).
+
 ## First Agent
 
 1. Open the dashboard.

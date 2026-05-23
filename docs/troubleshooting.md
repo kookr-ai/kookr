@@ -62,10 +62,12 @@ Set `KOOKR_PORT` or stop the conflicting process. `pnpm doctor` reports common c
 
 Kookr requires the dtach backend. The old tmux backend has been removed.
 
-Run:
+`pnpm dev` and `pnpm start` build the vendored dtach binary on demand, so you should not normally need to run `pnpm build:dtach` directly. If the auto-build fails (typically missing `cc`/`make`/`git`), install the build toolchain first — see [Getting Started](getting-started.md#prerequisites) — and the next `pnpm dev` will pick it up.
+
+To force a rebuild from a clean state:
 
 ```bash
-pnpm build:dtach
+pnpm build:dtach --force
 ```
 
 If `KOOKR_BACKEND=tmux` exists in your environment or `.env`, remove it. Any value except `dtach` now fails startup.
