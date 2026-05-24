@@ -9,6 +9,7 @@ import { detectAnomalies, evaluateAnomalies } from './anomaly-detector.js';
 import { deriveTurnState } from './turn-state.js';
 import { projectDisplayLabel } from './project-identity.js';
 import { normalizeTerminalWorktreeHealth } from './worktree-health.js';
+import { displayPromptForTask } from './prompt-display.js';
 import {
   recordDetectionCheck,
   recordDetectionFire,
@@ -71,7 +72,7 @@ export interface AgentState {
 interface SessionSnapshotMeta {
   taskId: string;
   name?: string;
-  prompt: string;
+  displayPrompt: string;
   cwd: string;
   agentType: import('./agent-types.js').AgentType;
   createdAt: Date;
@@ -543,7 +544,7 @@ export class Monitor {
         sessionIndex.set(session.tmuxSession, {
           taskId: task.id,
           name: task.name,
-          prompt: task.prompt,
+          displayPrompt: displayPromptForTask(task),
           cwd: session.cwd,
           agentType: session.agentType,
           createdAt: session.createdAt,
@@ -604,8 +605,8 @@ export class Monitor {
 
       if (meta) {
         state.taskId = meta.taskId;
-        state.taskName = meta.name ?? truncatePrompt(meta.prompt, 60);
-        state.description = meta.prompt;
+        state.taskName = meta.name ?? truncatePrompt(meta.displayPrompt, 60);
+        state.description = meta.displayPrompt;
         state.cwd = meta.cwd;
         state.agentType = meta.agentType;
         state.startedAt = meta.createdAt.toISOString();
@@ -646,13 +647,13 @@ export class Monitor {
           events: [],
           anomaly: null,
           taskId: task.id,
-          taskName: task.name ?? truncatePrompt(task.prompt, 60),
+          taskName: task.name ?? truncatePrompt(displayPromptForTask(task), 60),
           taskStatus: 'pending',
           parentTaskId: task.parentTaskId,
           childTaskIds: task.childTaskIds,
           blocks: task.blocks,
           blocked_by: task.blocked_by,
-          description: task.prompt,
+          description: displayPromptForTask(task),
           cwd: task.cwd,
           agentType: task.agentType,
           startedAt: task.createdAt.toISOString(),
@@ -677,13 +678,13 @@ export class Monitor {
             events: [],
             anomaly: null,
             taskId: task.id,
-            taskName: task.name ?? truncatePrompt(task.prompt, 60),
+            taskName: task.name ?? truncatePrompt(displayPromptForTask(task), 60),
             taskStatus: task.status,
             parentTaskId: task.parentTaskId,
             childTaskIds: task.childTaskIds,
             blocks: task.blocks,
             blocked_by: task.blocked_by,
-            description: task.prompt,
+            description: displayPromptForTask(task),
             cwd: lastSession?.cwd ?? task.cwd,
             agentType: lastSession?.agentType ?? task.agentType,
             startedAt: task.createdAt.toISOString(),

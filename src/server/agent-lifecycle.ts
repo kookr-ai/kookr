@@ -13,6 +13,7 @@ import { MAX_ACTIVE_TASKS } from './config.js';
 import { cleanupTaskWorktrees } from '../adapters/git-worktree.js';
 import { getProjectId, deriveCanonicalPath } from '../core/project-identity.js';
 import { isMissingWorktreeHealth } from '../core/worktree-health.js';
+import { displayPromptForTask } from '../core/prompt-display.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 
@@ -76,7 +77,7 @@ export async function registerNewAgent(task: Task, deps: AgentLifecycleDeps): Pr
 
   // AI-generate a short task name (skip if task already has a name, e.g., playbooks)
   if (!task.name) {
-    autoNameTask(task.id, task.prompt, task.cwd, task.criteria);
+    autoNameTask(task.id, displayPromptForTask(task), task.cwd, task.criteria);
   }
 
   // Resolve project identity (fire-and-forget — non-blocking).

@@ -19,6 +19,12 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 
 `e2e/accessibility-smoke.spec.ts` adds axe-backed structural scans for the dashboard shell and core dialogs. It disables axe's `color-contrast` rule because the existing dark theme has broad contrast debt that would make the smoke layer noisy; do not add broader suppressions without documenting the reason here.
 
+## Focused Regression Coverage
+
+Some UI regressions are covered below the Playwright layer because they are data-shaping or component-lifecycle bugs:
+
+- Prompt display hygiene: `src/server/launch-service.test.ts` verifies launches preserve the user-authored prompt separately from injected worktree guidance, `src/core/monitor.test.ts` verifies snapshots expose display-safe prompt text for both new and legacy tasks, and `src/frontend/components/Tooltip.test.ts` verifies hidden tooltip portals do not keep long prompt text mounted.
+
 ## CI Mapping
 
 | Workflow | Triggers | Jobs |

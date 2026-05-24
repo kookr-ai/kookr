@@ -92,6 +92,7 @@ export class TaskStore {
       : promptOrOpts;
     const {
       prompt,
+      userPrompt,
       cwd,
       criteria,
       parentTaskId,
@@ -114,6 +115,7 @@ export class TaskStore {
     const task: Task = {
       id: randomUUID(),
       prompt,
+      userPrompt,
       cwd,
       criteria,
       agentType: agentType ?? DEFAULT_AGENT_TYPE,

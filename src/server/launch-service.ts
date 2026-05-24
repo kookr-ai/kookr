@@ -283,6 +283,7 @@ export async function launchTask(
   const launchHealthSummary = summarizeLaunchHealth(dependencyFindings);
   const launchNote = formatLaunchNote(dependencyFindings);
 
+  const userPrompt = normalizePromptFileReferences(opts.prompt, opts.cwd);
   const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd);
   const effectivePrompt = normalizePromptFileReferences(guardedPrompt, opts.cwd);
 
@@ -314,6 +315,7 @@ export async function launchTask(
 
   const task = taskStore.createTask({
     prompt: effectivePrompt,
+    userPrompt,
     cwd: opts.cwd,
     criteria: opts.criteria,
     parentTaskId: opts.parentTaskId,
