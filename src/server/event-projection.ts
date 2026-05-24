@@ -31,6 +31,9 @@ export const LAST_MESSAGE_MAX_BYTES = 4 * 1024;
  */
 export const DESCRIPTOR_KEYS = ['file_path', 'command', 'pattern', 'url', 'prompt'] as const;
 
+const SUBAGENT_TOOL_NAMES = new Set(['Agent', 'Task', 'spawn_agent']);
+const SUBAGENT_PROMPT_KEYS = new Set(['prompt', 'instructions']);
+
 export function projectEventForClient(event: AgentEvent): AgentEvent {
   switch (event.type) {
     case 'tool_result': {
@@ -50,17 +53,33 @@ export function projectEventForClient(event: AgentEvent): AgentEvent {
   }
 }
 
-function projectWithToolInput<E extends AgentEvent & { toolInput?: unknown }>(event: E): E {
-  const { toolInput } = event;
+function projectWithToolInput<E extends AgentEvent & { toolName: string; toolInput?: unknown }>(event: E): E {
+  const toolInput = redactSubagentPromptInput(event.toolName, event.toolInput);
   if (toolInput === undefined || toolInput === null) return event;
 
   const serialized = JSON.stringify(toolInput);
-  if (serialized.length <= TOOL_INPUT_MAX_BYTES) return event;
+  if (serialized.length <= TOOL_INPUT_MAX_BYTES) {
+    return toolInput === event.toolInput ? event : { ...event, toolInput };
+  }
 
   return { ...event, toolInput: truncateToolInput(toolInput, serialized.length) };
 }
 
-/** Per-descriptor-value cap: prevents a single large descriptor (e.g. Agent `prompt`)
+function redactSubagentPromptInput(toolName: string, toolInput: unknown): unknown {
+  if (!SUBAGENT_TOOL_NAMES.has(toolName)) return toolInput;
+  if (toolInput === null || typeof toolInput !== 'object' || Array.isArray(toolInput)) return toolInput;
+
+  const obj = toolInput as Record<string, unknown>;
+  let redacted: Record<string, unknown> | undefined;
+  for (const key of SUBAGENT_PROMPT_KEYS) {
+    if (!(key in obj)) continue;
+    redacted ??= { ...obj };
+    delete redacted[key];
+  }
+  return redacted ?? toolInput;
+}
+
+/** Per-descriptor-value cap: prevents a single large descriptor (e.g. tool `prompt`)
  *  from bypassing TOOL_INPUT_MAX_BYTES. Sized so that even every descriptor at its
  *  cap still fits within the overall budget. */
 const DESCRIPTOR_VALUE_MAX_BYTES = 256;
