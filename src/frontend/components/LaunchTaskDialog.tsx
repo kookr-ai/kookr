@@ -14,6 +14,7 @@ import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../../shared/contracts/worktree-protection.js';
+import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -42,9 +43,10 @@ interface Props {
   projectCwd?: string;
   /** Controls which launch surface is shown first when both manual and playbook context are valid. */
   initialTab?: Tab;
+  sttShortcutBinding?: ShortcutBinding;
 }
 
-export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext, projectCwd, initialTab: requestedInitialTab }: Props) {
+export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext, projectCwd, initialTab: requestedInitialTab, sttShortcutBinding }: Props) {
   const serverCwd = useKookrStore((s) => s.serverCwd);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
@@ -320,7 +322,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 />
                 {sttUrl && (
                   <Suspense fallback={null}>
-                    <VoiceInputButton inputId="launch-description" onTranscript={(text) => setPrompt(text)} />
+                    <VoiceInputButton inputId="launch-description" onTranscript={(text) => setPrompt(text)} shortcutBinding={sttShortcutBinding} />
                   </Suspense>
                 )}
               </div>
@@ -403,7 +405,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 />
                 {sttUrl && (
                   <Suspense fallback={null}>
-                    <VoiceInputButton inputId="launch-criteria" onTranscript={(text) => setCriteria(text)} />
+                    <VoiceInputButton inputId="launch-criteria" onTranscript={(text) => setCriteria(text)} shortcutBinding={sttShortcutBinding} />
                   </Suspense>
                 )}
               </div>

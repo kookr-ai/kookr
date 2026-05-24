@@ -1,5 +1,9 @@
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { DEFAULT_AGENT_TYPE, normalizeAgentSelection, type AgentSelection } from './agent-types.js';
+import {
+  validateShortcutBindingOverrides,
+  type PlatformShortcutBindingOverrides,
+} from '../shared/contracts/shortcut-bindings.js';
 
 export interface KookrSettings {
   githubPollingEnabled: boolean;
@@ -20,6 +24,11 @@ export interface KookrSettings {
    * round-robin launch so the alternation survives a server restart.
    */
   roundRobinIndex: number;
+  /**
+   * Sparse keyboard shortcut overrides by frontend platform bucket. Missing
+   * actions use platform defaults; empty/invalid values are ignored.
+   */
+  shortcutBindings: PlatformShortcutBindingOverrides;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -31,6 +40,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   maxActiveTasks: 10,
   defaultAgentType: DEFAULT_AGENT_TYPE,
   roundRobinIndex: 0,
+  shortcutBindings: {},
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -44,6 +54,10 @@ const MAX_ACTIVE_TASKS = 25;
 
 /** Validate and clamp a raw settings object, filling in defaults for missing/invalid values. */
 export function validateSettings(raw: Record<string, unknown>): KookrSettings {
+  return validateSettingsWithWarnings(raw).settings;
+}
+
+export function validateSettingsWithWarnings(raw: Record<string, unknown>): { settings: KookrSettings; warnings: string[] } {
   const enabled = typeof raw.githubPollingEnabled === 'boolean'
     ? raw.githubPollingEnabled
     : DEFAULT_SETTINGS.githubPollingEnabled;
@@ -86,21 +100,28 @@ export function validateSettings(raw: Record<string, unknown>): KookrSettings {
     roundRobinIndex = raw.roundRobinIndex;
   }
 
+  const shortcutValidation = validateShortcutBindingOverrides(raw.shortcutBindings);
+
   return {
-    githubPollingEnabled: enabled,
-    githubPollingIntervalSec: interval,
-    autoWatchOssSources,
-    watchdogStaleThresholdSec: staleThreshold,
-    repeatedErrorThreshold: errorThreshold,
-    maxActiveTasks: maxTasks,
-    defaultAgentType,
-    roundRobinIndex,
+    warnings: shortcutValidation.warnings,
+    settings: {
+      githubPollingEnabled: enabled,
+      githubPollingIntervalSec: interval,
+      autoWatchOssSources,
+      watchdogStaleThresholdSec: staleThreshold,
+      repeatedErrorThreshold: errorThreshold,
+      maxActiveTasks: maxTasks,
+      defaultAgentType,
+      roundRobinIndex,
+      shortcutBindings: shortcutValidation.overrides,
+    },
   };
 }
 
 export interface SettingsLoadResult {
   settings: KookrSettings;
   loadedFromDefaults: boolean;
+  warnings: string[];
 }
 
 /** Load settings from a JSON file. Returns defaults on missing/corrupt file. */
@@ -110,16 +131,17 @@ export async function loadSettings(filePath: string): Promise<SettingsLoadResult
     const parsed = JSON.parse(content);
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       console.warn(`[settings] Invalid settings file (not an object), using defaults`);
-      return { settings: { ...DEFAULT_SETTINGS }, loadedFromDefaults: true };
+      return { settings: { ...DEFAULT_SETTINGS }, loadedFromDefaults: true, warnings: [] };
     }
-    return { settings: validateSettings(parsed as Record<string, unknown>), loadedFromDefaults: false };
+    const validated = validateSettingsWithWarnings(parsed as Record<string, unknown>);
+    return { settings: validated.settings, loadedFromDefaults: false, warnings: validated.warnings };
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'ENOENT') {
       // File doesn't exist yet — normal on first run
-      return { settings: { ...DEFAULT_SETTINGS }, loadedFromDefaults: true };
+      return { settings: { ...DEFAULT_SETTINGS }, loadedFromDefaults: true, warnings: [] };
     }
     console.warn(`[settings] Failed to read settings file, using defaults:`, err instanceof Error ? err.message : err);
-    return { settings: { ...DEFAULT_SETTINGS }, loadedFromDefaults: true };
+    return { settings: { ...DEFAULT_SETTINGS }, loadedFromDefaults: true, warnings: [] };
   }
 }
 

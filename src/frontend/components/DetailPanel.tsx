@@ -15,6 +15,12 @@ import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../remote/s
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import { TaskDependencyEditor } from './TaskDependencyEditor.js';
 import { CoordinatorChainStripView } from './CoordinatorSurfaces.js';
+import {
+  detectShortcutPlatform,
+  getDefaultShortcutBindings,
+  type ShortcutBindingMap,
+} from '../../shared/contracts/shortcut-bindings.js';
+import { ShortcutKeys } from './ShortcutKeys.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -67,6 +73,11 @@ interface Props {
   onRequestComplete: () => void;
   collapsed?: boolean;
   terminalFocusMode?: boolean;
+  shortcutBindings?: ShortcutBindingMap;
+}
+
+function defaultShortcutBindings(): ShortcutBindingMap {
+  return getDefaultShortcutBindings(detectShortcutPlatform());
 }
 
 function EditableHeading({ agent, send }: { agent: AgentState; send: (msg: ClientMessage) => boolean }) {
@@ -224,7 +235,7 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapsed, terminalFocusMode = false }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapsed, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings() }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -401,9 +412,11 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           )}
           <button className="btn-primary" onClick={onLaunch}>Launch New Task</button>
           <p className="detail-empty-hint">
-            <kbd>Alt+L</kbd> quick launch
-            {(findingsCount > 0 || totalCount > 0) && <> · <kbd>Alt+J</kbd>/<kbd>K</kbd> cycle tasks</>}
-            {findingsCount > 0 && <> · <kbd>Alt+N</kbd> next finding</>}
+            <ShortcutKeys binding={shortcutBindings.quick_launch} /> quick launch
+            {(findingsCount > 0 || totalCount > 0) && (
+              <> · <ShortcutKeys binding={shortcutBindings.next_task} />/<ShortcutKeys binding={shortcutBindings.previous_task} /> cycle tasks</>
+            )}
+            {findingsCount > 0 && <> · <ShortcutKeys binding={shortcutBindings.next_bottleneck} /> next finding</>}
           </p>
         </div>
       </div>
@@ -907,7 +920,12 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           />
           {sttUrl && (
             <Suspense fallback={null}>
-              <VoiceInputButton inputId="response-input" onTranscript={(text) => setInput(text)} disabled={!agent} />
+              <VoiceInputButton
+                inputId="response-input"
+                onTranscript={(text) => setInput(text)}
+                disabled={!agent}
+                shortcutBinding={shortcutBindings.stt_toggle}
+              />
             </Suspense>
           )}
           <button

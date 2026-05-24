@@ -1,5 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { buildAgentSelectionOptions, type AgentSelection } from '../../shared/protocol.js';
+import {
+  SHORTCUT_ACTIONS,
+  detectShortcutPlatform,
+  findShortcutConflicts,
+  formatShortcutBinding,
+  getDefaultShortcutBindings,
+  resolveShortcutBindings,
+  type PlatformShortcutBindingOverrides,
+  type ShortcutActionId,
+} from '../../shared/contracts/shortcut-bindings.js';
 import { useSoundPreference } from '../audio/sound.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
@@ -23,7 +33,9 @@ interface ServerSettings {
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
   defaultAgentType: AgentSelection;
+  shortcutBindings: PlatformShortcutBindingOverrides;
   loadedFromDefaults?: boolean;
+  warnings?: string[];
 }
 
 /** Settings field to scroll-and-focus on open. */
@@ -31,6 +43,7 @@ export type SettingsFocusField = 'maxActiveTasks' | 'relayConnection';
 
 interface Props {
   onClose: () => void;
+  onSettingsSaved?: (settings: ServerSettings) => void;
   /**
    * If set, the matching input is scrolled into view and focused once
    * settings load. Lets callers deep-link straight to the relevant control
@@ -51,6 +64,8 @@ const FOCUS_FIELD_TAB: Record<SettingsFocusField, SettingsTab> = {
 };
 
 const SHARE_CSRF_HEADER = 'x-kookr-csrf';
+const SHORTCUT_PLATFORM = detectShortcutPlatform();
+const SHORTCUT_DEFAULTS = getDefaultShortcutBindings(SHORTCUT_PLATFORM);
 
 function relayStateLabel(status: RelayConnectionStatus | null): string {
   switch (status?.connectionState) {
@@ -499,7 +514,7 @@ function RelayConnectionSection() {
   );
 }
 
-export function SettingsDialog({ onClose, focusField }: Props) {
+export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) {
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
@@ -519,6 +534,8 @@ export function SettingsDialog({ onClose, focusField }: Props) {
   const maxActiveTasksInputRef = useRef<HTMLInputElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const didFocusRef = useRef(false);
+  const saveQueueRef = useRef(Promise.resolve());
+  const latestSaveIdRef = useRef(0);
 
   useDialogFocus({ dialogRef, initialFocusRef: closeButtonRef });
 
@@ -527,6 +544,7 @@ export function SettingsDialog({ onClose, focusField }: Props) {
       .then((r) => r.json())
       .then((data: ServerSettings) => {
         setSettings(data);
+        setWarnings(data.warnings ?? []);
         setLoading(false);
       })
       .catch((err) => {
@@ -553,28 +571,38 @@ export function SettingsDialog({ onClose, focusField }: Props) {
     }
   }, [focusField, settings]);
 
-  const saveSettings = useCallback(async (updated: ServerSettings) => {
-    try {
-      setError(null);
-      setWarnings([]);
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updated),
-      });
-      if (!res.ok) {
-        const body = await res.json() as { error?: string };
-        throw new Error(body.error || `HTTP ${res.status}`);
+  const saveSettings = useCallback((updated: ServerSettings) => {
+    const saveId = ++latestSaveIdRef.current;
+    setError(null);
+    setWarnings([]);
+
+    const run = async () => {
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updated),
+        });
+        if (!res.ok) {
+          const body = await res.json() as { error?: string };
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
+        const saved = await res.json() as ServerSettings & { warnings?: string[] };
+        if (saveId !== latestSaveIdRef.current) return;
+        setWarnings(saved.warnings ?? []);
+        setSettings(saved);
+        onSettingsSaved?.(saved);
+      } catch (err) {
+        if (saveId === latestSaveIdRef.current) {
+          setError(err instanceof Error ? err.message : 'Failed to save settings');
+        }
       }
-      const saved = await res.json() as ServerSettings & { warnings?: string[] };
-      if (saved.warnings && saved.warnings.length > 0) {
-        setWarnings(saved.warnings);
-      }
-      setSettings(saved);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save settings');
-    }
-  }, []);
+    };
+
+    const queued = saveQueueRef.current.catch(() => undefined).then(run);
+    saveQueueRef.current = queued.catch(() => undefined);
+    return queued;
+  }, [onSettingsSaved]);
 
   function handleToggle(field: keyof ServerSettings) {
     if (!settings) return;
@@ -608,6 +636,57 @@ export function SettingsDialog({ onClose, focusField }: Props) {
     sound.setEnabled(!sound.enabled);
   }
 
+  function updateShortcutOverride(actionId: ShortcutActionId, value: string) {
+    if (!settings) return;
+    const platformOverrides = { ...(settings.shortcutBindings?.[SHORTCUT_PLATFORM] ?? {}) };
+    if (value.trim() === '') {
+      delete platformOverrides[actionId];
+    } else {
+      platformOverrides[actionId] = value.trim();
+    }
+    const updated = {
+      ...settings,
+      shortcutBindings: {
+        ...(settings.shortcutBindings ?? {}),
+        [SHORTCUT_PLATFORM]: platformOverrides,
+      },
+    };
+    setSettings(updated);
+  }
+
+  function saveShortcutOverrides() {
+    if (!settings) return;
+    void saveSettings(settings);
+  }
+
+  function resetShortcut(actionId: ShortcutActionId) {
+    if (!settings) return;
+    const platformOverrides = { ...(settings.shortcutBindings?.[SHORTCUT_PLATFORM] ?? {}) };
+    delete platformOverrides[actionId];
+    const updated = {
+      ...settings,
+      shortcutBindings: {
+        ...(settings.shortcutBindings ?? {}),
+        [SHORTCUT_PLATFORM]: platformOverrides,
+      },
+    };
+    setSettings(updated);
+    void saveSettings(updated);
+  }
+
+  function resetAllShortcuts() {
+    if (!settings) return;
+    const updated = {
+      ...settings,
+      shortcutBindings: {
+        ...(settings.shortcutBindings ?? {}),
+        [SHORTCUT_PLATFORM]: {},
+      },
+    };
+    setSettings(updated);
+    void saveSettings(updated);
+  }
+
   function handleTabKeyDown(tab: SettingsTab, event: React.KeyboardEvent<HTMLButtonElement>) {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
@@ -620,6 +699,11 @@ export function SettingsDialog({ onClose, focusField }: Props) {
   }
 
   useEscapeToClose(onClose);
+  const shortcutOverrides = settings?.shortcutBindings?.[SHORTCUT_PLATFORM] ?? {};
+  const resolvedShortcuts = settings
+    ? resolveShortcutBindings(SHORTCUT_PLATFORM, settings.shortcutBindings)
+    : SHORTCUT_DEFAULTS;
+  const shortcutConflicts = findShortcutConflicts(resolvedShortcuts);
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
@@ -802,6 +886,70 @@ export function SettingsDialog({ onClose, focusField }: Props) {
                         />
                       </div>
                     </div>
+                  </div>
+
+                  {/* Keyboard Shortcuts */}
+                  <div className="settings-section">
+                    <div className="settings-section-title">Keyboard Shortcuts</div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Platform defaults</span>
+                        <span className="settings-desc">
+                          Editing {SHORTCUT_PLATFORM === 'mac' ? 'macOS' : 'Linux/Windows'} shortcuts.
+                          Leave a field empty to use its default binding.
+                        </span>
+                        {shortcutConflicts.length > 0 && (
+                          <span className="settings-hint">
+                            Conflicts: {shortcutConflicts.map((conflict) => `${conflict.binding} (${conflict.actionIds.join(', ')})`).join('; ')}
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        className="settings-button"
+                        onClick={resetAllShortcuts}
+                      >
+                        Reset all
+                      </button>
+                    </div>
+                    {SHORTCUT_ACTIONS.map((action) => (
+                      <div className="settings-row" key={action.id}>
+                        <div className="settings-row-info">
+                          <span className="settings-label">{action.label}</span>
+                          <span className="settings-desc">
+                            Default: {formatShortcutBinding(SHORTCUT_DEFAULTS[action.id])}
+                            {' · '}
+                            Active: {formatShortcutBinding(resolvedShortcuts[action.id])}
+                          </span>
+                        </div>
+                        <div className="settings-shortcut-controls">
+                          <input
+                            type="text"
+                            className="settings-shortcut-input"
+                            aria-label={`${action.label} shortcut`}
+                            value={shortcutOverrides[action.id] ?? ''}
+                            placeholder={formatShortcutBinding(SHORTCUT_DEFAULTS[action.id])}
+                            onChange={(e) => updateShortcutOverride(action.id, e.target.value)}
+                            onBlur={saveShortcutOverrides}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                saveShortcutOverrides();
+                                (e.currentTarget as HTMLInputElement).blur();
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="settings-button secondary"
+                            aria-label={`Reset ${action.label} shortcut to default`}
+                            onClick={() => resetShortcut(action.id)}
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
                   {/* GitHub Polling */}

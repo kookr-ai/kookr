@@ -6949,6 +6949,49 @@ button.project-drawer-link:focus-visible {
   flex-shrink: 0;
 }
 
+.settings-shortcut-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.settings-shortcut-input {
+  width: 132px;
+  min-height: 30px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text-bright);
+  font-size: 12px;
+  padding: 5px 8px;
+  font-family: var(--font-mono);
+}
+
+.settings-shortcut-input:focus {
+  outline: none;
+  border-color: var(--teal);
+}
+
+.settings-button {
+  min-height: 30px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-bright);
+  font-size: 12px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.settings-button:hover {
+  border-color: var(--teal);
+}
+
+.settings-button.secondary {
+  color: var(--text-muted);
+}
+
 .settings-unit {
   font-size: 12px;
   color: var(--text-muted);

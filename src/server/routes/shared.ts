@@ -112,6 +112,7 @@ export interface RouteDeps {
   settings?: {
     get: () => KookrSettings;
     getLoadedFromDefaults: () => boolean;
+    getLoadWarnings?: () => string[];
     update: (settings: KookrSettings) => Promise<string[]>;
   };
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */

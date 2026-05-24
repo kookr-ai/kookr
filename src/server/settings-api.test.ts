@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
@@ -17,8 +17,7 @@ describe('Settings API', () => {
   let server: KookrServerInternal;
   let baseUrl: string;
 
-  beforeEach(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'kookr-settings-test-'));
+  async function startServer() {
     server = await createKookrServerInternal({
       port: 0,
       host: '127.0.0.1',
@@ -33,10 +32,19 @@ describe('Settings API', () => {
       terminalBackend: new FakeTerminalBackend(),
     });
     baseUrl = `http://127.0.0.1:${getActualPort(server)}`;
+  }
+
+  async function stopServer() {
+    await server.close();
+  }
+
+  beforeEach(async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'kookr-settings-test-'));
+    await startServer();
   });
 
   afterEach(async () => {
-    await server.close();
+    await stopServer();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -53,7 +61,9 @@ describe('Settings API', () => {
       maxActiveTasks: 10,
       defaultAgentType: 'claude-code',
       roundRobinIndex: 0,
+      shortcutBindings: {},
       loadedFromDefaults: true,
+      warnings: [],
     });
   });
 
@@ -65,6 +75,9 @@ describe('Settings API', () => {
         githubPollingEnabled: false,
         githubPollingIntervalSec: 120,
         defaultAgentType: 'codex-cli',
+        shortcutBindings: {
+          mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
+        },
       }),
     });
     expect(res.status).toBe(200);
@@ -72,6 +85,9 @@ describe('Settings API', () => {
     expect(data.githubPollingEnabled).toBe(false);
     expect(data.githubPollingIntervalSec).toBe(120);
     expect(data.defaultAgentType).toBe('codex-cli');
+    expect(data.shortcutBindings).toEqual({
+      mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
+    });
     expect(data.warnings).toEqual([]);
 
     // Verify persisted to file
@@ -79,6 +95,9 @@ describe('Settings API', () => {
     expect(fileContent.githubPollingEnabled).toBe(false);
     expect(fileContent.githubPollingIntervalSec).toBe(120);
     expect(fileContent.defaultAgentType).toBe('codex-cli');
+    expect(fileContent.shortcutBindings).toEqual({
+      mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
+    });
   });
 
   test('PUT /api/settings clamps out-of-range interval', async () => {
@@ -135,6 +154,52 @@ describe('Settings API', () => {
     expect(data.githubPollingEnabled).toBe(false);
     // Unknown keys are stripped
     expect(data.unknownSetting).toBeUndefined();
+  });
+
+  test('PUT /api/settings validates shortcut bindings with warnings', async () => {
+    const res = await fetch(`${baseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shortcutBindings: {
+          mac: {
+            next_bottleneck: 'Cmd+Ctrl+Space',
+            quick_launch: 'Cmd+Ctrl+Space',
+            previous_task: 'Ctrl+N+K',
+          },
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.shortcutBindings).toEqual({
+      mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
+    });
+    expect(data.warnings).toEqual([
+      'Shortcut "quick_launch" in mac bindings conflicts with "next_bottleneck" on Cmd+Ctrl+Space; ignored',
+      'Shortcut "previous_task" in mac bindings has invalid binding "Ctrl+N+K"; ignored',
+    ]);
+  });
+
+  test('GET /api/settings surfaces shortcut validation warnings from hand-edited settings file', async () => {
+    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({
+      shortcutBindings: {
+        darwin: { next_bottleneck: 'Cmd+Ctrl+Space' },
+        mac: { quick_launch: 'N' },
+      },
+    }));
+
+    await stopServer();
+    await startServer();
+
+    const res = await fetch(`${baseUrl}/api/settings`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.shortcutBindings).toEqual({ mac: {} });
+    expect(data.warnings).toEqual([
+      'Unknown shortcut platform "darwin" was ignored',
+      'Shortcut "quick_launch" in mac bindings has invalid binding "N"; ignored',
+    ]);
   });
 
   test('PUT /api/settings rejects invalid defaultAgentType to the safe default', async () => {

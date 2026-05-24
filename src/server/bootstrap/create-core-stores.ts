@@ -46,6 +46,7 @@ export interface CoreStores {
   settingsFile: string;
   currentSettings: KookrSettings;
   settingsLoadedFromDefaults: boolean;
+  settingsLoadWarnings: string[];
   circuitBreakerRegistry: CircuitBreakerRegistry;
   llmBreaker: CircuitBreaker;
   githubBreaker: CircuitBreaker;
@@ -178,6 +179,7 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
     settingsFile,
     currentSettings,
     settingsLoadedFromDefaults: settingsResult.loadedFromDefaults,
+    settingsLoadWarnings: settingsResult.warnings,
     circuitBreakerRegistry,
     llmBreaker,
     githubBreaker,

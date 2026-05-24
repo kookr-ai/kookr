@@ -209,6 +209,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const coordinatorSuppressions = new CoordinatorSuppressionStore(kookrDir);
   let currentSettings = coreStores.currentSettings;
   let settingsLoadedFromDefaults = coreStores.settingsLoadedFromDefaults;
+  let settingsLoadWarnings = coreStores.settingsLoadWarnings;
   const {
     interactionLog,
     telemetryLog,
@@ -1099,6 +1100,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     settings: {
       get: () => currentSettings,
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,
+      getLoadWarnings: () => settingsLoadWarnings,
       update: async (newSettings: KookrSettings) => {
         const prev = currentSettings;
         // `roundRobinIndex` is server-managed — advanced per launch by the
@@ -1123,6 +1125,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         });
         currentSettings = { ...newSettings, roundRobinIndex: currentSettings.roundRobinIndex };
         settingsLoadedFromDefaults = false;
+        settingsLoadWarnings = [];
         // applySettingsSideEffects wrote `merged` to disk, but a launch may
         // have advanced the cursor during the await above — that snapshot's
         // `roundRobinIndex` is then stale. Re-persist the live settings

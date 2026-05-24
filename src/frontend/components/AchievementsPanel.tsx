@@ -5,10 +5,18 @@ import { ACHIEVEMENT_CATALOG } from '../../shared/contracts/achievement-catalog.
 import type { AchievementDefinition } from '../../shared/contracts/achievement-catalog.js';
 import type { ClientMessage } from '../../shared/protocol.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
+import {
+  detectShortcutPlatform,
+  getDefaultShortcutBindings,
+  matchesShortcutAction,
+  type ShortcutBindingMap,
+} from '../../shared/contracts/shortcut-bindings.js';
+import { ShortcutKeys } from './ShortcutKeys.js';
 
 interface Props {
   onClose: () => void;
   send: (msg: ClientMessage) => void;
+  shortcutBindings?: ShortcutBindingMap;
 }
 
 const CATEGORY_LABELS: Record<AchievementDefinition['category'], string> = {
@@ -30,7 +38,11 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export function AchievementsPanel({ onClose, send }: Props) {
+function defaultShortcutBindings(): ShortcutBindingMap {
+  return getDefaultShortcutBindings(detectShortcutPlatform());
+}
+
+export function AchievementsPanel({ onClose, send, shortcutBindings = defaultShortcutBindings() }: Props) {
   const achievements = useKookrStore((s) => s.achievements);
   const counters = useKookrStore((s) => s.achievementCounters);
   const streak = useKookrStore((s) => s.achievementStreak);
@@ -54,10 +66,9 @@ export function AchievementsPanel({ onClose, send }: Props) {
 
   useEscapeToClose(onClose);
 
-  // Close on Alt+A (toggle shortcut)
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.altKey && e.key === 'a') {
+      if (matchesShortcutAction(e, shortcutBindings, 'toggle_achievements')) {
         e.preventDefault();
         e.stopPropagation();
         onClose();
@@ -65,7 +76,7 @@ export function AchievementsPanel({ onClose, send }: Props) {
     }
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [onClose]);
+  }, [onClose, shortcutBindings]);
 
   const handleReset = useCallback(() => {
     setResetting(true);
@@ -203,7 +214,7 @@ export function AchievementsPanel({ onClose, send }: Props) {
         </div>
 
         <div className="achievements-hint">
-          Press <kbd>Alt+A</kbd> or <kbd>Esc</kbd> to close
+          Press <ShortcutKeys binding={shortcutBindings.toggle_achievements} /> or <kbd>Esc</kbd> to close
         </div>
       </div>
     </div>

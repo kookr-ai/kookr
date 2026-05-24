@@ -8,7 +8,6 @@ import { useAudibleAlert } from './hooks/useAudibleAlert.js';
 import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
 import { track } from './telemetry.js';
-import { getPhysicalShortcutKey } from './shortcut-bindings.js';
 import { buildAgentBuckets } from './agent-buckets.js';
 import { TopBar } from './components/TopBar.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
@@ -28,6 +27,13 @@ import { SweepButton } from './components/SweepButton.js';
 import { OnboardingTour } from './components/OnboardingTour.js';
 import { CoordinatorFindingsPane } from './components/CoordinatorSurfaces.js';
 import { maybeOpenForFirstRun } from './store/onboarding-store.js';
+import {
+  detectShortcutPlatform,
+  formatShortcutBinding,
+  matchesShortcutAction,
+  resolveShortcutBindings,
+  type PlatformShortcutBindingOverrides,
+} from '../shared/contracts/shortcut-bindings.js';
 import './critical.css';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -102,12 +108,18 @@ export function App() {
   const [showCostComparison, setShowCostComparison] = useState(false);
   const [showOperations, setShowOperations] = useState(false);
   const [showCoordinatorFindings, setShowCoordinatorFindings] = useState(false);
+  const [shortcutOverrides, setShortcutOverrides] = useState<PlatformShortcutBindingOverrides>({});
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
   const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
   const [launchInitialTab, setLaunchInitialTab] = useState<LaunchInitialTab | null>(null);
   const [reflectionSuggestion, setReflectionSuggestion] = useState<ReflectionSuggestion | null>(null);
   const operationsPopoverRef = useRef<HTMLDivElement>(null);
   const terminalFocusTriggerRef = useRef<HTMLButtonElement>(null);
+  const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
+  const shortcutBindings = useMemo(
+    () => resolveShortcutBindings(shortcutPlatform, shortcutOverrides),
+    [shortcutOverrides, shortcutPlatform],
+  );
   const {
     agents,
     agentsHydrated,
@@ -139,6 +151,17 @@ export function App() {
 
   useEffect(() => {
     void import('./styles.css');
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/settings')
+      .then((r) => r.json())
+      .then((settings: { shortcutBindings?: PlatformShortcutBindingOverrides }) => {
+        if (!cancelled) setShortcutOverrides(settings.shortcutBindings ?? {});
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, []);
 
   // Open launch dialog when relaunchTask is set
@@ -238,27 +261,26 @@ export function App() {
   // Keyboard shortcuts
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      const shortcutKey = getPhysicalShortcutKey(e);
       if (showOperations && e.key !== 'Escape') {
         return;
       }
-      if (e.altKey && shortcutKey === 'n') {
+      if (matchesShortcutAction(e, shortcutBindings, 'next_bottleneck')) {
         e.preventDefault();
-        track({ type: 'shortcut_used', key: 'Alt+N', action: 'next_bottleneck', context: 'global' });
+        track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.next_bottleneck), action: 'next_bottleneck', context: 'global' });
         nextBottleneck();
       }
-      if (e.altKey && shortcutKey === 'l') {
+      if (matchesShortcutAction(e, shortcutBindings, 'quick_launch')) {
         e.preventDefault();
-        track({ type: 'shortcut_used', key: 'Alt+L', action: 'quick_launch', context: 'global' });
+        track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.quick_launch), action: 'quick_launch', context: 'global' });
         setShowQuickLaunch(true);
       }
-      if (e.altKey && shortcutKey === 'm') {
+      if (matchesShortcutAction(e, shortcutBindings, 'stt_toggle')) {
         e.preventDefault();
-        // Alt+M toggles voice recording — target the right mic button
+        // Voice shortcut toggles recording — target the right mic button.
         // 1. If any button is currently recording, stop it
         const recording = document.querySelector('.btn-voice.recording') as HTMLButtonElement | null;
         if (recording) {
-          track({ type: 'shortcut_used', key: 'Alt+M', action: 'stt_toggle', context: 'global' });
+          track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.stt_toggle), action: 'stt_toggle', context: 'global' });
           recording.click();
         } else {
           // 2. Find the mic button nearest the focused element (sibling in same row/label)
@@ -268,55 +290,55 @@ export function App() {
           // 3. Fall back to the first visible non-disabled mic button
           const target = nearestMic ?? document.querySelector('.btn-voice:not(:disabled)') as HTMLButtonElement | null;
           if (target) {
-            track({ type: 'shortcut_used', key: 'Alt+M', action: 'stt_toggle', context: 'global' });
+            track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.stt_toggle), action: 'stt_toggle', context: 'global' });
             target.click();
           }
         }
       }
-      if (e.altKey && shortcutKey === 's') {
+      if (matchesShortcutAction(e, shortcutBindings, 'snooze_dialog')) {
         e.preventDefault();
         const state = useKookrStore.getState();
         if (state.selectedAgentId) {
-          track({ type: 'shortcut_used', key: 'Alt+S', action: 'snooze_dialog', context: 'global' });
+          track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.snooze_dialog), action: 'snooze_dialog', context: 'global' });
           setShowSnooze(true);
         }
       }
-      if (e.altKey && shortcutKey === 'z') {
+      if (matchesShortcutAction(e, shortcutBindings, 'quick_snooze')) {
         e.preventDefault();
         const state = useKookrStore.getState();
         if (state.selectedAgentId) {
           const durationMs = 5 * 60 * 1000; // 5-minute default snooze
-          track({ type: 'shortcut_used', key: 'Alt+Z', action: 'quick_snooze', context: 'global' });
+          track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.quick_snooze), action: 'quick_snooze', context: 'global' });
           const selected = useKookrStore.getState().agents.find((agent) => agent.agentId === state.selectedAgentId);
           send({ type: 'snooze', agentId: state.selectedAgentId, taskId: selected?.taskId, durationMs });
         }
       }
-      if (e.altKey && shortcutKey === 'r') {
+      if (matchesShortcutAction(e, shortcutBindings, 'focus_reply')) {
         e.preventDefault();
         const replyInput = document.querySelector('.detail-panel .response-row input[type="text"]') as HTMLInputElement | null;
         if (replyInput) {
-          track({ type: 'shortcut_used', key: 'Alt+R', action: 'focus_reply', context: 'global' });
+          track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.focus_reply), action: 'focus_reply', context: 'global' });
           replyInput.focus();
         }
       }
-      if (e.altKey && shortcutKey === 'Delete') {
+      if (matchesShortcutAction(e, shortcutBindings, 'cancel_task')) {
         e.preventDefault();
         const state = useKookrStore.getState();
         if (state.selectedAgentId) {
           const agent = state.agents.find(a => a.agentId === state.selectedAgentId);
           if (agent?.taskId) {
-            track({ type: 'shortcut_used', key: 'Alt+Delete', action: 'cancel_task', context: 'global' });
+            track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.cancel_task), action: 'cancel_task', context: 'global' });
             setConfirmAction('cancel');
           }
         }
       }
-      if (e.altKey && shortcutKey === 'End') {
+      if (matchesShortcutAction(e, shortcutBindings, 'complete_task')) {
         e.preventDefault();
         const state = useKookrStore.getState();
         if (state.selectedAgentId) {
           const agent = state.agents.find(a => a.agentId === state.selectedAgentId);
           if (agent?.taskId) {
-            track({ type: 'shortcut_used', key: 'Alt+End', action: 'complete_task', context: 'global' });
+            track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.complete_task), action: 'complete_task', context: 'global' });
             setPendingComplete({
               taskId: agent.taskId,
               agentId: agent.agentId,
@@ -327,81 +349,92 @@ export function App() {
           }
         }
       }
-      // Alt+P toggles project sidebar
-      if (e.altKey && shortcutKey === 'p') {
+      // Toggle project sidebar.
+      if (matchesShortcutAction(e, shortcutBindings, 'toggle_project_sidebar')) {
         e.preventDefault();
-        track({ type: 'shortcut_used', key: 'Alt+P', action: 'toggle_project_sidebar', context: 'global' });
+        track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.toggle_project_sidebar), action: 'toggle_project_sidebar', context: 'global' });
         toggleProjectSidebar();
       }
-      if (e.altKey && shortcutKey === 't') {
+      if (matchesShortcutAction(e, shortcutBindings, 'toggle_terminal_focus')) {
         e.preventDefault();
         if (isMobileViewport) return;
-        track({ type: 'shortcut_used', key: 'Alt+T', action: 'toggle_terminal_focus', context: 'global' });
+        track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.toggle_terminal_focus), action: 'toggle_terminal_focus', context: 'global' });
         toggleTerminalFocusMode();
       }
-      // Alt+A toggles achievements panel
-      if (e.altKey && shortcutKey === 'a') {
+      // Toggle achievements panel.
+      if (matchesShortcutAction(e, shortcutBindings, 'toggle_achievements')) {
         e.preventDefault();
-        track({ type: 'shortcut_used', key: 'Alt+A', action: 'toggle_achievements', context: 'global' });
+        track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.toggle_achievements), action: 'toggle_achievements', context: 'global' });
         toggleAchievementsPanel();
       }
-      // Alt+0 = All projects
-      if (e.altKey && shortcutKey === '0') {
+      // Select all projects.
+      if (matchesShortcutAction(e, shortcutBindings, 'select_all_projects')) {
         e.preventDefault();
         selectProject(null);
       }
-      // Alt+1-3 = send digit to terminal, then skip to next task
-      if (e.altKey && shortcutKey >= '1' && shortcutKey <= '3') {
+      // Send terminal digit, then skip to next task.
+      const terminalSend = (['terminal_send_1', 'terminal_send_2', 'terminal_send_3'] as const)
+        .find((action) => matchesShortcutAction(e, shortcutBindings, action));
+      if (terminalSend) {
         e.preventDefault();
-        sendToTerminal(shortcutKey);
-        track({ type: 'shortcut_used', key: `Alt+${shortcutKey}`, action: 'terminal_send_and_next', context: 'global' });
+        const digit = terminalSend.slice(-1);
+        sendToTerminal(digit);
+        track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings[terminalSend]), action: 'terminal_send_and_next', context: 'global' });
         nextTask();
       }
-      // Alt+4-9 = select project by sidebar order
-      if (e.altKey && shortcutKey >= '4' && shortcutKey <= '9') {
+      // Select project by sidebar order.
+      const projectSelect = ([
+        'select_project_1',
+        'select_project_2',
+        'select_project_3',
+        'select_project_4',
+        'select_project_5',
+        'select_project_6',
+      ] as const).find((action) => matchesShortcutAction(e, shortcutBindings, action));
+      if (projectSelect) {
         e.preventDefault();
-        const idx = parseInt(shortcutKey, 10) - 4;
+        const idx = Number(projectSelect.slice(-1)) - 1;
         const state = useKookrStore.getState();
         if (idx < state.visibleProjectSummaries.length) {
           selectProject(state.visibleProjectSummaries[idx].project);
         }
       }
       // Escape to deselect current task — works from any context except inside dialogs
-      if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (matchesShortcutAction(e, shortcutBindings, 'deselect_task')) {
         const inDialog = (e.target as HTMLElement)?.closest('.dialog-overlay');
         if (!inDialog) {
           const state = useKookrStore.getState();
           if (state.selectedAgentId !== null) {
             e.preventDefault();
             (document.activeElement as HTMLElement)?.blur();
-            track({ type: 'shortcut_used', key: 'Escape', action: 'deselect', context: 'global' });
+            track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.deselect_task), action: 'deselect', context: 'global' });
             selectAgent(null);
           }
         }
       }
       // ? to open shortcuts help — only when not focused on an input/textarea
-      if (e.key === '?' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (matchesShortcutAction(e, shortcutBindings, 'toggle_shortcuts_help')) {
         const tag = (e.target as HTMLElement)?.tagName;
         if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
           e.preventDefault();
           setShowShortcuts((v) => !v);
         }
       }
-      // Alt+J = next task, Alt+K = previous task
-      if (e.altKey && shortcutKey === 'j') {
+      // Cycle selected task.
+      if (matchesShortcutAction(e, shortcutBindings, 'next_task')) {
         e.preventDefault();
-        track({ type: 'shortcut_used', key: 'Alt+J', action: 'next_task', context: 'global' });
+        track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.next_task), action: 'next_task', context: 'global' });
         nextTask();
       }
-      if (e.altKey && shortcutKey === 'k') {
+      if (matchesShortcutAction(e, shortcutBindings, 'previous_task')) {
         e.preventDefault();
-        track({ type: 'shortcut_used', key: 'Alt+K', action: 'previous_task', context: 'global' });
+        track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.previous_task), action: 'previous_task', context: 'global' });
         previousTask();
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isMobileViewport, nextBottleneck, nextTask, previousTask, send, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel]);
+  }, [isMobileViewport, nextBottleneck, nextTask, previousTask, send, shortcutBindings, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;
@@ -537,6 +570,7 @@ export function App() {
       }}
       collapsed={!isMobileViewport && !selectedAgent}
       terminalFocusMode={terminalFocusActive}
+      shortcutBindings={shortcutBindings}
     />
   );
 
@@ -698,18 +732,22 @@ export function App() {
         reflectionSuggestion={reflectionSuggestion}
         onReflect={triggerReflection}
         onDismissReflection={dismissReflectionSuggestion}
+        shortcutBindings={shortcutBindings}
       />
       <Toasts />
       <AchievementToasts />
       <SentOverlay />
       {showShortcuts && (
         <Suspense fallback={null}>
-          <ShortcutsHelp onClose={() => setShowShortcuts(false)} />
+          <ShortcutsHelp
+            bindings={shortcutBindings}
+            onClose={() => setShowShortcuts(false)}
+          />
         </Suspense>
       )}
       {showAchievements && (
         <Suspense fallback={null}>
-          <AchievementsPanel onClose={toggleAchievementsPanel} send={send} />
+          <AchievementsPanel onClose={toggleAchievementsPanel} send={send} shortcutBindings={shortcutBindings} />
         </Suspense>
       )}
       {showProjectSidebarManager && (
@@ -774,7 +812,7 @@ export function App() {
       )}
       {showQuickLaunch && (
         <Suspense fallback={null}>
-          <QuickLaunch send={send} onClose={() => setShowQuickLaunch(false)} />
+          <QuickLaunch send={send} onClose={() => setShowQuickLaunch(false)} sttShortcutBinding={shortcutBindings.stt_toggle} />
         </Suspense>
       )}
       {showSchedules && (
@@ -792,6 +830,7 @@ export function App() {
           <SettingsDialog
             onClose={() => { setShowSettings(false); setSettingsFocus(undefined); }}
             focusField={settingsFocus}
+            onSettingsSaved={(settings) => setShortcutOverrides(settings.shortcutBindings ?? {})}
           />
         </Suspense>
       )}
@@ -824,6 +863,7 @@ export function App() {
             projectContext={launchProjectContext ?? undefined}
             projectCwd={launchProjectCwd ?? undefined}
             initialTab={launchInitialTab ?? undefined}
+            sttShortcutBinding={shortcutBindings.stt_toggle}
           />
         </Suspense>
       )}
