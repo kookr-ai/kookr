@@ -2070,7 +2070,7 @@ Review daily work.
       // One case per message family plus an unknown-type case. Each payload has
       // a valid `type` string (so Gate 1 lets it through) but a shape that
       // Gate 2 — the discriminated-union schema — must reject.
-      type Case = { label: string; payload: object; expectDetailSubstring: string };
+      type Case = { label: string; payload: object; expectDetailSubstring: string; expectRejectedValue?: string };
       const cases: Case[] = [
         { label: 'launch with non-string cwd', payload: { type: 'launch', prompt: 'x', cwd: 42 }, expectDetailSubstring: 'cwd' },
         { label: 'respond missing input', payload: { type: 'respond', agentId: 'a1' }, expectDetailSubstring: 'input' },
@@ -2083,10 +2083,10 @@ Review daily work.
         { label: 'findingFeedback with wrong verdict', payload: { type: 'findingFeedback', agentId: 'a', anomalyType: 'api_error', explanation: 'e', verdict: 'true_positive' }, expectDetailSubstring: 'verdict' },
         { label: 'workspace:getView missing projectId', payload: { type: 'workspace:getView' }, expectDetailSubstring: 'projectId' },
         { label: 'workspace:cleanupCandidate with wrong riskAccepted type', payload: { type: 'workspace:cleanupCandidate', projectId: 'p', worktreePath: '/w', riskAccepted: 1 }, expectDetailSubstring: 'riskAccepted' },
-        { label: 'unknown type string', payload: { type: 'doesNotExist', foo: 'bar' }, expectDetailSubstring: 'type' },
+        { label: 'unknown type string', payload: { type: 'doesNotExist', foo: 'bar' }, expectDetailSubstring: 'type', expectRejectedValue: 'doesNotExist' },
       ];
 
-      for (const { label, payload, expectDetailSubstring } of cases) {
+      for (const { label, payload, expectDetailSubstring, expectRejectedValue } of cases) {
         const next = waitForMalformedAlert(ws, label);
         ws.send(JSON.stringify(payload));
         const alert = await next;
@@ -2097,6 +2097,9 @@ Review daily work.
         expect(alert.summary, `case: ${label}`).toContain('Malformed WebSocket message');
         // details should name the offending field or path
         expect(alert.details ?? '', `case: ${label} — details should mention ${expectDetailSubstring}`).toContain(expectDetailSubstring);
+        if (expectRejectedValue) {
+          expect(alert.details ?? '', `case: ${label} — details should include rejected value`).toContain(expectRejectedValue);
+        }
         expect(ws.readyState, `case: ${label}`).toBe(WebSocket.OPEN);
       }
 

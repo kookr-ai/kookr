@@ -243,16 +243,73 @@ void _driftUnionToSchema;
  * field(s). Used as the `details` body of the malformed-payload alert so
  * the operator can see which field tripped validation.
  */
-export function summarizeZodIssues(error: z.ZodError): string {
+export function summarizeZodIssues(error: z.ZodError, input?: unknown): string {
   const issues = flattenZodIssues(error.issues);
   if (issues.length === 0) return 'validation failed';
   return issues
     .slice(0, 5)
     .map((issue) => {
       const path = issue.path.length === 0 ? '(root)' : issue.path.join('.');
-      return `${path}: ${issue.message}`;
+      return `${path}: ${formatZodIssueMessage(issue, input)}`;
     })
     .join('; ');
+}
+
+function formatZodIssueMessage(issue: z.ZodIssue, input: unknown): string {
+  const rejectedValue = getRejectedValue(issue, input);
+  if (rejectedValue === undefined) return issue.message;
+  return `${issue.message} (received ${rejectedValue})`;
+}
+
+function getRejectedValue(issue: z.ZodIssue, input: unknown): string | undefined {
+  const raw = issue as unknown as { code: string; received?: unknown };
+  if (raw.code === 'invalid_type') return undefined;
+
+  // Zod 3 exposed `received` on enum/literal issues. Zod 4 often omits it,
+  // so recover the value from the original payload when the issue path exists.
+  const value = Object.prototype.hasOwnProperty.call(raw, 'received')
+    ? { found: true, value: raw.received }
+    : getValueAtPath(input, issue.path);
+  if (!value.found) return undefined;
+
+  const rendered = renderRejectedValue(value.value);
+  if (issueMessageAlreadyIncludesValue(issue.message, value.value, rendered)) return undefined;
+  return rendered;
+}
+
+function issueMessageAlreadyIncludesValue(message: string, value: unknown, rendered: string): boolean {
+  if (message.includes(rendered)) return true;
+  if (typeof value !== 'string') return message.includes(`received ${String(value)}`);
+  return message.includes(`received '${value}'`) || message.includes(`received \`${value}\``);
+}
+
+function getValueAtPath(input: unknown, path: z.ZodIssue['path']): { found: boolean; value: unknown } {
+  if (path.length === 0) return { found: true, value: input };
+
+  let current = input;
+  for (const segment of path) {
+    if ((typeof current !== 'object' && typeof current !== 'function') || current === null) {
+      return { found: false, value: undefined };
+    }
+    if (!(segment in Object(current))) {
+      return { found: false, value: undefined };
+    }
+    current = (current as Record<PropertyKey, unknown>)[segment];
+  }
+  return { found: true, value: current };
+}
+
+function renderRejectedValue(value: unknown): string {
+  let rendered: string;
+  if (typeof value === 'string') {
+    rendered = JSON.stringify(value);
+  } else if (value === undefined) {
+    rendered = 'undefined';
+  } else {
+    rendered = JSON.stringify(value) ?? String(value);
+  }
+
+  return rendered.length > 120 ? `${rendered.slice(0, 117)}...` : rendered;
 }
 
 function flattenZodIssues(issues: z.ZodIssue[]): z.ZodIssue[] {
