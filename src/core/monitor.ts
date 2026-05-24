@@ -100,6 +100,25 @@ const DEFAULT_WINDOW_SIZE = 50;
  */
 const SUBAGENT_TTL_MS = 30 * 60 * 1000;
 
+/**
+ * Anomaly types (and watchdog verdict statuses) whose lifecycle is owned by
+ * the watchdog tick path. Centralized so the actionable filter, the
+ * non-actionable purge guard, and the suppressed-verdict purge guard all
+ * agree on which queue entries the watchdog may legitimately remove.
+ * Typed as `string` rather than `AnomalyType` so the same set can be queried
+ * with `WatchdogVerdict['status']` (a wider union) without unsafe casts.
+ */
+const WATCHDOG_OWNED_TYPES: ReadonlySet<string> = new Set([
+  'needs_input',
+  'permission_blocked',
+  'stale_agent',
+  'hook_disconnected',
+]);
+
+function isWatchdogOwnedType(type: string | undefined): boolean {
+  return type !== undefined && WATCHDOG_OWNED_TYPES.has(type);
+}
+
 function anomalyFingerprint(anomaly: Anomaly): string {
   return `${anomaly.type}:${anomaly.subType ?? ''}:${anomaly.explanation}`;
 }
@@ -250,6 +269,9 @@ export class Monitor {
     verdict: WatchdogVerdict,
     options: { paneCaptureSucceeded: boolean; paneText?: string },
   ): boolean {
+    // Explicit-literal form (rather than `isWatchdogOwnedType(verdict.status)`)
+    // so TypeScript narrows the discriminated union and verdict.anomaly is
+    // typed below. The literals here match WATCHDOG_OWNED_TYPES.
     const actionable = verdict.status === 'needs_input'
       || verdict.status === 'permission_blocked'
       || verdict.status === 'stale_agent'
@@ -266,11 +288,7 @@ export class Monitor {
         // is currently shadowing the queue.
         recordSuppression(rawAnomaly.type);
         const queued = this.attentionQueue.peek(agentId);
-        const isWatchdogOwnedType = queued?.type === 'needs_input'
-          || queued?.type === 'permission_blocked'
-          || queued?.type === 'stale_agent'
-          || queued?.type === 'hook_disconnected';
-        if (queued && isWatchdogOwnedType && !this.getEventAnomaly(agentId)) {
+        if (queued && isWatchdogOwnedType(queued.type) && !this.getEventAnomaly(agentId)) {
           this.attentionQueue.purge(agentId);
         }
         // Audit trail: surface the suppressed verdict as a resolved record
@@ -314,11 +332,7 @@ export class Monitor {
     const eventAnomaly = this.getEventAnomaly(agentId);
     if (eventAnomaly) return false;
 
-    const isWatchdogOwnedType = queued.type === 'needs_input'
-      || queued.type === 'permission_blocked'
-      || queued.type === 'stale_agent'
-      || queued.type === 'hook_disconnected';
-    if (!isWatchdogOwnedType) return false;
+    if (!isWatchdogOwnedType(queued.type)) return false;
 
     this.attentionQueue.purge(agentId);
     this.findingEvidenceAuditor.observe(agentId, null, this.agentEvents.get(agentId) ?? []);

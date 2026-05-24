@@ -1280,7 +1280,7 @@ describe('Monitor', () => {
 
         expect(changed).toBe(true);
         expect(queue.peek(agentId)).toBeNull();
-        expect(getDetectionStats().suppressed.stale_agent).toBeGreaterThanOrEqual(1);
+        expect(getDetectionStats().suppressed.stale_agent).toBe(1);
 
         const records = monitor.getFindingEvidenceAuditRecords();
         const suppressed = records.find((r) => r.anomalyType === 'stale_agent' && r.status === 'resolved');
@@ -1299,7 +1299,13 @@ describe('Monitor', () => {
 
         expect(changed).toBe(true);
         expect(queue.peek(agentId)).toBeNull();
-        expect(getDetectionStats().suppressed.hook_disconnected).toBeGreaterThanOrEqual(1);
+        expect(getDetectionStats().suppressed.hook_disconnected).toBe(1);
+
+        // Audit trail must surface every suppressed actionable verdict, not just stale_agent.
+        const records = monitor.getFindingEvidenceAuditRecords();
+        const suppressed = records.find((r) => r.anomalyType === 'hook_disconnected' && r.status === 'resolved');
+        expect(suppressed?.verdict).toBe('possible_false_positive');
+        expect(suppressed?.notes.some((n) => n.includes('subagent_running'))).toBe(true);
       });
 
       test('permission_blocked verdict is NOT suppressed while a subagent is running', () => {
@@ -1337,6 +1343,25 @@ describe('Monitor', () => {
 
         expect(changed).toBe(true);
         expect(queue.peek(agentId)?.type).toBe('merge_conflict');
+      });
+
+      test('suppressed stale_agent does NOT purge a queued watchdog-owned entry that is shadowed by an event-derived anomaly', () => {
+        // Event-derived permission_blocked survives subagent suppression
+        // (not in the suppressible set), so it remains on the queue and
+        // is owned by processEvents. The watchdog suppression branch must
+        // honor that ownership.
+        monitor.processEvents(agentId, [makeSubagentStart('s1', 'sub-1')]);
+        monitor.processEvents(agentId, [makePermissionRequest('s1', 'Bash')]);
+        expect(queue.peek(agentId)?.type).toBe('permission_blocked');
+
+        const changed = monitor.applyWatchdogVerdict(
+          agentId,
+          { status: 'stale_agent', anomaly: staleAnomaly },
+          { paneCaptureSucceeded: true },
+        );
+
+        expect(changed).toBe(true);
+        expect(queue.peek(agentId)?.type).toBe('permission_blocked');
       });
 
       test('suppressed stale_agent purges a stale watchdog-owned queue entry', () => {

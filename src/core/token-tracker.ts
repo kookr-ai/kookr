@@ -1,4 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
+import { statSync } from 'node:fs';
 import type { TokenUsage } from './types.js';
 import { getPricing, estimateCost, type ModelPricing } from './pricing-tables.js';
 
@@ -49,7 +50,19 @@ interface UsageBlock {
 
 interface TranscriptState {
   taskId: string;
+  /**
+   * UTF-16 code-unit offset into the in-memory string representation of the
+   * file. Used by `scanOne` to slice off already-parsed content.
+   */
   offset: number;
+  /**
+   * Byte offset into the on-disk transcript. Used by `scanGrowth` to detect
+   * file growth via `fs.stat` without re-reading. Tracked separately from
+   * `offset` because `fs.stat` returns bytes while JS string `.length` is
+   * UTF-16 code units — mixing them silently misfires on any non-ASCII byte
+   * (em-dashes, smart quotes, emoji are all common in transcripts).
+   */
+  byteOffset: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -88,9 +101,16 @@ export class TokenTracker {
   /** Register a transcript file for a task. */
   register(transcriptPath: string, taskId: string): void {
     if (this.transcripts.has(transcriptPath)) return;
+    // Seed byteOffset to the file's current size so scanGrowth treats
+    // pre-existing bytes as "already accounted for" rather than as fresh
+    // growth on the first tick. The transcript may not exist yet — that's
+    // fine, byteOffset stays 0 and subsequent writes register as growth.
+    let initialByteOffset = 0;
+    try { initialByteOffset = statSync(transcriptPath).size; } catch { /* file not created yet */ }
     this.transcripts.set(transcriptPath, {
       taskId,
       offset: 0,
+      byteOffset: initialByteOffset,
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
@@ -128,14 +148,10 @@ export class TokenTracker {
   async scanGrowth(): Promise<TranscriptGrowth[]> {
     const growths: TranscriptGrowth[] = [];
     for (const [path, state] of this.transcripts) {
-      let s;
-      try {
-        s = await stat(path);
-      } catch {
-        continue;
-      }
-      if (s.size > state.offset) {
-        growths.push({ taskId: state.taskId, bytesGained: s.size - state.offset });
+      const s = await stat(path).catch(() => null);
+      if (!s) continue;
+      if (s.size > state.byteOffset) {
+        growths.push({ taskId: state.taskId, bytesGained: s.size - state.byteOffset });
       }
     }
     return growths;
@@ -223,10 +239,17 @@ export class TokenTracker {
       return; // File doesn't exist yet or is unreadable
     }
 
-    if (content.length <= state.offset) return;
+    if (content.length <= state.offset) {
+      // Even when no new code units are present, keep byteOffset in sync with
+      // the file's actual byte size so the freshness probe doesn't double-fire
+      // on pure-ASCII no-op ticks.
+      state.byteOffset = Buffer.byteLength(content, 'utf-8');
+      return;
+    }
 
     const newContent = content.slice(state.offset);
     state.offset = content.length;
+    state.byteOffset = Buffer.byteLength(content, 'utf-8');
 
     const lines = newContent.split('\n');
     for (const line of lines) {

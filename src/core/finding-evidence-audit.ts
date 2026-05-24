@@ -14,6 +14,13 @@ export type {
   FindingEvidenceVerdict,
 } from '../shared/contracts/anomalies.js';
 
+/**
+ * Reason a watchdog verdict was swallowed by the supervisor before reaching
+ * the attention queue. M3/M4 review pipelines distinguish these from natural
+ * "finding resolved" transitions when measuring detector quality.
+ */
+export type FindingSuppressionReason = 'subagent_running';
+
 export interface FindingEvidenceAuditOptions {
   maxRecords?: number;
   maxObservationsPerRecord?: number;
@@ -104,7 +111,7 @@ export class FindingEvidenceAuditor {
        * the supervisor swallowed the verdict. Used by M3/M4 detector-proposal
        * pipelines to distinguish natural resolution from suppression.
        */
-      suppressionReason?: 'subagent_running';
+      suppressionReason?: FindingSuppressionReason;
     } = { source: 'event' },
   ): boolean {
     const now = options.now ?? new Date();
@@ -138,7 +145,7 @@ export class FindingEvidenceAuditor {
     agentId: string,
     events: AgentEvent[],
     now: Date = new Date(),
-    suppressionReason?: 'subagent_running',
+    suppressionReason?: FindingSuppressionReason,
   ): boolean {
     const activeId = this.activeByAgent.get(agentId);
     if (!activeId) return false;

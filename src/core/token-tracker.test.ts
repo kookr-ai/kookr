@@ -319,7 +319,7 @@ describe('TokenTracker', () => {
   });
 
   describe('scanGrowth (freshness probe)', () => {
-    test('reports bytes gained since the last scanAll', async () => {
+    test('reports exact byte delta since the last scanAll', async () => {
       const path = join(dir, 'transcript.jsonl');
       writeJsonl(path, [
         { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 1, output_tokens: 1 } } },
@@ -328,12 +328,49 @@ describe('TokenTracker', () => {
       await tracker.scanAll();
 
       // Simulate a mid-stream growth that hasn't finalized into a parsable line yet.
-      appendFileSync(path, '{"type":"assistant","message":{"id":"msg_b","model":"claude-sonnet-4-6"', 'utf-8');
+      const appended = '{"type":"assistant","message":{"id":"msg_b","model":"claude-sonnet-4-6"';
+      appendFileSync(path, appended, 'utf-8');
 
       const growths = await tracker.scanGrowth();
       expect(growths).toHaveLength(1);
       expect(growths[0].taskId).toBe('task-1');
-      expect(growths[0].bytesGained).toBeGreaterThan(0);
+      expect(growths[0].bytesGained).toBe(Buffer.byteLength(appended, 'utf-8'));
+    });
+
+    test('reports bytes correctly when transcript contains non-ASCII UTF-8', async () => {
+      // Regression guard: scanGrowth must compare bytes vs bytes. JS string
+      // .length is UTF-16 code units, so any em-dash / smart quote / emoji
+      // would silently make scanGrowth fire forever if the impl mixed units.
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 1, output_tokens: 1 } },
+          text: 'em — dash and a smart "quote" with emoji 🚀' },
+      ]);
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      // No growth after scanAll consumed everything.
+      expect(await tracker.scanGrowth()).toEqual([]);
+
+      // Append a payload that has a different byte-vs-char count.
+      const appended = ' — more 🚀\n';
+      appendFileSync(path, appended, 'utf-8');
+      const growths = await tracker.scanGrowth();
+      expect(growths).toHaveLength(1);
+      expect(growths[0].bytesGained).toBe(Buffer.byteLength(appended, 'utf-8'));
+      expect(growths[0].bytesGained).toBeGreaterThan(appended.length);
+    });
+
+    test('does not report pre-existing bytes on the first tick after register', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 1, output_tokens: 1 } } },
+      ]);
+      // Register AFTER the file already has content — those bytes are
+      // historical, not growth. scanGrowth must seed from the current size.
+      tracker.register(path, 'task-1');
+
+      expect(await tracker.scanGrowth()).toEqual([]);
     });
 
     test('returns empty when no transcripts have grown', async () => {
@@ -354,7 +391,7 @@ describe('TokenTracker', () => {
       expect(growths).toEqual([]);
     });
 
-    test('skips transcripts that shrank below the previous offset (rotation)', async () => {
+    test('skips transcripts that shrank below the previous offset (truncation), then detects post-truncation growth', async () => {
       const path = join(dir, 'transcript.jsonl');
       writeJsonl(path, [
         { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 1, output_tokens: 1 } } },
@@ -362,11 +399,19 @@ describe('TokenTracker', () => {
       tracker.register(path, 'task-1');
       await tracker.scanAll();
 
-      // File truncated/rotated to a smaller size — stat.size < state.offset.
+      // File truncated — stat.size < state.byteOffset. scanGrowth must NOT
+      // report this as growth (a wrap-around would re-trigger watchdog freshness).
       writeFileSync(path, '', 'utf-8');
+      expect(await tracker.scanGrowth()).toEqual([]);
 
+      // After truncation, scanAll must catch up so the next legitimate
+      // append registers as growth from the new baseline.
+      await tracker.scanAll();
+      const appended = 'fresh content after truncation\n';
+      appendFileSync(path, appended, 'utf-8');
       const growths = await tracker.scanGrowth();
-      expect(growths).toEqual([]);
+      expect(growths).toHaveLength(1);
+      expect(growths[0].bytesGained).toBe(Buffer.byteLength(appended, 'utf-8'));
     });
   });
 
