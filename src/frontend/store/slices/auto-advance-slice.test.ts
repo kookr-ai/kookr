@@ -9,8 +9,7 @@ import {
   __resetAutoAdvanceForTests,
 } from './auto-advance-slice.js';
 import { createKookrStore } from '../useStore.js';
-import type { AgentState } from '../../../shared/contracts/agent-state.js';
-import type { ProjectSummary } from '../../../shared/contracts/project-summary.js';
+import type { AgentState, ProjectSummary } from '../../../shared/protocol.js';
 import type { ProjectSidebarPrefs } from '../project-sidebar-prefs.js';
 
 // ---------------------------------------------------------------------------
@@ -190,7 +189,7 @@ describe('engagedWithFinding', () => {
 describe('describeTickReason', () => {
   test('every enum value plus null maps to a non-implementer string', () => {
     const values: Array<Parameters<typeof describeTickReason>[0]> = [
-      'no_eligible_project', 'already_top', 'engaged', 'settling', 'scheduled', null,
+      'no_eligible_project', 'already_top', 'engaged', 'settling', null,
     ];
     for (const v of values) {
       const str = describeTickReason(v);
@@ -300,22 +299,28 @@ describe('evaluateAutoAdvance', () => {
   });
 
   test('cascade non-regression: auto-advance landing does NOT establish engagement', () => {
-    setProjects([makeProject('org/a'), makeProject('org/b')], ['org/a', 'org/b']);
-    // org/a has a finding the user manually engaged with; org/b just got one too.
-    // But the user just landed on org/a via auto-advance (source = auto-advance).
+    // The regression we are guarding against: after an auto-switch lands the
+    // user on a project with an active finding, the engagement guard would
+    // treat the auto-selected finding as a manual engagement and refuse to
+    // ever switch again. To exercise that path the queue head must DIFFER
+    // from selectedProject — otherwise `already_top` short-circuits before
+    // the engagement guard is consulted, and the test gives false comfort.
+    setProjects([makeProject('org/a'), makeProject('org/b')], ['org/b']);
     store.setState({
       agents: [makeFinding('xa', 'org/a'), makeFinding('xb', 'org/b')],
       selectedProject: 'org/a',
-      selectedAgentId: 'xa',
+      selectedAgentId: 'xa',           // pretend this came from an auto-advance landing
       selectedAgentSource: 'auto-advance',
     });
     const scheduleSwitch = vi.fn();
     evaluateAutoAdvance(store.getState(), store, {
       settleMs: 0, now: () => 1000, scheduleSwitch, cancelPending: vi.fn(),
     });
-    // org/a is still the top priority (pinned first), so it stays "already_top".
-    // The key non-regression: this is NOT 'engaged' (cascade would have made it so).
-    expect(store.getState().lastTickReason).toBe('already_top');
+    // With the source-distinguishing guard, this must SCHEDULE a switch.
+    // If the guard regresses to "selectedAgentId is a finding => engaged",
+    // outcome would be 'engaged' and scheduleSwitch would not be called.
+    expect(store.getState().lastTickReason).toBe('settling');
+    expect(scheduleSwitch).toHaveBeenCalledWith('queue_head_changed');
   });
 
   test('clears autoAdvanceError on the next successful tick', () => {
@@ -363,11 +368,15 @@ describe('attachAutoAdvanceSubscribers', () => {
     if (typeof localStorage !== 'undefined') {
       try { localStorage.removeItem('kookr-auto-advance-mode'); } catch { /* noop */ }
     }
+    // Fake timers so settle-window assertions are deterministic, not flake-
+    // prone wall-clock waits. Matches the pattern in useDnd.test.ts.
+    vi.useFakeTimers();
     store = createKookrStore();
   });
 
   afterEach(() => {
     __resetAutoAdvanceForTests();
+    vi.useRealTimers();
   });
 
   function hydrateWith(opts: {
@@ -390,8 +399,7 @@ describe('attachAutoAdvanceSubscribers', () => {
   }
 
   test('switch fires after settle window and lands on queue head with auto-advance source', async () => {
-    // Attach with settleMs=0 so the timer fires on next microtask.
-    attachAutoAdvanceSubscribers(store, { settleMs: 0 });
+    attachAutoAdvanceSubscribers(store, { settleMs: 50 });
     hydrateWith({
       projects: [makeProject('org/a'), makeProject('org/b')],
       pinned: ['org/b'],
@@ -399,7 +407,7 @@ describe('attachAutoAdvanceSubscribers', () => {
       selectedProject: 'org/a',
     });
 
-    await new Promise((r) => setTimeout(r, 5));
+    await vi.advanceTimersByTimeAsync(60);
     expect(store.getState().selectedProject).toBe('org/b');
     expect(store.getState().selectedAgentSource).toBe('auto-advance');
     expect(store.getState().selectedAgentId).toBeNull();
@@ -417,12 +425,12 @@ describe('attachAutoAdvanceSubscribers', () => {
     });
     // Disable before the timer fires.
     store.setState({ autoAdvanceEnabled: false });
-    await new Promise((r) => setTimeout(r, 80));
+    await vi.advanceTimersByTimeAsync(80);
     expect(store.getState().selectedProject).toBe('org/a');
   });
 
   test('no switch when mode is off', async () => {
-    attachAutoAdvanceSubscribers(store, { settleMs: 0 });
+    attachAutoAdvanceSubscribers(store, { settleMs: 50 });
     hydrateWith({
       projects: [makeProject('org/a'), makeProject('org/b')],
       pinned: ['org/b'],
@@ -430,14 +438,14 @@ describe('attachAutoAdvanceSubscribers', () => {
       selectedProject: 'org/a',
       enabled: false,
     });
-    await new Promise((r) => setTimeout(r, 5));
+    await vi.advanceTimersByTimeAsync(60);
     expect(store.getState().selectedProject).toBe('org/a');
     // lastTickReason should not be set — the early-exit guard skipped the tick.
     expect(store.getState().lastTickReason).toBeNull();
   });
 
   test('no tick fires before hydration completes', async () => {
-    attachAutoAdvanceSubscribers(store, { settleMs: 0 });
+    attachAutoAdvanceSubscribers(store, { settleMs: 50 });
     store.setState({
       visibleProjectSummaries: [makeProject('org/a'), makeProject('org/b')],
       projectSidebarPrefs: makePrefs(['org/b']),
@@ -447,13 +455,13 @@ describe('attachAutoAdvanceSubscribers', () => {
       agentsHydrated: false,
       projectSummariesHydrated: false,
     });
-    await new Promise((r) => setTimeout(r, 5));
+    await vi.advanceTimersByTimeAsync(60);
     expect(store.getState().selectedProject).toBe('org/a');
     expect(store.getState().lastTickReason).toBeNull();
   });
 
   test('side-effect cleanup on auto-switch: respondAllAgentIds and panes reset', async () => {
-    attachAutoAdvanceSubscribers(store, { settleMs: 0 });
+    attachAutoAdvanceSubscribers(store, { settleMs: 50 });
     hydrateWith({
       projects: [makeProject('org/a'), makeProject('org/b')],
       pinned: ['org/b'],
@@ -466,7 +474,7 @@ describe('attachAutoAdvanceSubscribers', () => {
       leftPane: 'github',
       narrowTab: 'github',
     });
-    await new Promise((r) => setTimeout(r, 5));
+    await vi.advanceTimersByTimeAsync(60);
     expect(store.getState().selectedProject).toBe('org/b');
     expect(store.getState().respondAllAgentIds).toBeNull();
     expect(store.getState().leftPane).toBe('activity');
@@ -474,7 +482,7 @@ describe('attachAutoAdvanceSubscribers', () => {
   });
 
   test('fire-time recompute: queue change between schedule and fire picks new head', async () => {
-    attachAutoAdvanceSubscribers(store, { settleMs: 30 });
+    attachAutoAdvanceSubscribers(store, { settleMs: 50 });
     hydrateWith({
       projects: [makeProject('org/a'), makeProject('org/b'), makeProject('org/c')],
       pinned: ['org/b', 'org/c'],
@@ -485,34 +493,54 @@ describe('attachAutoAdvanceSubscribers', () => {
     store.setState({
       agents: [makeFinding('x', 'org/c'), makeFinding('y', 'org/b')],
     });
-    await new Promise((r) => setTimeout(r, 60));
+    await vi.advanceTimersByTimeAsync(60);
     // The fire-time recompute should put us on org/b, not org/c.
     expect(store.getState().selectedProject).toBe('org/b');
   });
 });
 
 // ---------------------------------------------------------------------------
-// applySelection invariant — every selection write produces a consistent pair
+// Selection-write convention — every write to selectedAgentId pairs with source
 // ---------------------------------------------------------------------------
 
-describe('applySelection', () => {
-  let store: ReturnType<typeof createKookrStore>;
-
+describe('selection write convention', () => {
   beforeEach(() => {
     __resetAutoAdvanceForTests();
-    store = createKookrStore();
   });
 
   afterEach(() => {
     __resetAutoAdvanceForTests();
   });
 
-  test('writes selectedAgentId and selectedAgentSource together', () => {
-    store.getState().applySelection({ agentId: 'a1', source: 'manual' });
+  test('selectAgent tags source as manual', () => {
+    const store = createKookrStore();
+    store.getState().selectAgent('a1');
     expect(store.getState().selectedAgentId).toBe('a1');
     expect(store.getState().selectedAgentSource).toBe('manual');
+  });
 
-    store.getState().applySelection({ agentId: null, source: 'auto-advance' });
+  test('selectAgent(null) tags source as manual (engagement release)', () => {
+    const store = createKookrStore();
+    // pretend we landed via auto-advance previously
+    store.setState({ selectedAgentId: 'x', selectedAgentSource: 'auto-advance' });
+    store.getState().selectAgent(null);
+    expect(store.getState().selectedAgentId).toBeNull();
+    expect(store.getState().selectedAgentSource).toBe('manual');
+  });
+
+  test('selectProject(p, {source: "auto-advance"}) tags source as auto-advance after side-effect cleanup', () => {
+    const store = createKookrStore();
+    store.setState({
+      visibleProjectSummaries: [makeProject('org/x')],
+      projectSummaries: [makeProject('org/x')],
+      projectSidebarPrefs: makePrefs([], ['org/x']),
+      agents: [makeFinding('a1', 'org/x')],
+      // Pretend the user was manually engaged with another finding.
+      selectedAgentId: 'a1',
+      selectedAgentSource: 'manual',
+    });
+    store.getState().selectProject('org/x', { source: 'auto-advance' });
+    expect(store.getState().selectedProject).toBe('org/x');
     expect(store.getState().selectedAgentId).toBeNull();
     expect(store.getState().selectedAgentSource).toBe('auto-advance');
   });

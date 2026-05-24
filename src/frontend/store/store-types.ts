@@ -366,8 +366,7 @@ export type AutoAdvanceTickReason =
   | 'no_eligible_project'
   | 'already_top'
   | 'engaged'
-  | 'settling'
-  | 'scheduled';
+  | 'settling';
 
 /** What caused an actual auto-switch to fire (logged once per switch). */
 export type AutoAdvanceSwitchCause = 'activation' | 'queue_head_changed';
@@ -404,12 +403,15 @@ export interface AutoAdvanceSlice {
 
   /** Toggle the mode and fire activation telemetry + an immediate tick. */
   toggleAutoAdvance: () => void;
-  /**
-   * The single entry point for writing `selectedAgentId` alongside its
-   * provenance. All selection write paths in the codebase route through this.
-   */
-  applySelection: (input: { agentId: string | null; source: 'manual' | 'auto-advance' }) => void;
 }
+
+/**
+ * Convention: every store mutation that writes `selectedAgentId` MUST also
+ * write `selectedAgentSource` in the same `set()` call. Manual user actions
+ * tag `'manual'`; only the auto-advance branch in `selectProject(...)` writes
+ * `'auto-advance'`. Splitting the writes across two `set()` calls is a
+ * subscriber-flicker bug.
+ */
 
 export type KookrStore =
   & TransportSessionSlice

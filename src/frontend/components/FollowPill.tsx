@@ -30,6 +30,7 @@ export function FollowPill() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [, setTick] = useState(0);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const caretRef = useRef<HTMLButtonElement>(null);
 
   // Re-render every 15 s while a popover is open so "Ns ago" stays fresh.
   useEffect(() => {
@@ -48,6 +49,20 @@ export function FollowPill() {
     }
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
+  }, [menuOpen]);
+
+  // Escape closes the popover and returns focus to the caret (dialog pattern).
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setMenuOpen(false);
+        caretRef.current?.focus();
+      }
+    }
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
   }, [menuOpen]);
 
   const stateClass = enabled ? 'follow-pill-on' : 'follow-pill-off';
@@ -79,18 +94,22 @@ export function FollowPill() {
         <span className="follow-pill-label">FOLLOW</span>
       </button>
       <button
+        ref={caretRef}
         type="button"
         className="follow-pill-caret"
         onClick={() => setMenuOpen((v) => !v)}
         aria-label="Auto-Advance details"
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={menuOpen}
         title="Auto-Advance details"
       >
         <span aria-hidden="true">{'▾'}</span>
       </button>
       {menuOpen && (
-        <div className="follow-pill-menu" role="menu">
+        // Disclosure panel of static info + one action. Not a menu — its
+        // children are info rows, not menuitems. Use role="dialog" so screen
+        // readers expose the rows in reading order, not in menu-navigation mode.
+        <div className="follow-pill-menu" role="dialog" aria-label="Auto-Advance details">
           <div className="follow-pill-menu-row">
             <span className="follow-pill-menu-label">Status</span>
             <span className="follow-pill-menu-value">
@@ -114,7 +133,6 @@ export function FollowPill() {
           )}
           <button
             type="button"
-            role="menuitem"
             className="follow-pill-menu-item"
             onClick={() => {
               toggle();

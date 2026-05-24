@@ -66,7 +66,6 @@ export function describeTickReason(reason: AutoAdvanceTickReason | null): string
     case 'already_top': return 'Already on the highest-priority project';
     case 'no_eligible_project': return 'No project has active findings';
     case 'settling': return 'Switching in ~2s…';
-    case 'scheduled': return 'Switching shortly…';
     case null: return 'No decisions yet';
   }
 }
@@ -113,10 +112,6 @@ export function createAutoAdvanceSlice(set: StoreSet, get: StoreGet): AutoAdvanc
       // Activation tick is wired through the subscriber (which sees the
       // autoAdvanceEnabled change) so we don't need to invoke it directly.
     },
-
-    applySelection: ({ agentId, source }) => {
-      set({ selectedAgentId: agentId, selectedAgentSource: source });
-    },
   };
 }
 
@@ -152,14 +147,19 @@ interface AttachOptions {
  * module load from useStore.ts. Tests typically don't call this; they
  * exercise the pure functions and `evaluateAutoAdvance` directly.
  */
+function tearDownActiveRuntime(): void {
+  if (!activeRuntime) return;
+  activeRuntime.clearSettleTimer();
+  activeRuntime.detachStorage();
+  activeRuntime.unsubscribeStore();
+  activeRuntime = null;
+}
+
 export function attachAutoAdvanceSubscribers(
   store: ZustandStoreLike,
   options: AttachOptions = {},
 ): AutoAdvanceRuntime {
-  if (activeRuntime) activeRuntime.clearSettleTimer();
-  if (activeRuntime) activeRuntime.detachStorage();
-  if (activeRuntime) activeRuntime.unsubscribeStore();
-  activeRuntime = null;
+  tearDownActiveRuntime();
 
   const settleMs = options.settleMs ?? AUTO_ADVANCE_SETTLE_MS;
   const now = options.now ?? (() => Date.now());
@@ -237,11 +237,7 @@ export function attachAutoAdvanceSubscribers(
 
 /** Test-only: tear down the singleton subscriber + listeners + timer. */
 export function __resetAutoAdvanceForTests(): void {
-  if (!activeRuntime) return;
-  activeRuntime.clearSettleTimer();
-  activeRuntime.detachStorage();
-  activeRuntime.unsubscribeStore();
-  activeRuntime = null;
+  tearDownActiveRuntime();
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +268,6 @@ export function evaluateAutoAdvance(
     const head = queue[0] ?? null;
 
     let outcome: AutoAdvanceTickReason;
-    let cause: AutoAdvanceSwitchCause | null = null;
 
     if (head === null) {
       outcome = 'no_eligible_project';
@@ -288,8 +283,7 @@ export function evaluateAutoAdvance(
       // Distinguish activation (no current selectedProject in the queue) from
       // a queue-head-changed event purely for telemetry; the switch fires the
       // same way either way.
-      cause = state.selectedProject === null ? 'activation' : 'queue_head_changed';
-      ctx.scheduleSwitch(cause);
+      ctx.scheduleSwitch(state.selectedProject === null ? 'activation' : 'queue_head_changed');
     }
 
     const patch: Partial<KookrStore> = { lastTickReason: outcome };
