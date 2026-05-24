@@ -75,6 +75,7 @@ type LifecycleMessage = Extract<ClientMessage, {
     | 'cancelTask'
     | 'reopenTask'
     | 'renameTask'
+    | 'setTaskPriority'
     | 'deleteTask'
     | 'clearCompleted'
     | 'ackTerminatedTask'
@@ -290,6 +291,10 @@ export class LifecycleHandler {
 
       case 'renameTask':
         this.deps.taskStore.renameTask(msg.taskId, msg.name);
+        return { duplicate: false };
+
+      case 'setTaskPriority':
+        this.deps.taskStore.setTaskPriority(msg.taskId, msg.priority);
         return { duplicate: false };
 
       case 'clearCompleted': {

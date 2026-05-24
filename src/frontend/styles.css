@@ -674,6 +674,25 @@ kbd {
 }
 
 .finding-actions { display: flex; gap: 4px; margin-top: 6px; }
+.task-priority-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(251,191,36,0.35);
+  background: rgba(251,191,36,0.12);
+  color: var(--amber);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+}
+.task-priority-button.active {
+  color: var(--amber);
+  border-color: rgba(251,191,36,0.45);
+}
 .btn-xs {
   background: none;
   border: 1px solid var(--border-dim);

@@ -706,6 +706,25 @@ describe('TaskStore', () => {
     });
   });
 
+  describe('Task priority', () => {
+    test('setTaskPriority stores high priority and normal removes the field', () => {
+      const task = store.createTask('Fix priority bug', '/cwd');
+
+      const high = store.setTaskPriority(task.id, 'high');
+      expect(high.priority).toBe('high');
+      expect(store.getTask(task.id)!.priority).toBe('high');
+
+      const normal = store.setTaskPriority(task.id, 'normal');
+      expect(normal.priority).toBeUndefined();
+      expect(store.getTask(task.id)!.priority).toBeUndefined();
+      expect(normal.updatedAt.getTime()).toBeGreaterThanOrEqual(task.updatedAt.getTime());
+    });
+
+    test('setTaskPriority throws for unknown tasks', () => {
+      expect(() => store.setTaskPriority('missing', 'high')).toThrow('Task not found: missing');
+    });
+  });
+
   describe('Parent-child task linking', () => {
     test('createTask with parentTaskId links child to parent', () => {
       const parent = store.createTask('Parent task', '/cwd');

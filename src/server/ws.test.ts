@@ -845,6 +845,31 @@ describe('WebSocket MessageRouter', () => {
     }));
   });
 
+  test('setTaskPriority on shared tasks is rejected before local task lookup', async () => {
+    const beforeTasks = taskStore.listTasks();
+
+    await router.handleMessage({ type: 'setTaskPriority', taskId: 'shared:share-1', priority: 'high' });
+
+    expect(taskStore.listTasks()).toEqual(beforeTasks);
+    expect(sentMessages).toContainEqual(expect.objectContaining({
+      type: 'alert',
+      summary: 'Shared tasks are remote-owned',
+      severity: 'warning',
+    }));
+  });
+
+  test('setTaskPriority updates and clears local task priority', async () => {
+    const task = taskStore.createTask('Fix bug', '/cwd');
+
+    await router.handleMessage({ type: 'setTaskPriority', taskId: task.id, priority: 'high' });
+
+    expect(taskStore.getTask(task.id)?.priority).toBe('high');
+
+    await router.handleMessage({ type: 'setTaskPriority', taskId: task.id, priority: 'normal' });
+
+    expect(taskStore.getTask(task.id)?.priority).toBeUndefined();
+  });
+
   test('completeTask skips already-completed sessions', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Fix bug', '/cwd');

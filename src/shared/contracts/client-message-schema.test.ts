@@ -224,4 +224,24 @@ describe('ClientMessageSchema — happy path sanity', () => {
     const result = ClientMessageSchema.safeParse({ type: 'wat' });
     expect(result.success).toBe(false);
   });
+
+  test('accepts task priority updates and rejects invalid priority values', () => {
+    expect(ClientMessageSchema.safeParse({
+      type: 'setTaskPriority',
+      taskId: 'task-1',
+      priority: 'high',
+    }).success).toBe(true);
+
+    expect(ClientMessageSchema.safeParse({
+      type: 'setTaskPriority',
+      taskId: 'task-1',
+      priority: 'normal',
+    }).success).toBe(true);
+
+    expect(ClientMessageSchema.safeParse({
+      type: 'setTaskPriority',
+      taskId: 'task-1',
+      priority: 'low',
+    }).success).toBe(false);
+  });
 });

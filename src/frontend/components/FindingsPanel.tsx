@@ -207,6 +207,36 @@ function AgentProviderMark({
   );
 }
 
+function PriorityBadge({ agent }: { agent: AgentState }): React.ReactElement | null {
+  if (agent.priority !== 'high') return null;
+  return (
+    <span className="task-priority-badge" title="High priority">
+      High
+    </span>
+  );
+}
+
+function TaskPriorityButton({ agent, send }: {
+  agent: AgentState;
+  send: (msg: ClientMessage) => void;
+}): React.ReactElement | null {
+  if (!agent.taskId) return null;
+  const high = agent.priority === 'high';
+  return (
+    <button
+      className={`btn-xs task-priority-button${high ? ' active' : ''}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        send({ type: 'setTaskPriority', taskId: agent.taskId!, priority: high ? 'normal' : 'high' });
+      }}
+      title={high ? 'Mark task as normal priority' : 'Mark task as high priority'}
+      aria-label={high ? `Mark ${agent.taskName ?? agent.agentId} normal priority` : `Mark ${agent.taskName ?? agent.agentId} high priority`}
+    >
+      {high ? 'Normal' : 'Priority'}
+    </button>
+  );
+}
+
 function FindingCard({ agent, selected, send }: {
   agent: AgentState;
   selected: boolean;
@@ -308,6 +338,7 @@ function FindingCard({ agent, selected, send }: {
         <EditableName agent={agent} send={send} onBeforeEdit={() => {
           if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null; }
         }} />
+        <PriorityBadge agent={agent} />
         <div className="finding-context">
           <TaskIdCopyButton taskId={agent.taskId} compact />
           {showProjectBadge && agentProjectLabel(agent) && (
@@ -366,6 +397,7 @@ function FindingCard({ agent, selected, send }: {
           </div>
         )}
         <div className="finding-actions">
+          <TaskPriorityButton agent={agent} send={send} />
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); handleSkip(); }}>Skip</button>
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); setShowSnooze(true); }}>Snooze</button>
           <button className="btn-xs btn-fp" onClick={(e) => { e.stopPropagation(); handleFlagFP(); }} title="Mark as false positive">Flag FP</button>
@@ -446,6 +478,7 @@ function HealthyRow({ agent, selected, send }: {
               <span className="healthy-row-name" title={agent.taskName ?? agent.agentId}>
                 {agent.taskName ?? agent.agentId}
               </span>
+              <PriorityBadge agent={agent} />
               <TaskIdCopyButton taskId={agent.taskId} compact />
             </div>
             <div className="healthy-row-footer">
@@ -455,6 +488,7 @@ function HealthyRow({ agent, selected, send }: {
                 {healthyStatusLabel(agent.events, agent.startedAt)}
               </div>
               <div className="healthy-row-controls">
+                <TaskPriorityButton agent={agent} send={send} />
                 <button
                   className="btn-reply"
                   data-testid="reply-button"
@@ -635,10 +669,12 @@ function PendingRow({ agent, selected, send }: {
           <span className="pending-row-name" title={agent.taskName ?? agent.agentId}>
             {agent.taskName ?? agent.agentId}
           </span>
+          <PriorityBadge agent={agent} />
           <TaskIdCopyButton taskId={agent.taskId} compact />
         </div>
         <div className="pending-row-meta">
           Queued · waiting for slot
+          <TaskPriorityButton agent={agent} send={send} />
           {agent.taskId && (
             <button className="btn-xs btn-danger-xs" onClick={(e) => {
               e.stopPropagation();
@@ -687,10 +723,12 @@ function SnoozedRow({ agent, selected, send }: {
           <span className="snoozed-row-name" title={agent.taskName ?? agent.agentId}>
             {agent.taskName ?? agent.agentId}
           </span>
+          <PriorityBadge agent={agent} />
           <TaskIdCopyButton taskId={agent.taskId} compact />
         </div>
         <div className="snoozed-countdown">
           {agent.suppressed ? 'Paused' : `Snoozed · ${formatCountdown(agent.snoozedUntil!)}`}
+          <TaskPriorityButton agent={agent} send={send} />
           {!agent.suppressed && (
             <button
               className="btn-xs"
@@ -814,6 +852,7 @@ function CompletedRow({ agent, selected, send }: {
           <span className="completed-row-name" title={agent.taskName ?? agent.agentId}>
             {agent.taskName ?? agent.agentId}
           </span>
+          <PriorityBadge agent={agent} />
           <TaskIdCopyButton taskId={agent.taskId} compact />
           <span className="completed-row-meta">
             {isCancelled && <span className="completed-cancelled-label">cancelled</span>}
@@ -909,20 +948,10 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
     }
   }, [findings, isInitialLoad]);
 
-  // Sort findings oldest-first on initial load, default order otherwise
-  const displayFindings = useMemo(() => {
-    if (!isInitialLoad) return findings;
-    return [...findings].sort((a, b) => {
-      const aTime = a.anomaly?.detectedAt ? new Date(a.anomaly.detectedAt).getTime() : 0;
-      const bTime = b.anomaly?.detectedAt ? new Date(b.anomaly.detectedAt).getTime() : 0;
-      return aTime - bTime;
-    });
-  }, [findings, isInitialLoad]);
-
   // Group findings by anomaly type when ≥3 share the same type
   const { ungrouped: ungroupedFindings, groups: findingGroups } = useMemo(
-    () => groupFindings(displayFindings),
-    [displayFindings],
+    () => groupFindings(findings),
+    [findings],
   );
 
   function handlePanelClick(e: React.MouseEvent) {

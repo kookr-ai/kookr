@@ -148,7 +148,7 @@ export function ProjectSidebarManager({ onClose }: Props) {
 
           <div className="project-sidebar-manager-section">
             <div className="project-sidebar-manager-section-header">
-              <span>Visible</span>
+              <span>Visible priority order</span>
               <button className="btn-secondary btn-xs" onClick={resetProjectSidebar}>Reset sidebar</button>
             </div>
             {visibleRows.length === 0 ? (

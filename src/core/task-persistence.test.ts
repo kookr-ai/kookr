@@ -602,4 +602,33 @@ describe('Task Persistence — ralphLoop round-trip (issue #440)', () => {
     expect(tasks[0].ralphLoop?.stopPredicate).toBeUndefined();
     expect(tasks[0].ralphLoop?.status).toBe('paused');
   });
+
+  test('task priority high round-trips and legacy missing priority loads as normal', async () => {
+    const store = new TaskStore();
+    const task = createTaskForMutation(store, 'Priority task', '/cwd');
+    store.setTaskPriority(task.id, 'high');
+
+    await saveTasks(store.getAllTasks(), filePath);
+    const { tasks } = await loadTasks(filePath);
+
+    expect(tasks[0].priority).toBe('high');
+
+    writeFileSync(filePath, JSON.stringify({
+      version: 2,
+      lifetimeSpendUsd: 0,
+      tasks: [{
+        id: 'legacy',
+        prompt: 'Legacy task',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        status: 'open',
+        sessions: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+    }));
+
+    const legacy = await loadTasks(filePath);
+    expect(legacy.tasks[0].priority).toBeUndefined();
+  });
 });
