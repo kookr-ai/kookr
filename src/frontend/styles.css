@@ -554,8 +554,32 @@ kbd {
   color: var(--teal);
 }
 
-.finding-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.finding-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .finding-header-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.finding-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+}
+.finding-speech-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.finding-speech-timing {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+}
 
 /* Context line: project · branch · autonomy below task name */
 .finding-context {
@@ -5184,8 +5208,8 @@ textarea::-webkit-resizer { background: transparent; }
   50% { opacity: 0.6; }
 }
 
-/* Speak-finding button — mirrors .btn-voice so the response-row row reads as
-   a uniform STT/TTS pair. See docs/rfc/rfc-speak-finding-summary.md. */
+/* Speak-finding button. Card placement keeps the control next to the finding
+   context while reusing the compact audio-control treatment. */
 .btn-speak-finding {
   display: inline-flex;
   align-items: center;
@@ -5219,6 +5243,15 @@ textarea::-webkit-resizer { background: transparent; }
 .btn-speak-finding.error {
   border-color: #f87171;
   color: #f87171;
+}
+.btn-speak-finding-card {
+  width: 28px;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
 }
 
 /* Quota status display in status bar */
