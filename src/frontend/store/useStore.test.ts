@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createKookrStore, type KookrStore } from './useStore.js';
 import { __resetDndForTests, disableDnd, enableDnd } from '../hooks/useDnd.js';
 import type { AgentState } from '../../shared/protocol.js';
+import { getBugReportAlerts, resetBugReportRecorderForTests } from '../bug-report-recorder.js';
 
 describe('Kookr Zustand Store', () => {
   let store: ReturnType<typeof createKookrStore>;
@@ -16,6 +17,7 @@ describe('Kookr Zustand Store', () => {
       clear: () => localStore.clear(),
     });
     __resetDndForTests();
+    resetBugReportRecorderForTests();
     store = createKookrStore();
   });
 
@@ -127,6 +129,20 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().alerts).toHaveLength(1);
     expect(store.getState().alerts[0].agentId).toBe('agent-1');
     expect(store.getState().alerts[0].summary).toBe('Agent is stuck in a loop');
+    expect(getBugReportAlerts()[0]).toMatchObject({
+      agentId: 'agent-1',
+      summaryCategory: 'general',
+    });
+  });
+
+  test('dismissAlert does not remove reportable alert history', () => {
+    store.getState().handleAlert('agent-1', 'Malformed WebSocket message', 'error', 'payload failed schema validation');
+
+    store.getState().dismissAlert(0);
+
+    expect(store.getState().alerts).toHaveLength(0);
+    expect(getBugReportAlerts()).toHaveLength(1);
+    expect(getBugReportAlerts()[0].summaryCategory).toBe('malformed_websocket');
   });
 
   test('handleAlert stores optional details for recovery guidance', () => {
@@ -164,6 +180,8 @@ describe('Kookr Zustand Store', () => {
     try {
       store.getState().handleAlert('agent-1', 'Error: stuck loop');
       expect(store.getState().alerts).toHaveLength(0);
+      expect(getBugReportAlerts()).toHaveLength(1);
+      expect(getBugReportAlerts()[0].summary).toBe('Error: stuck loop');
     } finally {
       disableDnd();
     }

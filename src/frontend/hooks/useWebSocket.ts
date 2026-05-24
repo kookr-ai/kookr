@@ -4,6 +4,7 @@ import { initTelemetry, track } from '../telemetry.js';
 import type { ClientMessage } from '../../shared/protocol.js';
 import { isSystemResourceStatus } from '../resource-status.js';
 import type { TransportSessionSlice, TriageNavigationSlice } from '../store/store-types.js';
+import { recordInbound, recordOutbound } from '../bug-report-recorder.js';
 
 const RECONNECT_DELAY_MS = 2000;
 
@@ -13,6 +14,16 @@ export function parseServerMessageForClient(data: string): unknown | null {
   } catch {
     return null;
   }
+}
+
+export function recordAndParseServerMessageForClient(data: string): unknown | null {
+  const parsed = parseServerMessageForClient(data);
+  recordInbound(data, parsed);
+  return parsed;
+}
+
+export function recordClientMessageForSend(msg: ClientMessage): void {
+  recordOutbound(msg);
 }
 
 export function dispatchSnapshotMessageForClient(
@@ -106,7 +117,7 @@ export function useWebSocket() {
     };
 
     ws.onmessage = (event) => {
-      const parsed = parseServerMessageForClient(event.data);
+      const parsed = recordAndParseServerMessageForClient(String(event.data));
       if (!parsed || typeof parsed !== 'object' || !('type' in parsed)) return;
       try {
         const msg = parsed as Record<string, any>;
@@ -240,6 +251,7 @@ export function useWebSocket() {
 
   const send = useCallback((msg: ClientMessage): boolean => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
+      recordClientMessageForSend(msg);
       wsRef.current.send(JSON.stringify(msg));
       return true;
     }

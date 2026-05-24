@@ -2494,6 +2494,106 @@ kbd {
   box-shadow: 0 16px 48px rgba(0,0,0,0.4);
 }
 
+.bug-report-dialog {
+  border-radius: 8px;
+  width: min(880px, 94vw);
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.bug-report-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.bug-report-header h2 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.bug-report-header p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.bug-report-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.bug-report-field textarea,
+.bug-report-preview {
+  background: var(--bg);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font: 12px var(--font-mono);
+  padding: 10px;
+  resize: vertical;
+}
+
+.bug-report-field textarea {
+  min-height: 72px;
+}
+
+.bug-report-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bug-report-summary span {
+  border: 1px solid var(--border-dim);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.bug-report-error {
+  color: var(--red);
+  font-size: 12px;
+}
+
+.bug-report-preview-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.bug-report-preview {
+  flex: 1;
+  min-height: 220px;
+  white-space: pre;
+}
+
+.bug-report-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+@media (max-width: 768px) {
+  .bug-report-dialog {
+    width: 100vw;
+    max-width: 100vw;
+    max-height: 100dvh;
+    border-radius: 0;
+    overflow-y: auto;
+  }
+
+  .bug-report-preview {
+    min-height: 220px;
+  }
+}
+
 @media (min-width: 1440px) {
   .dialog {
     width: min(900px, 70vw);

@@ -2,6 +2,7 @@ import type { TriageNavigationSlice, StoreGet, StoreSet } from '../store-types.j
 import { isDndEnabled } from '../../hooks/useDnd.js';
 import { compareRoutableAgents } from '../../agent-priority-order.js';
 import { deriveProjectPriorityRanks } from '../../../shared/project-sidebar.js';
+import { recordReportableAlert } from '../../bug-report-recorder.js';
 
 const TERMINAL_FOCUS_STORAGE_KEY = 'kookr-terminal-focus-mode';
 
@@ -52,10 +53,11 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
     shortcutsArmed: true,
 
     handleAlert: (agentId, summary, severity, details) => {
+      const resolved = severity ?? (summary.startsWith('Error:') ? 'error' : 'info');
+      recordReportableAlert({ agentId, summary, details, severity: resolved });
       // DND silences in-app toasts at the emit site so anomaly detection keeps
       // running and findings still update; only the visual alert is suppressed.
       if (isDndEnabled()) return;
-      const resolved = severity ?? (summary.startsWith('Error:') ? 'error' : 'info');
       set((prev) => ({
         alerts: [...prev.alerts, { agentId, summary, details, severity: resolved, timestamp: new Date() }],
       }));

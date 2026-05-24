@@ -46,6 +46,19 @@ http://localhost:5173
 
 The backend runs on `4801` in dev mode, but the browser app is served by Vite on `5173`.
 
+## Send A Bug Report
+
+Use the bug-report button in the dashboard top bar. Kookr shows the complete JSON payload before download; attach that JSON file when reporting the issue.
+
+Include:
+
+- What you expected to happen.
+- What actually happened.
+- The approximate local time when it happened.
+- Whether you were connected locally, over LAN, or through a remote/share session.
+
+The V1 bundle is intentionally redacted by default. It does not include raw prompts, terminal output, hook logs, transcripts, screenshots, or full local paths.
+
 ## Terminal Panel Feels Too Small
 
 Use the dense-supervision controls before resizing your browser:

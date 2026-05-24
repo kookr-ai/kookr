@@ -1,13 +1,115 @@
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+
+import React, { useEffect } from 'react';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   dispatchAlertMessageForClient,
   dispatchCoordinatorSnapshotMessageForClient,
   dispatchSnapshotMessageForClient,
   parseServerMessageForClient,
+  recordAndParseServerMessageForClient,
+  recordClientMessageForSend,
+  useWebSocket,
 } from './useWebSocket.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import { getBugReportWireObservations, resetBugReportRecorderForTests } from '../bug-report-recorder.js';
+
+class RuntimeWebSocket {
+  static OPEN = 1;
+  static instances: RuntimeWebSocket[] = [];
+
+  readyState = RuntimeWebSocket.OPEN;
+  sent: string[] = [];
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onopen: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+
+  constructor(public readonly url: string) {
+    RuntimeWebSocket.instances.push(this);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(): void {
+    this.readyState = 3;
+  }
+}
+
+function WebSocketProbe({ onReady }: { onReady: (send: ReturnType<typeof useWebSocket>['send']) => void }) {
+  const { send } = useWebSocket();
+  useEffect(() => {
+    onReady(send);
+  }, [onReady, send]);
+  return null;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  resetBugReportRecorderForTests();
+  RuntimeWebSocket.instances = [];
+});
 
 describe('parseServerMessageForClient snapshot tolerance', () => {
+  it('records inbound and outbound observations through the mounted hook runtime path', async () => {
+    resetBugReportRecorderForTests();
+    RuntimeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', RuntimeWebSocket);
+    const container = document.createElement('div');
+    const root: Root = createRoot(container);
+    let send: ReturnType<typeof useWebSocket>['send'] | null = null;
+
+    await act(async () => {
+      root.render(React.createElement(WebSocketProbe, { onReady: (nextSend) => { send = nextSend; } }));
+    });
+
+    const socket = RuntimeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+    act(() => {
+      socket.onmessage?.({ data: '{not-json' });
+    });
+    expect(send?.({ type: 'respond', agentId: 'agent-1', input: 'private customer prompt' })).toBe(true);
+
+    const serialized = JSON.stringify(getBugReportWireObservations());
+    expect(serialized).toContain('"direction":"inbound"');
+    expect(serialized).toContain('"validationError":"json_parse_failed"');
+    expect(serialized).toContain('"direction":"outbound"');
+    expect(serialized).toContain('"type":"respond"');
+    expect(serialized).not.toContain('private customer prompt');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('records malformed inbound messages before returning null', () => {
+    resetBugReportRecorderForTests();
+
+    expect(recordAndParseServerMessageForClient('{not-json')).toBeNull();
+
+    expect(getBugReportWireObservations()[0]).toMatchObject({
+      direction: 'inbound',
+      parseOk: false,
+      validationError: 'json_parse_failed',
+    });
+  });
+
+  it('records outbound send metadata without retaining prompt values', () => {
+    resetBugReportRecorderForTests();
+
+    recordClientMessageForSend({ type: 'respond', agentId: 'agent-1', input: 'private customer prompt' });
+
+    const serialized = JSON.stringify(getBugReportWireObservations());
+    expect(serialized).toContain('"type":"respond"');
+    expect(serialized).toContain('"input"');
+    expect(serialized).not.toContain('private customer prompt');
+  });
+
+
   it('preserves unknown snapshot fields for additive server-message compatibility', () => {
     const parsed = parseServerMessageForClient(JSON.stringify({
       type: 'snapshot',

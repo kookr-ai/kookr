@@ -14,6 +14,7 @@ interface Props {
   onShowShortcuts: () => void;
   onOssView: () => void;
   onOperations: () => void;
+  onBugReport: () => void;
   operationsOpen?: boolean;
   onCoordinatorFindings: () => void;
   coordinatorFindingsOpen?: boolean;
@@ -64,7 +65,7 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusTriggerRef, onTerminalFocusToggle, onCostComparison, sweepSlot }: Props) {
+export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, onBugReport, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusTriggerRef, onTerminalFocusToggle, onCostComparison, sweepSlot }: Props) {
   const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
@@ -372,6 +373,14 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
               <path d="M3 12h4l3-8 4 16 3-8h4" />
             </svg>
             {operationsNeedsAttention && <span className="operations-alert-dot" />}
+          </button>
+          <button className="btn-icon" onClick={onBugReport} title="Bug report" aria-label="Bug report">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M8 2h8l4 4v16H4V2h4z" />
+              <path d="M16 2v5h5" />
+              <path d="M12 10v5" />
+              <path d="M12 18h.01" />
+            </svg>
           </button>
           {!compact && (
             <button
