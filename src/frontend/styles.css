@@ -8866,6 +8866,43 @@ button.act-tool-entry:focus-visible {
   margin-top: 6px;
 }
 
+.onboarding-shortcut-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(82px, max-content) 1fr;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.onboarding-shortcut-keys {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  min-width: 0;
+}
+
+.onboarding-shortcut-plus {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.onboarding-shortcut-desc {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+
 .onboarding-card-footer-hint {
   font-size: 12px;
   color: var(--text-muted);
@@ -9011,6 +9048,9 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   }
   .onboarding-nav {
     justify-content: space-between;
+  }
+  .onboarding-shortcut-grid {
+    grid-template-columns: 1fr;
   }
 }
 

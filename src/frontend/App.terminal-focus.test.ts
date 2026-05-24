@@ -69,7 +69,7 @@ describe('App terminal focus mode', () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1440 });
     localStorage.clear();
-    localStorage.setItem('kookr:onboarding:seen-v1', 'true');
+    localStorage.setItem('kookr:onboarding:seen-v2', 'true');
     localStorage.setItem('kookr-terminal-focus-mode', '1');
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
       cb(0);
@@ -167,7 +167,8 @@ describe('App terminal focus mode', () => {
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent('keydown', {
         altKey: true,
-        key: 't',
+        code: 'KeyT',
+        key: '†',
         bubbles: true,
         cancelable: true,
       }));
