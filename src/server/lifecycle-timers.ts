@@ -184,6 +184,20 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // --- Periodic token usage scan ---
   const tokenScanInterval = setInterval(async () => {
     try {
+      // Freshness probe: ask which transcripts grew on disk since the last
+      // scanAll. Used to keep the watchdog from minting stale_agent during a
+      // long streaming turn whose `usage` block hasn't finalized yet. Must run
+      // BEFORE scanAll so the byte-delta hasn't been consumed yet.
+      const growths = await tokenTracker.scanGrowth();
+      for (const g of growths) {
+        const task = taskStore.getTask(g.taskId);
+        if (!task) continue;
+        for (const session of task.sessions) {
+          if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {
+            watchdog.recordTokenActivity(session.tmuxSession);
+          }
+        }
+      }
       await tokenTracker.scanAll();
       let changed = false;
       for (const taskId of tokenTracker.getTrackedTaskIds()) {

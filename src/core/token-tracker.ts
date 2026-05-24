@@ -1,6 +1,17 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import type { TokenUsage } from './types.js';
 import { getPricing, estimateCost, type ModelPricing } from './pricing-tables.js';
+
+/**
+ * A transcript file that has grown since the last `scanAll`, but whose new bytes
+ * have not yet been parsed. Emitted by {@link TokenTracker.scanGrowth} so the
+ * watchdog can treat in-flight streaming as a freshness signal even before the
+ * final `usage` block lands.
+ */
+export interface TranscriptGrowth {
+  taskId: string;
+  bytesGained: number;
+}
 
 /**
  * Shape of transcript JSONL entries that carry cost/token data.
@@ -102,6 +113,32 @@ export class TokenTracker {
     for (const [path, state] of this.transcripts) {
       await this.scanOne(path, state);
     }
+  }
+
+  /**
+   * Stat each registered transcript and report any whose on-disk size exceeds
+   * the last byte offset consumed by {@link scanAll}. This is a near-zero-cost
+   * freshness probe used to suppress watchdog `stale_agent` findings while an
+   * LLM is mid-stream — long thinking turns finalize their `usage` block only
+   * at message end, but bytes arrive continuously in the meantime.
+   *
+   * Call this BEFORE `scanAll` on the same tick so `scanAll` does not advance
+   * `state.offset` past the growth this probe is supposed to observe.
+   */
+  async scanGrowth(): Promise<TranscriptGrowth[]> {
+    const growths: TranscriptGrowth[] = [];
+    for (const [path, state] of this.transcripts) {
+      let s;
+      try {
+        s = await stat(path);
+      } catch {
+        continue;
+      }
+      if (s.size > state.offset) {
+        growths.push({ taskId: state.taskId, bytesGained: s.size - state.offset });
+      }
+    }
+    return growths;
   }
 
   /** Scan only transcripts belonging to a specific task. Returns true if usage changed. */

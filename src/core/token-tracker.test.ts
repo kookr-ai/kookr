@@ -318,6 +318,58 @@ describe('TokenTracker', () => {
     });
   });
 
+  describe('scanGrowth (freshness probe)', () => {
+    test('reports bytes gained since the last scanAll', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 1, output_tokens: 1 } } },
+      ]);
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      // Simulate a mid-stream growth that hasn't finalized into a parsable line yet.
+      appendFileSync(path, '{"type":"assistant","message":{"id":"msg_b","model":"claude-sonnet-4-6"', 'utf-8');
+
+      const growths = await tracker.scanGrowth();
+      expect(growths).toHaveLength(1);
+      expect(growths[0].taskId).toBe('task-1');
+      expect(growths[0].bytesGained).toBeGreaterThan(0);
+    });
+
+    test('returns empty when no transcripts have grown', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 1, output_tokens: 1 } } },
+      ]);
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      const growths = await tracker.scanGrowth();
+      expect(growths).toEqual([]);
+    });
+
+    test('skips missing transcript files', async () => {
+      tracker.register('/nonexistent/path.jsonl', 'task-ghost');
+      const growths = await tracker.scanGrowth();
+      expect(growths).toEqual([]);
+    });
+
+    test('skips transcripts that shrank below the previous offset (rotation)', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 1, output_tokens: 1 } } },
+      ]);
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      // File truncated/rotated to a smaller size — stat.size < state.offset.
+      writeFileSync(path, '', 'utf-8');
+
+      const growths = await tracker.scanGrowth();
+      expect(growths).toEqual([]);
+    });
+  });
+
   describe('usage deduplication', () => {
     test('deduplicates multiple content blocks sharing one message.id', async () => {
       const path = join(dir, 'transcript.jsonl');

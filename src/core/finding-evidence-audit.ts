@@ -95,10 +95,20 @@ export class FindingEvidenceAuditor {
     agentId: string,
     anomaly: Anomaly | null,
     events: AgentEvent[],
-    options: { source: FindingEvidenceObservationSource; paneText?: string; now?: Date } = { source: 'event' },
+    options: {
+      source: FindingEvidenceObservationSource;
+      paneText?: string;
+      now?: Date;
+      /**
+       * When `anomaly` is null, optionally tag the resolution with the reason
+       * the supervisor swallowed the verdict. Used by M3/M4 detector-proposal
+       * pipelines to distinguish natural resolution from suppression.
+       */
+      suppressionReason?: 'subagent_running';
+    } = { source: 'event' },
   ): boolean {
     const now = options.now ?? new Date();
-    if (!anomaly) return this.resolve(agentId, events, now);
+    if (!anomaly) return this.resolve(agentId, events, now, options.suppressionReason);
 
     const existing = this.activeRecord(agentId);
     if (existing && anomalyFingerprintFromRecord(existing) !== anomalyFingerprint(anomaly)) {
@@ -124,7 +134,12 @@ export class FindingEvidenceAuditor {
     return JSON.stringify(record) !== before;
   }
 
-  resolve(agentId: string, events: AgentEvent[], now: Date = new Date()): boolean {
+  resolve(
+    agentId: string,
+    events: AgentEvent[],
+    now: Date = new Date(),
+    suppressionReason?: 'subagent_running',
+  ): boolean {
     const activeId = this.activeByAgent.get(agentId);
     if (!activeId) return false;
     const record = this.records.get(activeId);
@@ -148,12 +163,17 @@ export class FindingEvidenceAuditor {
     if (record.observations.length > this.opts.maxObservationsPerRecord) {
       record.observations = record.observations.slice(-this.opts.maxObservationsPerRecord);
     }
-    record.verdict = ageMs <= this.opts.transientGraceMs ? 'transient_too_fast' : 'resolved';
-    record.notes = [
-      ...(record.verdict === 'transient_too_fast'
-        ? ['Finding resolved inside the timing grace window after more activity arrived.']
-        : ['Finding resolved after subsequent state change.']),
-    ];
+    if (suppressionReason) {
+      record.verdict = 'possible_false_positive';
+      record.notes = [`Finding suppressed: ${suppressionReason}.`];
+    } else {
+      record.verdict = ageMs <= this.opts.transientGraceMs ? 'transient_too_fast' : 'resolved';
+      record.notes = [
+        ...(record.verdict === 'transient_too_fast'
+          ? ['Finding resolved inside the timing grace window after more activity arrived.']
+          : ['Finding resolved after subsequent state change.']),
+      ];
+    }
     return JSON.stringify(record) !== before;
   }
 

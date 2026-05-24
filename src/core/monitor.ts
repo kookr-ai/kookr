@@ -256,7 +256,39 @@ export class Monitor {
       || verdict.status === 'hook_disconnected';
 
     if (actionable) {
-      const anomaly = verdict.anomaly;
+      const rawAnomaly = verdict.anomaly;
+      const anomaly = this.suppressIfSubagentsRunning(rawAnomaly, agentId);
+      if (anomaly === null) {
+        // Subagent suppressor swallowed the verdict. Clear any prior queued
+        // watchdog-owned finding that the same suppressor would also have
+        // swallowed, mirroring the non-actionable purge guard below: only
+        // purge watchdog-owned types, and only when no event-derived anomaly
+        // is currently shadowing the queue.
+        recordSuppression(rawAnomaly.type);
+        const queued = this.attentionQueue.peek(agentId);
+        const isWatchdogOwnedType = queued?.type === 'needs_input'
+          || queued?.type === 'permission_blocked'
+          || queued?.type === 'stale_agent'
+          || queued?.type === 'hook_disconnected';
+        if (queued && isWatchdogOwnedType && !this.getEventAnomaly(agentId)) {
+          this.attentionQueue.purge(agentId);
+        }
+        // Audit trail: surface the suppressed verdict as a resolved record
+        // tagged possible_false_positive. Two-step (create-then-resolve) so
+        // the M3/M4 review pipeline sees the would-have-been anomaly, not
+        // just a silent drop.
+        const events = this.agentEvents.get(agentId) ?? [];
+        this.findingEvidenceAuditor.observe(agentId, rawAnomaly, events, {
+          source: 'watchdog_tick',
+          paneText: options.paneText,
+        });
+        this.findingEvidenceAuditor.observe(agentId, null, events, {
+          source: 'watchdog_tick',
+          paneText: options.paneText,
+          suppressionReason: 'subagent_running',
+        });
+        return true;
+      }
       // Suppression tracker opts the agent out of queue entry but the UI still
       // needs to reflect the suppressed state, so report "changed" either way.
       if (this.suppressionTracker?.shouldSuppress(agentId, anomaly.type)) {
@@ -490,20 +522,34 @@ export class Monitor {
   }
 
   /**
-   * Suppress needs_input when one or more background subagents are still running
-   * for the agent. Other anomaly types pass through unchanged.
+   * Suppress watchdog-routed anomaly types when one or more background subagents
+   * are still running for the agent. Other anomaly types pass through unchanged.
    *
-   * The parent agent's Stop hook fires whenever its turn ends — including while
-   * waiting for a background subagent (Agent tool with run_in_background: true)
-   * to complete. Without this gate every such Stop is misclassified as
-   * needs_input. See docs/rfc/rfc-subagent-aware-needs-input.md.
+   * Three types are eligible: `needs_input`, `stale_agent`, `hook_disconnected`.
+   *
+   * - `needs_input`: the parent's Stop hook fires whenever its turn ends, including
+   *   while waiting on a `run_in_background` subagent. See rfc-subagent-aware-needs-input.md.
+   * - `stale_agent` / `hook_disconnected`: while a background subagent is doing the
+   *   work, the parent emits no hook events for minutes and its pane may not change
+   *   meaningfully — the watchdog tick would otherwise mint a false-positive finding.
+   *   See rfc-supervisor-stale-agent-false-positives.md.
+   *
+   * `permission_blocked` is deliberately excluded — a parent blocked on permission
+   * is genuinely blocked regardless of subagent state.
    *
    * This helper is side-effect free w.r.t. recordSuppression so it can be safely
-   * called from both write (processEvents) and read (getEventAnomaly) paths.
-   * The write path increments the counter; the read path does not.
+   * called from both write (processEvents, applyWatchdogVerdict) and read
+   * (getEventAnomaly) paths. The write paths increment the counter.
    */
   private suppressIfSubagentsRunning(anomaly: Anomaly | null, agentId: string): Anomaly | null {
-    if (anomaly?.type !== 'needs_input') return anomaly;
+    if (!anomaly) return anomaly;
+    if (
+      anomaly.type !== 'needs_input'
+      && anomaly.type !== 'stale_agent'
+      && anomaly.type !== 'hook_disconnected'
+    ) {
+      return anomaly;
+    }
     const remaining = this.evictStaleSubagents(agentId, Date.now());
     return remaining > 0 ? null : anomaly;
   }
