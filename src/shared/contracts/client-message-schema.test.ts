@@ -46,6 +46,31 @@ describe('summarizeZodIssues', () => {
     } as unknown as z.ZodError;
     expect(summarizeZodIssues(fakeError)).toContain('config.dailyPrLimit');
   });
+
+  test('includes the rejected value from payload context when Zod omits it from the message', () => {
+    const payload = { type: 'doesNotExist', foo: 'bar' };
+    const result = ClientMessageSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const summary = summarizeZodIssues(result.error, payload);
+      expect(summary).toContain('type');
+      expect(summary).toContain('doesNotExist');
+    }
+  });
+
+  test('does not confuse a rejected value with an allowed value substring', () => {
+    const payload = {
+      type: 'telemetry',
+      events: [{ type: 'tab', timestamp: '2026-05-24T10:00:00.000Z', sessionId: 's1', platform: 'linux' }],
+    };
+    const result = ClientMessageSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const summary = summarizeZodIssues(result.error, payload);
+      expect(summary).toContain('events.0.type');
+      expect(summary).toContain('"tab"');
+    }
+  });
 });
 
 describe('ClientMessageSchema — happy path sanity', () => {

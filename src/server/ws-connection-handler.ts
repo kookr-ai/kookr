@@ -239,7 +239,7 @@ export function handleWsConnection(
             agentId: '',
             severity: 'critical',
             summary: 'Malformed WebSocket message: payload failed schema validation',
-            details: summarizeZodIssues(result.error),
+            details: summarizeZodIssues(result.error, parsed),
           }));
         }
         return;
