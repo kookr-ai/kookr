@@ -3,6 +3,10 @@ import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { track, trackClick } from '../telemetry.js';
 import { agentProviderPresentation, formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch, worktreeHealthLabel, worktreeHealthTitle, turnStateLabel, turnStateClass } from '../presentation.js';
+import {
+  formatSpeakFindingTimingLine,
+  formatSpeakFindingTimingTitle,
+} from '../speech-presentation.js';
 import { Tooltip } from './Tooltip.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -10,6 +14,7 @@ import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import { useDnd } from '../hooks/useDnd.js';
 import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
+import { useSpeakFinding, type SpeakFindingStatus } from '../hooks/useSpeakFinding.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { sendRalphLoopCommand, type RalphLoopCommand } from '../ralph-loop-api.js';
 import { CoordinatorTaskChipView, coordinatorChipForTask } from './CoordinatorSurfaces.js';
@@ -18,6 +23,8 @@ export const HEALTHY_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.healthy';
 export const PENDING_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.pending';
 export const SNOOZED_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.snoozed';
 export const COMPLETED_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.completed';
+
+const SPEAK_FINDING_STOP_OTHERS_EVENT = 'kookr:speak-finding-stop-others';
 
 interface Props {
   findings: AgentState[];
@@ -237,6 +244,89 @@ function TaskPriorityButton({ agent, send }: {
   );
 }
 
+function speakFindingLabel(status: SpeakFindingStatus, agentLabel: string, errorReason?: string): string {
+  switch (status) {
+    case 'loading':
+      return `Loading finding summary for ${agentLabel}`;
+    case 'playing':
+      return `Stop spoken finding summary for ${agentLabel}`;
+    case 'suppressed':
+      return errorReason === 'audio-context-suspended'
+        ? `Audio suppressed for ${agentLabel}; bring this tab to the foreground and press again`
+        : `Audio suppressed for ${agentLabel} by sound or Do Not Disturb settings`;
+    case 'error':
+      return `Speak finding summary for ${agentLabel} failed (${errorReason ?? 'unknown'}); press to retry`;
+    case 'idle':
+      return `Speak finding summary for ${agentLabel}`;
+  }
+}
+
+function SpeakFindingCardControl({ agent, selected }: { agent: AgentState; selected: boolean }): React.ReactElement | null {
+  const ttsAvailable = useKookrStore((s) => Boolean(s.ttsUrl));
+  const speakFinding = useSpeakFinding({
+    agentId: agent.agentId,
+    anomalyType: agent.anomaly?.type ?? null,
+    ttsAvailable,
+  });
+  const agentLabel = agent.taskName ?? agent.agentId;
+
+  useEffect(() => {
+    if (!selected && (speakFinding.state.status === 'loading' || speakFinding.state.status === 'playing')) {
+      speakFinding.stop();
+    }
+  }, [selected, speakFinding.state.status, speakFinding.stop]);
+
+  useEffect(() => {
+    function handleStopOthers(event: Event) {
+      const detail = (event as CustomEvent<{ agentId?: string }>).detail;
+      if (detail?.agentId !== agent.agentId) {
+        speakFinding.stop();
+      }
+    }
+
+    window.addEventListener(SPEAK_FINDING_STOP_OTHERS_EVENT, handleStopOthers);
+    return () => window.removeEventListener(SPEAK_FINDING_STOP_OTHERS_EVENT, handleStopOthers);
+  }, [agent.agentId, speakFinding.stop]);
+
+  if (!agent.anomaly || !ttsAvailable) return null;
+
+  const timingLine = formatSpeakFindingTimingLine(speakFinding.state.timings);
+  const timingTitle = formatSpeakFindingTimingTitle(speakFinding.state.timings);
+  const buttonLabel = speakFindingLabel(speakFinding.state.status, agentLabel, speakFinding.state.errorReason);
+  const title = timingTitle ? `${buttonLabel}\n\n${timingTitle}` : buttonLabel;
+
+  return (
+    <span className="finding-speech-control" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className={`btn-speak-finding btn-speak-finding-card ${speakFinding.state.status}`}
+        data-testid="speak-finding-button"
+        data-agent-id={agent.agentId}
+        aria-label={buttonLabel}
+        title={title}
+        onClick={() => {
+          useKookrStore.getState().selectAgent(agent.agentId);
+          window.dispatchEvent(new CustomEvent(SPEAK_FINDING_STOP_OTHERS_EVENT, { detail: { agentId: agent.agentId } }));
+          track({ type: 'shortcut_used', key: 'click', action: 'speak_finding', context: 'finding_card' });
+          speakFinding.speak();
+        }}
+      >
+        <span aria-hidden="true">
+          {speakFinding.state.status === 'loading' && '…'}
+          {speakFinding.state.status === 'playing' && '⏸'}
+          {speakFinding.state.status === 'suppressed' && '🔇'}
+          {(speakFinding.state.status === 'idle' || speakFinding.state.status === 'error') && '🔊'}
+        </span>
+      </button>
+      {timingLine && (
+        <span className="finding-speech-timing" title={timingTitle}>
+          {timingLine}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function FindingCard({ agent, selected, send }: {
   agent: AgentState;
   selected: boolean;
@@ -328,6 +418,7 @@ function FindingCard({ agent, selected, send }: {
             )}
           </span>
           <span className="finding-meta">
+            <SpeakFindingCardControl agent={agent} selected={selected} />
             {agent.anomaly?.detectedAt && formatAge(agent.anomaly.detectedAt) && (
               <span className={`age-badge ${ageColor(agent.anomaly.detectedAt)}`}>
                 waiting {formatAge(agent.anomaly.detectedAt)}
@@ -572,12 +663,17 @@ function FindingGroup({ type, agents, selectedAgentId, send }: {
 }) {
   const [expanded, setExpanded] = useState(false);
   const { setRespondAllAgentIds, selectAgent } = useKookrStore();
+  const selectedInGroup = Boolean(selectedAgentId && agents.some((agent) => agent.agentId === selectedAgentId));
   // A `needs_input` group can mix completed turns and explicit AskUserQuestion
   // waits. The header should only read as a completed turn when every member
   // is one — otherwise pick a non-completed member so it stays "Needs Input".
   // See issue #358.
   const headerAgent = agents.find((a) => a.turnState !== 'completed_turn') ?? agents[0];
   const cls = headerAgent ? severityClass(headerAgent) : '';
+
+  useEffect(() => {
+    if (selectedInGroup) setExpanded(true);
+  }, [selectedInGroup]);
 
   function handleRespondAll(e: React.MouseEvent) {
     e.stopPropagation();

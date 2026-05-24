@@ -14,6 +14,7 @@ import type {
   SpeakFindingErrorResponse,
   SpeakFindingResponse,
 } from '../../shared/contracts/speech.js';
+import type { SpeakFindingTimings } from '../speech-presentation.js';
 
 export type SpeakFindingStatus = 'idle' | 'loading' | 'playing' | 'suppressed' | 'error';
 
@@ -21,6 +22,7 @@ export interface SpeakFindingState {
   status: SpeakFindingStatus;
   errorReason?: string;
   cached?: boolean;
+  timings?: SpeakFindingTimings;
 }
 
 interface SpeakFindingDeps {
@@ -83,6 +85,12 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   const buf = new Uint8Array(len);
   for (let i = 0; i < len; i += 1) buf[i] = binary.charCodeAt(i);
   return buf.buffer;
+}
+
+function nowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
 }
 
 interface UseSpeakFindingArgs {
@@ -189,6 +197,7 @@ export function useSpeakFinding(
 
     const ac = new AbortController();
     abortRef.current = ac;
+    const requestStartedAt = nowMs();
     setState({ status: 'loading' });
 
     void (async () => {
@@ -217,6 +226,7 @@ export function useSpeakFinding(
       }
 
       const payload = (await response.json().catch(() => null)) as SpeakFindingResponse | null;
+      const payloadReceivedAt = nowMs();
       if (ac.signal.aborted) return;
       if (!payload || typeof payload.audioBase64 !== 'string') {
         logDecision(context, 'audio_context_error', 'bad_response');
@@ -224,18 +234,34 @@ export function useSpeakFinding(
         return;
       }
 
+      const baseTimings: SpeakFindingTimings = {
+        requestMs: payloadReceivedAt - requestStartedAt,
+        llmMs: payload.llmMs,
+        ttsMs: payload.ttsMs,
+        audioMs: payload.durationMs,
+        cached: payload.cached,
+        usedFallback: payload.usedFallback,
+      };
+      setState({ status: 'loading', cached: payload.cached, timings: baseTimings });
+
       const ctx = new AudioContext();
       ctxRef.current = ctx;
       let buffer: AudioBuffer;
+      const decodeStartedAt = nowMs();
       try {
         buffer = await ctx.decodeAudioData(base64ToArrayBuffer(payload.audioBase64));
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         logDecision(context, 'audio_context_error', `decode_failed:${reason.slice(0, 80)}`);
         cleanup();
-        setState({ status: 'error', errorReason: 'decode-failed' });
+        setState({ status: 'error', errorReason: 'decode-failed', cached: payload.cached, timings: baseTimings });
         return;
       }
+      const decodedAt = nowMs();
+      const decodedTimings: SpeakFindingTimings = {
+        ...baseTimings,
+        decodeMs: decodedAt - decodeStartedAt,
+      };
       // Abort can fire between fetch resolution and decodeAudioData completion;
       // a stale agentId means this audio belongs to a previous finding and
       // playing it now would mismatch the visible detail panel.
@@ -256,24 +282,37 @@ export function useSpeakFinding(
       source.buffer = buffer;
       source.connect(ctx.destination);
       sourceRef.current = source;
+      let playbackStartedAt = decodedAt;
+      let currentTimings = decodedTimings;
 
       source.onended = () => {
         if (sourceRef.current === source) {
           sourceRef.current = null;
+          const endedTimings: SpeakFindingTimings = {
+            ...currentTimings,
+            playedMs: nowMs() - playbackStartedAt,
+          };
           cleanup();
-          setState({ status: 'idle' });
+          setState({ status: 'idle', cached: payload.cached, timings: endedTimings });
         }
       };
 
       try {
         source.start();
+        playbackStartedAt = nowMs();
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         logDecision(context, 'audio_context_error', `start_failed:${reason.slice(0, 80)}`);
         cleanup();
-        setState({ status: 'error', errorReason: 'start-failed' });
+        setState({ status: 'error', errorReason: 'start-failed', cached: payload.cached, timings: decodedTimings });
         return;
       }
+
+      const playTimings: SpeakFindingTimings = {
+        ...decodedTimings,
+        timeToStartMs: playbackStartedAt - requestStartedAt,
+      };
+      currentTimings = playTimings;
 
       // Detect the case where the tab is backgrounded so AudioContext stays
       // 'suspended' after start() — audio would silently never play.
@@ -283,7 +322,7 @@ export function useSpeakFinding(
           audioContextFinalState: ctx.state,
         });
         updateAudioAlertDecision(decision.id, { audioContextFinalState: ctx.state });
-        setState({ status: 'suppressed', errorReason: 'audio-context-suspended', cached: payload.cached });
+        setState({ status: 'suppressed', errorReason: 'audio-context-suspended', cached: payload.cached, timings: playTimings });
         return;
       }
 
@@ -291,7 +330,7 @@ export function useSpeakFinding(
         audioContextInitialState: ctx.state,
         audioContextFinalState: ctx.state,
       });
-      setState({ status: 'playing', cached: payload.cached });
+      setState({ status: 'playing', cached: payload.cached, timings: playTimings });
     })();
   }, [agentId, anomalyType, ttsAvailable, state.status, stop, fetcher, cleanup]);
 

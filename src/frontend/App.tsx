@@ -353,7 +353,9 @@ export function App() {
           focused?.tagName === 'TEXTAREA' ||
           (focused?.isContentEditable ?? false);
         if (!inEditable) {
-          const speakButton = document.querySelector('[data-testid="speak-finding-button"]') as HTMLButtonElement | null;
+          const state = useKookrStore.getState();
+          const speakButton = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-testid="speak-finding-button"]'))
+            .find((button) => button.dataset.agentId === state.selectedAgentId) ?? null;
           if (speakButton && !speakButton.disabled) {
             e.preventDefault();
             track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.speak_finding), action: 'speak_finding', context: 'global' });
