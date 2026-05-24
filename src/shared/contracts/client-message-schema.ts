@@ -17,6 +17,7 @@ import type { ClientMessage } from './messages.js';
 const agentSelection = z.enum(['claude-code', 'codex-cli', 'round-robin']);
 const playbookScope = z.enum(['project', 'user', 'plugin']);
 const launchDependency = z.enum(['kb']);
+const taskPriorityUpdate = z.enum(['high', 'normal']);
 const permissionRequestBinding = z.object({
   requestId: z.string(),
   toolName: z.string(),
@@ -170,6 +171,7 @@ const ClientMessageSchemaImpl = z.union([
   z.object({ type: z.literal('reopenTask'), taskId: z.string() }),
   z.object({ type: z.literal('deleteTask'), taskId: z.string() }),
   z.object({ type: z.literal('renameTask'), taskId: z.string(), name: z.string() }),
+  z.object({ type: z.literal('setTaskPriority'), taskId: z.string(), priority: taskPriorityUpdate }),
   z.object({ type: z.literal('stop'), agentId: z.string() }),
   z.object({ type: z.literal('reflect') }),
   z.object({ type: z.literal('listPlaybooks'), cwd: z.string() }),

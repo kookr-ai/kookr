@@ -9,6 +9,7 @@ import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
 import { track } from './telemetry.js';
 import { buildAgentBuckets } from './agent-buckets.js';
+import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
 import { DetailPanel } from './components/DetailPanel.js';
@@ -135,6 +136,7 @@ export function App() {
     toggleProjectSidebar,
     projectSummaries,
     projectSummariesHydrated,
+    projectSidebarPrefs,
     showAchievements,
     toggleAchievementsPanel,
     workspaceEnabled,
@@ -455,6 +457,10 @@ export function App() {
   }, [agents, agentsHydrated, projectSummaries, projectSummariesHydrated, selectedProject]);
 
   const selectedAgent = agents.find((a) => a.agentId === selectedAgentId) ?? null;
+  const projectPriorityRanks = useMemo(
+    () => deriveProjectPriorityRanks(projectSummaries, projectSidebarPrefs),
+    [projectSummaries, projectSidebarPrefs],
+  );
   const {
     filteredAgents,
     pending,
@@ -464,7 +470,10 @@ export function App() {
     healthy,
     activeTaskCount,
     completedTaskCount,
-  } = useMemo(() => buildAgentBuckets(agents, selectedProject, coordinator), [agents, selectedProject, coordinator]);
+  } = useMemo(
+    () => buildAgentBuckets(agents, selectedProject, coordinator, projectPriorityRanks),
+    [agents, selectedProject, coordinator, projectPriorityRanks],
+  );
 
   useEffect(() => {
     if (!isMobileViewport) {

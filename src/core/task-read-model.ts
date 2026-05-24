@@ -4,7 +4,7 @@ import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
-import type { TaskDependencyEdge, TaskMetadata } from '../shared/contracts/task.js';
+import type { TaskDependencyEdge, TaskMetadata, TaskPriority } from '../shared/contracts/task.js';
 
 export type {
   BurnedOutTarget,
@@ -62,6 +62,8 @@ export interface CreateTaskOptions {
   projectId?: string;
   /** Operator-declared launch intent metadata, used by coordinator detectors. */
   metadata?: TaskMetadata;
+  /** User-declared task priority. Omitted means normal priority. */
+  priority?: TaskPriority;
 }
 
 export interface TaskLaunchHealthSummary {
@@ -105,6 +107,8 @@ export interface Task {
   projectId?: string;
   /** Operator-declared launch intent metadata, used by coordinator detectors. */
   metadata?: TaskMetadata;
+  /** User-declared task priority. Omitted means normal priority. */
+  priority?: TaskPriority;
   status: TaskStatus;
   sessions: SessionInfo[];
   tokenUsage?: TokenUsage;

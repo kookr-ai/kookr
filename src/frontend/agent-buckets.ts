@@ -3,6 +3,7 @@ import type { CoordinatorSnapshotState } from '../shared/contracts/coordinator.j
 import type { TaskStatus } from '../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { isActiveFinding } from './store/finding-helpers.js';
+import { compareRoutableAgents } from './agent-priority-order.js';
 
 export interface AgentBuckets {
   filteredAgents: AgentState[];
@@ -31,29 +32,34 @@ export function buildAgentBuckets(
   agents: AgentState[],
   selectedProject: string | null,
   coordinator?: CoordinatorSnapshotState | null,
+  projectPriorityRanks?: ReadonlyMap<string, number>,
 ): AgentBuckets {
   const chipTaskIds = new Set((coordinator?.chips ?? []).map((chip) => chip.taskId));
-  const filteredAgents = (selectedProject
+  const originalIndex = new Map(agents.map((agent, index) => [agent.agentId, index]));
+  const scopedAgents = (selectedProject
     ? agents.filter((agent) => agent.projectId === selectedProject)
-    : agents)
-    .map((agent, index) => ({ agent, index }))
-    .sort((left, right) => {
-      const leftHasChip = left.agent.taskId ? chipTaskIds.has(left.agent.taskId) : false;
-      const rightHasChip = right.agent.taskId ? chipTaskIds.has(right.agent.taskId) : false;
-      if (leftHasChip !== rightHasChip) return leftHasChip ? -1 : 1;
-      return left.index - right.index;
-    })
-    .map(({ agent }) => agent);
+    : agents);
+  const filteredAgents = [...scopedAgents].sort((left, right) => compareRoutableAgents(left, right, {
+      chipTaskIds,
+      originalIndex,
+      projectPriorityRanks,
+  }));
 
   return {
     filteredAgents,
-    pending: filteredAgents.filter((agent) => agent.taskStatus === 'pending'),
-    completed: filteredAgents.filter((agent) => isTerminalTaskStatus(agent.taskStatus)),
-    snoozed: filteredAgents
+    pending: scopedAgents
+      .filter((agent) => agent.taskStatus === 'pending')
+      .sort((left, right) => compareRoutableAgents(left, right, { chipTaskIds, originalIndex, projectPriorityRanks })),
+    completed: scopedAgents.filter((agent) => isTerminalTaskStatus(agent.taskStatus)),
+    snoozed: scopedAgents
       .filter((agent) => agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && (!!agent.snoozedUntil || agent.suppressed))
       .sort((a, b) => (a.snoozedUntil ?? 0) - (b.snoozedUntil ?? 0)),
-    findings: filteredAgents.filter((agent) => agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && isActiveFinding(agent)),
-    healthy: filteredAgents.filter(isHealthyRunningAgent),
+    findings: scopedAgents
+      .filter((agent) => agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && isActiveFinding(agent))
+      .sort((left, right) => compareRoutableAgents(left, right, { chipTaskIds, originalIndex, projectPriorityRanks })),
+    healthy: scopedAgents
+      .filter(isHealthyRunningAgent)
+      .sort((left, right) => compareRoutableAgents(left, right, { chipTaskIds, originalIndex, projectPriorityRanks, includeSeverity: false })),
     activeTaskCount: agents.filter((agent) => !isTerminalTaskStatus(agent.taskStatus)).length,
     completedTaskCount: agents.filter((agent) => isTerminalTaskStatus(agent.taskStatus)).length,
   };

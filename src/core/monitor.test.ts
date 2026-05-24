@@ -192,6 +192,21 @@ describe('Monitor', () => {
     expect(state?.taskName).toBe('Fix duplicate task prompt in activity panel.');
   });
 
+  test('getSnapshot projects priority for live task entries', () => {
+    const task = createTaskForMutation(taskStore, { prompt: 'Watch this first', cwd: '/repo' });
+    taskStore.setTaskPriority(task.id, 'high');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-priority',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:00:00Z'),
+    });
+    monitor.registerAgent('agent-priority');
+
+    const state = monitor.getSnapshot().find((agent) => agent.agentId === 'agent-priority');
+    expect(state?.priority).toBe('high');
+  });
+
   test('getSnapshot strips known launch guardrail preamble from legacy tasks', () => {
     const task = createTaskForMutation(taskStore, {
       prompt: guardedWorktreePrompt('Investigate false positives.'),
@@ -769,6 +784,7 @@ describe('Monitor', () => {
   describe('getSnapshot synthetic entries', () => {
     test('includes synthetic entry for pending task with no agent', () => {
       const task = createTaskForMutation(taskStore, 'Install dependencies', '/workspace/app');
+      taskStore.setTaskPriority(task.id, 'high');
       // open -> pending
       taskStore.pendTask(task.id);
 
@@ -782,6 +798,7 @@ describe('Monitor', () => {
       expect(entry!.taskName).toBe('Install dependencies');
       expect(entry!.cwd).toBe('/workspace/app');
       expect(entry!.taskId).toBe(task.id);
+      expect(entry!.priority).toBe('high');
       expect(entry!.description).toBe('Install dependencies');
       expect(entry!.startedAt).toBe(task.createdAt.toISOString());
     });
@@ -822,6 +839,7 @@ describe('Monitor', () => {
 
     test('includes synthetic entry for completed task after agent unregistered', () => {
       const task = createTaskForMutation(taskStore, 'Run database migration', '/workspace/app');
+      taskStore.setTaskPriority(task.id, 'high');
       const sessionCreatedAt = new Date('2026-03-30T12:00:00Z');
       // addSession auto-transitions open -> inProgress
       taskStore.addSession(task.id, {
@@ -844,6 +862,7 @@ describe('Monitor', () => {
       expect(entry).toBeDefined();
       expect(entry!.agentId).toBe('agent-c1');
       expect(entry!.taskStatus).toBe('completed');
+      expect(entry!.priority).toBe('high');
       expect(entry!.events).toEqual([]);
       expect(entry!.anomaly).toBeNull();
       expect(entry!.taskName).toBe('Run database migration');

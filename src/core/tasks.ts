@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import type { CompletionDigest } from './completion-digest.js';
-import type { TaskDependencyEdge } from '../shared/contracts/task.js';
+import type { TaskDependencyEdge, TaskPriorityUpdate } from '../shared/contracts/task.js';
 import type { ChildSessionInfo, GitInfo, SessionInfo, WorktreeHealth } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
@@ -104,6 +104,7 @@ export class TaskStore {
       launchNote,
       projectId,
       metadata,
+      priority,
     } = opts;
 
     // Validate parent exists if specified
@@ -136,6 +137,7 @@ export class TaskStore {
     }
     if (launchNote) task.launchNote = launchNote;
     if (metadata) task.metadata = structuredClone(metadata);
+    if (priority === 'high') task.priority = priority;
     this.tasks.set(task.id, task);
 
     // Link child to parent
@@ -267,6 +269,20 @@ export class TaskStore {
       throw new Error(`Task not found: ${id}`);
     }
     task.name = name.trim() || undefined;
+    task.updatedAt = new Date();
+    return cloneTask(task);
+  }
+
+  setTaskPriority(id: string, priority: TaskPriorityUpdate): Task {
+    const task = this.tasks.get(id);
+    if (!task) {
+      throw new Error(`Task not found: ${id}`);
+    }
+    if (priority === 'high') {
+      task.priority = 'high';
+    } else {
+      delete task.priority;
+    }
     task.updatedAt = new Date();
     return cloneTask(task);
   }

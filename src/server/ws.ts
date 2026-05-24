@@ -296,6 +296,7 @@ export class MessageRouter {
       case 'reopenTask':
       case 'deleteTask':
       case 'renameTask':
+      case 'setTaskPriority':
       case 'stop':
       case 'clearCompleted':
       case 'ackTerminatedTask':

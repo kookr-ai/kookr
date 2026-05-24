@@ -39,6 +39,7 @@ export interface AgentState {
   taskId?: string;
   taskName?: string;
   taskStatus?: import('./types.js').TaskStatus;
+  priority?: import('../shared/contracts/task.js').TaskPriority;
   parentTaskId?: string;
   childTaskIds?: string[];
   blocks?: TaskDependencyEdge[];
@@ -83,6 +84,7 @@ interface SessionSnapshotMeta {
   launchHealthSummary?: TaskLaunchHealthSummary;
   projectId?: string;
   projectDisplayLabel: string;
+  priority?: import('../shared/contracts/task.js').TaskPriority;
   gitBranch?: string;
   gitCommit?: string;
   gitIsWorktree?: boolean;
@@ -615,6 +617,7 @@ export class Monitor {
           launchHealthSummary: task.launchHealthSummary,
           projectId: task.projectId,
           projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: session.cwd }),
+          priority: task.priority,
           gitBranch: session.gitBranch,
           gitCommit: session.gitCommit,
           gitIsWorktree: session.gitIsWorktree,
@@ -681,6 +684,7 @@ export class Monitor {
         state.worktreeRegistryStale = meta.worktreeRegistryStale;
         state.projectId = meta.projectId;
         state.projectDisplayLabel = meta.projectDisplayLabel;
+        state.priority = meta.priority;
         // Enrich with token usage, task status, and ralph loop state from the task
         const task = this.taskStore.getTask(meta.taskId);
         if (task) {
@@ -722,6 +726,7 @@ export class Monitor {
           launchHealthSummary: task.launchHealthSummary,
           projectId: task.projectId,
           projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: task.cwd }),
+          priority: task.priority,
           ralphLoop: task.ralphLoop,
         });
       } else if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'terminated') {
@@ -753,6 +758,7 @@ export class Monitor {
             launchHealthSummary: task.launchHealthSummary,
             projectId: task.projectId,
             projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: lastSession?.cwd ?? task.cwd }),
+            priority: task.priority,
             tokenUsage: task.tokenUsage,
             gitBranch: lastSession?.gitBranch,
             gitCommit: lastSession?.gitCommit,

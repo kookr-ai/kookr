@@ -3,7 +3,7 @@ import type { AgentEvent } from './agent-events.js';
 import type { AgentActivityMeta } from './hook-events.js';
 import type { Anomaly, FindingEvidenceAuditRecord } from './anomalies.js';
 import type { CompletionDigest } from './completion-digest.js';
-import type { RalphLoopState, TaskCompletionFeedback, TaskDependencyEdge, TaskLaunchHealthSummary } from './task.js';
+import type { RalphLoopState, TaskCompletionFeedback, TaskDependencyEdge, TaskLaunchHealthSummary, TaskPriority } from './task.js';
 import type { TaskStatus, TurnState } from './task-status.js';
 import type { TokenUsage } from './usage.js';
 import type { WorktreeHealth } from './session.js';
@@ -24,6 +24,7 @@ export interface AgentState {
   taskId?: string;
   taskName?: string;
   taskStatus?: TaskStatus;
+  priority?: TaskPriority;
   parentTaskId?: string;
   childTaskIds?: string[];
   blocks?: TaskDependencyEdge[];

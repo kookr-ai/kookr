@@ -613,6 +613,73 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().selectedAgentId).toBe('agent-2');
   });
 
+  test('nextBottleneck uses task priority when finding severity ties', () => {
+    store.getState().handleSnapshot([
+      {
+        agentId: 'normal-finding',
+        events: [],
+        anomaly: {
+          agentId: 'normal-finding',
+          type: 'needs_input',
+          severity: 'warning',
+          explanation: 'Waiting',
+          detectedAt: new Date(),
+        },
+      },
+      {
+        agentId: 'high-finding',
+        priority: 'high',
+        events: [],
+        anomaly: {
+          agentId: 'high-finding',
+          type: 'needs_input',
+          severity: 'warning',
+          explanation: 'Waiting',
+          detectedAt: new Date(),
+        },
+      },
+    ]);
+
+    store.getState().nextBottleneck();
+
+    expect(store.getState().selectedAgentId).toBe('high-finding');
+  });
+
+  test('selectProject auto-selects using task priority ordering', () => {
+    store.getState().handleProjectSummaries([
+      {
+        project: 'project-a',
+        displayName: 'Project A',
+        color: 1,
+        activeAgents: 2,
+        findingCount: 2,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+    ]);
+    store.getState().handleSnapshot([
+      {
+        agentId: 'normal-project-finding',
+        projectId: 'project-a',
+        events: [],
+        anomaly: { agentId: 'normal-project-finding', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+      },
+      {
+        agentId: 'high-project-finding',
+        projectId: 'project-a',
+        priority: 'high',
+        events: [],
+        anomaly: { agentId: 'high-project-finding', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+      },
+    ]);
+
+    store.getState().selectProject('project-a');
+
+    expect(store.getState().selectedAgentId).toBe('high-project-finding');
+  });
+
   test('nextBottleneck clears selection when only one finding remains', () => {
     store.getState().handleSnapshot([
       {
@@ -737,6 +804,67 @@ describe('Kookr Zustand Store', () => {
     // Fourth call: wraps around to finding-1
     store.getState().nextTask();
     expect(store.getState().selectedAgentId).toBe('finding-1');
+  });
+
+  test('nextTask and previousTask follow priority ordering used by visible buckets', () => {
+    store.getState().handleProjectSummaries([
+      {
+        project: 'project-a',
+        displayName: 'Project A',
+        color: 1,
+        activeAgents: 1,
+        findingCount: 1,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+      {
+        project: 'project-b',
+        displayName: 'Project B',
+        color: 2,
+        activeAgents: 1,
+        findingCount: 1,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+    ]);
+    store.getState().pinProjectToTop('project-b');
+    store.getState().handleSnapshot([
+      {
+        agentId: 'normal-a',
+        projectId: 'project-a',
+        events: [],
+        anomaly: { agentId: 'normal-a', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+      },
+      {
+        agentId: 'high-a',
+        projectId: 'project-a',
+        priority: 'high',
+        events: [],
+        anomaly: { agentId: 'high-a', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+      },
+      {
+        agentId: 'healthy-b',
+        projectId: 'project-b',
+        events: [],
+        anomaly: null,
+      },
+    ]);
+
+    store.getState().nextTask();
+    expect(store.getState().selectedAgentId).toBe('high-a');
+
+    store.getState().nextTask();
+    expect(store.getState().selectedAgentId).toBe('normal-a');
+
+    store.getState().nextTask();
+    expect(store.getState().selectedAgentId).toBe('healthy-b');
+
+    store.getState().previousTask();
+    expect(store.getState().selectedAgentId).toBe('normal-a');
   });
 
   test('previousTask cycles backwards through findings then healthy', () => {

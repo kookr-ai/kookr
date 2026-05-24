@@ -15,7 +15,7 @@ import type { QuotaStatus } from './quota.js';
 import type { ScheduleResponse, ScheduleStatusSnapshot } from './schedule.js';
 import type { CollaborationCapabilities } from './speech.js';
 import type { CoordinatorSnapshotState } from './coordinator.js';
-import type { TaskCompletionFeedback } from './task.js';
+import type { TaskCompletionFeedback, TaskPriorityUpdate } from './task.js';
 import type { TelemetryEvent } from './telemetry.js';
 import type {
   WorkspaceView,
@@ -259,6 +259,7 @@ export type ClientMessage =
   | { type: 'reopenTask'; taskId: string }
   | { type: 'deleteTask'; taskId: string }
   | { type: 'renameTask'; taskId: string; name: string }
+  | { type: 'setTaskPriority'; taskId: string; priority: TaskPriorityUpdate }
   | { type: 'stop'; agentId: string }
   | { type: 'reflect' }
   | { type: 'listPlaybooks'; cwd: string }

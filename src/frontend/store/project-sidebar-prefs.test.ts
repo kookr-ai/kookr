@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { ProjectSummary } from '../../shared/protocol.js';
+import { deriveProjectPriorityRanks } from '../../shared/project-sidebar.js';
 import {
   applyProjectSidebarCommand,
   deriveProjectSidebarState,
@@ -344,5 +345,41 @@ describe('project-sidebar-prefs', () => {
       pinned: [],
       hidden: [],
     });
+  });
+
+  test('derives project priority ranks from visible sidebar order and skips hidden projects', () => {
+    const projects = [
+      summary('github.com/c', 'owner/c', 1),
+      summary('github.com/a', 'owner/a', 2),
+      summary('github.com/b', 'owner/b', 3),
+      summary('github.com/d', 'owner/d', 4),
+    ];
+
+    const ranks = deriveProjectPriorityRanks(projects, {
+      ordered: ['github.com/b', 'github.com/hidden', 'github.com/a'],
+      pinned: ['github.com/a'],
+      hidden: ['github.com/d'],
+    });
+
+    expect([...ranks.entries()]).toEqual([
+      ['github.com/a', 0],
+      ['github.com/b', 1],
+    ]);
+  });
+
+  test('does not derive priority ranks from dynamic summary order when projects are unordered', () => {
+    const projects = [
+      summary('github.com/z', 'owner/z', 1),
+      summary('github.com/a', 'owner/a', 2),
+      summary('github.com/m', 'owner/m', 3),
+    ];
+
+    const ranks = deriveProjectPriorityRanks(projects, {
+      ordered: [],
+      pinned: [],
+      hidden: [],
+    });
+
+    expect([...ranks.entries()]).toEqual([]);
   });
 });

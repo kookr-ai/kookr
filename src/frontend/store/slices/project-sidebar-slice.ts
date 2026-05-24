@@ -8,15 +8,15 @@ import {
   toProjectSidebarState,
   type ProjectSidebarSnapshot,
 } from '../project-sidebar-prefs.js';
-import type { ProjectSidebarState } from '../../../shared/project-sidebar.js';
+import { deriveProjectPriorityRanks, type ProjectSidebarState } from '../../../shared/project-sidebar.js';
 import { parseOwnerRepoSlug } from '../../../shared/repo-slug.js';
-import { SEVERITY_ORDER } from '../store-types.js';
 import type {
   ProjectSidebarSlice,
   StoreGet,
   StoreSet,
 } from '../store-types.js';
 import { isActiveFinding, isHealthyRunning } from '../finding-helpers.js';
+import { compareRoutableAgents } from '../../agent-priority-order.js';
 
 function sidebarSnapshotFromStore(state: Pick<ProjectSidebarSlice, 'projectSidebarPrefs' | 'projectSidebarCatalog'>): ProjectSidebarSnapshot {
   return {
@@ -107,26 +107,27 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
         return;
       }
 
-      // Surface something useful for the project so the user is not greeted
-      // by an empty detail pane. Priority order:
-      //   1. Highest-severity active finding (matches `nextBottleneck` order).
-      //   2. First healthy running task in the project.
-      //   3. Otherwise, clear selection.
-      const { agents, selectAgent } = get();
+      // Surface something useful for the project using the same ordering
+      // contract as keyboard navigation, scoped to the selected project.
+      const state = get();
+      const { agents, selectAgent } = state;
       const projectAgents = agents.filter((a) => a.projectId === project);
+      const order = {
+        chipTaskIds: new Set((state.coordinator?.chips ?? []).map((chip) => chip.taskId)),
+        originalIndex: new Map(agents.map((agent, index) => [agent.agentId, index])),
+        projectPriorityRanks: deriveProjectPriorityRanks(state.projectSummaries, state.projectSidebarPrefs),
+      };
       const findings = projectAgents
         .filter(isActiveFinding)
-        .sort(
-          (left, right) =>
-            SEVERITY_ORDER[left.anomaly!.severity] -
-            SEVERITY_ORDER[right.anomaly!.severity],
-        );
+        .sort((left, right) => compareRoutableAgents(left, right, order));
       if (findings.length > 0) {
         selectAgent(findings[0].agentId);
         return;
       }
 
-      const healthy = projectAgents.find(isHealthyRunning);
+      const healthy = projectAgents
+        .filter(isHealthyRunning)
+        .sort((left, right) => compareRoutableAgents(left, right, { ...order, includeSeverity: false }))[0];
       if (healthy) {
         selectAgent(healthy.agentId);
         return;

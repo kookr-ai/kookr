@@ -1,6 +1,7 @@
 import type { TriageNavigationSlice, StoreGet, StoreSet } from '../store-types.js';
-import { SEVERITY_ORDER } from '../store-types.js';
 import { isDndEnabled } from '../../hooks/useDnd.js';
+import { compareRoutableAgents } from '../../agent-priority-order.js';
+import { deriveProjectPriorityRanks } from '../../../shared/project-sidebar.js';
 
 const TERMINAL_FOCUS_STORAGE_KEY = 'kookr-terminal-focus-mode';
 
@@ -27,6 +28,15 @@ function saveTerminalFocusMode(enabled: boolean): void {
 }
 
 export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): TriageNavigationSlice {
+  function getPriorityOrderContext() {
+    const state = get();
+    return {
+      chipTaskIds: new Set((state.coordinator?.chips ?? []).map((chip) => chip.taskId)),
+      originalIndex: new Map(state.agents.map((agent, index) => [agent.agentId, index])),
+      projectPriorityRanks: deriveProjectPriorityRanks(state.projectSummaries, state.projectSidebarPrefs),
+    };
+  }
+
   return {
     selectedAgentId: null,
     alerts: [],
@@ -87,9 +97,10 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
     nextBottleneck: () => {
       const { agents, selectedAgentId } = get();
+      const order = getPriorityOrderContext();
       const findings = agents
         .filter((agent) => agent.anomaly !== null && !agent.snoozedUntil && !agent.suppressed)
-        .sort((left, right) => SEVERITY_ORDER[left.anomaly!.severity] - SEVERITY_ORDER[right.anomaly!.severity]);
+        .sort((left, right) => compareRoutableAgents(left, right, order));
 
       if (findings.length === 0) {
         set({ selectedAgentId: null, shortcutsArmed: false });
@@ -108,10 +119,13 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
     nextTask: () => {
       const { agents, selectedAgentId } = get();
+      const order = getPriorityOrderContext();
       const findings = agents
         .filter((agent) => agent.anomaly !== null && !agent.snoozedUntil && !agent.suppressed)
-        .sort((left, right) => SEVERITY_ORDER[left.anomaly!.severity] - SEVERITY_ORDER[right.anomaly!.severity]);
-      const healthy = agents.filter((agent) => agent.anomaly === null && !agent.snoozedUntil && !agent.suppressed);
+        .sort((left, right) => compareRoutableAgents(left, right, order));
+      const healthy = agents
+        .filter((agent) => agent.anomaly === null && !agent.snoozedUntil && !agent.suppressed)
+        .sort((left, right) => compareRoutableAgents(left, right, { ...order, includeSeverity: false }));
       const all = [...findings, ...healthy];
 
       if (all.length === 0) return;
@@ -123,10 +137,13 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
     previousTask: () => {
       const { agents, selectedAgentId } = get();
+      const order = getPriorityOrderContext();
       const findings = agents
         .filter((agent) => agent.anomaly !== null && !agent.snoozedUntil && !agent.suppressed)
-        .sort((left, right) => SEVERITY_ORDER[left.anomaly!.severity] - SEVERITY_ORDER[right.anomaly!.severity]);
-      const healthy = agents.filter((agent) => agent.anomaly === null && !agent.snoozedUntil && !agent.suppressed);
+        .sort((left, right) => compareRoutableAgents(left, right, order));
+      const healthy = agents
+        .filter((agent) => agent.anomaly === null && !agent.snoozedUntil && !agent.suppressed)
+        .sort((left, right) => compareRoutableAgents(left, right, { ...order, includeSeverity: false }));
       const all = [...findings, ...healthy];
 
       if (all.length === 0) return;
