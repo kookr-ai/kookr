@@ -1340,6 +1340,174 @@ describe('Monitor', () => {
       expect(queue.peek(agentId)?.type).toBe('needs_input');
     });
 
+    describe('subagent-aware suppression (rfc-supervisor-stale-agent-false-positives)', () => {
+      const hookDisconnectedAnomaly = {
+        agentId,
+        type: 'hook_disconnected' as const,
+        severity: 'warning' as const,
+        explanation: 'hook stream dropped',
+        detectedAt: new Date('2026-04-23T00:00:00Z'),
+      };
+      const permissionBlockedAnomaly = {
+        agentId,
+        type: 'permission_blocked' as const,
+        severity: 'warning' as const,
+        explanation: 'pane shows permission dialog',
+        detectedAt: new Date('2026-04-23T00:00:00Z'),
+      };
+
+      test('stale_agent verdict is suppressed while a background subagent is running', () => {
+        monitor.processEvents(agentId, [makeSubagentStart('s1', 'sub-1')]);
+
+        const changed = monitor.applyWatchdogVerdict(
+          agentId,
+          { status: 'stale_agent', anomaly: staleAnomaly },
+          { paneCaptureSucceeded: true },
+        );
+
+        expect(changed).toBe(true);
+        expect(queue.peek(agentId)).toBeNull();
+        expect(getDetectionStats().suppressed.stale_agent).toBe(1);
+
+        const records = monitor.getFindingEvidenceAuditRecords();
+        const suppressed = records.find((r) => r.anomalyType === 'stale_agent' && r.status === 'resolved');
+        expect(suppressed?.verdict).toBe('possible_false_positive');
+        expect(suppressed?.notes.some((n) => n.includes('subagent_running'))).toBe(true);
+      });
+
+      test('hook_disconnected verdict is suppressed while a background subagent is running', () => {
+        monitor.processEvents(agentId, [makeSubagentStart('s1', 'sub-1')]);
+
+        const changed = monitor.applyWatchdogVerdict(
+          agentId,
+          { status: 'hook_disconnected', anomaly: hookDisconnectedAnomaly },
+          { paneCaptureSucceeded: true },
+        );
+
+        expect(changed).toBe(true);
+        expect(queue.peek(agentId)).toBeNull();
+        expect(getDetectionStats().suppressed.hook_disconnected).toBe(1);
+
+        // Audit trail must surface every suppressed actionable verdict, not just stale_agent.
+        const records = monitor.getFindingEvidenceAuditRecords();
+        const suppressed = records.find((r) => r.anomalyType === 'hook_disconnected' && r.status === 'resolved');
+        expect(suppressed?.verdict).toBe('possible_false_positive');
+        expect(suppressed?.notes.some((n) => n.includes('subagent_running'))).toBe(true);
+      });
+
+      test('permission_blocked verdict is NOT suppressed while a subagent is running', () => {
+        monitor.processEvents(agentId, [makeSubagentStart('s1', 'sub-1')]);
+
+        const changed = monitor.applyWatchdogVerdict(
+          agentId,
+          { status: 'permission_blocked', anomaly: permissionBlockedAnomaly },
+          { paneCaptureSucceeded: true },
+        );
+
+        expect(changed).toBe(true);
+        expect(queue.peek(agentId)?.type).toBe('permission_blocked');
+      });
+
+      test('suppressed stale_agent retains a previously-queued non-watchdog anomaly', () => {
+        // processEvents first — its no-anomaly branch unconditionally clears
+        // the queue, so the merge_conflict must land AFTER subagent tracking
+        // has been recorded to survive into the watchdog verdict.
+        monitor.processEvents(agentId, [makeSubagentStart('s1', 'sub-1')]);
+        const mergeConflict = {
+          agentId,
+          type: 'merge_conflict' as const,
+          severity: 'warning' as const,
+          explanation: 'rebase left CONFLICT markers',
+          detectedAt: new Date('2026-04-23T00:00:00Z'),
+        };
+        queue.enqueue(agentId, mergeConflict);
+
+        const changed = monitor.applyWatchdogVerdict(
+          agentId,
+          { status: 'stale_agent', anomaly: staleAnomaly },
+          { paneCaptureSucceeded: true },
+        );
+
+        expect(changed).toBe(true);
+        expect(queue.peek(agentId)?.type).toBe('merge_conflict');
+      });
+
+      test('suppressed stale_agent does NOT purge a queued watchdog-owned entry that is shadowed by an event-derived anomaly', () => {
+        // Event-derived permission_blocked survives subagent suppression
+        // (not in the suppressible set), so it remains on the queue and
+        // is owned by processEvents. The watchdog suppression branch must
+        // honor that ownership.
+        monitor.processEvents(agentId, [makeSubagentStart('s1', 'sub-1')]);
+        monitor.processEvents(agentId, [makePermissionRequest('s1', 'Bash')]);
+        expect(queue.peek(agentId)?.type).toBe('permission_blocked');
+
+        const changed = monitor.applyWatchdogVerdict(
+          agentId,
+          { status: 'stale_agent', anomaly: staleAnomaly },
+          { paneCaptureSucceeded: true },
+        );
+
+        expect(changed).toBe(true);
+        expect(queue.peek(agentId)?.type).toBe('permission_blocked');
+      });
+
+      test('suppressed stale_agent purges a stale watchdog-owned queue entry', () => {
+        // Earlier stale_agent finding sat on the queue while the subagent was launching.
+        monitor.processEvents(agentId, [makeSubagentStart('s1', 'sub-1')]);
+        queue.enqueue(agentId, staleAnomaly);
+
+        const changed = monitor.applyWatchdogVerdict(
+          agentId,
+          { status: 'stale_agent', anomaly: staleAnomaly },
+          { paneCaptureSucceeded: true },
+        );
+
+        expect(changed).toBe(true);
+        expect(queue.peek(agentId)).toBeNull();
+      });
+
+      test('after subagent_stop, the next stale_agent verdict enqueues normally', () => {
+        monitor.processEvents(agentId, [makeSubagentStart('s1', 'sub-1')]);
+        monitor.applyWatchdogVerdict(
+          agentId,
+          { status: 'stale_agent', anomaly: staleAnomaly },
+          { paneCaptureSucceeded: true },
+        );
+        expect(queue.peek(agentId)).toBeNull();
+
+        monitor.processEvents(agentId, [makeSubagentStop('s1', 'sub-1')]);
+
+        const changed = monitor.applyWatchdogVerdict(
+          agentId,
+          { status: 'stale_agent', anomaly: staleAnomaly },
+          { paneCaptureSucceeded: true },
+        );
+        expect(changed).toBe(true);
+        expect(queue.peek(agentId)?.type).toBe('stale_agent');
+      });
+
+      test('after SUBAGENT_TTL eviction, a stuck subagent no longer suppresses stale_agent', () => {
+        vi.useFakeTimers();
+        try {
+          vi.setSystemTime(new Date('2026-04-23T00:00:00Z'));
+          monitor.processEvents(agentId, [makeSubagentStart('s1', 'sub-1')]);
+
+          // Advance just past SUBAGENT_TTL_MS (30 min) — eviction is lazy on next read.
+          vi.setSystemTime(new Date('2026-04-23T00:30:01Z'));
+
+          const changed = monitor.applyWatchdogVerdict(
+            agentId,
+            { status: 'stale_agent', anomaly: staleAnomaly },
+            { paneCaptureSucceeded: true },
+          );
+          expect(changed).toBe(true);
+          expect(queue.peek(agentId)?.type).toBe('stale_agent');
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+
     test('suppression tracker prevents enqueue over a pre-populated queue entry', () => {
       // Pre-populate with a different, non-watchdog finding that should NOT be
       // overwritten when the suppression tracker gates the new verdict.

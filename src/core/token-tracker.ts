@@ -1,6 +1,18 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
+import { statSync } from 'node:fs';
 import type { TokenUsage } from './types.js';
 import { getPricing, estimateCost, type ModelPricing } from './pricing-tables.js';
+
+/**
+ * A transcript file that has grown since the last `scanAll`, but whose new bytes
+ * have not yet been parsed. Emitted by {@link TokenTracker.scanGrowth} so the
+ * watchdog can treat in-flight streaming as a freshness signal even before the
+ * final `usage` block lands.
+ */
+export interface TranscriptGrowth {
+  taskId: string;
+  bytesGained: number;
+}
 
 /**
  * Shape of transcript JSONL entries that carry cost/token data.
@@ -38,7 +50,19 @@ interface UsageBlock {
 
 interface TranscriptState {
   taskId: string;
+  /**
+   * UTF-16 code-unit offset into the in-memory string representation of the
+   * file. Used by `scanOne` to slice off already-parsed content.
+   */
   offset: number;
+  /**
+   * Byte offset into the on-disk transcript. Used by `scanGrowth` to detect
+   * file growth via `fs.stat` without re-reading. Tracked separately from
+   * `offset` because `fs.stat` returns bytes while JS string `.length` is
+   * UTF-16 code units — mixing them silently misfires on any non-ASCII byte
+   * (em-dashes, smart quotes, emoji are all common in transcripts).
+   */
+  byteOffset: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -77,9 +101,16 @@ export class TokenTracker {
   /** Register a transcript file for a task. */
   register(transcriptPath: string, taskId: string): void {
     if (this.transcripts.has(transcriptPath)) return;
+    // Seed byteOffset to the file's current size so scanGrowth treats
+    // pre-existing bytes as "already accounted for" rather than as fresh
+    // growth on the first tick. The transcript may not exist yet — that's
+    // fine, byteOffset stays 0 and subsequent writes register as growth.
+    let initialByteOffset = 0;
+    try { initialByteOffset = statSync(transcriptPath).size; } catch { /* file not created yet */ }
     this.transcripts.set(transcriptPath, {
       taskId,
       offset: 0,
+      byteOffset: initialByteOffset,
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
@@ -102,6 +133,28 @@ export class TokenTracker {
     for (const [path, state] of this.transcripts) {
       await this.scanOne(path, state);
     }
+  }
+
+  /**
+   * Stat each registered transcript and report any whose on-disk size exceeds
+   * the last byte offset consumed by {@link scanAll}. This is a near-zero-cost
+   * freshness probe used to suppress watchdog `stale_agent` findings while an
+   * LLM is mid-stream — long thinking turns finalize their `usage` block only
+   * at message end, but bytes arrive continuously in the meantime.
+   *
+   * Call this BEFORE `scanAll` on the same tick so `scanAll` does not advance
+   * `state.offset` past the growth this probe is supposed to observe.
+   */
+  async scanGrowth(): Promise<TranscriptGrowth[]> {
+    const growths: TranscriptGrowth[] = [];
+    for (const [path, state] of this.transcripts) {
+      const s = await stat(path).catch(() => null);
+      if (!s) continue;
+      if (s.size > state.byteOffset) {
+        growths.push({ taskId: state.taskId, bytesGained: s.size - state.byteOffset });
+      }
+    }
+    return growths;
   }
 
   /** Scan only transcripts belonging to a specific task. Returns true if usage changed. */
@@ -186,10 +239,17 @@ export class TokenTracker {
       return; // File doesn't exist yet or is unreadable
     }
 
-    if (content.length <= state.offset) return;
+    if (content.length <= state.offset) {
+      // Even when no new code units are present, keep byteOffset in sync with
+      // the file's actual byte size so the freshness probe doesn't double-fire
+      // on pure-ASCII no-op ticks.
+      state.byteOffset = Buffer.byteLength(content, 'utf-8');
+      return;
+    }
 
     const newContent = content.slice(state.offset);
     state.offset = content.length;
+    state.byteOffset = Buffer.byteLength(content, 'utf-8');
 
     const lines = newContent.split('\n');
     for (const line of lines) {
