@@ -527,10 +527,14 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     }
   }
 
-  function handleSkip() {
+  function handleSkip(method: 'button' | 'empty_enter' = 'button') {
     if (!agent) return;
-    track({ type: 'finding_skipped', agentId: agent.agentId, anomalyType: agent.anomaly?.type ?? null, method: 'button' });
-    trackClick('skip');
+    track({ type: 'finding_skipped', agentId: agent.agentId, anomalyType: agent.anomaly?.type ?? null, method });
+    if (method === 'button') {
+      trackClick('skip');
+    } else {
+      track({ type: 'shortcut_used', key: 'Enter', action: 'skip_empty_input', context: 'input_focused' });
+    }
     send({ type: 'skip', agentId: agent.agentId });
     nextBottleneck();
   }
@@ -593,6 +597,10 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     // intends to confirm the composition, not to send the message.
     if (e.key === 'Enter' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
+      if (!input.trim() && !isDirectReply) {
+        handleSkip('empty_enter');
+        return;
+      }
       handleSendAndNext(true);
       return;
     }

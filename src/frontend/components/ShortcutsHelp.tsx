@@ -17,7 +17,7 @@ const CONTEXTUAL_SHORTCUTS = [
   {
     title: 'Responding to findings',
     shortcuts: [
-      { keys: ['Enter'], description: 'Send response and move to next finding' },
+      { keys: ['Enter'], description: 'Send response; skip current finding when empty' },
       { keys: ['1'], description: 'Trigger quick action by number', context: 'when response input is empty' },
     ],
   },
