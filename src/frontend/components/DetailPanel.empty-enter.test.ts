@@ -156,11 +156,18 @@ describe('DetailPanel empty Enter behavior', () => {
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
   });
 
-  test('does not send or skip a direct reply when Enter is pressed with empty input', () => {
-    const agent = makeAgent('agent-1', null);
-    useKookrStore.setState({ agents: [agent], selectedAgentId: agent.agentId });
+  test('on a healthy task with a pending finding, empty Enter jumps to the finding without sending skip', () => {
+    const healthy = makeAgent('agent-healthy', null);
+    const finding = makeAgent('agent-finding', {
+      agentId: 'agent-finding',
+      type: 'needs_input',
+      severity: 'warning',
+      explanation: 'waiting',
+      detectedAt: new Date('2026-05-24T16:00:00.000Z'),
+    });
+    useKookrStore.setState({ agents: [healthy, finding], selectedAgentId: healthy.agentId });
     const sent: ClientMessage[] = [];
-    root = renderDetailPanel(container, agent, (msg) => {
+    root = renderDetailPanel(container, healthy, (msg) => {
       sent.push(msg);
       return true;
     });
@@ -172,6 +179,61 @@ describe('DetailPanel empty Enter behavior', () => {
     });
 
     expect(sent).toEqual([]);
-    expect(useKookrStore.getState().selectedAgentId).toBe('agent-1');
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-finding');
+    expect(track).toHaveBeenCalledWith({
+      type: 'shortcut_used',
+      key: 'Enter',
+      action: 'advance_empty_input',
+      context: 'input_focused',
+    });
+  });
+
+  test('on a healthy task with no findings, empty Enter advances to the next task without sending skip', () => {
+    const first = makeAgent('agent-1', null);
+    const second = makeAgent('agent-2', null);
+    useKookrStore.setState({ agents: [first, second], selectedAgentId: first.agentId });
+    const sent: ClientMessage[] = [];
+    root = renderDetailPanel(container, first, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+
+    const input = container.querySelector<HTMLInputElement>('.response-row input');
+    expect(input).toBeInstanceOf(HTMLInputElement);
+    act(() => {
+      input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(sent).toEqual([]);
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
+    expect(track).toHaveBeenCalledWith({
+      type: 'shortcut_used',
+      key: 'Enter',
+      action: 'advance_empty_input',
+      context: 'input_focused',
+    });
+  });
+
+  test('on a healthy task, whitespace-only Enter advances without sending skip', () => {
+    const first = makeAgent('agent-1', null);
+    const second = makeAgent('agent-2', null);
+    useKookrStore.setState({ agents: [first, second], selectedAgentId: first.agentId });
+    const sent: ClientMessage[] = [];
+    root = renderDetailPanel(container, first, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+
+    const input = container.querySelector<HTMLInputElement>('.response-row input');
+    expect(input).toBeInstanceOf(HTMLInputElement);
+    act(() => {
+      setInputValue(input!, '   ');
+    });
+    act(() => {
+      input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(sent).toEqual([]);
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
   });
 });

@@ -247,7 +247,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     typeof window !== 'undefined' ? window.innerWidth <= NARROW_DETAIL_BREAKPOINT_PX : false,
   );
   const inputRef = useRef<HTMLInputElement>(null);
-  const { selectAgent, nextBottleneck, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
+  const { selectAgent, nextBottleneck, nextTask, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
 
   // Right-pane mode for the Activity+Terminal|Diff split. See
@@ -591,14 +591,34 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     send({ type: 'cancelTask', taskId: agent.taskId });
   }
 
+  function handleEmptyEnterAdvance() {
+    if (!agent) return;
+    if (agent.anomaly) {
+      handleSkip('empty_enter');
+      return;
+    }
+    // Healthy task: nothing to skip on the server. Jump to the next pending
+    // finding when one exists, otherwise advance through the unified task list.
+    // Predicate intentionally mirrors nextBottleneck's filter (NOT isActiveFinding,
+    // which would diverge by also excluding pending/terminal statuses).
+    const { agents } = useKookrStore.getState();
+    const hasFinding = agents.some((a) => a.anomaly !== null && !a.snoozedUntil && !a.suppressed);
+    track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'input_focused' });
+    if (hasFinding) {
+      nextBottleneck();
+    } else {
+      nextTask();
+    }
+  }
+
   function handleKeyDown(e: React.KeyboardEvent) {
     // Guard: skip Enter during IME composition (e.g., CJK input) or browser
     // autocomplete acceptance — these fire keydown with key='Enter' but the user
     // intends to confirm the composition, not to send the message.
     if (e.key === 'Enter' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      if (!input.trim() && !isDirectReply) {
-        handleSkip('empty_enter');
+      if (!input.trim()) {
+        handleEmptyEnterAdvance();
         return;
       }
       handleSendAndNext(true);
