@@ -8,6 +8,7 @@ import { useAudibleAlert } from './hooks/useAudibleAlert.js';
 import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
 import { track } from './telemetry.js';
+import { getPhysicalShortcutKey } from './shortcut-bindings.js';
 import { buildAgentBuckets } from './agent-buckets.js';
 import { TopBar } from './components/TopBar.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
@@ -148,7 +149,7 @@ export function App() {
   }, [relaunchTask]);
 
   // First-run onboarding tour: opens once per browser when localStorage has
-  // no `kookr:onboarding:seen-v1` key. Idempotent on subsequent reloads.
+  // no current onboarding seen key. Idempotent on subsequent reloads.
   useEffect(() => {
     maybeOpenForFirstRun();
   }, []);
@@ -237,20 +238,21 @@ export function App() {
   // Keyboard shortcuts
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      const shortcutKey = getPhysicalShortcutKey(e);
       if (showOperations && e.key !== 'Escape') {
         return;
       }
-      if (e.altKey && e.key === 'n') {
+      if (e.altKey && shortcutKey === 'n') {
         e.preventDefault();
         track({ type: 'shortcut_used', key: 'Alt+N', action: 'next_bottleneck', context: 'global' });
         nextBottleneck();
       }
-      if (e.altKey && e.key === 'l') {
+      if (e.altKey && shortcutKey === 'l') {
         e.preventDefault();
         track({ type: 'shortcut_used', key: 'Alt+L', action: 'quick_launch', context: 'global' });
         setShowQuickLaunch(true);
       }
-      if (e.altKey && e.key === 'm') {
+      if (e.altKey && shortcutKey === 'm') {
         e.preventDefault();
         // Alt+M toggles voice recording — target the right mic button
         // 1. If any button is currently recording, stop it
@@ -271,7 +273,7 @@ export function App() {
           }
         }
       }
-      if (e.altKey && e.key === 's') {
+      if (e.altKey && shortcutKey === 's') {
         e.preventDefault();
         const state = useKookrStore.getState();
         if (state.selectedAgentId) {
@@ -279,7 +281,7 @@ export function App() {
           setShowSnooze(true);
         }
       }
-      if (e.altKey && e.key === 'z') {
+      if (e.altKey && shortcutKey === 'z') {
         e.preventDefault();
         const state = useKookrStore.getState();
         if (state.selectedAgentId) {
@@ -289,7 +291,7 @@ export function App() {
           send({ type: 'snooze', agentId: state.selectedAgentId, taskId: selected?.taskId, durationMs });
         }
       }
-      if (e.altKey && e.key === 'r') {
+      if (e.altKey && shortcutKey === 'r') {
         e.preventDefault();
         const replyInput = document.querySelector('.detail-panel .response-row input[type="text"]') as HTMLInputElement | null;
         if (replyInput) {
@@ -297,7 +299,7 @@ export function App() {
           replyInput.focus();
         }
       }
-      if (e.altKey && e.key === 'Delete') {
+      if (e.altKey && shortcutKey === 'Delete') {
         e.preventDefault();
         const state = useKookrStore.getState();
         if (state.selectedAgentId) {
@@ -308,7 +310,7 @@ export function App() {
           }
         }
       }
-      if (e.altKey && e.key === 'End') {
+      if (e.altKey && shortcutKey === 'End') {
         e.preventDefault();
         const state = useKookrStore.getState();
         if (state.selectedAgentId) {
@@ -326,39 +328,39 @@ export function App() {
         }
       }
       // Alt+P toggles project sidebar
-      if (e.altKey && e.key === 'p') {
+      if (e.altKey && shortcutKey === 'p') {
         e.preventDefault();
         track({ type: 'shortcut_used', key: 'Alt+P', action: 'toggle_project_sidebar', context: 'global' });
         toggleProjectSidebar();
       }
-      if (e.altKey && e.key === 't') {
+      if (e.altKey && shortcutKey === 't') {
         e.preventDefault();
         if (isMobileViewport) return;
         track({ type: 'shortcut_used', key: 'Alt+T', action: 'toggle_terminal_focus', context: 'global' });
         toggleTerminalFocusMode();
       }
       // Alt+A toggles achievements panel
-      if (e.altKey && e.key === 'a') {
+      if (e.altKey && shortcutKey === 'a') {
         e.preventDefault();
         track({ type: 'shortcut_used', key: 'Alt+A', action: 'toggle_achievements', context: 'global' });
         toggleAchievementsPanel();
       }
       // Alt+0 = All projects
-      if (e.altKey && e.key === '0') {
+      if (e.altKey && shortcutKey === '0') {
         e.preventDefault();
         selectProject(null);
       }
       // Alt+1-3 = send digit to terminal, then skip to next task
-      if (e.altKey && e.key >= '1' && e.key <= '3') {
+      if (e.altKey && shortcutKey >= '1' && shortcutKey <= '3') {
         e.preventDefault();
-        sendToTerminal(e.key);
-        track({ type: 'shortcut_used', key: `Alt+${e.key}`, action: 'terminal_send_and_next', context: 'global' });
+        sendToTerminal(shortcutKey);
+        track({ type: 'shortcut_used', key: `Alt+${shortcutKey}`, action: 'terminal_send_and_next', context: 'global' });
         nextTask();
       }
       // Alt+4-9 = select project by sidebar order
-      if (e.altKey && e.key >= '4' && e.key <= '9') {
+      if (e.altKey && shortcutKey >= '4' && shortcutKey <= '9') {
         e.preventDefault();
-        const idx = parseInt(e.key, 10) - 4;
+        const idx = parseInt(shortcutKey, 10) - 4;
         const state = useKookrStore.getState();
         if (idx < state.visibleProjectSummaries.length) {
           selectProject(state.visibleProjectSummaries[idx].project);
@@ -386,12 +388,12 @@ export function App() {
         }
       }
       // Alt+J = next task, Alt+K = previous task
-      if (e.altKey && e.key === 'j') {
+      if (e.altKey && shortcutKey === 'j') {
         e.preventDefault();
         track({ type: 'shortcut_used', key: 'Alt+J', action: 'next_task', context: 'global' });
         nextTask();
       }
-      if (e.altKey && e.key === 'k') {
+      if (e.altKey && shortcutKey === 'k') {
         e.preventDefault();
         track({ type: 'shortcut_used', key: 'Alt+K', action: 'previous_task', context: 'global' });
         previousTask();

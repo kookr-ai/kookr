@@ -49,4 +49,24 @@ describe('OnboardingTour readiness guidance', () => {
     expect(container.textContent).toContain('pnpm run doctor');
     expect(container.textContent).toContain('Missing agent binary or auth');
   });
+
+  test('surfaces a shortcut cheatsheet during onboarding', async () => {
+    await act(async () => {
+      root.render(React.createElement(OnboardingTour));
+    });
+    act(() => open());
+    await flush();
+
+    for (let i = 0; i < 4; i++) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('.onboarding-btn.primary')?.click();
+      });
+      await flush();
+    }
+
+    expect(container.querySelector('.onboarding-header h3')?.textContent).toBe('Shortcuts that save clicks');
+    expect(container.textContent).toContain('Jump to next finding by severity');
+    expect(container.textContent).toContain('Open quick launch bar');
+    expect(container.textContent).toContain('?');
+  });
 });

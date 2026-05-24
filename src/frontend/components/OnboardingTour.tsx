@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { getFeaturedShortcuts, type Shortcut } from '../shortcut-bindings.js';
 import { close, getSnapshot, subscribe } from '../store/onboarding-store.js';
 import { OnboardingLayoutDiagram } from './OnboardingLayoutDiagram.js';
 import type { TourTargetClass } from './onboarding-tour-targets.js';
@@ -82,6 +83,10 @@ export const ONBOARDING_CARDS: Card[] = [
     ),
   },
   {
+    title: 'Shortcuts that save clicks',
+    body: <ShortcutCheatsheetCard />,
+  },
+  {
     title: 'Findings and routing',
     targetClass: 'findings',
     body: (
@@ -95,6 +100,40 @@ export const ONBOARDING_CARDS: Card[] = [
     ),
   },
 ];
+
+function ShortcutCheatsheetCard() {
+  const shortcuts = getFeaturedShortcuts();
+
+  return (
+    <>
+      <p>
+        Use these bindings to move through agent work without hunting through panels. Press <kbd>?</kbd> anytime
+        for the complete shortcut list.
+      </p>
+      <ul className="onboarding-shortcut-grid" aria-label="Shortcut cheatsheet">
+        {shortcuts.map((shortcut) => (
+          <ShortcutCheatsheetRow key={shortcut.id} shortcut={shortcut} />
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function ShortcutCheatsheetRow({ shortcut }: { shortcut: Shortcut }) {
+  return (
+    <li className="onboarding-shortcut-row">
+      <span className="onboarding-shortcut-keys">
+        {shortcut.keys.map((key, index) => (
+          <React.Fragment key={`${shortcut.id}-${key}`}>
+            {index > 0 && <span className="onboarding-shortcut-plus">+</span>}
+            <kbd>{key}</kbd>
+          </React.Fragment>
+        ))}
+      </span>
+      <span className="onboarding-shortcut-desc">{shortcut.description}</span>
+    </li>
+  );
+}
 
 export function OnboardingTour() {
   const open = useSyncExternalStore(subscribe, getSnapshot, () => false);

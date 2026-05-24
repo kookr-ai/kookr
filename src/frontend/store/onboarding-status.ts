@@ -4,10 +4,10 @@
 // denied or quota-exhausted). Storage tier is picked once at module load via
 // the IIFE probe so reads and writes hit the same backend across the session.
 //
-// Version is encoded in the storage key suffix (`-v1`). A material rewrite
+// Version is encoded in the storage key suffix (`-v2`). A material rewrite
 // of tour content bumps the suffix; no separate version field is read.
 
-export const STORAGE_KEY = 'kookr:onboarding:seen-v1';
+export const STORAGE_KEY = 'kookr:onboarding:seen-v2';
 
 declare const __KOOKR_DISABLE_ONBOARDING__: string | undefined;
 

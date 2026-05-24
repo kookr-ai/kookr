@@ -71,7 +71,7 @@ describe('App operations modal shortcuts', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    localStorage.setItem('kookr:onboarding:seen-v1', 'true');
+    localStorage.setItem('kookr:onboarding:seen-v2', 'true');
     websocketMock.send.mockClear();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
