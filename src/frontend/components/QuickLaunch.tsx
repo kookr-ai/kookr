@@ -3,6 +3,7 @@ import { buildAgentSelectionOptions, type ClientMessage, type AgentSelection } f
 import { useKookrStore } from '../store/useStore.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -11,9 +12,10 @@ const recentPaths = new RecentPaths();
 interface Props {
   send: (msg: ClientMessage) => boolean;
   onClose: () => void;
+  sttShortcutBinding?: ShortcutBinding;
 }
 
-export function QuickLaunch({ send, onClose }: Props) {
+export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const [prompt, setPrompt] = useState('');
   const [cwd, setCwd] = useState('');
   const [agentType, setAgentType] = useState<AgentSelection>('claude-code');
@@ -125,7 +127,7 @@ export function QuickLaunch({ send, onClose }: Props) {
       />
       {sttUrl && (
         <Suspense fallback={null}>
-          <VoiceInputButton inputId="quick-launch" onTranscript={(text) => setPrompt(text)} />
+          <VoiceInputButton inputId="quick-launch" onTranscript={(text) => setPrompt(text)} shortcutBinding={sttShortcutBinding} />
         </Suspense>
       )}
     </div>

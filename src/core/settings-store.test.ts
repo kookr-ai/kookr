@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
 import { mkdtemp, rm, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { loadSettings, saveSettings, validateSettings, DEFAULT_SETTINGS } from './settings-store.js';
+import { loadSettings, saveSettings, validateSettings, validateSettingsWithWarnings, DEFAULT_SETTINGS } from './settings-store.js';
 
 describe('validateSettings', () => {
   it('returns defaults for empty object', () => {
@@ -85,6 +85,7 @@ describe('validateSettings', () => {
     expect(result.repeatedErrorThreshold).toBe(3);
     expect(result.maxActiveTasks).toBe(10);
     expect(result.defaultAgentType).toBe('claude-code');
+    expect(result.shortcutBindings).toEqual({});
   });
 
   it('accepts valid boolean for autoWatchOssSources', () => {
@@ -127,6 +128,28 @@ describe('validateSettings', () => {
     expect(validateSettings({ roundRobinIndex: 'five' }).roundRobinIndex).toBe(0);
     expect(validateSettings({ roundRobinIndex: NaN }).roundRobinIndex).toBe(0);
   });
+
+  it('validates shortcut binding overrides with warnings', () => {
+    const result = validateSettingsWithWarnings({
+      shortcutBindings: {
+        mac: {
+          next_bottleneck: 'Cmd+Ctrl+Space',
+          quick_launch: 'Cmd+Ctrl+Space',
+          nope: 'Ctrl+X',
+          previous_task: 'Ctrl+N+K',
+        },
+      },
+    });
+
+    expect(result.settings.shortcutBindings).toEqual({
+      mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
+    });
+    expect(result.warnings).toEqual([
+      'Shortcut "quick_launch" in mac bindings conflicts with "next_bottleneck" on Cmd+Ctrl+Space; ignored',
+      'Unknown shortcut action "nope" in mac bindings was ignored',
+      'Shortcut "previous_task" in mac bindings has invalid binding "Ctrl+N+K"; ignored',
+    ]);
+  });
 });
 
 describe('loadSettings / saveSettings', () => {
@@ -144,6 +167,7 @@ describe('loadSettings / saveSettings', () => {
     const result = await loadSettings(join(tmpDir, 'nonexistent.json'));
     expect(result.settings).toEqual(DEFAULT_SETTINGS);
     expect(result.loadedFromDefaults).toBe(true);
+    expect(result.warnings).toEqual([]);
   });
 
   it('returns defaults for corrupt JSON', async () => {
@@ -152,6 +176,7 @@ describe('loadSettings / saveSettings', () => {
     const result = await loadSettings(filePath);
     expect(result.settings).toEqual(DEFAULT_SETTINGS);
     expect(result.loadedFromDefaults).toBe(true);
+    expect(result.warnings).toEqual([]);
   });
 
   it('returns defaults for JSON array', async () => {
@@ -160,6 +185,7 @@ describe('loadSettings / saveSettings', () => {
     const result = await loadSettings(filePath);
     expect(result.settings).toEqual(DEFAULT_SETTINGS);
     expect(result.loadedFromDefaults).toBe(true);
+    expect(result.warnings).toEqual([]);
   });
 
   it('round-trips valid settings', async () => {
@@ -173,11 +199,15 @@ describe('loadSettings / saveSettings', () => {
       maxActiveTasks: 15,
       defaultAgentType: 'codex-cli' as const,
       roundRobinIndex: 3,
+      shortcutBindings: {
+        mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
+      },
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);
     expect(result.settings).toEqual(settings);
     expect(result.loadedFromDefaults).toBe(false);
+    expect(result.warnings).toEqual([]);
   });
 
   it('saves as pretty JSON', async () => {
@@ -194,6 +224,24 @@ describe('loadSettings / saveSettings', () => {
     const result = await loadSettings(filePath);
     expect(result.settings.githubPollingIntervalSec).toBe(15);
     expect(result.settings.githubPollingEnabled).toBe(true); // default
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('returns load-time shortcut warnings for hand-edited invalid settings', async () => {
+    const filePath = join(tmpDir, 'settings.json');
+    await writeFile(filePath, JSON.stringify({
+      shortcutBindings: {
+        darwin: { next_bottleneck: 'Cmd+Ctrl+Space' },
+        mac: { quick_launch: 'N' },
+      },
+    }), 'utf-8');
+    const result = await loadSettings(filePath);
+    expect(result.settings.shortcutBindings).toEqual({ mac: {} });
+    expect(result.loadedFromDefaults).toBe(false);
+    expect(result.warnings).toEqual([
+      'Unknown shortcut platform "darwin" was ignored',
+      'Shortcut "quick_launch" in mac bindings has invalid binding "N"; ignored',
+    ]);
   });
 
   it('fills missing new fields with defaults on load', async () => {
@@ -209,7 +257,9 @@ describe('loadSettings / saveSettings', () => {
     expect(result.settings.autoWatchOssSources).toBe(true);
     expect(result.settings.maxActiveTasks).toBe(10);
     expect(result.settings.defaultAgentType).toBe('claude-code');
+    expect(result.settings.shortcutBindings).toEqual({});
     expect(result.loadedFromDefaults).toBe(false);
+    expect(result.warnings).toEqual([]);
   });
 
   it('atomic write: temp file does not persist on success', async () => {

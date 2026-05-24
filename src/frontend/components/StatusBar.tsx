@@ -12,6 +12,7 @@ import {
   isResourceStatusStale,
   memorySeverity,
 } from '../resource-status.js';
+import { formatShortcutBinding, type ShortcutBindingMap } from '../../shared/contracts/shortcut-bindings.js';
 
 interface Props {
   findings: number;
@@ -26,6 +27,7 @@ interface Props {
   } | null;
   onReflect?: () => void;
   onDismissReflection?: () => void;
+  shortcutBindings?: ShortcutBindingMap;
 }
 
 const ZONE_LABELS: Record<FocusZone, string> = {
@@ -158,6 +160,7 @@ export function StatusBar({
   reflectionSuggestion,
   onReflect,
   onDismissReflection,
+  shortcutBindings,
 }: Props) {
   const focusZone = useKookrStore((s) => s.focusZone);
   const sttUrl = useKookrStore((s) => s.sttUrl);
@@ -200,7 +203,7 @@ export function StatusBar({
         <button
           className="btn-trophy"
           onClick={toggleAchievementsPanel}
-          title="Achievements (Alt+A)"
+          title={`Achievements${shortcutBindings ? ` (${formatShortcutBinding(shortcutBindings.toggle_achievements)})` : ''}`}
           aria-label="Achievements"
         >
           {'\u{1F3C6}'}

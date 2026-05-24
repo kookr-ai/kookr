@@ -15,6 +15,7 @@ interface MockSettings {
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
   defaultAgentType: AgentSelection;
+  shortcutBindings: Record<string, Record<string, string>>;
 }
 
 function relayStatusWithAction(
@@ -85,7 +86,18 @@ const DEFAULT_SETTINGS: MockSettings = {
   repeatedErrorThreshold: 3,
   maxActiveTasks: 10,
   defaultAgentType: 'claude-code',
+  shortcutBindings: {},
 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 async function flush() {
   await act(async () => { await Promise.resolve(); });
@@ -261,6 +273,114 @@ describe('SettingsDialog tabs', () => {
     expect(JSON.parse(String(putCall![1]!.body))).toMatchObject({
       defaultAgentType: 'round-robin',
     });
+  });
+
+  test('serializes shortcut saves so older responses do not roll back newer edits', async () => {
+    const onSettingsSaved = vi.fn();
+    const firstPut = deferred<Response>();
+    const secondPut = deferred<Response>();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((async (url, init) => {
+      if (url === '/api/settings' && !init) {
+        return { ok: true, json: async () => DEFAULT_SETTINGS } as Response;
+      }
+      if (url === '/api/settings' && init?.method === 'PUT') {
+        const putIndex = fetchMock.mock.calls.filter(([callUrl, callInit]) =>
+          callUrl === '/api/settings' && callInit?.method === 'PUT'
+        ).length;
+        return putIndex === 1 ? firstPut.promise : secondPut.promise;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    }) as typeof fetch);
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    act(() => {
+      root.render(React.createElement(SettingsDialog, { onClose: vi.fn(), onSettingsSaved }));
+    });
+    await flush();
+
+    const quickLaunch = container.querySelector<HTMLInputElement>('input[aria-label="Quick launch shortcut"]');
+    const nextTask = container.querySelector<HTMLInputElement>('input[aria-label="Next task shortcut"]');
+    expect(quickLaunch).not.toBeNull();
+    expect(nextTask).not.toBeNull();
+
+    await act(async () => {
+      changeInput(quickLaunch!, 'Ctrl+Shift+L');
+    });
+    await flush();
+    await act(async () => {
+      quickLaunch!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await flush();
+
+    await act(async () => {
+      changeInput(nextTask!, 'Ctrl+Shift+J');
+    });
+    await flush();
+    await act(async () => {
+      nextTask!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await flush();
+
+    expect(fetchMock.mock.calls.filter(([url, init]) => url === '/api/settings' && init?.method === 'PUT')).toHaveLength(1);
+    const firstPutCall = fetchMock.mock.calls.find(([url, init]) => url === '/api/settings' && init?.method === 'PUT');
+    expect(JSON.parse(String(firstPutCall![1]!.body)).shortcutBindings).toEqual({
+      default: { quick_launch: 'Ctrl+Shift+L' },
+    });
+
+    await act(async () => {
+      firstPut.resolve({
+        ok: true,
+        json: async () => ({
+          ...DEFAULT_SETTINGS,
+          shortcutBindings: { default: { quick_launch: 'Ctrl+Shift+L' } },
+        }),
+      } as Response);
+      await firstPut.promise;
+    });
+    await flush();
+
+    expect(onSettingsSaved).not.toHaveBeenCalled();
+    expect(quickLaunch!.value).toBe('Ctrl+Shift+L');
+    expect(nextTask!.value).toBe('Ctrl+Shift+J');
+    const putCalls = fetchMock.mock.calls.filter(([url, init]) => url === '/api/settings' && init?.method === 'PUT');
+    expect(putCalls).toHaveLength(2);
+    expect(JSON.parse(String(putCalls[1]![1]!.body)).shortcutBindings).toEqual({
+      default: {
+        quick_launch: 'Ctrl+Shift+L',
+        next_task: 'Ctrl+Shift+J',
+      },
+    });
+
+    await act(async () => {
+      secondPut.resolve({
+        ok: true,
+        json: async () => ({
+          ...DEFAULT_SETTINGS,
+          shortcutBindings: {
+            default: {
+              quick_launch: 'Ctrl+Shift+L',
+              next_task: 'Ctrl+Shift+J',
+            },
+          },
+        }),
+      } as Response);
+      await secondPut.promise;
+    });
+    await flush();
+
+    expect(onSettingsSaved).toHaveBeenCalledTimes(1);
+    expect(onSettingsSaved).toHaveBeenLastCalledWith(expect.objectContaining({
+      shortcutBindings: {
+        default: {
+          quick_launch: 'Ctrl+Shift+L',
+          next_task: 'Ctrl+Shift+J',
+        },
+      },
+    }));
   });
 
   test('connects relay credentials from the Sharing tab with the share CSRF token', async () => {

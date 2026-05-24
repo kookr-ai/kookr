@@ -1,21 +1,44 @@
 import React, { useEffect, useRef } from 'react';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
-import { getShortcutGroups } from '../shortcut-bindings.js';
 import { open as openOnboardingTour } from '../store/onboarding-store.js';
+import {
+  getShortcutHelpGroups,
+  matchesShortcutAction,
+  type ShortcutBindingMap,
+} from '../../shared/contracts/shortcut-bindings.js';
+import { ShortcutKeys } from './ShortcutKeys.js';
 
 interface Props {
+  bindings: ShortcutBindingMap;
   onClose: () => void;
 }
 
-export function ShortcutsHelp({ onClose }: Props) {
+const CONTEXTUAL_SHORTCUTS = [
+  {
+    title: 'Responding to findings',
+    shortcuts: [
+      { keys: ['Enter'], description: 'Send response and move to next finding' },
+      { keys: ['1'], description: 'Trigger quick action by number', context: 'when response input is empty' },
+    ],
+  },
+  {
+    title: 'Dialogs',
+    shortcuts: [
+      { keys: ['Esc'], description: 'Close current dialog or cancel editing' },
+      { keys: ['Enter'], description: 'Confirm / submit in dialogs and inline edits' },
+    ],
+  },
+];
+
+export function ShortcutsHelp({ bindings, onClose }: Props) {
   useEscapeToClose(onClose);
-  const shortcutGroups = getShortcutGroups();
+  const shortcutGroups = getShortcutHelpGroups(bindings);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === '?') {
+      if (matchesShortcutAction(e, bindings, 'toggle_shortcuts_help')) {
         e.preventDefault();
         e.stopPropagation();
         onClose();
@@ -28,7 +51,7 @@ export function ShortcutsHelp({ onClose }: Props) {
     }
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [onClose]);
+  }, [bindings, onClose]);
 
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -67,7 +90,7 @@ export function ShortcutsHelp({ onClose }: Props) {
               className="shortcuts-tour-cta"
               onClick={handleReplayTour}
             >
-              Take the product tour <span aria-hidden="true">{'→'}</span>
+              Take the product tour <span aria-hidden="true">{'->'}</span>
             </button>
           </div>
           {shortcutGroups.map((group) => (
@@ -77,12 +100,27 @@ export function ShortcutsHelp({ onClose }: Props) {
                 {group.shortcuts.map((shortcut) => (
                   <div key={shortcut.id} className="shortcut-row">
                     <span className="shortcut-keys">
-                      {shortcut.keys.map((key, i) => (
-                        <React.Fragment key={key}>
-                          {i > 0 && <span className="shortcut-plus">+</span>}
-                          <kbd>{key}</kbd>
-                        </React.Fragment>
-                      ))}
+                      <ShortcutKeys binding={shortcut.binding} plusClassName="shortcut-plus" />
+                    </span>
+                    <span className="shortcut-desc">
+                      {shortcut.description}
+                      {shortcut.context && (
+                        <span className="shortcut-context"> ({shortcut.context})</span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          {CONTEXTUAL_SHORTCUTS.map((group) => (
+            <div key={`contextual-${group.title}`} className="shortcuts-group">
+              <h4>{group.title}</h4>
+              <div className="shortcuts-list">
+                {group.shortcuts.map((shortcut) => (
+                  <div key={shortcut.keys.join('+')} className="shortcut-row">
+                    <span className="shortcut-keys">
+                      <ShortcutKeys keys={shortcut.keys} plusClassName="shortcut-plus" />
                     </span>
                     <span className="shortcut-desc">
                       {shortcut.description}

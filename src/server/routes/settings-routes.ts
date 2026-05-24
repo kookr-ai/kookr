@@ -8,6 +8,7 @@ export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
     return c.json({
       ...deps.settings.get(),
       loadedFromDefaults: deps.settings.getLoadedFromDefaults(),
+      warnings: deps.settings.getLoadWarnings?.() ?? [],
     });
   });
 
@@ -19,9 +20,12 @@ export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
         return c.json({ error: 'Body must be a JSON object' }, 400);
       }
 
-      const { validateSettings } = await import('../../core/settings-store.js');
-      const validated = validateSettings(body);
-      const warnings = await deps.settings.update(validated);
+      const { validateSettingsWithWarnings } = await import('../../core/settings-store.js');
+      const { settings: validated, warnings: validationWarnings } = validateSettingsWithWarnings(body);
+      const warnings = [
+        ...validationWarnings,
+        ...await deps.settings.update(validated),
+      ];
       // Pass the live deps so the snapshot carries maxActiveTasks (and sttUrl,
       // activityMetaProvider, etc.) — without these the broadcast would emit a
       // partial payload and the frontend would have to fall back on stickiness.

@@ -152,6 +152,7 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
         return false;
       }
       if (e.altKey && e.type === 'keydown') return false;
+      if (e.metaKey && e.ctrlKey && e.type === 'keydown') return false;
       return true;
     });
 

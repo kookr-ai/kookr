@@ -12,11 +12,13 @@ import React, { useEffect } from 'react';
 import { useSTT, type STTState } from '../hooks/useSTT.js';
 import { useKookrStore } from '../store/useStore.js';
 import { track } from '../telemetry.js';
+import { formatShortcutBinding, type ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 
 interface Props {
   inputId: string;
   onTranscript: (text: string) => void;
   disabled?: boolean;
+  shortcutBinding?: ShortcutBinding;
 }
 
 function formatElapsed(seconds: number): string {
@@ -25,14 +27,21 @@ function formatElapsed(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-const STATE_TITLES: Record<STTState, string> = {
-  idle: 'Click to start voice input (Alt+M)',
+function stateTitle(state: STTState, shortcutBinding?: ShortcutBinding): string {
+  if (state === 'idle') {
+    const suffix = shortcutBinding ? ` (${formatShortcutBinding(shortcutBinding)})` : '';
+    return `Click to start voice input${suffix}`;
+  }
+  return STATE_TITLES[state];
+}
+
+const STATE_TITLES: Record<Exclude<STTState, 'idle'>, string> = {
   recording: 'Recording... click to stop',
   processing: 'Processing transcription...',
   error: '',
 };
 
-export function VoiceInputButton({ inputId, onTranscript, disabled }: Props) {
+export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBinding }: Props) {
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const activeSTTInputId = useKookrStore((s) => s.activeSTTInputId);
   const setActiveSTTInput = useKookrStore((s) => s.setActiveSTTInput);
@@ -76,7 +85,7 @@ export function VoiceInputButton({ inputId, onTranscript, disabled }: Props) {
     e.preventDefault();
   }
 
-  const title = state === 'error' && error ? error : STATE_TITLES[state];
+  const title = state === 'error' && error ? error : stateTitle(state, shortcutBinding);
 
   return (
     <button

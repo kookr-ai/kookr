@@ -5,6 +5,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { AgentState } from '../../shared/protocol.js';
+import { getDefaultShortcutBindings } from '../../shared/contracts/shortcut-bindings.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { DetailPanel } from './DetailPanel.js';
 
@@ -135,5 +136,22 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-split-left')).toBeNull();
     expect(container.querySelector('.detail-tabs-narrow')).toBeNull();
     expect(container.querySelector('[data-testid="task-dependencies"]')).toBeNull();
+  });
+
+  test('empty state shortcut hint uses provided bindings', () => {
+    root = createRoot(container);
+    act(() => {
+      root?.render(
+        React.createElement(DetailPanel, {
+          agent: null,
+          send: vi.fn(() => true),
+          onLaunch: vi.fn(),
+          onRequestComplete: vi.fn(),
+          shortcutBindings: getDefaultShortcutBindings('mac'),
+        }),
+      );
+    });
+
+    expect(container.querySelector('.detail-empty-hint')?.textContent).toContain('Cmd+Ctrl+L quick launch');
   });
 });

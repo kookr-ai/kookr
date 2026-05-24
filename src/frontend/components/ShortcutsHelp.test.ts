@@ -5,11 +5,13 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { close as closeOnboardingTour, getSnapshot } from '../store/onboarding-store.js';
+import { getDefaultShortcutBindings, resolveShortcutBindings } from '../../shared/contracts/shortcut-bindings.js';
 import { ShortcutsHelp } from './ShortcutsHelp.js';
 
 describe('ShortcutsHelp', () => {
   let container: HTMLDivElement;
   let root: Root;
+  const bindings = getDefaultShortcutBindings('default');
 
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -32,7 +34,7 @@ describe('ShortcutsHelp', () => {
     previousFocus.focus();
 
     act(() => {
-      root.render(React.createElement(ShortcutsHelp, { onClose: () => root.render(React.createElement(React.Fragment)) }));
+      root.render(React.createElement(ShortcutsHelp, { bindings, onClose: () => root.render(React.createElement(React.Fragment)) }));
     });
 
     const dialog = container.querySelector('[role="dialog"]');
@@ -41,14 +43,14 @@ describe('ShortcutsHelp', () => {
     expect(container.querySelector('#shortcuts-help-title')?.textContent).toBe('Help & Shortcuts');
     expect(container.textContent).toContain('Jump to next finding by severity');
     expect(container.textContent).toContain('Show all projects');
-    expect(container.textContent).toContain('Select project by sidebar order');
+    expect(container.textContent).toContain('Select first visible project');
     expect(document.activeElement).toBe(container.querySelector<HTMLButtonElement>('.shortcuts-close'));
   });
 
   test('closes with question mark and traps Tab within the dialog', () => {
     let open = true;
     function render() {
-      root.render(open ? React.createElement(ShortcutsHelp, { onClose: () => {
+      root.render(open ? React.createElement(ShortcutsHelp, { bindings, onClose: () => {
         open = false;
         render();
       } }) : React.createElement(React.Fragment));
@@ -81,7 +83,7 @@ describe('ShortcutsHelp', () => {
 
   test('opens the onboarding tour from the overlay CTA', () => {
     act(() => {
-      root.render(React.createElement(ShortcutsHelp, { onClose: () => root.render(React.createElement(React.Fragment)) }));
+      root.render(React.createElement(ShortcutsHelp, { bindings, onClose: () => root.render(React.createElement(React.Fragment)) }));
     });
 
     act(() => {
@@ -89,5 +91,22 @@ describe('ShortcutsHelp', () => {
     });
 
     expect(getSnapshot()).toBe(true);
+  });
+
+  test('renders active custom bindings from the resolved shortcut map', () => {
+    act(() => {
+      root.render(React.createElement(ShortcutsHelp, {
+        bindings: resolveShortcutBindings('mac', {
+          mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
+        }),
+        onClose: () => root.render(React.createElement(React.Fragment)),
+      }));
+    });
+
+    expect(container.textContent).toContain('Jump to next finding by severity');
+    expect(container.textContent).toContain('Cmd');
+    expect(container.textContent).toContain('Ctrl');
+    expect(container.textContent).toContain('Space');
+    expect(container.textContent).not.toContain('Alt+N');
   });
 });

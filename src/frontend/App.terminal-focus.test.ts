@@ -182,6 +182,107 @@ describe('App terminal focus mode', () => {
     expect(container.querySelector('[data-testid="project-sidebar"]')).toBeNull();
   });
 
+  test('Cmd+Ctrl+T enables focus mode on macOS defaults', async () => {
+    Object.defineProperty(window.navigator, 'platform', { configurable: true, value: 'MacIntel' });
+    localStorage.removeItem('kookr-terminal-focus-mode');
+    syncGlobalStore();
+    useKookrStore.setState({
+      projectSummariesHydrated: true,
+      sttUrl: '',
+    });
+    useKookrStore.getState().handleProjectSummaries([
+      {
+        project: 'github.com/me/focus',
+        displayName: 'me/focus',
+        activeAgents: 1,
+        attentionScore: 2,
+        findingCount: 1,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+    ]);
+    useKookrStore.getState().selectProject('github.com/me/focus');
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await waitForElement<HTMLButtonElement>(container, '.terminal-focus-trigger');
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        metaKey: true,
+        ctrlKey: true,
+        key: 't',
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    await flush();
+
+    expect(useKookrStore.getState().terminalFocusMode).toBe(true);
+  });
+
+  test('uses custom shortcut bindings loaded from settings', async () => {
+    localStorage.removeItem('kookr-terminal-focus-mode');
+    syncGlobalStore();
+    useKookrStore.setState({
+      projectSummariesHydrated: true,
+      sttUrl: '',
+    });
+    useKookrStore.getState().handleProjectSummaries([
+      {
+        project: 'github.com/me/focus',
+        displayName: 'me/focus',
+        activeAgents: 1,
+        attentionScore: 2,
+        findingCount: 1,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+    ]);
+    useKookrStore.getState().selectProject('github.com/me/focus');
+
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({
+        shortcutBindings: {
+          default: { toggle_terminal_focus: 'Ctrl+Shift+T' },
+          mac: { toggle_terminal_focus: 'Ctrl+Shift+T' },
+        },
+      }),
+    } as Response)));
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await waitForElement<HTMLButtonElement>(container, '.terminal-focus-trigger');
+    const fetchMock = vi.mocked(fetch);
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 1_000) {
+      await flush();
+      if (fetchMock.mock.calls.some(([url]) => url === '/api/settings')) break;
+    }
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/settings')).toBe(true);
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        ctrlKey: true,
+        shiftKey: true,
+        key: 't',
+        code: 'KeyT',
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    await flush();
+
+    expect(useKookrStore.getState().terminalFocusMode).toBe(true);
+  });
+
   test('keeps the normal mobile layout even when focus mode is persisted', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 390 });
 

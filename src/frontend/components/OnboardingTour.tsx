@@ -1,7 +1,13 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { getFeaturedShortcuts, type Shortcut } from '../shortcut-bindings.js';
+import {
+  detectShortcutPlatform,
+  getDefaultShortcutBindings,
+  getFeaturedShortcuts,
+  type ShortcutDisplay,
+} from '../../shared/contracts/shortcut-bindings.js';
 import { close, getSnapshot, subscribe } from '../store/onboarding-store.js';
 import { OnboardingLayoutDiagram } from './OnboardingLayoutDiagram.js';
+import { ShortcutKeys } from './ShortcutKeys.js';
 import type { TourTargetClass } from './onboarding-tour-targets.js';
 
 export { TOUR_TARGET_CLASSES } from './onboarding-tour-targets.js';
@@ -56,7 +62,7 @@ export const ONBOARDING_CARDS: Card[] = [
     body: (
       <>
         <p>
-          The <strong>+ Launch</strong> button (or <kbd>Alt</kbd>+<kbd>L</kbd>) spawns a Claude Code or Codex CLI session
+          The <strong>+ Launch</strong> button (or <QuickLaunchShortcutHint />) spawns a Claude Code or Codex CLI session
           inside a managed dtach terminal. Kookr watches its output stream and surfaces anomalies as findings.
         </p>
       </>
@@ -102,7 +108,7 @@ export const ONBOARDING_CARDS: Card[] = [
 ];
 
 function ShortcutCheatsheetCard() {
-  const shortcuts = getFeaturedShortcuts();
+  const shortcuts = getFeaturedShortcuts(detectShortcutPlatform());
 
   return (
     <>
@@ -119,16 +125,16 @@ function ShortcutCheatsheetCard() {
   );
 }
 
-function ShortcutCheatsheetRow({ shortcut }: { shortcut: Shortcut }) {
+function QuickLaunchShortcutHint() {
+  const bindings = getDefaultShortcutBindings(detectShortcutPlatform());
+  return <ShortcutKeys binding={bindings.quick_launch} />;
+}
+
+function ShortcutCheatsheetRow({ shortcut }: { shortcut: ShortcutDisplay }) {
   return (
     <li className="onboarding-shortcut-row">
       <span className="onboarding-shortcut-keys">
-        {shortcut.keys.map((key, index) => (
-          <React.Fragment key={`${shortcut.id}-${key}`}>
-            {index > 0 && <span className="onboarding-shortcut-plus">+</span>}
-            <kbd>{key}</kbd>
-          </React.Fragment>
-        ))}
+        <ShortcutKeys keys={shortcut.keys} plusClassName="onboarding-shortcut-plus" />
       </span>
       <span className="onboarding-shortcut-desc">{shortcut.description}</span>
     </li>
