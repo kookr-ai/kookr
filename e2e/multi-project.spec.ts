@@ -220,6 +220,38 @@ test.describe('Multi-Project Tracking', () => {
     await expect(page.locator('.finding-card')).toHaveCount(2, { timeout: 3000 });
   });
 
+  test('Alt+N activates the next finding project in the sidebar', async ({ page, request }) => {
+    await launchViaUI(page, 'Fix auth in A', '/test/repo-a');
+    const tmuxA = await getLatestTmuxName(request);
+    const taskA = await getLatestTaskId(request);
+    await injectSessionStart(request, tmuxA);
+    await injectStopEvent(request, tmuxA);
+    await setProjectId(request, taskA, 'github.com/org/repo-a');
+
+    await launchViaUI(page, 'Fix build in B', '/test/repo-b');
+    const tmuxB = await getLatestTmuxName(request);
+    const taskB = await getLatestTaskId(request);
+    await injectSessionStart(request, tmuxB);
+    await injectStopEvent(request, tmuxB);
+    await setProjectId(request, taskB, 'github.com/org/repo-b');
+
+    await expect(page.locator('.finding-card')).toHaveCount(2, { timeout: 10000 });
+    await broadcastProjectSummaries(request);
+    await expect(page.locator('[data-testid="project-sidebar"]')).toBeVisible({ timeout: 5000 });
+
+    const projectAIcon = page.locator('[data-testid="project-icon-github.com/org/repo-a"]');
+    const projectBIcon = page.locator('[data-testid="project-icon-github.com/org/repo-b"]');
+    await projectAIcon.click();
+    await expect(projectAIcon).toHaveClass(/selected/);
+    await expect(page.locator('.finding-card.selected')).toContainText(/auth.*A/i);
+
+    await page.keyboard.press('Alt+n');
+
+    await expect(projectBIcon).toHaveClass(/selected/);
+    await expect(projectAIcon).not.toHaveClass(/selected/);
+    await expect(page.locator('.finding-card.selected')).toContainText(/build.*B/i);
+  });
+
   test('Alt+P toggles project sidebar visibility', async ({ page, request }) => {
     // Launch agents to trigger sidebar
     await launchViaUI(page, 'Task A', '/test/a');

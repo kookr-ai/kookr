@@ -1,8 +1,10 @@
 import type { TriageNavigationSlice, StoreGet, StoreSet } from '../store-types.js';
+import type { AgentState } from '../../../shared/protocol.js';
 import { isDndEnabled } from '../../hooks/useDnd.js';
 import { compareRoutableAgents } from '../../agent-priority-order.js';
 import { deriveProjectPriorityRanks } from '../../../shared/project-sidebar.js';
 import { recordReportableAlert } from '../../bug-report-recorder.js';
+import { saveSelectedProject } from '../selected-project-storage.js';
 
 const TERMINAL_FOCUS_STORAGE_KEY = 'kookr-terminal-focus-mode';
 
@@ -26,6 +28,17 @@ function saveTerminalFocusMode(enabled: boolean): void {
   } catch {
     // Persistence is best-effort; focus mode should still toggle in memory.
   }
+}
+
+function activateNavigationSelection(
+  agents: AgentState[],
+  agentId: string,
+  visibleProjectIds: Set<string>,
+): { selectedAgentId: string; selectedAgentSource: 'manual'; selectedProject: string | null } {
+  const projectId = agents.find((agent) => agent.agentId === agentId)?.projectId ?? null;
+  const selectedProject = projectId && visibleProjectIds.has(projectId) ? projectId : null;
+  saveSelectedProject(selectedProject);
+  return { selectedAgentId: agentId, selectedAgentSource: 'manual', selectedProject };
 }
 
 export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): TriageNavigationSlice {
@@ -100,8 +113,9 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
     },
 
     nextBottleneck: () => {
-      const { agents, selectedAgentId } = get();
+      const { agents, selectedAgentId, visibleProjectSummaries } = get();
       const order = getPriorityOrderContext();
+      const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
       const findings = agents
         .filter((agent) => agent.anomaly !== null && !agent.snoozedUntil && !agent.suppressed)
         .sort((left, right) => compareRoutableAgents(left, right, order));
@@ -118,12 +132,13 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
         return;
       }
 
-      set({ selectedAgentId: findings[nextIdx].agentId, selectedAgentSource: 'manual', shortcutsArmed: false });
+      set({ ...activateNavigationSelection(agents, findings[nextIdx].agentId, visibleProjectIds), shortcutsArmed: false });
     },
 
     nextTask: () => {
-      const { agents, selectedAgentId } = get();
+      const { agents, selectedAgentId, visibleProjectSummaries } = get();
       const order = getPriorityOrderContext();
+      const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
       const findings = agents
         .filter((agent) => agent.anomaly !== null && !agent.snoozedUntil && !agent.suppressed)
         .sort((left, right) => compareRoutableAgents(left, right, order));
@@ -136,12 +151,13 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
       const currentIdx = all.findIndex((agent) => agent.agentId === selectedAgentId);
       const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % all.length : 0;
-      set({ selectedAgentId: all[nextIdx].agentId, selectedAgentSource: 'manual' });
+      set(activateNavigationSelection(agents, all[nextIdx].agentId, visibleProjectIds));
     },
 
     previousTask: () => {
-      const { agents, selectedAgentId } = get();
+      const { agents, selectedAgentId, visibleProjectSummaries } = get();
       const order = getPriorityOrderContext();
+      const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
       const findings = agents
         .filter((agent) => agent.anomaly !== null && !agent.snoozedUntil && !agent.suppressed)
         .sort((left, right) => compareRoutableAgents(left, right, order));
@@ -154,7 +170,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
       const currentIdx = all.findIndex((agent) => agent.agentId === selectedAgentId);
       const prevIdx = currentIdx >= 0 ? (currentIdx - 1 + all.length) % all.length : all.length - 1;
-      set({ selectedAgentId: all[prevIdx].agentId, selectedAgentSource: 'manual' });
+      set(activateNavigationSelection(agents, all[prevIdx].agentId, visibleProjectIds));
     },
 
     snoozeAgent: (agentId, durationMs) => {

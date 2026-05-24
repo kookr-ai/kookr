@@ -312,6 +312,19 @@ describe('Kookr Zustand Store', () => {
     expect(freshStore.getState().selectedProject).toBe('github.com/example/repo');
   });
 
+  test('selectedProject defaults to null when localStorage getItem fails', () => {
+    vi.spyOn(globalThis.localStorage, 'getItem').mockImplementation((key: string) => {
+      if (key === 'kookr-selected-project') {
+        throw new DOMException('blocked', 'SecurityError');
+      }
+      return localStore.get(key) ?? null;
+    });
+
+    const freshStore = createKookrStore();
+
+    expect(freshStore.getState().selectedProject).toBeNull();
+  });
+
   test('handleSnapshot preserves task metadata fields', () => {
     const agents: AgentState[] = [
       {
@@ -779,6 +792,97 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().shortcutsArmed).toBe(true);
   });
 
+  test('nextBottleneck selects and persists the target project', () => {
+    store.getState().handleProjectSummaries([
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+    ]);
+    store.getState().handleSnapshot([
+      {
+        agentId: 'agent-A',
+        events: [],
+        anomaly: { agentId: 'agent-A', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+        projectId: 'proj-a',
+      },
+      {
+        agentId: 'agent-B',
+        events: [],
+        anomaly: { agentId: 'agent-B', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+        projectId: 'proj-b',
+      },
+    ]);
+
+    store.getState().selectProject('proj-a');
+    expect(store.getState().selectedAgentId).toBe('agent-A');
+    store.setState({ selectedAgentSource: 'auto-advance' });
+
+    store.getState().nextBottleneck();
+
+    expect(store.getState().selectedAgentId).toBe('agent-B');
+    expect(store.getState().selectedAgentSource).toBe('manual');
+    expect(store.getState().selectedProject).toBe('proj-b');
+    expect(localStore.get('kookr-selected-project')).toBe('proj-b');
+  });
+
+  test('nextBottleneck selects the target project when localStorage persistence fails', () => {
+    store.getState().handleProjectSummaries([
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+    ]);
+    store.getState().handleSnapshot([
+      {
+        agentId: 'agent-A',
+        events: [],
+        anomaly: { agentId: 'agent-A', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+        projectId: 'proj-a',
+      },
+      {
+        agentId: 'agent-B',
+        events: [],
+        anomaly: { agentId: 'agent-B', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+        projectId: 'proj-b',
+      },
+    ]);
+    store.getState().selectProject('proj-a');
+    vi.spyOn(globalThis.localStorage, 'setItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+
+    store.getState().nextBottleneck();
+
+    expect(store.getState().selectedAgentId).toBe('agent-B');
+    expect(store.getState().selectedProject).toBe('proj-b');
+  });
+
+  test('nextBottleneck falls back to All Projects when the target project is hidden', () => {
+    store.getState().handleProjectSummaries([
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+    ]);
+    store.getState().hideSidebarProject('proj-b');
+    store.getState().handleSnapshot([
+      {
+        agentId: 'agent-A',
+        events: [],
+        anomaly: { agentId: 'agent-A', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+        projectId: 'proj-a',
+      },
+      {
+        agentId: 'agent-B',
+        events: [],
+        anomaly: { agentId: 'agent-B', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+        projectId: 'proj-b',
+      },
+    ]);
+    store.getState().selectProject('proj-a');
+
+    store.getState().nextBottleneck();
+
+    expect(store.getState().selectedAgentId).toBe('agent-B');
+    expect(store.getState().selectedProject).toBeNull();
+    expect(localStore.get('kookr-selected-project')).toBeUndefined();
+  });
+
   test('nextBottleneck disarms shortcuts even when clearing selection', () => {
     store.getState().handleSnapshot([
       { agentId: 'healthy-1', events: [], anomaly: null },
@@ -874,15 +978,54 @@ describe('Kookr Zustand Store', () => {
 
     store.getState().nextTask();
     expect(store.getState().selectedAgentId).toBe('high-a');
+    expect(store.getState().selectedProject).toBe('project-a');
+    expect(localStore.get('kookr-selected-project')).toBe('project-a');
 
     store.getState().nextTask();
     expect(store.getState().selectedAgentId).toBe('normal-a');
+    expect(store.getState().selectedProject).toBe('project-a');
+    expect(localStore.get('kookr-selected-project')).toBe('project-a');
 
     store.getState().nextTask();
     expect(store.getState().selectedAgentId).toBe('healthy-b');
+    expect(store.getState().selectedProject).toBe('project-b');
+    expect(localStore.get('kookr-selected-project')).toBe('project-b');
 
     store.getState().previousTask();
     expect(store.getState().selectedAgentId).toBe('normal-a');
+    expect(store.getState().selectedProject).toBe('project-a');
+    expect(localStore.get('kookr-selected-project')).toBe('project-a');
+  });
+
+  test('nextTask selects and persists the target project', () => {
+    store.getState().handleProjectSummaries([
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+    ]);
+    store.getState().handleSnapshot([
+      {
+        agentId: 'finding-1',
+        events: [],
+        anomaly: {
+          agentId: 'finding-1',
+          type: 'repeated_error',
+          severity: 'critical',
+          explanation: 'Stuck',
+          detectedAt: new Date(),
+        },
+        projectId: 'proj-a',
+      },
+      { agentId: 'healthy-1', events: [], anomaly: null, projectId: 'proj-b' },
+    ]);
+
+    store.getState().selectAgent('finding-1');
+    store.setState({ selectedAgentSource: 'auto-advance' });
+    store.getState().nextTask();
+
+    expect(store.getState().selectedAgentId).toBe('healthy-1');
+    expect(store.getState().selectedAgentSource).toBe('manual');
+    expect(store.getState().selectedProject).toBe('proj-b');
+    expect(localStore.get('kookr-selected-project')).toBe('proj-b');
   });
 
   test('previousTask cycles backwards through findings then healthy', () => {
@@ -917,6 +1060,37 @@ describe('Kookr Zustand Store', () => {
     // Fourth call: wraps around to healthy-2
     store.getState().previousTask();
     expect(store.getState().selectedAgentId).toBe('healthy-2');
+  });
+
+  test('previousTask selects and persists the target project', () => {
+    store.getState().handleProjectSummaries([
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+    ]);
+    store.getState().handleSnapshot([
+      {
+        agentId: 'finding-1',
+        events: [],
+        anomaly: {
+          agentId: 'finding-1',
+          type: 'repeated_error',
+          severity: 'critical',
+          explanation: 'Stuck',
+          detectedAt: new Date(),
+        },
+        projectId: 'proj-a',
+      },
+      { agentId: 'healthy-1', events: [], anomaly: null, projectId: 'proj-b' },
+    ]);
+
+    store.getState().selectAgent('finding-1');
+    store.setState({ selectedAgentSource: 'auto-advance' });
+    store.getState().previousTask();
+
+    expect(store.getState().selectedAgentId).toBe('healthy-1');
+    expect(store.getState().selectedAgentSource).toBe('manual');
+    expect(store.getState().selectedProject).toBe('proj-b');
+    expect(localStore.get('kookr-selected-project')).toBe('proj-b');
   });
 
   test('handleProjectSummaries derives visible sidebar order from persisted prefs', () => {
@@ -980,6 +1154,31 @@ describe('Kookr Zustand Store', () => {
 
     expect(store.getState().selectedProject).toBeNull();
     expect(localStore.has('kookr-selected-project')).toBe(false);
+    expect(store.getState().visibleProjectSummaries).toEqual([]);
+  });
+
+  test('hideSidebarProject clears selected project when localStorage removal fails', () => {
+    store.getState().handleProjectSummaries([
+      {
+        project: 'github.com/example/repo',
+        displayName: 'example/repo',
+        color: 1,
+        activeAgents: 0,
+        findingCount: 0,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+    ]);
+    store.getState().selectProject('github.com/example/repo');
+    vi.spyOn(globalThis.localStorage, 'removeItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+
+    store.getState().hideSidebarProject('github.com/example/repo');
+
+    expect(store.getState().selectedProject).toBeNull();
     expect(store.getState().visibleProjectSummaries).toEqual([]);
   });
 
@@ -1151,6 +1350,30 @@ describe('Kookr Zustand Store', () => {
       'github.com/a',
       'github.com/b',
     ]);
+  });
+
+  test('resetProjectSidebar clears selection when localStorage removal fails', () => {
+    store.getState().handleProjectSummaries([
+      {
+        project: 'github.com/a',
+        displayName: 'owner/a',
+        color: 1,
+        activeAgents: 0,
+        findingCount: 0,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+    ]);
+    store.getState().selectProject('github.com/a');
+    vi.spyOn(globalThis.localStorage, 'removeItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+
+    store.getState().resetProjectSidebar();
+
+    expect(store.getState().selectedProject).toBeNull();
   });
 
   // --- Workspace slice ---

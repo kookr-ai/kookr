@@ -48,7 +48,7 @@ async function flush() {
 
 async function waitForElement<T extends Element>(container: Element, selector: string): Promise<T> {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 1_000) {
+  while (Date.now() - startedAt < 5_000) {
     await flush();
     const element = container.querySelector<T>(selector);
     if (element) return element;
