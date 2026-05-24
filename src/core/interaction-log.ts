@@ -31,7 +31,22 @@ export type InteractionEvent =
   | { type: 'submission_rejected_dedup'; existingTaskId: string; promptHash: string; canonicalCwd: string; timestamp: string }
   | { type: 'auto_suppressed'; agentId: string; anomalyType: AnomalyType; suppressionCount: number; timestamp: string }
   | { type: 'monitoring_resumed'; agentId: string; reason: 'respond' | 'cleanup'; timestamp: string }
-  | { type: 'finding_feedback'; agentId: string; anomalyType: AnomalyType; verdict: 'false_positive'; explanation: string; timestamp: string }
+  | {
+      type: 'finding_feedback';
+      agentId: string;
+      anomalyType: AnomalyType;
+      verdict: 'false_positive';
+      explanation: string;
+      userReason?: string;
+      timestamp: string;
+    }
+  | {
+      type: 'missed_finding';
+      agentId: string;
+      userReason: string;
+      suspectedType?: AnomalyType;
+      timestamp: string;
+    }
   | {
       type: 'task_feedback_submitted';
       taskId: string;
@@ -150,6 +165,7 @@ const SUBSTANTIVE_EVENT_TYPES: ReadonlySet<InteractionEvent['type']> = new Set([
   'finding_snoozed',
   'finding_resolved',
   'finding_feedback',
+  'missed_finding',
 ]);
 
 export function isSubstantiveEvent(event: InteractionEvent): boolean {

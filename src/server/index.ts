@@ -56,6 +56,7 @@ import {
   readFindingEvidenceReviewConfigFromEnv,
 } from './finding-evidence-review-service.js';
 import { ReviewLogStore } from './review-log-store.js';
+import { SupervisorFeedbackCaseStore } from './supervisor-feedback-case-store.js';
 import { type OssSourceWatcherFs } from './oss-source-watcher.js';
 import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
 import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
@@ -1018,6 +1019,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ? getOrCreateFindingEvidenceReviewHmacKey(kookrDir)
     : Buffer.alloc(32, 0);
   const findingEvidenceReviewLogStore = ReviewLogStore.forKookrDir(kookrDir);
+  const supervisorFeedbackCaseStore = SupervisorFeedbackCaseStore.forKookrDir(kookrDir);
   const findingEvidenceReviewConfig = readFindingEvidenceReviewConfigFromEnv(process.env, findingEvidenceReviewHmacKey, buildInfo.commitHash);
   const findingEvidenceReviewSamplerConfig = readFindingEvidenceReviewSamplerConfigFromEnv(process.env);
   const contactShare = new ContactShareReadModel();
@@ -1220,6 +1222,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     leaseService,
     serverProjectId,
     takePredeleteSnapshot,
+    supervisorFeedbackCaseStore,
   };
 
   const backgroundServices = startBackgroundServices({

@@ -5,6 +5,7 @@ import { track, trackClick } from '../telemetry.js';
 import { agentProviderPresentation, formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch, worktreeHealthLabel, worktreeHealthTitle, turnStateLabel, turnStateClass } from '../presentation.js';
 import { Tooltip } from './Tooltip.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
+import { SupervisorFeedbackDialog } from './SupervisorFeedbackDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
@@ -243,6 +244,7 @@ function FindingCard({ agent, selected, send }: {
   send: (msg: ClientMessage) => void;
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
+  const [showFlagFP, setShowFlagFP] = useState(false);
   const { selectAgent, nextBottleneck } = useKookrStore();
   const selectedProject = useKookrStore((s) => s.selectedProject);
   const dnd = useDnd();
@@ -266,7 +268,7 @@ function FindingCard({ agent, selected, send }: {
     nextBottleneck();
   }
 
-  function handleFlagFP() {
+  function submitFlagFP(userReason: string) {
     if (!agent.anomaly) return;
     trackClick('flag_fp');
     send({
@@ -275,7 +277,9 @@ function FindingCard({ agent, selected, send }: {
       anomalyType: agent.anomaly.type,
       explanation: agent.anomaly.explanation,
       verdict: 'false_positive',
+      ...(userReason ? { userReason } : {}),
     });
+    setShowFlagFP(false);
     nextBottleneck();
   }
 
@@ -400,7 +404,7 @@ function FindingCard({ agent, selected, send }: {
           <TaskPriorityButton agent={agent} send={send} />
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); handleSkip(); }}>Skip</button>
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); setShowSnooze(true); }}>Snooze</button>
-          <button className="btn-xs btn-fp" onClick={(e) => { e.stopPropagation(); handleFlagFP(); }} title="Mark as false positive">Flag FP</button>
+          <button className="btn-xs btn-fp" onClick={(e) => { e.stopPropagation(); setShowFlagFP(true); }} title="Mark as false positive">Flag FP</button>
         </div>
         {showSnooze && (
           <SnoozeDialog
@@ -408,6 +412,15 @@ function FindingCard({ agent, selected, send }: {
             agentName={agent.taskName ?? agent.agentId}
             onSnooze={(durationMs) => { handleSnooze(durationMs); setShowSnooze(false); }}
             onClose={() => setShowSnooze(false)}
+          />
+        )}
+        {showFlagFP && agent.anomaly && (
+          <SupervisorFeedbackDialog
+            mode="false_positive"
+            agentName={agent.taskName ?? agent.agentId}
+            supervisorExplanation={agent.anomaly.explanation}
+            onSubmit={({ userReason }) => submitFlagFP(userReason)}
+            onClose={() => setShowFlagFP(false)}
           />
         )}
       </div>
@@ -421,6 +434,7 @@ function HealthyRow({ agent, selected, send }: {
   send: (msg: ClientMessage) => void;
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
+  const [showFlagMissed, setShowFlagMissed] = useState(false);
   const selectedProject = useKookrStore((s) => s.selectedProject);
   const coordinatorChip = coordinatorChipForTask(useKookrStore((s) => s.coordinator), agent.taskId);
   const projectLabelText = agentProjectLabel(agent);
@@ -504,6 +518,14 @@ function HealthyRow({ agent, selected, send }: {
                 >
                   Snooze
                 </button>
+                <button
+                  className="btn-xs btn-fn"
+                  onClick={(e) => { e.stopPropagation(); setShowFlagMissed(true); }}
+                  title="Report that Kookr should have flagged this agent"
+                  aria-label={`Report missed finding for ${agent.taskName ?? agent.agentId}`}
+                >
+                  Flag missed
+                </button>
                 <RalphLoopControls agent={agent} />
                 {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
                   <RalphLoopBadge agent={agent} />
@@ -519,6 +541,23 @@ function HealthyRow({ agent, selected, send }: {
             agentName={agent.taskName ?? agent.agentId}
             onSnooze={(durationMs) => { handleSnooze(durationMs); setShowSnooze(false); }}
             onClose={() => setShowSnooze(false)}
+          />
+        )}
+        {showFlagMissed && (
+          <SupervisorFeedbackDialog
+            mode="false_negative"
+            agentName={agent.taskName ?? agent.agentId}
+            onSubmit={({ userReason, suspectedType }) => {
+              trackClick('flag_missed');
+              send({
+                type: 'missedFinding',
+                agentId: agent.agentId,
+                userReason,
+                ...(suspectedType ? { suspectedType } : {}),
+              });
+              setShowFlagMissed(false);
+            }}
+            onClose={() => setShowFlagMissed(false)}
           />
         )}
       </div>

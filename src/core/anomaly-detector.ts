@@ -6,6 +6,7 @@ import type { AnomalyDetectorConfig } from './detection-stats.js';
 // these — see src/core/detection-stats.ts.
 export {
   getDetectionStats,
+  recordFalseNegative,
   recordFalsePositive,
   recordSuppression,
   recordSubagentOrphans,

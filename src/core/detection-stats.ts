@@ -16,6 +16,13 @@ export interface DetectionStats {
   checks: Record<AnomalyType, number>;
   fires: Record<AnomalyType, number>;
   falsePositives: Record<AnomalyType, number>;
+  /**
+   * User-reported missed findings: agent was shown as healthy but the user
+   * had to intervene. Bucketed by the suspectedType the user picked; if the
+   * user did not name a type, the report is not counted here (still persisted
+   * in the supervisor-feedback case log).
+   */
+  falseNegatives: Record<AnomalyType, number>;
   /** Anomalies returned null at the suppression layer (e.g. needs_input while subagents running). */
   suppressed: Record<AnomalyType, number>;
   /** Outstanding subagent entries dropped at session/agent end (lost SubagentStop). */
@@ -43,6 +50,7 @@ const stats: DetectionStats = {
   checks: { ...ZERO_COUNTS },
   fires: { ...ZERO_COUNTS },
   falsePositives: { ...ZERO_COUNTS },
+  falseNegatives: { ...ZERO_COUNTS },
   suppressed: { ...ZERO_COUNTS },
   subagentOrphans: 0,
   subagentSessionsWithOrphans: 0,
@@ -55,6 +63,7 @@ export function getDetectionStats(): DetectionStats {
     checks: { ...stats.checks },
     fires: { ...stats.fires },
     falsePositives: { ...stats.falsePositives },
+    falseNegatives: { ...stats.falseNegatives },
     suppressed: { ...stats.suppressed },
     subagentOrphans: stats.subagentOrphans,
     subagentSessionsWithOrphans: stats.subagentSessionsWithOrphans,
@@ -65,6 +74,15 @@ export function getDetectionStats(): DetectionStats {
 /** Record a user-reported false positive for a detector type. */
 export function recordFalsePositive(type: AnomalyType): void {
   stats.falsePositives[type]++;
+}
+
+/**
+ * Record a user-reported missed finding for a detector type. The agent was
+ * shown as healthy but the user had to intervene; the user identified what
+ * kind of finding should have surfaced.
+ */
+export function recordFalseNegative(type: AnomalyType): void {
+  stats.falseNegatives[type]++;
 }
 
 /** Record a suppressed anomaly (returned null at the suppression layer). */
@@ -103,6 +121,7 @@ export function resetDetectionStats(): void {
     stats.checks[key] = 0;
     stats.fires[key] = 0;
     stats.falsePositives[key] = 0;
+    stats.falseNegatives[key] = 0;
     stats.suppressed[key] = 0;
   }
   stats.subagentOrphans = 0;

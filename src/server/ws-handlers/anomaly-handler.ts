@@ -7,9 +7,11 @@ import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js
 import type { SnoozeSuppressionTracker } from '../../core/snooze-suppression.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { nowISO } from '../../core/interaction-log.js';
-import { recordFalsePositive } from '../../core/anomaly-detector.js';
+import { recordFalseNegative, recordFalsePositive } from '../../core/detection-stats.js';
 import { validatePermissionApprovalBinding } from '../../shared/contracts/permission-request-binding.js';
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
+import type { SupervisorFeedbackCaseStore } from '../supervisor-feedback-case-store.js';
+import { SUPERVISOR_FEEDBACK_CASE_SCHEMA_VERSION } from '../supervisor-feedback-case-store.js';
 
 /**
  * Narrow dependency bag for anomaly-response messages.
@@ -29,6 +31,10 @@ export interface AnomalyHandlerDeps {
   interactionLog?: DeferredInteractionLogWriter;
   suppressionTracker?: SnoozeSuppressionTracker;
   onRespond?: (agentId: string, outcome?: 'used' | 'cleared') => void;
+  /** Persistent case log capturing user-reported FP/FN snapshots for offline analysis. */
+  caseLogStore?: SupervisorFeedbackCaseStore;
+  /** Max number of recent agent events to include in case snapshots (default 30). */
+  caseSnapshotEventCap?: number;
 }
 
 type AnomalyMessage = Extract<ClientMessage, {
@@ -41,6 +47,7 @@ type AnomalyMessage = Extract<ClientMessage, {
     | 'snooze'
     | 'cancelSnooze'
     | 'findingFeedback'
+    | 'missedFinding'
     | 'permissionChoice'
 }>;
 
@@ -295,6 +302,7 @@ export class AnomalyHandler {
           anomalyType: msg.anomalyType,
           verdict: msg.verdict,
           explanation: msg.explanation,
+          ...(msg.userReason ? { userReason: msg.userReason } : {}),
           timestamp: fpTs,
         });
         await this.deps.interactionLog?.append({
@@ -306,7 +314,39 @@ export class AnomalyHandler {
           timestamp: fpTs,
         });
         recordFalsePositive(msg.anomalyType);
+        await this.deps.caseLogStore?.append({
+          schemaVersion: SUPERVISOR_FEEDBACK_CASE_SCHEMA_VERSION,
+          kind: 'false_positive',
+          agentId: msg.agentId,
+          timestamp: fpTs,
+          anomalyType: msg.anomalyType,
+          supervisorExplanation: msg.explanation,
+          ...(msg.userReason ? { userReason: msg.userReason } : {}),
+          snapshot: this.captureSnapshot(msg.agentId, msg.explanation),
+        });
         this.deps.queue.remove(msg.agentId);
+        return;
+      }
+
+      case 'missedFinding': {
+        const fnTs = nowISO();
+        await this.deps.interactionLog?.append({
+          type: 'missed_finding',
+          agentId: msg.agentId,
+          userReason: msg.userReason,
+          ...(msg.suspectedType ? { suspectedType: msg.suspectedType } : {}),
+          timestamp: fnTs,
+        });
+        if (msg.suspectedType) recordFalseNegative(msg.suspectedType);
+        await this.deps.caseLogStore?.append({
+          schemaVersion: SUPERVISOR_FEEDBACK_CASE_SCHEMA_VERSION,
+          kind: 'false_negative',
+          agentId: msg.agentId,
+          timestamp: fnTs,
+          userReason: msg.userReason,
+          ...(msg.suspectedType ? { suspectedType: msg.suspectedType } : {}),
+          snapshot: this.captureSnapshot(msg.agentId),
+        });
         return;
       }
 
@@ -357,5 +397,20 @@ export class AnomalyHandler {
         return;
       }
     }
+  }
+
+  /**
+   * Lean snapshot capturing the agent's recent event tail at flag-time.
+   * Pane text and audit-record context are intentionally out of scope for
+   * this layer — they'd require wiring providers and add coupling for
+   * marginal additional signal beyond the user's free-text reason.
+   */
+  private captureSnapshot(agentId: string, anomalyExplanation?: string) {
+    const cap = this.deps.caseSnapshotEventCap ?? 30;
+    const events = this.deps.monitor.getAgentEvents(agentId);
+    return {
+      recentEvents: events.slice(-cap),
+      ...(anomalyExplanation ? { anomalyExplanation } : {}),
+    };
   }
 }
