@@ -14,7 +14,7 @@ import { LocalDtachBackend } from '../adapters/local-dtach-backend.js';
 import { createKookrServer } from './index.js';
 import { resolveListenPort } from './resolve-listen-port.js';
 import { parseSTTDevice, startSTT, type STTManager } from './stt-manager.js';
-import { startTTS, type TTSManager } from './tts-manager.js';
+import { parseTTSDevice, startTTS, type TTSManager } from './tts-manager.js';
 
 const HOST = process.env.KOOKR_HOST ?? '127.0.0.1';
 const STT_ENABLED = process.env.KOOKR_STT === 'true';
@@ -26,6 +26,7 @@ const TTS_ENABLED = process.env.KOOKR_TTS === 'true';
 const TTS_URL_OVERRIDE = process.env.KOOKR_TTS_URL ?? '';
 const TTS_PORT = parseInt(process.env.KOOKR_TTS_PORT ?? '8004', 10);
 const TTS_VOICE = process.env.TTS_VOICE ?? '/app/voices/matilda.mp3';
+const TTS_DEVICE = parseTTSDevice();
 const AGENT_BIN = process.env.KOOKR_AGENT_BIN || undefined;
 const CODEX_BIN = process.env.KOOKR_CODEX_BIN || undefined;
 const BYPASS_ALL_PERMISSIONS = process.env.KOOKR_BYPASS_ALL_PERMISSIONS === 'true';
@@ -115,6 +116,7 @@ async function main(): Promise<void> {
         ttsDir,
         port: TTS_PORT,
         voice: TTS_VOICE,
+        device: TTS_DEVICE,
       });
       ttsUrl = ttsManager.url;
     } catch (err) {

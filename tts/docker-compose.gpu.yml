@@ -1,0 +1,12 @@
+# GPU override for the bundled TTS service.
+# Applied automatically when KOOKR_TTS_DEVICE resolves to gpu.
+
+services:
+  kookr-tts:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

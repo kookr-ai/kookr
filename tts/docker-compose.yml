@@ -1,7 +1,8 @@
 # TTS service for Kookr — started automatically when KOOKR_TTS=true.
 #
 # Single service: Pocket TTS (Kyutai Labs) with FastAPI.
-# GPU is auto-detected by PyTorch. CPU fallback works but is slower.
+# GPU is enabled by the TTS manager when KOOKR_TTS_DEVICE resolves to gpu.
+# CPU fallback works but is slower.
 #
 # Voice cloning requires HF_TOKEN (accept terms at https://huggingface.co/kyutai/pocket-tts).
 # Built-in voices (no token needed): alba, marius, javert, jean, fantine, cosette, eponine, azelma.
