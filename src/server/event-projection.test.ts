@@ -103,7 +103,7 @@ describe('projectEventForClient — toolInput truncation', () => {
     const event: AgentEvent = {
       type: 'tool_use',
       sessionId: 's1',
-      toolName: 'Agent',
+      toolName: 'CustomTool',
       toolInput: {
         file_path: '/a',
         command: 'go',
@@ -119,6 +119,70 @@ describe('projectEventForClient — toolInput truncation', () => {
       expect(ti[key]).toBeDefined();
     }
     expect(ti.extra_bulk).toBeUndefined();
+  });
+
+  it('redacts Claude subagent prompts from client-facing tool_use events', () => {
+    const event: AgentEvent = {
+      type: 'tool_use',
+      sessionId: 's1',
+      toolName: 'Agent',
+      toolInput: {
+        description: 'Correctness review',
+        subagent_type: 'general-purpose',
+        prompt: 'Full reviewer prompt that should not appear in the activity panel.',
+      },
+    };
+
+    const projected = projectEventForClient(event) as typeof event;
+    expect(projected).not.toBe(event);
+    expect((event.toolInput as Record<string, unknown>).prompt).toBe(
+      'Full reviewer prompt that should not appear in the activity panel.',
+    );
+    expect(projected.toolInput).toEqual({
+      description: 'Correctness review',
+      subagent_type: 'general-purpose',
+    });
+  });
+
+  it('redacts Codex subagent instructions from client-facing tool_use events', () => {
+    const event: AgentEvent = {
+      type: 'tool_use',
+      sessionId: 's1',
+      toolName: 'spawn_agent',
+      toolInput: {
+        task_name: 'review_correctness',
+        instructions: 'Full specialist instructions that should not appear in the activity panel.',
+      },
+    };
+
+    const projected = projectEventForClient(event) as typeof event;
+    expect(projected).not.toBe(event);
+    expect((event.toolInput as Record<string, unknown>).instructions).toBe(
+      'Full specialist instructions that should not appear in the activity panel.',
+    );
+    expect(projected.toolInput).toEqual({
+      task_name: 'review_correctness',
+    });
+  });
+
+  it('redacts Claude Task prompts from client-facing tool_use events', () => {
+    const event: AgentEvent = {
+      type: 'tool_use',
+      sessionId: 's1',
+      toolName: 'Task',
+      toolInput: {
+        description: 'Research branch state',
+        prompt: 'Full Task prompt that should not appear in the activity panel.',
+      },
+    };
+
+    const projected = projectEventForClient(event) as typeof event;
+    expect(projected.toolInput).toEqual({
+      description: 'Research branch state',
+    });
+    expect((event.toolInput as Record<string, unknown>).prompt).toBe(
+      'Full Task prompt that should not appear in the activity panel.',
+    );
   });
 
   it('applies truncation on tool_error', () => {
@@ -202,12 +266,12 @@ describe('projectEventForClient — toolInput truncation', () => {
     expect(ti.file_path).toBeUndefined();
   });
 
-  it('oversized descriptor value (Agent prompt) is capped per-value, not preserved verbatim', () => {
+  it('oversized descriptor value (tool prompt) is capped per-value, not preserved verbatim', () => {
     const hugePrompt = 'P'.repeat(TOOL_INPUT_MAX_BYTES * 3);
     const event: AgentEvent = {
       type: 'tool_use',
       sessionId: 's1',
-      toolName: 'Agent',
+      toolName: 'CustomTool',
       toolInput: { prompt: hugePrompt, file_path: '/a', extra: 'b'.repeat(TOOL_INPUT_MAX_BYTES) },
     };
     const projected = projectEventForClient(event) as typeof event;
