@@ -1,6 +1,7 @@
 import type { ServerMessage, ClientMessage } from '../../shared/contracts/messages.js';
 import type { AgentAdapter } from '../../adapters/agent-adapter.js';
 import type { Monitor } from '../../core/monitor.js';
+import type { Watchdog } from '../../core/watchdog.js';
 import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
 import type { SnoozeSuppressionTracker } from '../../core/snooze-suppression.js';
@@ -23,6 +24,7 @@ export interface AnomalyHandlerDeps {
   adapter: AgentAdapter;
   taskStore: TaskStore;
   monitor: Monitor;
+  watchdog?: Pick<Watchdog, 'recordInputReceived'>;
   queue: AttentionQueue;
   interactionLog?: DeferredInteractionLogWriter;
   suppressionTracker?: SnoozeSuppressionTracker;
@@ -70,7 +72,9 @@ export class AnomalyHandler {
         // Capture anomaly from the queue (persisted detectedAt) before clearing
         const preAnomaly = this.deps.queue.getAnomaly(msg.agentId);
         await this.deps.adapter.sendInput(msg.agentId, msg.input);
-        this.deps.monitor.markInputReceived(msg.agentId);
+        if (this.deps.monitor.markInputReceived(msg.agentId)) {
+          this.deps.watchdog?.recordInputReceived(msg.agentId);
+        }
         this.deps.queue.respondAndAdvance(msg.agentId);
         // Cancel in-flight suggestion generation and clear any stale suggestions
         this.deps.onRespond?.(msg.agentId, 'used');
@@ -327,7 +331,9 @@ export class AnomalyHandler {
         // advanced. Drop it instead of sending a keystroke to a new prompt.
         if (!binding.ok) return;
         await this.deps.adapter.sendKeystroke(msg.agentId, msg.keystroke);
-        this.deps.monitor.markInputReceived(msg.agentId);
+        if (this.deps.monitor.markInputReceived(msg.agentId)) {
+          this.deps.watchdog?.recordInputReceived(msg.agentId);
+        }
         this.deps.queue.respondAndAdvance(msg.agentId);
         this.deps.onRespond?.(msg.agentId, 'used');
         this.deps.send({ type: 'suggestion', agentId: msg.agentId, suggestions: [], quickActions: [] });

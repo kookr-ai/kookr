@@ -49,7 +49,7 @@ export interface MessageRouterDeps {
   telemetryLog?: DeferredTelemetryLogWriter;
   lifecycleExtras?: {
     hookWatcher?: { stop(tmuxName: string): void };
-    watchdog?: { unregisterAgent(agentId: string): void };
+    watchdog?: { unregisterAgent(agentId: string): void; recordInputReceived?(agentId: string): void };
     shadowRegistry?: { unregisterAgent(agentId: string): void };
     tokenTracker?: { unregister(transcriptPath: string): void };
   };
@@ -125,11 +125,16 @@ export class MessageRouter {
       interactionLog: this.deps.interactionLog,
       launchTask: this.deps.launchTask,
     });
+    const recordWatchdogInputReceived = this.deps.lifecycleExtras?.watchdog?.recordInputReceived
+      ?.bind(this.deps.lifecycleExtras.watchdog);
     this.anomalyHandler = new AnomalyHandler({
       send: this.deps.send,
       adapter: this.deps.adapter,
       taskStore: this.deps.taskStore,
       monitor: this.deps.monitor,
+      watchdog: recordWatchdogInputReceived
+        ? { recordInputReceived: recordWatchdogInputReceived }
+        : undefined,
       queue: this.deps.queue,
       interactionLog: this.deps.interactionLog,
       suppressionTracker: this.deps.suppressionTracker,

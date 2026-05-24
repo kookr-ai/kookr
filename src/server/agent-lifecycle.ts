@@ -114,6 +114,7 @@ export async function registerNewAgent(task: Task, deps: AgentLifecycleDeps): Pr
 
 export interface TerminalInputDeps {
   monitor: Monitor;
+  watchdog?: Pick<Watchdog, 'recordInputReceived'>;
   abortPendingSuggestion: (agentId: string, outcome?: 'used' | 'cleared') => void;
   broadcastToAll: (msg: ServerMessage) => void;
   serverCwd: string;
@@ -130,6 +131,7 @@ export function handleTerminalInput(
 ): void {
   const changed = deps.monitor.markInputReceived(sessionName);
   if (changed) {
+    deps.watchdog?.recordInputReceived(sessionName);
     deps.abortPendingSuggestion(sessionName);
     deps.broadcastToAll(createSnapshotMessage({ monitor: deps.monitor, serverCwd: deps.serverCwd }));
   }

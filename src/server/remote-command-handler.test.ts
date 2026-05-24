@@ -118,6 +118,7 @@ describe('configureRemoteCommandHandler', () => {
   test('rejects unbound permissionApprove through the real broker and command pipeline', async () => {
     let commandHandler: ((command: CommandEnvelope) => Promise<CommandResult>) | null = null;
     const sendKeystroke = vi.fn(async () => {});
+    const recordInputReceived = vi.fn();
     const tempDir = await mkdtemp(join(tmpdir(), 'kookr-remote-command-handler-'));
     const commandJournal = await CommandJournal.open({
       kookrDir: tempDir,
@@ -146,6 +147,7 @@ describe('configureRemoteCommandHandler', () => {
           markInputReceived: vi.fn(() => true),
           getAgentEvents: vi.fn(() => [permissionEvent]),
         } as unknown as RemoteCommandHandlerDeps['monitor'],
+        watchdog: { recordInputReceived },
         queue: {
           getAnomaly: vi.fn(() => ({
             agentId: 'session-1',
@@ -211,6 +213,7 @@ describe('configureRemoteCommandHandler', () => {
         result: { keystroke: '1', permissionRequest },
       });
       expect(sendKeystroke).toHaveBeenCalledWith('session-1', '1');
+      expect(recordInputReceived).toHaveBeenCalledWith('session-1');
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -221,6 +224,7 @@ describe('configureRemoteCommandHandler', () => {
     const append = vi.fn(async () => {});
     const sendPresetReply = vi.fn(async () => ({ text: 'continue' }));
     const submit = vi.fn(async () => ({ accepted: true }));
+    const recordInputReceived = vi.fn();
     const anomaly = {
       agentId: 'session-1',
       type: 'needs_input',
@@ -256,8 +260,9 @@ describe('configureRemoteCommandHandler', () => {
       commandJournal: {} as unknown as RemoteCommandHandlerDeps['commandJournal'],
       adapter: {} as unknown as RemoteCommandHandlerDeps['adapter'],
       monitor: {
-        markInputReceived: vi.fn(),
+        markInputReceived: vi.fn(() => true),
       } as unknown as RemoteCommandHandlerDeps['monitor'],
+      watchdog: { recordInputReceived },
       queue: {
         getAnomaly: vi.fn(() => anomaly),
         respondAndAdvance: vi.fn(),
@@ -342,5 +347,7 @@ describe('configureRemoteCommandHandler', () => {
       durationMs: 60_000,
       timestamp: '2026-05-15T19:01:00.000Z',
     });
+    expect(recordInputReceived).toHaveBeenCalledTimes(2);
+    expect(recordInputReceived).toHaveBeenCalledWith('session-1');
   });
 });

@@ -53,6 +53,14 @@ export interface AgentWatchdogState {
    * event, which proxies "MCP startup is done and the agent is doing real work".
    */
   mcpStartupAt: number;
+  /**
+   * Latest structured permission request still waiting for a response.
+   * This is authoritative when present; pane classification is only a fallback.
+   */
+  pendingPermissionRequest?: {
+    toolName: string;
+    detectedAt: number;
+  };
 }
 
 /**
@@ -179,6 +187,15 @@ export class Watchdog {
       } else if (event.type === 'notification' && event.notificationType === 'mcp_startup_starting') {
         state.mcpStartupAt = now;
       }
+
+      if (event.type === 'permission_request') {
+        state.pendingPermissionRequest = {
+          toolName: event.toolName,
+          detectedAt: now,
+        };
+      } else if (closesPendingPermission(event)) {
+        state.pendingPermissionRequest = undefined;
+      }
     }
   }
 
@@ -199,6 +216,15 @@ export class Watchdog {
     const state = this.agents.get(agentId);
     if (!state) return;
     state.lastTokenActivityAt = now;
+  }
+
+  /**
+   * Record explicit user input sent to the agent outside the hook pipeline.
+   * This clears structured wait states immediately instead of waiting for the
+   * provider's next hook event.
+   */
+  recordInputReceived(agentId: string, now = Date.now()): void {
+    this.recordEvents(agentId, [{ type: 'input_received', sessionId: agentId }], now);
   }
 
   /**
@@ -263,6 +289,22 @@ export class Watchdog {
     }
 
     const paneSemantics = analyzePaneSemantics(currentPaneContent);
+
+    // Structured PermissionRequest hooks are authoritative. Pane parsing is a
+    // lossy fallback and may be low-confidence while the permission is still
+    // genuinely pending.
+    if (state.pendingPermissionRequest) {
+      return {
+        status: 'permission_blocked',
+        anomaly: {
+          agentId,
+          type: 'permission_blocked',
+          severity: 'warning',
+          explanation: `Permission request pending for tool: ${state.pendingPermissionRequest.toolName}`,
+          detectedAt: new Date(state.pendingPermissionRequest.detectedAt),
+        },
+      };
+    }
 
     // Permission dialog: always actionable — check before staleness.
     if (paneSemantics.confidence === 'high' && paneSemantics.state === 'permission_dialog') {
@@ -376,4 +418,16 @@ function simpleHash(str: string): string {
     hash |= 0; // Convert to 32-bit integer
   }
   return hash.toString(36);
+}
+
+function closesPendingPermission(event: AgentEvent): boolean {
+  return event.type === 'tool_use'
+    || event.type === 'tool_result'
+    || event.type === 'tool_error'
+    || event.type === 'input_received'
+    || event.type === 'user_prompt'
+    || event.type === 'stop'
+    || event.type === 'stop_failure'
+    || event.type === 'session_start'
+    || event.type === 'session_end';
 }

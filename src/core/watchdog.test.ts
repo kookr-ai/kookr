@@ -27,6 +27,10 @@ function makeStop(sessionId: string, lastMessage = ''): AgentEvent {
   return { type: 'stop', sessionId, lastMessage };
 }
 
+function makePermissionRequest(sessionId: string, toolName: string): AgentEvent {
+  return { type: 'permission_request', sessionId, toolName };
+}
+
 function makeSessionStart(sessionId: string): AgentEvent {
   return { type: 'session_start', sessionId, transcriptPath: '/tmp/test.jsonl' };
 }
@@ -310,6 +314,54 @@ describe('Watchdog', () => {
       if (verdict.status === 'permission_blocked') {
         expect(verdict.anomaly.type).toBe('permission_blocked');
       }
+    });
+
+    test('structured PermissionRequest overrides low-confidence pane and recent activity', () => {
+      const t0 = 0;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeSessionStart('s1')], t0);
+      watchdog.tick(agentId, 'ordinary pane output', [], t0 + 5_000);
+
+      watchdog.recordEvents(agentId, [makePermissionRequest('s1', 'Bash')], t0 + 12_000);
+      const verdict = watchdog.tick(
+        agentId,
+        'ordinary pane output without a recognized permission dialog',
+        [],
+        t0 + 13_000,
+      );
+
+      expect(verdict.status).toBe('permission_blocked');
+      if (verdict.status === 'permission_blocked') {
+        expect(verdict.anomaly.type).toBe('permission_blocked');
+        expect(verdict.anomaly.explanation).toContain('Bash');
+        expect(verdict.anomaly.detectedAt).toEqual(new Date(t0 + 12_000));
+      }
+    });
+
+    test('clears structured pending permission after the request advances', () => {
+      const t0 = 0;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeSessionStart('s1')], t0);
+      watchdog.recordEvents(agentId, [makePermissionRequest('s1', 'Bash')], t0 + 12_000);
+      expect(watchdog.tick(agentId, 'low-confidence pane', [], t0 + 13_000).status).toBe('permission_blocked');
+
+      watchdog.recordEvents(agentId, [makeToolResult('s1', 'Bash', 't1')], t0 + 14_000);
+      const verdict = watchdog.tick(agentId, 'low-confidence pane', [], t0 + 15_000);
+
+      expect(verdict.status).toBe('healthy');
+    });
+
+    test('clears structured pending permission when explicit input is sent', () => {
+      const t0 = 0;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeSessionStart('s1')], t0);
+      watchdog.recordEvents(agentId, [makePermissionRequest('s1', 'Bash')], t0 + 12_000);
+      expect(watchdog.tick(agentId, 'low-confidence pane', [], t0 + 13_000).status).toBe('permission_blocked');
+
+      watchdog.recordInputReceived(agentId, t0 + 14_000);
+      const verdict = watchdog.tick(agentId, 'low-confidence pane', [], t0 + 15_000);
+
+      expect(verdict.status).toBe('healthy');
     });
   });
 

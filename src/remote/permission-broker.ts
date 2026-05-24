@@ -3,6 +3,7 @@ import type { AttentionQueue } from '../core/attention-queue.js';
 import type { AgentEvent } from '../core/agent-events.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import type { Monitor } from '../core/monitor.js';
+import type { Watchdog } from '../core/watchdog.js';
 import {
   validatePermissionApprovalBinding,
   type PermissionApprovalPayload,
@@ -14,6 +15,7 @@ export interface RemotePermissionBrokerDeps {
   monitor: Pick<Monitor, 'isPermissionBlocked' | 'markInputReceived'> & {
     getAgentEvents: (agentId: string) => AgentEvent[];
   };
+  watchdog?: Pick<Watchdog, 'recordInputReceived'>;
   queue: Pick<AttentionQueue, 'getAnomaly' | 'respondAndAdvance'>;
   interactionLog?: DeferredInteractionLogWriter;
   onRespond?: (agentId: string, outcome?: 'used' | 'cleared') => void;
@@ -59,7 +61,9 @@ export class RemotePermissionBroker {
       this.consumedApprovals.delete(consumeKey);
       throw err;
     }
-    this.deps.monitor.markInputReceived(sessionId);
+    if (this.deps.monitor.markInputReceived(sessionId)) {
+      this.deps.watchdog?.recordInputReceived(sessionId);
+    }
     this.deps.queue.respondAndAdvance(sessionId);
     this.deps.onRespond?.(sessionId, 'used');
     const ts = new Date().toISOString();

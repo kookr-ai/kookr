@@ -24,6 +24,7 @@ describe('RemotePermissionBroker', () => {
   it('is a sidecar approval path and sends a keystroke only for permission-blocked sessions', async () => {
     const sendKeystroke = vi.fn(async () => {});
     const markInputReceived = vi.fn(() => true);
+    const recordInputReceived = vi.fn();
     const respondAndAdvance = vi.fn();
     const broker = new RemotePermissionBroker({
       adapter: { sendKeystroke },
@@ -32,6 +33,7 @@ describe('RemotePermissionBroker', () => {
         markInputReceived,
         getAgentEvents: () => [permissionEvent],
       },
+      watchdog: { recordInputReceived },
       queue: {
         getAnomaly: () => ({
           agentId: 'session-1',
@@ -50,6 +52,7 @@ describe('RemotePermissionBroker', () => {
     })).resolves.toEqual({ keystroke: '1', permissionRequest: permissionRequestBinding() });
     expect(sendKeystroke).toHaveBeenCalledWith('session-1', '1');
     expect(markInputReceived).toHaveBeenCalledWith('session-1');
+    expect(recordInputReceived).toHaveBeenCalledWith('session-1');
     expect(respondAndAdvance).toHaveBeenCalledWith('session-1');
   });
 

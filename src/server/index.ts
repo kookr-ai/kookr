@@ -677,7 +677,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Terminal input deps — used by terminal bridge handlers
   const terminalDeps: TerminalInputDeps = {
-    monitor, abortPendingSuggestion, broadcastToAll, serverCwd,
+    monitor, watchdog, abortPendingSuggestion, broadcastToAll, serverCwd,
   };
   const recordLocalTerminalActivity = (sessionId: string): void => {
     if (!controllerLeaseManager) return;
@@ -715,6 +715,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       commandJournal,
       adapter,
       monitor,
+      watchdog,
       queue,
       interactionLog,
       abortPendingSuggestion,

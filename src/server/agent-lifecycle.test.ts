@@ -307,6 +307,7 @@ function makeTerminalInputDeps(overrides: Partial<TerminalInputDeps> = {}): Term
       getSnapshot: vi.fn().mockReturnValue([]),
       isPermissionBlocked: vi.fn().mockReturnValue(false),
     } as any,
+    watchdog: { recordInputReceived: vi.fn() },
     abortPendingSuggestion: vi.fn(),
     broadcastToAll: vi.fn(),
     serverCwd: '/workspace/project',
@@ -321,6 +322,7 @@ describe('handleTerminalInput', () => {
     handleTerminalInput(deps, 'kookr-session-1');
 
     expect(deps.monitor.markInputReceived).toHaveBeenCalledWith('kookr-session-1');
+    expect(deps.watchdog?.recordInputReceived).toHaveBeenCalledWith('kookr-session-1');
     expect(deps.abortPendingSuggestion).toHaveBeenCalledWith('kookr-session-1');
     expect(deps.broadcastToAll).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'snapshot', serverCwd: '/workspace/project' }),
@@ -339,6 +341,7 @@ describe('handleTerminalInput', () => {
     handleTerminalInput(deps, 'kookr-session-1');
 
     expect(deps.monitor.markInputReceived).toHaveBeenCalledWith('kookr-session-1');
+    expect(deps.watchdog?.recordInputReceived).not.toHaveBeenCalled();
     expect(deps.abortPendingSuggestion).not.toHaveBeenCalled();
     expect(deps.broadcastToAll).not.toHaveBeenCalled();
   });
