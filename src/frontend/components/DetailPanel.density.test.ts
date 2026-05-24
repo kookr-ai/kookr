@@ -63,6 +63,7 @@ function renderDetailPanel(container: HTMLElement, agent: AgentState): Root {
         agent,
         send: vi.fn(() => true),
         onLaunch: vi.fn(),
+        onRequestComplete: vi.fn(),
       }),
     );
   });
@@ -77,6 +78,7 @@ function renderFocusedDetailPanel(container: HTMLElement, agent: AgentState): Ro
         agent,
         send: vi.fn(() => true),
         onLaunch: vi.fn(),
+        onRequestComplete: vi.fn(),
         terminalFocusMode: true,
       }),
     );

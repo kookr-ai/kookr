@@ -51,7 +51,11 @@ const permissionRequest: PermissionRequestBinding = {
   ttlMs: 300000,
 };
 
-function renderDetailPanel(container: HTMLElement, send: (msg: ClientMessage) => boolean): Root {
+function renderDetailPanel(
+  container: HTMLElement,
+  send: (msg: ClientMessage) => boolean,
+  onRequestComplete: () => void = vi.fn(),
+): Root {
   useKookrStore.getState().handleSuggestion('agent-1', [], [{
     label: 'Allow: Bash: `git status`',
     value: 'Yes',
@@ -64,6 +68,7 @@ function renderDetailPanel(container: HTMLElement, send: (msg: ClientMessage) =>
       agent: permissionAgent(),
       send,
       onLaunch: vi.fn(),
+      onRequestComplete,
     }));
   });
   return root;
@@ -127,5 +132,21 @@ describe('DetailPanel permission quick actions', () => {
       keystroke: '1',
       permissionRequest,
     });
+  });
+
+  test('opens the complete confirmation flow instead of completing immediately', () => {
+    const sent: ClientMessage[] = [];
+    const onRequestComplete = vi.fn();
+    root = renderDetailPanel(container, (msg) => {
+      sent.push(msg);
+      return true;
+    }, onRequestComplete);
+
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="action-complete"]');
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    act(() => button!.click());
+
+    expect(onRequestComplete).toHaveBeenCalledTimes(1);
+    expect(sent).not.toContainEqual({ type: 'completeTask', taskId: 'task-1' });
   });
 });

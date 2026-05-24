@@ -64,6 +64,7 @@ interface Props {
   agent: AgentState | null;
   send: (msg: ClientMessage) => boolean;
   onLaunch: () => void;
+  onRequestComplete: () => void;
   collapsed?: boolean;
   terminalFocusMode?: boolean;
 }
@@ -223,7 +224,7 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, collapsed, terminalFocusMode = false }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapsed, terminalFocusMode = false }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -561,9 +562,8 @@ export function DetailPanel({ agent, send, onLaunch, collapsed, terminalFocusMod
 
   function handleComplete() {
     if (!agent?.taskId) return;
-    track({ type: 'task_completed', agentId: agent.agentId, method: 'button' });
     trackClick('complete_task');
-    send({ type: 'completeTask', taskId: agent.taskId });
+    onRequestComplete();
   }
 
   function handleCancel() {
@@ -664,11 +664,11 @@ export function DetailPanel({ agent, send, onLaunch, collapsed, terminalFocusMod
           {agent.taskId && agent.taskStatus === 'pending' && (
             <button className="action-btn action-btn--danger" onClick={handleCancel}>Cancel</button>
           )}
-          {/* Terminated tasks need an "Ack" (mark-as-done) button; completed / cancelled already have Reopen+Relaunch */}
+          {/* Terminated means the session died before the user marked it done. Keep that flow separate from ordinary Complete. */}
           {agent.taskId && agent.taskStatus === 'terminated' && (
             <button
               className="action-btn action-btn--success"
-              title="Acknowledge this terminated task — transitions it to Completed"
+              title="Mark this unexpectedly terminated task as done"
               onClick={() => send({ type: 'ackTerminatedTask', taskId: agent.taskId! })}
             >
               Mark as done

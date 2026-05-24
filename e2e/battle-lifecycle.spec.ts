@@ -299,6 +299,7 @@ test.describe('Full integration scenarios', () => {
     // Complete the task
     await page.locator('.healthy-row').click();
     await page.locator('[data-testid="action-complete"]').click();
+    await page.getByRole('dialog', { name: 'Complete Task' }).getByRole('button', { name: 'Complete' }).click();
 
     // Agent removed
     await expect(page.locator('.healthy-row')).not.toBeVisible({ timeout: 5000 });
