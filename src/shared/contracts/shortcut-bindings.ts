@@ -13,6 +13,7 @@ export type ShortcutActionId =
   | 'next_bottleneck'
   | 'next_task'
   | 'previous_task'
+  | 'toggle_auto_advance'
   | 'quick_launch'
   | 'stt_toggle'
   | 'snooze_dialog'
@@ -87,6 +88,7 @@ export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   { id: 'next_bottleneck', group: 'Navigation', label: 'Next finding', description: 'Jump to next finding by severity', featured: true },
   { id: 'next_task', group: 'Navigation', label: 'Next task', description: 'Next task (findings + healthy)', featured: true },
   { id: 'previous_task', group: 'Navigation', label: 'Previous task', description: 'Previous task', featured: true },
+  { id: 'toggle_auto_advance', group: 'Navigation', label: 'Auto-Advance', description: 'Toggle Auto-Advance (follow priority project)', featured: true },
   { id: 'deselect_task', group: 'Navigation', label: 'Deselect task', description: 'Deselect current task', context: 'when no dialog is open' },
   { id: 'stt_toggle', group: 'Responding to findings', label: 'Toggle voice input', description: 'Toggle voice input (speech-to-text)', context: 'when STT is enabled' },
   { id: 'quick_launch', group: 'Task management', label: 'Quick launch', description: 'Open quick launch bar to create a new task', featured: true },
@@ -117,6 +119,7 @@ const DEFAULT_SHORTCUTS: ShortcutBindingMap = {
   next_bottleneck: binding('n', { alt: true }),
   next_task: binding('j', { alt: true }),
   previous_task: binding('k', { alt: true }),
+  toggle_auto_advance: binding('f', { alt: true }),
   quick_launch: binding('l', { alt: true }),
   stt_toggle: binding('m', { alt: true }),
   snooze_dialog: binding('s', { alt: true }),
@@ -146,6 +149,7 @@ const MAC_SHORTCUTS: ShortcutBindingMap = {
   next_bottleneck: binding('n', { meta: true, ctrl: true }),
   next_task: binding('j', { meta: true, ctrl: true }),
   previous_task: binding('k', { meta: true, ctrl: true }),
+  toggle_auto_advance: binding('f', { meta: true, ctrl: true }),
   quick_launch: binding('l', { meta: true, ctrl: true }),
   stt_toggle: binding('m', { meta: true, ctrl: true }),
   snooze_dialog: binding('s', { meta: true, ctrl: true }),
