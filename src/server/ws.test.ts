@@ -26,6 +26,7 @@ describe('WebSocket MessageRouter', () => {
   let router: MessageRouter;
   let sentMessages: ServerMessage[];
   let cancelLoop: ReturnType<typeof vi.fn>;
+  let watchdogRecordInputReceived: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     taskStore = new TaskStore();
@@ -36,6 +37,7 @@ describe('WebSocket MessageRouter', () => {
     terminal = new FakeTerminalBackend();
     adapter = new ClaudeCodeAdapter(terminal, taskStore);
     sentMessages = [];
+    watchdogRecordInputReceived = vi.fn();
     const ralphLoopService = new RalphLoopService({
       taskStore,
       monitor,
@@ -71,6 +73,12 @@ describe('WebSocket MessageRouter', () => {
       send: (msg) => { sentMessages.push(msg); },
       serverCwd: '/test/cwd',
       launchTask: testLaunchTask,
+      lifecycleExtras: {
+        watchdog: {
+          unregisterAgent: vi.fn(),
+          recordInputReceived: watchdogRecordInputReceived,
+        },
+      },
       ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
     });
   });
@@ -232,6 +240,10 @@ describe('WebSocket MessageRouter', () => {
   test('client sends respond - input delivered to agent', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const tmuxName = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    monitor.registerAgent(tmuxName);
+    monitor.processEvents(tmuxName, [
+      { type: 'stop', sessionId: 's1', lastMessage: 'Need help' },
+    ]);
 
     const msg: ClientMessage = {
       type: 'respond',
@@ -243,6 +255,7 @@ describe('WebSocket MessageRouter', () => {
 
     // Adapter.sendInput writes `text` followed by CR; assert the text was delivered.
     expect(terminal.getWrittenText(tmuxName)).toContain('Try using the other module');
+    expect(watchdogRecordInputReceived).toHaveBeenCalledWith(tmuxName);
   });
 
   test('client sends respond - broadcasts empty suggestion to clear stale UI', async () => {
@@ -1890,6 +1903,7 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
   let router: MessageRouter;
   let sentMessages: ServerMessage[];
   let respondedAgents: string[];
+  let watchdogRecordInputReceived: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     taskStore = new TaskStore();
@@ -1899,12 +1913,19 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
     adapter = new ClaudeCodeAdapter(terminal, taskStore);
     sentMessages = [];
     respondedAgents = [];
+    watchdogRecordInputReceived = vi.fn();
 
     router = new MessageRouter({
       taskStore, queue, monitor, adapter,
       send: (msg) => { sentMessages.push(msg); },
       serverCwd: '/test/cwd',
       onRespond: (agentId) => { respondedAgents.push(agentId); },
+      lifecycleExtras: {
+        watchdog: {
+          unregisterAgent: vi.fn(),
+          recordInputReceived: watchdogRecordInputReceived,
+        },
+      },
     });
   });
 
@@ -1935,6 +1956,7 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
 
     // Keystroke '1' translates to the single UTF-8 byte '1'.
     expect(terminal.getWrittenText(tmuxName).slice(before)).toBe('1');
+    expect(watchdogRecordInputReceived).toHaveBeenCalledWith(tmuxName);
   });
 
   test('validates permission request binding when permissionChoice includes one', async () => {

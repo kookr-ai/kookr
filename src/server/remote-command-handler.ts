@@ -2,6 +2,7 @@ import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import type { Monitor } from '../core/monitor.js';
+import type { Watchdog } from '../core/watchdog.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { executeWithPipeline } from '../remote/command-pipeline.js';
 import type { CommandJournal } from '../remote/command-journal.js';
@@ -33,6 +34,7 @@ export interface RemoteCommandHandlerDeps {
   commandJournal: CommandJournal | null;
   adapter: AgentAdapter;
   monitor: Monitor;
+  watchdog?: Pick<Watchdog, 'recordInputReceived'>;
   queue: AttentionQueue;
   interactionLog: DeferredInteractionLogWriter;
   abortPendingSuggestion: (agentId: string, outcome?: 'used' | 'cleared') => void;
@@ -53,6 +55,7 @@ export async function configureRemoteCommandHandler(deps: RemoteCommandHandlerDe
     commandJournal,
     adapter,
     monitor,
+    watchdog,
     queue,
     interactionLog,
     abortPendingSuggestion,
@@ -87,6 +90,7 @@ export async function configureRemoteCommandHandler(deps: RemoteCommandHandlerDe
   const permissionBroker = new runtime.RemotePermissionBroker({
     adapter,
     monitor,
+    watchdog,
     queue,
     interactionLog,
     onRespond: abortPendingSuggestion,
@@ -158,7 +162,9 @@ export async function configureRemoteCommandHandler(deps: RemoteCommandHandlerDe
               const presetId = (command.payload as { presetId: Parameters<typeof sendPresetReply>[2] }).presetId;
               const result = await runtime.sendPresetReply(adapter, command.sessionId, presetId);
               const preAnomaly = queue.getAnomaly(command.sessionId);
-              monitor.markInputReceived(command.sessionId);
+              if (monitor.markInputReceived(command.sessionId)) {
+                watchdog?.recordInputReceived(command.sessionId);
+              }
               queue.respondAndAdvance(command.sessionId);
               abortPendingSuggestion(command.sessionId, 'used');
               const timestamp = (now?.() ?? new Date()).toISOString();
@@ -413,7 +419,9 @@ export async function configureRemoteCommandHandler(deps: RemoteCommandHandlerDe
               if (!isSubmitMessageCommand(command)) throw new Error('invalid submit message');
               const result = await remoteInputAdapter.submit(command);
               const preAnomaly = queue.getAnomaly(command.sessionId);
-              monitor.markInputReceived(command.sessionId);
+              if (monitor.markInputReceived(command.sessionId)) {
+                watchdog?.recordInputReceived(command.sessionId);
+              }
               queue.respondAndAdvance(command.sessionId);
               abortPendingSuggestion(command.sessionId, 'used');
               const timestamp = (now?.() ?? new Date()).toISOString();

@@ -48,7 +48,7 @@ export interface WsConnectionDeps {
   abortPendingSuggestion: (agentId: string, outcome?: 'used' | 'cleared') => void;
   lifecycleExtras: {
     hookWatcher: { stop(tmuxName: string): void };
-    watchdog: { unregisterAgent(agentId: string): void };
+    watchdog: { unregisterAgent(agentId: string): void; recordInputReceived?(agentId: string): void };
     shadowRegistry?: { unregisterAgent(agentId: string): void };
     tokenTracker?: { unregister(transcriptPath: string): void };
   };
