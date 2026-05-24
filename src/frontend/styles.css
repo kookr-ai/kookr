@@ -8754,6 +8754,158 @@ button.act-tool-entry:focus-visible {
   border-color: transparent;
 }
 
+/* --- Auto-Advance "FOLLOW" pill (TopBar) --- */
+.follow-pill-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+.follow-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  background: none;
+  border: 1px solid var(--border-dim);
+  border-right: none;
+  border-radius: 5px 0 0 5px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  font-family: inherit;
+  line-height: 1;
+}
+
+.follow-pill:hover {
+  color: var(--text-bright);
+  border-color: var(--border);
+}
+
+.follow-pill:focus-visible {
+  outline: 2px solid var(--accent, #3b82f6);
+  outline-offset: 1px;
+  z-index: 1;
+}
+
+.follow-pill-icon {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.follow-pill-label {
+  letter-spacing: 0.06em;
+}
+
+.follow-pill-on {
+  color: var(--text-bright);
+  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(59, 130, 246, 0.08);
+}
+.follow-pill-on .follow-pill-icon { color: var(--accent, #3b82f6); }
+
+.follow-pill-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 28px;
+  background: none;
+  border: 1px solid var(--border-dim);
+  border-radius: 0 5px 5px 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  font-family: inherit;
+}
+.follow-pill-caret:hover {
+  color: var(--text-bright);
+  border-color: var(--border);
+}
+.follow-pill-caret:focus-visible {
+  outline: 2px solid var(--accent, #3b82f6);
+  outline-offset: 1px;
+  z-index: 1;
+}
+.follow-pill-on + .follow-pill-caret {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(59, 130, 246, 0.04);
+}
+
+.follow-pill-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 280px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.follow-pill-menu-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 4px 6px;
+  font-size: 11.5px;
+}
+
+.follow-pill-menu-label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.follow-pill-menu-value {
+  color: var(--text);
+  text-align: right;
+  word-break: break-word;
+}
+
+.follow-pill-menu-error .follow-pill-menu-value {
+  color: var(--red);
+}
+
+.follow-pill-menu-item {
+  background: none;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 7px 10px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-dim);
+  border-radius: 0 0 4px 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.follow-pill-menu-item:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-bright);
+}
+
+@media (max-width: 768px) {
+  .follow-pill-wrapper {
+    display: none;
+  }
+}
+
 /* --- Do Not Disturb pill (TopBar) --- */
 .dnd-pill-wrapper {
   position: relative;

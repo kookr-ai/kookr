@@ -7,6 +7,9 @@ export type TelemetryEventType =
   // Navigation & Selection
   | 'agent_clicked'
   | 'auto_advance_overridden'
+  | 'auto_advance_enabled'
+  | 'auto_advance_disabled'
+  | 'auto_advance_switch'
   | 'tab_switched'
   // Response & Input
   | 'response_sent'

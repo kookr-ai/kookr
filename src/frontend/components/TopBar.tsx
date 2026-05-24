@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import { DndPill } from './DndPill.js';
+import { FollowPill } from './FollowPill.js';
 import { formatCost } from '../presentation.js';
 
 interface Props {
@@ -361,6 +362,7 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
           </span>
         </div>
         <div className="metric-group">
+          <FollowPill />
           <DndPill />
           <button
             className={`btn-icon operations-trigger${operationsOpen ? ' active' : ''}`}

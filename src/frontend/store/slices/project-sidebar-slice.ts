@@ -93,7 +93,8 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
     untrackOssError: null,
     untrackOssBusy: false,
 
-    selectProject: (project) => {
+    selectProject: (project, options) => {
+      const source = options?.source ?? 'manual';
       set({ selectedProject: project });
       if (project && typeof localStorage !== 'undefined') {
         localStorage.setItem('kookr-selected-project', project);
@@ -102,15 +103,29 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
       }
 
       if (!project) {
-        // Deselecting project — clear any previously auto-selected finding
-        set({ selectedAgentId: null });
+        // Deselecting project — clear any previously auto-selected finding.
+        // Source is 'manual' since this only fires on explicit deselect.
+        set({ selectedAgentId: null, selectedAgentSource: 'manual' });
+        return;
+      }
+
+      const { selectAgent } = get();
+
+      if (source === 'auto-advance') {
+        // Auto-advance landings put the user on the project's findings panel
+        // without picking a specific finding. We still go through selectAgent
+        // to reset respondAllAgentIds, leftPane, narrowTab — but then mark
+        // the source so the engagement guard doesn't treat the (null)
+        // selection as a manual choice.
+        selectAgent(null);
+        set({ selectedAgentSource: 'auto-advance' });
         return;
       }
 
       // Surface something useful for the project using the same ordering
       // contract as keyboard navigation, scoped to the selected project.
       const state = get();
-      const { agents, selectAgent } = state;
+      const { agents } = state;
       const projectAgents = agents.filter((a) => a.projectId === project);
       const order = {
         chipTaskIds: new Set((state.coordinator?.chips ?? []).map((chip) => chip.taskId)),

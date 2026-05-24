@@ -377,6 +377,12 @@ export function App() {
         track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.toggle_project_sidebar), action: 'toggle_project_sidebar', context: 'global' });
         toggleProjectSidebar();
       }
+      // Toggle Auto-Advance (follow priority project).
+      if (matchesShortcutAction(e, shortcutBindings, 'toggle_auto_advance')) {
+        e.preventDefault();
+        track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.toggle_auto_advance), action: 'toggle_auto_advance', context: 'global' });
+        useKookrStore.getState().toggleAutoAdvance();
+      }
       if (matchesShortcutAction(e, shortcutBindings, 'toggle_terminal_focus')) {
         e.preventDefault();
         if (isMobileViewport) return;
