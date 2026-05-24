@@ -216,7 +216,7 @@ export interface ProjectSidebarSlice {
   untrackOssError: string | null;
   untrackOssBusy: boolean;
 
-  selectProject: (project: string | null) => void;
+  selectProject: (project: string | null, options?: { source?: 'manual' | 'auto-advance' }) => void;
   toggleProjectSidebar: () => void;
   hydrateProjectSidebarFromServer: () => Promise<void>;
   handleProjectSummaries: (projects: ProjectSummary[]) => void;
@@ -358,6 +358,59 @@ export interface SystemStatusSlice {
   handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
 }
 
+/**
+ * Why the auto-advance subscriber's last tick reached its outcome. Surfaced
+ * in the FollowPill popover so the user can answer "why isn't it switching?"
+ */
+export type AutoAdvanceTickReason =
+  | 'no_eligible_project'
+  | 'already_top'
+  | 'engaged'
+  | 'settling'
+  | 'scheduled';
+
+/** What caused an actual auto-switch to fire (logged once per switch). */
+export type AutoAdvanceSwitchCause = 'activation' | 'queue_head_changed';
+
+export interface AutoAdvanceSwitchRecord {
+  from: string | null;
+  to: string;
+  cause: AutoAdvanceSwitchCause;
+  ts: number;
+}
+
+export interface AutoAdvanceErrorRecord {
+  message: string;
+  firstSeenTs: number;
+}
+
+export interface AutoAdvanceSlice {
+  /** Opt-in mode flag, persisted in localStorage `kookr-auto-advance-mode`. */
+  autoAdvanceEnabled: boolean;
+  /**
+   * Provenance of the current `selectedAgentId`. `'manual'` means the user
+   * selected (or any non-auto-advance code path did); `'auto-advance'` means
+   * the auto-advance branch landed the user on a project without selecting
+   * an agent (selectedAgentId may be null in that case). The engagement
+   * guard uses this to avoid the cascade-self-disable trap.
+   */
+  selectedAgentSource: 'manual' | 'auto-advance';
+  /** Outcome of the most recent decision-point tick (never written on early-exit). */
+  lastTickReason: AutoAdvanceTickReason | null;
+  /** Most recent actual switch; powers the popover "Last switch" line. */
+  lastAutoSwitch: AutoAdvanceSwitchRecord | null;
+  /** Persistent tick error (cleared on next successful tick). */
+  autoAdvanceError: AutoAdvanceErrorRecord | null;
+
+  /** Toggle the mode and fire activation telemetry + an immediate tick. */
+  toggleAutoAdvance: () => void;
+  /**
+   * The single entry point for writing `selectedAgentId` alongside its
+   * provenance. All selection write paths in the codebase route through this.
+   */
+  applySelection: (input: { agentId: string | null; source: 'manual' | 'auto-advance' }) => void;
+}
+
 export type KookrStore =
   & TransportSessionSlice
   & TriageNavigationSlice
@@ -365,7 +418,8 @@ export type KookrStore =
   & AchievementsSystemSlice
   & WorkspaceSlice
   & OssAttemptsSlice
-  & SystemStatusSlice;
+  & SystemStatusSlice
+  & AutoAdvanceSlice;
 
 export type StoreSet = (
   partial: Partial<KookrStore> | ((state: KookrStore) => Partial<KookrStore>),

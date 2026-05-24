@@ -94,7 +94,9 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
     },
 
     selectAgent: (agentId) => {
-      set({ selectedAgentId: agentId, respondAllAgentIds: null, leftPane: 'activity', narrowTab: 'activity' });
+      // selectedAgentSource: 'manual' marks this selection as a user choice
+      // (rather than an auto-advance landing) so the engagement guard fires.
+      set({ selectedAgentId: agentId, selectedAgentSource: 'manual', respondAllAgentIds: null, leftPane: 'activity', narrowTab: 'activity' });
     },
 
     nextBottleneck: () => {
@@ -105,18 +107,18 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
         .sort((left, right) => compareRoutableAgents(left, right, order));
 
       if (findings.length === 0) {
-        set({ selectedAgentId: null, shortcutsArmed: false });
+        set({ selectedAgentId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
         return;
       }
 
       const currentIdx = findings.findIndex((agent) => agent.agentId === selectedAgentId);
       const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % findings.length : 0;
       if (findings[nextIdx].agentId === selectedAgentId) {
-        set({ selectedAgentId: null, shortcutsArmed: false });
+        set({ selectedAgentId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
         return;
       }
 
-      set({ selectedAgentId: findings[nextIdx].agentId, shortcutsArmed: false });
+      set({ selectedAgentId: findings[nextIdx].agentId, selectedAgentSource: 'manual', shortcutsArmed: false });
     },
 
     nextTask: () => {
@@ -134,7 +136,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
       const currentIdx = all.findIndex((agent) => agent.agentId === selectedAgentId);
       const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % all.length : 0;
-      set({ selectedAgentId: all[nextIdx].agentId });
+      set({ selectedAgentId: all[nextIdx].agentId, selectedAgentSource: 'manual' });
     },
 
     previousTask: () => {
@@ -152,7 +154,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
       const currentIdx = all.findIndex((agent) => agent.agentId === selectedAgentId);
       const prevIdx = currentIdx >= 0 ? (currentIdx - 1 + all.length) % all.length : all.length - 1;
-      set({ selectedAgentId: all[prevIdx].agentId });
+      set({ selectedAgentId: all[prevIdx].agentId, selectedAgentSource: 'manual' });
     },
 
     snoozeAgent: (agentId, durationMs) => {

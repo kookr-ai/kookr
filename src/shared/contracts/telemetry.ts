@@ -1,6 +1,9 @@
 export type TelemetryEventType =
   | 'agent_clicked'
   | 'auto_advance_overridden'
+  | 'auto_advance_enabled'
+  | 'auto_advance_disabled'
+  | 'auto_advance_switch'
   | 'tab_switched'
   | 'response_sent'
   | 'quick_action_clicked'

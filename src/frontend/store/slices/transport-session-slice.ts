@@ -33,13 +33,15 @@ function selectedAgentUpdateAfterServerState(
   selectedAgentId: string | null,
   previousAgents: AgentState[],
   nextAgents: AgentState[],
-): { selectedAgentId?: string | null; respondAllAgentIds?: null; leftPane?: 'activity'; narrowTab?: 'activity'; shortcutsArmed?: false } {
+): { selectedAgentId?: string | null; selectedAgentSource?: 'manual'; respondAllAgentIds?: null; leftPane?: 'activity'; narrowTab?: 'activity'; shortcutsArmed?: false } {
   if (!selectedAgentId) return {};
 
   const previousSelected = previousAgents.find((agent) => agent.agentId === selectedAgentId);
   const nextSelected = nextAgents.find((agent) => agent.agentId === selectedAgentId);
   if (!nextSelected) {
-    return { selectedAgentId: null, respondAllAgentIds: null };
+    // Server evicted the agent. Tag as 'manual' so the engagement guard isn't
+    // confused into thinking the (now null) selection is an auto-advance landing.
+    return { selectedAgentId: null, selectedAgentSource: 'manual', respondAllAgentIds: null };
   }
 
   if (
@@ -49,6 +51,7 @@ function selectedAgentUpdateAfterServerState(
   ) {
     return {
       selectedAgentId: nextActionableFindingId(nextAgents, selectedAgentId),
+      selectedAgentSource: 'manual',
       respondAllAgentIds: null,
       leftPane: 'activity',
       narrowTab: 'activity',

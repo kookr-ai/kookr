@@ -7,6 +7,7 @@ import { createTriageNavigationSlice } from './slices/triage-navigation-slice.js
 import { createWorkspaceSlice } from './slices/workspace-slice.js';
 import { createOssAttemptsSlice } from './slices/oss-attempts-slice.js';
 import { createSystemStatusSlice } from './slices/system-status-slice.js';
+import { createAutoAdvanceSlice, attachAutoAdvanceSubscribers } from './slices/auto-advance-slice.js';
 import type {
   AchievementToast,
   Alert,
@@ -47,6 +48,7 @@ function createKookrStoreState(
     ...createWorkspaceSlice(set, get),
     ...createOssAttemptsSlice(set, get),
     ...createSystemStatusSlice(set),
+    ...createAutoAdvanceSlice(set, get),
   };
 }
 
@@ -57,3 +59,9 @@ export function createKookrStore() {
 
 /** React hook — used in components */
 export const useKookrStore = create<KookrStore>(createKookrStoreState);
+
+// Wire up the auto-advance subscriber to the singleton store. Tests using
+// `createKookrStore()` get an isolated store with no subscriber; they
+// exercise `evaluateAutoAdvance` directly. The singleton attach is guarded
+// inside `attachAutoAdvanceSubscribers` so SSR / Node imports are safe.
+attachAutoAdvanceSubscribers(useKookrStore);
