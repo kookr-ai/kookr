@@ -59,6 +59,13 @@ interface ReflectionSuggestion {
 type MobileDashboardTab = 'findings' | 'task';
 type LaunchInitialTab = 'manual' | 'playbooks';
 
+interface PendingCompleteConfirmation {
+  taskId: string;
+  agentId: string;
+  label: string;
+  method: 'button' | 'shortcut';
+}
+
 const MOBILE_BREAKPOINT_PX = 768;
 
 function reflectionDismissKey(sessionId: string): string {
@@ -84,6 +91,7 @@ export function App() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showSnooze, setShowSnooze] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'cancel' | 'complete' | null>(null);
+  const [pendingComplete, setPendingComplete] = useState<PendingCompleteConfirmation | null>(null);
   const [completeFeedback, setCompleteFeedback] = useState<TaskCompletionFeedback | undefined>(undefined);
   const [showProjectSidebarManager, setShowProjectSidebarManager] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -307,6 +315,12 @@ export function App() {
           const agent = state.agents.find(a => a.agentId === state.selectedAgentId);
           if (agent?.taskId) {
             track({ type: 'shortcut_used', key: 'Alt+End', action: 'complete_task', context: 'global' });
+            setPendingComplete({
+              taskId: agent.taskId,
+              agentId: agent.agentId,
+              label: agent.taskName ?? agent.agentId,
+              method: 'shortcut',
+            });
             setConfirmAction('complete');
           }
         }
@@ -509,6 +523,16 @@ export function App() {
       agent={selectedAgent}
       send={send}
       onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'empty_panel' }); setShowLaunch(true); }}
+      onRequestComplete={() => {
+        if (!selectedAgent?.taskId) return;
+        setPendingComplete({
+          taskId: selectedAgent.taskId,
+          agentId: selectedAgent.agentId,
+          label: selectedAgent.taskName ?? selectedAgent.agentId,
+          method: 'button',
+        });
+        setConfirmAction('complete');
+      }}
       collapsed={!isMobileViewport && !selectedAgent}
       terminalFocusMode={terminalFocusActive}
     />
@@ -716,10 +740,10 @@ export function App() {
           onClose={() => setConfirmAction(null)}
         />
       )}
-      {confirmAction === 'complete' && selectedAgent?.taskId && (
+      {confirmAction === 'complete' && pendingComplete && (
         <ConfirmDialog
           title="Complete Task"
-          message={`Mark "${selectedAgent.taskName ?? selectedAgent.agentId}" as complete?`}
+          message={`Mark "${pendingComplete.label}" as complete?`}
           confirmLabel="Complete"
           suppressEnterToConfirm={completeFeedback !== undefined}
           footer={
@@ -729,17 +753,19 @@ export function App() {
             />
           }
           onConfirm={() => {
-            track({ type: 'task_completed', agentId: selectedAgent.agentId, method: 'shortcut' });
+            track({ type: 'task_completed', agentId: pendingComplete.agentId, method: pendingComplete.method });
             send({
               type: 'completeTask',
-              taskId: selectedAgent.taskId!,
+              taskId: pendingComplete.taskId,
               ...(completeFeedback ? { feedback: completeFeedback } : {}),
             });
             setConfirmAction(null);
+            setPendingComplete(null);
             setCompleteFeedback(undefined);
           }}
           onClose={() => {
             setConfirmAction(null);
+            setPendingComplete(null);
             setCompleteFeedback(undefined);
           }}
         />

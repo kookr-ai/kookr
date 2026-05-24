@@ -7,8 +7,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { App } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
 
+const websocketMock = vi.hoisted(() => ({
+  send: vi.fn(() => true),
+}));
+
 vi.mock('./hooks/useWebSocket.js', () => ({
-  useWebSocket: () => ({ send: () => true }),
+  useWebSocket: () => ({ send: websocketMock.send }),
 }));
 
 vi.mock('./hooks/useNotifications.js', () => ({
@@ -28,7 +32,11 @@ vi.mock('./telemetry.js', () => ({
 }));
 
 vi.mock('./components/DetailPanel.js', () => ({
-  DetailPanel: () => React.createElement('div', { 'data-testid': 'detail-panel' }),
+  DetailPanel: (props: { onRequestComplete: () => void }) => React.createElement(
+    'div',
+    { 'data-testid': 'detail-panel' },
+    React.createElement('button', { 'data-testid': 'mock-complete-button', onClick: props.onRequestComplete }, 'Complete'),
+  ),
 }));
 
 function syncGlobalStore() {
@@ -64,6 +72,7 @@ describe('App operations modal shortcuts', () => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.setItem('kookr:onboarding:seen-v1', 'true');
+    websocketMock.send.mockClear();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/anomaly-stats')) {
@@ -114,5 +123,80 @@ describe('App operations modal shortcuts', () => {
 
     expect(container.querySelector('.shortcuts-help')).toBeNull();
     expect(container.querySelector('.operations-panel')).not.toBeNull();
+  });
+
+  test('detail-panel complete requests open the feedback-enabled complete dialog', async () => {
+    useKookrStore.setState({
+      agents: [{
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        taskName: 'Example task',
+        events: [],
+        anomaly: null,
+        cwd: '/tmp/kookr',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskStatus: 'inProgress',
+      }],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+
+    expect(container.textContent).toContain('Complete Task');
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Thumbs up"]')).toBeInstanceOf(HTMLButtonElement);
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Thumbs down"]')).toBeInstanceOf(HTMLButtonElement);
+  });
+
+  test('complete confirmation keeps the task selected when the dialog opened', async () => {
+    useKookrStore.setState({
+      agents: [
+        {
+          agentId: 'agent-1',
+          taskId: 'task-1',
+          taskName: 'First task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:00:00.000Z',
+          taskStatus: 'inProgress',
+        },
+        {
+          agentId: 'agent-2',
+          taskId: 'task-2',
+          taskName: 'Second task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:01:00.000Z',
+          taskStatus: 'inProgress',
+        },
+      ],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+    await act(async () => {
+      useKookrStore.getState().selectAgent('agent-2');
+    });
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
   });
 });

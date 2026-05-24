@@ -46,6 +46,7 @@ function renderDetailPanel(container: HTMLElement, agent: AgentState): Root {
         agent,
         send: vi.fn(() => true),
         onLaunch: vi.fn(),
+        onRequestComplete: vi.fn(),
       }),
     );
   });
