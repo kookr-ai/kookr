@@ -40,9 +40,9 @@ export function Tooltip({ text, children }: TooltipProps) {
         onMouseEnter: show,
         onMouseLeave: hide,
       })}
-      {displayText && createPortal(
+      {displayText && visible && createPortal(
         <div
-          className={`tooltip-portal ${visible ? 'visible' : ''}`}
+          className="tooltip-portal visible"
           style={{ top: pos.top, left: pos.left, transform: 'translateY(-100%)' }}
         >
           {displayText}

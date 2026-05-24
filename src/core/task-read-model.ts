@@ -42,7 +42,10 @@ export interface ReflectMeta {
 }
 
 export interface CreateTaskOptions {
+  /** Raw execution prompt sent to the agent. May include Kookr launch-context guidance. */
   prompt: string;
+  /** Original user-authored prompt before Kookr launch-context injection. */
+  userPrompt?: string;
   cwd: string;
   criteria?: string;
   parentTaskId?: string;
@@ -78,6 +81,9 @@ export interface TaskLaunchHealthFinding {
 export interface Task {
   id: string;
   name?: string;
+  /** Original user-authored prompt before Kookr launch-context injection. */
+  userPrompt?: string;
+  /** Raw execution prompt sent to the agent. May include Kookr launch-context guidance. */
   prompt: string;
   cwd: string;
   criteria?: string;

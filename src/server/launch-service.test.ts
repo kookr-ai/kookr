@@ -781,6 +781,7 @@ describe('launchTask', () => {
       cwd: repoDir,
     });
 
+    expect(result.task.userPrompt).toBe('Implement the bug fix and update tests.');
     expect(result.task.prompt).toContain('You are currently in the main checkout');
     expect(result.task.prompt).toContain(realpathSync(repoDir));
     expect(result.task.prompt).toContain('Do NOT commit in this checkout');
@@ -805,6 +806,7 @@ describe('launchTask', () => {
     });
 
     expect(result.task.prompt).toBe(prompt);
+    expect(result.task.userPrompt).toBe(prompt);
   });
 
   it('prefixes "create a fresh worktree" guidance when launching from an existing worktree', async () => {

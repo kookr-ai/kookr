@@ -36,6 +36,18 @@ function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
   return task;
 }
 
+function guardedWorktreePrompt(userPrompt: string): string {
+  return [
+    'You are currently in the main checkout `/repo` on branch `main`. Do NOT commit in this checkout — every Kookr task must make tracked-file changes in a fresh git worktree of its own, not in any pre-existing checkout (the main repo, the production runtime worktree, or any sibling worktree spawned for unrelated work).',
+    '- Create one: `git worktree add ../repo-<short-name> -b <feature-branch> HEAD`',
+    '- Perform all tracked-file edits, commits, and pushes from that new worktree.',
+    '- If the task stays read-only, you may remain in the current checkout.',
+    "- After committing, don't end your turn silently — unless the task already told you to deliver, ask the user whether to push the branch and open a PR.",
+    '',
+    userPrompt,
+  ].join('\n');
+}
+
 describe('Monitor', () => {
   let taskStore: TaskStore;
   let queue: AttentionQueue;
@@ -159,6 +171,43 @@ describe('Monitor', () => {
     expect(terminalEntry).toBeDefined();
     expect(terminalEntry!.taskStatus).toBe('completed');
     expect(terminalEntry!.anomaly).toBeNull();
+  });
+
+  test('getSnapshot describes tasks with user-authored prompt instead of launch guardrail preamble', () => {
+    const task = createTaskForMutation(taskStore, {
+      prompt: guardedWorktreePrompt('Fix duplicate task prompt in activity panel.'),
+      userPrompt: 'Fix duplicate task prompt in activity panel.',
+      cwd: '/repo',
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:00:00Z'),
+    });
+    monitor.registerAgent('agent-1');
+
+    const state = monitor.getSnapshot().find((agent) => agent.agentId === 'agent-1');
+    expect(state?.description).toBe('Fix duplicate task prompt in activity panel.');
+    expect(state?.taskName).toBe('Fix duplicate task prompt in activity panel.');
+  });
+
+  test('getSnapshot strips known launch guardrail preamble from legacy tasks', () => {
+    const task = createTaskForMutation(taskStore, {
+      prompt: guardedWorktreePrompt('Investigate false positives.'),
+      cwd: '/repo',
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:00:00Z'),
+    });
+    monitor.registerAgent('agent-1');
+
+    const state = monitor.getSnapshot().find((agent) => agent.agentId === 'agent-1');
+    expect(state?.description).toBe('Investigate false positives.');
+    expect(state?.taskName).toBe('Investigate false positives.');
   });
 
   test('getSnapshot hides completed Ralph iteration sessions while keeping live owner visible', () => {
@@ -737,6 +786,22 @@ describe('Monitor', () => {
       expect(entry!.startedAt).toBe(task.createdAt.toISOString());
     });
 
+    test('pending task synthetic entry uses display-safe prompt text', () => {
+      const task = createTaskForMutation(taskStore, {
+        prompt: guardedWorktreePrompt('Prepare the release checklist.'),
+        userPrompt: 'Prepare the release checklist.',
+        cwd: '/workspace/app',
+      });
+      taskStore.pendTask(task.id);
+
+      const snapshot = monitor.getSnapshot();
+      const entry = snapshot.find((s) => s.agentId === `pending-${task.id}`);
+
+      expect(entry).toBeDefined();
+      expect(entry!.taskName).toBe('Prepare the release checklist.');
+      expect(entry!.description).toBe('Prepare the release checklist.');
+    });
+
     test('includes playbookParameterValues in snapshot for playbook tasks', () => {
       const task = createTaskForMutation(taskStore, {
         prompt: 'Analyze owner/repo',
@@ -784,6 +849,28 @@ describe('Monitor', () => {
       expect(entry!.taskName).toBe('Run database migration');
       expect(entry!.cwd).toBe('/workspace/app');
       expect(entry!.description).toBe('Run database migration');
+    });
+
+    test('completed task synthetic entry strips known launch guardrail preamble', () => {
+      const task = createTaskForMutation(taskStore, {
+        prompt: guardedWorktreePrompt('Archive completed evidence.'),
+        cwd: '/workspace/app',
+      });
+      taskStore.addSession(task.id, {
+        tmuxSession: 'agent-c1',
+        agentType: 'claude-code',
+        cwd: '/workspace/app',
+        createdAt: new Date('2026-03-30T12:00:00Z'),
+      });
+      taskStore.completeTask(task.id);
+      monitor.unregisterAgent('agent-c1');
+
+      const snapshot = monitor.getSnapshot();
+      const entry = snapshot.find((s) => s.taskId === task.id);
+
+      expect(entry).toBeDefined();
+      expect(entry!.taskName).toBe('Archive completed evidence.');
+      expect(entry!.description).toBe('Archive completed evidence.');
     });
 
     test('completed task synthetic entry normalizes legacy missing worktree health as cleaned_up', () => {

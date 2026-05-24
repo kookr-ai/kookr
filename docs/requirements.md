@@ -689,10 +689,12 @@ The system SHOULD reduce repeated metadata and long prompt noise when a develope
 - The selected task header keeps title, status, critical worktree health, age, and primary actions visible while moving provider, hooks, project, branch, cost, and token details into a details affordance
 - When a project and task are both selected on a wide viewport, the project drawer switches to a compact summary instead of showing full contribution history, settings, and recent tasks
 - Oversized launch prompts in the Activity pane render as a bounded preview with an explicit full-prompt expander
+- Task display text and hover text prioritize the user-authored prompt over Kookr-injected launch guidance so repeated worktree/checkpoint preambles do not look like duplicate user prompts
+- Tooltip portals do not retain hidden long prompt text after dismissal
 - Healthy task rows avoid repeated project metadata when the user is already scoped to that project
 - The global top bar avoids duplicating finding/healthy counts already shown in the findings and status areas
 
-**Evidence:** `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/ActivityPanel.tsx`, `src/frontend/components/ProjectDetailDrawer.tsx`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/components/TopBar.tsx`, density-focused component tests.
+**Evidence:** `src/core/monitor.ts`, `src/core/prompt-display.ts`, `src/server/launch-service.ts`, `src/frontend/components/Tooltip.tsx`, `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/ActivityPanel.tsx`, `src/frontend/components/ProjectDetailDrawer.tsx`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/components/TopBar.tsx`, density-focused component tests.
 
 ### R5.9: API-Minimal GitHub Awareness Polling — SHOULD — `done`
 
@@ -1050,7 +1052,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R5.5 | F5.5 | SHALL | done | useWebSocket, ws, useStore |
 | R5.6 | — | SHOULD | done | OnboardingTour, onboarding-status, onboarding-tour E2E |
 | R5.7 | — | SHOULD | done | project-sidebar-store, project-routes, project-sidebar-slice |
-| R5.8 | — | SHOULD | done | DetailPanel, ActivityPanel, ProjectDetailDrawer, FindingsPanel, TopBar |
+| R5.8 | — | SHOULD | done | prompt-display, monitor, launch-service, Tooltip, DetailPanel, ActivityPanel, ProjectDetailDrawer, FindingsPanel, TopBar |
 | R5.9 | — | SHOULD | done | github-scanner-service, github-state-store, github-fetcher |
 | R5.10 | — | SHOULD | done | system-resource-metrics, resource-status-service, useWebSocket, StatusBar |
 | R6.1 | ADR-007 / ADR-014 | SHALL | done | local-dtach-backend |
