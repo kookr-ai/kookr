@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { App } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
+import { recordReportableAlert, resetBugReportRecorderForTests } from './bug-report-recorder.js';
 
 const websocketMock = vi.hoisted(() => ({
   send: vi.fn(() => true),
@@ -73,6 +74,7 @@ describe('App operations modal shortcuts', () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.setItem('kookr:onboarding:seen-v2', 'true');
     websocketMock.send.mockClear();
+    resetBugReportRecorderForTests();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/anomaly-stats')) {
@@ -198,5 +200,100 @@ describe('App operations modal shortcuts', () => {
     });
 
     expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+  });
+
+  test('top-bar bug report opens a live bundle preview with recorder state and note edits', async () => {
+    recordReportableAlert({
+      agentId: 'agent-1',
+      severity: 'error',
+      summary: 'Malformed WebSocket message',
+      details: 'payload failed schema validation',
+    });
+    useKookrStore.setState({
+      agents: [{
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        events: [],
+        anomaly: null,
+        cwd: '/home/user/customer/repo',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskStatus: 'inProgress',
+      }],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const bugReport = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Bug report"]');
+    await act(async () => {
+      bugReport.click();
+    });
+
+    const preview = await waitForElement<HTMLTextAreaElement>(container, '#bug-report-preview');
+    expect(preview.value).toContain('"trigger": "alert"');
+    expect(preview.value).toContain('"selectedAgentId": "agent-1"');
+    expect(preview.value).toContain('"summaryCategory": "malformed_websocket"');
+
+    const note = await waitForElement<HTMLTextAreaElement>(container, 'textarea[placeholder="What did you expect to happen?"]');
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(note, 'user-added note');
+    await act(async () => {
+      note.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    expect(await waitForElement<HTMLTextAreaElement>(container, '#bug-report-preview')).toHaveProperty(
+      'value',
+      expect.stringContaining('user-added note'),
+    );
+  });
+
+  test('global shortcuts are suppressed while bug report dialog is open', async () => {
+    useKookrStore.setState({
+      agents: [
+        {
+          agentId: 'agent-1',
+          taskId: 'task-1',
+          taskName: 'First task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:00:00.000Z',
+          taskStatus: 'inProgress',
+        },
+        {
+          agentId: 'agent-2',
+          taskId: 'task-2',
+          taskName: 'Second task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:01:00.000Z',
+          taskStatus: 'inProgress',
+        },
+      ],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const bugReport = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Bug report"]');
+    await act(async () => {
+      bugReport.click();
+    });
+    await waitForElement<HTMLTextAreaElement>(container, '#bug-report-preview');
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'j',
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    await flush();
+
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-1');
   });
 });

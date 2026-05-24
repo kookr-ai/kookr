@@ -15,6 +15,7 @@ import { FindingsPanel } from './components/FindingsPanel.js';
 import { DetailPanel } from './components/DetailPanel.js';
 import { StatusBar } from './components/StatusBar.js';
 import { Toasts } from './components/Toasts.js';
+import { BugReportDialog } from './components/BugReportDialog.js';
 import { AchievementToasts } from './components/AchievementToast.js';
 import { SentOverlay } from './components/SentOverlay.js';
 import { SnoozeDialog } from './components/SnoozeDialog.js';
@@ -35,6 +36,8 @@ import {
   resolveShortcutBindings,
   type PlatformShortcutBindingOverrides,
 } from '../shared/contracts/shortcut-bindings.js';
+import { buildBugReportBundle } from './bug-report-bundle.js';
+import { getBugReportAlerts, getBugReportWireObservations } from './bug-report-recorder.js';
 import './critical.css';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -109,6 +112,8 @@ export function App() {
   const [showCostComparison, setShowCostComparison] = useState(false);
   const [showOperations, setShowOperations] = useState(false);
   const [showCoordinatorFindings, setShowCoordinatorFindings] = useState(false);
+  const [showBugReport, setShowBugReport] = useState(false);
+  const [bugReportNote, setBugReportNote] = useState('');
   const [shortcutOverrides, setShortcutOverrides] = useState<PlatformShortcutBindingOverrides>({});
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
   const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
@@ -124,6 +129,8 @@ export function App() {
   const {
     agents,
     agentsHydrated,
+    buildInfo,
+    serverStartedAt,
     selectedAgentId,
     selectAgent,
     nextBottleneck,
@@ -217,6 +224,19 @@ export function App() {
     ? projectSummaries.find((p) => p.project === selectedProject) ?? null
     : null;
   const terminalFocusActive = terminalFocusMode && !isMobileViewport;
+  const bugReportDraft = useMemo(() => {
+    if (!showBugReport) return null;
+    return buildBugReportBundle({
+      agents,
+      selectedAgentId,
+      selectedProject,
+      buildInfo,
+      serverStartedAt,
+      alerts: getBugReportAlerts(),
+      wireObservations: getBugReportWireObservations(),
+      note: bugReportNote,
+    });
+  }, [agents, bugReportNote, buildInfo, selectedAgentId, selectedProject, serverStartedAt, showBugReport]);
 
   useEffect(() => {
     if (isMobileViewport && terminalFocusMode) {
@@ -263,7 +283,7 @@ export function App() {
   // Keyboard shortcuts
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (showOperations && e.key !== 'Escape') {
+      if ((showOperations || showBugReport) && e.key !== 'Escape') {
         return;
       }
       if (matchesShortcutAction(e, shortcutBindings, 'next_bottleneck')) {
@@ -436,7 +456,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isMobileViewport, nextBottleneck, nextTask, previousTask, send, shortcutBindings, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel]);
+  }, [isMobileViewport, nextBottleneck, nextTask, previousTask, send, shortcutBindings, showBugReport, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;
@@ -624,6 +644,7 @@ export function App() {
         onShowShortcuts={() => setShowShortcuts(true)}
         onOssView={toggleOssView}
         onOperations={() => setShowOperations((value) => !value)}
+        onBugReport={() => setShowBugReport(true)}
         operationsOpen={showOperations}
         onCoordinatorFindings={() => setShowCoordinatorFindings((value) => !value)}
         coordinatorFindingsOpen={showCoordinatorFindings}
@@ -842,6 +863,18 @@ export function App() {
             onSettingsSaved={(settings) => setShortcutOverrides(settings.shortcutBindings ?? {})}
           />
         </Suspense>
+      )}
+      {showBugReport && bugReportDraft && (
+        <BugReportDialog
+          bundle={bugReportDraft.bundle}
+          serialized={bugReportDraft.serialized}
+          note={bugReportNote}
+          onNoteChange={setBugReportNote}
+          onClose={() => {
+            setShowBugReport(false);
+            setBugReportNote('');
+          }}
+        />
       )}
       {ossShowView && (
         <Suspense fallback={null}>
