@@ -24,6 +24,7 @@ import {
   type SessionRuntimeIdentity,
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
+import { inferGitInfoPathFromEvent } from './git-path-inference.js';
 import { buildAgentLaunchContext } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
@@ -135,6 +136,10 @@ export class CodexCliAdapter implements AgentAdapter {
   private identities = new Map<string, SessionRuntimeIdentity>();
   /** Kookr-assigned monotonic sequence per Kookr session. */
   private sequenceCounters = new Map<string, number>();
+  /** Strong worktree path inferred from tool payloads; provider cwd can remain at launch cwd. */
+  private inferredWorktreeRoots = new Map<string, string>();
+  /** Tool-result hooks often omit the original tool input, so carry the inferred path by tool_use_id. */
+  private pendingToolGitPaths = new Map<string, Map<string, string>>();
   private hooksDir: string;
   private settingsDir: string;
   private writeFile?: (path: string, content: string) => Promise<void>;
@@ -494,25 +499,36 @@ export class CodexCliAdapter implements AgentAdapter {
       const task = this.taskStore.getTask(taskId);
       const session = task?.sessions.find((s) => s.tmuxSession === tmuxName);
       if (session) {
-        let shouldRefreshGit = false;
+        const inferredGitPath = this.resolveInferredGitPath(tmuxName, event);
+        const stickyWorktreeRoot = this.inferredWorktreeRoots.get(tmuxName);
+        let gitRefreshPath: string | null = null;
 
-        if (event.cwd !== session.cwd) {
+        if (event.cwd !== session.cwd && !inferredGitPath && !stickyWorktreeRoot) {
           this.taskStore.updateSessionCwd(taskId, tmuxName, event.cwd);
-          shouldRefreshGit = true;
+          gitRefreshPath = event.cwd;
         }
 
         if (event.type === 'tool_result' && event.toolName === 'Bash' && isGitBranchCommand(event.toolResponse)) {
-          shouldRefreshGit = true;
+          gitRefreshPath = stickyWorktreeRoot ?? event.cwd;
         }
         if (event.type === 'tool_use' && event.toolName === 'Bash' && isGitBranchCommand(event.toolInput)) {
-          shouldRefreshGit = true;
+          gitRefreshPath = inferredGitPath ?? stickyWorktreeRoot ?? event.cwd;
         }
+        if (inferredGitPath) gitRefreshPath = inferredGitPath;
 
-        if (shouldRefreshGit) {
-          getGitInfo(event.cwd)
+        if (gitRefreshPath) {
+          const currentPath = gitRefreshPath;
+          getGitInfo(currentPath)
             .then((info) => {
               if (info) {
+                if (inferredGitPath && info.worktreeRoot && info.worktreeRoot !== session.cwd) {
+                  this.inferredWorktreeRoots.set(tmuxName, info.worktreeRoot);
+                  this.taskStore.updateSessionCwd(taskId, tmuxName, info.worktreeRoot);
+                }
                 this.taskStore.updateSessionGitInfo(taskId, tmuxName, info);
+                for (const handler of this.refreshHandlers) {
+                  handler();
+                }
               }
             })
             .catch(() => { /* graceful degradation */ });
@@ -537,6 +553,31 @@ export class CodexCliAdapter implements AgentAdapter {
       parentage,
       sequence,
     };
+  }
+
+  private resolveInferredGitPath(tmuxName: string, event: AgentEvent): string | null {
+    const directPath = inferGitInfoPathFromEvent(event);
+    if (directPath) {
+      if (event.type === 'tool_use' && event.toolUseId) {
+        let paths = this.pendingToolGitPaths.get(tmuxName);
+        if (!paths) {
+          paths = new Map();
+          this.pendingToolGitPaths.set(tmuxName, paths);
+        }
+        paths.set(event.toolUseId, directPath);
+      }
+      return directPath;
+    }
+
+    if ((event.type === 'tool_result' || event.type === 'tool_error') && event.toolUseId) {
+      const paths = this.pendingToolGitPaths.get(tmuxName);
+      const pendingPath = paths?.get(event.toolUseId) ?? null;
+      paths?.delete(event.toolUseId);
+      if (paths?.size === 0) this.pendingToolGitPaths.delete(tmuxName);
+      return pendingPath;
+    }
+
+    return null;
   }
 
   private getOrHydrateIdentity(tmuxName: string, taskId: string | undefined): SessionRuntimeIdentity {

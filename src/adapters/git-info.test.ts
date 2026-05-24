@@ -43,6 +43,7 @@ describe('getGitInfo', () => {
       expect(result!.commit).toBe('abc1234');
       expect(result!.isWorktree).toBe(false);
       expect(result!.isDetached).toBe(false);
+      expect(result!.worktreeRoot).toBe(dir);
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -110,18 +111,19 @@ describe('getGitInfo', () => {
       expect(result!.commit).toBe('cafebab');
       expect(result!.isWorktree).toBe(true);
       expect(result!.isDetached).toBe(false);
+      expect(result!.worktreeRoot).toBe(worktreeDir);
     } finally {
       rmSync(mainDir, { recursive: true });
       rmSync(worktreeDir, { recursive: true });
     }
   });
 
-  test('handles branch with no ref file (packed refs)', async () => {
+  test('handles branch with no ref file or packed ref', async () => {
     const dir = makeTempDir();
     const gitDir = join(dir, '.git');
     mkdirSync(gitDir);
     writeFileSync(join(gitDir, 'HEAD'), 'ref: refs/heads/main\n');
-    // Don't create refs/heads/main — simulate packed refs
+    // Don't create refs/heads/main or packed-refs — commit cannot resolve.
 
     try {
       const result = await getGitInfo(dir);
@@ -131,6 +133,60 @@ describe('getGitInfo', () => {
       expect(result!.isDetached).toBe(false);
     } finally {
       rmSync(dir, { recursive: true });
+    }
+  });
+
+  test('resolves commit from packed refs when no loose ref exists', async () => {
+    const dir = makeTempDir();
+    const gitDir = join(dir, '.git');
+    mkdirSync(gitDir);
+    writeFileSync(join(gitDir, 'HEAD'), 'ref: refs/heads/main\n');
+    writeFileSync(
+      join(gitDir, 'packed-refs'),
+      '# pack-refs with: peeled fully-peeled sorted\nfedcba9876543210fedcba9876543210fedcba98 refs/heads/main\n',
+    );
+
+    try {
+      const result = await getGitInfo(dir);
+      expect(result).toMatchObject({
+        branch: 'main',
+        commit: 'fedcba9',
+        isWorktree: false,
+        isDetached: false,
+        worktreeRoot: dir,
+      });
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test('reads worktree branch from a nested file path', async () => {
+    const mainDir = makeTempDir();
+    const worktreeDir = makeTempDir();
+    const mainGitDir = join(mainDir, '.git');
+    const linkedGitDir = join(mainGitDir, 'worktrees', 'nested-worktree');
+    const nestedFile = join(worktreeDir, 'src', 'core', 'file.ts');
+
+    mkdirSync(linkedGitDir, { recursive: true });
+    mkdirSync(join(mainGitDir, 'refs', 'heads', 'fix'), { recursive: true });
+    mkdirSync(join(worktreeDir, 'src', 'core'), { recursive: true });
+    writeFileSync(join(mainGitDir, 'refs', 'heads', 'fix', 'worktree-branch'), '1234567890abcdef1234567890abcdef12345678\n');
+    writeFileSync(join(linkedGitDir, 'HEAD'), 'ref: refs/heads/fix/worktree-branch\n');
+    writeFileSync(join(worktreeDir, '.git'), `gitdir: ${linkedGitDir}\n`);
+    writeFileSync(nestedFile, 'export const value = 1;\n');
+
+    try {
+      const result = await getGitInfo(nestedFile);
+      expect(result).toMatchObject({
+        branch: 'fix/worktree-branch',
+        commit: '1234567',
+        isWorktree: true,
+        isDetached: false,
+        worktreeRoot: worktreeDir,
+      });
+    } finally {
+      rmSync(mainDir, { recursive: true });
+      rmSync(worktreeDir, { recursive: true });
     }
   });
 
@@ -151,6 +207,7 @@ describe('getGitInfo', () => {
       commit: 'abcdef1',
       isWorktree: true,
       isDetached: false,
+      worktreeRoot: '/missing-from-disk',
     });
   });
 });
