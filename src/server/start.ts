@@ -29,6 +29,7 @@ const TTS_VOICE = process.env.TTS_VOICE ?? '/app/voices/matilda.mp3';
 const AGENT_BIN = process.env.KOOKR_AGENT_BIN || undefined;
 const CODEX_BIN = process.env.KOOKR_CODEX_BIN || undefined;
 const BYPASS_ALL_PERMISSIONS = process.env.KOOKR_BYPASS_ALL_PERMISSIONS === 'true';
+const SPEAK_FINDING_ENABLED = process.env.KOOKR_SPEAK !== 'false';
 
 /**
  * V8: Fail loud if the dtach binary is unreachable. Startup gets ONE
@@ -159,6 +160,8 @@ async function main(): Promise<void> {
     terminalBackend,
     sttUrl,
     ttsUrl,
+    ttsVoice: TTS_VOICE,
+    speakFindingEnabled: SPEAK_FINDING_ENABLED,
     agentBin: AGENT_BIN,
     codexBin: CODEX_BIN,
     bypassAllPermissions: BYPASS_ALL_PERMISSIONS,

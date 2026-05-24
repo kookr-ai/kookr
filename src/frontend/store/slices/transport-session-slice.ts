@@ -79,13 +79,14 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
     playbooksLastFetchedCwd: '',
     hostCapabilities: {},
     sttUrl: '',
+    ttsUrl: '',
     speechCapabilities: null,
     activeSTTInputId: null,
     totalSpendUsd: 0,
     maxActiveTasks: 0,
     coordinator: null,
 
-    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities, coordinator) => {
+    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities, coordinator, ttsUrl) => {
       set((prev) => {
         const previousById = new Map(prev.agents.map((agent) => [agent.agentId, agent]));
         const mergedAgents = agents.map((agent) => mergeActivityAgent(previousById.get(agent.agentId), agent));
@@ -101,6 +102,7 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
           ...(build !== undefined ? { buildInfo: build } : {}),
           ...(serverStartedAt !== undefined ? { serverStartedAt } : {}),
           ...(nextSttUrl ? { sttUrl: nextSttUrl } : {}),
+          ...(ttsUrl !== undefined ? { ttsUrl } : {}),
           ...(speechCapabilities !== undefined ? { speechCapabilities } : {}),
           ...(totalSpendUsd !== undefined ? { totalSpendUsd } : {}),
           ...(achievements !== undefined ? { achievements } : {}),

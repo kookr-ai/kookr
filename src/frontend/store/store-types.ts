@@ -113,6 +113,8 @@ export interface TransportSessionSlice {
    */
   hostCapabilities: Partial<Record<LaunchDependency, HostCapability>>;
   sttUrl: string;
+  /** Pocket TTS HTTP base URL when configured server-side. Empty string when unset. Gates the speak-finding feature in the UI. */
+  ttsUrl: string;
   speechCapabilities: CollaborationCapabilities | null;
   activeSTTInputId: string | null;
   totalSpendUsd: number;
@@ -141,6 +143,7 @@ export interface TransportSessionSlice {
     maxActiveTasks?: number,
     speechCapabilities?: CollaborationCapabilities,
     coordinator?: CoordinatorSnapshotState,
+    ttsUrl?: string,
   ) => void;
   handleUpdate: (agentId: string, state: AgentState) => void;
   handlePlaybooks: (

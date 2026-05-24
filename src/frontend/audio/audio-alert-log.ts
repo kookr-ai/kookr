@@ -1,13 +1,14 @@
 import { useSyncExternalStore } from 'react';
 
-export type AudioAlertSource = 'finding' | 'task_completion' | 'manual_test';
+export type AudioAlertSource = 'finding' | 'task_completion' | 'manual_test' | 'finding_speak';
 
 export type AudioAlertOutcome =
   | 'scheduled'
   | 'suppressed_muted'
   | 'suppressed_dnd'
   | 'audio_context_unavailable'
-  | 'audio_context_error';
+  | 'audio_context_error'
+  | 'audio_context_suspended';
 
 export type AudioAlertPrimaryCause =
   | 'first_candidate'
@@ -241,6 +242,7 @@ export function redactAudioAlertDecision(decision: LocalAudioAlertDecision): Red
   const reasonCode = (() => {
     if (decision.outcome === 'audio_context_error') return decision.reason;
     if (decision.source === 'finding') return decision.anomalyType ?? 'finding';
+    if (decision.source === 'finding_speak') return decision.anomalyType ?? 'finding_speak';
     if (decision.source === 'task_completion') return 'task_completion';
     if (decision.source === 'manual_test') return 'manual_test';
     return decision.outcome;

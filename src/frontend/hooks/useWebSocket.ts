@@ -46,6 +46,7 @@ export function dispatchSnapshotMessageForClient(
     msg.maxActiveTasks,
     msg.speechCapabilities,
     msg.coordinator,
+    msg.ttsUrl,
   );
 }
 

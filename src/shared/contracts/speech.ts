@@ -55,6 +55,42 @@ export interface CollaborationCapabilities {
   capabilitiesByNode?: Record<string, SpeechCapability[]>;
 }
 
+/**
+ * Wire response for POST /api/findings/:agentId/speak. See
+ * docs/rfc/rfc-speak-finding-summary.md.
+ */
+export interface SpeakFindingResponse {
+  /** The text that was spoken (may be the LLM recap, or — when usedFallback is true — the raw explanation). */
+  text: string;
+  /** Base64 WAV bytes synthesized by the local TTS service. */
+  audioBase64: string;
+  /** Always 'audio/wav' for Pocket TTS. Kept in the contract so future codecs can change it. */
+  mimeType: 'audio/wav';
+  durationMs: number;
+  /** True iff the LLM failed, was unavailable, or hit a guardrail and the raw explanation was used. */
+  usedFallback: boolean;
+  /** 0 when the cache hit (no fresh LLM call). */
+  llmMs: number;
+  /** TTS synthesis time. 0 when the cache hit. */
+  ttsMs: number;
+  cached: boolean;
+}
+
+export type SpeakFindingErrorReason =
+  | 'feature-disabled'
+  | 'tts-not-configured'
+  | 'agent-not-found'
+  | 'no-finding'
+  | 'tts-error'
+  | 'aborted'
+  | 'http-error';
+
+export interface SpeakFindingErrorResponse {
+  error: SpeakFindingErrorReason;
+  /** Optional operator-facing detail (e.g. upstream TTS message). Never displayed to end users. */
+  reason?: string;
+}
+
 export function firstReadyKookrSTTEndpoint(capabilities?: CollaborationCapabilities): string | undefined {
   if (!capabilities) return undefined;
   for (const deviceCapabilities of Object.values(capabilities.capabilitiesByDevice)) {

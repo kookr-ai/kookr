@@ -11,6 +11,7 @@ import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus
 import { computeTerminalVisible } from './detail-panel-visibility.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
+import { useSpeakFinding } from '../hooks/useSpeakFinding.js';
 import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../remote/share-contract.js';
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import { TaskDependencyEditor } from './TaskDependencyEditor.js';
@@ -247,7 +248,12 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     typeof window !== 'undefined' ? window.innerWidth <= NARROW_DETAIL_BREAKPOINT_PX : false,
   );
   const inputRef = useRef<HTMLInputElement>(null);
-  const { selectAgent, nextBottleneck, nextTask, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
+  const { selectAgent, nextBottleneck, nextTask, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, ttsUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
+  const speakFinding = useSpeakFinding({
+    agentId: agent?.agentId ?? null,
+    anomalyType: agent?.anomaly?.type ?? null,
+    ttsAvailable: Boolean(ttsUrl),
+  });
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
 
   // Right-pane mode for the Activity+Terminal|Diff split. See
@@ -955,6 +961,40 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                 shortcutBinding={shortcutBindings.stt_toggle}
               />
             </Suspense>
+          )}
+          {ttsUrl && agent?.anomaly && (
+            <button
+              type="button"
+              className={`btn-speak-finding ${speakFinding.state.status}`}
+              data-testid="speak-finding-button"
+              aria-label={(() => {
+                switch (speakFinding.state.status) {
+                  case 'loading':
+                    return 'Loading finding summary';
+                  case 'playing':
+                    return 'Stop spoken finding summary';
+                  case 'suppressed':
+                    return speakFinding.state.errorReason === 'audio-context-suspended'
+                      ? 'Audio suppressed — bring this tab to the foreground and press again'
+                      : 'Audio suppressed (sound muted or do not disturb)';
+                  case 'error':
+                    return `Speak finding failed (${speakFinding.state.errorReason ?? 'unknown'}); press to retry`;
+                  default:
+                    return 'Speak finding summary (Alt+V)';
+                }
+              })()}
+              onClick={() => {
+                track({ type: 'shortcut_used', key: 'click', action: 'speak_finding', context: 'detail_panel' });
+                speakFinding.speak();
+              }}
+            >
+              <span aria-hidden="true">
+                {speakFinding.state.status === 'loading' && '…'}
+                {speakFinding.state.status === 'playing' && '⏸'}
+                {speakFinding.state.status === 'suppressed' && '🔇'}
+                {(speakFinding.state.status === 'idle' || speakFinding.state.status === 'error') && '🔊'}
+              </span>
+            </button>
           )}
           <button
             className="btn-primary"

@@ -343,6 +343,24 @@ export function App() {
           replyInput.focus();
         }
       }
+      if (matchesShortcutAction(e, shortcutBindings, 'speak_finding')) {
+        // Skip when the user is typing into any editable field so the keystroke
+        // reaches the input. .closest covers <input>/<textarea> as well as
+        // contenteditable subtrees (rich composers, code editors).
+        const focused = document.activeElement as HTMLElement | null;
+        const inEditable =
+          focused?.tagName === 'INPUT' ||
+          focused?.tagName === 'TEXTAREA' ||
+          (focused?.isContentEditable ?? false);
+        if (!inEditable) {
+          const speakButton = document.querySelector('[data-testid="speak-finding-button"]') as HTMLButtonElement | null;
+          if (speakButton && !speakButton.disabled) {
+            e.preventDefault();
+            track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.speak_finding), action: 'speak_finding', context: 'global' });
+            speakButton.click();
+          }
+        }
+      }
       if (matchesShortcutAction(e, shortcutBindings, 'cancel_task')) {
         e.preventDefault();
         const state = useKookrStore.getState();
