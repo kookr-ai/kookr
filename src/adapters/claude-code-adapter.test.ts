@@ -656,6 +656,76 @@ describe('ClaudeCodeAdapter', () => {
     expect(inputEvents).toHaveLength(0);
   });
 
+  test('parent tool paths can move git metadata from launch cwd to a linked worktree', async () => {
+    const refreshCalls: number[] = [];
+    adapter.onRefreshNeeded(() => refreshCalls.push(1));
+
+    const task = taskStore.createTask('Fix bug', '/workspace/repo');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/workspace/repo');
+    await vi.waitFor(() => expect(mockGetGitInfo).toHaveBeenCalledWith('/workspace/repo'));
+    mockGetGitInfo.mockClear();
+    mockGetGitInfo.mockResolvedValue({
+      branch: 'fix/worktree-branch',
+      commit: '1234567',
+      isWorktree: true,
+      isDetached: false,
+      worktreeRoot: '/workspace/repo-fix',
+    });
+
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'sess-uuid-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/workspace/repo',
+      hook_event_name: 'SessionStart',
+    }));
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'sess-uuid-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/workspace/repo',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Edit',
+      tool_use_id: 'toolu-edit-1',
+      tool_input: {
+        file_path: '/workspace/repo-fix/src/core/monitor.ts',
+      },
+    }));
+
+    await vi.waitFor(() => {
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.cwd).toBe('/workspace/repo-fix');
+      expect(session.gitBranch).toBe('fix/worktree-branch');
+      expect(session.gitCommit).toBe('1234567');
+      expect(session.gitIsWorktree).toBe(true);
+    });
+    expect(mockGetGitInfo).toHaveBeenCalledWith('/workspace/repo-fix/src/core/monitor.ts');
+
+    mockGetGitInfo.mockClear();
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'sess-uuid-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/workspace/repo',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Edit',
+      tool_use_id: 'toolu-edit-1',
+      tool_response: {},
+    }));
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'sess-uuid-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/workspace/repo',
+      hook_event_name: 'Stop',
+      last_assistant_message: 'done',
+    }));
+
+    await vi.waitFor(() => {
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.cwd).toBe('/workspace/repo-fix');
+      expect(session.gitBranch).toBe('fix/worktree-branch');
+    });
+    expect(mockGetGitInfo).toHaveBeenCalledWith('/workspace/repo-fix/src/core/monitor.ts');
+    expect(refreshCalls.length).toBeGreaterThan(0);
+  });
+
   test('hook command must not background the pipeline (& causes stdin loss in Claude Code)', async () => {
     // Claude Code runs hooks via a mechanism that redirects stdin from /dev/null
     // when the command is backgrounded with &. This is NOT reproducible with

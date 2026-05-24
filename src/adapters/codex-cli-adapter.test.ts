@@ -36,6 +36,9 @@ vi.mock('./git-info.js', async (importOriginal) => {
   };
 });
 
+import { getGitInfo } from './git-info.js';
+const mockGetGitInfo = vi.mocked(getGitInfo);
+
 /** Probe stub: a kookr-fork codex advertising both --plugin-dir and --prompt-file. */
 const forkProbeExec: import('./probe-agent-binary.js').ProbeExecRunner = async (_file, args) => {
   if (args.includes('--help')) {
@@ -72,6 +75,7 @@ describe('CodexCliAdapter', () => {
         writtenFiles.set(path, content);
       },
     });
+    mockGetGitInfo.mockReset().mockResolvedValue(null);
   });
 
   /** Initial prompt as delivered to codex via the --prompt-file launch artifact. */
@@ -533,6 +537,119 @@ describe('CodexCliAdapter', () => {
 
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe('permission_request');
+  });
+
+  test('tool workdir paths can move git metadata from launch cwd to a linked worktree', async () => {
+    const task = taskStore.createTask('Fix bug', '/workspace/repo');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/workspace/repo');
+    await vi.waitFor(() => expect(mockGetGitInfo).toHaveBeenCalledWith('/workspace/repo'));
+    mockGetGitInfo.mockClear();
+    mockGetGitInfo.mockResolvedValue({
+      branch: 'fix/codex-worktree',
+      commit: 'abcdef1',
+      isWorktree: true,
+      isDetached: false,
+      worktreeRoot: '/workspace/repo-codex',
+    });
+
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'codex-session-123',
+      turn_id: 'turn-1',
+      transcript_path: null,
+      cwd: '/workspace/repo',
+      hook_event_name: 'SessionStart',
+    }));
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'codex-session-123',
+      turn_id: 'turn-1',
+      transcript_path: null,
+      cwd: '/workspace/repo',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_use_id: 'toolu-bash-1',
+      tool_input: {
+        cmd: 'pnpm test',
+        workdir: '/workspace/repo-codex',
+      },
+    }));
+
+    await vi.waitFor(() => {
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.cwd).toBe('/workspace/repo-codex');
+      expect(session.gitBranch).toBe('fix/codex-worktree');
+      expect(session.gitCommit).toBe('abcdef1');
+      expect(session.gitIsWorktree).toBe(true);
+    });
+    expect(mockGetGitInfo).toHaveBeenCalledWith('/workspace/repo-codex');
+
+    mockGetGitInfo.mockClear();
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'codex-session-123',
+      turn_id: 'turn-1',
+      transcript_path: null,
+      cwd: '/workspace/repo',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_use_id: 'toolu-bash-1',
+      tool_response: { output: 'ok' },
+    }));
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'codex-session-123',
+      turn_id: 'turn-1',
+      transcript_path: null,
+      cwd: '/workspace/repo',
+      hook_event_name: 'Stop',
+      last_assistant_message: 'done',
+    }));
+
+    await vi.waitFor(() => {
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.cwd).toBe('/workspace/repo-codex');
+      expect(session.gitBranch).toBe('fix/codex-worktree');
+    });
+    expect(mockGetGitInfo).toHaveBeenCalledWith('/workspace/repo-codex');
+  });
+
+  test('command paths can move git metadata when no workdir is present', async () => {
+    const task = taskStore.createTask('Fix bug', '/workspace/repo');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/workspace/repo');
+    await vi.waitFor(() => expect(mockGetGitInfo).toHaveBeenCalledWith('/workspace/repo'));
+    mockGetGitInfo.mockClear();
+    mockGetGitInfo.mockResolvedValue({
+      branch: 'fix/codex-command-path',
+      commit: '123abcd',
+      isWorktree: true,
+      isDetached: false,
+      worktreeRoot: '/workspace/repo-command',
+    });
+
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'codex-session-456',
+      turn_id: 'turn-1',
+      transcript_path: null,
+      cwd: '/workspace/repo',
+      hook_event_name: 'SessionStart',
+    }));
+    adapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: 'codex-session-456',
+      turn_id: 'turn-1',
+      transcript_path: null,
+      cwd: '/workspace/repo',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: {
+        cmd: 'cd /workspace/repo-command && pnpm test',
+      },
+    }));
+
+    await vi.waitFor(() => {
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
+      expect(session.cwd).toBe('/workspace/repo-command');
+      expect(session.gitBranch).toBe('fix/codex-command-path');
+      expect(session.gitCommit).toBe('123abcd');
+      expect(session.gitIsWorktree).toBe(true);
+    });
+    expect(mockGetGitInfo).toHaveBeenCalledWith('/workspace/repo-command');
   });
 
   test('sendInput writes text and Enter as two distinct payloads in submission order', async () => {

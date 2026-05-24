@@ -8,6 +8,8 @@ export interface GitInfo {
   commit: string | null;
   isWorktree: boolean;
   isDetached: boolean;
+  /** Top-level working tree path for the repository that produced this metadata. */
+  worktreeRoot?: string;
 }
 
 export type WorktreeHealth =

@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { GitInfo } from '../core/types.js';
 import type { WorktreeRegistry } from './git-worktree-registry.js';
 
@@ -17,10 +17,23 @@ export async function getGitInfo(cwd: string, registry?: Pick<WorktreeRegistry, 
       commit: registryEntry.head.slice(0, 7),
       isWorktree: !registryEntry.isMain,
       isDetached: registryEntry.isDetached,
+      worktreeRoot: registryEntry.path,
     };
   }
 
-  const gitPath = join(cwd, '.git');
+  const gitRoot = await findGitRoot(cwd);
+  if (!gitRoot) return null;
+  const gitPath = join(gitRoot, '.git');
+  const registryRootEntry = registry?.byPath(gitRoot);
+  if (registryRootEntry) {
+    return {
+      branch: registryRootEntry.branch,
+      commit: registryRootEntry.head.slice(0, 7),
+      isWorktree: !registryRootEntry.isMain,
+      isDetached: registryRootEntry.isDetached,
+      worktreeRoot: registryRootEntry.path,
+    };
+  }
 
   let gitStat;
   try {
@@ -37,7 +50,8 @@ export async function getGitInfo(cwd: string, registry?: Pick<WorktreeRegistry, 
     const content = await readFile(gitPath, 'utf-8');
     const match = content.match(/^gitdir:\s*(.+)$/m);
     if (!match) return null;
-    headPath = join(match[1].trim(), 'HEAD');
+    const worktreeGitDir = resolveGitFilePath(gitRoot, match[1].trim());
+    headPath = join(worktreeGitDir, 'HEAD');
     isWorktree = true;
   } else {
     headPath = join(gitPath, 'HEAD');
@@ -59,36 +73,35 @@ export async function getGitInfo(cwd: string, registry?: Pick<WorktreeRegistry, 
     try {
       // Try to resolve the ref file for the short commit hash
       const gitDir = isWorktree
-        ? join(cwd, '.git') // For worktrees, the ref might be in the main repo
+        ? join(gitRoot, '.git') // For worktrees, the ref might be in the main repo
         : gitPath;
       // For worktrees, we need the common dir. Read the actual gitdir to find the main .git
-      let refBase: string;
+      let refBases: string[];
       if (isWorktree) {
         const gitFileContent = await readFile(gitPath, 'utf-8');
         const dirMatch = gitFileContent.match(/^gitdir:\s*(.+)$/m);
         if (dirMatch) {
           // gitdir points to .git/worktrees/name, go up to .git
-          const worktreeGitDir = dirMatch[1].trim();
-          const commonDir = join(worktreeGitDir, '..', '..');
-          refBase = commonDir;
+          const worktreeGitDir = resolveGitFilePath(gitRoot, dirMatch[1].trim());
+          const commonDir = resolve(worktreeGitDir, '..', '..');
+          refBases = [worktreeGitDir, commonDir];
         } else {
-          refBase = gitDir;
+          refBases = [gitDir];
         }
       } else {
-        refBase = gitDir;
+        refBases = [gitDir];
       }
-      const refPath = join(refBase, 'refs', 'heads', branch);
-      const sha = (await readFile(refPath, 'utf-8')).trim();
+      const sha = await readRefSha(refBases, `refs/heads/${branch}`);
       commit = sha.slice(0, 7);
     } catch {
       // Packed refs or other edge case — commit stays null
     }
-    return { branch, commit, isWorktree, isDetached: false };
+    return { branch, commit, isWorktree, isDetached: false, worktreeRoot: gitRoot };
   }
 
   // Detached HEAD — headContent is a raw SHA
   const commit = headContent.slice(0, 7);
-  return { branch: null, commit, isWorktree, isDetached: true };
+  return { branch: null, commit, isWorktree, isDetached: true, worktreeRoot: gitRoot };
 }
 
 /**
@@ -99,4 +112,55 @@ export function isGitBranchCommand(toolInput: unknown): boolean {
   if (!toolInput || typeof toolInput !== 'object') return false;
   const command = (toolInput as { command?: string }).command ?? '';
   return /\bgit\s+(checkout|switch|worktree)\b/.test(command);
+}
+
+async function findGitRoot(startPath: string): Promise<string | null> {
+  let current = resolve(startPath);
+  try {
+    const startStat = await stat(current);
+    if (!startStat.isDirectory()) current = dirname(current);
+  } catch {
+    current = dirname(current);
+  }
+
+  while (true) {
+    try {
+      const gitStat = await stat(join(current, '.git'));
+      if (gitStat.isDirectory() || gitStat.isFile()) return current;
+    } catch {
+      // Keep walking.
+    }
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function resolveGitFilePath(worktreeRoot: string, gitdir: string): string {
+  return resolve(worktreeRoot, gitdir);
+}
+
+async function readRefSha(refBases: string[], refName: string): Promise<string> {
+  for (const refBase of refBases) {
+    try {
+      return (await readFile(join(refBase, refName), 'utf-8')).trim();
+    } catch {
+      // Try the next location.
+    }
+  }
+
+  for (const refBase of refBases) {
+    try {
+      const packedRefs = await readFile(join(refBase, 'packed-refs'), 'utf-8');
+      for (const line of packedRefs.split('\n')) {
+        if (!line || line.startsWith('#') || line.startsWith('^')) continue;
+        const [sha, name] = line.trim().split(/\s+/, 2);
+        if (name === refName && /^[0-9a-f]{40}$/i.test(sha)) return sha;
+      }
+    } catch {
+      // Try the next packed-refs file.
+    }
+  }
+
+  throw new Error(`ref not found: ${refName}`);
 }
