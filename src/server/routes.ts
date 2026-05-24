@@ -16,6 +16,8 @@ import { registerContactShareRoutes } from './routes/contact-share-routes.js';
 import { registerRelayConnectionRoutes } from './routes/relay-connection-routes.js';
 import { registerSessionSharingRecoveryRoutes } from './routes/session-sharing-recovery-routes.js';
 import { registerCollaborationPairingRoutes } from './routes/collaboration-pairing-routes.js';
+import { registerSpeechRoutes } from './routes/speech-routes.js';
+import { FindingSummaryCache } from './finding-summary-cache.js';
 import type { RouteDeps } from './routes/shared.js';
 
 export type { RouteDeps } from './routes/shared.js';
@@ -36,6 +38,16 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerRelayConnectionRoutes(app, deps);
   registerSessionSharingRecoveryRoutes(app, deps);
   registerCollaborationPairingRoutes(app, deps);
+
+  const speakEnabled = deps.speakFindingEnabled !== false;
+  const speakCache = deps.ttsUrl
+    ? new FindingSummaryCache({
+        llmClient: deps.llmClient ?? null,
+        ttsUrl: deps.ttsUrl,
+        voice: deps.ttsVoice ?? '/app/voices/matilda.mp3',
+      })
+    : null;
+  registerSpeechRoutes(app, deps, { enabled: speakEnabled, cache: speakCache, ttsUrl: deps.ttsUrl });
 
   // Cache headers for frontend assets:
   // - /assets/* have content hashes in filenames → cache forever

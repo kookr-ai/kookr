@@ -26,6 +26,9 @@ const APPROVED_DIRECT_CALLERS = new Set<string>([
   'src/server/ws-handlers/anomaly-handler.ts',
   // State diffing in the event-processing pipeline.
   'src/server/event-pipeline.ts',
+  // Looks up agentId → current anomaly + taskName for the speak-finding route;
+  // does not project events. See docs/rfc/rfc-speak-finding-summary.md.
+  'src/server/routes/speech-routes.ts',
 ]);
 
 function repoRoot(): string {

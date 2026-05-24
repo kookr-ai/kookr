@@ -19,6 +19,7 @@ export type ShortcutActionId =
   | 'snooze_dialog'
   | 'quick_snooze'
   | 'focus_reply'
+  | 'speak_finding'
   | 'complete_task'
   | 'cancel_task'
   | 'toggle_project_sidebar'
@@ -101,6 +102,7 @@ export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   { id: 'terminal_send_3', group: 'Terminal', label: 'Send 3 and next', description: 'Send 3 to terminal and skip to next task' },
   { id: 'toggle_terminal_focus', group: 'Terminal', label: 'Terminal focus mode', description: 'Toggle terminal focus mode', featured: true },
   { id: 'focus_reply', group: 'Detail panel', label: 'Focus reply', description: 'Focus reply input for current finding' },
+  { id: 'speak_finding', group: 'Detail panel', label: 'Speak finding summary', description: 'Speak finding summary aloud', context: 'when TTS is enabled' },
   { id: 'select_all_projects', group: 'Projects', label: 'All projects', description: 'Show all projects' },
   { id: 'select_project_1', group: 'Projects', label: 'Project shortcut 1', description: 'Select first visible project' },
   { id: 'select_project_2', group: 'Projects', label: 'Project shortcut 2', description: 'Select second visible project' },
@@ -125,6 +127,7 @@ const DEFAULT_SHORTCUTS: ShortcutBindingMap = {
   snooze_dialog: binding('s', { alt: true }),
   quick_snooze: binding('z', { alt: true }),
   focus_reply: binding('r', { alt: true }),
+  speak_finding: binding('v', { alt: true }),
   complete_task: binding('End', { alt: true }),
   cancel_task: binding('Delete', { alt: true }),
   toggle_project_sidebar: binding('p', { alt: true }),
@@ -155,6 +158,7 @@ const MAC_SHORTCUTS: ShortcutBindingMap = {
   snooze_dialog: binding('s', { meta: true, ctrl: true }),
   quick_snooze: binding('z', { meta: true, ctrl: true }),
   focus_reply: binding('r', { meta: true, ctrl: true }),
+  speak_finding: binding('v', { meta: true, ctrl: true }),
   complete_task: binding('Enter', { meta: true, ctrl: true }),
   cancel_task: binding('Backspace', { meta: true, ctrl: true }),
   toggle_project_sidebar: binding('p', { meta: true, ctrl: true }),

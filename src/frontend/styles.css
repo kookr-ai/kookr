@@ -5184,6 +5184,43 @@ textarea::-webkit-resizer { background: transparent; }
   50% { opacity: 0.6; }
 }
 
+/* Speak-finding button — mirrors .btn-voice so the response-row row reads as
+   a uniform STT/TTS pair. See docs/rfc/rfc-speak-finding-summary.md. */
+.btn-speak-finding {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid var(--border-dim);
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 14px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s;
+}
+.btn-speak-finding:hover { color: var(--text); border-color: var(--border); }
+.btn-speak-finding:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-speak-finding.loading {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+.btn-speak-finding.playing {
+  border-color: var(--teal);
+  color: var(--teal);
+  animation: stt-pulse 1.5s ease-in-out infinite;
+}
+.btn-speak-finding.suppressed {
+  border-color: #f59e0b;
+  color: #f59e0b;
+}
+.btn-speak-finding.error {
+  border-color: #f87171;
+  color: #f87171;
+}
+
 /* Quota status display in status bar */
 .quota-display {
   display: inline-flex;

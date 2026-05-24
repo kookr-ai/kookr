@@ -113,6 +113,10 @@ export interface KookrConfig {
   sttUrl?: string;
   /** Optional TTS service HTTP URL (e.g. http://localhost:8004). Advertised as a Phase 6 speech capability when set. */
   ttsUrl?: string;
+  /** Pocket TTS voice path. Defaults to the bundled matilda voice. */
+  ttsVoice?: string;
+  /** Surgical kill-switch for the speak-finding feature. Default true; set via `KOOKR_SPEAK=false`. */
+  speakFindingEnabled?: boolean;
   /** Use FakeTerminalBridge instead of a real session attach. For E2E tests and demo mode. */
   useFakeTerminalBridge?: boolean;
   /** Path or command name for the Claude Code binary. Defaults to 'claude'. */
@@ -1083,6 +1087,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       },
     },
     shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
+    ttsUrl, ttsVoice: config.ttsVoice, speakFindingEnabled: config.speakFindingEnabled,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,
