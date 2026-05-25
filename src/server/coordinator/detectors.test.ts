@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'vitest';
@@ -50,6 +51,13 @@ function pruneUndefined<T extends Record<string, unknown>>(input: T): Partial<T>
 }
 
 describe('runDetectors', () => {
+  test('does not import launch orchestration for cwd canonicalization', () => {
+    const source = readFileSync(new URL('./detectors.ts', import.meta.url), 'utf8');
+
+    expect(source).not.toContain("from '../launch-service.js'");
+    expect(source).toContain("from '../cwd.js'");
+  });
+
   test('builds one chip for every detector class using coordinator precedence', () => {
     const edge = task({ id: 'edge', blocks: ['task:downstream'] });
     const downstream = task({ id: 'downstream' });

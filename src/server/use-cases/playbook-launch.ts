@@ -6,7 +6,8 @@ import { userPlaybooksDir, pluginPlaybooksDir } from '../../core/playbook-discov
 import { getProjectId, projectDisplayName, projectIdFromRepoSpecifier } from '../../core/project-identity.js';
 import type { AgentSelection } from '../../core/agent-types.js';
 import type { PlaybookParameter, PlaybookScope } from '../../core/playbook.js';
-import { canonicalizeCwd, type LaunchOpts } from '../launch-service.js';
+import { canonicalizeCwd } from '../cwd.js';
+import type { LaunchOpts } from '../launch-service.js';
 import { normalizePromptFileReferences } from '../prompt-file-paths.js';
 import { expandConfiguredCwd } from '../cwd-paths.js';
 
