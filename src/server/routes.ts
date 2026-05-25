@@ -19,6 +19,7 @@ import { registerCollaborationPairingRoutes } from './routes/collaboration-pairi
 import { registerSpeechRoutes } from './routes/speech-routes.js';
 import { FindingSummaryCache } from './finding-summary-cache.js';
 import { DEFAULT_TTS_VOICE } from './tts-manager.js';
+import { TaskSpeechSummaryCache } from './task-speech-summary-cache.js';
 import type { RouteDeps } from './routes/shared.js';
 
 export type { RouteDeps } from './routes/shared.js';
@@ -48,7 +49,19 @@ export function createRoutes(deps: RouteDeps): Hono {
         voice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
       })
     : null;
-  registerSpeechRoutes(app, deps, { enabled: speakEnabled, cache: speakCache, ttsUrl: deps.ttsUrl });
+  const taskSpeakCache = deps.ttsUrl
+    ? new TaskSpeechSummaryCache({
+        llmClient: deps.llmClient ?? null,
+        ttsUrl: deps.ttsUrl,
+        voice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
+      })
+    : null;
+  registerSpeechRoutes(app, deps, {
+    enabled: speakEnabled,
+    cache: speakCache,
+    taskCache: taskSpeakCache,
+    ttsUrl: deps.ttsUrl,
+  });
 
   // Cache headers for frontend assets:
   // - /assets/* have content hashes in filenames → cache forever

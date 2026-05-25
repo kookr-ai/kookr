@@ -55,11 +55,7 @@ export interface CollaborationCapabilities {
   capabilitiesByNode?: Record<string, SpeechCapability[]>;
 }
 
-/**
- * Wire response for POST /api/findings/:agentId/speak. See
- * docs/rfc/rfc-speak-finding-summary.md.
- */
-export interface SpeakFindingResponse {
+export interface SpeakAudioResponse {
   /** The text that was spoken (may be the LLM recap, or — when usedFallback is true — the raw explanation). */
   text: string;
   /** Base64 WAV bytes synthesized by the local TTS service. */
@@ -76,10 +72,23 @@ export interface SpeakFindingResponse {
   cached: boolean;
 }
 
+/**
+ * Wire response for POST /api/findings/:agentId/speak. See
+ * docs/rfc/rfc-speak-finding-summary.md.
+ */
+export interface SpeakFindingResponse extends SpeakAudioResponse {}
+
+/**
+ * Wire response for POST /api/tasks/:taskId/speak-summary. See
+ * docs/rfc/rfc-smart-task-speech-summary.md.
+ */
+export interface SpeakTaskSummaryResponse extends SpeakAudioResponse {}
+
 export type SpeakFindingErrorReason =
   | 'feature-disabled'
   | 'tts-not-configured'
   | 'agent-not-found'
+  | 'task-not-found'
   | 'no-finding'
   | 'tts-error'
   | 'aborted'

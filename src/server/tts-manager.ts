@@ -59,7 +59,7 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
     ttsDir,
     port = 8004,
     voice = DEFAULT_TTS_VOICE,
-    device = parseTTSDevice(),
+    device = parseTTSDeviceFromEnv(),
     startupTimeoutMs = 120_000,
     readinessProbeTimeoutMs = 30_000,
   } = config;
@@ -187,7 +187,7 @@ export async function resolveTTSDevice(
   return (await probe()) ? 'gpu' : 'cpu';
 }
 
-export function parseTTSDevice(raw = process.env.KOOKR_TTS_DEVICE): TTSDevice {
+export function parseTTSDevice(raw: string | undefined): TTSDevice {
   if (!raw) return 'auto';
   const normalized = raw.trim().toLowerCase();
   if (normalized === 'auto' || normalized === 'cpu' || normalized === 'gpu') {
@@ -197,6 +197,10 @@ export function parseTTSDevice(raw = process.env.KOOKR_TTS_DEVICE): TTSDevice {
     `[tts] Warning: ignoring invalid KOOKR_TTS_DEVICE=${JSON.stringify(raw)}; using auto`,
   );
   return 'auto';
+}
+
+export function parseTTSDeviceFromEnv(): TTSDevice {
+  return parseTTSDevice(process.env.KOOKR_TTS_DEVICE);
 }
 
 function sleep(ms: number): Promise<void> {
