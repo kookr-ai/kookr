@@ -1096,6 +1096,47 @@ describe('TerminalPanel', () => {
     expect(ws.send).not.toHaveBeenCalled();
   });
 
+  test('agentPromptReady prop decrease (true → false) re-arms the buffer-scan fallback', () => {
+    // Symmetric guard to the false → true ref-bridge test: when the same
+    // session transitions back from completed_turn to running (the user sent
+    // a follow-up and Claude resumed streaming), the next Enter must NOT
+    // fire empty-Enter from the hint and must instead fall back to the
+    // buffer scan — which with an empty buffer means forwarding `\r` to the
+    // PTY. Without the ref decreasing on prop change, a stale `true` would
+    // silently skip past an active turn.
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, {
+        tmuxName: 'kookr-task-Y',
+        visible: true,
+        onEmptySubmit,
+        agentPromptReady: true,
+      }));
+    });
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    ws.send.mockClear();
+
+    act(() => { terminal.dataHandler?.('\r'); });
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+    onEmptySubmit.mockClear();
+    ws.send.mockClear();
+
+    // Same session, hint flips off (turnState transitioned to running).
+    act(() => {
+      root.render(React.createElement(TerminalPanel, {
+        tmuxName: 'kookr-task-Y',
+        visible: true,
+        onEmptySubmit,
+        agentPromptReady: false,
+      }));
+    });
+    act(() => { terminal.dataHandler?.('\r'); });
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith('\r');
+  });
+
   test('empty-Enter fires repeatedly within the same task as the user mashes Enter', () => {
     // Scenario: same task, the user presses Enter several times before the
     // parent has finished navigating. Each press must hit onEmptySubmit, not

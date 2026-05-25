@@ -54,9 +54,18 @@ function isTerminalTaskStatus(status: TaskStatus | undefined): boolean {
  * hasn't repainted yet and the local pane-pattern scan would otherwise miss
  * the prompt and forward `\r` to the new PTY.
  *
- * `permission_blocked` is intentionally excluded — those findings show an
- * Allow/Deny dialog that requires an explicit choice; treating Enter as
- * advance would silently skip past the decision.
+ * Only `completed_turn` and `waiting_for_input` qualify — those are the two
+ * states where Claude is sitting at the empty prompt. `running` / `blocked`
+ * / `unknown` / undefined fall through to the local buffer scan.
+ *
+ * `permission_blocked` is the only anomaly type the hint suppresses: those
+ * findings show an Allow/Deny dialog that requires an explicit choice, so
+ * Enter must never silently advance past them. (`turnState` for a permission
+ * request is `blocked` and would already disqualify, but the explicit guard
+ * is defense-in-depth against a server-side race where the anomaly outlives
+ * the `permission_request` event.) Other anomaly types are safe to advance
+ * past because `handleEmptyEnterAdvance` routes them all through
+ * `handleSkip`, which is the documented empty-Enter behavior.
  */
 function isAgentIdleAtPrompt(agent: AgentState): boolean {
   if (agent.anomaly?.type === 'permission_blocked') return false;

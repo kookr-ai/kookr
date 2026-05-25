@@ -440,6 +440,37 @@ describe('DetailPanel empty Enter behavior', () => {
     expect(terminalSubmit?.dataset.agentPromptReady).toBe('false');
   });
 
+  test('passes agentPromptReady=false to TerminalPanel when turnState is blocked', () => {
+    // `blocked` covers non-permission hard-blocks (api_error stops, etc.).
+    // The hint must stay false so the buffer scan owns the decision.
+    const blocked = makeAgent('agent-blocked-turn', null);
+    blocked.turnState = 'blocked';
+    useKookrStore.setState({ agents: [blocked], selectedAgentId: blocked.agentId });
+    root = renderDetailPanel(container, blocked, () => true);
+
+    const terminalSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
+    expect(terminalSubmit?.dataset.agentPromptReady).toBe('false');
+  });
+
+  test('passes agentPromptReady=false to TerminalPanel when turnState is unknown or absent', () => {
+    // Pinning the default branch — synthetic pending/terminal entries have
+    // no turnState, and `unknown` is the explicit "no events yet" placeholder.
+    // Both must fall through to the local buffer scan rather than override.
+    const noState = makeAgent('agent-no-state', null);
+    useKookrStore.setState({ agents: [noState], selectedAgentId: noState.agentId });
+    root = renderDetailPanel(container, noState, () => true);
+    const noStateSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
+    expect(noStateSubmit?.dataset.agentPromptReady).toBe('false');
+
+    const unknown = makeAgent('agent-unknown', null);
+    unknown.turnState = 'unknown';
+    useKookrStore.setState({ agents: [unknown], selectedAgentId: unknown.agentId });
+    act(() => root?.unmount());
+    root = renderDetailPanel(container, unknown, () => true);
+    const unknownSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
+    expect(unknownSubmit?.dataset.agentPromptReady).toBe('false');
+  });
+
   test('passes agentPromptReady=false to TerminalPanel when anomaly is permission_blocked', () => {
     // Permission dialog needs an explicit Allow/Deny choice — empty-Enter
     // must not silently advance past it. The buffer scan already returns
