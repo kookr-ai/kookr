@@ -46,6 +46,32 @@ function isTerminalTaskStatus(status: TaskStatus | undefined): boolean {
   return status !== undefined && isTerminalStatus(status);
 }
 
+/**
+ * Server-derived "Claude/Codex is idle at the empty input prompt" signal,
+ * coherent with the agent's current `tmuxName` because both come from the
+ * same React render. The TerminalPanel uses this to dispatch empty-Enter
+ * during the brief window after a session switch where the terminal buffer
+ * hasn't repainted yet and the local pane-pattern scan would otherwise miss
+ * the prompt and forward `\r` to the new PTY.
+ *
+ * Only `completed_turn` and `waiting_for_input` qualify — those are the two
+ * states where Claude is sitting at the empty prompt. `running` / `blocked`
+ * / `unknown` / undefined fall through to the local buffer scan.
+ *
+ * `permission_blocked` is the only anomaly type the hint suppresses: those
+ * findings show an Allow/Deny dialog that requires an explicit choice, so
+ * Enter must never silently advance past them. (`turnState` for a permission
+ * request is `blocked` and would already disqualify, but the explicit guard
+ * is defense-in-depth against a server-side race where the anomaly outlives
+ * the `permission_request` event.) Other anomaly types are safe to advance
+ * past because `handleEmptyEnterAdvance` routes them all through
+ * `handleSkip`, which is the documented empty-Enter behavior.
+ */
+function isAgentIdleAtPrompt(agent: AgentState): boolean {
+  if (agent.anomaly?.type === 'permission_blocked') return false;
+  return agent.turnState === 'completed_turn' || agent.turnState === 'waiting_for_input';
+}
+
 function agentProjectLabel(agent: AgentState): string {
   return agent.projectDisplayLabel ?? projectLabel(agent.cwd);
 }
@@ -943,6 +969,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                         tmuxName={agent.agentId}
                         visible={terminalVisible}
                         onEmptySubmit={handleEmptyEnterAdvance}
+                        agentPromptReady={isAgentIdleAtPrompt(agent)}
                       />
                     </Suspense>
                   </div>
