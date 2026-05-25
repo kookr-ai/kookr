@@ -7,7 +7,7 @@ import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js
 import type { SnoozeSuppressionTracker } from '../../core/snooze-suppression.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { nowISO } from '../../core/interaction-log.js';
-import { recordFalseNegative, recordFalsePositive } from '../../core/detection-stats.js';
+import { recordFalseNegative, recordFalsePositive } from '../../core/anomaly-detector.js';
 import { validatePermissionApprovalBinding } from '../../shared/contracts/permission-request-binding.js';
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
 import type { SupervisorFeedbackCaseStore } from '../supervisor-feedback-case-store.js';

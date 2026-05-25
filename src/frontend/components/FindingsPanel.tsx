@@ -270,7 +270,7 @@ function FindingCard({ agent, selected, send }: {
 
   function submitFlagFP(userReason: string) {
     if (!agent.anomaly) return;
-    trackClick('flag_fp');
+    trackClick('flag_fp_submitted');
     send({
       type: 'findingFeedback',
       agentId: agent.agentId,
@@ -548,7 +548,7 @@ function HealthyRow({ agent, selected, send }: {
             mode="false_negative"
             agentName={agent.taskName ?? agent.agentId}
             onSubmit={({ userReason, suspectedType }) => {
-              trackClick('flag_missed');
+              trackClick('flag_missed_submitted');
               send({
                 type: 'missedFinding',
                 agentId: agent.agentId,

@@ -41,7 +41,6 @@ export function SupervisorFeedbackDialog({
 }: Props) {
   const [reason, setReason] = useState('');
   const [suspectedType, setSuspectedType] = useState<AnomalyType | ''>('');
-  const dialogRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
@@ -73,9 +72,14 @@ export function SupervisorFeedbackDialog({
   }
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
+    <div
+      className="dialog-overlay"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClose();
+      }}
+    >
       <div
-        ref={dialogRef}
         className="supervisor-feedback-dialog"
         role="dialog"
         aria-modal="true"
