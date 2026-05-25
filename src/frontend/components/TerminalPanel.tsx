@@ -64,6 +64,25 @@ function isEmptyAgentPromptVisible(outputTail: string): boolean {
   return semantics.state === 'input_prompt' && semantics.confidence === 'high';
 }
 
+function getVisibleTerminalTail(terminal: Terminal): string {
+  try {
+    const buffer = terminal.buffer.active;
+    const start = Math.max(0, buffer.length - 15);
+    const lines: string[] = [];
+    for (let i = start; i < buffer.length; i++) {
+      lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
+    }
+    return lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
+function shouldHandleEmptyTerminalEnter(terminal: Terminal, draft: string, outputTail: string, onEmptySubmit?: () => void): boolean {
+  if (draft.length !== 0 || !onEmptySubmit) return false;
+  return isEmptyAgentPromptVisible(getVisibleTerminalTail(terminal)) || isEmptyAgentPromptVisible(outputTail);
+}
+
 export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -255,6 +274,24 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     }
     container.addEventListener('paste', handlePasteCapture, { capture: true });
 
+    // Real keyboard Enter reaches xterm as a DOM event before `onData`. Catch
+    // empty prompts here so xterm never forwards the newline to the agent.
+    function handleKeyDownCapture(e: KeyboardEvent) {
+      if (e.key !== 'Enter' || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
+      if (!shouldHandleEmptyTerminalEnter(
+        terminal,
+        terminalInputDraftRef.current,
+        terminalOutputTailRef.current,
+        onEmptySubmitRef.current,
+      )) {
+        return;
+      }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      onEmptySubmitRef.current?.();
+    }
+    container.addEventListener('keydown', handleKeyDownCapture, { capture: true });
+
     // Wheel override — capture phase, before xterm.js.
     // Without this, xterm.js converts wheel to application-cursor-key bytes
     // (ESC O A / ESC O B) whenever the child has enabled DECSET ?1 or is in
@@ -286,6 +323,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       container.removeEventListener('wheel', handleWheelOverride, { capture: true });
       container.removeEventListener('contextmenu', handleContextMenu);
       container.removeEventListener('paste', handlePasteCapture, { capture: true });
+      container.removeEventListener('keydown', handleKeyDownCapture, { capture: true });
       resizeObserver.disconnect();
       searchResultDisposable.dispose();
       terminal.dispose();
@@ -470,9 +508,12 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     const inputDisposable = terminal.onData((data) => {
       if (
         data === '\r'
-        && terminalInputDraftRef.current.length === 0
-        && onEmptySubmitRef.current
-        && isEmptyAgentPromptVisible(terminalOutputTailRef.current)
+        && shouldHandleEmptyTerminalEnter(
+          terminal,
+          terminalInputDraftRef.current,
+          terminalOutputTailRef.current,
+          onEmptySubmitRef.current,
+        )
       ) {
         onEmptySubmitRef.current();
         return;

@@ -33,6 +33,18 @@ describe('analyzePaneSemantics', () => {
       expect(result.confidence).toBe('high');
     });
 
+    test('detects prompt redrawn over an active status line', () => {
+      const result = analyzePaneSemantics('Working (3s • esc to interrupt)\r❯ \r\n');
+      expect(result.state).toBe('input_prompt');
+      expect(result.confidence).toBe('high');
+    });
+
+    test('detects prompt when replay adds duplicate carriage returns before newlines', () => {
+      const result = analyzePaneSemantics('\x1b[2J\x1b[H\r\r\n╭────────────────╮\r\r\n❯ \r\r\n');
+      expect(result.state).toBe('input_prompt');
+      expect(result.confidence).toBe('high');
+    });
+
     test('does not match ❯ in the middle of text', () => {
       const pane = [
         'The symbol ❯ appears in this line but is not a prompt',
@@ -325,6 +337,10 @@ describe('normalizePaneForActivity', () => {
     ].join('\n');
 
     expect(normalizePaneForActivity(pane)).toBe('› Summarize recent commits');
+  });
+
+  test('normalizes carriage-return redraws to the visible line', () => {
+    expect(normalizePaneForActivity('Working (3s • esc to interrupt)\r❯ \r\n')).toBe('❯');
   });
 
   test('preserves meaningful output changes', () => {
