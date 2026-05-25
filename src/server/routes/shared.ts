@@ -98,7 +98,7 @@ export interface RouteDeps {
   sttUrl?: string;
   /** Optional Pocket TTS HTTP URL — when set, the speak-finding route is reachable. */
   ttsUrl?: string;
-  /** Voice argument for Pocket TTS `/synthesize`. Defaults to the bundled matilda voice. */
+  /** Voice argument for Pocket TTS `/synthesize`. Defaults to the bundled Matilda voice. */
   ttsVoice?: string;
   /** Surgical kill-switch for the speak-finding feature. Defaults to true; set false via `KOOKR_SPEAK=false`. */
   speakFindingEnabled?: boolean;

@@ -55,7 +55,7 @@ KOOKR_TTS_URL=http://localhost:8004 pnpm demo:record
 | `demo/terminal-content.ts` | Pre-scripted ANSI terminal output per agent |
 | `demo/output/` | Generated files (gitignored) |
 | `tts/` | Pocket TTS Docker service (server.py, Dockerfile, docker-compose.yml) |
-| `tts/voices/matilda.mp3` | Default narration voice (cloned from aegiscore) |
+| `tts/voices/matilda.mp3` | Default narration voice (copied into the TTS image at build time) |
 | `src/server/tts-manager.ts` | TTS Docker lifecycle (start/stop/health) |
 | `src/server/fake-terminal-bridge.ts` | Streams pre-scripted content to xterm.js |
 
@@ -70,7 +70,7 @@ Defined in `NARRATIONS` object in `demo/record.ts`. Each key maps to a `tracker.
 
 ### Voice selection
 
-Default: `matilda` (voice clone from `tts/voices/matilda.mp3`). Override with:
+Default: Matilda (`/app/voices/matilda.mp3`). Override with:
 ```bash
 TTS_VOICE=alba pnpm demo:record   # Built-in voice (no HF_TOKEN needed)
 ```

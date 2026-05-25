@@ -18,6 +18,7 @@ import { registerSessionSharingRecoveryRoutes } from './routes/session-sharing-r
 import { registerCollaborationPairingRoutes } from './routes/collaboration-pairing-routes.js';
 import { registerSpeechRoutes } from './routes/speech-routes.js';
 import { FindingSummaryCache } from './finding-summary-cache.js';
+import { DEFAULT_TTS_VOICE } from './tts-manager.js';
 import type { RouteDeps } from './routes/shared.js';
 
 export type { RouteDeps } from './routes/shared.js';
@@ -44,7 +45,7 @@ export function createRoutes(deps: RouteDeps): Hono {
     ? new FindingSummaryCache({
         llmClient: deps.llmClient ?? null,
         ttsUrl: deps.ttsUrl,
-        voice: deps.ttsVoice ?? '/app/voices/matilda.mp3',
+        voice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
       })
     : null;
   registerSpeechRoutes(app, deps, { enabled: speakEnabled, cache: speakCache, ttsUrl: deps.ttsUrl });

@@ -174,7 +174,7 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 | `KOOKR_TTS_URL` | unset | HTTP/WebSocket URL expected by the client | Uses an external text-to-speech service and skips bundled startup. |
 | `KOOKR_TTS_PORT` | `8004` | Integer port | Port for the bundled text-to-speech service. Also injected into the TTS child process. |
 | `KOOKR_TTS_DEVICE` | `auto` | `auto`, `cpu`, `gpu` | Inference device for the bundled TTS stack. `auto` probes `docker info` for an nvidia runtime and applies the GPU compose override when available; set explicitly to force CPU or GPU. |
-| `TTS_VOICE` | `/app/voices/matilda.mp3` | Path inside the `kookr-tts` container | Default voice used by the bundled TTS service. Built-in voices live under `/app/voices/`: `matilda`, `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`. Custom voices: drop MP3/WAV files in `tts/voices/` and reference as `/app/voices/<name>.<ext>`. |
+| `TTS_VOICE` | `/app/voices/matilda.mp3` | Built-in voice name or path inside the `kookr-tts` container | Default voice used by the bundled TTS service. Built-in voices: `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`. Bundled/custom voices are copied from `tts/voices/` into the image at build time and can be referenced as `/app/voices/<name>.<ext>`. Bundled startup probes this configured voice before advertising TTS as enabled. |
 
 ## Diagnostics And Budgeting
 
