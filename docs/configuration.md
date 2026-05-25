@@ -102,6 +102,11 @@ KOOKR_STT=true
 KOOKR_TTS=true
 ```
 
+Bundled TTS uses `KOOKR_TTS_DEVICE=auto` by default. On hosts with the
+NVIDIA Docker runtime, Kookr applies the GPU compose override so Pocket TTS
+can use CUDA; otherwise it stays on CPU. Set `KOOKR_TTS_DEVICE=cpu` or
+`KOOKR_TTS_DEVICE=gpu` to force either mode.
+
 External services:
 
 ```bash

@@ -13,6 +13,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
+import { hasDockerRuntime } from './docker-runtime.js';
 
 const execFileAsync = promisify(execFile);
 export const DEFAULT_STT_STARTUP_TIMEOUT_MS = 600_000;
@@ -151,22 +152,10 @@ async function stopSTT(composeFlags: string[], env: NodeJS.ProcessEnv): Promise<
  */
 export async function resolveDevice(
   device: STTDevice,
-  probe: () => Promise<boolean> = detectNvidiaRuntime,
+  probe: () => Promise<boolean> = () => hasDockerRuntime('nvidia'),
 ): Promise<ResolvedSTTDevice> {
   if (device === 'cpu' || device === 'gpu') return device;
   return (await probe()) ? 'gpu' : 'cpu';
-}
-
-async function detectNvidiaRuntime(): Promise<boolean> {
-  try {
-    const { stdout } = await execFileAsync('docker', ['info', '--format', '{{json .Runtimes}}'], {
-      timeout: 5_000,
-    });
-    const runtimes = JSON.parse(stdout) as Record<string, unknown>;
-    return Object.prototype.hasOwnProperty.call(runtimes, 'nvidia');
-  } catch {
-    return false;
-  }
 }
 
 interface DeviceDefaults {
