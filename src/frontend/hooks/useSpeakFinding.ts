@@ -99,6 +99,7 @@ interface UseSpeakFindingArgs {
   anomalyType: string | null;
   /** Whether the server advertises ttsUrl. Drives the toast vs. fetch decision. */
   ttsAvailable: boolean;
+  endpoint?: string | null;
 }
 
 export interface UseSpeakFindingReturn {
@@ -120,7 +121,7 @@ export function useSpeakFinding(
   args: UseSpeakFindingArgs,
   deps: SpeakFindingDeps = {},
 ): UseSpeakFindingReturn {
-  const { agentId, anomalyType, ttsAvailable } = args;
+  const { agentId, anomalyType, ttsAvailable, endpoint } = args;
   const fetcher = deps.fetcher ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
 
   const [state, setState] = useState<SpeakFindingState>({ status: 'idle' });
@@ -229,7 +230,7 @@ export function useSpeakFinding(
     void (async () => {
       let response: Response;
       try {
-        response = await fetcher(`/api/findings/${encodeURIComponent(agentId)}/speak`, {
+        response = await fetcher(endpoint ?? `/api/findings/${encodeURIComponent(agentId)}/speak`, {
           method: 'POST',
           signal: ac.signal,
         });
@@ -375,7 +376,7 @@ export function useSpeakFinding(
       });
       setState({ status: 'playing', cached: payload.cached, timings: playTimings });
     })();
-  }, [agentId, anomalyType, ttsAvailable, state.status, stop, fetcher, cleanup]);
+  }, [agentId, anomalyType, ttsAvailable, endpoint, state.status, stop, fetcher, cleanup]);
 
   return { state, speak, stop };
 }

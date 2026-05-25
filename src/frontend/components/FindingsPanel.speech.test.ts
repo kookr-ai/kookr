@@ -84,6 +84,7 @@ function renderPanel(
   container: HTMLElement,
   findings: AgentState[],
   selectedAgentId: string | null = null,
+  extras: Partial<React.ComponentProps<typeof FindingsPanel>> = {},
 ): Root {
   const root = createRoot(container);
   act(() => {
@@ -97,6 +98,7 @@ function renderPanel(
       send: vi.fn(),
       globalFinishedCount: 0,
       globalTerminatedCount: 0,
+      ...extras,
     }));
   });
   return root;
@@ -124,7 +126,7 @@ describe('FindingsPanel speak finding control', () => {
       .mockReturnValue(180);
     vi.stubGlobal('AudioContext', FakeAudioContext);
     fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes('/api/findings/')) {
+      if (String(input).includes('/api/tasks/')) {
         fakeAudioEvents.push('fetch');
         return {
           ok: true,
@@ -168,7 +170,7 @@ describe('FindingsPanel speak finding control', () => {
 
     expect(button).toBeTruthy();
     expect(button?.dataset.agentId).toBe('agent-1');
-    expect(button?.getAttribute('aria-label')).toBe('Speak finding summary for Some task');
+    expect(button?.getAttribute('aria-label')).toBe('Speak task summary for Some task');
   });
 
   test('clicking the card speak button posts, plays, and shows timing', async () => {
@@ -180,13 +182,13 @@ describe('FindingsPanel speak finding control', () => {
       await Promise.resolve();
     });
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/findings/agent-1/speak', expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/task-1/speak-summary', expect.objectContaining({
       method: 'POST',
     }));
     expect(fakeSources).toHaveLength(1);
     expect(fakeSources[0].start).toHaveBeenCalledOnce();
     expect(container.querySelector<HTMLButtonElement>('[data-testid="speak-finding-button"]')?.getAttribute('aria-label'))
-      .toBe('Stop spoken finding summary for Some task');
+      .toBe('Stop spoken task summary for Some task');
     expect(container.querySelector('.finding-speech-timing')?.textContent)
       .toContain('LLM 1.2s');
   });
@@ -206,13 +208,36 @@ describe('FindingsPanel speak finding control', () => {
     expect(fakeSources).toHaveLength(1);
     expect(fakeSources[0].start).toHaveBeenCalledOnce();
     expect(container.querySelector<HTMLButtonElement>('[data-testid="speak-finding-button"]')?.getAttribute('aria-label'))
-      .toBe('Stop spoken finding summary for Some task');
+      .toBe('Stop spoken task summary for Some task');
+  });
+
+  test('healthy no-anomaly task row can speak task summary', async () => {
+    root = renderPanel(container, [], 'done-agent', {
+      healthy: [makeFinding({
+        agentId: 'done-agent',
+        taskId: 'done-task',
+        taskName: 'Done task',
+        anomaly: null,
+        taskStatus: 'inProgress',
+      })],
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-agent-id="done-agent"]')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/done-task/speak-summary', expect.objectContaining({
+      method: 'POST',
+    }));
+    expect(fakeSources[0].start).toHaveBeenCalledOnce();
   });
 
   test('starting another finding stops the previous card playback', async () => {
     root = renderPanel(container, [
       makeFinding({ agentId: 'agent-1', taskName: 'First task' }),
-      makeFinding({ agentId: 'agent-2', taskName: 'Second task' }),
+      makeFinding({ agentId: 'agent-2', taskId: 'task-2', taskName: 'Second task' }),
     ], 'agent-1');
 
     await act(async () => {
@@ -231,7 +256,7 @@ describe('FindingsPanel speak finding control', () => {
 
     expect(firstSource.stop).toHaveBeenCalledOnce();
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
-    expect(fetchMock).toHaveBeenCalledWith('/api/findings/agent-2/speak', expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/task-2/speak-summary', expect.objectContaining({
       method: 'POST',
     }));
   });

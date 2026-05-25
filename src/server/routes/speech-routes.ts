@@ -1,14 +1,18 @@
 import type { Context, Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
 import { FindingSummaryCache } from '../finding-summary-cache.js';
+import { TaskSpeechSummaryCache } from '../task-speech-summary-cache.js';
+import { buildTaskSpeechSubject } from '../use-cases/task-speech-summary-input.js';
 import { TTSClientError } from '../../adapters/tts-client.js';
-import type { SpeakFindingErrorResponse, SpeakFindingResponse } from '../../shared/contracts/speech.js';
+import type { SpeakFindingErrorResponse, SpeakFindingResponse, SpeakTaskSummaryResponse } from '../../shared/contracts/speech.js';
 
 export interface SpeechRouteOptions {
   /** Surgical kill-switch independent of KOOKR_TTS. */
   enabled: boolean;
   /** Bound when ttsUrl is set; null otherwise. */
   cache: FindingSummaryCache | null;
+  /** Bound when ttsUrl is set; null otherwise. */
+  taskCache?: TaskSpeechSummaryCache | null;
   /** Same value the server passes to other consumers. */
   ttsUrl?: string;
 }
@@ -18,6 +22,46 @@ function jsonError(c: Context, status: 400 | 404 | 409 | 500 | 503, body: SpeakF
 }
 
 export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: SpeechRouteOptions): void {
+  app.post('/api/tasks/:taskId/speak-summary', async (c) => {
+    if (!options.enabled) {
+      return jsonError(c, 503, { error: 'feature-disabled' });
+    }
+    if (!options.taskCache || !options.ttsUrl) {
+      return jsonError(c, 503, { error: 'tts-not-configured' });
+    }
+
+    const taskId = c.req.param('taskId');
+    const collectStart = Date.now();
+    const subject = buildTaskSpeechSubject({
+      taskId,
+      agents: deps.monitor.getSnapshot(),
+      task: deps.taskStore.getTask(taskId),
+    });
+    const collectMs = Date.now() - collectStart;
+    if (!subject) {
+      return jsonError(c, 404, { error: 'task-not-found' });
+    }
+
+    const requestSignal = c.req.raw.signal;
+    try {
+      const startedAt = Date.now();
+      const result = await options.taskCache.get(subject.input, requestSignal);
+      const response: SpeakTaskSummaryResponse = result;
+      console.log(
+        `[task-speak] task=${taskId} agent=${subject.agentState?.agentId ?? 'none'} status=${subject.input.taskStatus ?? 'unknown'} cached=${result.cached} usedFallback=${result.usedFallback} collectMs=${collectMs} llmMs=${result.llmMs} ttsMs=${result.ttsMs} totalMs=${Date.now() - startedAt + collectMs}`,
+      );
+      return c.json(response, 200);
+    } catch (err) {
+      if (requestSignal.aborted) {
+        return jsonError(c, 503, { error: 'aborted' });
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      const kind = err instanceof TTSClientError ? err.kind : 'unknown';
+      console.warn(`[task-speak] failed task=${taskId} kind=${kind} reason=${reason}`);
+      return jsonError(c, 500, { error: 'tts-error', reason: reason.slice(0, 200) });
+    }
+  });
+
   app.post('/api/findings/:agentId/speak', async (c) => {
     if (!options.enabled) {
       return jsonError(c, 503, { error: 'feature-disabled' });

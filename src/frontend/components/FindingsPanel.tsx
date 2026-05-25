@@ -245,29 +245,30 @@ function TaskPriorityButton({ agent, send }: {
   );
 }
 
-function speakFindingLabel(status: SpeakFindingStatus, agentLabel: string, errorReason?: string): string {
+function speakTaskSummaryLabel(status: SpeakFindingStatus, agentLabel: string, errorReason?: string): string {
   switch (status) {
     case 'loading':
-      return `Loading finding summary for ${agentLabel}`;
+      return `Cancel task summary for ${agentLabel}`;
     case 'playing':
-      return `Stop spoken finding summary for ${agentLabel}`;
+      return `Stop spoken task summary for ${agentLabel}`;
     case 'suppressed':
       return errorReason === 'audio-context-suspended'
         ? `Audio suppressed for ${agentLabel}; bring this tab to the foreground and press again`
         : `Audio suppressed for ${agentLabel} by sound or Do Not Disturb settings`;
     case 'error':
-      return `Speak finding summary for ${agentLabel} failed (${errorReason ?? 'unknown'}); press to retry`;
+      return `Speak task summary for ${agentLabel} failed (${errorReason ?? 'unknown'}); press to retry`;
     case 'idle':
-      return `Speak finding summary for ${agentLabel}`;
+      return `Speak task summary for ${agentLabel}`;
   }
 }
 
-function SpeakFindingCardControl({ agent, selected }: { agent: AgentState; selected: boolean }): React.ReactElement | null {
+function SpeakTaskSummaryControl({ agent, selected }: { agent: AgentState; selected: boolean }): React.ReactElement | null {
   const ttsAvailable = useKookrStore((s) => Boolean(s.ttsUrl));
   const speakFinding = useSpeakFinding({
     agentId: agent.agentId,
     anomalyType: agent.anomaly?.type ?? null,
     ttsAvailable,
+    endpoint: agent.taskId ? `/api/tasks/${encodeURIComponent(agent.taskId)}/speak-summary` : null,
   });
   const agentLabel = agent.taskName ?? agent.agentId;
 
@@ -289,11 +290,11 @@ function SpeakFindingCardControl({ agent, selected }: { agent: AgentState; selec
     return () => window.removeEventListener(SPEAK_FINDING_STOP_OTHERS_EVENT, handleStopOthers);
   }, [agent.agentId, speakFinding.stop]);
 
-  if (!agent.anomaly || !ttsAvailable) return null;
+  if ((!agent.taskId && !agent.anomaly) || !ttsAvailable) return null;
 
   const timingLine = formatSpeakFindingTimingLine(speakFinding.state.timings);
   const timingTitle = formatSpeakFindingTimingTitle(speakFinding.state.timings);
-  const buttonLabel = speakFindingLabel(speakFinding.state.status, agentLabel, speakFinding.state.errorReason);
+  const buttonLabel = speakTaskSummaryLabel(speakFinding.state.status, agentLabel, speakFinding.state.errorReason);
   const title = timingTitle ? `${buttonLabel}\n\n${timingTitle}` : buttonLabel;
 
   return (
@@ -308,7 +309,7 @@ function SpeakFindingCardControl({ agent, selected }: { agent: AgentState; selec
         onClick={() => {
           useKookrStore.getState().selectAgent(agent.agentId);
           window.dispatchEvent(new CustomEvent(SPEAK_FINDING_STOP_OTHERS_EVENT, { detail: { agentId: agent.agentId } }));
-          track({ type: 'shortcut_used', key: 'click', action: 'speak_finding', context: 'finding_card' });
+          track({ type: 'shortcut_used', key: 'click', action: 'speak_finding', context: 'task_card' });
           speakFinding.speak();
         }}
       >
@@ -422,7 +423,7 @@ function FindingCard({ agent, selected, send }: {
             )}
           </span>
           <span className="finding-meta">
-            <SpeakFindingCardControl agent={agent} selected={selected} />
+            <SpeakTaskSummaryControl agent={agent} selected={selected} />
             {agent.anomaly?.detectedAt && formatAge(agent.anomaly.detectedAt) && (
               <span className={`age-badge ${ageColor(agent.anomaly.detectedAt)}`}>
                 waiting {formatAge(agent.anomaly.detectedAt)}
@@ -593,6 +594,7 @@ function HealthyRow({ agent, selected, send }: {
                 {healthyStatusLabel(agent.events, agent.startedAt)}
               </div>
               <div className="healthy-row-controls">
+                <SpeakTaskSummaryControl agent={agent} selected={selected} />
                 <TaskPriorityButton agent={agent} send={send} />
                 <button
                   className="btn-reply"
@@ -806,6 +808,7 @@ function PendingRow({ agent, selected, send }: {
           </span>
           <PriorityBadge agent={agent} />
           <TaskIdCopyButton taskId={agent.taskId} compact />
+          <SpeakTaskSummaryControl agent={agent} selected={selected} />
         </div>
         <div className="pending-row-meta">
           Queued · waiting for slot
@@ -860,6 +863,7 @@ function SnoozedRow({ agent, selected, send }: {
           </span>
           <PriorityBadge agent={agent} />
           <TaskIdCopyButton taskId={agent.taskId} compact />
+          <SpeakTaskSummaryControl agent={agent} selected={selected} />
         </div>
         <div className="snoozed-countdown">
           {agent.suppressed ? 'Paused' : `Snoozed · ${formatCountdown(agent.snoozedUntil!)}`}
@@ -989,6 +993,7 @@ function CompletedRow({ agent, selected, send }: {
           </span>
           <PriorityBadge agent={agent} />
           <TaskIdCopyButton taskId={agent.taskId} compact />
+          <SpeakTaskSummaryControl agent={agent} selected={selected} />
           <span className="completed-row-meta">
             {isCancelled && <span className="completed-cancelled-label">cancelled</span>}
             {isCancelled && (agent.tokenUsage || agent.startedAt) && ' · '}
