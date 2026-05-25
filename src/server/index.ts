@@ -21,12 +21,6 @@ import { formatGitHubAlert } from '../core/github-alerts.js';
 import { wireEventPipeline } from './event-pipeline.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
-import { createRelayShareClient } from './relay-share-client.js';
-import type { RemoteShareDeps } from './routes/shared.js';
-import { TaskShareService } from './task-share-service.js';
-import { createRelayConnectionManager, type RelayRuntimeHandle } from './relay-connection-manager.js';
-import { ShareDiagnosticsService, terminalAdapterAvailableFromStats } from './share-diagnostics-service.js';
-import type { RelayConnectionCredentials } from './relay-connection-store.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
@@ -79,14 +73,8 @@ import { CollaborationAuditLog } from './collaboration-audit-log.js';
 import { ContactIdentityStore } from './contact-identity-store.js';
 import { CollaborationShareStore } from './collaboration-share-store.js';
 import type { CollaborationAuthFailureDiagnostic } from '../shared/contracts/collaboration-profile.js';
-import { configureRemoteCommandHandler } from './remote-command-handler.js';
-import type { RemoteNodeClient } from '../remote/node-client.js';
-import type { CommandJournal } from '../remote/command-journal.js';
-import type { SessionStreamPublisher } from '../remote/session-stream-publisher.js';
-import type { ControllerLeaseManager } from '../remote/controller-lease.js';
-import type { NodeId, ServerRevision, SessionEpoch, SessionId } from '../remote/ids.js';
-import type { RemotePolicyCache } from '../remote/policy-cache.js';
-import type { RemoteInputAdapter } from './remote-input-adapter.js';
+import type { NodeId } from '../remote/ids.js';
+import { createRemoteRelayRuntime, type RemoteRelayRuntime } from './remote-relay-runtime.js';
 import { RuntimeAttentionMissSampler } from './attention-miss-runtime-sampler.js';
 import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
 
@@ -241,21 +229,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     llmClient,
   } = coreStores;
   const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
-
-  // Remote collaboration runtime. This remains inert until env credentials or
-  // stored Phase B relay credentials are present.
-  let remoteNodeClient: RemoteNodeClient | null = null;
-  let sessionStreamPublisher: SessionStreamPublisher | null = null;
-  let commandJournal: CommandJournal | null = null;
-  let controllerLeaseManager: ControllerLeaseManager | null = null;
-  let remoteInputAdapter: RemoteInputAdapter | null = null;
-  let remotePolicyCache: RemotePolicyCache | null = null;
-  let taskShareService: TaskShareService | null = null;
-  let remoteShareRevision = 0;
-  const nextRemoteShareRevision = (): ServerRevision => {
-    remoteShareRevision += 1;
-    return remoteShareRevision as ServerRevision;
-  };
 
   const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
     terminalBackend,
@@ -460,15 +433,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     console.warn(`Orphan sessions (not in tasks): ${reconcileResult.orphans.join(', ')}`);
   }
 
-  if (remoteNodeClient) {
-    const { createSessionStreamPublisher } = await import('../remote/session-stream-publisher.js');
-    sessionStreamPublisher = createSessionStreamPublisher({
-      terminalBackend,
-      remoteNodeClient,
-    });
-    await sessionStreamPublisher.start();
-  }
-
   // Hook watcher created here but resumed-session replay is deferred to after crash recovery,
   // so relaunched sessions have their new tmux names before snooze restore + hook replay.
   // HookIngestion serializes file-source and http-source delivery through a
@@ -650,6 +614,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // --- Event pipeline ---
 
+  let remoteRelayRuntime: RemoteRelayRuntime | null = null;
+
   const { abortPendingSuggestion } = wireEventPipeline({
     adapter, monitor, taskStore, tokenTracker, watchdog,
     githubScanner, llmClient, serverCwd, broadcastToAll,
@@ -659,25 +625,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ralphLoopService,
     hookIngestion,
     taskShareService: {
-      publishTaskProjectionForTask: (taskId) => taskShareService?.publishTaskProjectionForTask(taskId),
+      publishTaskProjectionForTask: (taskId) => remoteRelayRuntime?.publishTaskProjectionForTask(taskId),
     },
     onPermissionBlocked: (taskId, promptText) => {
       onPermissionBlockedHolder?.(taskId, promptText);
-      const task = remoteNodeClient && process.env.KOOKR_PUSH_DISABLED !== 'true'
-        ? taskStore.getTask(taskId)
-        : undefined;
-      if (!task) return;
-      void import('../remote/push.js')
-        .then(({ makePermissionBlockedPushPayload, publishPushAlertDelta }) => {
-          publishPushAlertDelta(remoteNodeClient, makePermissionBlockedPushPayload({
-            nodeDisplayName: process.env.KOOKR_RELAY_DISPLAY_NAME,
-            task,
-            alertId: `permission-${taskId}-${Date.now()}`,
-          }));
-        })
-        .catch((err) => {
-          console.warn('[remote-push] failed to publish permission alert:', err);
-        });
+      remoteRelayRuntime?.publishPermissionBlocked(taskId);
     },
   });
 
@@ -685,70 +637,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const terminalDeps: TerminalInputDeps = {
     monitor, watchdog, abortPendingSuggestion, broadcastToAll, serverCwd,
   };
-  const recordLocalTerminalActivity = (sessionId: string): void => {
-    if (!controllerLeaseManager) return;
-    controllerLeaseManager.acquireLocal({
-      sessionId: sessionId as SessionId,
-      sessionEpoch: sessionStreamPublisher?.currentCursor(sessionId)?.sessionEpoch ?? ('1' as SessionEpoch),
-    });
-  };
-
-  const wireRemoteCommandHandler = async (): Promise<void> => {
-    if (!remoteNodeClient || !commandJournal) return;
-    const [
-      { executeWithPipeline },
-      { RemotePermissionBroker },
-      { grantForRemoteCommandAction },
-      { evaluateGrantById },
-      { isPresetReplyId, sendPresetReply },
-    ] = await Promise.all([
-      import('../remote/command-pipeline.js'),
-      import('../remote/permission-broker.js'),
-      import('../remote/grants.js'),
-      import('../remote/share-policy.js'),
-      import('../remote/preset-reply.js'),
-    ]);
-    await configureRemoteCommandHandler({
-      runtime: {
-        executeWithPipeline,
-        RemotePermissionBroker,
-        grantForRemoteCommandAction,
-        evaluateGrantById,
-        isPresetReplyId,
-        sendPresetReply,
-      },
-      remoteNodeClient,
-      commandJournal,
-      adapter,
-      monitor,
-      watchdog,
-      queue,
-      interactionLog,
-      abortPendingSuggestion,
-      taskStore,
-      remotePolicyCache,
-      bypassAllPermissions: config.bypassAllPermissions,
-      remoteLaunchBroker,
-      markDone: async (taskId) => {
-        await completeTask(taskId, {
-          adapter,
-          monitor,
-          taskStore,
-          interactionLog,
-          hookWatcher,
-          watchdog,
-          shadowRegistry,
-          tokenTracker,
-          suppressionTracker,
-          checkpointCycler,
-          queue,
-        });
-      },
-      remoteInputAdapter,
-      controllerLeaseManager,
-    });
-  };
-  await wireRemoteCommandHandler();
 
   const startupRecoverySummary = await runStartupRecoveryPhase({
     taskStore,
@@ -816,203 +704,38 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   diagnosticRunner.start();
 
-  const remoteShare: RemoteShareDeps = {
-    csrfToken: randomBytes(16).toString('hex'),
-    client: null,
-    getShareMaxTtlMs: () => {
-      const value = remoteNodeClient?.status.lastRelayHello?.shareMaxTtlMs;
-      return typeof value === 'number' && Number.isFinite(value) ? value : null;
-    },
-  };
-  const {
-    parseTerminalInputKillSwitch,
-    RELAY_TRUSTED_ENV_NAME,
-    relayTrustedProcessValue,
-  } = await import('../remote/handshake.js');
-  const shareDiagnostics = new ShareDiagnosticsService({
-    serverCwd,
-    processStartedAt: serverStartedAt,
-    getRemoteNodeStatus: () => remoteNodeClient?.status ?? null,
-    getRelayConfigured: () => Boolean(remoteShare.client),
-    getTerminalAdapterAvailable: () => terminalAdapterAvailableFromStats(terminalBackend.getStats()),
-    getPolicySynced: (share) => {
-      if (!remotePolicyCache) return false;
-      const identity = remoteNodeClient?.status.nodeId;
-      if (!identity) return false;
-      return remotePolicyCache.snapshot().grants.some((grant) => (
-        grant.subject.kind === 'task'
-        && grant.subject.nodeId === identity
-        && grant.subject.taskId === share.taskId
-        && grant.grants.includes('terminalInput')
-        && !remotePolicyCache?.hasTombstone(grant.grantId)
-        && (!grant.expiresAt || Date.parse(grant.expiresAt) > Date.now())
-      ));
-    },
-    relayTrustedEnvName: RELAY_TRUSTED_ENV_NAME,
-    relayTrustedProcessValue,
-    parseTerminalInputKillSwitch,
-  });
-
-  const stopRemoteRuntime = async (): Promise<void> => {
-    sessionStreamPublisher?.stop();
-    sessionStreamPublisher = null;
-    remoteNodeClient?.setConnectionObserver(null);
-    controllerLeaseManager?.dispose();
-    controllerLeaseManager = null;
-    remoteInputAdapter = null;
-    commandJournal = null;
-    await remoteNodeClient?.stop();
-    remoteNodeClient = null;
-    remotePolicyCache = null;
-    taskShareService = null;
-    remoteShare.client = null;
-    delete remoteShare.service;
-  };
-
-  const startRemoteRuntime = async (credentials: RelayConnectionCredentials): Promise<RelayRuntimeHandle> => {
-    await stopRemoteRuntime();
-    const { createRemoteAuditScaffold } = await import('../remote/audit.js');
-    const { CommandJournal } = await import('../remote/command-journal.js');
-    const { createRemoteNodeClient } = await import('../remote/node-client.js');
-    const { ControllerLeaseManager } = await import('../remote/controller-lease.js');
-    const { remoteTerminalInputFeatureEnabled } = await import('../remote/handshake.js');
-    const { asServerRevision } = await import('../remote/ids.js');
-    const { RemotePolicyCache } = await import('../remote/policy-cache.js');
-
-    createRemoteAuditScaffold({ relayUrl: credentials.relayUrl });
-    remotePolicyCache = new RemotePolicyCache();
-    const nodeClient = await createRemoteNodeClient({
-      relayUrl: credentials.relayUrl,
-      token: credentials.relayToken,
-      kookrDir,
-      softwareVersion: buildInfo.version,
-      ...(credentials.displayName ? { displayName: credentials.displayName } : {}),
-      ...(credentials.publicBaseUrl ? { publicBaseUrl: credentials.publicBaseUrl } : {}),
-      onPolicyMessage: async (message) => {
-        if (!remotePolicyCache) return;
-        if (message.type === 'policy.sync') {
-          remotePolicyCache.applySync({
-            policyVersion: message.policyVersion,
-            grants: message.grants,
-            revokedGrantIds: message.revokedGrantIds,
-          });
-          for (const grantId of message.revokedGrantIds) {
-            await commandJournal?.revokeGrant(grantId, message.policyVersion);
-          }
-          taskShareService?.publishActiveTaskProjections();
-          return;
-        }
-        if (message.type === 'policy.delta') {
-          for (const grant of message.upserts) remotePolicyCache.upsert(grant);
-          for (const grantId of message.revokes) {
-            const grant = remotePolicyCache.get(grantId);
-            if (grant?.subject.kind === 'session') {
-              controllerLeaseManager?.revoke(grant.subject.sessionId as SessionId, 'policy-revoke');
-            }
-            remotePolicyCache.revoke(grantId, message.policyVersion);
-            await commandJournal?.revokeGrant(grantId, message.policyVersion);
-          }
-          taskShareService?.publishActiveTaskProjections();
-          return;
-        }
-        if (message.type === 'policy.revoke') {
-          const grant = remotePolicyCache.get(message.grantId);
-          if (grant?.subject.kind === 'session') {
-            controllerLeaseManager?.revoke(grant.subject.sessionId as SessionId, 'policy-revoke');
-          }
-          remotePolicyCache.revoke(message.grantId, message.policyVersion);
-          await commandJournal?.revokeGrant(message.grantId, message.policyVersion);
-          taskShareService?.publishActiveTaskProjections();
-        }
-      },
-      onTerminalDemandProof: (message) => {
-        const handledByShare = taskShareService?.recordTerminalPublicationDemand(message) ?? false;
-        if (handledByShare) return;
-        sessionStreamPublisher?.recordDemandProof({
-          principal: message.principal,
-          sessionId: message.sessionId,
-          sessionEpoch: message.sessionEpoch,
-          proof: message.proof,
-        });
-      },
-    });
-    remoteNodeClient = nodeClient;
-    commandJournal = await CommandJournal.open({
-      kookrDir,
-      nodeId: nodeClient.status.nodeId,
-      nodeEpoch: nodeClient.status.nodeEpoch,
-    });
-    let leaseRevision = 0;
-    controllerLeaseManager = new ControllerLeaseManager({
-      nodeId: nodeClient.status.nodeId,
-      nodeEpoch: nodeClient.status.nodeEpoch,
-      nextServerRevision: () => asServerRevision(++leaseRevision),
-      publish: (event) => {
-        remoteNodeClient?.publish(event);
-      },
-    });
-    nodeClient.setConnectionObserver((state) => {
-      if (state === 'disconnected') controllerLeaseManager?.handleRelayDisconnect();
-      else controllerLeaseManager?.handleRelayReconnect();
-    });
-    const { createSessionStreamPublisher } = await import('../remote/session-stream-publisher.js');
-    sessionStreamPublisher = createSessionStreamPublisher({
-      terminalBackend,
-      remoteNodeClient: nodeClient,
-    });
-    await sessionStreamPublisher.start();
-    if (remoteTerminalInputFeatureEnabled({ ...process.env, KOOKR_RELAY_URL: credentials.relayUrl })) {
-      const { createRemoteInputAdapter } = await import('./remote-input-adapter.js');
-      remoteInputAdapter = await createRemoteInputAdapter({
-        terminalBackend,
-        leaseManager: controllerLeaseManager,
-        getCurrentSeq: (sessionId, sessionEpoch) => {
-          const cursor = sessionStreamPublisher?.currentCursor(sessionId);
-          if (!cursor || cursor.sessionEpoch !== sessionEpoch) return null;
-          return cursor.lastSeq;
-        },
-      });
-      console.log('[remote] terminal input adapter enabled');
-    } else {
-      console.log('[remote] terminal input adapter disabled');
-    }
-
-    const relayShareClient = createRelayShareClient({
-      relayUrl: credentials.relayUrl,
-      relayToken: credentials.relayToken,
-    });
-    taskShareService = new TaskShareService({
-      client: relayShareClient,
-      taskStore,
-      queue,
-      getAgentEvents: (agentId) => monitor.getAgentEvents(agentId),
-      remotePolicyCache,
-      getNodeIdentity: () => ({
-        nodeId: nodeClient.status.nodeId,
-        nodeEpoch: nodeClient.status.nodeEpoch,
-      }),
-      nextServerRevision: nextRemoteShareRevision,
-      publish: (event) => nodeClient.publish(event),
-      terminalPublisher: sessionStreamPublisher,
-      diagnoseTerminalSharing: (share) => shareDiagnostics.diagnoseTerminalSharing(share),
-    });
-    remoteShare.client = relayShareClient;
-    remoteShare.service = taskShareService;
-    await wireRemoteCommandHandler();
-
-    return {
-      nodeStatus: nodeClient.status,
-      start: () => nodeClient.start(),
-      stop: stopRemoteRuntime,
-    };
-  };
-
-  const relayConnection = createRelayConnectionManager({
+  remoteRelayRuntime = await createRemoteRelayRuntime({
     kookrDir,
-    cwd: serverCwd,
-    startRuntime: startRemoteRuntime,
+    serverCwd,
+    serverStartedAt,
+    buildInfo,
+    terminalBackend,
+    taskStore,
+    queue,
+    monitor,
+    adapter,
+    watchdog,
+    interactionLog,
+    abortPendingSuggestion,
+    bypassAllPermissions: config.bypassAllPermissions,
+    remoteLaunchBroker,
+    markDone: async (taskId) => {
+      await completeTask(taskId, {
+        adapter,
+        monitor,
+        taskStore,
+        interactionLog,
+        hookWatcher,
+        watchdog,
+        shadowRegistry,
+        tokenTracker,
+        suppressionTracker,
+        checkpointCycler,
+        queue,
+      });
+    },
   });
-  await relayConnection.startConfigured();
+  await remoteRelayRuntime.startConfigured();
 
   const findingEvidenceReviewEnabled = process.env.KOOKR_FINDING_REVIEW_ENABLED === 'true';
   const findingEvidenceReviewHmacKey = findingEvidenceReviewEnabled
@@ -1060,7 +783,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     llmClient,
     ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
     findingEvidenceReviewSampler,
-    remoteShare, relayConnection,
+    remoteShare: remoteRelayRuntime.remoteShare,
+    relayConnection: remoteRelayRuntime.relayConnection,
     contactShare,
     collaborationDiagnostics: {
       get: async () => {
@@ -1259,7 +983,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     terminalDeps,
     useFakeTerminalBridge,
-    onLocalTerminalActivity: recordLocalTerminalActivity,
+    onLocalTerminalActivity: (sessionId) => remoteRelayRuntime?.recordLocalTerminalActivity(sessionId),
     onDashboardConnection: (ws) => handleWsConnection(ws, clients, wsConnectionDeps),
   });
   const collaborationListener = await startConfiguredPrivateNetworkCollaborationListener({
@@ -1338,7 +1062,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     // Stop diagnostic runner
     diagnosticRunner.dispose();
-    await stopRemoteRuntime();
+    await remoteRelayRuntime?.stop();
 
     // Stop hook watchers and trackers
     hookWatcher.stopAll();
@@ -1417,8 +1141,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     projectSidebarStore,
     circuitBreakerRegistry,
     remoteLaunchBroker,
-    controllerLeaseManager,
-    remoteInputAdapter,
+    controllerLeaseManager: remoteRelayRuntime?.controllerLeaseManager ?? null,
+    remoteInputAdapter: remoteRelayRuntime?.remoteInputAdapter ?? null,
     app,
     broadcastToAll,
     close,

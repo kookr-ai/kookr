@@ -33,31 +33,14 @@ import type { RalphCycler } from '../../core/ralph-cycler.js';
 import type { TokenTracker } from '../../core/token-tracker.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
 import type { WorktreeRegistry } from '../../adapters/git-worktree-registry.js';
-import type { RelayShareClient } from '../relay-share-client.js';
-import type { TaskShareService } from '../task-share-service.js';
+import type { RemoteShareDeps } from '../remote-share-deps.js';
 import type { RelayConnectionManager } from '../relay-connection-manager.js';
 import type { ContactShareReadModel } from '../../core/contact-share.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sampler.js';
 import type { CollaborationDiagnostics } from '../../shared/contracts/collaboration-profile.js';
 import type { CoordinatorSuppressionRegistry } from '../coordinator/suppression-store.js';
-
-/**
- * Phase A0 easy connection sharing config. The server always provides it;
- * `client` is `null` in local-only mode (no relay configured), which makes
- * the share routes answer `409 relay-not-configured`. The `RouteDeps` field
- * is still optional only so pre-existing callers/tests need not set it.
- */
-export interface RemoteShareDeps {
-  /** Per-process CSRF nonce for share-mutation endpoints. */
-  csrfToken: string;
-  /** Relay client, or `null` when no relay is configured. */
-  client: RelayShareClient | null;
-  /** Local owner of A0 projection publication/revoke overlay state. */
-  service?: TaskShareService;
-  /** Relay-advertised task-share max TTL from the node handshake, when connected. */
-  getShareMaxTtlMs?: () => number | null;
-}
+export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 export interface RouteDeps {
   taskStore: TaskStore;

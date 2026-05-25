@@ -5,7 +5,10 @@ import ts from 'typescript';
 
 const ROOT = process.cwd();
 const SOURCE_ROOTS = ['src/server', 'src/core', 'src/adapters', 'src/frontend'];
-const ALLOWED_DYNAMIC_IMPORT_FILE = join(ROOT, 'src/server/index.ts');
+const ALLOWED_DYNAMIC_IMPORT_FILES = new Set([
+  join(ROOT, 'src/server/index.ts'),
+  join(ROOT, 'src/server/remote-relay-runtime.ts'),
+]);
 
 interface Violation {
   file: string;
@@ -80,7 +83,7 @@ function checkFile(file: string): Violation[] {
       && node.arguments.length === 1
       && ts.isStringLiteralLike(node.arguments[0])
       && isRemoteImport(node.arguments[0].text, file)
-      && file !== ALLOWED_DYNAMIC_IMPORT_FILE
+      && !ALLOWED_DYNAMIC_IMPORT_FILES.has(file)
     ) {
       violations.push({
         file,
