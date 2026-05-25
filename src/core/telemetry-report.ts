@@ -1,4 +1,4 @@
-import type { TelemetryEvent, TelemetryEventType } from './telemetry.js';
+import { TELEMETRY_EVENT_TYPES, type TelemetryEvent } from './telemetry.js';
 
 export interface TelemetryReport {
   totalEvents: number;
@@ -34,16 +34,7 @@ export interface TelemetryReport {
   tabSwitchCounts: Record<string, number>;
 }
 
-const ALL_EVENT_TYPES: TelemetryEventType[] = [
-  'agent_clicked', 'auto_advance_overridden', 'tab_switched',
-  'response_sent', 'quick_action_clicked', 'suggestion_accepted', 'suggestion_ignored',
-  'launch_dialog_opened', 'launch_dialog_closed', 'launch_dialog_cwd_field_used', 'launch_submitted',
-  'task_completed', 'task_cancelled', 'task_relaunched', 'task_renamed',
-  'finding_skipped', 'finding_snoozed',
-  'shortcut_used',
-  'rapid_repeat_click', 'healthy_agent_inspected',
-  'session_started', 'websocket_reconnect',
-];
+const ALL_EVENT_TYPES = [...TELEMETRY_EVENT_TYPES];
 
 function computeNonMruRate(counts: Record<string, number>): number | null {
   let nonMru = 0;

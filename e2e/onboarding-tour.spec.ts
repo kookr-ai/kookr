@@ -147,7 +147,12 @@ test.describe('Onboarding tour', () => {
     await expect(page.locator('.onboarding-tour h3')).toHaveText('First-launch readiness');
     await expect(page.locator('body')).not.toHaveClass(/kookr-tour-active-/);
 
-    // Card 5 = findings.
+    // Card 5 = shortcut guidance, no spotlight target.
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.onboarding-tour h3')).toHaveText('Shortcuts that save clicks');
+    await expect(page.locator('body')).not.toHaveClass(/kookr-tour-active-/);
+
+    // Card 6 = findings.
     await page.keyboard.press('ArrowRight');
     await expect(page.locator('body')).toHaveClass(/kookr-tour-active-findings/);
 

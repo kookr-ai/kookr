@@ -67,6 +67,7 @@ export type {
 } from './contracts/speech.js';
 export type { TaskCompletionFeedback } from './contracts/task.js';
 export type { TurnState } from './contracts/task-status.js';
+export { TELEMETRY_EVENT_TYPES } from './contracts/telemetry.js';
 export type { TelemetryEvent, TelemetryEventType } from './contracts/telemetry.js';
 export type { TokenUsage } from './contracts/usage.js';
 export type {
