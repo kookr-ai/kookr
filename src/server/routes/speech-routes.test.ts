@@ -196,6 +196,10 @@ describe('POST /api/tasks/:taskId/speak-summary', () => {
         taskId: 'task-1',
         taskStatus: 'completed',
         completionDigest: { bullets: ['Tests passed'], filesChanged: [] },
+        events: [
+          { type: 'user_prompt', sessionId: 's1', prompt: 'Summarize the activity panel instead of task metadata.' },
+          { type: 'stop', sessionId: 's1', lastMessage: 'I updated the speech summary input.' },
+        ],
       })],
       taskCache: cache,
       ttsUrl: 'http://tts',
@@ -208,6 +212,10 @@ describe('POST /api/tasks/:taskId/speak-summary', () => {
       taskName: 'Refactor auth',
       taskStatus: 'completed',
       completionDigest: expect.objectContaining({ bullets: ['Tests passed'] }),
+      recentActivity: [
+        'User: Summarize the activity panel instead of task metadata.',
+        'Agent: I updated the speech summary input.',
+      ],
     }), expect.any(AbortSignal));
   });
 });
