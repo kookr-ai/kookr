@@ -24,6 +24,7 @@ RUN uv pip install \
     soundfile
 
 COPY src/server.py /app/server.py
+COPY voices/ /app/voices/
 
 EXPOSE 8000
 

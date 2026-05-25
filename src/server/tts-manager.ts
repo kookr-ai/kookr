@@ -4,8 +4,9 @@
  * When KOOKR_TTS=true, this module:
  * 1. Runs `docker compose up -d` on the tts/ docker-compose.yml
  * 2. Waits for the TTS service health check to pass
- * 3. Exposes the TTS HTTP URL for synthesis requests
- * 4. Tears down containers on server shutdown
+ * 3. Probes synthesis with the configured voice
+ * 4. Exposes the TTS HTTP URL for synthesis requests
+ * 5. Tears down containers on server shutdown
  *
  * When KOOKR_TTS is unset or false, this module is a no-op.
  *
@@ -19,6 +20,8 @@ import { hasDockerRuntime } from './docker-runtime.js';
 
 const execFileAsync = promisify(execFile);
 
+export const DEFAULT_TTS_VOICE = '/app/voices/matilda.mp3';
+
 export type TTSDevice = 'auto' | 'cpu' | 'gpu';
 export type ResolvedTTSDevice = 'cpu' | 'gpu';
 
@@ -27,7 +30,7 @@ export interface TTSManagerConfig {
   ttsDir: string;
   /** Port to expose the TTS service on the host (default: 8004) */
   port?: number;
-  /** TTS voice to use (default: matilda) */
+  /** TTS voice to use (default: bundled Matilda voice) */
   voice?: string;
   /**
    * Inference device. `auto` (default) probes the docker daemon for an
@@ -36,6 +39,8 @@ export interface TTSManagerConfig {
   device?: TTSDevice;
   /** Max time to wait for health check (ms, default: 120000) */
   startupTimeoutMs?: number;
+  /** Max time to wait for the configured voice synthesis probe (ms, default: 30000) */
+  readinessProbeTimeoutMs?: number;
 }
 
 export interface TTSManager {
@@ -53,9 +58,10 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
   const {
     ttsDir,
     port = 8004,
-    voice = '/app/voices/matilda.mp3',
+    voice = DEFAULT_TTS_VOICE,
     device = parseTTSDevice(),
     startupTimeoutMs = 120_000,
+    readinessProbeTimeoutMs = 30_000,
   } = config;
 
   const resolvedDevice = await resolveTTSDevice(device);
@@ -94,19 +100,28 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
   console.log(`[tts] Waiting for TTS service at ${healthUrl}...`);
 
   while (Date.now() < deadline) {
+    let healthy = false;
     try {
       const res = await fetch(healthUrl, { signal: AbortSignal.timeout(3000) });
-      if (res.ok) {
-        console.log('[tts] TTS service is ready');
-
-        const url = `http://localhost:${port}`;
-        return {
-          url,
-          stop: () => stopTTS(composeFlags, env),
-        };
-      }
+      healthy = res.ok;
     } catch {
       // Not ready yet
+    }
+    if (healthy) {
+      const url = `http://localhost:${port}`;
+      try {
+        await probeTTSReadiness(url, voice, readinessProbeTimeoutMs);
+      } catch (err) {
+        await stopTTS(composeFlags, env).catch(() => {});
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`[tts] TTS service health passed but synthesis probe failed: ${msg}`);
+      }
+
+      console.log('[tts] TTS service is ready');
+      return {
+        url,
+        stop: () => stopTTS(composeFlags, env),
+      };
     }
     await sleep(2000);
   }
@@ -114,6 +129,35 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
   // Timeout — tear down and throw
   await stopTTS(composeFlags, env).catch(() => {});
   throw new Error(`[tts] TTS service did not become healthy within ${startupTimeoutMs / 1000}s`);
+}
+
+async function probeTTSReadiness(
+  url: string,
+  voice: string,
+  timeoutMs: number,
+): Promise<void> {
+  console.log(`[tts] Probing configured TTS voice (${voice})...`);
+  const res = await fetch(`${url}/synthesize`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      text: 'ready',
+      voice,
+      params: { framesAfterEos: 0 },
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  if (!res.ok) {
+    let detail = '';
+    try {
+      detail = await res.text();
+    } catch {
+      // Keep the readiness error useful even if the response body cannot be read.
+    }
+    const suffix = detail ? `: ${detail.slice(0, 500)}` : '';
+    throw new Error(`HTTP ${res.status}${suffix}`);
+  }
 }
 
 async function stopTTS(composeFlags: string[], env: NodeJS.ProcessEnv): Promise<void> {

@@ -15,11 +15,12 @@ import {
 } from './tts-manager.js';
 
 beforeEach(() => {
+  vi.stubEnv('KOOKR_TTS_DEVICE', '');
   execFileMock.mockReset();
   execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
     cb(null, '', '');
   });
-  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true })));
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
 });
 
 describe('parseTTSDevice', () => {
@@ -61,6 +62,35 @@ describe('resolveTTSDevice', () => {
 });
 
 describe('startTTS', () => {
+  it('defaults to the bundled Matilda voice and probes synthesis before returning ready', async () => {
+    const manager = await startTTS({
+      ttsDir: '/repo/tts',
+      port: 8004,
+      device: 'cpu',
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8004/health',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8004/synthesize',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'ready',
+          voice: '/app/voices/matilda.mp3',
+          params: { framesAfterEos: 0 },
+        }),
+        signal: expect.any(AbortSignal),
+      }),
+    );
+
+    await manager.stop();
+  });
+
   it('uses the GPU compose overlay for startup and shutdown when device is gpu', async () => {
     const manager = await startTTS({
       ttsDir: '/repo/tts',
@@ -95,6 +125,36 @@ describe('startTTS', () => {
         '/repo/tts/docker-compose.yml',
         '-f',
         '/repo/tts/docker-compose.gpu.yml',
+        'down',
+      ],
+      expect.objectContaining({ timeout: 30_000 }),
+      expect.any(Function),
+    );
+  });
+
+  it('tears down and rejects when health passes but configured voice synthesis fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn()
+        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('voice missing', { status: 500 })),
+    );
+
+    await expect(startTTS({
+      ttsDir: '/repo/tts',
+      port: 8004,
+      voice: '/app/voices/matilda.mp3',
+      device: 'cpu',
+    })).rejects.toThrow(
+      '[tts] TTS service health passed but synthesis probe failed: HTTP 500: voice missing',
+    );
+
+    expect(execFileMock).toHaveBeenLastCalledWith(
+      'docker',
+      [
+        'compose',
+        '-f',
+        '/repo/tts/docker-compose.yml',
         'down',
       ],
       expect.objectContaining({ timeout: 30_000 }),

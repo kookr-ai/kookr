@@ -6,7 +6,8 @@
 #
 # Voice cloning requires HF_TOKEN (accept terms at https://huggingface.co/kyutai/pocket-tts).
 # Built-in voices (no token needed): alba, marius, javert, jean, fantine, cosette, eponine, azelma.
-# Custom voices: place MP3/WAV files in tts/voices/ and reference by path (/app/voices/name.mp3).
+# Bundled/custom voices: place MP3/WAV files in tts/voices/ before building and
+# reference them by path (/app/voices/name.mp3).
 
 services:
   kookr-tts:
@@ -21,8 +22,6 @@ services:
       TTS_MODEL_LSD_STEPS: ${TTS_MODEL_LSD_STEPS:-1}
       TTS_MODEL_EOS_THRESHOLD: ${TTS_MODEL_EOS_THRESHOLD:--4.0}
       HF_TOKEN: ${HF_TOKEN:-}
-    volumes:
-      - ./voices:/app/voices:ro
     deploy:
       resources:
         limits:

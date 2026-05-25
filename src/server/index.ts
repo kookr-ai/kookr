@@ -114,7 +114,7 @@ export interface KookrConfig {
   sttUrl?: string;
   /** Optional TTS service HTTP URL (e.g. http://localhost:8004). Advertised as a Phase 6 speech capability when set. */
   ttsUrl?: string;
-  /** Pocket TTS voice path. Defaults to the bundled matilda voice. */
+  /** Pocket TTS voice. Defaults to the bundled Matilda voice. */
   ttsVoice?: string;
   /** Surgical kill-switch for the speak-finding feature. Default true; set via `KOOKR_SPEAK=false`. */
   speakFindingEnabled?: boolean;
