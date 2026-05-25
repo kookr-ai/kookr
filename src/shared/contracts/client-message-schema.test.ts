@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { z } from 'zod';
 import { ClientMessageSchema, summarizeZodIssues } from './client-message-schema.js';
+import { TELEMETRY_EVENT_TYPES } from './telemetry.js';
 
 describe('summarizeZodIssues', () => {
   test('returns a placeholder when the error has no issues', () => {
@@ -173,6 +174,21 @@ describe('ClientMessageSchema — happy path sanity', () => {
   test('accepts a respond message with all required fields', () => {
     const result = ClientMessageSchema.safeParse({ type: 'respond', agentId: 'a1', input: 'go' });
     expect(result.success).toBe(true);
+  });
+
+  test('accepts every shared telemetry event type', () => {
+    for (const eventType of TELEMETRY_EVENT_TYPES) {
+      const result = ClientMessageSchema.safeParse({
+        type: 'telemetry',
+        events: [{
+          type: eventType,
+          timestamp: '2026-05-25T00:00:00.000Z',
+          sessionId: 'test-session',
+          platform: 'linux',
+        }],
+      });
+      expect(result.success, `event type ${eventType}`).toBe(true);
+    }
   });
 
   test('accepts a permission choice with a bound permission request', () => {

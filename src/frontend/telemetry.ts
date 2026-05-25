@@ -1,4 +1,4 @@
-import type { TelemetryEventType } from '../shared/protocol.js';
+import type { TelemetryEvent, TelemetryEventType } from '../shared/protocol.js';
 
 // --- Platform detection ---
 
@@ -25,7 +25,7 @@ interface TelemetryPayload {
 interface FullTelemetryEvent extends TelemetryPayload {
   timestamp: string;
   sessionId: string;
-  platform: string;
+  platform: TelemetryEvent['platform'];
 }
 
 let sendFn: ((msg: { type: 'telemetry'; events: FullTelemetryEvent[] }) => void) | null = null;

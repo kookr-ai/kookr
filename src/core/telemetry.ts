@@ -1,55 +1,9 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import type { TelemetryEvent, TelemetryEventType } from '../shared/contracts/telemetry.js';
 
-// --- Telemetry event types ---
-
-export type TelemetryEventType =
-  // Navigation & Selection
-  | 'agent_clicked'
-  | 'auto_advance_overridden'
-  | 'auto_advance_enabled'
-  | 'auto_advance_disabled'
-  | 'auto_advance_switch'
-  | 'tab_switched'
-  // Response & Input
-  | 'response_sent'
-  | 'quick_action_clicked'
-  | 'suggestion_accepted'
-  | 'suggestion_ignored'
-  // Agent Lifecycle
-  | 'launch_dialog_opened'
-  | 'launch_dialog_closed'
-  | 'launch_dialog_draft_restored'
-  | 'launch_dialog_draft_discarded'
-  | 'launch_dialog_cwd_field_used'
-  | 'launch_submitted'
-  | 'task_completed'
-  | 'task_cancelled'
-  | 'task_relaunched'
-  | 'task_renamed'
-  // Finding Management
-  | 'finding_skipped'
-  | 'finding_snoozed'
-  // Keyboard Shortcuts
-  | 'shortcut_used'
-  // Focus Tracking
-  | 'focus_zone_changed'
-  // Frustration & Confusion Signals
-  | 'rapid_repeat_click'
-  | 'healthy_agent_inspected'
-  // Session-Level
-  | 'session_started'
-  | 'websocket_reconnect'
-  // Suggestion Lifecycle (server-side)
-  | 'suggestion_lifecycle';
-
-export interface TelemetryEvent {
-  type: TelemetryEventType;
-  timestamp: string;
-  sessionId: string;
-  platform: 'linux' | 'darwin' | 'wsl2' | 'unknown';
-  [key: string]: unknown;
-}
+export { TELEMETRY_EVENT_TYPES } from '../shared/contracts/telemetry.js';
+export type { TelemetryEvent, TelemetryEventType };
 
 // --- Writer ---
 
