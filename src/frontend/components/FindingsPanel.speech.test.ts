@@ -18,16 +18,25 @@ type FakeBufferSource = {
 };
 
 const fakeSources: FakeBufferSource[] = [];
+const fakeAudioContexts: FakeAudioContext[] = [];
+const fakeAudioEvents: string[] = [];
+let fakeAudioContextInitialState: AudioContextState = 'running';
 
 class FakeAudioContext {
-  state: AudioContextState = 'running';
+  state: AudioContextState = fakeAudioContextInitialState;
   destination = {};
+
+  constructor() {
+    fakeAudioContexts.push(this);
+    fakeAudioEvents.push('context');
+  }
 
   decodeAudioData = vi.fn(async () => ({}) as AudioBuffer);
   close = vi.fn(async () => {
     this.state = 'closed';
   });
   resume = vi.fn(async () => {
+    fakeAudioEvents.push('resume');
     this.state = 'running';
   });
   createBufferSource = vi.fn(() => {
@@ -102,6 +111,9 @@ describe('FindingsPanel speak finding control', () => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     fakeSources.length = 0;
+    fakeAudioContexts.length = 0;
+    fakeAudioEvents.length = 0;
+    fakeAudioContextInitialState = 'running';
     syncGlobalStore();
     useKookrStore.setState({ ttsUrl: 'http://127.0.0.1:8004' });
     vi.spyOn(performance, 'now')
@@ -113,6 +125,7 @@ describe('FindingsPanel speak finding control', () => {
     vi.stubGlobal('AudioContext', FakeAudioContext);
     fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).includes('/api/findings/')) {
+        fakeAudioEvents.push('fetch');
         return {
           ok: true,
           json: async () => ({
@@ -176,6 +189,24 @@ describe('FindingsPanel speak finding control', () => {
       .toBe('Stop spoken finding summary for Some task');
     expect(container.querySelector('.finding-speech-timing')?.textContent)
       .toContain('LLM 1.2s');
+  });
+
+  test('unlocks a suspended AudioContext before waiting on TTS generation', async () => {
+    fakeAudioContextInitialState = 'suspended';
+    root = renderPanel(container, [makeFinding()], 'agent-1');
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="speak-finding-button"]')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(fakeAudioEvents.slice(0, 3)).toEqual(['context', 'resume', 'fetch']);
+    expect(fakeAudioContexts[0].resume).toHaveBeenCalledOnce();
+    expect(fakeSources).toHaveLength(1);
+    expect(fakeSources[0].start).toHaveBeenCalledOnce();
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="speak-finding-button"]')?.getAttribute('aria-label'))
+      .toBe('Stop spoken finding summary for Some task');
   });
 
   test('starting another finding stops the previous card playback', async () => {

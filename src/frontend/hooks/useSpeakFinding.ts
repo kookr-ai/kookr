@@ -195,6 +195,32 @@ export function useSpeakFinding(
       return;
     }
 
+    let ctx: AudioContext;
+    try {
+      ctx = new AudioContext();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logDecision(context, 'audio_context_error', `context_failed:${reason.slice(0, 80)}`);
+      setState({ status: 'error', errorReason: 'audio-context-error' });
+      return;
+    }
+
+    ctxRef.current = ctx;
+    const audioContextInitialState = ctx.state;
+    let resumeAttempted = false;
+    let resumeFailed = false;
+    let resumeError: unknown = null;
+    let unlockPromise: Promise<void> | undefined;
+    if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
+      // Browser autoplay policy ties resume() to the click's transient user
+      // activation, so start unlocking before the slow TTS request.
+      resumeAttempted = true;
+      unlockPromise = ctx.resume().catch((err: unknown) => {
+        resumeFailed = true;
+        resumeError = err;
+      });
+    }
+
     const ac = new AbortController();
     abortRef.current = ac;
     const requestStartedAt = nowMs();
@@ -211,6 +237,7 @@ export function useSpeakFinding(
         if (ac.signal.aborted) return;
         const reason = err instanceof Error ? err.message : String(err);
         logDecision(context, 'audio_context_error', `fetch_failed:${reason.slice(0, 80)}`);
+        cleanup();
         setState({ status: 'error', errorReason: 'fetch-failed' });
         return;
       }
@@ -221,6 +248,7 @@ export function useSpeakFinding(
         const body = (await response.json().catch(() => ({}))) as SpeakFindingErrorResponse;
         const errorReason = body.error ?? 'http-error';
         logDecision(context, 'audio_context_error', `http_${response.status}:${errorReason}`);
+        cleanup();
         setState({ status: 'error', errorReason });
         return;
       }
@@ -230,6 +258,7 @@ export function useSpeakFinding(
       if (ac.signal.aborted) return;
       if (!payload || typeof payload.audioBase64 !== 'string') {
         logDecision(context, 'audio_context_error', 'bad_response');
+        cleanup();
         setState({ status: 'error', errorReason: 'bad-response' });
         return;
       }
@@ -244,8 +273,6 @@ export function useSpeakFinding(
       };
       setState({ status: 'loading', cached: payload.cached, timings: baseTimings });
 
-      const ctx = new AudioContext();
-      ctxRef.current = ctx;
       let buffer: AudioBuffer;
       const decodeStartedAt = nowMs();
       try {
@@ -270,11 +297,23 @@ export function useSpeakFinding(
         return;
       }
 
-      if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
-        try { await ctx.resume(); } catch {}
+      if (unlockPromise) {
+        await unlockPromise;
       }
       if (ac.signal.aborted) {
         try { void ctx.close(); } catch {}
+        return;
+      }
+      if (resumeError) {
+        const reason = resumeError instanceof Error ? resumeError.message : String(resumeError);
+        logDecision(context, 'audio_context_error', `resume_failed:${reason.slice(0, 80)}`, {
+          audioContextInitialState,
+          audioContextFinalState: ctx.state,
+          resumeAttempted,
+          resumeFailed,
+        });
+        cleanup();
+        setState({ status: 'error', errorReason: 'audio-context-resume-failed', cached: payload.cached, timings: decodedTimings });
         return;
       }
 
@@ -318,8 +357,10 @@ export function useSpeakFinding(
       // 'suspended' after start() — audio would silently never play.
       if (ctx.state !== 'running') {
         const decision = logDecision(context, 'audio_context_suspended', 'audio_context_suspended', {
-          audioContextInitialState: ctx.state,
+          audioContextInitialState,
           audioContextFinalState: ctx.state,
+          resumeAttempted,
+          resumeFailed,
         });
         updateAudioAlertDecision(decision.id, { audioContextFinalState: ctx.state });
         setState({ status: 'suppressed', errorReason: 'audio-context-suspended', cached: payload.cached, timings: playTimings });
@@ -327,8 +368,10 @@ export function useSpeakFinding(
       }
 
       logDecision(context, 'scheduled', 'speak_playing', {
-        audioContextInitialState: ctx.state,
+        audioContextInitialState,
         audioContextFinalState: ctx.state,
+        resumeAttempted,
+        resumeFailed,
       });
       setState({ status: 'playing', cached: payload.cached, timings: playTimings });
     })();
