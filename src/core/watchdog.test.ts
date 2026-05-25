@@ -251,10 +251,10 @@ describe('Watchdog', () => {
       // Record event at t0+5000 so it's recent relative to the tick
       watchdog.recordEvents(agentId, [makeSessionStart('s1')], t0 + 5_000);
 
-      watchdog.tick(agentId, '› Ask Codex to do anything', [], t0 + 5_000);
+      watchdog.tick(agentId, '› ', [], t0 + 5_000);
       const verdict = watchdog.tick(
         agentId,
-        '› Ask Codex to do anything\n\n  gpt-5.4 fast · 100% left · /tmp/project',
+        '› \n\n  gpt-5.4 fast · 100% left · /tmp/project',
         [],
         t0 + 11_000, // 6s since last event < 10s stale threshold → healthy
       );
@@ -269,10 +269,10 @@ describe('Watchdog', () => {
       watchdog.registerAgent(agentId, t0, t0);
       watchdog.recordEvents(agentId, [makeSessionStart('s1')], t0);
 
-      watchdog.tick(agentId, '› Ask Codex to do anything', [], t0 + 5_000);
+      watchdog.tick(agentId, '› ', [], t0 + 5_000);
       const verdict = watchdog.tick(
         agentId,
-        '› Ask Codex to do anything\n\n  gpt-5.4 fast · 100% left · /tmp/project',
+        '› \n\n  gpt-5.4 fast · 100% left · /tmp/project',
         [],
         t0 + 11_000, // 11s > 10s stale threshold → needs_input
       );

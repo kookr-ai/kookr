@@ -12,10 +12,17 @@ import { DetailPanel } from './DetailPanel.js';
 vi.mock('../telemetry.js', () => ({ track: vi.fn(), trackClick: vi.fn() }));
 vi.mock('./ActivityPanel.js', () => ({ ActivityPanel: () => React.createElement('div', { 'data-testid': 'activity-panel' }) }));
 vi.mock('./GitHubPanel.js', () => ({ GitHubPanel: () => React.createElement('div', { 'data-testid': 'github-panel' }) }));
-vi.mock('./TerminalPanel.js', () => ({ TerminalPanel: () => React.createElement('div', { 'data-testid': 'terminal-panel' }) }));
+vi.mock('./TerminalPanel.js', () => ({
+  TerminalPanel: ({ onEmptySubmit }: { onEmptySubmit?: () => void }) => React.createElement(
+    'button',
+    { 'data-testid': 'terminal-empty-submit', onClick: onEmptySubmit },
+    'terminal',
+  ),
+}));
 vi.mock('./DiffPane.js', () => ({ DiffPane: () => React.createElement('div', { 'data-testid': 'diff-pane' }) }));
 vi.mock('./SnoozeDialog.js', () => ({ SnoozeDialog: () => null }));
 vi.mock('./EffectiveHookSettingsModal.js', () => ({ EffectiveHookSettingsModal: () => null }));
+vi.mock('./TaskShareModal.js', () => ({ TaskShareModal: () => null }));
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -235,5 +242,43 @@ describe('DetailPanel empty Enter behavior', () => {
 
     expect(sent).toEqual([]);
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
+  });
+
+  test('terminal empty-submit callback uses the same empty Enter advance path', () => {
+    const first = makeAgent('agent-1', {
+      agentId: 'agent-1',
+      type: 'needs_input',
+      severity: 'warning',
+      explanation: 'waiting',
+      detectedAt: new Date('2026-05-24T16:00:00.000Z'),
+    });
+    const second = makeAgent('agent-2', {
+      agentId: 'agent-2',
+      type: 'repeated_error',
+      severity: 'warning',
+      explanation: 'stuck',
+      detectedAt: new Date('2026-05-24T16:01:00.000Z'),
+    });
+    useKookrStore.setState({ agents: [first, second], selectedAgentId: first.agentId });
+    const sent: ClientMessage[] = [];
+    root = renderDetailPanel(container, first, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+
+    const terminalSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
+    expect(terminalSubmit).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      terminalSubmit!.click();
+    });
+
+    expect(sent).toEqual([{ type: 'skip', agentId: 'agent-1' }]);
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
+    expect(track).toHaveBeenCalledWith({
+      type: 'finding_skipped',
+      agentId: 'agent-1',
+      anomalyType: 'needs_input',
+      method: 'empty_enter',
+    });
   });
 });

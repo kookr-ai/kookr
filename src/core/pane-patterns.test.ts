@@ -46,7 +46,7 @@ describe('analyzePaneSemantics', () => {
     test('detects Codex idle composer prompt', () => {
       const pane = [
         '',
-        '› Ask Codex to do anything',
+        '› ',
         '',
         '  gpt-5.4 xhigh fast · 100% left · /tmp/project',
       ].join('\n');
@@ -54,6 +54,18 @@ describe('analyzePaneSemantics', () => {
       const result = analyzePaneSemantics(pane);
       expect(result.state).toBe('input_prompt');
       expect(result.confidence).toBe('high');
+    });
+
+    test('does not detect a Codex composer with visible draft text as an empty input prompt', () => {
+      const pane = [
+        '',
+        '› run tests',
+        '',
+        '  gpt-5.4 xhigh fast · 100% left · /tmp/project',
+      ].join('\n');
+
+      const result = analyzePaneSemantics(pane);
+      expect(result.state).not.toBe('input_prompt');
     });
 
     test('does not detect Codex plugin popup rows as input prompt', () => {
@@ -255,7 +267,7 @@ describe('PaneSemanticsStrategy', () => {
 
   test('returns needs_input for Codex idle prompt', () => {
     const anomaly = strategy.evaluate('agent-1', {
-      paneText: '› Ask Codex to do anything\n\n  gpt-5.4 fast · 100% left · /tmp/project',
+      paneText: '› \n\n  gpt-5.4 fast · 100% left · /tmp/project',
       realAnomaly: null,
     });
     expect(anomaly).not.toBeNull();

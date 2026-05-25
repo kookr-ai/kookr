@@ -862,7 +862,11 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                     style={{ display: rightPane === 'terminal' ? 'flex' : 'none' }}
                   >
                     <Suspense fallback={null}>
-                      <TerminalPanel tmuxName={agent.agentId} visible={terminalVisible} />
+                      <TerminalPanel
+                        tmuxName={agent.agentId}
+                        visible={terminalVisible}
+                        onEmptySubmit={handleEmptyEnterAdvance}
+                      />
                     </Suspense>
                   </div>
                   {activeDiff && (
@@ -964,7 +968,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           >
             {respondAllAgentIds ? `Send to All (${respondAllAgentIds.length})` : isDirectReply ? 'Send' : 'Send & Next'}
           </button>
-          {!isDirectReply && <button className="btn-secondary" onClick={handleSkip}>Skip</button>}
+          {!isDirectReply && <button className="btn-secondary" onClick={() => handleSkip()}>Skip</button>}
           {!isDirectReply && <button className="btn-secondary" onClick={() => setShowSnooze(true)}>Snooze</button>}
         </div>
         {showSnooze && agent && (

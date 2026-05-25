@@ -8,10 +8,12 @@ import { useKookrStore } from '../store/useStore.js';
 import { registerTerminalSend } from '../terminal-send.js';
 import { isMultilinePaste, buildPasteFrame } from '../terminal-paste.js';
 import { track } from '../telemetry.js';
+import { analyzePaneSemantics } from '../../shared/pane-semantics.js';
 
 interface Props {
   tmuxName: string | null;
   visible: boolean;
+  onEmptySubmit?: () => void;
 }
 
 interface MenuState {
@@ -31,13 +33,38 @@ const SEARCH_OPTIONS: ISearchOptions = {
   },
 };
 
+const CTRL_C = '\u0003';
+const CTRL_U = '\u0015';
+const BACKSPACE = '\b';
+const DELETE = '\u007f';
+const TERMINAL_OUTPUT_TAIL_LIMIT = 20_000;
+
 function getValidatedResize(cols: unknown, rows: unknown): { cols: number; rows: number } | null {
   if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
   if (cols <= 0 || rows <= 0) return null;
   return { cols, rows };
 }
 
-export function TerminalPanel({ tmuxName, visible }: Props) {
+function updateTerminalInputDraft(draft: string, data: string): string {
+  let next = draft;
+  for (const char of data) {
+    if (char === '\r' || char === '\n' || char === CTRL_C || char === CTRL_U) {
+      next = '';
+    } else if (char === DELETE || char === BACKSPACE) {
+      next = next.slice(0, -1);
+    } else {
+      next += char;
+    }
+  }
+  return next;
+}
+
+function isEmptyAgentPromptVisible(outputTail: string): boolean {
+  const semantics = analyzePaneSemantics(outputTail);
+  return semantics.state === 'input_prompt' && semantics.confidence === 'high';
+}
+
+export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -45,6 +72,10 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const currentTmuxRef = useRef<string | null>(null);
+  const terminalInputDraftRef = useRef('');
+  const terminalOutputTailRef = useRef('');
+  const terminalOutputDecoderRef = useRef(new TextDecoder());
+  const onEmptySubmitRef = useRef(onEmptySubmit);
   const searchOpenRef = useRef(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -82,6 +113,10 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
       : searchAddon.findPrevious(term, options);
     setSearchFound(found);
   }
+
+  useEffect(() => {
+    onEmptySubmitRef.current = onEmptySubmit;
+  }, [onEmptySubmit]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -353,6 +388,9 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
     }
 
     searchOpenRef.current = false;
+    terminalInputDraftRef.current = '';
+    terminalOutputTailRef.current = '';
+    terminalOutputDecoderRef.current = new TextDecoder();
     setSearchOpen(false);
     setSearchTerm('');
     setSearchFound(null);
@@ -404,8 +442,12 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
       // .write() accepts both Uint8Array and string. String frames (from the
       // legacy TerminalBridge path) pass through unchanged.
       if (event.data instanceof ArrayBuffer) {
-        terminal.write(new Uint8Array(event.data));
+        const bytes = new Uint8Array(event.data);
+        terminalOutputTailRef.current = (terminalOutputTailRef.current + terminalOutputDecoderRef.current.decode(bytes, { stream: true }))
+          .slice(-TERMINAL_OUTPUT_TAIL_LIMIT);
+        terminal.write(bytes);
       } else {
+        terminalOutputTailRef.current = (terminalOutputTailRef.current + event.data).slice(-TERMINAL_OUTPUT_TAIL_LIMIT);
         terminal.write(event.data);
       }
     };
@@ -426,6 +468,16 @@ export function TerminalPanel({ tmuxName, visible }: Props) {
 
     // Terminal input → WebSocket
     const inputDisposable = terminal.onData((data) => {
+      if (
+        data === '\r'
+        && terminalInputDraftRef.current.length === 0
+        && onEmptySubmitRef.current
+        && isEmptyAgentPromptVisible(terminalOutputTailRef.current)
+      ) {
+        onEmptySubmitRef.current();
+        return;
+      }
+      terminalInputDraftRef.current = updateTerminalInputDraft(terminalInputDraftRef.current, data);
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
