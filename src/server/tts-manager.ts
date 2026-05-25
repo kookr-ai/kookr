@@ -14,6 +14,8 @@
  */
 
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { hasDockerRuntime } from './docker-runtime.js';
@@ -21,6 +23,7 @@ import { hasDockerRuntime } from './docker-runtime.js';
 const execFileAsync = promisify(execFile);
 
 export const DEFAULT_TTS_VOICE = '/app/voices/matilda.mp3';
+const TTS_BUILD_STAMP_FILE = '.kookr-tts-build.hash';
 
 export type TTSDevice = 'auto' | 'cpu' | 'gpu';
 export type ResolvedTTSDevice = 'cpu' | 'gpu';
@@ -82,12 +85,29 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
     }, voice: ${voice}, port: ${port})...`,
   );
 
+  const buildPlan = await planTTSImageBuild(ttsDir);
+  if (buildPlan.build) {
+    console.log(`[tts] Building TTS image (${buildPlan.reason})...`);
+  } else {
+    console.log('[tts] Reusing existing TTS image; build inputs are unchanged');
+  }
+
   // Start container in detached mode
   try {
-    await execFileAsync('docker', ['compose', ...composeFlags, 'up', '-d', '--build'], {
+    const upArgs = [
+      'compose',
+      ...composeFlags,
+      'up',
+      '-d',
+      ...(buildPlan.build ? ['--build'] : []),
+    ];
+    await execFileAsync('docker', upArgs, {
       env,
       timeout: 600_000, // PyTorch + CUDA install can take several minutes on first build
     });
+    if (buildPlan.build) {
+      await writeTTSBuildStamp(ttsDir, buildPlan.inputHash);
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`[tts] Failed to start Docker container: ${msg}`);
@@ -201,6 +221,89 @@ export function parseTTSDevice(raw: string | undefined): TTSDevice {
 
 export function parseTTSDeviceFromEnv(): TTSDevice {
   return parseTTSDevice(process.env.KOOKR_TTS_DEVICE);
+}
+
+interface TTSImageBuildPlan {
+  build: boolean;
+  inputHash: string;
+  reason: string;
+}
+
+async function planTTSImageBuild(ttsDir: string): Promise<TTSImageBuildPlan> {
+  const inputHash = await hashTTSBuildInputs(ttsDir);
+  const stampPath = join(ttsDir, TTS_BUILD_STAMP_FILE);
+  let previousHash = '';
+
+  try {
+    previousHash = (await readFile(stampPath, 'utf-8')).trim();
+  } catch {
+    // First run, deleted stamp, or unreadable stamp: rebuild conservatively.
+    return { build: true, inputHash, reason: 'no prior build stamp' };
+  }
+
+  if (previousHash !== inputHash) {
+    return { build: true, inputHash, reason: 'TTS build inputs changed' };
+  }
+
+  return { build: false, inputHash, reason: 'TTS build inputs unchanged' };
+}
+
+async function hashTTSBuildInputs(ttsDir: string): Promise<string> {
+  const hash = createHash('sha256');
+  for (const relativePath of [
+    'Dockerfile',
+    'docker-compose.yml',
+    'docker-compose.gpu.yml',
+    'src',
+    'voices',
+  ]) {
+    await addPathToHash(hash, ttsDir, relativePath);
+  }
+  return hash.digest('hex');
+}
+
+async function addPathToHash(
+  hash: ReturnType<typeof createHash>,
+  rootDir: string,
+  relativePath: string,
+): Promise<void> {
+  const absolutePath = join(rootDir, relativePath);
+  try {
+    const stats = await lstat(absolutePath);
+    if (stats.isDirectory()) {
+      hash.update(`dir\0${relativePath}\0`);
+      const entries = await readdir(absolutePath);
+      for (const entry of entries.sort()) {
+        await addPathToHash(hash, rootDir, join(relativePath, entry));
+      }
+      return;
+    }
+
+    if (stats.isFile()) {
+      hash.update(`file\0${relativePath}\0`);
+      hash.update(await readFile(absolutePath));
+      hash.update('\0');
+      return;
+    }
+
+    hash.update(`other\0${relativePath}\0${stats.mode}\0`);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      hash.update(`missing\0${relativePath}\0`);
+      return;
+    }
+    throw err;
+  }
+}
+
+async function writeTTSBuildStamp(ttsDir: string, inputHash: string): Promise<void> {
+  try {
+    await mkdir(ttsDir, { recursive: true });
+    await writeFile(join(ttsDir, TTS_BUILD_STAMP_FILE), `${inputHash}\n`, 'utf-8');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[tts] Warning: failed to write TTS build stamp: ${msg}`);
+  }
 }
 
 function sleep(ms: number): Promise<void> {

@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { execFileMock } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
@@ -22,6 +25,23 @@ beforeEach(() => {
   });
   vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
 });
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
+
+async function createTTSFixture(): Promise<string> {
+  const ttsDir = await mkdtemp(join(tmpdir(), 'kookr-tts-test-'));
+  await mkdir(join(ttsDir, 'src'));
+  await mkdir(join(ttsDir, 'voices'));
+  await writeFile(join(ttsDir, 'Dockerfile'), 'FROM scratch\n');
+  await writeFile(join(ttsDir, 'docker-compose.yml'), 'services:\n  kookr-tts:\n    build: .\n');
+  await writeFile(join(ttsDir, 'docker-compose.gpu.yml'), 'services:\n  kookr-tts: {}\n');
+  await writeFile(join(ttsDir, 'src', 'server.py'), 'print("hello")\n');
+  await writeFile(join(ttsDir, 'voices', 'matilda.mp3'), 'voice');
+  return ttsDir;
+}
 
 describe('parseTTSDevice', () => {
   it('defaults to auto when unset', () => {
@@ -130,6 +150,132 @@ describe('startTTS', () => {
       expect.objectContaining({ timeout: 30_000 }),
       expect.any(Function),
     );
+  });
+
+  it('skips docker rebuilds after the TTS image inputs are already built', async () => {
+    const ttsDir = await createTTSFixture();
+
+    try {
+      await startTTS({
+        ttsDir,
+        port: 8004,
+        device: 'cpu',
+      });
+
+      expect(execFileMock).toHaveBeenCalledWith(
+        'docker',
+        [
+          'compose',
+          '-f',
+          join(ttsDir, 'docker-compose.yml'),
+          'up',
+          '-d',
+          '--build',
+        ],
+        expect.objectContaining({ timeout: 600_000 }),
+        expect.any(Function),
+      );
+
+      execFileMock.mockClear();
+
+      await startTTS({
+        ttsDir,
+        port: 8004,
+        device: 'cpu',
+      });
+
+      expect(execFileMock).toHaveBeenCalledWith(
+        'docker',
+        [
+          'compose',
+          '-f',
+          join(ttsDir, 'docker-compose.yml'),
+          'up',
+          '-d',
+        ],
+        expect.objectContaining({ timeout: 600_000 }),
+        expect.any(Function),
+      );
+    } finally {
+      await rm(ttsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rebuilds when the TTS web server file changes', async () => {
+    const ttsDir = await createTTSFixture();
+
+    try {
+      await startTTS({
+        ttsDir,
+        port: 8004,
+        device: 'cpu',
+      });
+      execFileMock.mockClear();
+
+      await writeFile(join(ttsDir, 'src', 'server.py'), 'print("changed")\n');
+
+      await startTTS({
+        ttsDir,
+        port: 8004,
+        device: 'cpu',
+      });
+
+      expect(execFileMock).toHaveBeenCalledWith(
+        'docker',
+        [
+          'compose',
+          '-f',
+          join(ttsDir, 'docker-compose.yml'),
+          'up',
+          '-d',
+          '--build',
+        ],
+        expect.objectContaining({ timeout: 600_000 }),
+        expect.any(Function),
+      );
+    } finally {
+      await rm(ttsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rebuilds when the TTS compose build definition changes', async () => {
+    const ttsDir = await createTTSFixture();
+
+    try {
+      await startTTS({
+        ttsDir,
+        port: 8004,
+        device: 'cpu',
+      });
+      execFileMock.mockClear();
+
+      await writeFile(
+        join(ttsDir, 'docker-compose.yml'),
+        'services:\n  kookr-tts:\n    build:\n      context: .\n      dockerfile: Dockerfile\n',
+      );
+
+      await startTTS({
+        ttsDir,
+        port: 8004,
+        device: 'cpu',
+      });
+
+      expect(execFileMock).toHaveBeenCalledWith(
+        'docker',
+        [
+          'compose',
+          '-f',
+          join(ttsDir, 'docker-compose.yml'),
+          'up',
+          '-d',
+          '--build',
+        ],
+        expect.objectContaining({ timeout: 600_000 }),
+        expect.any(Function),
+      );
+    } finally {
+      await rm(ttsDir, { recursive: true, force: true });
+    }
   });
 
   it('tears down and rejects when health passes but configured voice synthesis fails', async () => {
