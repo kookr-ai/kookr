@@ -244,4 +244,65 @@ describe('ClientMessageSchema — happy path sanity', () => {
       priority: 'low',
     }).success).toBe(false);
   });
+
+  test('accepts findingFeedback without userReason (backwards compat)', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'findingFeedback',
+      agentId: 'a',
+      anomalyType: 'needs_input',
+      explanation: 'x',
+      verdict: 'false_positive',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts findingFeedback with userReason', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'findingFeedback',
+      agentId: 'a',
+      anomalyType: 'needs_input',
+      explanation: 'x',
+      verdict: 'false_positive',
+      userReason: 'agent was emitting a report',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts missedFinding with required userReason', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'missedFinding',
+      agentId: 'a',
+      userReason: 'stuck for 10 minutes',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts missedFinding with optional suspectedType', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'missedFinding',
+      agentId: 'a',
+      userReason: 'stuck for 10 minutes',
+      suspectedType: 'stale_agent',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('rejects missedFinding with empty userReason', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'missedFinding',
+      agentId: 'a',
+      userReason: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects missedFinding with unknown suspectedType', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'missedFinding',
+      agentId: 'a',
+      userReason: 'r',
+      suspectedType: 'not_a_real_anomaly',
+    });
+    expect(result.success).toBe(false);
+  });
 });

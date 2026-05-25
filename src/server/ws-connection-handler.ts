@@ -89,6 +89,8 @@ export interface WsConnectionDeps {
   serverProjectId?: string;
   /** Wired by createKookrServer so ws.ts can trigger a predelete snapshot. */
   takePredeleteSnapshot?: () => Promise<void>;
+  /** Persistent store for user-flagged supervisor FP/FN cases (offline analysis). */
+  supervisorFeedbackCaseStore?: import('./supervisor-feedback-case-store.js').SupervisorFeedbackCaseStore;
 }
 
 /**
@@ -143,6 +145,7 @@ export function handleWsConnection(
     takePredeleteSnapshot: deps.takePredeleteSnapshot,
     projectConfigStore,
     broadcastProjectSummaries,
+    supervisorFeedbackCaseStore: deps.supervisorFeedbackCaseStore,
   });
 
   // Send initial snapshot

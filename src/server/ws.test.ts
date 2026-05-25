@@ -2146,6 +2146,92 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
 
     // Should not throw — the message is self-contained
   });
+
+  test('findingFeedback persists userReason and snapshot when case store is wired', async () => {
+    const appended: unknown[] = [];
+    const caseStore = { append: async (r: unknown) => { appended.push(r); } };
+    const localRouter = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+      supervisorFeedbackCaseStore: caseStore as never,
+    });
+    monitor.processEvents('agent-fp', [
+      { type: 'stop', sessionId: 's1', lastMessage: '### Finding 1' },
+    ]);
+
+    await localRouter.handleMessage({
+      type: 'findingFeedback',
+      agentId: 'agent-fp',
+      anomalyType: 'needs_input',
+      explanation: 'Agent is waiting for input. Last message: "### Finding 1"',
+      verdict: 'false_positive',
+      userReason: 'agent emitted a long review report, not a question',
+    });
+
+    expect(appended).toHaveLength(1);
+    const record = appended[0] as { kind: string; userReason?: string; snapshot: { recentEvents?: unknown[]; anomalyExplanation?: string } };
+    expect(record.kind).toBe('false_positive');
+    expect(record.userReason).toBe('agent emitted a long review report, not a question');
+    expect(record.snapshot.anomalyExplanation).toContain('### Finding 1');
+    expect(Array.isArray(record.snapshot.recentEvents)).toBe(true);
+  });
+
+  test('missedFinding logs interaction event and persists a false_negative case', async () => {
+    const appended: unknown[] = [];
+    const caseStore = { append: async (r: unknown) => { appended.push(r); } };
+    const interactionLogAppends: unknown[] = [];
+    const interactionLog = {
+      append: async (e: unknown) => { interactionLogAppends.push(e); },
+    };
+    const localRouter = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+      interactionLog: interactionLog as never,
+      supervisorFeedbackCaseStore: caseStore as never,
+    });
+
+    await localRouter.handleMessage({
+      type: 'missedFinding',
+      agentId: 'agent-fn',
+      userReason: 'agent had been stuck for 10 minutes but nothing surfaced',
+      suspectedType: 'stale_agent',
+    });
+
+    expect(appended).toHaveLength(1);
+    const caseRecord = appended[0] as { kind: string; suspectedType?: string; userReason: string };
+    expect(caseRecord.kind).toBe('false_negative');
+    expect(caseRecord.suspectedType).toBe('stale_agent');
+    expect(caseRecord.userReason).toContain('stuck for 10 minutes');
+
+    const missedFindingEvent = interactionLogAppends.find(
+      (e): e is { type: string } => typeof e === 'object' && e !== null && 'type' in e && (e as { type: string }).type === 'missed_finding',
+    );
+    expect(missedFindingEvent).toBeDefined();
+  });
+
+  test('missedFinding without suspectedType still persists a case but skips the per-type counter', async () => {
+    const appended: unknown[] = [];
+    const caseStore = { append: async (r: unknown) => { appended.push(r); } };
+    const localRouter = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+      supervisorFeedbackCaseStore: caseStore as never,
+    });
+
+    await localRouter.handleMessage({
+      type: 'missedFinding',
+      agentId: 'agent-fn-untyped',
+      userReason: 'something was off, can\'t name it',
+    });
+
+    expect(appended).toHaveLength(1);
+    const record = appended[0] as { kind: string; suspectedType?: string };
+    expect(record.kind).toBe('false_negative');
+    expect(record.suspectedType).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

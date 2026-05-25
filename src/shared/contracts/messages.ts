@@ -272,7 +272,20 @@ export type ClientMessage =
   | { type: 'achievement:setEnabled'; enabled: boolean }
   | { type: 'permissionChoice'; agentId: string; keystroke: string; permissionRequest: PermissionRequestBinding }
   | { type: 'rearmCircuitBreaker'; name: string }
-  | { type: 'findingFeedback'; agentId: string; anomalyType: AnomalyType; explanation: string; verdict: 'false_positive' }
+  | {
+      type: 'findingFeedback';
+      agentId: string;
+      anomalyType: AnomalyType;
+      explanation: string;
+      verdict: 'false_positive';
+      userReason?: string;
+    }
+  | {
+      type: 'missedFinding';
+      agentId: string;
+      userReason: string;
+      suspectedType?: AnomalyType;
+    }
   | { type: 'workspace:getView'; projectId: string }
   | { type: 'workspace:getCleanupDetail'; projectId: string; worktreePath: string }
   | {

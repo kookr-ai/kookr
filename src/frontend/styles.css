@@ -729,6 +729,8 @@ kbd {
 .btn-xs:hover { color: var(--text-secondary); }
 .btn-fp { color: var(--orange, #f59e0b); border-color: color-mix(in srgb, var(--orange, #f59e0b) 40%, transparent); }
 .btn-fp:hover { color: #fbbf24; }
+.btn-fn { color: var(--purple, #a78bfa); border-color: color-mix(in srgb, var(--purple, #a78bfa) 40%, transparent); }
+.btn-fn:hover { color: #c4b5fd; }
 
 .task-id-copy {
   display: inline-flex;
@@ -6524,6 +6526,57 @@ button.project-drawer-link:focus-visible {
   font-size: 10px;
   font-weight: 600;
   min-width: 40px;
+  text-align: right;
+}
+.stats-fn {
+  color: var(--purple, #a78bfa);
+  font-size: 10px;
+  font-weight: 600;
+  min-width: 40px;
+  text-align: right;
+}
+
+.supervisor-feedback-dialog {
+  background: var(--bg-elevated, #1f2937);
+  border: 1px solid var(--border, #374151);
+  border-radius: 8px;
+  padding: 16px;
+  max-width: 480px;
+  width: 90vw;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+.supervisor-feedback-dialog-title { font-size: 14px; }
+.supervisor-feedback-dialog-context {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.04));
+  padding: 8px;
+  border-radius: 4px;
+}
+.supervisor-feedback-dialog-field { display: flex; flex-direction: column; gap: 4px; }
+.supervisor-feedback-dialog-field label { font-size: 12px; color: var(--text-secondary); }
+.supervisor-feedback-dialog-field textarea,
+.supervisor-feedback-dialog-field select {
+  background: var(--bg-base, #111827);
+  color: var(--text-primary, #f3f4f6);
+  border: 1px solid var(--border, #374151);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+.supervisor-feedback-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.supervisor-feedback-dialog-hint {
+  font-size: 11px;
+  color: var(--text-muted);
   text-align: right;
 }
 

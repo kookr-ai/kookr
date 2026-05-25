@@ -199,6 +199,13 @@ const ClientMessageSchemaImpl = z.union([
     anomalyType,
     explanation: z.string(),
     verdict: z.literal('false_positive'),
+    userReason: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal('missedFinding'),
+    agentId: z.string(),
+    userReason: z.string().min(1),
+    suspectedType: anomalyType.optional(),
   }),
   z.object({ type: z.literal('workspace:getView'), projectId: z.string() }),
   z.object({

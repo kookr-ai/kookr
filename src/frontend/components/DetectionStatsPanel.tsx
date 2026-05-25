@@ -7,6 +7,7 @@ interface DetectionStats {
   checks: Record<string, number>;
   fires: Record<string, number>;
   falsePositives: Record<string, number>;
+  falseNegatives?: Record<string, number>;
 }
 
 const LABEL: Record<string, string> = {
@@ -163,9 +164,14 @@ export function DetectionStatsPanel({ defaultExpanded = false, showEmpty = false
   // Nothing detected yet — don't clutter the panel
   if (totalChecks === 0 && !showEmpty) return null;
 
-  // Only show types that have fired at least once
-  const firedTypes = Object.entries(stats.fires)
-    .filter(([, count]) => count > 0)
+  // Show any detector type that has fired OR has user feedback (FP/FN). A type
+  // can have 0 fires but >0 FNs when the user reported a missed finding for it.
+  const allTypes = new Set<string>([
+    ...Object.keys(stats.fires).filter((t) => (stats.fires[t] ?? 0) > 0),
+    ...Object.keys(stats.falseNegatives ?? {}).filter((t) => (stats.falseNegatives?.[t] ?? 0) > 0),
+  ]);
+  const firedTypes = Array.from(allTypes)
+    .map((type) => [type, stats.fires[type] ?? 0] as [string, number])
     .sort(([, a], [, b]) => b - a);
 
   const diagnosticFindings = diagnosticReport?.findings ?? [];
@@ -199,12 +205,14 @@ export function DetectionStatsPanel({ defaultExpanded = false, showEmpty = false
           {firedTypes.map(([type, fires]) => {
             const checks = stats.checks[type] ?? 0;
             const fp = stats.falsePositives?.[type] ?? 0;
+            const fn = stats.falseNegatives?.[type] ?? 0;
             const rate = checks > 0 ? ((fires / checks) * 100).toFixed(1) : '0';
             return (
               <div key={type} className="stats-row">
                 <span className="stats-type">{LABEL[type] ?? type}</span>
                 <span className="stats-count">{fires}</span>
                 {fp > 0 && <span className="stats-fp">{fp} FP</span>}
+                {fn > 0 && <span className="stats-fn">{fn} FN</span>}
                 <span className="stats-rate">{rate}% fire rate</span>
               </div>
             );

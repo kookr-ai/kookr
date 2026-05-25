@@ -87,6 +87,12 @@ export interface MessageRouterDeps {
   projectConfigStore?: ProjectConfigStore;
   /** Rebroadcasts `projectSummaries` to all clients after config changes. */
   broadcastProjectSummaries?: () => void;
+  /**
+   * Persistent JSONL log of user-flagged supervisor false-positive / missed-finding
+   * cases. Optional — when omitted, FP/FN feedback still flows through the interaction
+   * log and stats counters but no rich case snapshot is persisted for offline review.
+   */
+  supervisorFeedbackCaseStore?: import('./supervisor-feedback-case-store.js').SupervisorFeedbackCaseStore;
 }
 
 export class MessageRouter {
@@ -139,6 +145,7 @@ export class MessageRouter {
       interactionLog: this.deps.interactionLog,
       suppressionTracker: this.deps.suppressionTracker,
       onRespond: this.deps.onRespond,
+      caseLogStore: this.deps.supervisorFeedbackCaseStore,
     });
     this.lifecycleHandler = new LifecycleHandler({
       send: this.deps.send,
@@ -279,6 +286,7 @@ export class MessageRouter {
       case 'snooze':
       case 'cancelSnooze':
       case 'findingFeedback':
+      case 'missedFinding':
       case 'permissionChoice':
         await this.anomalyHandler.handle(msg, dispatch);
         return;
