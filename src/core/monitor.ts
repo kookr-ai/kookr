@@ -5,6 +5,7 @@ import { isTerminalStatus, type TaskLaunchHealthSummary, type TaskStore } from '
 import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
+import { anomalyFingerprint } from './anomaly-fingerprint.js';
 import { detectAnomalies, evaluateAnomalies } from './anomaly-detector.js';
 import { deriveTurnState } from './turn-state.js';
 import { projectDisplayLabel } from './project-identity.js';
@@ -122,10 +123,6 @@ function isWatchdogOwnedType(type: string | undefined): boolean {
   return type !== undefined && WATCHDOG_OWNED_TYPES.has(type);
 }
 
-function anomalyFingerprint(anomaly: Anomaly): string {
-  return `${anomaly.type}:${anomaly.subType ?? ''}:${anomaly.explanation}`;
-}
-
 export class Monitor {
   private agentEvents = new Map<string, AgentEvent[]>();
   private stoppedAgents = new Set<string>();
@@ -133,6 +130,7 @@ export class Monitor {
   /** Monotonic per-agent event counts for self-diagnostic rate checks. */
   private _eventCounts = new Map<string, number>();
   private lastRecordedAnomalyFingerprint = new Map<string, string>();
+  private lastEventAnomaly = new Map<string, Anomaly>();
   private findingEvidenceAuditor = new FindingEvidenceAuditor();
   /**
    * Outstanding background subagents per parent agent. Each subagent tracked with
@@ -199,7 +197,7 @@ export class Monitor {
     // the counter once per snapshot tick instead of once per suppressed Stop.
     const evaluation = evaluateAnomalies(capped, agentId, this.anomalyConfig);
     const rawAnomaly = evaluation.anomaly;
-    const anomaly = this.suppressIfSubagentsRunning(rawAnomaly, agentId);
+    const anomaly = this.stabilizeEventAnomaly(agentId, this.suppressIfSubagentsRunning(rawAnomaly, agentId));
     this.recordDetectionTelemetry(agentId, evaluation.checkedTypes, anomaly);
     if (rawAnomaly?.type === 'needs_input' && anomaly === null) {
       recordSuppression('needs_input');
@@ -234,7 +232,8 @@ export class Monitor {
   getEventAnomaly(agentId: string): Anomaly | null {
     const events = this.agentEvents.get(agentId) ?? [];
     const raw = detectAnomalies(events, agentId, this.anomalyConfig);
-    return this.suppressIfSubagentsRunning(raw, agentId);
+    const anomaly = this.suppressIfSubagentsRunning(raw, agentId);
+    return anomaly ? this.withStableEventDetectedAt(agentId, anomaly) : null;
   }
 
   /**
@@ -246,7 +245,7 @@ export class Monitor {
     let anomaly = this.getEventAnomaly(agentId);
     const queued = this.attentionQueue.peek(agentId);
     if (anomaly) {
-      if (queued && queued.type === anomaly.type) {
+      if (queued && anomalyFingerprint(queued) === anomalyFingerprint(anomaly)) {
         anomaly = { ...anomaly, detectedAt: queued.detectedAt };
       }
       return anomaly;
@@ -309,6 +308,17 @@ export class Monitor {
           suppressionReason: 'subagent_running',
         });
         return true;
+      }
+
+      const eventAnomaly = this.getEventAnomaly(agentId);
+      if (eventAnomaly) {
+        // Event-derived findings are the source of truth when hook evidence is
+        // present; watchdog verdicts should not replace or re-age that finding.
+        const queued = this.attentionQueue.peek(agentId);
+        this.attentionQueue.enqueue(agentId, eventAnomaly);
+        return !queued
+          || anomalyFingerprint(queued) !== anomalyFingerprint(eventAnomaly)
+          || queued.detectedAt.getTime() !== eventAnomaly.detectedAt.getTime();
       }
       // Suppression tracker opts the agent out of queue entry but the UI still
       // needs to reflect the suppressed state, so report "changed" either way.
@@ -454,10 +464,27 @@ export class Monitor {
     this.agentEvents.delete(agentId);
     this._eventCounts.delete(agentId);
     this.lastRecordedAnomalyFingerprint.delete(agentId);
+    this.lastEventAnomaly.delete(agentId);
     this.findingEvidenceAuditor.deleteAgent(agentId);
     this.attentionQueue.purge(agentId);
     this.flushAndDeleteSubagents(agentId);
     this.stoppedAgents.add(agentId);
+  }
+
+  private stabilizeEventAnomaly(agentId: string, anomaly: Anomaly | null): Anomaly | null {
+    if (!anomaly) {
+      this.lastEventAnomaly.delete(agentId);
+      return null;
+    }
+    const stable = this.withStableEventDetectedAt(agentId, anomaly);
+    this.lastEventAnomaly.set(agentId, stable);
+    return stable;
+  }
+
+  private withStableEventDetectedAt(agentId: string, anomaly: Anomaly): Anomaly {
+    const previous = this.lastEventAnomaly.get(agentId);
+    if (!previous || anomalyFingerprint(previous) !== anomalyFingerprint(anomaly)) return anomaly;
+    return { ...anomaly, detectedAt: previous.detectedAt };
   }
 
   private recordDetectionTelemetry(

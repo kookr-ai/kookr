@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { AgentEvent, Anomaly } from './types.js';
+import { stableAnomalyExplanation } from './anomaly-fingerprint.js';
 import type {
   FindingEvidenceAuditRecord,
   FindingEvidenceObservation,
@@ -38,11 +39,7 @@ const DEFAULT_OPTIONS = {
 };
 
 function anomalyFingerprint(anomaly: Anomaly): string {
-  return `${anomaly.agentId}:${anomaly.type}:${anomaly.subType ?? ''}:${fingerprintExplanation(anomaly.type, anomaly.explanation)}`;
-}
-
-function fingerprintExplanation(type: Anomaly['type'], explanation: string): string {
-  return type === 'stale_agent' || type === 'hook_disconnected' ? '' : explanation;
+  return `${anomaly.agentId}:${anomaly.type}:${anomaly.subType ?? ''}:${stableAnomalyExplanation(anomaly)}`;
 }
 
 function recordId(anomaly: Anomaly, detectedAt: string): string {
@@ -311,7 +308,10 @@ function sameObservation(a: FindingEvidenceObservation, b: FindingEvidenceObserv
 }
 
 function anomalyFingerprintFromRecord(record: FindingEvidenceAuditRecord): string {
-  return `${record.agentId}:${record.anomalyType}:${record.anomalySubType ?? ''}:${fingerprintExplanation(record.anomalyType, record.explanation)}`;
+  return `${record.agentId}:${record.anomalyType}:${record.anomalySubType ?? ''}:${stableAnomalyExplanation({
+    type: record.anomalyType,
+    explanation: record.explanation,
+  })}`;
 }
 
 function cloneRecord(record: FindingEvidenceAuditRecord): FindingEvidenceAuditRecord {

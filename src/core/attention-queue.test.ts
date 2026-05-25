@@ -14,6 +14,10 @@ function makeAnomaly(agentId: string, type: Anomaly['type'], severity: Anomaly['
   };
 }
 
+function withDetectedAt(anomaly: Anomaly, detectedAt: string): Anomaly {
+  return { ...anomaly, detectedAt: new Date(detectedAt) };
+}
+
 describe('AttentionQueue', () => {
   let queue: AttentionQueue;
 
@@ -60,6 +64,70 @@ describe('AttentionQueue', () => {
       const all = queue.getAll();
       expect(all).toHaveLength(1);
       expect(all[0].anomaly.type).toBe('repeated_error');
+    });
+
+    test('same type with different fingerprint gets a fresh detectedAt', () => {
+      const first = withDetectedAt(
+        { ...makeAnomaly('a1', 'api_error', 'warning'), explanation: 'API Error: 529 Overloaded' },
+        '2026-05-25T09:28:08.000Z',
+      );
+      const second = withDetectedAt(
+        { ...makeAnomaly('a1', 'api_error', 'critical'), explanation: 'Billing quota exhausted' },
+        '2026-05-25T10:00:00.000Z',
+      );
+
+      queue.enqueue('a1', first);
+      queue.enqueue('a1', second);
+
+      const current = queue.peek('a1')!;
+      expect(current.explanation).toBe('Billing quota exhausted');
+      expect(current.detectedAt.toISOString()).toBe('2026-05-25T10:00:00.000Z');
+    });
+
+    test('same fingerprint keeps the original detectedAt', () => {
+      const first = withDetectedAt(makeAnomaly('a1', 'api_error', 'warning'), '2026-05-25T09:28:08.000Z');
+      const second = withDetectedAt(makeAnomaly('a1', 'api_error', 'warning'), '2026-05-25T10:00:00.000Z');
+
+      queue.enqueue('a1', first);
+      queue.enqueue('a1', second);
+
+      expect(queue.peek('a1')!.detectedAt.toISOString()).toBe('2026-05-25T09:28:08.000Z');
+    });
+
+    test('liveness findings ignore volatile elapsed-time explanations', () => {
+      const first = withDetectedAt(
+        { ...makeAnomaly('a1', 'stale_agent', 'warning'), explanation: 'No activity for 10s - agent may be stuck or disconnected' },
+        '2026-05-25T09:28:08.000Z',
+      );
+      const second = withDetectedAt(
+        { ...makeAnomaly('a1', 'stale_agent', 'warning'), explanation: 'No activity for 20s - agent may be stuck or disconnected' },
+        '2026-05-25T09:28:18.000Z',
+      );
+
+      queue.enqueue('a1', first);
+      queue.enqueue('a1', second);
+
+      const current = queue.peek('a1')!;
+      expect(current.explanation).toContain('20s');
+      expect(current.detectedAt.toISOString()).toBe('2026-05-25T09:28:08.000Z');
+    });
+
+    test('repeated errors ignore volatile repeat counts', () => {
+      const first = withDetectedAt(
+        { ...makeAnomaly('a1', 'repeated_error', 'warning'), explanation: 'Same error repeated 3 times: "ECONNRESET"' },
+        '2026-05-25T09:28:08.000Z',
+      );
+      const second = withDetectedAt(
+        { ...makeAnomaly('a1', 'repeated_error', 'warning'), explanation: 'Same error repeated 5 times: "ECONNRESET"' },
+        '2026-05-25T09:30:00.000Z',
+      );
+
+      queue.enqueue('a1', first);
+      queue.enqueue('a1', second);
+
+      const current = queue.peek('a1')!;
+      expect(current.explanation).toContain('5 times');
+      expect(current.detectedAt.toISOString()).toBe('2026-05-25T09:28:08.000Z');
     });
   });
 
@@ -131,6 +199,50 @@ describe('AttentionQueue', () => {
       const next = queue.next();
       expect(next).not.toBeNull();
       expect(next!.anomaly.type).toBe('repeated_error');
+    });
+
+    test('snoozed same type with different fingerprint gets a fresh detectedAt', () => {
+      const first = withDetectedAt(
+        { ...makeAnomaly('a1', 'api_error', 'warning'), explanation: 'API Error: 529 Overloaded' },
+        '2026-05-25T09:28:08.000Z',
+      );
+      const second = withDetectedAt(
+        { ...makeAnomaly('a1', 'api_error', 'warning'), explanation: 'Billing quota exhausted' },
+        '2026-05-25T10:00:00.000Z',
+      );
+
+      queue.enqueue('a1', first);
+      queue.snooze('a1', 60000);
+      queue.enqueue('a1', second);
+
+      expect(queue.next()).toBeNull();
+      queue.cancelSnooze('a1');
+
+      const next = queue.next();
+      expect(next).not.toBeNull();
+      expect(next!.anomaly.explanation).toBe('Billing quota exhausted');
+      expect(next!.anomaly.detectedAt.toISOString()).toBe('2026-05-25T10:00:00.000Z');
+    });
+
+    test('snoozed liveness finding keeps original detectedAt across volatile explanations', () => {
+      const first = withDetectedAt(
+        { ...makeAnomaly('a1', 'stale_agent', 'warning'), explanation: 'No activity for 10s - agent may be stuck or disconnected' },
+        '2026-05-25T09:28:08.000Z',
+      );
+      const second = withDetectedAt(
+        { ...makeAnomaly('a1', 'stale_agent', 'warning'), explanation: 'No activity for 20s - agent may be stuck or disconnected' },
+        '2026-05-25T09:28:18.000Z',
+      );
+
+      queue.enqueue('a1', first);
+      queue.snooze('a1', 60000);
+      queue.enqueue('a1', second);
+      queue.cancelSnooze('a1');
+
+      const next = queue.next();
+      expect(next).not.toBeNull();
+      expect(next!.anomaly.explanation).toContain('20s');
+      expect(next!.anomaly.detectedAt.toISOString()).toBe('2026-05-25T09:28:08.000Z');
     });
 
     test('snooze with fallback anomaly when entry not in entries', () => {
