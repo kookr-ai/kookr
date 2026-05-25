@@ -105,6 +105,21 @@ export interface ClaudeCodeAdapterOptions {
    * `resolveBracketedPasteSubmit`.
    */
   promptBracketedPaste?: boolean;
+  /**
+   * Per-attempt deadline (ms) for the `UserPromptSubmit` confirmation that
+   * gates the launch-path Enter retry loop. Production default lives in
+   * `agent-launch-context.DEFAULT_PROMPT_SUBMIT_CONFIRM_MS`; tests override
+   * to a small value so the worst-case bracketed-paste launch test does
+   * not stall waiting for a hook the FakeTerminalBackend never produces.
+   */
+  promptSubmitConfirmTimeoutMs?: number;
+  /**
+   * Number of retry Enters after the initial submission Enter when the
+   * `UserPromptSubmit` confirmation keeps timing out. Production default
+   * lives in `agent-launch-context.DEFAULT_PROMPT_SUBMIT_RETRIES`; tests
+   * use `0` to assert the open-loop path with no resends.
+   */
+  promptSubmitRetries?: number;
 }
 
 /** Env var that overrides the default Claude Code binary path. */
@@ -130,6 +145,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private inferredWorktreeRoots = new Map<string, string>();
   /** Tool-result hooks often omit the original tool input, so carry the inferred path by tool_use_id. */
   private pendingToolGitPaths = new Map<string, Map<string, string>>();
+  /**
+   * Resolver for the first parent `UserPromptSubmit` hook on each launching
+   * session — the ground-truth signal that the initial prompt left the
+   * composer. The launch path registers a deferred here BEFORE delivering
+   * the prompt, then awaits it with timeout/retry; `injectHookEvent` calls
+   * the resolver when the matching hook arrives. Cleared on first fire and
+   * on `stop()`. See `launch()` for usage.
+   */
+  private initialPromptSubmitResolvers = new Map<string, () => void>();
   private hooksDir: string;
   private settingsDir: string;
   private writeFile?: (path: string, content: string) => Promise<void>;
@@ -142,6 +166,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private probeExec?: ProbeExecRunner;
   private loadAgents: (cwd: string) => Record<string, InlineAgentDef>;
   private promptBracketedPaste: boolean;
+  private promptSubmitConfirmTimeoutMs?: number;
+  private promptSubmitRetries?: number;
 
   constructor(
     private backend: TerminalBackend,
@@ -160,6 +186,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     this.probeExec = options?.probeExec;
     this.loadAgents = options?.loadFileBasedAgents ?? ((cwd) => loadFileBasedAgents(cwd));
     this.promptBracketedPaste = resolveBracketedPasteSubmit(options?.promptBracketedPaste);
+    this.promptSubmitConfirmTimeoutMs = options?.promptSubmitConfirmTimeoutMs;
+    this.promptSubmitRetries = options?.promptSubmitRetries;
   }
 
   async preflight(): Promise<PreflightResult> {
@@ -263,13 +291,33 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       size: { cols: 200, rows: 50 },
     });
     if (!useResume) {
-      // Submit the prompt via bracketed paste so Claude Code's UI parses the
-      // trailing Enter as a keystroke, not paste content. See
-      // deliverInitialPromptToSession.
-      await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
-        bracketedPaste: this.promptBracketedPaste,
-        waitForReady: this.promptBracketedPaste,
-      });
+      // Register a deferred BEFORE delivery so a fast UserPromptSubmit hook
+      // is not missed. The resolver fires from `injectHookEvent` on the
+      // first parent UserPromptSubmit for this session — Claude Code's own
+      // ack that the prompt left the composer. `deliverInitialPromptToSession`
+      // awaits it with timeout and resends Enter on miss, closing the
+      // residual race where the first Enter is parsed as paste content
+      // because bracketed-paste mode had not yet been enabled.
+      const submitConfirmed = this.armInitialPromptSubmitSignal(tmuxName);
+      try {
+        // Submit the prompt via bracketed paste so Claude Code's UI parses the
+        // trailing Enter as a keystroke, not paste content. See
+        // deliverInitialPromptToSession.
+        await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+          bracketedPaste: this.promptBracketedPaste,
+          waitForReady: this.promptBracketedPaste,
+          awaitSubmit: this.promptBracketedPaste
+            ? (timeoutMs) => awaitWithTimeout(submitConfirmed, timeoutMs)
+            : undefined,
+          submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
+          submitRetries: this.promptSubmitRetries,
+        });
+      } finally {
+        // Free the resolver slot even if delivery throws — a later launch on
+        // the same tmuxName (unlikely but possible) must not see a stale
+        // already-resolved deferred.
+        this.initialPromptSubmitResolvers.delete(tmuxName);
+      }
     }
 
     // Register session with task store
@@ -316,6 +364,27 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     await this.backend.killSession(tmuxName);
     this.settingsMap.delete(tmuxName);
     this.tmuxToTaskId.delete(tmuxName);
+    // Resolve any in-flight launch waiter so it stops awaiting hooks that
+    // will never fire after the session is dead, then drop the slot.
+    const resolver = this.initialPromptSubmitResolvers.get(tmuxName);
+    if (resolver) resolver();
+    this.initialPromptSubmitResolvers.delete(tmuxName);
+  }
+
+  /**
+   * Install a deferred that resolves on the first parent `UserPromptSubmit`
+   * hook for `tmuxName`. Returns the promise side; the resolver is held in
+   * {@link initialPromptSubmitResolvers} and fired from
+   * {@link injectHookEvent}. Idempotent: a pre-existing resolver is
+   * cancelled (resolved) before being replaced, so a re-launch on the same
+   * tmuxName cannot leak a never-resolved promise.
+   */
+  private armInitialPromptSubmitSignal(tmuxName: string): Promise<void> {
+    const existing = this.initialPromptSubmitResolvers.get(tmuxName);
+    if (existing) existing();
+    return new Promise<void>((resolve) => {
+      this.initialPromptSubmitResolvers.set(tmuxName, resolve);
+    });
   }
 
   /** Capture the current terminal display as a decoded string. */
@@ -464,6 +533,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       }
     }
 
+    // Fire the launch-path submit signal on the first parent UserPromptSubmit.
+    // Child sessions (subagents) also emit user_prompt events; ignore those —
+    // the launch waiter only cares that the initial top-level prompt landed.
+    if (event.type === 'user_prompt' && parentage === 'parent') {
+      const resolver = this.initialPromptSubmitResolvers.get(tmuxName);
+      if (resolver) {
+        this.initialPromptSubmitResolvers.delete(tmuxName);
+        resolver();
+      }
+    }
+
     const sequence = externalSequence ?? (this.sequenceCounters.get(tmuxName) ?? 0) + 1;
     this.sequenceCounters.set(tmuxName, sequence);
     const meta: EventMeta = { parentage, rawSessionId, sequence, observedAt };
@@ -603,4 +683,29 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Resolve `true` if `promise` settles within `timeoutMs`, otherwise `false`.
+ * Used by the launch path to give `UserPromptSubmit` a bounded wait before
+ * resending Enter. The timer is cleared on settle so a long-lived deferred
+ * does not keep the event loop alive after the awaiter has moved on.
+ */
+function awaitWithTimeout(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    if (typeof timer === 'object' && timer && 'unref' in timer && typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    promise.then(
+      () => {
+        clearTimeout(timer);
+        resolve(true);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(true);
+      },
+    );
+  });
 }

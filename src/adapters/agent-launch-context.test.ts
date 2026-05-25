@@ -8,9 +8,12 @@ import {
   buildAgentLaunchContext,
   deliverInitialPromptToSession,
   resolveBracketedPasteSubmit,
+  isBracketedPasteModeEnabled,
   isClaudeComposerReady,
   PROMPT_BRACKETED_PASTE_ENV,
+  DEFAULT_PROMPT_SUBMIT_CONFIRM_MS,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
+  DEFAULT_PROMPT_SUBMIT_RETRIES,
   DEFAULT_PROMPT_READY_TIMEOUT_MS,
   INITIAL_PROMPT_CHUNK_BYTES,
 } from './agent-launch-context.js';
@@ -327,5 +330,150 @@ describe('isClaudeComposerReady', () => {
     expect(isClaudeComposerReady('\x1b]0;Claude Code\x07\x1b[7mClaudeCode\x1b[0m\n❯ ')).toBe(true);
     expect(isClaudeComposerReady('Claude Code\n❯ ')).toBe(true);
     expect(isClaudeComposerReady('ClaudeCode without composer')).toBe(false);
+  });
+});
+
+describe('isBracketedPasteModeEnabled', () => {
+  const encoder = new TextEncoder();
+  test('returns true when the DECSET sequence appears anywhere in the raw bytes', () => {
+    expect(isBracketedPasteModeEnabled(encoder.encode('boot\x1b[?2004hready'))).toBe(true);
+    // Sequence at end-of-buffer (after the visual composer has painted) still matches.
+    expect(isBracketedPasteModeEnabled(encoder.encode('Claude Code\n❯ \x1b[?2004h'))).toBe(true);
+  });
+  test('returns false on a painted composer that has not yet enabled paste mode', () => {
+    // This is exactly the race the new detector exists to close: visually
+    // ready but paste-mode-disable would still misparse ESC[200~ as content.
+    expect(isBracketedPasteModeEnabled(encoder.encode('Claude Code\n❯ '))).toBe(false);
+    expect(isBracketedPasteModeEnabled(encoder.encode(''))).toBe(false);
+  });
+});
+
+describe('deliverInitialPromptToSession with awaitSubmit', () => {
+  test('sends exactly one Enter when awaitSubmit confirms on the first attempt', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-confirm', 'claude');
+    const writeSpy = vi.spyOn(backend, 'write');
+    const sleep = vi.fn(async (_ms: number) => {});
+    const awaitSubmit = vi.fn(async (_timeoutMs: number) => true);
+
+    await deliverInitialPromptToSession(backend, 's-confirm', 'go', {
+      bracketedPaste: true,
+      submitDelayMs: 0,
+      submitRetries: 2,
+      submitConfirmTimeoutMs: 1234,
+      sleep,
+      awaitSubmit,
+    });
+
+    // One Enter total — no retry needed when the hook ack arrives.
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(Array.from(writeSpy.mock.calls[0][1])).toEqual([0x0d]);
+    expect(awaitSubmit).toHaveBeenCalledTimes(1);
+    expect(awaitSubmit).toHaveBeenCalledWith(1234);
+  });
+
+  test('resends Enter on every timeout up to submitRetries, then stops', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-retry-all', 'claude');
+    const writeSpy = vi.spyOn(backend, 'write');
+    const sleep = vi.fn(async (_ms: number) => {});
+    // Three awaits expected: initial + retry-after-#1 + final-after-last-retry.
+    // All return false (acknowledgement never arrives).
+    const awaitSubmit = vi.fn(async (_timeoutMs: number) => false);
+
+    await deliverInitialPromptToSession(backend, 's-retry-all', 'go', {
+      bracketedPaste: true,
+      submitDelayMs: 0,
+      submitRetries: 2,
+      submitConfirmTimeoutMs: 50,
+      sleep,
+      awaitSubmit,
+    });
+
+    // submitRetries + 1 initial = 3 Enter writes total.
+    expect(writeSpy).toHaveBeenCalledTimes(3);
+    for (const call of writeSpy.mock.calls) {
+      expect(Array.from(call[1])).toEqual([0x0d]);
+    }
+    // One await per loop iteration + the final post-loop await.
+    expect(awaitSubmit).toHaveBeenCalledTimes(3);
+  });
+
+  test('stops resending the moment awaitSubmit returns true', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-retry-mid', 'claude');
+    const writeSpy = vi.spyOn(backend, 'write');
+    const sleep = vi.fn(async (_ms: number) => {});
+    // First await times out; second confirms — so we expect 2 Enter writes total.
+    let calls = 0;
+    const awaitSubmit = vi.fn(async (_timeoutMs: number) => {
+      calls += 1;
+      return calls >= 2;
+    });
+
+    await deliverInitialPromptToSession(backend, 's-retry-mid', 'go', {
+      bracketedPaste: true,
+      submitDelayMs: 0,
+      submitRetries: 3,
+      submitConfirmTimeoutMs: 10,
+      sleep,
+      awaitSubmit,
+    });
+
+    // Initial Enter + 1 retry = 2 writes; the second await returns true so
+    // the loop exits before a third Enter is sent.
+    expect(writeSpy).toHaveBeenCalledTimes(2);
+    expect(awaitSubmit).toHaveBeenCalledTimes(2);
+  });
+
+  test('without awaitSubmit, sends exactly one Enter (open-loop, prior behaviour)', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-no-await', 'claude');
+    const writeSpy = vi.spyOn(backend, 'write');
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    await deliverInitialPromptToSession(backend, 's-no-await', 'go', {
+      bracketedPaste: true,
+      submitDelayMs: 0,
+      sleep,
+    });
+
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(Array.from(writeSpy.mock.calls[0][1])).toEqual([0x0d]);
+  });
+
+  test('exposes documented defaults for submit confirmation tuning', () => {
+    expect(DEFAULT_PROMPT_SUBMIT_CONFIRM_MS).toBe(2_000);
+    expect(DEFAULT_PROMPT_SUBMIT_RETRIES).toBe(2);
+  });
+});
+
+describe('deliverInitialPromptToSession waitForReady covers paste-mode-enable too', () => {
+  test('waitForReady resolves on the ESC[?2004h DECSET in raw bytes', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-pasteready', 'claude');
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    let polls = 0;
+    const sleep = vi.fn(async (_ms: number) => {
+      polls += 1;
+      // After the first poll, emit ONLY the DECSET (no visible composer
+      // text) — proves the wait succeeds on the precise paste-mode signal.
+      if (polls === 1) backend.emit('s-pasteready', '\x1b[?2004h');
+    });
+
+    await deliverInitialPromptToSession(backend, 's-pasteready', 'go', {
+      bracketedPaste: true,
+      waitForReady: true,
+      readyTimeoutMs: DEFAULT_PROMPT_READY_TIMEOUT_MS,
+      readyPollMs: 10,
+      submitDelayMs: 0,
+      sleep,
+    });
+
+    expect(writeSeqSpy).toHaveBeenCalledTimes(1);
+    // Sanity: paste block was delivered AFTER at least one ready-poll sleep.
+    expect(writeSeqSpy.mock.invocationCallOrder[0]).toBeGreaterThan(
+      sleep.mock.invocationCallOrder[0],
+    );
   });
 });
