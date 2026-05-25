@@ -86,6 +86,37 @@ describe('validateSettings', () => {
     expect(result.maxActiveTasks).toBe(10);
     expect(result.defaultAgentType).toBe('claude-code');
     expect(result.shortcutBindings).toEqual({});
+    expect(result.speakVerbosity).toBe('medium');
+  });
+
+  it('accepts valid speakVerbosity values', () => {
+    for (const value of ['terse', 'brief', 'medium', 'detailed'] as const) {
+      const result = validateSettingsWithWarnings({ speakVerbosity: value });
+      expect(result.settings.speakVerbosity).toBe(value);
+      expect(result.warnings).toEqual([]);
+    }
+  });
+
+  it("clamps invalid speakVerbosity to 'medium' with a warning", () => {
+    const result = validateSettingsWithWarnings({ speakVerbosity: 'bogus' });
+    expect(result.settings.speakVerbosity).toBe('medium');
+    expect(result.warnings).toEqual([
+      'speakVerbosity: invalid value "bogus", clamped to \'medium\'',
+    ]);
+  });
+
+  it("clamps non-string speakVerbosity to 'medium' with a warning", () => {
+    const result = validateSettingsWithWarnings({ speakVerbosity: 42 });
+    expect(result.settings.speakVerbosity).toBe('medium');
+    expect(result.warnings).toEqual([
+      "speakVerbosity: invalid value 42, clamped to 'medium'",
+    ]);
+  });
+
+  it('omits speakVerbosity warning when field is absent', () => {
+    const result = validateSettingsWithWarnings({});
+    expect(result.settings.speakVerbosity).toBe('medium');
+    expect(result.warnings).toEqual([]);
   });
 
   it('accepts valid boolean for autoWatchOssSources', () => {
@@ -202,6 +233,7 @@ describe('loadSettings / saveSettings', () => {
       shortcutBindings: {
         mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
       },
+      speakVerbosity: 'detailed' as const,
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);
@@ -258,6 +290,7 @@ describe('loadSettings / saveSettings', () => {
     expect(result.settings.maxActiveTasks).toBe(10);
     expect(result.settings.defaultAgentType).toBe('claude-code');
     expect(result.settings.shortcutBindings).toEqual({});
+    expect(result.settings.speakVerbosity).toBe('medium');
     expect(result.loadedFromDefaults).toBe(false);
     expect(result.warnings).toEqual([]);
   });

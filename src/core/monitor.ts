@@ -69,6 +69,13 @@ export interface AgentState {
   activityMeta?: AgentActivityMeta;
   /** Multi-sample evidence captured for the active supervisor finding. */
   findingEvidenceAudit?: FindingEvidenceAuditRecord;
+  /**
+   * Sequence number of the last event in {@link events}, or `0` when the
+   * window is empty (including synthetic pending/terminal entries). Populated
+   * by {@link Monitor.getSnapshot} so speak-summary consumers can detect when
+   * fresh activity arrived between cache hit and TTS playback.
+   */
+  lastEventSeq?: number;
 }
 
 interface SessionSnapshotMeta {
@@ -673,6 +680,7 @@ export class Monitor {
         events,
         anomaly,
         turnState: this.deriveTurnStateForSnapshot(agentId, events),
+        lastEventSeq: events.at(-1)?.eventSeq ?? 0,
       };
       const findingEvidenceAudit = this.findingEvidenceAuditor.getActiveRecord(agentId);
       if (findingEvidenceAudit) state.findingEvidenceAudit = findingEvidenceAudit;
@@ -737,6 +745,7 @@ export class Monitor {
           agentId: `pending-${task.id}`,
           events: [],
           anomaly: null,
+          lastEventSeq: 0,
           taskId: task.id,
           taskName: task.name ?? truncatePrompt(displayPromptForTask(task), 60),
           taskStatus: 'pending',
@@ -769,6 +778,7 @@ export class Monitor {
             agentId: lastSession?.tmuxSession ?? `done-${task.id}`,
             events: [],
             anomaly: null,
+            lastEventSeq: 0,
             taskId: task.id,
             taskName: task.name ?? truncatePrompt(displayPromptForTask(task), 60),
             taskStatus: task.status,

@@ -196,6 +196,52 @@ describe('Monitor', () => {
     expect(state?.taskName).toBe('Fix duplicate task prompt in activity panel.');
   });
 
+  test('getSnapshot populates lastEventSeq from the last event eventSeq', () => {
+    const task = createTaskForMutation(taskStore, { prompt: 'work', cwd: '/repo' });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-seq',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:00:00Z'),
+    });
+    monitor.registerAgent('agent-seq');
+
+    monitor.processEvents('agent-seq', [makeToolUse('s1', 'Read')]);
+    monitor.processEvents('agent-seq', [makeToolUse('s1', 'Bash')]);
+    monitor.processEvents('agent-seq', [makeToolUse('s1', 'Edit')]);
+
+    const state = monitor.getSnapshot().find((agent) => agent.agentId === 'agent-seq');
+    expect(state).toBeDefined();
+    expect(state!.events.length).toBe(3);
+    expect(state!.events.at(-1)?.eventSeq).toBe(3);
+    expect(state!.lastEventSeq).toBe(3);
+  });
+
+  test('getSnapshot reports lastEventSeq=0 for an agent with no events', () => {
+    const task = createTaskForMutation(taskStore, { prompt: 'idle', cwd: '/repo' });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-empty',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:00:00Z'),
+    });
+    monitor.registerAgent('agent-empty');
+
+    const state = monitor.getSnapshot().find((agent) => agent.agentId === 'agent-empty');
+    expect(state).toBeDefined();
+    expect(state!.events).toEqual([]);
+    expect(state!.lastEventSeq).toBe(0);
+  });
+
+  test('getSnapshot reports lastEventSeq=0 for synthetic pending entries', () => {
+    const task = createTaskForMutation(taskStore, { prompt: 'queued', cwd: '/repo' });
+    taskStore.pendTask(task.id);
+
+    const state = monitor.getSnapshot().find((agent) => agent.taskId === task.id);
+    expect(state).toBeDefined();
+    expect(state!.lastEventSeq).toBe(0);
+  });
+
   test('getSnapshot projects priority for live task entries', () => {
     const task = createTaskForMutation(taskStore, { prompt: 'Watch this first', cwd: '/repo' });
     taskStore.setTaskPriority(task.id, 'high');

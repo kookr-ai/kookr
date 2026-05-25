@@ -100,6 +100,95 @@ export interface SpeakFindingErrorResponse {
   reason?: string;
 }
 
+/**
+ * Verbosity scale for speak-agent summaries. Drives prompt selection in the
+ * summarizer and the persisted {@link KookrSettings.speakVerbosity} default.
+ * See docs/rfc/rfc-speak-agent-summary-v2.md.
+ */
+export type VerbosityScale = 'terse' | 'brief' | 'medium' | 'detailed';
+
+/**
+ * Speak-agent mode. `finding` summarizes the active supervisor anomaly;
+ * `activity` summarizes the recent task activity window.
+ */
+export type SpeakMode = 'finding' | 'activity';
+
+/**
+ * Speak-agent request mode. `auto` lets the route pick `finding` when an
+ * anomaly is active, otherwise `activity`.
+ */
+export type SpeakModeRequest = 'auto' | SpeakMode;
+
+/**
+ * Wire request for POST /api/agents/:agentId/speak (PR2). All fields optional —
+ * the route falls back to {@link KookrSettings.speakVerbosity} and `mode='auto'`.
+ */
+export interface SpeakAgentRequest {
+  verbosity?: VerbosityScale;
+  mode?: SpeakModeRequest;
+}
+
+export type SpeakAgentFallbackReason =
+  | 'no-llm-client'
+  | 'timeout'
+  | 'schema-violation'
+  | 'denylist'
+  | 'validator-reject'
+  | 'empty';
+
+/**
+ * Wire response for POST /api/agents/:agentId/speak (PR2). Superset of the
+ * legacy {@link SpeakAudioResponse} with the resolved mode, effective verbosity,
+ * fallback reason, and request id surfaced for operator-facing diagnostics.
+ */
+export interface SpeakAgentResponse {
+  text: string;
+  audioBase64: string;
+  mimeType: 'audio/wav';
+  durationMs: number;
+  usedFallback: boolean;
+  fallbackReason: SpeakAgentFallbackReason | null;
+  llmMs: number;
+  ttsMs: number;
+  cached: boolean;
+  resolvedMode: SpeakMode;
+  effectiveVerbosity: VerbosityScale;
+  requestId: string;
+}
+
+export type SpeakAgentErrorReason =
+  | 'feature-disabled'
+  | 'tts-not-configured'
+  | 'agent-not-found'
+  | 'tts-error'
+  | 'aborted'
+  | 'http-error';
+
+export interface SpeakAgentErrorResponse {
+  error: SpeakAgentErrorReason;
+  reason?: string;
+  requestId?: string;
+}
+
+/**
+ * Context bundle assembled by the speak route and passed to the summarizer.
+ * Decoupled from {@link AgentState} so the summarizer stays unaware of the
+ * monitor's data model. See rfc-speak-agent-summary-v2.md.
+ */
+export interface AgentSpeakContext {
+  taskName: string;
+  agentType: string;
+  cwd: string;
+  descriptionExcerpt: string;
+  recentActivity: string;
+  recentMessages: string;
+  anomaly?: {
+    type: string;
+    severity: string;
+    explanation: string;
+  };
+}
+
 export function firstReadyKookrSTTEndpoint(capabilities?: CollaborationCapabilities): string | undefined {
   if (!capabilities) return undefined;
   for (const deviceCapabilities of Object.values(capabilities.capabilitiesByDevice)) {

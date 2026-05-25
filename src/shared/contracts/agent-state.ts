@@ -50,4 +50,11 @@ export interface AgentState {
   ralphLoop?: RalphLoopState;
   activityMeta?: AgentActivityMeta;
   findingEvidenceAudit?: FindingEvidenceAuditRecord;
+  /**
+   * Sequence number of the last event in {@link events}, or `0` when the
+   * window is empty (including synthetic pending/terminal entries). Populated
+   * by {@link Monitor.getSnapshot} so speak-summary consumers can detect when
+   * fresh activity arrived between cache hit and TTS playback.
+   */
+  lastEventSeq?: number;
 }
