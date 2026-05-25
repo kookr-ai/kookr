@@ -23,6 +23,17 @@ const PASTE_START = promptEncoder.encode(PASTE_START_TEXT);
 const PASTE_END = promptEncoder.encode(PASTE_END_TEXT);
 
 /**
+ * DECSET sequence Claude Code emits when its TUI enables bracketed-paste
+ * parsing. Seeing this in the session's raw captured bytes is the precise
+ * signal that subsequent `ESC[200~ … ESC[201~` markers will be honoured as
+ * paste delimiters — strictly stronger than the visual `Claude Code + ❯`
+ * heuristic, because the composer can paint before bracketed-paste mode is
+ * enabled. See {@link isBracketedPasteModeEnabled} and
+ * {@link waitForPasteReady}.
+ */
+const BRACKETED_PASTE_MODE_ENABLE_TEXT = '\x1b[?2004h';
+
+/**
  * Default cushion (ms) between the bracketed prompt block and the
  * submitting Enter. Claude Code finalises bracketed paste asynchronously
  * under dtach; 150ms left the prompt visible but unsubmitted in live repro,
@@ -31,6 +42,42 @@ const PASTE_END = promptEncoder.encode(PASTE_END_TEXT);
 export const DEFAULT_PROMPT_SUBMIT_DELAY_MS = 500;
 export const DEFAULT_PROMPT_READY_TIMEOUT_MS = 15_000;
 const DEFAULT_PROMPT_READY_POLL_MS = 100;
+
+/**
+ * Default per-attempt deadline for {@link DeliverInitialPromptOptions.awaitSubmit}.
+ * Tuned so a slow dtach + cold Claude Code can still confirm the prompt
+ * submission via the `UserPromptSubmit` hook before a retry Enter is sent.
+ */
+export const DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS = 2_000;
+/**
+ * Default number of retry Enters after the initial submission Enter when
+ * {@link DeliverInitialPromptOptions.awaitSubmit} keeps timing out. With the
+ * default of 2 the adapter sends at most 3 Enters total — enough to cover
+ * the known races (paste-mode not yet enabled, dtach latency spike) without
+ * spamming the composer.
+ */
+export const DEFAULT_PROMPT_SUBMIT_RETRIES = 2;
+
+/**
+ * Substrings that, when visible in the post-Enter display, prove Claude
+ * Code has already accepted the prompt and is in a state where another
+ * Enter could have side effects (cancel/confirm). The retry path uses
+ * {@link isClaudeBusyOrResponding} to skip a retry when any of these
+ * appear, defending against the case where the initial Enter actually
+ * succeeded but the `UserPromptSubmit` hook is slow to round-trip.
+ */
+const CLAUDE_BUSY_MARKERS: readonly string[] = [
+  'esc to interrupt',
+  'Esc to interrupt',
+  'ESC to interrupt',
+];
+/**
+ * Permission-prompt detector. Claude Code's permission UI renders numbered
+ * choices preceded by the same `❯` glyph the idle composer uses, so a bare
+ * `❯` match would false-positive. Require the numbered option to keep the
+ * heuristic narrow.
+ */
+const CLAUDE_PERMISSION_PROMPT_RE = /(?:^|\n)\s*(?:❯\s*)?1\.\s+(?:Yes|Allow|Approve|Continue)\b/;
 
 /** Env var that disables bracketed-paste prompt submission when set falsey. */
 export const PROMPT_BRACKETED_PASTE_ENV = 'KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE';
@@ -158,6 +205,26 @@ export interface DeliverInitialPromptOptions {
    */
   submitDelayMs?: number;
   /**
+   * Bracketed-paste mode only: ground-truth predicate that resolves `true`
+   * once the agent has confirmed the prompt was submitted (Kookr observes
+   * this via the `UserPromptSubmit` hook in the adapter layer), or `false`
+   * if no confirmation arrives within `timeoutMs`. When provided, the
+   * delivery sends another Enter on every `false` and gives up after
+   * {@link submitRetries} retries — closing the residual race where the
+   * first Enter is parsed as paste content because bracketed-paste mode
+   * had not yet been finalised. When omitted, delivery is open-loop and
+   * matches the prior behaviour exactly.
+   */
+  awaitSubmit?: (timeoutMs: number) => Promise<boolean>;
+  /** Per-attempt timeout passed to {@link awaitSubmit}. */
+  submitConfirmTimeoutMs?: number;
+  /**
+   * Number of *retry* Enters allowed after the first if `awaitSubmit` keeps
+   * timing out. Total Enter writes therefore = `submitRetries + 1`. Defaults
+   * to {@link DEFAULT_PROMPT_SUBMIT_RETRIES}.
+   */
+  submitRetries?: number;
+  /**
    * Sleep implementation. Defaults to a real `setTimeout`-backed wait;
    * tests inject a stub to assert ordering without spending real time.
    */
@@ -173,6 +240,36 @@ export function isClaudeComposerReady(text: string): boolean {
   return (plain.includes('ClaudeCode') || plain.includes('Claude Code')) && plain.includes('❯');
 }
 
+/**
+ * Detect whether the session has already emitted the DECSET that turns on
+ * bracketed-paste parsing. Operates on the raw bytes (not the post-strip
+ * display) because the escape sequence is exactly what
+ * {@link stripTerminalControls} would remove.
+ */
+export function isBracketedPasteModeEnabled(rawBytes: Uint8Array): boolean {
+  return promptDecoder.decode(rawBytes).includes(BRACKETED_PASTE_MODE_ENABLE_TEXT);
+}
+
+/**
+ * Detect whether Claude Code has already accepted the most recent prompt
+ * and is either streaming a response or showing a permission prompt. Used
+ * by the launch path to skip a retry Enter that would otherwise risk
+ * confirming a tool-permission dialog or interrupting a streaming reply.
+ *
+ * False negatives are acceptable (a missed signal merely allows a spurious
+ * Enter into an empty composer, which Claude Code ignores); false positives
+ * are not (they would leave the prompt stuck unsubmitted, which is the
+ * very bug the retry loop exists to fix), so the markers below are kept
+ * narrow and high-confidence rather than broad.
+ */
+export function isClaudeBusyOrResponding(rawBytes: Uint8Array): boolean {
+  const text = stripTerminalControls(promptDecoder.decode(rawBytes));
+  for (const marker of CLAUDE_BUSY_MARKERS) {
+    if (text.includes(marker)) return true;
+  }
+  return CLAUDE_PERMISSION_PROMPT_RE.test(text);
+}
+
 function stripTerminalControls(text: string): string {
   return text
     // OSC sequences, including terminal-title updates.
@@ -181,7 +278,16 @@ function stripTerminalControls(text: string): string {
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
 }
 
-async function waitForComposerReady(
+/**
+ * Wait until the session is ready to receive a bracketed paste. Preferred
+ * signal: the raw `ESC[?2004h` DECSET — proof that the TUI has enabled
+ * bracketed-paste parsing. Fallback signal: the visual `Claude Code + ❯`
+ * composer indicator, which can light up slightly before paste mode is
+ * enabled but still beats sending blind. Returns when either fires; on
+ * timeout returns without throwing so delivery proceeds (matching prior
+ * fail-open behaviour).
+ */
+async function waitForPasteReady(
   backend: TerminalBackend,
   sessionId: SessionId,
   options: Required<Pick<DeliverInitialPromptOptions, 'readyTimeoutMs' | 'readyPollMs' | 'sleep'>>,
@@ -189,6 +295,7 @@ async function waitForComposerReady(
   const deadline = Date.now() + options.readyTimeoutMs;
   while (Date.now() <= deadline) {
     const bytes = await backend.captureBytes(sessionId);
+    if (isBracketedPasteModeEnabled(bytes)) return;
     if (isClaudeComposerReady(promptDecoder.decode(bytes))) return;
 
     const remainingMs = deadline - Date.now();
@@ -217,6 +324,13 @@ function chunkPromptBytes(promptBytes: Uint8Array): Uint8Array[] {
  * the trailing Enter as an unambiguous keystroke — independent of how the
  * input bursts are chunked or how fast the agent boots. This is required
  * for Claude Code; Codex CLI uses the legacy path below.
+ *
+ * When `awaitSubmit` is provided, the function additionally closes the loop
+ * around the Enter: after the initial Enter it waits for the predicate to
+ * confirm the prompt was accepted (Kookr supplies a `UserPromptSubmit`-hook
+ * backed predicate) and resends Enter on each timeout up to
+ * `submitRetries` extra attempts. Without `awaitSubmit` the behaviour is
+ * open-loop and matches earlier releases byte-for-byte.
  *
  * Without `bracketedPaste` the body and Enter are delivered together in one
  * `writeSequence` (one mutex acquisition).
@@ -250,15 +364,46 @@ export async function deliverInitialPromptToSession(
   const submitDelayMs = options.submitDelayMs ?? DEFAULT_PROMPT_SUBMIT_DELAY_MS;
   const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_PROMPT_READY_TIMEOUT_MS;
   const readyPollMs = options.readyPollMs ?? DEFAULT_PROMPT_READY_POLL_MS;
+  const submitConfirmTimeoutMs =
+    options.submitConfirmTimeoutMs ?? DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS;
+  const submitRetries = options.submitRetries ?? DEFAULT_PROMPT_SUBMIT_RETRIES;
   const sleep = options.sleep ?? realSleep;
   if (options.waitForReady) {
-    await waitForComposerReady(backend, sessionId, { readyTimeoutMs, readyPollMs, sleep });
+    await waitForPasteReady(backend, sessionId, { readyTimeoutMs, readyPollMs, sleep });
   }
   // Deliver the body wrapped in paste markers, then send Enter as its own
   // write so it is parsed as a keystroke, not paste content.
   await backend.writeSequence(sessionId, [PASTE_START, ...chunks, PASTE_END]);
   await sleep(submitDelayMs);
   await backend.write(sessionId, ENTER_BYTES);
+
+  // Closed-loop confirmation: if the caller wired an `awaitSubmit` predicate
+  // (the adapter does this via the `UserPromptSubmit` hook), wait for the
+  // agent's own acknowledgement that the prompt left the composer.
+  //
+  // On timeout, only resend Enter when the captured display shows no signs
+  // that Claude has already accepted the prompt. The hazard the check
+  // closes: if the initial Enter actually submitted but the hook ack is
+  // slow to round-trip, a blind resend at the 2 s mark can land on a
+  // tool-permission dialog ("1. Yes") and confirm it, or on a streaming
+  // response (no-op in practice, but still uncontracted). When the display
+  // is unambiguous about Claude being busy, treat the submission as
+  // confirmed and stop waiting — better to release the launch than to
+  // poke a live composer.
+  //
+  // Invariant: `submitRetries + 1` awaits total, `submitRetries` Enter
+  // resends. With `submitRetries = 0` the loop body runs exactly once
+  // (await + no resend), matching the documented "skip the retries"
+  // semantics.
+  if (options.awaitSubmit) {
+    for (let attempt = 0; attempt <= submitRetries; attempt += 1) {
+      if (await options.awaitSubmit(submitConfirmTimeoutMs)) return;
+      if (attempt === submitRetries) return;
+      const capture = await backend.captureBytes(sessionId);
+      if (isClaudeBusyOrResponding(capture)) return;
+      await backend.write(sessionId, ENTER_BYTES);
+    }
+  }
 }
 
 async function resolveGitCommonDir(cwd: string): Promise<string | null> {

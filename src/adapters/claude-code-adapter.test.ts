@@ -70,6 +70,11 @@ describe('ClaudeCodeAdapter', () => {
     // deliverInitialPromptToSession.
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
+      // No UserPromptSubmit hook is injected in this argv/write-shape test;
+      // tune the closed-loop confirmation to fall through quickly so the
+      // launch promise resolves on the open-loop guarantees alone.
+      promptSubmitConfirmTimeoutMs: 5,
+      promptSubmitRetries: 0,
     });
     const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
     const writeSpy = vi.spyOn(backend, 'write');
@@ -100,7 +105,12 @@ describe('ClaudeCodeAdapter', () => {
     // test clears it to exercise the real default.)
     vi.stubEnv('KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE', undefined);
     try {
-      const defaultAdapter = new ClaudeCodeAdapter(backend, taskStore);
+      const defaultAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+        // Same rationale as the explicit-bracketed-paste test above: no hook
+        // is delivered so let the closed-loop confirmation fall through fast.
+        promptSubmitConfirmTimeoutMs: 5,
+        promptSubmitRetries: 0,
+      });
       const task = taskStore.createTask('Fix bug', '/cwd');
       const launchPromise = defaultAdapter.launch(task.id, 'Fix bug', '/cwd');
       await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
@@ -111,6 +121,246 @@ describe('ClaudeCodeAdapter', () => {
       expect(backend.getWrittenText(sessionId)).toBe('\x1b[200~Fix bug\x1b[201~\r');
     } finally {
       vi.unstubAllEnvs();
+    }
+  });
+
+  test('bracketed-paste launch short-circuits the confirmation wait when a UserPromptSubmit hook arrives', async () => {
+    // Closed-loop verification of the submission path: with a generous confirm
+    // window and many retries, the launch promise must still resolve quickly
+    // once Claude Code emits a parent UserPromptSubmit hook — proving the
+    // launch path observes the hook and stops waiting (rather than always
+    // burning the full timeout). This is the primary defence against the
+    // "prompt visible in input box, never submitted" stall.
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 5_000,
+      promptSubmitRetries: 3,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+
+    // Wait for delivery to have written the Enter — by that point the launch
+    // is inside its awaitSubmit loop, so the next two injected hooks resolve
+    // the deferred and let launch complete.
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+
+    // SessionStart establishes parent identity so the subsequent
+    // UserPromptSubmit classifies as parentage='parent'.
+    const rawSessionId = '00000000-0000-0000-0000-aaaaaaaaaaaa';
+    const transcriptPath = '/tmp/claude/transcripts/parent.jsonl';
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: transcriptPath,
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    }));
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: transcriptPath,
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Submit me',
+    }));
+
+    const sessionId = await launchPromise;
+    expect(sessionId).toBe(pendingSessionId);
+    // Exactly one Enter — the hook short-circuited the retry loop.
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('bracketed-paste launch resolves after a retry Enter when the hook arrives on the second attempt', async () => {
+    // End-to-end coverage of the retry-then-confirm path THROUGH the
+    // adapter wiring (resolver registration, parentage classification,
+    // awaitSubmit predicate, retry loop). Helper-level tests already cover
+    // the same behavior with a stubbed awaitSubmit; this one proves the
+    // adapter's hook → resolver → predicate chain works across a retry
+    // boundary, which the test reviewer flagged as the only path not yet
+    // exercised at this layer.
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 200,
+      promptSubmitRetries: 2,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+
+    // Wait for the first retry to land (writes = initial + 1 retry = 2).
+    // Timeout budget covers paste→Enter cushion (DEFAULT_PROMPT_SUBMIT_DELAY_MS,
+    // 500ms) + one confirm window (200ms) + scheduling slop. By the time
+    // this resolves the adapter is inside its second confirm await — the
+    // injected hook below short-circuits it before the next 200ms expires.
+    await vi.waitFor(
+      () => expect(writeSpy).toHaveBeenCalledTimes(2),
+      { timeout: 3_000 },
+    );
+    const rawSessionId = '00000000-0000-0000-0000-bbbbbbbbbbbb';
+    const transcriptPath = '/tmp/claude/transcripts/parent.jsonl';
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: transcriptPath,
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    }));
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: transcriptPath,
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Submit me',
+    }));
+
+    await launchPromise;
+    // No third Enter — the hook fired before submitConfirmTimeoutMs elapsed.
+    expect(writeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('bracketed-paste launch fires the resolver on a UserPromptSubmit that arrives before any SessionStart', async () => {
+    // Race coverage for the parentage gate. When the UserPromptSubmit hook
+    // POST overtakes the SessionStart POST under load, `classifyHookParentage`
+    // returns 'unknown' because the parent identity has not been recorded
+    // yet. The launch waiter must still fire — narrowing the gate to
+    // `parent` would silently force every launch to ride the retry path.
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 5_000,
+      promptSubmitRetries: 3,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+
+    // Inject UserPromptSubmit WITHOUT a preceding SessionStart so the
+    // parentage classifier sees no parent and returns 'unknown'.
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: 'no-session-start-yet',
+      transcript_path: '/tmp/orphan.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Submit me',
+    }));
+
+    await launchPromise;
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('bracketed-paste launch ignores a child-session UserPromptSubmit and waits for the parent one', async () => {
+    // Symmetric guard: subagent UserPromptSubmit events (parentage='child')
+    // must NOT fire the launch resolver, or a fast subagent prompt could
+    // falsely declare the launch complete before the user's prompt landed.
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 5_000,
+      promptSubmitRetries: 3,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+
+    // Register parent identity via a parent SessionStart.
+    const rawSessionId = '00000000-0000-0000-0000-cccccccccccc';
+    const parentTranscript = '/tmp/claude/parent.jsonl';
+    const childTranscript = '/tmp/claude/child.jsonl';
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: parentTranscript,
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    }));
+    // Subagent SessionStart — same session id, different transcript → child.
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: childTranscript,
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      source: 'subagent',
+    }));
+    // Child user_prompt — must not fire the launch resolver.
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: childTranscript,
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'subagent inner prompt',
+    }));
+
+    // The launch is still pending — release it with a parent user_prompt.
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: parentTranscript,
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Submit me',
+    }));
+
+    await launchPromise;
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('stop() during an in-flight bracketed-paste launch releases the launch waiter', async () => {
+    // Without the resolver release in stop(), a killed session would leave
+    // the launch promise blocked for up to (confirmTimeout × (retries+1))
+    // waiting for a hook the dead process can never emit. We give the
+    // confirm window an outright minute to prove the release path actually
+    // unblocks rather than racing the timeout.
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 60_000,
+      promptSubmitRetries: 0,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+
+    await bracketAdapter.stop(pendingSessionId);
+    // launchPromise must resolve quickly — the 60s window is the canary.
+    await launchPromise;
+  });
+
+  test('bracketed-paste launch resends Enter when the UserPromptSubmit hook never arrives', async () => {
+    // Open-loop fallback: a misconfigured deployment where hooks do not
+    // reach the adapter must still produce a launched session. The launch
+    // sends the configured number of retry Enters, then proceeds — better
+    // a launched task with an extra harmless Enter than a stuck one.
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 5,
+      promptSubmitRetries: 2,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+
+    await launchPromise;
+    // Initial Enter + promptSubmitRetries (2) resends = 3 Enter writes total.
+    expect(writeSpy).toHaveBeenCalledTimes(3);
+    for (const call of writeSpy.mock.calls) {
+      expect(Array.from(call[1])).toEqual([0x0d]);
     }
   });
 
