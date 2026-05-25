@@ -536,6 +536,23 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       track({ type: 'shortcut_used', key: 'Enter', action: 'skip_empty_input', context: 'input_focused' });
     }
     send({ type: 'skip', agentId: agent.agentId });
+    // Rapid-skim empty-Enter must keep a selection so the next press fires. If
+    // this is the only remaining finding, nextBottleneck would wrap onto self
+    // and deselect, unmounting the input. Fall through to nextTask. The Skip
+    // BUTTON keeps the deselect-on-last behavior — clicking Skip is a deliberate
+    // "I'm done" action, not a rapid-keyboard skim.
+    if (method === 'empty_enter') {
+      const { agents } = useKookrStore.getState();
+      const hasOtherFinding = agents.some(
+        (other) => other.anomaly !== null
+          && !other.snoozedUntil
+          && !other.suppressed
+          && other.agentId !== agent.agentId,
+      );
+      if (hasOtherFinding) nextBottleneck();
+      else nextTask();
+      return;
+    }
     nextBottleneck();
   }
 

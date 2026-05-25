@@ -669,4 +669,81 @@ describe('TerminalPanel', () => {
     expect(searchAddon.clearDecorations).toHaveBeenCalled();
     expect(container.querySelector('input[aria-label="Search terminal scrollback"]')).toBeNull();
   });
+
+  test('empty-Enter fires on each new task that lands at an empty agent prompt', () => {
+    // The user-reported regression case: after one empty-Enter dispatch the
+    // parent navigates to the next agent, tmuxName changes, and the next Enter
+    // on the new task's empty prompt must ALSO fire. The component re-runs the
+    // [tmuxName] effect, disposes the previous onData listener, opens a fresh
+    // WS, and re-attaches a new handler — all three steps are exercised here.
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-task-A', visible: true, onEmptySubmit }));
+    });
+    const terminal = mocks.terminalInstances[0];
+
+    function streamAndPressEnter() {
+      const ws = mocks.webSocketInstances[mocks.webSocketInstances.length - 1];
+      act(() => { ws.onmessage?.({ data: '\r\n╭────────╮\r\n❯ \r\n' }); });
+      ws.send.mockClear();
+      act(() => { terminal.dataHandler?.('\r'); });
+      return ws;
+    }
+
+    // Task A: empty Claude prompt → empty-Enter fires.
+    let ws = streamAndPressEnter();
+    expect(onEmptySubmit).toHaveBeenCalledTimes(1);
+    expect(ws.send).not.toHaveBeenCalled();
+
+    // Capture the first onData's disposable BEFORE the tmuxName transition so
+    // we can assert the cleanup runs. Without this, the mock's overwrite-style
+    // `dataHandler` field would silently pass even if the disposal regressed.
+    const firstOnDataResult = terminal.onData.mock.results[0].value;
+    expect(firstOnDataResult.dispose).not.toHaveBeenCalled();
+
+    // Parent navigates to task B (tmuxName change).
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-task-B', visible: true, onEmptySubmit }));
+    });
+    expect(firstOnDataResult.dispose).toHaveBeenCalledOnce();
+    // Same Terminal instance (no-deps mount effect ran once), new WebSocket.
+    expect(mocks.terminalInstances).toHaveLength(1);
+    expect(mocks.webSocketInstances.length).toBeGreaterThanOrEqual(2);
+
+    // Task B: empty Claude prompt → empty-Enter fires again.
+    ws = streamAndPressEnter();
+    expect(onEmptySubmit).toHaveBeenCalledTimes(2);
+    expect(ws.send).not.toHaveBeenCalled();
+
+    // Task C: Codex empty prompt + composer footer → still fires.
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-task-C', visible: true, onEmptySubmit }));
+    });
+    const wsC = mocks.webSocketInstances[mocks.webSocketInstances.length - 1];
+    act(() => { wsC.onmessage?.({ data: '\r\n› \r\n  gpt-5.5 high · ~/git/kookr\r\n' }); });
+    wsC.send.mockClear();
+    act(() => { terminal.dataHandler?.('\r'); });
+    expect(onEmptySubmit).toHaveBeenCalledTimes(3);
+    expect(wsC.send).not.toHaveBeenCalled();
+  });
+
+  test('empty-Enter fires repeatedly within the same task as the user mashes Enter', () => {
+    // Scenario: same task, the user presses Enter several times before the
+    // parent has finished navigating. Each press must hit onEmptySubmit, not
+    // just the first one.
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-task-X', visible: true, onEmptySubmit }));
+    });
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => { ws.onmessage?.({ data: '\r\n❯ \r\n' }); });
+
+    for (let i = 1; i <= 5; i++) {
+      ws.send.mockClear();
+      act(() => { terminal.dataHandler?.('\r'); });
+      expect(onEmptySubmit).toHaveBeenCalledTimes(i);
+      expect(ws.send).not.toHaveBeenCalled();
+    }
+  });
 });
