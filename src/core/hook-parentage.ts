@@ -37,7 +37,14 @@ export function classifyHookParentage(
   if (!rawSessionId) return 'unknown';
   if (!identity.parentSessionId) return 'unknown';
   if (rawSessionId === identity.parentSessionId) {
-    return isKnownChildTranscript(identity, transcriptPath) ? 'child' : 'parent';
+    // Same session id as the parent: most providers reuse the parent's id for
+    // subagents and only diverge by transcript path. Use the same heuristic
+    // recordSessionStart uses so subagent UserPromptSubmit / PreToolUse hooks
+    // that arrive without a registered SessionStart for their sidechain still
+    // get classified as 'child' and gated out of parent activity. Without this,
+    // AI-authored subagent prompts (Codex spawn_agent, Claude Code Task) leak
+    // into the activity panel as synthetic "You" messages.
+    return isChildTranscript(identity, rawSessionId, transcriptPath) ? 'child' : 'parent';
   }
   // A known child id, or a new distinct id that arrives before its own
   // SessionStart — either way classify as `child` so the event is gated out
