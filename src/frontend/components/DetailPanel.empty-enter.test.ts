@@ -244,6 +244,162 @@ describe('DetailPanel empty Enter behavior', () => {
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
   });
 
+  test('empty Enter on the only remaining finding falls through to nextTask instead of deselecting', () => {
+    // Regression: nextBottleneck wraps onto self when there is exactly one
+    // finding and deselects the agent, unmounting the reply input. Subsequent
+    // Enters then hit <body> and the user is stranded. The empty-Enter path
+    // must fall through to nextTask so a selection is preserved.
+    const onlyFinding = makeAgent('agent-finding', {
+      agentId: 'agent-finding',
+      type: 'needs_input',
+      severity: 'warning',
+      explanation: 'waiting',
+      detectedAt: new Date('2026-05-24T16:00:00.000Z'),
+    });
+    const healthyA = makeAgent('agent-healthy-a', null);
+    const healthyB = makeAgent('agent-healthy-b', null);
+    useKookrStore.setState({
+      agents: [onlyFinding, healthyA, healthyB],
+      selectedAgentId: onlyFinding.agentId,
+    });
+    const sent: ClientMessage[] = [];
+    root = renderDetailPanel(container, onlyFinding, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+
+    const input = container.querySelector<HTMLInputElement>('.response-row input');
+    expect(input).toBeInstanceOf(HTMLInputElement);
+    act(() => {
+      input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(sent).toEqual([{ type: 'skip', agentId: 'agent-finding' }]);
+    // Critical: did NOT deselect — selection moved forward into the healthy list.
+    expect(useKookrStore.getState().selectedAgentId).not.toBeNull();
+    expect(useKookrStore.getState().selectedAgentId).toBe(healthyA.agentId);
+  });
+
+  test('empty Enter on the only finding falls through even when no healthy tasks exist', () => {
+    // Defensive: if nextTask has nothing to advance to either, the worst case
+    // is no movement — but we should not silently deselect (which would unmount
+    // the input and break the user's rapid-skim flow).
+    const onlyFinding = makeAgent('agent-finding', {
+      agentId: 'agent-finding',
+      type: 'needs_input',
+      severity: 'warning',
+      explanation: 'waiting',
+      detectedAt: new Date('2026-05-24T16:00:00.000Z'),
+    });
+    useKookrStore.setState({
+      agents: [onlyFinding],
+      selectedAgentId: onlyFinding.agentId,
+    });
+    const sent: ClientMessage[] = [];
+    root = renderDetailPanel(container, onlyFinding, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+
+    const input = container.querySelector<HTMLInputElement>('.response-row input');
+    expect(input).toBeInstanceOf(HTMLInputElement);
+    act(() => {
+      input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(sent).toEqual([{ type: 'skip', agentId: 'agent-finding' }]);
+    // With nothing else to advance to, selection stays put rather than being
+    // nulled out. The DetailPanel remains mounted and the input keeps focus.
+    expect(useKookrStore.getState().selectedAgentId).toBe(onlyFinding.agentId);
+  });
+
+  test('Skip BUTTON on the only finding keeps the deselect-on-last behavior', () => {
+    // Symmetric guard: the user-explicit Skip click should NOT have changed.
+    // Only the empty-Enter rapid-skim shortcut falls through to nextTask.
+    const onlyFinding = makeAgent('agent-finding', {
+      agentId: 'agent-finding',
+      type: 'needs_input',
+      severity: 'warning',
+      explanation: 'waiting',
+      detectedAt: new Date('2026-05-24T16:00:00.000Z'),
+    });
+    const healthyA = makeAgent('agent-healthy-a', null);
+    useKookrStore.setState({
+      agents: [onlyFinding, healthyA],
+      selectedAgentId: onlyFinding.agentId,
+    });
+    const sent: ClientMessage[] = [];
+    root = renderDetailPanel(container, onlyFinding, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+
+    const skipButton = Array.from(container.querySelectorAll('button'))
+      .find((b) => b.textContent?.trim() === 'Skip') as HTMLButtonElement | undefined;
+    expect(skipButton).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      skipButton!.click();
+    });
+
+    expect(sent).toEqual([{ type: 'skip', agentId: 'agent-finding' }]);
+    expect(useKookrStore.getState().selectedAgentId).toBeNull();
+  });
+
+  test('empty Enter treats snoozed and suppressed findings as "no other finding"', () => {
+    // Pins the `hasOtherFinding` predicate guards: a snoozed-with-anomaly or
+    // suppressed agent does not count as a routable bottleneck (the slice's
+    // nextBottleneck filter excludes both), so the empty-Enter path must still
+    // fall through to nextTask when the only OTHER findings are snoozed/suppressed.
+    const onlyFinding = makeAgent('agent-finding', {
+      agentId: 'agent-finding',
+      type: 'needs_input',
+      severity: 'warning',
+      explanation: 'waiting',
+      detectedAt: new Date('2026-05-24T16:00:00.000Z'),
+    });
+    const snoozed: AgentState = {
+      ...makeAgent('agent-snoozed', {
+        agentId: 'agent-snoozed',
+        type: 'repeated_error',
+        severity: 'warning',
+        explanation: 'paused',
+        detectedAt: new Date('2026-05-24T16:00:00.000Z'),
+      }),
+      snoozedUntil: Date.now() + 60_000,
+    };
+    const suppressed: AgentState = {
+      ...makeAgent('agent-suppressed', {
+        agentId: 'agent-suppressed',
+        type: 'repeated_error',
+        severity: 'warning',
+        explanation: 'muted',
+        detectedAt: new Date('2026-05-24T16:00:00.000Z'),
+      }),
+      suppressed: true,
+    };
+    const healthy = makeAgent('agent-healthy', null);
+
+    useKookrStore.setState({
+      agents: [onlyFinding, snoozed, suppressed, healthy],
+      selectedAgentId: onlyFinding.agentId,
+    });
+    const sent: ClientMessage[] = [];
+    root = renderDetailPanel(container, onlyFinding, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+
+    const input = container.querySelector<HTMLInputElement>('.response-row input');
+    expect(input).toBeInstanceOf(HTMLInputElement);
+    act(() => {
+      input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(sent).toEqual([{ type: 'skip', agentId: 'agent-finding' }]);
+    // hasOtherFinding must return false → nextTask, landing on the healthy agent.
+    expect(useKookrStore.getState().selectedAgentId).toBe(healthy.agentId);
+  });
+
   test('terminal empty-submit callback uses the same empty Enter advance path', () => {
     const first = makeAgent('agent-1', {
       agentId: 'agent-1',
