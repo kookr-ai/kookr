@@ -121,6 +121,16 @@ vi.mock('../telemetry.js', () => ({ track: vi.fn() }));
 
 import { TerminalPanel } from './TerminalPanel.js';
 import { buildPasteFrame } from '../terminal-paste.js';
+import { registerTerminalSend } from '../terminal-send.js';
+import { createKookrStore, useKookrStore } from '../store/useStore.js';
+
+function syncGlobalStore() {
+  const freshState = createKookrStore().getState();
+  const nextData = Object.fromEntries(
+    Object.entries(freshState).filter(([, value]) => typeof value !== 'function'),
+  );
+  useKookrStore.setState(nextData);
+}
 
 function changeInputValue(input: HTMLInputElement, value: string) {
   const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -173,6 +183,8 @@ describe('TerminalPanel', () => {
     mocks.searchAddonInstances.length = 0;
     mocks.webSocketInstances.length = 0;
     mocks.searchFound = true;
+    vi.clearAllMocks();
+    syncGlobalStore();
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.stubGlobal('ResizeObserver', MockResizeObserver);
     vi.stubGlobal('WebSocket', MockWebSocket);
@@ -218,6 +230,99 @@ describe('TerminalPanel', () => {
 
     expect(fitAddon.fit).toHaveBeenCalledOnce();
     expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1);
+  });
+
+  test('does not register global terminal send while hidden', () => {
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: false }));
+    });
+
+    const ws = mocks.webSocketInstances[0];
+    const registerMock = vi.mocked(registerTerminalSend);
+    ws.send.mockClear();
+    act(() => {
+      ws.onopen?.();
+    });
+
+    expect(registerMock).toHaveBeenLastCalledWith(null);
+    expect(ws.send).not.toHaveBeenCalled();
+    const sender = registerMock.mock.calls.find(([candidate]) => typeof candidate === 'function')?.[0];
+    expect(sender).toBeUndefined();
+
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const visibleSender = [...registerMock.mock.calls].reverse().find(([candidate]) => typeof candidate === 'function')?.[0];
+    expect(typeof visibleSender).toBe('function');
+    (visibleSender as (data: string) => void)('1');
+    expect(ws.send).toHaveBeenCalledWith('1');
+  });
+
+  test('hidden terminals do not forward input or resize frames', () => {
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: false }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onopen?.();
+    });
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('hello');
+      terminal.resizeHandler?.({ cols: 80, rows: 24 });
+    });
+
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  test('hiding a terminal clears interactive state and blocks search shortcuts', () => {
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const searchAddon = mocks.searchAddonInstances[0];
+    const xtermContainer = container.querySelector('.terminal-xterm');
+    expect(xtermContainer).not.toBeNull();
+
+    act(() => {
+      xtermContainer!.dispatchEvent(new Event('focusin', { bubbles: true }));
+    });
+    expect(useKookrStore.getState().focusZone).toBe('terminal');
+
+    act(() => {
+      openSearchViaShortcut(terminal);
+    });
+    expect(container.querySelector('input[aria-label="Search terminal scrollback"]')).not.toBeNull();
+
+    act(() => {
+      xtermContainer!.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: 12,
+        clientY: 16,
+      }));
+    });
+    expect(container.querySelector('.terminal-context-menu')).not.toBeNull();
+
+    searchAddon.clearDecorations.mockClear();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: false }));
+    });
+
+    expect(container.querySelector('input[aria-label="Search terminal scrollback"]')).toBeNull();
+    expect(container.querySelector('.terminal-context-menu')).toBeNull();
+    expect(searchAddon.clearDecorations).toHaveBeenCalled();
+    expect(useKookrStore.getState().focusZone).toBe('none');
+
+    act(() => {
+      openSearchViaShortcut(terminal);
+    });
+    expect(container.querySelector('input[aria-label="Search terminal scrollback"]')).toBeNull();
   });
 
   test.each([

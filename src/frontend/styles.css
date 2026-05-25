@@ -3611,6 +3611,16 @@ textarea::-webkit-resizer { background: transparent; }
 .detail-split-terminal-focus .detail-split-right {
   flex: 1 1 auto;
 }
+.detail-split-left-only {
+  background: var(--bg-panel);
+}
+.detail-split-left-only .detail-split-left {
+  flex: 1 1 auto;
+  border-right: none;
+}
+.pane-hidden-wide {
+  display: none !important;
+}
 
 /* Pane headers */
 .detail-pane-header {
@@ -3642,6 +3652,25 @@ textarea::-webkit-resizer { background: transparent; }
 .pane-tab.active {
   color: var(--teal);
   border-bottom-color: var(--teal);
+}
+.pane-control {
+  margin-left: auto;
+  padding: 3px 8px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+}
+.pane-control:hover {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--bg-card-hover);
+}
+.pane-control:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
 }
 /* Non-interactive pane label (e.g. Terminal header) — must look
    distinct from .pane-tab.active so users don't mistake it for a

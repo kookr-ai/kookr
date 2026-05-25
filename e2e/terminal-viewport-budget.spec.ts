@@ -96,6 +96,7 @@ test.describe('Terminal viewport budgets', () => {
     await resetServer(request);
     await page.addInitScript((onboardingStorageKey) => {
       localStorage.removeItem('kookr-terminal-focus-mode');
+      localStorage.removeItem('kookr-detail-panel-mode');
       localStorage.setItem(onboardingStorageKey, 'true');
     }, ONBOARDING_STORAGE_KEY);
     await page.goto('/');

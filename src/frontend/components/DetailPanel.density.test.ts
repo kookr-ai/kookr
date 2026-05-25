@@ -10,7 +10,20 @@ import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { DetailPanel } from './DetailPanel.js';
 
 vi.mock('../telemetry.js', () => ({ track: vi.fn(), trackClick: vi.fn() }));
-vi.mock('./ActivityPanel.js', () => ({ ActivityPanel: () => React.createElement('div', { 'data-testid': 'activity-panel' }) }));
+vi.mock('./ActivityPanel.js', () => ({
+  ActivityPanel: ({ onOpenDiff }: { onOpenDiff?: (target: { toolUseId: string; filePath: string }) => void }) => React.createElement(
+    'div',
+    { 'data-testid': 'activity-panel' },
+    React.createElement(
+      'button',
+      {
+        type: 'button',
+        onClick: () => onOpenDiff?.({ toolUseId: 'tool-1', filePath: '/tmp/example.ts' }),
+      },
+      'Open diff',
+    ),
+  ),
+}));
 vi.mock('./GitHubPanel.js', () => ({ GitHubPanel: () => React.createElement('div', { 'data-testid': 'github-panel' }) }));
 vi.mock('./TerminalPanel.js', () => ({
   TerminalPanel: ({ visible }: { visible?: boolean }) => React.createElement('div', {
@@ -87,6 +100,12 @@ function renderFocusedDetailPanel(container: HTMLElement, agent: AgentState): Ro
   return root;
 }
 
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
 describe('DetailPanel dense metadata', () => {
   let container: HTMLDivElement;
   let root: Root | null;
@@ -136,6 +155,64 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-split-left')).toBeNull();
     expect(container.querySelector('.detail-tabs-narrow')).toBeNull();
     expect(container.querySelector('[data-testid="task-dependencies"]')).toBeNull();
+  });
+
+  test('left-only detail pane mode hides terminal chrome and keeps a restore control visible', () => {
+    useKookrStore.getState().setDetailPaneMode('left');
+    root = renderDetailPanel(container, makeAgent());
+
+    expect(container.querySelector('.detail-panel.detail-left-only')).not.toBeNull();
+    expect(container.querySelector('.detail-split-left')).not.toBeNull();
+    expect(container.querySelector('.detail-split-right')?.className).toContain('pane-hidden-wide');
+    expect(container.querySelector('[data-testid="activity-panel"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="terminal-panel"]')?.getAttribute('data-visible')).toBe('false');
+
+    const restore = container.querySelector<HTMLButtonElement>('button[aria-label="Show terminal/diff pane"]');
+    expect(restore).not.toBeNull();
+    act(() => {
+      restore!.click();
+    });
+
+    expect(useKookrStore.getState().detailPaneMode).toBe('split');
+  });
+
+  test('right-only detail pane mode hides activity chrome and restores split mode from the persistent control', () => {
+    useKookrStore.getState().setDetailPaneMode('right');
+    root = renderDetailPanel(container, makeAgent());
+
+    expect(container.querySelector('.detail-panel.terminal-focus')).not.toBeNull();
+    expect(container.querySelector('.detail-split-left')).toBeNull();
+    expect(container.querySelector('[data-testid="terminal-panel"]')?.getAttribute('data-visible')).toBe('true');
+
+    const restore = container.querySelector<HTMLButtonElement>('button[aria-label="Show Activity/GitHub pane"]');
+    expect(restore).not.toBeNull();
+    act(() => {
+      restore!.click();
+    });
+
+    expect(useKookrStore.getState().detailPaneMode).toBe('split');
+  });
+
+  test('right-only diff mode keeps hidden terminal inactive', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    const openDiff = container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button');
+    expect(openDiff).not.toBeNull();
+    act(() => {
+      openDiff!.click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
+
+    act(() => {
+      useKookrStore.getState().setDetailPaneMode('right');
+    });
+    await flush();
+
+    expect(container.querySelector('.detail-panel.terminal-focus')).not.toBeNull();
+    expect(container.querySelector('.detail-split-left')).toBeNull();
+    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="terminal-panel"]')?.getAttribute('data-visible')).toBe('false');
   });
 
   test('empty state shortcut hint uses provided bindings', () => {

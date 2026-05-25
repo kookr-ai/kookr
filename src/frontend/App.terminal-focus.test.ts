@@ -4,6 +4,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import type { AgentState } from '../shared/protocol.js';
 import { App } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
 
@@ -28,9 +29,10 @@ vi.mock('./telemetry.js', () => ({
 }));
 
 vi.mock('./components/DetailPanel.js', () => ({
-  DetailPanel: ({ terminalFocusMode }: { terminalFocusMode?: boolean }) =>
+  DetailPanel: ({ detailPaneMode, terminalFocusMode }: { detailPaneMode?: string; terminalFocusMode?: boolean }) =>
     React.createElement('div', {
       'data-testid': 'detail-panel',
+      'data-detail-pane-mode': detailPaneMode ?? '',
       'data-terminal-focus': String(Boolean(terminalFocusMode)),
     }),
 }));
@@ -41,6 +43,21 @@ function syncGlobalStore() {
     Object.entries(freshState).filter(([, value]) => typeof value !== 'function'),
   );
   useKookrStore.setState(nextData);
+}
+
+function makeCompletedAgent(): AgentState {
+  return {
+    agentId: 'agent-completed',
+    taskId: 'task-completed',
+    taskName: 'Completed Task',
+    events: [],
+    anomaly: null,
+    taskStatus: 'completed',
+    completionDigest: {
+      bullets: ['Done'],
+      filesChanged: [],
+    },
+  };
 }
 
 async function flush() {
@@ -68,9 +85,10 @@ describe('App terminal focus mode', () => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1440 });
+    Object.defineProperty(window.navigator, 'platform', { configurable: true, value: 'Linux x86_64' });
     localStorage.clear();
     localStorage.setItem('kookr:onboarding:seen-v2', 'true');
-    localStorage.setItem('kookr-terminal-focus-mode', '1');
+    localStorage.setItem('kookr-detail-panel-mode', 'right');
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
       cb(0);
       return 1;
@@ -121,6 +139,7 @@ describe('App terminal focus mode', () => {
     const trigger = await waitForElement<HTMLButtonElement>(container, '.terminal-focus-trigger');
 
     expect(trigger.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('[data-testid="detail-panel"]')?.getAttribute('data-detail-pane-mode')).toBe('right');
     expect(container.querySelector('[data-testid="detail-panel"]')?.getAttribute('data-terminal-focus')).toBe('true');
     expect(container.querySelector('[data-testid="project-sidebar"]')).toBeNull();
     expect(container.querySelector('[data-testid="project-detail-drawer"]')).toBeNull();
@@ -131,11 +150,31 @@ describe('App terminal focus mode', () => {
     await flush();
 
     expect(useKookrStore.getState().terminalFocusMode).toBe(false);
-    expect(localStorage.getItem('kookr-terminal-focus-mode')).toBeNull();
+    expect(useKookrStore.getState().detailPaneMode).toBe('split');
+    expect(localStorage.getItem('kookr-detail-panel-mode')).toBeNull();
+  });
+
+  test('does not activate terminal focus chrome for completed digest tasks', async () => {
+    const completedAgent = makeCompletedAgent();
+    useKookrStore.setState({
+      agents: [completedAgent],
+      selectedAgentId: completedAgent.agentId,
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await waitForElement<HTMLButtonElement>(container, '.terminal-focus-trigger');
+
+    expect(useKookrStore.getState().detailPaneMode).toBe('right');
+    expect(useKookrStore.getState().terminalFocusMode).toBe(true);
+    expect(container.querySelector('[data-testid="detail-panel"]')?.getAttribute('data-detail-pane-mode')).toBe('right');
+    expect(container.querySelector('[data-testid="detail-panel"]')?.getAttribute('data-terminal-focus')).toBe('false');
+    expect(container.querySelector('[data-testid="project-sidebar"]')).not.toBeNull();
   });
 
   test('Alt+T enables focus mode and moves focus to the stable top-bar toggle', async () => {
-    localStorage.removeItem('kookr-terminal-focus-mode');
+    localStorage.removeItem('kookr-detail-panel-mode');
     syncGlobalStore();
     useKookrStore.setState({
       projectSummariesHydrated: true,
@@ -176,6 +215,7 @@ describe('App terminal focus mode', () => {
     await flush();
 
     const trigger = await waitForElement<HTMLButtonElement>(container, '.terminal-focus-trigger');
+    expect(useKookrStore.getState().detailPaneMode).toBe('right');
     expect(useKookrStore.getState().terminalFocusMode).toBe(true);
     expect(trigger.getAttribute('aria-pressed')).toBe('true');
     expect(document.activeElement).toBe(trigger);
@@ -184,7 +224,7 @@ describe('App terminal focus mode', () => {
 
   test('Cmd+Ctrl+T enables focus mode on macOS defaults', async () => {
     Object.defineProperty(window.navigator, 'platform', { configurable: true, value: 'MacIntel' });
-    localStorage.removeItem('kookr-terminal-focus-mode');
+    localStorage.removeItem('kookr-detail-panel-mode');
     syncGlobalStore();
     useKookrStore.setState({
       projectSummariesHydrated: true,
@@ -221,11 +261,12 @@ describe('App terminal focus mode', () => {
     });
     await flush();
 
+    expect(useKookrStore.getState().detailPaneMode).toBe('right');
     expect(useKookrStore.getState().terminalFocusMode).toBe(true);
   });
 
   test('uses custom shortcut bindings loaded from settings', async () => {
-    localStorage.removeItem('kookr-terminal-focus-mode');
+    localStorage.removeItem('kookr-detail-panel-mode');
     syncGlobalStore();
     useKookrStore.setState({
       projectSummariesHydrated: true,
@@ -280,7 +321,130 @@ describe('App terminal focus mode', () => {
     });
     await flush();
 
+    expect(useKookrStore.getState().detailPaneMode).toBe('right');
     expect(useKookrStore.getState().terminalFocusMode).toBe(true);
+  });
+
+  test('hides the focus toggle and ignores focus shortcut below the wide detail breakpoint', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1000 });
+    localStorage.removeItem('kookr-detail-panel-mode');
+    syncGlobalStore();
+    useKookrStore.setState({
+      projectSummariesHydrated: true,
+      sttUrl: '',
+    });
+    useKookrStore.getState().handleProjectSummaries([
+      {
+        project: 'github.com/me/focus',
+        displayName: 'me/focus',
+        activeAgents: 1,
+        attentionScore: 2,
+        findingCount: 1,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+    ]);
+    useKookrStore.getState().selectProject('github.com/me/focus');
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await waitForElement(container, '[data-testid="detail-panel"]');
+    expect(container.querySelector('.terminal-focus-trigger')).toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        altKey: true,
+        code: 'KeyT',
+        key: '†',
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    await flush();
+
+    expect(useKookrStore.getState().detailPaneMode).toBe('split');
+    expect(useKookrStore.getState().terminalFocusMode).toBe(false);
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1301 });
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    await flush();
+    const trigger = await waitForElement<HTMLButtonElement>(container, '.terminal-focus-trigger');
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        altKey: true,
+        code: 'KeyT',
+        key: '†',
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    await flush();
+
+    expect(useKookrStore.getState().detailPaneMode).toBe('right');
+    expect(useKookrStore.getState().terminalFocusMode).toBe(true);
+    expect(trigger.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('[data-testid="detail-panel"]')?.getAttribute('data-terminal-focus')).toBe('true');
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1000 });
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    await flush();
+
+    expect(container.querySelector('.terminal-focus-trigger')).toBeNull();
+    expect(container.querySelector('[data-testid="detail-panel"]')?.getAttribute('data-terminal-focus')).toBe('false');
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        altKey: true,
+        code: 'KeyT',
+        key: '†',
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    await flush();
+    expect(useKookrStore.getState().detailPaneMode).toBe('right');
+  });
+
+  test('preserves selected left subpane when activity-only mode collapses below the wide breakpoint', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1000 });
+    localStorage.removeItem('kookr-detail-panel-mode');
+    syncGlobalStore();
+    useKookrStore.setState({
+      projectSummariesHydrated: true,
+      sttUrl: '',
+    });
+    useKookrStore.getState().handleProjectSummaries([
+      {
+        project: 'github.com/me/focus',
+        displayName: 'me/focus',
+        activeAgents: 1,
+        attentionScore: 2,
+        findingCount: 1,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openPrs: 0,
+        recentTasks: [],
+      },
+    ]);
+    useKookrStore.getState().selectProject('github.com/me/focus');
+    useKookrStore.getState().setLeftPane('github');
+    useKookrStore.getState().setDetailPaneMode('left');
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await waitForElement(container, '[data-testid="detail-panel"]');
+
+    expect(useKookrStore.getState().detailPaneMode).toBe('left');
+    expect(useKookrStore.getState().leftPane).toBe('github');
+    expect(useKookrStore.getState().narrowTab).toBe('github');
   });
 
   test('keeps the normal mobile layout even when focus mode is persisted', async () => {
@@ -292,7 +456,8 @@ describe('App terminal focus mode', () => {
     await waitForElement(container, '[data-testid="mobile-dashboard-tabs"]');
 
     expect(useKookrStore.getState().terminalFocusMode).toBe(true);
-    expect(useKookrStore.getState().narrowTab).toBe('activity');
+    expect(useKookrStore.getState().detailPaneMode).toBe('right');
+    expect(useKookrStore.getState().narrowTab).toBe('terminal');
     expect(container.querySelector('[data-testid="project-sidebar"]')).not.toBeNull();
     expect(container.querySelector('.app')?.className).toBe('app app-mobile');
   });

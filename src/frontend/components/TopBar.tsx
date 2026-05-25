@@ -20,6 +20,7 @@ interface Props {
   onCoordinatorFindings: () => void;
   coordinatorFindingsOpen?: boolean;
   terminalFocusMode?: boolean;
+  terminalFocusAvailable?: boolean;
   terminalFocusTriggerRef?: React.RefObject<HTMLButtonElement | null>;
   onTerminalFocusToggle: () => void;
   /** Open the Cost Comparison panel. Optional — the icon is hidden when undefined. */
@@ -66,7 +67,7 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, onBugReport, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusTriggerRef, onTerminalFocusToggle, onCostComparison, sweepSlot }: Props) {
+export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, onBugReport, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusAvailable = true, terminalFocusTriggerRef, onTerminalFocusToggle, onCostComparison, sweepSlot }: Props) {
   const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
@@ -384,7 +385,7 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
               <path d="M12 18h.01" />
             </svg>
           </button>
-          {!compact && (
+          {!compact && terminalFocusAvailable && (
             <button
               ref={terminalFocusTriggerRef}
               className={`btn-icon terminal-focus-trigger${terminalFocusMode ? ' active' : ''}`}
