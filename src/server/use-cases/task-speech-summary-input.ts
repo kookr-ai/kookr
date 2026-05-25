@@ -1,6 +1,9 @@
 import type { AgentState } from '../../core/monitor.js';
 import type { Task } from '../../core/tasks.js';
-import type { TaskSpeechSummaryInput } from '../../core/task-speech-summary.js';
+import {
+  buildTaskSpeechActivityLines,
+  type TaskSpeechSummaryInput,
+} from '../../core/task-speech-summary.js';
 
 export interface TaskSpeechSubject {
   taskId: string;
@@ -33,17 +36,14 @@ export function buildTaskSpeechSubject(opts: {
       taskName: name,
       taskStatus: agentState?.taskStatus ?? task?.status,
       turnState: agentState?.turnState ?? null,
-      agentType: agentState?.agentType ?? task?.agentType ?? null,
       activeFinding: agentState?.anomaly ? {
         type: agentState.anomaly.type,
         severity: agentState.anomaly.severity,
         explanation: agentState.anomaly.explanation,
       } : null,
       completionDigest: digest,
+      recentActivity: buildTaskSpeechActivityLines(agentState?.events),
       launchWarnings,
-      gitBranch: agentState?.gitBranch,
-      worktreeHealth: agentState?.worktreeHealth,
-      tokenUsage: agentState?.tokenUsage ?? task?.tokenUsage ?? null,
     },
   };
 }
