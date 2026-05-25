@@ -17,6 +17,7 @@ import type {
 } from '../store-types.js';
 import { isActiveFinding, isHealthyRunning } from '../finding-helpers.js';
 import { compareRoutableAgents } from '../../agent-priority-order.js';
+import { loadSelectedProject, saveSelectedProject } from '../selected-project-storage.js';
 
 function sidebarSnapshotFromStore(state: Pick<ProjectSidebarSlice, 'projectSidebarPrefs' | 'projectSidebarCatalog'>): ProjectSidebarSnapshot {
   return {
@@ -76,7 +77,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
   );
 
   return {
-    selectedProject: typeof localStorage !== 'undefined' ? localStorage.getItem('kookr-selected-project') : null,
+    selectedProject: loadSelectedProject(),
     projectSidebarVisible: initialSidebarDerived.hasRecoveryShell,
     projectSummaries: [],
     visibleProjectSummaries: initialSidebarDerived.visibleProjects,
@@ -96,11 +97,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
     selectProject: (project, options) => {
       const source = options?.source ?? 'manual';
       set({ selectedProject: project });
-      if (project && typeof localStorage !== 'undefined') {
-        localStorage.setItem('kookr-selected-project', project);
-      } else if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem('kookr-selected-project');
-      }
+      saveSelectedProject(project);
 
       if (!project) {
         // Deselecting project — clear any previously auto-selected finding.
@@ -268,9 +265,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
         saveProjectSidebarToServer(nextSnapshot, set);
       }
 
-      if (hidingSelected && typeof localStorage !== 'undefined') {
-        localStorage.removeItem('kookr-selected-project');
-      }
+      if (hidingSelected) saveSelectedProject(null);
 
       set({
         projectSidebarPrefs: nextSnapshot.prefs,
@@ -348,9 +343,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
         saveProjectSidebarToServer(nextSnapshot, set);
       }
 
-      if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem('kookr-selected-project');
-      }
+      saveSelectedProject(null);
 
       set({
         selectedProject: null,
