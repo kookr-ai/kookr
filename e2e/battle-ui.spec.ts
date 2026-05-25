@@ -81,7 +81,7 @@ test.describe('UI layout', () => {
 
   test('detail panel shows empty state initially', async ({ page }) => {
     await expect(page.locator('.detail-empty')).toContainText('No agents running');
-    await expect(page.locator('.detail-empty kbd')).toContainText('Alt+L');
+    await expect(page.locator('.detail-empty kbd')).toHaveText(['Alt', 'L']);
   });
 
   // Keyboard-hint affordances were moved out of the statusbar at some point

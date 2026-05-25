@@ -1,6 +1,7 @@
 import { test as base, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
+import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from '../src/frontend/store/onboarding-status.js';
 
 export function createRelayModeTest(mode: 'stored' | 'runtime') {
   const label = mode === 'stored' ? 'Stored' : 'Runtime';
@@ -81,13 +82,13 @@ export function createRelayModeTest(mode: 'stored' | 'runtime') {
 
     page: async ({ page, suppressOnboarding }, use) => {
       if (suppressOnboarding) {
-        await page.addInitScript(() => {
+        await page.addInitScript((onboardingStorageKey) => {
           try {
             window.localStorage.removeItem('kookr:projectSidebarCatalog');
             window.localStorage.removeItem('kookr:projectSidebarPrefs');
-            window.localStorage.setItem('kookr:onboarding:seen-v1', 'true');
+            window.localStorage.setItem(onboardingStorageKey, 'true');
           } catch { /* ignore */ }
-        });
+        }, ONBOARDING_STORAGE_KEY);
       }
       await use(page);
     },

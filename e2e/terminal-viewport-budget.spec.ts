@@ -9,6 +9,7 @@ import {
   injectStopEvent,
 } from './battle-helpers.js';
 import type { APIRequestContext, Page } from '@playwright/test';
+import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from '../src/frontend/store/onboarding-status.js';
 
 type TerminalBudget = {
   width: number;
@@ -93,10 +94,10 @@ async function expectTerminalBudget(page: Page, minimum: TerminalBudget, label: 
 test.describe('Terminal viewport budgets', () => {
   test.beforeEach(async ({ page, request }) => {
     await resetServer(request);
-    await page.addInitScript(() => {
+    await page.addInitScript((onboardingStorageKey) => {
       localStorage.removeItem('kookr-terminal-focus-mode');
-      localStorage.setItem('kookr:onboarding:seen-v1', 'true');
-    });
+      localStorage.setItem(onboardingStorageKey, 'true');
+    }, ONBOARDING_STORAGE_KEY);
     await page.goto('/');
     await expect(page.locator('.logo')).toHaveText('KOOKR');
   });
