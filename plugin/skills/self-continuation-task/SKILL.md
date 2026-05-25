@@ -172,17 +172,53 @@ For issue batches, the next task should derive state from GitHub rather than
 from the previous task's memory:
 
 - Candidate set: explicit issue list or a stable `gh issue list` query.
-- Done check: issue closed, or an open PR whose closing issue references include
-  the issue.
+- Done check: issue closed, OR an open PR whose closing issue references
+  include the issue, OR (drift signal) a recently-merged PR on a branch
+  matching the unit's namespace (e.g. `*<issue-number>*`, `*<slug>*`) — see
+  End-of-Chain Sweep for why the drift signal matters.
 - In-progress check: existing branch/PR for the issue.
 - Successor cursor: include the next issue number and a remaining issue list or
   count, for example `Next issue: #110; remaining issues: #110, #111, #112`.
 - Failure cap: durable per-issue attempt count only when there is no stronger
   completion signal.
+- Blocker marking: when a task records a blocker on its issue (e.g. dependency
+  not yet merged), make the marker discoverable to other workstreams that may
+  pick the issue up independently. Post a sticky comment such as
+  `tracked-by: chain-task <task-id>; blocked-on: <#dep>; resume when: <#dep>
+  is merged`, OR apply a `chain-blocked` label. Without a discoverable marker,
+  a parallel workstream may pick the issue up, merge a fix that forgets the
+  `Closes #N` keyword, and leave the issue stale-open while the chain assumes
+  it is still pending — the failure mode the End-of-Chain Sweep catches.
 
 Avoid dependent issues in one chain unless the completion check verifies that
 the dependency has actually merged. Open PRs on separate branches do not make
 their changes visible to later worktrees based on `main`.
+
+## End-of-Chain Sweep
+
+When the chain stops — because no eligible unit remains, an attempt cap is
+hit, or a hard blocker was recorded — the terminating task SHOULD perform a
+final reconciliation pass before exiting:
+
+1. Re-derive the full unit list from the source of truth.
+2. For each unit, check BOTH the primary done-signal (issue closed, queue row
+   complete) AND the secondary "work shipped but signal missing" drift signal
+   (a merged PR on the unit's branch namespace, a status row updated
+   out-of-band, an issue comment from a non-chain workstream claiming
+   completion).
+3. Emit a one-line-per-unit status summary — as a comment on a tracking issue,
+   as stdout, or as a row in durable state — labelling each unit as:
+   `done` / `in-flight` / `blocked` / `stale-open-but-shipped` / `pending`.
+
+The sweep catches a common failure: another workstream completes a chain unit
+but uses a different completion convention (e.g. merges a PR without the
+`Closes #N` keyword). The primary done-check misses it; the sweep surfaces it
+as a drift report so a human can close the gap manually.
+
+Keep the sweep read-only and cheap — no new work, no PR changes, just a final
+scan and a short summary. If the sweep finds drift, do NOT silently
+"fix" it; report it and let a human decide. Silent reconciliation hides bugs
+in the chain's completion-detection logic.
 
 ## Anti-Patterns
 
@@ -196,3 +232,9 @@ their changes visible to later worktrees based on `main`.
   available.
 - Using inline `kookr-spawn "long prompt..."` from inside agent sessions.
 - Continuing when tests fail and the blocker has not been recorded.
+- Recording a blocker on an issue without a discoverable marker (label, sticky
+  comment, status tag) that parallel workstreams can see — they may complete
+  the issue under a different convention and leave it stale-open.
+- Ending the chain without a reconciliation sweep that cross-checks primary
+  done-signals against secondary "work shipped but signal missing" signals.
+- Silently "fixing" drift the sweep finds. Surface it; let a human decide.
