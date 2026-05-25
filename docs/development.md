@@ -26,7 +26,7 @@ pnpm build && pnpm start # production mode on 4800
 pnpm run doctor          # local setup diagnostics
 ```
 
-Dev mode uses port `4801` so it can run beside a stable production-style instance on port `4800`.
+Dev mode uses port `4801` so it can run beside a stable production-style instance on port `4800`. Treat `pnpm dev` as a live development target, not the Kookr instance supervising important work: it restarts on source changes and may be broken while edits are in progress.
 
 ## Production-Style Worktree
 
@@ -38,6 +38,8 @@ pnpm prod:update
 ```
 
 `pnpm prod:update` fetches, builds, restarts, and health-checks the production-style worktree. The dashboard auto-deploy button calls the same script when Kookr is running on port `4800`.
+
+The usual contributor setup is the production-style instance on `4800` for real agent supervision, plus `pnpm dev` on `4801`/`5173` only when you need to check current modifications with hot reload.
 
 The dev checkout's `.env` is symlinked into `../kookr-prod/.env`, so use:
 

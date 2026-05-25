@@ -40,12 +40,17 @@ brew install node@22 pnpm
 git clone https://github.com/kookr-ai/kookr.git
 cd kookr
 pnpm install
-pnpm dev
+pnpm prod:setup
+pnpm prod:update
 ```
 
-Open `http://localhost:5173`.
+Open `http://localhost:4800`.
 
-`pnpm dev` starts the backend on port `4801` and the Vite frontend on port `5173`. Port `4800` is reserved for the stable production-style instance described below.
+`pnpm prod:setup` creates a sibling `../kookr-prod` worktree and builds it. `pnpm prod:update` fetches, builds, restarts, and health-checks that production-style instance.
+
+This is the right default for daily Kookr usage because the server supervising your agents should not be the same process that is restarting or breaking while you edit Kookr itself.
+
+Use `pnpm dev` only when you are actively developing Kookr and need hot reload on source changes. Dev mode starts the backend on port `4801` and the Vite frontend on port `5173`, so it can run beside the stable production-style instance on port `4800`.
 
 `pnpm dev` also builds the vendored dtach binary on demand if it is not already present (idempotent, fast when cached), so the first run works even if `pnpm install`'s `prepare` hook was skipped (e.g., under `ignore-scripts=true`).
 
@@ -75,8 +80,8 @@ Kookr has two common run modes:
 
 | Mode | Port | Worktree | Use when |
 | --- | --- | --- | --- |
-| `pnpm dev` | `4801` | Current checkout | You are developing Kookr itself. Backend and frontend reload on source changes. |
 | `pnpm prod:setup` then `pnpm prod:update` | `4800` | Sibling `../kookr-prod` | You want a stable Kookr instance supervising real agents while this checkout changes. |
+| `pnpm dev` | `4801` plus Vite on `5173` | Current checkout | You are developing Kookr itself and need hot reload for active modifications. |
 
 For daily supervision, use the production-style path:
 
@@ -86,6 +91,8 @@ pnpm prod:update
 ```
 
 After setup, `pnpm prod:update` fetches, builds, restarts, and health-checks the `../kookr-prod` worktree. `pnpm prod:restart` restarts without rebuilding, useful after `.env` changes.
+
+For Kookr development, keep the production-style instance open for real supervision and run `pnpm dev` separately only for checking your current changes in real time.
 
 ## Optional Features
 

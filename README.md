@@ -36,10 +36,15 @@ You run several Claude Code or Codex CLI agents in parallel. One loops on the sa
 git clone https://github.com/kookr-ai/kookr.git
 cd kookr
 pnpm install
-pnpm dev
+pnpm prod:setup
+pnpm prod:update
 ```
 
-Open `http://localhost:5173`.
+Open `http://localhost:4800`.
+
+Use the production-style instance for normal Kookr usage. It runs from the sibling `../kookr-prod` worktree, so it stays stable while you edit this checkout or run another dev server to test changes.
+
+Use `pnpm dev` only when you are actively developing Kookr and need hot reload on your modifications. Dev mode runs on `4801` with Vite on `5173`; because it restarts and can break while source changes are being applied, it is a poor supervisor for real agent work. The usual contributor setup is stable Kookr on `4800` plus a separate `pnpm dev` instance for live verification.
 
 Prerequisites: `git`, Node.js `>=22`, `pnpm >=10`, and build tools for native modules. Claude Code is only required when you want Kookr to launch Claude Code agents.
 
