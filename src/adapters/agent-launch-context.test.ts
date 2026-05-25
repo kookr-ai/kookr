@@ -9,9 +9,10 @@ import {
   deliverInitialPromptToSession,
   resolveBracketedPasteSubmit,
   isBracketedPasteModeEnabled,
+  isClaudeBusyOrResponding,
   isClaudeComposerReady,
   PROMPT_BRACKETED_PASTE_ENV,
-  DEFAULT_PROMPT_SUBMIT_CONFIRM_MS,
+  DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
   DEFAULT_PROMPT_SUBMIT_RETRIES,
   DEFAULT_PROMPT_READY_TIMEOUT_MS,
@@ -348,6 +349,33 @@ describe('isBracketedPasteModeEnabled', () => {
   });
 });
 
+describe('isClaudeBusyOrResponding', () => {
+  const encoder = new TextEncoder();
+  test('detects the streaming-response "esc to interrupt" indicator', () => {
+    expect(isClaudeBusyOrResponding(encoder.encode('Generating… esc to interrupt'))).toBe(true);
+    expect(isClaudeBusyOrResponding(encoder.encode('Generating… Esc to interrupt'))).toBe(true);
+    expect(isClaudeBusyOrResponding(encoder.encode('Generating… ESC to interrupt'))).toBe(true);
+  });
+  test('detects numbered permission-prompt options', () => {
+    expect(isClaudeBusyOrResponding(encoder.encode('Allow tool?\n❯ 1. Yes\n  2. No'))).toBe(true);
+    expect(isClaudeBusyOrResponding(encoder.encode('  1. Allow once\n  2. Deny'))).toBe(true);
+    expect(isClaudeBusyOrResponding(encoder.encode('  1. Approve\n  2. Reject'))).toBe(true);
+  });
+  test('returns false for an idle composer or empty display', () => {
+    // The exact state the retry loop must be willing to resend into:
+    // composer painted with no busy / response indicators.
+    expect(isClaudeBusyOrResponding(encoder.encode('Claude Code\n❯ '))).toBe(false);
+    expect(isClaudeBusyOrResponding(encoder.encode(''))).toBe(false);
+  });
+  test('does not false-positive on bare numbers or the ❯ glyph', () => {
+    // The permission-prompt regex is intentionally narrow (must follow a
+    // line break, must match Yes/Allow/Approve/Continue) so prompts that
+    // mention "1." in passing or echo the composer cursor do not trip it.
+    expect(isClaudeBusyOrResponding(encoder.encode('see step 1. then step 2.'))).toBe(false);
+    expect(isClaudeBusyOrResponding(encoder.encode('❯ '))).toBe(false);
+  });
+});
+
 describe('deliverInitialPromptToSession with awaitSubmit', () => {
   test('sends exactly one Enter when awaitSubmit confirms on the first attempt', async () => {
     const backend = new FakeTerminalBackend();
@@ -377,8 +405,8 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
     await backend.createSession('s-retry-all', 'claude');
     const writeSpy = vi.spyOn(backend, 'write');
     const sleep = vi.fn(async (_ms: number) => {});
-    // Three awaits expected: initial + retry-after-#1 + final-after-last-retry.
-    // All return false (acknowledgement never arrives).
+    // Three awaits expected: initial submit + two retry loops. All return
+    // false so the launch falls through after exhausting submitRetries.
     const awaitSubmit = vi.fn(async (_timeoutMs: number) => false);
 
     await deliverInitialPromptToSession(backend, 's-retry-all', 'go', {
@@ -390,13 +418,68 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
       awaitSubmit,
     });
 
-    // submitRetries + 1 initial = 3 Enter writes total.
+    // 1 initial Enter + submitRetries (2) resends = 3 Enter writes total.
     expect(writeSpy).toHaveBeenCalledTimes(3);
     for (const call of writeSpy.mock.calls) {
       expect(Array.from(call[1])).toEqual([0x0d]);
     }
-    // One await per loop iteration + the final post-loop await.
+    // `submitRetries + 1` awaits — one per loop iteration.
     expect(awaitSubmit).toHaveBeenCalledTimes(3);
+  });
+
+  test('with submitRetries=0, awaits once but never resends Enter', async () => {
+    // Regression guard for the "skip the retries entirely" caller intent:
+    // the helper still issues exactly one confirmation await (so a hook
+    // that does arrive is observed), but writes no retry Enter.
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-no-retry', 'claude');
+    const writeSpy = vi.spyOn(backend, 'write');
+    const sleep = vi.fn(async (_ms: number) => {});
+    const awaitSubmit = vi.fn(async (_timeoutMs: number) => false);
+
+    await deliverInitialPromptToSession(backend, 's-no-retry', 'go', {
+      bracketedPaste: true,
+      submitDelayMs: 0,
+      submitRetries: 0,
+      submitConfirmTimeoutMs: 5,
+      sleep,
+      awaitSubmit,
+    });
+
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(awaitSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  test('skips the retry Enter when the post-await display shows Claude is busy', async () => {
+    // The hazard: the initial Enter actually submitted the prompt, but the
+    // `UserPromptSubmit` hook is slow to round-trip. A blind retry at the
+    // confirm timeout could confirm a tool-permission dialog that has
+    // since appeared. When the captured display proves Claude has already
+    // accepted the prompt, treat the submission as confirmed and stop.
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-busy', 'claude');
+    const writeSpy = vi.spyOn(backend, 'write');
+    const sleep = vi.fn(async (_ms: number) => {});
+    const awaitSubmit = vi.fn(async () => {
+      // Between the initial Enter and the would-be retry, Claude starts
+      // streaming — the display now carries the "esc to interrupt" marker.
+      backend.emit('s-busy', ' (esc to interrupt) ');
+      return false;
+    });
+
+    await deliverInitialPromptToSession(backend, 's-busy', 'go', {
+      bracketedPaste: true,
+      submitDelayMs: 0,
+      submitRetries: 2,
+      submitConfirmTimeoutMs: 5,
+      sleep,
+      awaitSubmit,
+    });
+
+    // Only the initial Enter — no retry written despite the timed-out await.
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    // Exactly one confirmation attempt; the busy check short-circuits the loop.
+    expect(awaitSubmit).toHaveBeenCalledTimes(1);
   });
 
   test('stops resending the moment awaitSubmit returns true', async () => {
@@ -443,7 +526,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
   });
 
   test('exposes documented defaults for submit confirmation tuning', () => {
-    expect(DEFAULT_PROMPT_SUBMIT_CONFIRM_MS).toBe(2_000);
+    expect(DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS).toBe(2_000);
     expect(DEFAULT_PROMPT_SUBMIT_RETRIES).toBe(2);
   });
 });

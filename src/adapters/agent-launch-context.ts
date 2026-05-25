@@ -48,7 +48,7 @@ const DEFAULT_PROMPT_READY_POLL_MS = 100;
  * Tuned so a slow dtach + cold Claude Code can still confirm the prompt
  * submission via the `UserPromptSubmit` hook before a retry Enter is sent.
  */
-export const DEFAULT_PROMPT_SUBMIT_CONFIRM_MS = 2_000;
+export const DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS = 2_000;
 /**
  * Default number of retry Enters after the initial submission Enter when
  * {@link DeliverInitialPromptOptions.awaitSubmit} keeps timing out. With the
@@ -57,6 +57,27 @@ export const DEFAULT_PROMPT_SUBMIT_CONFIRM_MS = 2_000;
  * spamming the composer.
  */
 export const DEFAULT_PROMPT_SUBMIT_RETRIES = 2;
+
+/**
+ * Substrings that, when visible in the post-Enter display, prove Claude
+ * Code has already accepted the prompt and is in a state where another
+ * Enter could have side effects (cancel/confirm). The retry path uses
+ * {@link isClaudeBusyOrResponding} to skip a retry when any of these
+ * appear, defending against the case where the initial Enter actually
+ * succeeded but the `UserPromptSubmit` hook is slow to round-trip.
+ */
+const CLAUDE_BUSY_MARKERS: readonly string[] = [
+  'esc to interrupt',
+  'Esc to interrupt',
+  'ESC to interrupt',
+];
+/**
+ * Permission-prompt detector. Claude Code's permission UI renders numbered
+ * choices preceded by the same `❯` glyph the idle composer uses, so a bare
+ * `❯` match would false-positive. Require the numbered option to keep the
+ * heuristic narrow.
+ */
+const CLAUDE_PERMISSION_PROMPT_RE = /(?:^|\n)\s*(?:❯\s*)?1\.\s+(?:Yes|Allow|Approve|Continue)\b/;
 
 /** Env var that disables bracketed-paste prompt submission when set falsey. */
 export const PROMPT_BRACKETED_PASTE_ENV = 'KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE';
@@ -229,6 +250,26 @@ export function isBracketedPasteModeEnabled(rawBytes: Uint8Array): boolean {
   return promptDecoder.decode(rawBytes).includes(BRACKETED_PASTE_MODE_ENABLE_TEXT);
 }
 
+/**
+ * Detect whether Claude Code has already accepted the most recent prompt
+ * and is either streaming a response or showing a permission prompt. Used
+ * by the launch path to skip a retry Enter that would otherwise risk
+ * confirming a tool-permission dialog or interrupting a streaming reply.
+ *
+ * False negatives are acceptable (a missed signal merely allows a spurious
+ * Enter into an empty composer, which Claude Code ignores); false positives
+ * are not (they would leave the prompt stuck unsubmitted, which is the
+ * very bug the retry loop exists to fix), so the markers below are kept
+ * narrow and high-confidence rather than broad.
+ */
+export function isClaudeBusyOrResponding(rawBytes: Uint8Array): boolean {
+  const text = stripTerminalControls(promptDecoder.decode(rawBytes));
+  for (const marker of CLAUDE_BUSY_MARKERS) {
+    if (text.includes(marker)) return true;
+  }
+  return CLAUDE_PERMISSION_PROMPT_RE.test(text);
+}
+
 function stripTerminalControls(text: string): string {
   return text
     // OSC sequences, including terminal-title updates.
@@ -324,7 +365,7 @@ export async function deliverInitialPromptToSession(
   const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_PROMPT_READY_TIMEOUT_MS;
   const readyPollMs = options.readyPollMs ?? DEFAULT_PROMPT_READY_POLL_MS;
   const submitConfirmTimeoutMs =
-    options.submitConfirmTimeoutMs ?? DEFAULT_PROMPT_SUBMIT_CONFIRM_MS;
+    options.submitConfirmTimeoutMs ?? DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS;
   const submitRetries = options.submitRetries ?? DEFAULT_PROMPT_SUBMIT_RETRIES;
   const sleep = options.sleep ?? realSleep;
   if (options.waitForReady) {
@@ -338,19 +379,30 @@ export async function deliverInitialPromptToSession(
 
   // Closed-loop confirmation: if the caller wired an `awaitSubmit` predicate
   // (the adapter does this via the `UserPromptSubmit` hook), wait for the
-  // agent's own acknowledgement that the prompt left the composer. On
-  // timeout, resend Enter — Claude Code treats Enter on an empty composer
-  // as a no-op, so a redundant Enter after a successful (but unobserved)
-  // submission is safe. Caps at `submitRetries` extra Enters.
+  // agent's own acknowledgement that the prompt left the composer.
+  //
+  // On timeout, only resend Enter when the captured display shows no signs
+  // that Claude has already accepted the prompt. The hazard the check
+  // closes: if the initial Enter actually submitted but the hook ack is
+  // slow to round-trip, a blind resend at the 2 s mark can land on a
+  // tool-permission dialog ("1. Yes") and confirm it, or on a streaming
+  // response (no-op in practice, but still uncontracted). When the display
+  // is unambiguous about Claude being busy, treat the submission as
+  // confirmed and stop waiting — better to release the launch than to
+  // poke a live composer.
+  //
+  // Invariant: `submitRetries + 1` awaits total, `submitRetries` Enter
+  // resends. With `submitRetries = 0` the loop body runs exactly once
+  // (await + no resend), matching the documented "skip the retries"
+  // semantics.
   if (options.awaitSubmit) {
-    for (let attempt = 0; attempt < submitRetries; attempt += 1) {
+    for (let attempt = 0; attempt <= submitRetries; attempt += 1) {
       if (await options.awaitSubmit(submitConfirmTimeoutMs)) return;
+      if (attempt === submitRetries) return;
+      const capture = await backend.captureBytes(sessionId);
+      if (isClaudeBusyOrResponding(capture)) return;
       await backend.write(sessionId, ENTER_BYTES);
     }
-    // Last attempt: wait once more but do not send another Enter. If this
-    // also times out, fall through silently — better to declare launch
-    // complete than to spam the composer indefinitely.
-    await options.awaitSubmit(submitConfirmTimeoutMs);
   }
 }
 

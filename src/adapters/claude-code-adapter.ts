@@ -38,6 +38,7 @@ import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
 import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
+import { withTimeout } from '../core/with-timeout.js';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -307,7 +308,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           bracketedPaste: this.promptBracketedPaste,
           waitForReady: this.promptBracketedPaste,
           awaitSubmit: this.promptBracketedPaste
-            ? (timeoutMs) => awaitWithTimeout(submitConfirmed, timeoutMs)
+            ? (timeoutMs) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false)
             : undefined,
           submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
           submitRetries: this.promptSubmitRetries,
@@ -361,14 +362,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
   /** Stop an agent by killing its session. */
   async stop(tmuxName: string): Promise<void> {
-    await this.backend.killSession(tmuxName);
-    this.settingsMap.delete(tmuxName);
-    this.tmuxToTaskId.delete(tmuxName);
-    // Resolve any in-flight launch waiter so it stops awaiting hooks that
-    // will never fire after the session is dead, then drop the slot.
+    // Release the in-flight launch waiter FIRST so that even if killSession
+    // throws (dtach error, transient I/O fault) the launching promise still
+    // unblocks. With the waiter still armed, a failed stop would leave the
+    // launch hanging for up to `submitConfirmTimeoutMs * (submitRetries+1)`
+    // waiting on a hook the dead session will never emit.
     const resolver = this.initialPromptSubmitResolvers.get(tmuxName);
     if (resolver) resolver();
     this.initialPromptSubmitResolvers.delete(tmuxName);
+    await this.backend.killSession(tmuxName);
+    this.settingsMap.delete(tmuxName);
+    this.tmuxToTaskId.delete(tmuxName);
   }
 
   /**
@@ -533,10 +537,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       }
     }
 
-    // Fire the launch-path submit signal on the first parent UserPromptSubmit.
-    // Child sessions (subagents) also emit user_prompt events; ignore those —
-    // the launch waiter only cares that the initial top-level prompt landed.
-    if (event.type === 'user_prompt' && parentage === 'parent') {
+    // Fire the launch-path submit signal on the first user_prompt that is
+    // not classified as a child (subagent) session. Accept both 'parent' and
+    // 'unknown': the hook command writes JSONL + HTTP POST and the HTTP POST
+    // for UserPromptSubmit can race ahead of the SessionStart POST under load,
+    // landing here before `classifyHookParentage` has a `parentSessionId` to
+    // compare against. In that window classification returns 'unknown' even
+    // though the launching session is the only one that could possibly be
+    // emitting it. Excluding 'child' still keeps subagent prompts out, since
+    // subagent SessionStart fires before its UserPromptSubmit on the same
+    // child id and is what makes a child id known.
+    if (event.type === 'user_prompt' && parentage !== 'child') {
       const resolver = this.initialPromptSubmitResolvers.get(tmuxName);
       if (resolver) {
         this.initialPromptSubmitResolvers.delete(tmuxName);
@@ -683,29 +694,4 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/**
- * Resolve `true` if `promise` settles within `timeoutMs`, otherwise `false`.
- * Used by the launch path to give `UserPromptSubmit` a bounded wait before
- * resending Enter. The timer is cleared on settle so a long-lived deferred
- * does not keep the event loop alive after the awaiter has moved on.
- */
-function awaitWithTimeout(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const timer = setTimeout(() => resolve(false), timeoutMs);
-    if (typeof timer === 'object' && timer && 'unref' in timer && typeof timer.unref === 'function') {
-      timer.unref();
-    }
-    promise.then(
-      () => {
-        clearTimeout(timer);
-        resolve(true);
-      },
-      () => {
-        clearTimeout(timer);
-        resolve(true);
-      },
-    );
-  });
 }

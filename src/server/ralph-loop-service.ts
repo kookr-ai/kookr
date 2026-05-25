@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
+import { withTimeout } from '../core/with-timeout.js';
 import { buildTaskCompletionMetadata } from './completion-metadata.js';
 import type { RalphCycler, RalphCyclerEvent } from '../core/ralph-cycler.js';
 import { nowISO, type DeferredInteractionLogWriter, type InteractionEvent } from '../core/interaction-log.js';
@@ -102,24 +103,6 @@ export interface ReconcileRalphLoopsOptions {
 
 /** Per-probe timeout for `probeStartupLiveness` (ms). Hardcoded; not configurable. */
 const STARTUP_PROBE_TIMEOUT_MS = 500;
-
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  fallback: T,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((resolve) => {
-        timer = setTimeout(() => resolve(fallback), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
 
 /**
  * Startup-only liveness probe. Iterates a task's sessions newest-first and
