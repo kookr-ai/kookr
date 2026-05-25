@@ -36,6 +36,7 @@ import {
   resolveShortcutBindings,
   type PlatformShortcutBindingOverrides,
 } from '../shared/contracts/shortcut-bindings.js';
+import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { buildBugReportBundle } from './bug-report-bundle.js';
 import { getBugReportAlerts, getBugReportWireObservations } from './bug-report-recorder.js';
 import './critical.css';
@@ -78,6 +79,7 @@ interface PendingCompleteConfirmation {
 }
 
 const MOBILE_BREAKPOINT_PX = 768;
+const WIDE_DETAIL_BREAKPOINT_PX = 1200;
 
 function reflectionDismissKey(sessionId: string): string {
   return `kookr-reflection-dismissed-${sessionId}`;
@@ -95,6 +97,9 @@ export function App() {
   useTaskCompletionChime();
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth <= MOBILE_BREAKPOINT_PX : false,
+  );
+  const [wideDetailActive, setWideDetailActive] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth > WIDE_DETAIL_BREAKPOINT_PX : false,
   );
   const [mobileTab, setMobileTab] = useState<MobileDashboardTab>('findings');
   const [showLaunch, setShowLaunch] = useState(false);
@@ -153,6 +158,8 @@ export function App() {
     closeOssView,
     toggleOssView,
     coordinator,
+    leftPane,
+    detailPaneMode,
     terminalFocusMode,
     setNarrowTab,
     toggleTerminalFocusMode,
@@ -188,7 +195,9 @@ export function App() {
 
   useEffect(() => {
     function updateViewportMode() {
-      setIsMobileViewport(window.innerWidth <= MOBILE_BREAKPOINT_PX);
+      const width = window.innerWidth;
+      setIsMobileViewport(width <= MOBILE_BREAKPOINT_PX);
+      setWideDetailActive(width > WIDE_DETAIL_BREAKPOINT_PX);
     }
 
     updateViewportMode();
@@ -223,7 +232,10 @@ export function App() {
   const selectedProjectSummary = selectedProject
     ? projectSummaries.find((p) => p.project === selectedProject) ?? null
     : null;
-  const terminalFocusActive = terminalFocusMode && !isMobileViewport;
+  const selectedAgent = agents.find((a) => a.agentId === selectedAgentId) ?? null;
+  const selectedAgentShowsSplit = selectedAgent === null
+    || !(selectedAgent.taskStatus !== undefined && isTerminalStatus(selectedAgent.taskStatus) && selectedAgent.completionDigest);
+  const terminalFocusActive = terminalFocusMode && wideDetailActive && selectedAgentShowsSplit;
   const bugReportDraft = useMemo(() => {
     if (!showBugReport) return null;
     return buildBugReportBundle({
@@ -239,10 +251,13 @@ export function App() {
   }, [agents, bugReportNote, buildInfo, selectedAgentId, selectedProject, serverStartedAt, showBugReport]);
 
   useEffect(() => {
-    if (isMobileViewport && terminalFocusMode) {
-      setNarrowTab('activity');
+    if (wideDetailActive) return;
+    if (detailPaneMode === 'right') {
+      setNarrowTab('terminal');
+    } else if (detailPaneMode === 'left') {
+      setNarrowTab(leftPane === 'github' ? 'github' : 'activity');
     }
-  }, [isMobileViewport, setNarrowTab, terminalFocusMode]);
+  }, [detailPaneMode, leftPane, setNarrowTab, wideDetailActive]);
 
   useEffect(() => {
     if (!terminalFocusActive) return;
@@ -405,7 +420,7 @@ export function App() {
       }
       if (matchesShortcutAction(e, shortcutBindings, 'toggle_terminal_focus')) {
         e.preventDefault();
-        if (isMobileViewport) return;
+        if (!wideDetailActive) return;
         track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.toggle_terminal_focus), action: 'toggle_terminal_focus', context: 'global' });
         toggleTerminalFocusMode();
       }
@@ -426,7 +441,7 @@ export function App() {
       if (terminalSend) {
         e.preventDefault();
         const digit = terminalSend.slice(-1);
-        sendToTerminal(digit);
+        if (!sendToTerminal(digit)) return;
         track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings[terminalSend]), action: 'terminal_send_and_next', context: 'global' });
         nextTask();
       }
@@ -482,7 +497,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isMobileViewport, nextBottleneck, nextTask, previousTask, send, shortcutBindings, showBugReport, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel]);
+  }, [nextBottleneck, nextTask, previousTask, send, shortcutBindings, showBugReport, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;
@@ -502,7 +517,6 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [agents, agentsHydrated, projectSummaries, projectSummariesHydrated, selectedProject]);
 
-  const selectedAgent = agents.find((a) => a.agentId === selectedAgentId) ?? null;
   const projectPriorityRanks = useMemo(
     () => deriveProjectPriorityRanks(projectSummaries, projectSidebarPrefs),
     [projectSummaries, projectSidebarPrefs],
@@ -624,6 +638,8 @@ export function App() {
         setConfirmAction('complete');
       }}
       collapsed={!isMobileViewport && !selectedAgent}
+      detailPaneMode={detailPaneMode}
+      wideDetailActive={wideDetailActive}
       terminalFocusMode={terminalFocusActive}
       shortcutBindings={shortcutBindings}
     />
@@ -675,6 +691,7 @@ export function App() {
         onCoordinatorFindings={() => setShowCoordinatorFindings((value) => !value)}
         coordinatorFindingsOpen={showCoordinatorFindings}
         terminalFocusMode={terminalFocusMode}
+        terminalFocusAvailable={wideDetailActive}
         terminalFocusTriggerRef={terminalFocusTriggerRef}
         onTerminalFocusToggle={() => {
           track({ type: 'shortcut_used', key: 'TopBar Terminal Focus', action: 'toggle_terminal_focus', context: 'click' });

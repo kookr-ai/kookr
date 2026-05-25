@@ -1,4 +1,4 @@
-import type { TriageNavigationSlice, StoreGet, StoreSet } from '../store-types.js';
+import type { DetailPaneMode, TriageNavigationSlice, StoreGet, StoreSet } from '../store-types.js';
 import type { AgentState } from '../../../shared/protocol.js';
 import { isDndEnabled } from '../../hooks/useDnd.js';
 import { compareRoutableAgents } from '../../agent-priority-order.js';
@@ -7,26 +7,60 @@ import { recordReportableAlert } from '../../bug-report-recorder.js';
 import { saveSelectedProject } from '../selected-project-storage.js';
 
 const TERMINAL_FOCUS_STORAGE_KEY = 'kookr-terminal-focus-mode';
+const DETAIL_PANE_MODE_STORAGE_KEY = 'kookr-detail-panel-mode';
 
-function loadTerminalFocusMode(): boolean {
+function isDetailPaneMode(value: string | null): value is DetailPaneMode {
+  return value === 'split' || value === 'left' || value === 'right';
+}
+
+function saveDetailPaneMode(mode: DetailPaneMode): boolean {
   try {
     if (typeof localStorage === 'undefined') return false;
-    return localStorage.getItem(TERMINAL_FOCUS_STORAGE_KEY) === '1';
+    if (mode === 'split') {
+      localStorage.removeItem(DETAIL_PANE_MODE_STORAGE_KEY);
+    } else {
+      localStorage.setItem(DETAIL_PANE_MODE_STORAGE_KEY, mode);
+    }
+    localStorage.removeItem(TERMINAL_FOCUS_STORAGE_KEY);
+    return true;
   } catch {
+    // Persistence is best-effort; panel mode should still change in memory.
+    console.warn('Kookr: failed to persist detail pane mode');
     return false;
   }
 }
 
-function saveTerminalFocusMode(enabled: boolean): void {
+function loadDetailPaneMode(): DetailPaneMode {
   try {
-    if (typeof localStorage === 'undefined') return;
-    if (enabled) {
-      localStorage.setItem(TERMINAL_FOCUS_STORAGE_KEY, '1');
-    } else {
+    if (typeof localStorage === 'undefined') return 'split';
+    const stored = localStorage.getItem(DETAIL_PANE_MODE_STORAGE_KEY);
+    if (isDetailPaneMode(stored)) return stored;
+    if (stored !== null) {
+      console.warn(`Kookr: ignoring invalid detail pane mode "${stored}"`);
+      localStorage.removeItem(DETAIL_PANE_MODE_STORAGE_KEY);
+      return 'split';
+    }
+
+    const legacy = localStorage.getItem(TERMINAL_FOCUS_STORAGE_KEY);
+    if (legacy === '1') {
+      try {
+        localStorage.setItem(DETAIL_PANE_MODE_STORAGE_KEY, 'right');
+      } catch {
+        console.warn('Kookr: failed to write migrated terminal focus mode preference');
+      }
+      try {
+        localStorage.removeItem(TERMINAL_FOCUS_STORAGE_KEY);
+      } catch {
+        console.warn('Kookr: failed to remove legacy terminal focus mode preference');
+      }
+      return 'right';
+    }
+    if (legacy !== null) {
       localStorage.removeItem(TERMINAL_FOCUS_STORAGE_KEY);
     }
+    return 'split';
   } catch {
-    // Persistence is best-effort; focus mode should still toggle in memory.
+    return 'split';
   }
 }
 
@@ -42,6 +76,8 @@ function activateNavigationSelection(
 }
 
 export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): TriageNavigationSlice {
+  const initialDetailPaneMode = loadDetailPaneMode();
+
   function getPriorityOrderContext() {
     const state = get();
     return {
@@ -59,7 +95,8 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
     githubState: {},
     leftPane: 'activity',
     narrowTab: 'activity',
-    terminalFocusMode: loadTerminalFocusMode(),
+    detailPaneMode: initialDetailPaneMode,
+    terminalFocusMode: initialDetailPaneMode === 'right',
     suggestions: {},
     focusZone: 'none',
     respondAllAgentIds: null,
@@ -215,21 +252,21 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       set({ narrowTab: tab });
     },
 
-    setTerminalFocusMode: (enabled) => {
-      saveTerminalFocusMode(enabled);
+    setDetailPaneMode: (mode) => {
+      saveDetailPaneMode(mode);
       set({
-        terminalFocusMode: enabled,
-        ...(enabled ? { narrowTab: 'terminal' as const } : {}),
+        detailPaneMode: mode,
+        terminalFocusMode: mode === 'right',
+        ...(mode === 'right' ? { narrowTab: 'terminal' as const } : {}),
       });
     },
 
+    setTerminalFocusMode: (enabled) => {
+      get().setDetailPaneMode(enabled ? 'right' : 'split');
+    },
+
     toggleTerminalFocusMode: () => {
-      const enabled = !get().terminalFocusMode;
-      saveTerminalFocusMode(enabled);
-      set({
-        terminalFocusMode: enabled,
-        ...(enabled ? { narrowTab: 'terminal' as const } : {}),
-      });
+      get().setDetailPaneMode(get().detailPaneMode === 'right' ? 'split' : 'right');
     },
 
     setFocusZone: (zone) => {

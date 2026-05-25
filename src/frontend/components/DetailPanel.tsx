@@ -21,6 +21,7 @@ import {
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
+import type { DetailPaneMode } from '../store/store-types.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -72,6 +73,8 @@ interface Props {
   onLaunch: () => void;
   onRequestComplete: () => void;
   collapsed?: boolean;
+  detailPaneMode?: DetailPaneMode;
+  wideDetailActive?: boolean;
   terminalFocusMode?: boolean;
   shortcutBindings?: ShortcutBindingMap;
 }
@@ -235,23 +238,24 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapsed, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings() }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapsed, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings() }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareHeaderShares, setShareHeaderShares] = useState<TaskShareSummary[]>([]);
   const hookSettingsTriggerRef = useRef<HTMLButtonElement>(null);
+  const showRightPaneButtonRef = useRef<HTMLButtonElement>(null);
+  const hideRightPaneButtonRef = useRef<HTMLButtonElement>(null);
   const [permissionButtonsDisabled, setPermissionButtonsDisabled] = useState(false);
   const [isNarrowViewport, setIsNarrowViewport] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth <= NARROW_DETAIL_BREAKPOINT_PX : false,
   );
   const inputRef = useRef<HTMLInputElement>(null);
-  const { selectAgent, nextBottleneck, nextTask, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
+  const { selectAgent, nextBottleneck, nextTask, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
 
-  // Right-pane mode for the Activity+Terminal|Diff split. See
-  // docs/rfc/rfc-activity-panel-ux.md §1.
+  // Right-pane mode for the Activity+Terminal|Diff split.
   const [rightPane, setRightPane] = useState<'terminal' | 'diff'>('terminal');
   const [activeDiff, setActiveDiff] = useState<
     { agentId: string; toolUseId: string; filePath: string; openedAt: string | null } | null
@@ -304,12 +308,6 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       window.clearInterval(timer);
     };
   }, [agent?.taskId]);
-
-  useEffect(() => {
-    if (!terminalFocusMode) return;
-    setRightPane('terminal');
-    setNarrowTab('terminal');
-  }, [setNarrowTab, terminalFocusMode]);
 
   // Clear diff state when the selected agent changes. Avoids showing stale diff
   // content bound to a different agent's toolUseId.
@@ -401,7 +399,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     const totalCount = allAgents.length;
 
     return (
-      <div className={`detail-panel kookr-tour-target-layout${collapsed ? ' collapsed' : ''}${terminalFocusMode ? ' terminal-focus' : ''}`}>
+      <div className={`detail-panel kookr-tour-target-layout${collapsed ? ' collapsed' : ''}`}>
         <div className="detail-empty">
           {findingsCount > 0 ? (
             <p>{findingsCount} finding{findingsCount > 1 ? 's' : ''} need{findingsCount === 1 ? 's' : ''} attention.</p>
@@ -674,9 +672,35 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     : 'RUNNING';
   const agentProvider = agent.agentType ? agentProviderPresentation(agent.agentType) : null;
   const shareHeaderStatus = deriveTaskShareHeaderStatus(agent.taskId, shareHeaderShares);
+  const requestedDetailPaneMode = detailPaneMode ?? (terminalFocusMode ? 'right' : storedDetailPaneMode);
+  const splitRenderingTaskVisible = !(isTerminalTaskStatus(agent.taskStatus) && agent.completionDigest);
+  const effectiveDetailPaneMode: DetailPaneMode = wideDetailActive && splitRenderingTaskVisible ? requestedDetailPaneMode : 'split';
+  const rightOnlyMode = effectiveDetailPaneMode === 'right';
+  const leftOnlyMode = effectiveDetailPaneMode === 'left';
+  const showLeftPane = !rightOnlyMode;
+  const showRightPane = !leftOnlyMode;
+
+  function focusNextFrame(ref: React.RefObject<HTMLElement | null>) {
+    window.requestAnimationFrame(() => ref.current?.focus());
+  }
+
+  function hideRightPane() {
+    setDetailPaneMode('left');
+    focusNextFrame(showRightPaneButtonRef);
+  }
+
+  function showBothPanesFromLeft() {
+    setDetailPaneMode('split');
+    focusNextFrame(hideRightPaneButtonRef);
+  }
+
+  function showBothPanesFromRight() {
+    setDetailPaneMode('split');
+    focusNextFrame(hideRightPaneButtonRef);
+  }
 
   return (
-    <div className={`detail-panel kookr-tour-target-layout${terminalFocusMode ? ' terminal-focus' : ''}`} data-testid="detail-panel">
+    <div className={`detail-panel kookr-tour-target-layout${rightOnlyMode ? ' terminal-focus' : ''}${leftOnlyMode ? ' detail-left-only' : ''}`} data-testid="detail-panel">
       <div className="detail-header">
         <div className="detail-header-left">
           <EditableHeading agent={agent} send={send} />
@@ -749,15 +773,17 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           onSharesChanged={setShareHeaderShares}
         />
       )}
-      {!terminalFocusMode && agent.taskId && <CoordinatorChainStripView agent={agent} />}
-      {!terminalFocusMode && agent.taskId && <TaskDependencyEditor agent={agent} />}
+      {!rightOnlyMode && agent.taskId && <CoordinatorChainStripView agent={agent} />}
+      {!rightOnlyMode && agent.taskId && <TaskDependencyEditor agent={agent} />}
 
       {/* Side-by-side split (wide) + tab fallback (narrow) */}
       {(() => {
         const gh = agent.taskId ? githubState[agent.taskId] : undefined;
         const ghCount = (gh?.prs.length ?? 0) + (gh?.issues.length ?? 0);
         const isCompleted = isTerminalTaskStatus(agent.taskStatus);
-        const terminalVisible = computeTerminalVisible({ rightPane, isNarrowViewport, narrowTab });
+        const terminalVisible = showRightPane && (
+          rightOnlyMode ? rightPane === 'terminal' : computeTerminalVisible({ rightPane, isNarrowViewport, narrowTab })
+        );
 
         // Completion digest replaces both panes
         if (isCompleted && agent.completionDigest) {
@@ -788,7 +814,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
         return (
           <>
             {/* Narrow-mode tab bar (hidden on wide viewports via CSS) */}
-            {!terminalFocusMode && <div className="detail-tabs-narrow">
+            {!rightOnlyMode && <div className="detail-tabs-narrow">
               <button
                 className={`detail-tab ${narrowTab === 'activity' ? 'active' : ''}`}
                 onClick={() => { track({ type: 'tab_switched', from: narrowTab, to: 'activity' }); setNarrowTab('activity'); setLeftPane('activity'); }}
@@ -812,9 +838,9 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
             </div>}
 
             {/* Side-by-side split container */}
-            <div className={`detail-split${terminalFocusMode ? ' detail-split-terminal-focus' : ''}`}>
+            <div className={`detail-split${rightOnlyMode ? ' detail-split-terminal-focus' : ''}${leftOnlyMode ? ' detail-split-left-only' : ''}`}>
               {/* Left pane: Activity or GitHub */}
-              {!terminalFocusMode && <div className={`detail-split-left${narrowTab !== 'activity' && narrowTab !== 'github' ? ' pane-hidden-narrow' : ''}`}>
+              {showLeftPane && <div className={`detail-split-left${narrowTab !== 'activity' && narrowTab !== 'github' ? ' pane-hidden-narrow' : ''}`}>
                 <div className="detail-pane-header">
                   <button
                     className={`pane-tab ${leftPane === 'activity' ? 'active' : ''}`}
@@ -830,6 +856,18 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                       onClick={() => { track({ type: 'tab_switched', from: leftPane, to: 'github' }); setLeftPane('github'); setNarrowTab('github'); }}
                     >
                       GitHub ({ghCount})
+                    </button>
+                  )}
+                  {leftOnlyMode && (
+                    <button
+                      ref={showRightPaneButtonRef}
+                      type="button"
+                      className="pane-control"
+                      aria-label="Show terminal/diff pane"
+                      title="Show terminal/diff pane"
+                      onClick={showBothPanesFromLeft}
+                    >
+                      Show terminal/diff
                     </button>
                   )}
                 </div>
@@ -852,7 +890,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
 
               {/* Right pane: Terminal or Diff (terminal is always mounted so
                   xterm state and WebSocket connection survive mode toggles) */}
-              <div className={`detail-split-right${!terminalFocusMode && narrowTab !== 'terminal' ? ' pane-hidden-narrow' : ''}`}>
+              <div className={`detail-split-right${!rightOnlyMode && narrowTab !== 'terminal' ? ' pane-hidden-narrow' : ''}${!showRightPane ? ' pane-hidden-wide' : ''}`}>
                 <div className="detail-pane-header">
                   <button
                     type="button"
@@ -870,6 +908,28 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                       onClick={() => setRightPane('diff')}
                     >
                       Diff
+                    </button>
+                  )}
+                  {rightOnlyMode ? (
+                    <button
+                      type="button"
+                      className="pane-control"
+                      aria-label="Show Activity/GitHub pane"
+                      title="Show Activity/GitHub pane"
+                      onClick={showBothPanesFromRight}
+                    >
+                      Show Activity/GitHub
+                    </button>
+                  ) : (
+                    <button
+                      ref={hideRightPaneButtonRef}
+                      type="button"
+                      className="pane-control"
+                      aria-label="Hide terminal/diff pane"
+                      title="Hide terminal/diff pane"
+                      onClick={hideRightPane}
+                    >
+                      Hide terminal/diff
                     </button>
                   )}
                 </div>

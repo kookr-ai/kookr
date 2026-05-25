@@ -232,25 +232,74 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().narrowTab).toBe('github');
   });
 
-  test('terminal focus mode persists and moves narrow detail view to terminal', () => {
+  test('detail pane mode persists and keeps terminal focus mode compatible', () => {
     expect(store.getState().terminalFocusMode).toBe(false);
+    expect(store.getState().detailPaneMode).toBe('split');
 
     store.getState().setNarrowTab('activity');
-    store.getState().setTerminalFocusMode(true);
+    store.getState().setDetailPaneMode('right');
 
     expect(store.getState().terminalFocusMode).toBe(true);
+    expect(store.getState().detailPaneMode).toBe('right');
     expect(store.getState().narrowTab).toBe('terminal');
-    expect(localStore.get('kookr-terminal-focus-mode')).toBe('1');
+    expect(localStore.get('kookr-detail-panel-mode')).toBe('right');
 
     const freshStore = createKookrStore();
     expect(freshStore.getState().terminalFocusMode).toBe(true);
+    expect(freshStore.getState().detailPaneMode).toBe('right');
 
     freshStore.getState().toggleTerminalFocusMode();
     expect(freshStore.getState().terminalFocusMode).toBe(false);
+    expect(freshStore.getState().detailPaneMode).toBe('split');
+    expect(localStore.has('kookr-detail-panel-mode')).toBe(false);
+  });
+
+  test('left detail pane mode persists without enabling terminal focus mode', () => {
+    store.getState().setDetailPaneMode('left');
+
+    expect(store.getState().detailPaneMode).toBe('left');
+    expect(store.getState().terminalFocusMode).toBe(false);
+    expect(localStore.get('kookr-detail-panel-mode')).toBe('left');
+
+    const freshStore = createKookrStore();
+    expect(freshStore.getState().detailPaneMode).toBe('left');
+    expect(freshStore.getState().terminalFocusMode).toBe(false);
+  });
+
+  test('legacy terminal focus preference migrates to right detail pane mode', () => {
+    localStore.set('kookr-terminal-focus-mode', '1');
+
+    const freshStore = createKookrStore();
+
+    expect(freshStore.getState().detailPaneMode).toBe('right');
+    expect(freshStore.getState().terminalFocusMode).toBe(true);
+    expect(localStore.get('kookr-detail-panel-mode')).toBe('right');
     expect(localStore.has('kookr-terminal-focus-mode')).toBe(false);
   });
 
-  test('terminal focus mode still toggles when localStorage persistence fails', () => {
+  test('saving detail pane mode clears stale legacy terminal focus preference', () => {
+    localStore.set('kookr-terminal-focus-mode', '1');
+
+    store.getState().setDetailPaneMode('split');
+
+    expect(store.getState().detailPaneMode).toBe('split');
+    expect(localStore.has('kookr-detail-panel-mode')).toBe(false);
+    expect(localStore.has('kookr-terminal-focus-mode')).toBe(false);
+  });
+
+  test('invalid persisted detail pane mode falls back to split', () => {
+    localStore.set('kookr-detail-panel-mode', 'sideways');
+    localStore.set('kookr-terminal-focus-mode', '1');
+
+    const freshStore = createKookrStore();
+
+    expect(freshStore.getState().detailPaneMode).toBe('split');
+    expect(freshStore.getState().terminalFocusMode).toBe(false);
+    expect(localStore.has('kookr-detail-panel-mode')).toBe(false);
+    expect(localStore.get('kookr-terminal-focus-mode')).toBe('1');
+  });
+
+  test('detail pane mode still toggles when localStorage persistence fails', () => {
     vi.stubGlobal('localStorage', {
       getItem: () => null,
       setItem: () => { throw new Error('quota exceeded'); },
@@ -260,10 +309,12 @@ describe('Kookr Zustand Store', () => {
     const freshStore = createKookrStore();
 
     freshStore.getState().setTerminalFocusMode(true);
+    expect(freshStore.getState().detailPaneMode).toBe('right');
     expect(freshStore.getState().terminalFocusMode).toBe(true);
     expect(freshStore.getState().narrowTab).toBe('terminal');
 
     freshStore.getState().toggleTerminalFocusMode();
+    expect(freshStore.getState().detailPaneMode).toBe('split');
     expect(freshStore.getState().terminalFocusMode).toBe(false);
   });
 

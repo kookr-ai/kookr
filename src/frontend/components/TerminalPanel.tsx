@@ -96,6 +96,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   const terminalOutputDecoderRef = useRef(new TextDecoder());
   const onEmptySubmitRef = useRef(onEmptySubmit);
   const searchOpenRef = useRef(false);
+  const visibleRef = useRef(visible);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -117,6 +118,16 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     terminalRef.current?.focus();
   }
 
+  function registerVisibleTerminalSend(ws: WebSocket | null) {
+    if (!visibleRef.current || !ws || ws.readyState !== WebSocket.OPEN) {
+      registerTerminalSend(null);
+      return;
+    }
+    registerTerminalSend((data) => {
+      if (visibleRef.current && ws.readyState === WebSocket.OPEN) ws.send(data);
+    });
+  }
+
   function runSearch(term: string, direction: 'next' | 'previous', incremental = false) {
     const searchAddon = searchAddonRef.current;
     if (!searchAddon || term.length === 0) {
@@ -136,6 +147,22 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   useEffect(() => {
     onEmptySubmitRef.current = onEmptySubmit;
   }, [onEmptySubmit]);
+
+  useEffect(() => {
+    visibleRef.current = visible;
+    registerVisibleTerminalSend(wsRef.current);
+    if (visible) return;
+
+    searchOpenRef.current = false;
+    setSearchOpen(false);
+    setSearchFound(null);
+    setSearchResult(null);
+    searchAddonRef.current?.clearDecorations();
+    setMenu(null);
+    if (useKookrStore.getState().focusZone === 'terminal') {
+      useKookrStore.getState().setFocusZone('none');
+    }
+  }, [visible]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -193,6 +220,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     // Let Alt+key combinations bubble to the global shortcut handler
     // instead of being swallowed by xterm.js
     terminal.attachCustomKeyEventHandler((e) => {
+      if (!visibleRef.current) return false;
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.type === 'keydown' && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         e.stopPropagation();
@@ -226,6 +254,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     // Track focus zone via DOM events (xterm v6 removed onFocus/onBlur)
     const container = containerRef.current;
     function handleTermFocus() {
+      if (!visibleRef.current) return;
       const prev = useKookrStore.getState().focusZone;
       useKookrStore.getState().setFocusZone('terminal');
       track({ type: 'focus_zone_changed', from: prev, to: 'terminal' });
@@ -246,6 +275,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     function handleContextMenu(e: Event) {
       const mouseEvent = e as MouseEvent;
       mouseEvent.preventDefault();
+      if (!visibleRef.current) return;
       const rect = container.getBoundingClientRect();
       setMenu({
         x: mouseEvent.clientX - rect.left,
@@ -458,6 +488,10 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if (!visibleRef.current) {
+        registerTerminalSend(null);
+        return;
+      }
       // Send initial size
       const fitAddon = fitAddonRef.current;
       if (fitAddon) {
@@ -468,10 +502,9 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
           ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
         }
       }
-      // Register send function so global shortcuts can write to this terminal
-      registerTerminalSend((data) => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(data);
-      });
+      // Register send function so global shortcuts can write only when this
+      // terminal is actually visible.
+      registerVisibleTerminalSend(ws);
     };
 
     ws.onmessage = (event) => {
@@ -506,6 +539,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
 
     // Terminal input → WebSocket
     const inputDisposable = terminal.onData((data) => {
+      if (!visibleRef.current) return;
       if (
         data === '\r'
         && shouldHandleEmptyTerminalEnter(
@@ -526,6 +560,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
 
     // Terminal resize → WebSocket
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
+      if (!visibleRef.current) return;
       const resize = getValidatedResize(cols, rows);
       if (resize && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
