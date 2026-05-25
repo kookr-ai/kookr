@@ -64,6 +64,12 @@ vi.mock('@xterm/xterm', () => {
     getSelection = vi.fn(() => '');
     paste = vi.fn();
     focus = vi.fn();
+    buffer = {
+      active: {
+        length: 0,
+        getLine: vi.fn(() => undefined),
+      },
+    };
 
     constructor() {
       mocks.terminalInstances.push(this);
@@ -161,6 +167,16 @@ function openSearchViaShortcut(terminal: { keyHandler: ((event: KeyboardEvent) =
     stopPropagation,
   } as KeyboardEvent);
   return { handled, preventDefault, stopPropagation };
+}
+
+function setTerminalBufferLines(terminal: {
+  buffer: { active: { length: number; getLine: ReturnType<typeof vi.fn> } };
+}, lines: string[]) {
+  terminal.buffer.active.length = lines.length;
+  terminal.buffer.active.getLine.mockImplementation((index: number) => {
+    const text = lines[index];
+    return text === undefined ? undefined : { translateToString: vi.fn(() => text) };
+  });
 }
 
 describe('TerminalPanel', () => {
@@ -286,6 +302,64 @@ describe('TerminalPanel', () => {
     expect(ws.send).not.toHaveBeenCalled();
   });
 
+  test('captures real keyboard Enter on an empty terminal prompt before xterm forwards it', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: '\r\n╭────────────────╮\r\n❯ \r\n' });
+    });
+    ws.send.mockClear();
+    const xtermContainer = container.querySelector('.terminal-xterm');
+    expect(xtermContainer).not.toBeNull();
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      xtermContainer!.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  test('captures real keyboard Enter from the visible xterm buffer when raw output is stale', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: 'Working (3s • esc to interrupt)' });
+    });
+    setTerminalBufferLines(terminal, ['older output', '❯']);
+    ws.send.mockClear();
+    const xtermContainer = container.querySelector('.terminal-xterm');
+    expect(xtermContainer).not.toBeNull();
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      xtermContainer!.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
   test('captures empty terminal Enter after binary terminal output', () => {
     const onEmptySubmit = vi.fn();
     act(() => {
@@ -320,6 +394,27 @@ describe('TerminalPanel', () => {
     act(() => {
       ws.onmessage?.({ data: arrayBufferFrom(encoded.slice(0, 4)) });
       ws.onmessage?.({ data: arrayBufferFrom(encoded.slice(4)) });
+    });
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  test('captures empty terminal Enter when the prompt is redrawn over a status line', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: 'Working (3s • esc to interrupt)\r❯ \r\n' });
     });
     ws.send.mockClear();
 

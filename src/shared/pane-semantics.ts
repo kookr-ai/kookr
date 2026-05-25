@@ -19,7 +19,47 @@ export interface PaneSemantics {
   matchedText?: string;
 }
 
-const ANSI_ESCAPE_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+const ANSI_OSC_RE = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
+const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+const ANSI_SINGLE_CHAR_RE = /\x1b[@-_]/g;
+
+function stripTerminalControls(text: string): string {
+  return text
+    .replace(ANSI_OSC_RE, '')
+    .replace(ANSI_CSI_RE, '')
+    .replace(ANSI_SINGLE_CHAR_RE, '');
+}
+
+function visibleLinesFromTerminalText(text: string): string[] {
+  const lines = [''];
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '\r') {
+      // CRLF ends a line; bare CR is a terminal redraw that returns to column 0.
+      // Replays can contain duplicated CRs before LF, so collapse those first.
+      let next = i + 1;
+      while (text[next] === '\r') next++;
+      if (text[next] === '\n') {
+        i = next - 1;
+        continue;
+      }
+      lines[lines.length - 1] = '';
+      continue;
+    }
+    if (char === '\n') {
+      lines.push('');
+      continue;
+    }
+    if (char === '\b' || char === '\u007f') {
+      lines[lines.length - 1] = lines[lines.length - 1].slice(0, -1);
+      continue;
+    }
+    lines[lines.length - 1] += char;
+  }
+
+  return lines;
+}
 
 // Claude Code's input prompt: ❯ on its own line, often surrounded by horizontal rules.
 const CLAUDE_INPUT_PROMPT_RE = /^❯\s*$/;
@@ -54,13 +94,13 @@ const VOLATILE_ACTIVITY_LINE_RES = [
 ];
 
 export function analyzePaneSemantics(paneText: string): PaneSemantics {
-  const cleanText = paneText.replace(ANSI_ESCAPE_RE, '');
-  if (!cleanText.trim()) {
+  const cleanText = stripTerminalControls(paneText);
+  const visibleLines = visibleLinesFromTerminalText(cleanText);
+  if (!visibleLines.some((line) => line.trim().length > 0)) {
     return { state: 'unknown', confidence: 'low' };
   }
 
-  const lastLines = cleanText
-    .split('\n')
+  const lastLines = visibleLines
     .map((line) => line.trimEnd())
     .filter((line) => line.length > 0)
     .slice(-15);
@@ -116,11 +156,11 @@ export function analyzePaneSemantics(paneText: string): PaneSemantics {
 }
 
 export function normalizePaneForActivity(paneText: string): string {
-  const cleanText = paneText.replace(ANSI_ESCAPE_RE, '');
-  if (!cleanText.trim()) return '';
+  const cleanText = stripTerminalControls(paneText);
+  const visibleLines = visibleLinesFromTerminalText(cleanText);
+  if (!visibleLines.some((line) => line.trim().length > 0)) return '';
 
-  return cleanText
-    .split('\n')
+  return visibleLines
     .map((line) => line.trimEnd())
     .filter((line) => !VOLATILE_ACTIVITY_LINE_RES.some((re) => re.test(line)))
     .join('\n')
