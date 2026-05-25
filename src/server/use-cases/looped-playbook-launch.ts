@@ -1,7 +1,8 @@
 import { detectStandalonePlugin, type CoexistenceResult } from '../../core/ralph-plugin-coexistence.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import type { RalphLoopRequest, RalphLoopService } from '../ralph-loop-service.js';
-import { canonicalizeCwd, type LaunchOpts, type LaunchResult } from '../launch-service.js';
+import { canonicalizeCwd } from '../cwd.js';
+import type { LaunchOpts, LaunchResult } from '../launch-service.js';
 import { MAX_ACTIVE_TASKS } from '../config.js';
 import {
   preparePlaybookLaunchWithMetadata,

@@ -1,5 +1,3 @@
-import { realpathSync } from 'node:fs';
-import { resolve as pathResolve } from 'node:path';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
 import {
   type AgentType,
@@ -24,24 +22,9 @@ import { MAX_ACTIVE_TASKS } from './config.js';
 import { registerNewAgent, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { hashPrompt } from './hash-prompt.js';
 import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
+import { canonicalizeCwd } from './cwd.js';
 import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails } from './worktree-guardrails.js';
-
-/**
- * Canonical form of a cwd for dedup comparison. Resolves symlinks and, on
- * case-insensitive filesystems (default macOS), the on-disk casing. Falls back
- * to path.resolve() when the directory does not exist or is not readable —
- * which keeps dedup consistent between a fresh submission and a stored task
- * that referred to a now-missing directory. The fallback is also what lets
- * unit tests pass paths like "/tmp" without caring whether that dir is present.
- */
-export function canonicalizeCwd(cwd: string): string {
-  try {
-    return realpathSync(cwd);
-  } catch {
-    return pathResolve(cwd);
-  }
-}
 
 export interface LaunchServiceDeps {
   taskStore: TaskStore;
