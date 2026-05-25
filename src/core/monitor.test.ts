@@ -13,6 +13,10 @@ function makeStop(sessionId: string, lastMessage = ''): AgentEvent {
   return { type: 'stop', sessionId, lastMessage };
 }
 
+function makeStopFailure(sessionId: string, error = 'server_error', lastMessage = 'API Error: 529 Overloaded'): AgentEvent {
+  return { type: 'stop_failure', sessionId, error, lastMessage };
+}
+
 function makePermissionRequest(sessionId: string, toolName: string): AgentEvent {
   return { type: 'permission_request', sessionId, toolName };
 }
@@ -336,6 +340,116 @@ describe('Monitor', () => {
     const stats = getDetectionStats();
     expect(stats.checks.needs_input).toBe(2);
     expect(stats.fires.needs_input).toBe(1);
+  });
+
+  test('event-derived anomaly keeps stable detectedAt when watchdog also fires', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-25T09:28:08.000Z'));
+    try {
+      monitor.processEvents('agent-1', [makeStopFailure('s1')]);
+      const originalDetectedAt = monitor.getSnapshot()
+        .find((state) => state.agentId === 'agent-1')!
+        .anomaly!.detectedAt;
+
+      vi.setSystemTime(new Date('2026-05-25T18:34:00.000Z'));
+      monitor.applyWatchdogVerdict(
+        'agent-1',
+        {
+          status: 'stale_agent',
+          anomaly: {
+            agentId: 'agent-1',
+            type: 'stale_agent',
+            severity: 'warning',
+            explanation: 'No activity for 32134s - agent may be stuck or disconnected',
+            detectedAt: new Date(),
+          },
+        },
+        { paneCaptureSucceeded: true, paneText: 'Checking for updates' },
+      );
+
+      const afterWatchdog = monitor.getSnapshot()
+        .find((state) => state.agentId === 'agent-1')!
+        .anomaly!;
+      expect(afterWatchdog.type).toBe('api_error');
+      expect(afterWatchdog.detectedAt).toBe(originalDetectedAt);
+      expect(queue.peek('agent-1')?.type).toBe('api_error');
+
+      vi.setSystemTime(new Date('2026-05-25T18:34:05.000Z'));
+      const later = monitor.getSnapshot()
+        .find((state) => state.agentId === 'agent-1')!
+        .anomaly!;
+      expect(later.type).toBe('api_error');
+      expect(later.detectedAt).toBe(originalDetectedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('event-derived anomaly keeps stable detectedAt without active queue entry', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-25T09:28:08.000Z'));
+    try {
+      monitor.processEvents('agent-1', [makeStopFailure('s1')]);
+      const originalDetectedAt = monitor.getSnapshot()
+        .find((state) => state.agentId === 'agent-1')!
+        .anomaly!.detectedAt;
+
+      queue.remove('agent-1');
+
+      vi.setSystemTime(new Date('2026-05-25T09:29:08.000Z'));
+      const afterQueueRemoval = monitor.getSnapshot()
+        .find((state) => state.agentId === 'agent-1')!
+        .anomaly!;
+      expect(afterQueueRemoval.type).toBe('api_error');
+      expect(afterQueueRemoval.detectedAt).toBe(originalDetectedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('event-derived anomaly gets fresh detectedAt after clearing and re-entering', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-25T09:28:08.000Z'));
+    try {
+      monitor.processEvents('agent-1', [makeStopFailure('s1')]);
+      const firstDetectedAt = monitor.getSnapshot()
+        .find((state) => state.agentId === 'agent-1')!
+        .anomaly!.detectedAt;
+
+      monitor.markInputReceived('agent-1');
+      expect(monitor.getSnapshot().find((state) => state.agentId === 'agent-1')!.anomaly).toBeNull();
+
+      vi.setSystemTime(new Date('2026-05-25T09:30:08.000Z'));
+      monitor.processEvents('agent-1', [makeStopFailure('s1')]);
+      const secondDetectedAt = monitor.getSnapshot()
+        .find((state) => state.agentId === 'agent-1')!
+        .anomaly!.detectedAt;
+
+      expect(secondDetectedAt.toISOString()).toBe('2026-05-25T09:30:08.000Z');
+      expect(secondDetectedAt.getTime()).toBeGreaterThan(firstDetectedAt.getTime());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('event-derived anomaly gets fresh detectedAt when fingerprint changes', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-25T09:28:08.000Z'));
+    try {
+      monitor.processEvents('agent-1', [makeStopFailure('s1')]);
+
+      vi.setSystemTime(new Date('2026-05-25T10:00:00.000Z'));
+      monitor.processEvents('agent-1', [makeStopFailure('s1', 'rate_limit', 'Billing quota exhausted')]);
+
+      const anomaly = monitor.getSnapshot()
+        .find((state) => state.agentId === 'agent-1')!
+        .anomaly!;
+      expect(anomaly.type).toBe('api_error');
+      expect(anomaly.explanation).toContain('Billing quota exhausted');
+      expect(anomaly.detectedAt.toISOString()).toBe('2026-05-25T10:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('merge_conflict telemetry fires once for the conflicting git result', () => {

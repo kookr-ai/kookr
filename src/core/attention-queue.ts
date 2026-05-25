@@ -1,4 +1,5 @@
 import type { Anomaly, AnomalySeverity } from './types.js';
+import { anomalyFingerprint } from './anomaly-fingerprint.js';
 
 const SEVERITY_ORDER: Record<AnomalySeverity, number> = {
   critical: 0,
@@ -77,17 +78,17 @@ export class AttentionQueue {
     // for the server expiry timer.
     const snoozed = this.snoozed.get(key);
     if (snoozed && Date.now() < snoozed.expiresAt) {
-      // Preserve original detectedAt when anomaly type hasn't changed
-      if (snoozed.anomaly?.type === anomaly.type) {
+      // Preserve original detectedAt only while the same finding remains active.
+      if (snoozed.anomaly && anomalyFingerprint(snoozed.anomaly) === anomalyFingerprint(anomaly)) {
         anomaly = { ...anomaly, detectedAt: snoozed.anomaly.detectedAt };
       }
       snoozed.anomaly = anomaly;
       return;
     }
 
-    // Preserve original detectedAt when re-enqueuing the same anomaly type
+    // Preserve original detectedAt when re-enqueuing the same finding.
     const existing = this.entries.get(agentId);
-    if (existing && existing.anomaly.type === anomaly.type) {
+    if (existing && anomalyFingerprint(existing.anomaly) === anomalyFingerprint(anomaly)) {
       existing.anomaly = { ...anomaly, detectedAt: existing.anomaly.detectedAt };
       return;
     }
