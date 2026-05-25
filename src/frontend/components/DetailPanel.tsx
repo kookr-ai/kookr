@@ -46,6 +46,23 @@ function isTerminalTaskStatus(status: TaskStatus | undefined): boolean {
   return status !== undefined && isTerminalStatus(status);
 }
 
+/**
+ * Server-derived "Claude/Codex is idle at the empty input prompt" signal,
+ * coherent with the agent's current `tmuxName` because both come from the
+ * same React render. The TerminalPanel uses this to dispatch empty-Enter
+ * during the brief window after a session switch where the terminal buffer
+ * hasn't repainted yet and the local pane-pattern scan would otherwise miss
+ * the prompt and forward `\r` to the new PTY.
+ *
+ * `permission_blocked` is intentionally excluded — those findings show an
+ * Allow/Deny dialog that requires an explicit choice; treating Enter as
+ * advance would silently skip past the decision.
+ */
+function isAgentIdleAtPrompt(agent: AgentState): boolean {
+  if (agent.anomaly?.type === 'permission_blocked') return false;
+  return agent.turnState === 'completed_turn' || agent.turnState === 'waiting_for_input';
+}
+
 function agentProjectLabel(agent: AgentState): string {
   return agent.projectDisplayLabel ?? projectLabel(agent.cwd);
 }
@@ -943,6 +960,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                         tmuxName={agent.agentId}
                         visible={terminalVisible}
                         onEmptySubmit={handleEmptyEnterAdvance}
+                        agentPromptReady={isAgentIdleAtPrompt(agent)}
                       />
                     </Suspense>
                   </div>

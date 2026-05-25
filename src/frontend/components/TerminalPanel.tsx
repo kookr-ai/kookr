@@ -14,6 +14,15 @@ interface Props {
   tmuxName: string | null;
   visible: boolean;
   onEmptySubmit?: () => void;
+  /**
+   * Server-derived "agent is idle at an empty Claude/Codex prompt" hint that
+   * survives `tmuxName` transitions. When true, empty-Enter fires even before
+   * the new session's terminal buffer has repainted — otherwise the keypress
+   * races the WebSocket handoff and gets sent to the new PTY as a raw `\r`.
+   * Travels alongside `tmuxName` through React props so the two are always
+   * coherent (the same render that switches sessions provides the new hint).
+   */
+  agentPromptReady?: boolean;
 }
 
 interface MenuState {
@@ -78,12 +87,22 @@ function getVisibleTerminalTail(terminal: Terminal): string {
   }
 }
 
-function shouldHandleEmptyTerminalEnter(terminal: Terminal, draft: string, outputTail: string, onEmptySubmit?: () => void): boolean {
+function shouldHandleEmptyTerminalEnter(
+  terminal: Terminal,
+  draft: string,
+  outputTail: string,
+  agentPromptReady: boolean,
+  onEmptySubmit?: () => void,
+): boolean {
   if (draft.length !== 0 || !onEmptySubmit) return false;
+  // Trust the server-derived idle hint: it survives `tmuxName` transitions
+  // where the local buffer briefly resets to empty and the buffer scan would
+  // otherwise miss-detect the prompt and forward `\r` to the new PTY.
+  if (agentPromptReady) return true;
   return isEmptyAgentPromptVisible(getVisibleTerminalTail(terminal)) || isEmptyAgentPromptVisible(outputTail);
 }
 
-export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
+export function TerminalPanel({ tmuxName, visible, onEmptySubmit, agentPromptReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -95,6 +114,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   const terminalOutputTailRef = useRef('');
   const terminalOutputDecoderRef = useRef(new TextDecoder());
   const onEmptySubmitRef = useRef(onEmptySubmit);
+  const agentPromptReadyRef = useRef(agentPromptReady ?? false);
   const searchOpenRef = useRef(false);
   const visibleRef = useRef(visible);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -147,6 +167,10 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   useEffect(() => {
     onEmptySubmitRef.current = onEmptySubmit;
   }, [onEmptySubmit]);
+
+  useEffect(() => {
+    agentPromptReadyRef.current = agentPromptReady ?? false;
+  }, [agentPromptReady]);
 
   useEffect(() => {
     visibleRef.current = visible;
@@ -312,6 +336,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
         terminal,
         terminalInputDraftRef.current,
         terminalOutputTailRef.current,
+        agentPromptReadyRef.current,
         onEmptySubmitRef.current,
       )) {
         return;
@@ -546,6 +571,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
           terminal,
           terminalInputDraftRef.current,
           terminalOutputTailRef.current,
+          agentPromptReadyRef.current,
           onEmptySubmitRef.current,
         )
       ) {
