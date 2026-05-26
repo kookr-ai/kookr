@@ -42,6 +42,78 @@ import type { CollaborationDiagnostics } from '../../shared/contracts/collaborat
 import type { CoordinatorSuppressionRegistry } from '../coordinator/suppression-store.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
+/**
+ * Narrower dependency surface for task CRUD/lifecycle routes (GET/POST/DELETE
+ * /api/tasks, PATCH /api/tasks/:id/{name,edges}, GET /api/playbooks). The
+ * PATCH /edges handler rebroadcasts the snapshot with coordinator state, so
+ * `coordinatorSuppressions` + `kookrDir` appear here too.
+ */
+export interface TaskRouteDeps {
+  taskStore: TaskStore;
+  monitor: Monitor;
+  queue?: AttentionQueue;
+  adapter: AgentAdapter;
+  hookWatcher: HookFileWatcher;
+  watchdog: Watchdog;
+  serverCwd: string;
+  broadcastToAll: (msg: ServerMessage) => void;
+  hookIngestion?: HookIngestion;
+  shadowRegistry?: ShadowDetectorRegistry;
+  activityLedger?: ActivityLedger;
+  launchServiceDeps: LaunchServiceDeps;
+  suppressionTracker?: SnoozeSuppressionTracker;
+  tasksFile?: string;
+  kookrDir?: string;
+  coordinatorSuppressions?: CoordinatorSuppressionRegistry;
+}
+
+/** Narrower deps for coordinator suppression / acknowledgement / mark-prior-done routes. */
+export interface CoordinatorRouteDeps {
+  taskStore: TaskStore;
+  monitor: Monitor;
+  queue?: AttentionQueue;
+  adapter: AgentAdapter;
+  hookWatcher: HookFileWatcher;
+  watchdog: Watchdog;
+  interactionLog: DeferredInteractionLogWriter;
+  githubScanner: GitHubScannerService;
+  githubStateStore: GitHubStateStore;
+  serverCwd: string;
+  kookrDir?: string;
+  broadcastToAll: (msg: ServerMessage) => void;
+  shadowRegistry?: ShadowDetectorRegistry;
+  hookIngestion?: HookIngestion;
+  suppressionTracker?: SnoozeSuppressionTracker;
+  coordinatorSuppressions?: CoordinatorSuppressionRegistry;
+}
+
+/** Narrower deps for direct agent input + edit-event + hook-settings diagnostics routes. */
+export interface AgentRouteDeps {
+  monitor: Monitor;
+  adapter: AgentAdapter;
+  interactionLog: DeferredInteractionLogWriter;
+  serverCwd: string;
+  serverStartedAt: string;
+  hookIngestion?: HookIngestion;
+  broadcastToAll: (msg: ServerMessage) => void;
+}
+
+/** Narrower deps for the read-only /api/cost-comparison telemetry route. */
+export interface CostComparisonRouteDeps {
+  taskStore: TaskStore;
+  serverCwd: string;
+  tokenTracker?: TokenTracker;
+  tasksFile?: string;
+}
+
+/** Narrower deps for the typed task-relation graph routes (issue #599). */
+export interface TaskRelationsRouteDeps {
+  taskStore: TaskStore;
+  queue?: AttentionQueue;
+  suppressionTracker?: SnoozeSuppressionTracker;
+  tasksFile?: string;
+}
+
 export interface RouteDeps {
   taskStore: TaskStore;
   monitor: Monitor;
