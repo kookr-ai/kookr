@@ -9,6 +9,7 @@ import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, f
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
 import { computeTerminalVisible } from './detail-panel-visibility.js';
+import { isActiveFinding } from '../store/finding-helpers.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
 import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../remote/share-contract.js';
@@ -638,12 +639,12 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       handleSkip('empty_enter');
       return;
     }
-    // Healthy task: nothing to skip on the server. Jump to the next pending
+    // Healthy task: nothing to skip on the server. Jump to the next active
     // finding when one exists, otherwise advance through the unified task list.
-    // Predicate intentionally mirrors nextBottleneck's filter (NOT isActiveFinding,
-    // which would diverge by also excluding pending/terminal statuses).
+    // Predicate mirrors nextBottleneck/nextTask — both use isActiveFinding so
+    // pending and terminal-status tasks are excluded from navigation.
     const { agents } = useKookrStore.getState();
-    const hasFinding = agents.some((a) => a.anomaly !== null && !a.snoozedUntil && !a.suppressed);
+    const hasFinding = agents.some(isActiveFinding);
     track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'input_focused' });
     if (hasFinding) {
       nextBottleneck();

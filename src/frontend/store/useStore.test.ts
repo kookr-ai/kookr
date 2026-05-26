@@ -1144,6 +1144,144 @@ describe('Kookr Zustand Store', () => {
     expect(localStore.get('kookr-selected-project')).toBe('proj-b');
   });
 
+  test('nextTask skips tasks in terminal statuses (completed/terminated/cancelled)', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'completed-1', events: [], anomaly: null, taskStatus: 'completed' },
+      { agentId: 'healthy-1', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'terminated-1', events: [], anomaly: null, taskStatus: 'terminated' },
+      { agentId: 'cancelled-1', events: [], anomaly: null, taskStatus: 'cancelled' },
+      { agentId: 'healthy-2', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+
+    store.getState().nextTask();
+    expect(store.getState().selectedAgentId).toBe('healthy-1');
+
+    store.getState().nextTask();
+    expect(store.getState().selectedAgentId).toBe('healthy-2');
+
+    store.getState().nextTask();
+    expect(store.getState().selectedAgentId).toBe('healthy-1');
+  });
+
+  test('nextTask skips pending tasks', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'pending-1', events: [], anomaly: null, taskStatus: 'pending' },
+      { agentId: 'healthy-1', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+
+    store.getState().nextTask();
+    expect(store.getState().selectedAgentId).toBe('healthy-1');
+
+    store.getState().nextTask();
+    expect(store.getState().selectedAgentId).toBe('healthy-1');
+  });
+
+  test('nextTask skips snoozed tasks', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'snoozed-1', events: [], anomaly: null, taskStatus: 'inProgress', snoozedUntil: Date.now() + 60_000 },
+      { agentId: 'healthy-1', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+
+    store.getState().nextTask();
+    expect(store.getState().selectedAgentId).toBe('healthy-1');
+
+    store.getState().nextTask();
+    expect(store.getState().selectedAgentId).toBe('healthy-1');
+  });
+
+  test('nextTask from a completed task advances to the first active candidate', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'completed-1', events: [], anomaly: null, taskStatus: 'completed' },
+      {
+        agentId: 'finding-1',
+        events: [],
+        anomaly: { agentId: 'finding-1', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+        taskStatus: 'inProgress',
+      },
+      { agentId: 'healthy-1', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+
+    store.getState().selectAgent('completed-1');
+    store.getState().nextTask();
+
+    expect(store.getState().selectedAgentId).toBe('finding-1');
+  });
+
+  test('previousTask skips tasks in terminal statuses', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'completed-1', events: [], anomaly: null, taskStatus: 'completed' },
+      { agentId: 'healthy-1', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'healthy-2', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+
+    store.getState().previousTask();
+    expect(store.getState().selectedAgentId).toBe('healthy-2');
+
+    store.getState().previousTask();
+    expect(store.getState().selectedAgentId).toBe('healthy-1');
+
+    store.getState().previousTask();
+    expect(store.getState().selectedAgentId).toBe('healthy-2');
+  });
+
+  test('nextBottleneck skips findings attached to terminal-status tasks', () => {
+    store.getState().handleSnapshot([
+      {
+        agentId: 'finding-on-completed',
+        events: [],
+        anomaly: {
+          agentId: 'finding-on-completed',
+          type: 'repeated_error',
+          severity: 'critical',
+          explanation: 'Stuck',
+          detectedAt: new Date(),
+        },
+        taskStatus: 'completed',
+      },
+      {
+        agentId: 'finding-active',
+        events: [],
+        anomaly: {
+          agentId: 'finding-active',
+          type: 'needs_input',
+          severity: 'warning',
+          explanation: 'Waiting',
+          detectedAt: new Date(),
+        },
+        taskStatus: 'inProgress',
+      },
+    ]);
+
+    store.getState().nextBottleneck();
+    expect(store.getState().selectedAgentId).toBe('finding-active');
+  });
+
+  test('nextBottleneck clears selection when every finding is on a terminal-status task', () => {
+    // Negative assertion for the terminal-status filter: with no active
+    // findings, nextBottleneck must not land on the excluded finding-on-
+    // completed task. Without the filter, priority ordering alone could
+    // make the positive test above pass even if the filter regressed.
+    store.getState().handleSnapshot([
+      {
+        agentId: 'finding-on-completed',
+        events: [],
+        anomaly: {
+          agentId: 'finding-on-completed',
+          type: 'repeated_error',
+          severity: 'critical',
+          explanation: 'Stuck',
+          detectedAt: new Date(),
+        },
+        taskStatus: 'completed',
+      },
+    ]);
+
+    store.getState().selectAgent('finding-on-completed');
+    store.getState().nextBottleneck();
+
+    expect(store.getState().selectedAgentId).toBeNull();
+  });
+
   test('handleProjectSummaries derives visible sidebar order from persisted prefs', () => {
     localStore.set('kookr:projectSidebarPrefs', JSON.stringify({
       ordered: ['github.com/b', 'github.com/a'],

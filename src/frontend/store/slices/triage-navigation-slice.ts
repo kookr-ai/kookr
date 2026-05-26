@@ -5,6 +5,7 @@ import { compareRoutableAgents } from '../../agent-priority-order.js';
 import { deriveProjectPriorityRanks } from '../../../shared/project-sidebar.js';
 import { recordReportableAlert } from '../../bug-report-recorder.js';
 import { saveSelectedProject } from '../selected-project-storage.js';
+import { isActiveFinding, isHealthyRunning } from '../finding-helpers.js';
 
 const TERMINAL_FOCUS_STORAGE_KEY = 'kookr-terminal-focus-mode';
 const DETAIL_PANE_MODE_STORAGE_KEY = 'kookr-detail-panel-mode';
@@ -154,7 +155,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       const order = getPriorityOrderContext();
       const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
       const findings = agents
-        .filter((agent) => agent.anomaly !== null && !agent.snoozedUntil && !agent.suppressed)
+        .filter(isActiveFinding)
         .sort((left, right) => compareRoutableAgents(left, right, order));
 
       if (findings.length === 0) {
@@ -177,10 +178,10 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       const order = getPriorityOrderContext();
       const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
       const findings = agents
-        .filter((agent) => agent.anomaly !== null && !agent.snoozedUntil && !agent.suppressed)
+        .filter(isActiveFinding)
         .sort((left, right) => compareRoutableAgents(left, right, order));
       const healthy = agents
-        .filter((agent) => agent.anomaly === null && !agent.snoozedUntil && !agent.suppressed)
+        .filter(isHealthyRunning)
         .sort((left, right) => compareRoutableAgents(left, right, { ...order, includeSeverity: false }));
       const all = [...findings, ...healthy];
 
@@ -196,10 +197,10 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       const order = getPriorityOrderContext();
       const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
       const findings = agents
-        .filter((agent) => agent.anomaly !== null && !agent.snoozedUntil && !agent.suppressed)
+        .filter(isActiveFinding)
         .sort((left, right) => compareRoutableAgents(left, right, order));
       const healthy = agents
-        .filter((agent) => agent.anomaly === null && !agent.snoozedUntil && !agent.suppressed)
+        .filter(isHealthyRunning)
         .sort((left, right) => compareRoutableAgents(left, right, { ...order, includeSeverity: false }));
       const all = [...findings, ...healthy];
 
