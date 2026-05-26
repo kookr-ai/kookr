@@ -40,6 +40,11 @@ fi
 
 cd "${PROD_DIR}"
 git fetch origin
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "Discarding tracked local changes in production worktree: ${PROD_DIR}" >&2
+  git status --short --untracked-files=no >&2
+  git reset --hard
+fi
 git switch --detach origin/main
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 pnpm build
