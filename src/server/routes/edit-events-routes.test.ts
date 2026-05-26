@@ -4,18 +4,18 @@ import { Monitor } from '../../core/monitor.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { TaskStore } from '../../core/tasks.js';
 import type { AgentEvent } from '../../core/types.js';
-import { registerTaskRoutes } from './task-routes.js';
-import type { RouteDeps } from './shared.js';
+import { registerAgentRoutes } from './agent-routes.js';
+import type { AgentRouteDeps } from './shared.js';
 
 const SERVER_STARTED_AT = '2026-04-21T00:00:00.000Z';
 
 function mkApp(monitor: Monitor): Hono {
   const app = new Hono();
   // Only fields the edit-events route reads — the rest are ignored at runtime.
-  registerTaskRoutes(app, {
+  registerAgentRoutes(app, {
     monitor,
     serverStartedAt: SERVER_STARTED_AT,
-  } as unknown as RouteDeps);
+  } as unknown as AgentRouteDeps);
   return app;
 }
 

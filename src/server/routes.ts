@@ -9,6 +9,10 @@ import { registerDeployRoutes } from './routes/deploy-routes.js';
 import { registerScheduleRoutes } from './routes/schedule-routes.js';
 import { registerSettingsRoutes } from './routes/settings-routes.js';
 import { registerTaskRoutes } from './routes/task-routes.js';
+import { registerCoordinatorRoutes } from './routes/coordinator-routes.js';
+import { registerAgentRoutes } from './routes/agent-routes.js';
+import { registerCostComparisonRoutes } from './routes/cost-comparison-routes.js';
+import { registerTaskRelationsRoutes } from './routes/task-relations-routes.js';
 import { registerRalphRoutes } from './ralph/routes.js';
 import { registerOssAttemptRoutes } from './routes/oss-attempts-routes.js';
 import { registerShareRoutes } from './routes/share-routes.js';
@@ -20,6 +24,7 @@ import { registerSpeechRoutes } from './routes/speech-routes.js';
 import { AgentSpeakCache } from './agent-speak-cache.js';
 import { DEFAULT_TTS_VOICE } from './tts-manager.js';
 import { TaskSpeechSummaryCache } from './task-speech-summary-cache.js';
+import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
 import type { RouteDeps } from './routes/shared.js';
 
 export type { RouteDeps } from './routes/shared.js';
@@ -27,19 +32,34 @@ export type { RouteDeps } from './routes/shared.js';
 export function createRoutes(deps: RouteDeps): Hono {
   const app = new Hono();
 
-  registerDiagnosticsRoutes(app, deps);
-  registerSettingsRoutes(app, deps);
-  registerRalphRoutes(app, deps);
-  registerTaskRoutes(app, deps);
-  registerProjectRoutes(app, deps);
-  registerOssAttemptRoutes(app, deps);
-  registerScheduleRoutes(app, deps);
-  registerDeployRoutes(app, deps);
-  registerContactShareRoutes(app, deps);
-  registerShareRoutes(app, deps);
-  registerRelayConnectionRoutes(app, deps);
-  registerSessionSharingRecoveryRoutes(app, deps);
-  registerCollaborationPairingRoutes(app, deps);
+  // Hoist the coordinator-suppression-store fallback so task-routes (PATCH /edges
+  // snapshot broadcast) and coordinator-routes (3 mutation handlers) share one
+  // instance. Pre-split, a single closure-scoped store backed both call sites;
+  // splitting the module would otherwise leave each module to construct its own
+  // fallback, silently diverging the suppression view across the two surfaces.
+  const sharedDeps: RouteDeps = {
+    ...deps,
+    coordinatorSuppressions:
+      deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? deps.serverCwd),
+  };
+
+  registerDiagnosticsRoutes(app, sharedDeps);
+  registerSettingsRoutes(app, sharedDeps);
+  registerRalphRoutes(app, sharedDeps);
+  registerTaskRoutes(app, sharedDeps);
+  registerCoordinatorRoutes(app, sharedDeps);
+  registerAgentRoutes(app, sharedDeps);
+  registerTaskRelationsRoutes(app, sharedDeps);
+  registerCostComparisonRoutes(app, sharedDeps);
+  registerProjectRoutes(app, sharedDeps);
+  registerOssAttemptRoutes(app, sharedDeps);
+  registerScheduleRoutes(app, sharedDeps);
+  registerDeployRoutes(app, sharedDeps);
+  registerContactShareRoutes(app, sharedDeps);
+  registerShareRoutes(app, sharedDeps);
+  registerRelayConnectionRoutes(app, sharedDeps);
+  registerSessionSharingRecoveryRoutes(app, sharedDeps);
+  registerCollaborationPairingRoutes(app, sharedDeps);
 
   const speakEnabled = deps.speakFindingEnabled !== false;
   const speakCache = deps.ttsUrl
@@ -56,7 +76,7 @@ export function createRoutes(deps: RouteDeps): Hono {
         voice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
       })
     : null;
-  registerSpeechRoutes(app, deps, {
+  registerSpeechRoutes(app, sharedDeps, {
     enabled: speakEnabled,
     cache: speakCache,
     taskCache: taskSpeakCache,
