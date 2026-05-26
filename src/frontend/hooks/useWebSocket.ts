@@ -95,6 +95,7 @@ export function useWebSocket() {
     handleSweepBusy,
     handleOssAttempts,
     handleResourceStatus,
+    handleDashboardSelection,
     setConnected,
   } = useKookrStore();
 
@@ -170,6 +171,15 @@ export function useWebSocket() {
             break;
           case 'coordinator.snapshot':
             dispatchCoordinatorSnapshotMessageForClient(msg);
+            break;
+          case 'dashboardSelection':
+            handleDashboardSelection({
+              selectedTaskId: msg.selectedTaskId,
+              selectedSessionId: msg.selectedSessionId,
+              selectionVersion: msg.selectionVersion,
+            });
+            break;
+          case 'emptyEnterDecision':
             break;
           case 'contributionWarning':
             handleAlert('', msg.message, msg.severity === 'exceeded' ? 'error' : 'info');
@@ -247,7 +257,7 @@ export function useWebSocket() {
     ws.onerror = () => {
       ws.close();
     };
-  }, [handleSnapshot, handleUpdate, handleAlert, handleGitHubUpdate, handlePlaybooks, handleSuggestion, hydrateProjectSidebarFromServer, handleProjectSummaries, handleAchievementUnlocked, handleQuotaStatus, handleResourceStatus, handleCircuitBreakerStatus, handleDiagnosticReport, handleSchedules, handleWorkspaceView, handleWorkspaceCleanupDetail, handleSweepComplete, handleSweepBusy, handleOssAttempts, setConnected]);
+  }, [handleSnapshot, handleUpdate, handleAlert, handleGitHubUpdate, handlePlaybooks, handleSuggestion, hydrateProjectSidebarFromServer, handleProjectSummaries, handleAchievementUnlocked, handleQuotaStatus, handleResourceStatus, handleDashboardSelection, handleCircuitBreakerStatus, handleDiagnosticReport, handleSchedules, handleWorkspaceView, handleWorkspaceCleanupDetail, handleSweepComplete, handleSweepBusy, handleOssAttempts, setConnected]);
 
   useEffect(() => {
     connect();

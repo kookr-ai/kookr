@@ -5,6 +5,10 @@ import {
   SessionAttachFailedError,
   SessionGoneError,
 } from '../adapters/terminal-backend.js';
+import {
+  asTerminalInputWriterPort,
+  type TerminalInputWriterPort,
+} from '../core/ports/terminal-input-writer-port.js';
 
 /**
  * SessionBridge — per-WS-client view over the backend's byte stream.
@@ -14,7 +18,7 @@ import {
  *   - on WS open, replay the backend's ring buffer via `captureBytes`
  *     before wiring live updates;
  *   - subscribe to live bytes via `backend.onData`;
- *   - forward inbound WS frames to `backend.write` / `backend.resize`;
+   *   - forward inbound WS frames through the input-writer port and resize via the backend;
  *   - on WS close, unsubscribe.
  *
  * The ring buffer moved to the backend (one owner per session), so every
@@ -42,14 +46,34 @@ export const BRACKETED_PASTE_END = '\x1b[201~';
 export class SessionBridge {
   private unsubscribeData: (() => void) | null = null;
   private closed = false;
+  private readonly sessionId: SessionId;
+  private readonly ws: WebSocket;
+  private readonly backend: TerminalBackend;
+  private readonly inputWriter: TerminalInputWriterPort;
+  private readonly onInput?: (sessionId: SessionId) => void;
+  private readonly onAnyKeystroke?: (sessionId: SessionId) => void;
 
   constructor(
-    private readonly sessionId: SessionId,
-    private readonly ws: WebSocket,
-    private readonly backend: TerminalBackend,
-    private readonly onInput?: (sessionId: SessionId) => void,
-    private readonly onAnyKeystroke?: (sessionId: SessionId) => void,
-  ) {}
+    sessionId: SessionId,
+    ws: WebSocket,
+    backend: TerminalBackend,
+    inputWriterOrOnInput?: TerminalInputWriterPort | ((sessionId: SessionId) => void),
+    onInputOrAnyKeystroke?: (sessionId: SessionId) => void,
+    onAnyKeystroke?: (sessionId: SessionId) => void,
+  ) {
+    this.sessionId = sessionId;
+    this.ws = ws;
+    this.backend = backend;
+    if (inputWriterOrOnInput && typeof inputWriterOrOnInput === 'object' && 'writeInput' in inputWriterOrOnInput) {
+      this.inputWriter = inputWriterOrOnInput;
+      this.onInput = onInputOrAnyKeystroke;
+      this.onAnyKeystroke = onAnyKeystroke;
+    } else {
+      this.inputWriter = asTerminalInputWriterPort(backend);
+      this.onInput = inputWriterOrOnInput as ((sessionId: SessionId) => void) | undefined;
+      this.onAnyKeystroke = onInputOrAnyKeystroke;
+    }
+  }
 
   async start(_cols = 120, _rows = 40): Promise<void> {
     // Install the ws 'error' listener FIRST — before any awaits or safeSend
@@ -186,7 +210,7 @@ export class SessionBridge {
    */
   private safeForwardWrite(bytes: Uint8Array): void {
     if (this.closed) return;
-    this.backend.write(this.sessionId, bytes).catch((err: unknown) => {
+    this.inputWriter.writeInput(this.sessionId, bytes, { reason: 'browser-terminal-input' }).catch((err: unknown) => {
       this.handleBackendRejection(err, 'write');
     });
   }

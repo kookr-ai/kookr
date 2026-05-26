@@ -35,7 +35,7 @@ import {
   runStartupRecoveryPhase,
 } from './startup-recovery.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
-import { createSnapshotMessage } from './use-cases/get-snapshot.js';
+import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler } from './system-resource-sampler.js';
@@ -77,6 +77,8 @@ import type { NodeId } from '../remote/ids.js';
 import { createRemoteRelayRuntime, type RemoteRelayRuntime } from './remote-relay-runtime.js';
 import { RuntimeAttentionMissSampler } from './attention-miss-runtime-sampler.js';
 import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
+import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import { DashboardSelectionController } from './dashboard-selection-controller.js';
 
 // --- Exported types ---
 
@@ -229,9 +231,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     llmClient,
   } = coreStores;
   const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
+  const terminalInputCoordinator = new TerminalInputCoordinator(terminalBackend);
 
   const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
     terminalBackend,
+    terminalInputWriter: terminalInputCoordinator,
     taskStore,
     hooksDir,
     settingsDir,
@@ -327,6 +331,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcastProjectSummaries,
     broadcastOssAttempts,
   } = realtime;
+  const selectionController = new DashboardSelectionController({
+    getAgents: () => getSnapshotAgentsForClient({ monitor }),
+  });
 
   // Create GitHub scanner with user-configured intervals
   const githubStateStore = new GitHubStateStore();
@@ -435,6 +442,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   if (reconcileResult.orphans.length > 0) {
     console.warn(`Orphan sessions (not in tasks): ${reconcileResult.orphans.join(', ')}`);
   }
+  for (const task of taskStore.getAllTasks()) {
+    for (const session of task.sessions) {
+      if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted' && !session.crashRecovered) {
+        terminalInputCoordinator.registerSession(session.tmuxSession);
+      }
+    }
+  }
 
   // Hook watcher created here but resumed-session replay is deferred to after crash recovery,
   // so relaunched sessions have their new tmux names before snooze restore + hook replay.
@@ -510,6 +524,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
       getMaxActiveTasks,
       relationTaskStore: taskStore,
+      terminalInputSnapshots: terminalInputCoordinator,
     }));
     broadcastProjectSummaries();
   });
@@ -547,6 +562,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
             getMaxActiveTasks,
             relationTaskStore: taskStore,
+            terminalInputSnapshots: terminalInputCoordinator,
           }));
         }
       })
@@ -561,6 +577,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const lifecycleDeps: AgentLifecycleDeps = {
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
     projectConfigStore,
+    terminalInputCoordinator,
   };
 
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
@@ -614,6 +631,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       tokenTracker,
       suppressionTracker,
       checkpointCycler,
+      terminalInputCoordinator,
     }),
   });
 
@@ -629,6 +647,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ralphCycler,
     ralphLoopService,
     hookIngestion,
+    terminalInputCoordinator,
     taskShareService: {
       publishTaskProjectionForTask: (taskId) => remoteRelayRuntime?.publishTaskProjectionForTask(taskId),
     },
@@ -694,6 +713,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         activityMetaProvider: hookIngestion,
         coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
         relationTaskStore: taskStore,
+        terminalInputSnapshots: terminalInputCoordinator,
       });
       return JSON.stringify(msg).length;
     },
@@ -716,6 +736,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverStartedAt,
     buildInfo,
     terminalBackend,
+    terminalInputWriter: terminalInputCoordinator,
     taskStore,
     queue,
     monitor,
@@ -737,6 +758,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         tokenTracker,
         suppressionTracker,
         checkpointCycler,
+        terminalInputCoordinator,
         queue,
       });
     },
@@ -954,6 +976,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverProjectId,
     takePredeleteSnapshot,
     supervisorFeedbackCaseStore,
+    selectionController,
+    terminalInputCoordinator,
   };
 
   const backgroundServices = startBackgroundServices({
@@ -988,6 +1012,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     tasksFile,
     hooksDir,
     terminalBackend,
+    terminalInputWriter: terminalInputCoordinator,
     terminalDeps,
     useFakeTerminalBridge,
     onLocalTerminalActivity: (sessionId) => remoteRelayRuntime?.recordLocalTerminalActivity(sessionId),

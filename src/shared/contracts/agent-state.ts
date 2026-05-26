@@ -8,6 +8,7 @@ import type { TaskStatus, TurnState } from './task-status.js';
 import type { TaskRelationRollup } from './task-relations.js';
 import type { TokenUsage } from './usage.js';
 import type { WorktreeHealth } from './session.js';
+import type { TerminalInputSnapshot } from '../terminal-input-contract.js';
 
 export interface AgentState {
   agentId: string;
@@ -51,6 +52,7 @@ export interface AgentState {
   ralphLoop?: RalphLoopState;
   activityMeta?: AgentActivityMeta;
   findingEvidenceAudit?: FindingEvidenceAuditRecord;
+  terminalInputSnapshot?: TerminalInputSnapshot;
   /**
    * Sequence number of the last event in {@link events}, or `0` when the
    * window is empty (including synthetic pending/terminal entries). Populated

@@ -24,6 +24,7 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 Some UI regressions are covered below the Playwright layer because they are data-shaping or component-lifecycle bugs:
 
 - Prompt display hygiene: `src/server/launch-service.test.ts` verifies launches preserve the user-authored prompt separately from injected worktree guidance, `src/core/monitor.test.ts` verifies snapshots expose display-safe prompt text for both new and legacy tasks, and `src/frontend/components/Tooltip.test.ts` verifies hidden tooltip portals do not keep long prompt text mounted.
+- Reliable empty-terminal Enter: `src/server/terminal-input-coordinator.test.ts` covers readiness versions, blocked/unknown/stale intent rejection, and the no-forward-Enter invariant; `src/server/dashboard-selection-controller.test.ts` covers atomic selection CAS and duplicate intents; `src/server/terminal-input-boundary.test.ts` guards direct raw backend writes outside the input boundary; `src/frontend/components/DetailPanel.empty-enter.test.ts` covers the frontend intent path.
 
 ## CI Mapping
 

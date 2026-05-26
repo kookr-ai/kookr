@@ -22,6 +22,7 @@ import { createResponseAssistProcessor } from './event-processors/response-assis
 import { createSessionActivityProcessor } from './event-processors/session-activity-processor.js';
 import { createStopTokenScanProcessor } from './event-processors/stop-token-scan-processor.js';
 import { createTokenAccountingProcessor } from './event-processors/token-accounting-processor.js';
+import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 
 export interface EventPipelineDeps {
   adapter: AgentAdapter;
@@ -58,6 +59,7 @@ export interface EventPipelineDeps {
   hookIngestion?: HookIngestion;
   /** Optional publisher for refreshing remote task-share projections after local task state changes. */
   taskShareService?: { publishTaskProjectionForTask(taskId: string): void };
+  terminalInputCoordinator?: TerminalInputCoordinator;
 }
 
 /**
@@ -72,7 +74,13 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
   } = deps;
 
   const broadcastSnapshot = () => {
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: deps.hookIngestion, relationTaskStore: taskStore }));
+    broadcastToAll(createSnapshotMessage({
+      monitor,
+      serverCwd,
+      activityMetaProvider: deps.hookIngestion,
+      relationTaskStore: taskStore,
+      terminalInputSnapshots: deps.terminalInputCoordinator,
+    }));
   };
   const publishTaskProjection = (taskId: string) => {
     deps.taskShareService?.publishTaskProjectionForTask(taskId);
@@ -132,6 +140,36 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     // anomaly detection — V1 SHALL keep existing detection unless a record is
     // confidently classified as non-parent. See rfc §3.
     if (meta.parentage === 'child' || meta.parentage === 'foreign') return;
+
+    const inputState = deps.terminalInputCoordinator?.getSnapshot(tmuxName);
+    switch (event.type) {
+      case 'user_prompt':
+        void deps.terminalInputCoordinator?.markUserPromptSubmitted(tmuxName);
+        break;
+      case 'tool_use':
+        void deps.terminalInputCoordinator?.markToolStarted(tmuxName);
+        break;
+      case 'permission_request':
+        void deps.terminalInputCoordinator?.markPermissionBlocked(tmuxName);
+        break;
+      case 'stop_failure':
+        void deps.terminalInputCoordinator?.markStopFailure(tmuxName);
+        break;
+      case 'stop':
+        void deps.terminalInputCoordinator?.markTurnStopped(tmuxName);
+        break;
+      case 'session_end':
+        void deps.terminalInputCoordinator?.markSessionEnded(tmuxName);
+        break;
+      case 'notification':
+        if (event.notificationType === 'idle_prompt' && inputState) {
+          void deps.terminalInputCoordinator?.markPromptReady(tmuxName, {
+            observedEpoch: inputState.inputStateEpoch,
+            observedReadinessVersion: inputState.readinessVersion,
+          });
+        }
+        break;
+    }
 
     // ⚠ ORDERING CONTRACT: pre-capture must precede processEvents();
     // post-capture must follow it. The anomaly-diff detects any transition

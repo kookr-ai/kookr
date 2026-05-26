@@ -33,6 +33,8 @@ import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
 import type { CoordinatorAuditTailProvider } from './coordinator/detectors.js';
 import type { CoordinatorSuppressionReader } from './coordinator/suppression-store.js';
+import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import type { DashboardSelectionController } from './dashboard-selection-controller.js';
 
 export interface MessageRouterDeps {
   taskStore: TaskStore;
@@ -93,6 +95,9 @@ export interface MessageRouterDeps {
    * log and stats counters but no rich case snapshot is persisted for offline review.
    */
   supervisorFeedbackCaseStore?: import('./supervisor-feedback-case-store.js').SupervisorFeedbackCaseStore;
+  connectionId?: string;
+  selectionController?: DashboardSelectionController;
+  terminalInputCoordinator?: TerminalInputCoordinator;
 }
 
 export class MessageRouter {
@@ -234,6 +239,7 @@ export class MessageRouter {
       },
       getMaxActiveTasks: this.deps.getMaxActiveTasks,
       relationTaskStore: this.deps.taskStore,
+      terminalInputSnapshots: this.deps.terminalInputCoordinator,
     }));
   }
 
@@ -300,6 +306,73 @@ export class MessageRouter {
         return;
       }
       case 'getNext':
+      case 'selectionChanged':
+        if (msg.type === 'selectionChanged') {
+          if (!this.deps.connectionId || !this.deps.selectionController) return;
+          const state = this.deps.selectionController.updateSelection({
+            connectionId: this.deps.connectionId,
+            selectedTaskId: msg.selectedTaskId,
+            selectedSessionId: msg.selectedSessionId,
+          });
+          this.deps.send({
+            type: 'dashboardSelection',
+            selectedTaskId: state.selectedTaskId,
+            selectedSessionId: state.selectedSessionId,
+            selectionVersion: state.selectionVersion,
+          });
+          return;
+        }
+        await this.lifecycleHandler.handle(msg);
+        return;
+      case 'emptyEnterIntent': {
+        if (!this.deps.connectionId || !this.deps.selectionController || !this.deps.terminalInputCoordinator) return;
+        const selection = this.deps.selectionController.getSelection(this.deps.connectionId);
+        if (
+          !selection
+          || selection.selectedTaskId !== msg.taskId
+          || selection.selectedSessionId !== msg.sessionId
+          || selection.selectionVersion !== msg.selectionVersion
+        ) {
+          this.deps.send({
+            type: 'emptyEnterDecision',
+            decision: { kind: 'rejected', intentId: msg.intentId, sessionId: msg.sessionId, reason: 'stale-selection' },
+          });
+          return;
+        }
+        const decision = await this.deps.terminalInputCoordinator.handleEmptyEnterIntent(msg);
+        if (decision.kind === 'valid-empty-enter') {
+          const advanced = this.deps.selectionController.advanceIfSelectionStill({
+            connectionId: this.deps.connectionId,
+            taskId: msg.taskId,
+            sessionId: msg.sessionId,
+            selectionVersion: msg.selectionVersion,
+            intentId: msg.intentId,
+          });
+          if (advanced.kind === 'rejected') {
+            this.deps.send({
+              type: 'emptyEnterDecision',
+              decision: { kind: 'rejected', intentId: msg.intentId, sessionId: msg.sessionId, reason: 'stale-selection' },
+            });
+            return;
+          }
+          const task = this.deps.taskStore.getTask(msg.taskId);
+          const agentState = getSnapshotAgentsForClient({ monitor: this.deps.monitor })
+            .find((agent) => agent.agentId === msg.sessionId);
+          if (task && agentState?.anomaly) {
+            this.deps.queue.skip(msg.sessionId);
+          }
+          if (advanced.kind === 'advanced') {
+            this.deps.send({
+              type: 'dashboardSelection',
+              selectedTaskId: advanced.state.selectedTaskId,
+              selectedSessionId: advanced.state.selectedSessionId,
+              selectionVersion: advanced.state.selectionVersion,
+            });
+          }
+        }
+        this.deps.send({ type: 'emptyEnterDecision', decision });
+        return;
+      }
       case 'completeTask':
       case 'cancelTask':
       case 'reopenTask':

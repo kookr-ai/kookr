@@ -6,6 +6,7 @@ import {
   type TerminalBackend,
   SessionGoneError,
 } from './terminal-backend.js';
+import type { TerminalInputWriteResult, TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: false });
@@ -42,7 +43,7 @@ export interface FakeSession {
   written: Uint8Array[];
 }
 
-export class FakeTerminalBackend implements TerminalBackend {
+export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriterPort {
   readonly sessions = new Map<SessionId, FakeSession>();
   lastKeystroke: { name: string; key: string } | null = null;
 
@@ -112,6 +113,11 @@ export class FakeTerminalBackend implements TerminalBackend {
     });
   }
 
+  async writeInput(id: SessionId, data: Uint8Array): Promise<TerminalInputWriteResult> {
+    await this.write(id, data);
+    return { sessionId: id, readinessVersion: 0 };
+  }
+
   async writeSequence(id: SessionId, payloads: Uint8Array[]): Promise<void> {
     if (payloads.length === 0) return;
     return this.enqueueWrite(id, async () => {
@@ -136,6 +142,11 @@ export class FakeTerminalBackend implements TerminalBackend {
         if (s) s.keysReceived.push(concatText.replace(/[\r\n]+$/, ''));
       }
     });
+  }
+
+  async writeInputSequence(id: SessionId, payloads: Uint8Array[]): Promise<TerminalInputWriteResult> {
+    await this.writeSequence(id, payloads);
+    return { sessionId: id, readinessVersion: 0 };
   }
 
   async captureBytes(id: SessionId, maxBytes: number = 64 * 1024): Promise<Uint8Array> {

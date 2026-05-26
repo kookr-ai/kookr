@@ -238,6 +238,13 @@ export function App() {
     ? projectSummaries.find((p) => p.project === selectedProject) ?? null
     : null;
   const selectedAgent = agents.find((a) => a.agentId === selectedAgentId) ?? null;
+  useEffect(() => {
+    send({
+      type: 'selectionChanged',
+      selectedTaskId: selectedAgent?.taskId ?? null,
+      selectedSessionId: selectedAgent?.agentId ?? null,
+    });
+  }, [selectedAgent?.agentId, selectedAgent?.taskId, send]);
   const selectedAgentShowsSplit = selectedAgent === null
     || !(selectedAgent.taskStatus !== undefined && isTerminalStatus(selectedAgent.taskStatus) && selectedAgent.completionDigest);
   const terminalFocusActive = terminalFocusMode && wideDetailActive && selectedAgentShowsSplit;

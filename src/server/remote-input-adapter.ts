@@ -1,3 +1,7 @@
+import {
+  asTerminalInputWriterPort,
+  type TerminalInputWriterPort,
+} from '../core/ports/terminal-input-writer-port.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type {
   ActorId,
@@ -52,7 +56,8 @@ export interface RemoteInputAdapter {
 }
 
 export interface RemoteInputAdapterDeps {
-  terminalBackend: Pick<TerminalBackend, 'write'>;
+  terminalInputWriter?: TerminalInputWriterPort;
+  terminalBackend?: Pick<TerminalBackend, 'write'>;
   leaseManager: ControllerLeaseManager;
   getCurrentSeq?: (sessionId: SessionId, sessionEpoch: SessionEpoch) => number | null;
 }
@@ -109,6 +114,7 @@ export function isSubmitMessageCommand(command: CommandEnvelope): command is Sub
 }
 
 export async function createRemoteInputAdapter(deps: RemoteInputAdapterDeps): Promise<RemoteInputAdapter> {
+  const inputWriter = deps.terminalInputWriter ?? asTerminalInputWriterPort(deps.terminalBackend);
   return {
     async submit(command: SubmitMessageCommand): Promise<{ bytesWritten: number; appendNewline: boolean }> {
       const lease = deps.leaseManager.validateRemoteSubmit({
@@ -136,7 +142,7 @@ export async function createRemoteInputAdapter(deps: RemoteInputAdapterDeps): Pr
       }
 
       const payload = encoder.encode(command.payload.text + (command.payload.appendNewline ? '\r' : ''));
-      await deps.terminalBackend.write(command.sessionId, payload);
+      await inputWriter.writeInput(command.sessionId, payload, { reason: 'remote-submit-message' });
       return { bytesWritten: payload.byteLength, appendNewline: command.payload.appendNewline };
     },
   };

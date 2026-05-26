@@ -18,6 +18,7 @@ import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider, type 
 import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
 import { buildRelationProjection, deriveEffectiveAttentionSeverity } from './build-relation-projection.js';
 import type { TaskRelation } from '../../shared/contracts/task-relations.js';
+import type { PromptStatus } from '../../shared/terminal-input-contract.js';
 
 export interface SnapshotQueryDeps {
   monitor: Pick<Monitor, 'getSnapshot'>;
@@ -25,6 +26,14 @@ export interface SnapshotQueryDeps {
    *  {@link AgentState.activityMeta} on each snapshot so the activity panel
    *  can disclose partial-window state and child / malformed counts. */
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
+  terminalInputSnapshots?: {
+    getSnapshot(sessionId: string): {
+      sessionId: string;
+      inputStateEpoch: string;
+      readinessVersion: number;
+      prompt: PromptStatus;
+    } | null;
+  };
 }
 
 export interface SnapshotMessageDeps extends SnapshotQueryDeps {
@@ -151,6 +160,9 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
 export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[] {
   return deps.monitor.getSnapshot().map((agent) => {
     const activityMeta = deps.activityMetaProvider?.getActivityMeta(agent.agentId);
+    const terminalSnapshot = agent.taskId
+      ? deps.terminalInputSnapshots?.getSnapshot(agent.agentId)
+      : null;
     return {
       ...agent,
       events: agent.events.map(projectEventForClient),
@@ -158,6 +170,15 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
         ? { findingEvidenceAudit: projectFindingEvidenceAuditForClient(agent.findingEvidenceAudit) }
         : {}),
       ...(activityMeta ? { activityMeta } : {}),
+      ...(terminalSnapshot ? {
+        terminalInputSnapshot: {
+          sessionId: agent.agentId,
+          taskId: agent.taskId!,
+          inputStateEpoch: terminalSnapshot.inputStateEpoch,
+          readinessVersion: terminalSnapshot.readinessVersion,
+          promptReady: terminalSnapshot.prompt.kind === 'ready',
+        },
+      } : {}),
     };
   });
 }

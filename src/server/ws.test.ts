@@ -16,6 +16,8 @@ import { MessageRouter } from './ws.js';
 import type { ServerMessage, ClientMessage } from '../shared/protocol.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
 import { RalphLoopService } from './ralph-loop-service.js';
+import { DashboardSelectionController } from './dashboard-selection-controller.js';
+import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 
 describe('WebSocket MessageRouter', () => {
   let taskStore: TaskStore;
@@ -103,6 +105,128 @@ describe('WebSocket MessageRouter', () => {
     if (msg.type === 'snapshot') {
       expect(msg.serverCwd).toBe('/test/cwd');
     }
+  });
+
+  test('emptyEnterIntent skips the selected finding only after prompt and selection CAS pass', async () => {
+    const task = taskStore.createTask('Needs review', '/test/cwd');
+    taskStore.getTaskForMutation(task.id)!.sessions.push({
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/test/cwd',
+      createdAt: new Date(),
+    });
+    taskStore.startTask(task.id);
+    monitor.processEvents('s1', [{ type: 'stop', sessionId: 's1', lastMessage: 'Waiting' }]);
+    const skipSpy = vi.spyOn(queue, 'skip');
+    const selectionController = new DashboardSelectionController({
+      getAgents: () => monitor.getSnapshot(),
+    });
+    const terminalInputCoordinator = {
+      handleEmptyEnterIntent: vi.fn().mockResolvedValue({
+        kind: 'valid-empty-enter',
+        intentId: 'intent-1',
+        taskId: task.id,
+        sessionId: 's1',
+        inputStateEpoch: 'epoch-1',
+        decisionReadinessVersion: 3,
+      }),
+    } as unknown as TerminalInputCoordinator;
+    const routerWithSelection = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+      ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
+      connectionId: 'connection-1',
+      selectionController,
+      terminalInputCoordinator,
+    });
+
+    await routerWithSelection.handleMessage({
+      type: 'selectionChanged',
+      selectedTaskId: task.id,
+      selectedSessionId: 's1',
+    });
+    await routerWithSelection.handleMessage({
+      type: 'emptyEnterIntent',
+      intentId: 'intent-1',
+      taskId: task.id,
+      sessionId: 's1',
+      selectionVersion: 1,
+      inputStateEpoch: 'epoch-1',
+      observedReadinessVersion: 3,
+    });
+
+    expect(skipSpy).toHaveBeenCalledWith('s1');
+    expect(sentMessages.some((msg) => msg.type === 'dashboardSelection' && msg.selectionVersion === 2)).toBe(true);
+    expect(sentMessages.at(-1)).toMatchObject({
+      type: 'emptyEnterDecision',
+      decision: { kind: 'valid-empty-enter', intentId: 'intent-1' },
+    });
+  });
+
+  test('emptyEnterIntent rejects without skipping when selection changes while prompt validation is pending', async () => {
+    const task = taskStore.createTask('Needs review', '/test/cwd');
+    taskStore.getTaskForMutation(task.id)!.sessions.push({
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/test/cwd',
+      createdAt: new Date(),
+    });
+    taskStore.startTask(task.id);
+    monitor.processEvents('s1', [{ type: 'stop', sessionId: 's1', lastMessage: 'Waiting' }]);
+    const skipSpy = vi.spyOn(queue, 'skip');
+    const selectionController = new DashboardSelectionController({
+      getAgents: () => monitor.getSnapshot(),
+    });
+    let resolveDecision!: (value: unknown) => void;
+    const decisionPromise = new Promise((resolve) => { resolveDecision = resolve; });
+    const terminalInputCoordinator = {
+      handleEmptyEnterIntent: vi.fn().mockReturnValue(decisionPromise),
+    } as unknown as TerminalInputCoordinator;
+    const routerWithSelection = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+      ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
+      connectionId: 'connection-1',
+      selectionController,
+      terminalInputCoordinator,
+    });
+
+    await routerWithSelection.handleMessage({
+      type: 'selectionChanged',
+      selectedTaskId: task.id,
+      selectedSessionId: 's1',
+    });
+    const handling = routerWithSelection.handleMessage({
+      type: 'emptyEnterIntent',
+      intentId: 'intent-race',
+      taskId: task.id,
+      sessionId: 's1',
+      selectionVersion: 1,
+      inputStateEpoch: 'epoch-1',
+      observedReadinessVersion: 3,
+    });
+    await routerWithSelection.handleMessage({
+      type: 'selectionChanged',
+      selectedTaskId: null,
+      selectedSessionId: null,
+    });
+    resolveDecision({
+      kind: 'valid-empty-enter',
+      intentId: 'intent-race',
+      taskId: task.id,
+      sessionId: 's1',
+      inputStateEpoch: 'epoch-1',
+      decisionReadinessVersion: 3,
+    });
+    await handling;
+
+    expect(skipSpy).not.toHaveBeenCalled();
+    expect(sentMessages.at(-1)).toMatchObject({
+      type: 'emptyEnterDecision',
+      decision: { kind: 'rejected', intentId: 'intent-race', reason: 'stale-selection' },
+    });
   });
 
   test('client connects - snapshot includes coordinator detector outputs', () => {

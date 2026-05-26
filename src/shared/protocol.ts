@@ -101,6 +101,13 @@ export type {
   SystemResourceStatus,
 } from './contracts/messages.js';
 export type {
+  EmptyEnterDecision,
+  EmptyEnterIntentRequest,
+  EmptyEnterRejectReason,
+  PromptStatus,
+  TerminalInputSnapshot,
+} from './terminal-input-contract.js';
+export type {
   RalphLoopStatus,
   RalphLoopState,
   RalphLoopReadModel,

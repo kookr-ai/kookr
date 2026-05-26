@@ -16,6 +16,7 @@ import { isMissingWorktreeHealth } from '../core/worktree-health.js';
 import { displayPromptForTask } from '../core/prompt-display.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
+import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 
 // ---------------------------------------------------------------------------
 // Post-launch registration (used by WS handler and REST routes)
@@ -35,6 +36,7 @@ export interface AgentLifecycleDeps {
    * pre-fill the cwd field for project-drawer launches.
    */
   projectConfigStore?: ProjectConfigStore;
+  terminalInputCoordinator?: Pick<TerminalInputCoordinator, 'registerSession'>;
 }
 
 /**
@@ -55,6 +57,7 @@ export async function registerNewAgent(task: Task, deps: AgentLifecycleDeps): Pr
       continue;
     }
     monitor.registerAgent(session.tmuxSession);
+    deps.terminalInputCoordinator?.registerSession(session.tmuxSession);
     watchdog.registerAgent(session.tmuxSession);
     if (!hookWatcher.isWatching(session.tmuxSession)) {
       hookWatcher.watch(session.tmuxSession, { replayExisting: true });
@@ -179,6 +182,7 @@ export interface LifecycleDeps {
   queue?: Pick<AttentionQueue, 'purgeTask'>;
   /** v5 checkpoint cycler — forget per-session state on cleanup to avoid leaks. */
   checkpointCycler?: { forget(tmuxName: string): void };
+  terminalInputCoordinator?: Pick<TerminalInputCoordinator, 'cleanupSession'>;
   /** Workspace lease service — releases leases on task completion (Phase 1b). */
   leaseService?: { release(worktreePath: string, ownerId: string): boolean };
   /** Workspace attempt repository — records cleanup attempts (Phase 1b). */
@@ -203,6 +207,7 @@ function forgetSessionBookkeeping(tmuxName: string, deps: LifecycleDeps): void {
   deps.shadowRegistry?.unregisterAgent(tmuxName);
   deps.suppressionTracker?.reset(tmuxName);
   deps.checkpointCycler?.forget(tmuxName);
+  deps.terminalInputCoordinator?.cleanupSession(tmuxName);
 }
 
 /**
