@@ -17,7 +17,7 @@ import { registerRelayConnectionRoutes } from './routes/relay-connection-routes.
 import { registerSessionSharingRecoveryRoutes } from './routes/session-sharing-recovery-routes.js';
 import { registerCollaborationPairingRoutes } from './routes/collaboration-pairing-routes.js';
 import { registerSpeechRoutes } from './routes/speech-routes.js';
-import { FindingSummaryCache } from './finding-summary-cache.js';
+import { AgentSpeakCache } from './agent-speak-cache.js';
 import { DEFAULT_TTS_VOICE } from './tts-manager.js';
 import { TaskSpeechSummaryCache } from './task-speech-summary-cache.js';
 import type { RouteDeps } from './routes/shared.js';
@@ -43,7 +43,7 @@ export function createRoutes(deps: RouteDeps): Hono {
 
   const speakEnabled = deps.speakFindingEnabled !== false;
   const speakCache = deps.ttsUrl
-    ? new FindingSummaryCache({
+    ? new AgentSpeakCache({
         llmClient: deps.llmClient ?? null,
         ttsUrl: deps.ttsUrl,
         voice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
@@ -61,6 +61,7 @@ export function createRoutes(deps: RouteDeps): Hono {
     cache: speakCache,
     taskCache: taskSpeakCache,
     ttsUrl: deps.ttsUrl,
+    ttsVoice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
   });
 
   // Cache headers for frontend assets:

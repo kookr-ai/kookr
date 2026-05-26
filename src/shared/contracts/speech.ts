@@ -137,6 +137,23 @@ export type SpeakAgentFallbackReason =
   | 'empty';
 
 /**
+ * Cache-internal shape of a successful speak result. Distinct from
+ * {@link SpeakAgentResponse} because the cache does not store the
+ * route-level `resolvedMode`, `effectiveVerbosity`, `requestId`, or `cached`
+ * — those are derived per-request at response-build time.
+ */
+export interface AgentSpeakResultCore {
+  text: string;
+  audioBase64: string;
+  mimeType: 'audio/wav';
+  durationMs: number;
+  usedFallback: boolean;
+  fallbackReason: SpeakAgentFallbackReason | null;
+  llmMs: number;
+  ttsMs: number;
+}
+
+/**
  * Wire response for POST /api/agents/:agentId/speak (PR2). Superset of the
  * legacy {@link SpeakAudioResponse} with the resolved mode, effective verbosity,
  * fallback reason, and request id surfaced for operator-facing diagnostics.
@@ -154,6 +171,12 @@ export interface SpeakAgentResponse {
   resolvedMode: SpeakMode;
   effectiveVerbosity: VerbosityScale;
   requestId: string;
+  /**
+   * SHA-1 of the cache-key tuple. Echoed so an operator can correlate the
+   * spoken recap with the `/api/agents/:agentId/speak/preview?cacheKey=…`
+   * lookup and the `/api/diagnostics/speak-cache` listing.
+   */
+  cacheKey: string;
 }
 
 export type SpeakAgentErrorReason =

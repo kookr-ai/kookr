@@ -39,32 +39,42 @@ export class GoogleLlmClient implements LlmClient {
 
     const timeoutMs = req.timeoutMs ?? 10_000;
 
-    const apiCall = this.client.models.generateContent({
-      model: this.model,
-      contents: req.userMessage,
-      config,
-    });
+    // Wire the caller's signal AND the timeout into a single AbortController
+    // so the underlying SDK fetch actually cancels — the prior `Promise.race`
+    // rejected the awaited promise while letting the SDK call complete in
+    // the background (rfc-speak-agent-summary-v2 R8 / round-1 finding).
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error('Request timed out')),
+      timeoutMs,
+    );
+    const onUpstreamAbort = (): void => {
+      const reason = req.signal?.reason;
+      const err = reason instanceof Error ? reason : new Error('Request aborted');
+      if (err.name !== 'AbortError') err.name = 'AbortError';
+      controller.abort(err);
+    };
+    if (req.signal) {
+      if (req.signal.aborted) onUpstreamAbort();
+      else req.signal.addEventListener('abort', onUpstreamAbort, { once: true });
+    }
 
-    // Race the API call against timeout (and optional abort signal)
-    const response = await Promise.race([
-      apiCall,
-      new Promise<never>((_, reject) => {
-        const timer = setTimeout(() => reject(new Error('Request timed out')), timeoutMs);
-        if (req.signal) {
-          if (req.signal.aborted) {
-            clearTimeout(timer);
-            reject(new Error('Request aborted'));
-            return;
-          }
-          req.signal.addEventListener('abort', () => {
-            clearTimeout(timer);
-            reject(new Error('Request aborted'));
-          }, { once: true });
-        }
-      }),
-    ]);
+    // GenerateContentConfig.abortSignal is honored by the SDK fetch path
+    // (`@google/genai`'s `GenerateContentConfig`).
+    config.abortSignal = controller.signal;
 
-    const text = response.text?.trim();
-    return text || null;
+    try {
+      const response = await this.client.models.generateContent({
+        model: this.model,
+        contents: req.userMessage,
+        config,
+      });
+
+      const text = response.text?.trim();
+      return text || null;
+    } finally {
+      clearTimeout(timer);
+      req.signal?.removeEventListener('abort', onUpstreamAbort);
+    }
   }
 }
