@@ -5258,14 +5258,13 @@ textarea::-webkit-resizer { background: transparent; }
 }
 .btn-speak-finding:hover { color: var(--text); border-color: var(--border); }
 .btn-speak-finding:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-speak-finding.loading {
+.btn-speak-finding.generating {
   border-color: var(--teal);
   color: var(--teal);
 }
 .btn-speak-finding.playing {
   border-color: var(--teal);
   color: var(--teal);
-  animation: stt-pulse 1.5s ease-in-out infinite;
 }
 .btn-speak-finding.suppressed {
   border-color: #f59e0b;
@@ -5283,6 +5282,79 @@ textarea::-webkit-resizer { background: transparent; }
   border-radius: 6px;
   font-size: 13px;
   line-height: 1;
+}
+
+/* Speak-agent v2 animations: rotating ring while generating, three-bar
+   equalizer while playing. CSS only — no canvas, no GIFs. Pure CSS lets the
+   ring/equalizer follow the button's transform without JS RAF loops. */
+.btn-speak-finding-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+.btn-speak-finding-ring {
+  position: absolute;
+  inset: -2px;
+  border: 1.5px solid transparent;
+  border-top-color: var(--teal);
+  border-right-color: var(--teal);
+  border-radius: 50%;
+  animation: speak-agent-spin 0.9s linear infinite;
+  pointer-events: none;
+}
+@keyframes speak-agent-spin {
+  to { transform: rotate(360deg); }
+}
+.btn-speak-finding-eq {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  pointer-events: none;
+}
+.btn-speak-finding-eq > span {
+  display: block;
+  width: 2px;
+  height: 6px;
+  background: var(--teal);
+  border-radius: 1px;
+  animation: speak-agent-pulse 0.85s ease-in-out infinite;
+}
+.btn-speak-finding-eq > span:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.btn-speak-finding-eq > span:nth-child(3) {
+  animation-delay: 0.24s;
+}
+@keyframes speak-agent-pulse {
+  0%, 100% { transform: scaleY(0.55); }
+  50% { transform: scaleY(1.6); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Status colour on the parent button still differentiates the states, so
+     freezing the animation does not erase the affordance. */
+  .btn-speak-finding-ring { animation: none; opacity: 0.7; }
+  .btn-speak-finding-eq > span { animation: none; transform: scaleY(1); }
+}
+.btn-speak-finding-stop {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 12px;
+  text-align: center;
+  pointer-events: none;
 }
 
 /* Quota status display in status bar */
@@ -7161,6 +7233,54 @@ button.project-drawer-link:focus-visible {
   font-size: 11px;
   color: var(--yellow, #eab308);
   margin-top: 2px;
+}
+
+.settings-row-fieldset {
+  display: block;
+}
+
+.settings-radio-group {
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  padding: 8px 12px 10px;
+  margin: 0;
+}
+
+.settings-radio-group > .settings-label {
+  padding: 0 4px;
+}
+
+.settings-radio-group > .settings-desc {
+  display: block;
+  margin: 2px 0 8px;
+}
+
+.settings-radio-option {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.settings-radio-option input[type='radio'] {
+  margin: 0;
+}
+
+.settings-radio-label {
+  color: var(--text-bright);
+}
+
+.settings-radio-desc {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.settings-radio-meta {
+  color: var(--text-muted);
+  opacity: 0.85;
 }
 
 /* Toggle switch */

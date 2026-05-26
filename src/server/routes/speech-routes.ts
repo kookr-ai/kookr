@@ -272,10 +272,6 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
 
   app.post('/api/agents/:agentId/speak', handleSpeakAgent);
 
-  // Thin alias kept so PR2 (server) and PR3 (frontend URL switch) are
-  // independently revertable per RFC R1 / D17. PR3 removes this.
-  app.post('/api/findings/:agentId/speak', handleSpeakAgent);
-
   app.get('/api/agents/:agentId/speak/preview', (c) => {
     if (!isDebugEnabled()) {
       return c.json({ error: 'not-found' }, 404);

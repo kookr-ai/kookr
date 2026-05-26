@@ -73,32 +73,10 @@ export interface SpeakAudioResponse {
 }
 
 /**
- * Wire response for POST /api/findings/:agentId/speak. See
- * docs/rfc/rfc-speak-finding-summary.md.
- */
-export interface SpeakFindingResponse extends SpeakAudioResponse {}
-
-/**
  * Wire response for POST /api/tasks/:taskId/speak-summary. See
  * docs/rfc/rfc-smart-task-speech-summary.md.
  */
 export interface SpeakTaskSummaryResponse extends SpeakAudioResponse {}
-
-export type SpeakFindingErrorReason =
-  | 'feature-disabled'
-  | 'tts-not-configured'
-  | 'agent-not-found'
-  | 'task-not-found'
-  | 'no-finding'
-  | 'tts-error'
-  | 'aborted'
-  | 'http-error';
-
-export interface SpeakFindingErrorResponse {
-  error: SpeakFindingErrorReason;
-  /** Optional operator-facing detail (e.g. upstream TTS message). Never displayed to end users. */
-  reason?: string;
-}
 
 /**
  * Verbosity scale for speak-agent summaries. Drives prompt selection in the

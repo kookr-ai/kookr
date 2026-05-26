@@ -7,27 +7,47 @@ import {
   type AudioAlertContext,
   type AudioAlertOutcome,
   type LocalAudioAlertDecision,
+  type SpeakStatus,
 } from '../audio/audio-alert-log.js';
 import { getSoundPreferenceState } from '../audio/sound-preference.js';
 import { getDndState } from './useDnd.js';
 import type {
-  SpeakFindingErrorResponse,
-  SpeakFindingResponse,
+  SpeakAgentErrorResponse,
+  SpeakAgentRequest,
+  SpeakAgentResponse,
+  VerbosityScale,
 } from '../../shared/contracts/speech.js';
 import type { SpeakFindingTimings } from '../speech-presentation.js';
 
-export type SpeakFindingStatus = 'idle' | 'loading' | 'playing' | 'suppressed' | 'error';
+export type { SpeakStatus };
 
-export interface SpeakFindingState {
-  status: SpeakFindingStatus;
+export interface SpeakAgentHookState {
+  status: SpeakStatus;
   errorReason?: string;
   cached?: boolean;
   timings?: SpeakFindingTimings;
 }
 
-interface SpeakFindingDeps {
+interface SpeakAgentDeps {
   /** Test seam. */
   fetcher?: typeof fetch;
+}
+
+const DEFAULT_VERBOSITY: VerbosityScale = 'medium';
+const CLIENT_TIMEOUT_MS = 20_000;
+
+// Module-level snapshot of the user's effective verbosity preference.
+// App.tsx loads it from /api/settings at startup; the SettingsDialog
+// refreshes it via onSettingsSaved. Falls back to DEFAULT_VERBOSITY before
+// the first load completes.
+let currentSpeakVerbosity: VerbosityScale | null = null;
+
+export function setSpeakVerbositySnapshot(value: VerbosityScale | undefined | null): void {
+  currentSpeakVerbosity = value ?? null;
+}
+
+export function getSpeakVerbositySnapshot(): VerbosityScale {
+  return currentSpeakVerbosity ?? DEFAULT_VERBOSITY;
 }
 
 let decisionSeq = 0;
@@ -93,7 +113,7 @@ function nowMs(): number {
     : Date.now();
 }
 
-interface UseSpeakFindingArgs {
+interface UseSpeakAgentArgs {
   agentId: string | null;
   /** Anomaly type for telemetry/log context. */
   anomalyType: string | null;
@@ -102,34 +122,44 @@ interface UseSpeakFindingArgs {
   endpoint?: string | null;
 }
 
-export interface UseSpeakFindingReturn {
-  state: SpeakFindingState;
-  /** Toggles: starts if idle, stops if playing/loading. */
+export interface UseSpeakAgentReturn {
+  state: SpeakAgentHookState;
+  /** Toggles: starts if idle, stops if playing/generating. */
   speak: () => void;
   /** Force-stop and reset to idle. */
   stop: () => void;
 }
 
 /**
- * Owns the speak-finding lifecycle for the currently-selected finding.
+ * Owns the speak-agent lifecycle for the currently-selected agent.
  *
  * Fetch + audio decode + playback live here. Suppression + decision logging go
  * through audio-alert-log (same channel as `maybePlayChime` — search for
- * source: 'finding_speak' to find this hook's records).
+ * source: 'finding_speak' to find this hook's records). The literal stays
+ * `'finding_speak'` per RFC D12 to keep historical telemetry coherent.
  */
-export function useSpeakFinding(
-  args: UseSpeakFindingArgs,
-  deps: SpeakFindingDeps = {},
-): UseSpeakFindingReturn {
+export function useSpeakAgent(
+  args: UseSpeakAgentArgs,
+  deps: SpeakAgentDeps = {},
+): UseSpeakAgentReturn {
   const { agentId, anomalyType, ttsAvailable, endpoint } = args;
   const fetcher = deps.fetcher ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
 
-  const [state, setState] = useState<SpeakFindingState>({ status: 'idle' });
+  const [state, setState] = useState<SpeakAgentHookState>({ status: 'idle' });
   const abortRef = useRef<AbortController | null>(null);
   const sourceRef = useRef<AudioBufferSourceNode | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearClientTimeout = useCallback(() => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  }, []);
 
   const cleanup = useCallback(() => {
+    clearClientTimeout();
     if (sourceRef.current) {
       try { sourceRef.current.stop(); } catch {}
       sourceRef.current.disconnect();
@@ -143,14 +173,14 @@ export function useSpeakFinding(
       abortRef.current.abort();
       abortRef.current = null;
     }
-  }, []);
+  }, [clearClientTimeout]);
 
   const stop = useCallback(() => {
     cleanup();
     setState({ status: 'idle' });
   }, [cleanup]);
 
-  // Cancel any in-flight work when the selected finding changes.
+  // Cancel any in-flight work when the selected agent changes.
   useEffect(() => {
     return () => {
       cleanup();
@@ -166,8 +196,9 @@ export function useSpeakFinding(
       anomalyType: anomalyType ?? undefined,
     };
 
-    if (state.status === 'loading' || state.status === 'playing') {
-      logDecision(context, 'audio_context_error', 'user_canceled');
+    if (state.status === 'generating' || state.status === 'playing') {
+      const abortedAtPhase: SpeakStatus = state.status;
+      logDecision(context, 'audio_context_error', 'user_canceled', { abortedAtPhase });
       stop();
       return;
     }
@@ -195,6 +226,12 @@ export function useSpeakFinding(
       setState({ status: 'error', errorReason: 'audio-context-unavailable' });
       return;
     }
+
+    // Retry paths from `suspended` / `error` leave the previous AudioContext
+    // and any armed client timeout in place. Dispose them before starting a
+    // new attempt so we never stack two AudioContexts or have a stale timer
+    // fire against the new request.
+    cleanup();
 
     let ctx: AudioContext;
     try {
@@ -225,14 +262,36 @@ export function useSpeakFinding(
     const ac = new AbortController();
     abortRef.current = ac;
     const requestStartedAt = nowMs();
-    setState({ status: 'loading' });
+    setState({ status: 'generating' });
+
+    // Guard the client timeout: if the user kicks off a new speak (or stops
+    // the hook), `cleanup()` aborts the old `ac` and the next `speak()` clears
+    // `timeoutRef.current`. The callback below verifies the timer is still
+    // the active one *and* the AbortController hasn't been retired before
+    // taking action — that way a stale 20s timer can never sabotage a
+    // subsequent request.
+    const ownTimer = setTimeout(() => {
+      if (timeoutRef.current !== ownTimer || abortRef.current !== ac) return;
+      timeoutRef.current = null;
+      if (ac.signal.aborted) return;
+      logDecision(context, 'audio_context_error', 'timeout_client', { abortedAtPhase: 'generating' });
+      cleanup();
+      setState({ status: 'error', errorReason: 'timeout-client' });
+    }, CLIENT_TIMEOUT_MS);
+    timeoutRef.current = ownTimer;
+
+    const verbosity = getSpeakVerbositySnapshot();
+    const requestUrl = endpoint ?? `/api/agents/${encodeURIComponent(agentId)}/speak`;
+    const requestBody: SpeakAgentRequest = { verbosity };
 
     void (async () => {
       let response: Response;
       try {
-        response = await fetcher(endpoint ?? `/api/findings/${encodeURIComponent(agentId)}/speak`, {
+        response = await fetcher(requestUrl, {
           method: 'POST',
           signal: ac.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
         });
       } catch (err) {
         if (ac.signal.aborted) return;
@@ -246,7 +305,7 @@ export function useSpeakFinding(
       if (ac.signal.aborted) return;
 
       if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as SpeakFindingErrorResponse;
+        const body = (await response.json().catch(() => ({}))) as SpeakAgentErrorResponse;
         const errorReason = body.error ?? 'http-error';
         logDecision(context, 'audio_context_error', `http_${response.status}:${errorReason}`);
         cleanup();
@@ -254,7 +313,7 @@ export function useSpeakFinding(
         return;
       }
 
-      const payload = (await response.json().catch(() => null)) as SpeakFindingResponse | null;
+      const payload = (await response.json().catch(() => null)) as SpeakAgentResponse | null;
       const payloadReceivedAt = nowMs();
       if (ac.signal.aborted) return;
       if (!payload || typeof payload.audioBase64 !== 'string') {
@@ -262,6 +321,14 @@ export function useSpeakFinding(
         cleanup();
         setState({ status: 'error', errorReason: 'bad-response' });
         return;
+      }
+
+      if (payload.effectiveVerbosity) {
+        console.debug('[kookr.speak] effectiveVerbosity', {
+          requested: verbosity,
+          effective: payload.effectiveVerbosity,
+          requestId: payload.requestId,
+        });
       }
 
       const baseTimings: SpeakFindingTimings = {
@@ -272,7 +339,7 @@ export function useSpeakFinding(
         cached: payload.cached,
         usedFallback: payload.usedFallback,
       };
-      setState({ status: 'loading', cached: payload.cached, timings: baseTimings });
+      setState({ status: 'generating', cached: payload.cached, timings: baseTimings });
 
       let buffer: AudioBuffer;
       const decodeStartedAt = nowMs();
@@ -291,7 +358,7 @@ export function useSpeakFinding(
         decodeMs: decodedAt - decodeStartedAt,
       };
       // Abort can fire between fetch resolution and decodeAudioData completion;
-      // a stale agentId means this audio belongs to a previous finding and
+      // a stale agentId means this audio belongs to a previous agent and
       // playing it now would mismatch the visible detail panel.
       if (ac.signal.aborted) {
         try { void ctx.close(); } catch {}
@@ -355,8 +422,12 @@ export function useSpeakFinding(
       currentTimings = playTimings;
 
       // Detect the case where the tab is backgrounded so AudioContext stays
-      // 'suspended' after start() — audio would silently never play.
+      // 'suspended' after start() — audio would silently never play. Clear
+      // the client timeout here so the stale timer can't fire 20s later and
+      // wrongly mark the recovered/retried attempt as a timeout-client
+      // failure (see #624 review Finding 1).
       if (ctx.state !== 'running') {
+        clearClientTimeout();
         const decision = logDecision(context, 'audio_context_suspended', 'audio_context_suspended', {
           audioContextInitialState,
           audioContextFinalState: ctx.state,
@@ -374,9 +445,10 @@ export function useSpeakFinding(
         resumeAttempted,
         resumeFailed,
       });
+      clearClientTimeout();
       setState({ status: 'playing', cached: payload.cached, timings: playTimings });
     })();
-  }, [agentId, anomalyType, ttsAvailable, endpoint, state.status, stop, fetcher, cleanup]);
+  }, [agentId, anomalyType, ttsAvailable, endpoint, state.status, stop, fetcher, cleanup, clearClientTimeout]);
 
   return { state, speak, stop };
 }

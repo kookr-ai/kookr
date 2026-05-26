@@ -15,7 +15,7 @@ import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import { useDnd } from '../hooks/useDnd.js';
 import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
-import { useSpeakFinding, type SpeakFindingStatus } from '../hooks/useSpeakFinding.js';
+import { useSpeakAgent, type SpeakStatus } from '../hooks/useSpeakAgent.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { sendRalphLoopCommand, type RalphLoopCommand } from '../ralph-loop-api.js';
 import { CoordinatorTaskChipView, coordinatorChipForTask } from './CoordinatorSurfaces.js';
@@ -245,9 +245,9 @@ function TaskPriorityButton({ agent, send }: {
   );
 }
 
-function speakTaskSummaryLabel(status: SpeakFindingStatus, agentLabel: string, errorReason?: string): string {
+function speakTaskSummaryLabel(status: SpeakStatus, agentLabel: string, errorReason?: string): string {
   switch (status) {
-    case 'loading':
+    case 'generating':
       return `Cancel task summary for ${agentLabel}`;
     case 'playing':
       return `Stop spoken task summary for ${agentLabel}`;
@@ -264,61 +264,75 @@ function speakTaskSummaryLabel(status: SpeakFindingStatus, agentLabel: string, e
 
 function SpeakTaskSummaryControl({ agent, selected }: { agent: AgentState; selected: boolean }): React.ReactElement | null {
   const ttsAvailable = useKookrStore((s) => Boolean(s.ttsUrl));
-  const speakFinding = useSpeakFinding({
+  const speakAgent = useSpeakAgent({
     agentId: agent.agentId,
     anomalyType: agent.anomaly?.type ?? null,
     ttsAvailable,
     endpoint: agent.taskId ? `/api/tasks/${encodeURIComponent(agent.taskId)}/speak-summary` : null,
   });
   const agentLabel = agent.taskName ?? agent.agentId;
+  const { status } = speakAgent.state;
 
   useEffect(() => {
-    if (!selected && (speakFinding.state.status === 'loading' || speakFinding.state.status === 'playing')) {
-      speakFinding.stop();
+    if (!selected && (status === 'generating' || status === 'playing')) {
+      speakAgent.stop();
     }
-  }, [selected, speakFinding.state.status, speakFinding.stop]);
+  }, [selected, status, speakAgent.stop]);
 
   useEffect(() => {
     function handleStopOthers(event: Event) {
       const detail = (event as CustomEvent<{ agentId?: string }>).detail;
       if (detail?.agentId !== agent.agentId) {
-        speakFinding.stop();
+        speakAgent.stop();
       }
     }
 
     window.addEventListener(SPEAK_FINDING_STOP_OTHERS_EVENT, handleStopOthers);
     return () => window.removeEventListener(SPEAK_FINDING_STOP_OTHERS_EVENT, handleStopOthers);
-  }, [agent.agentId, speakFinding.stop]);
+  }, [agent.agentId, speakAgent.stop]);
 
   if ((!agent.taskId && !agent.anomaly) || !ttsAvailable) return null;
 
-  const timingLine = formatSpeakFindingTimingLine(speakFinding.state.timings);
-  const timingTitle = formatSpeakFindingTimingTitle(speakFinding.state.timings);
-  const buttonLabel = speakTaskSummaryLabel(speakFinding.state.status, agentLabel, speakFinding.state.errorReason);
+  const timingLine = formatSpeakFindingTimingLine(speakAgent.state.timings);
+  const timingTitle = formatSpeakFindingTimingTitle(speakAgent.state.timings);
+  const buttonLabel = speakTaskSummaryLabel(status, agentLabel, speakAgent.state.errorReason);
   const title = timingTitle ? `${buttonLabel}\n\n${timingTitle}` : buttonLabel;
+  const inFlight = status === 'generating' || status === 'playing';
 
   return (
     <span className="finding-speech-control" onClick={(e) => e.stopPropagation()}>
       <button
         type="button"
-        className={`btn-speak-finding btn-speak-finding-card ${speakFinding.state.status}`}
-        data-testid="speak-finding-button"
+        className={`btn-speak-finding btn-speak-finding-card ${status}`}
+        data-testid="speak-button"
         data-agent-id={agent.agentId}
         aria-label={buttonLabel}
         title={title}
         onClick={() => {
           useKookrStore.getState().selectAgent(agent.agentId);
           window.dispatchEvent(new CustomEvent(SPEAK_FINDING_STOP_OTHERS_EVENT, { detail: { agentId: agent.agentId } }));
-          track({ type: 'shortcut_used', key: 'click', action: 'speak_finding', context: 'task_card' });
-          speakFinding.speak();
+          track({ type: 'shortcut_used', key: 'click', action: 'speak_agent', context: 'task_card' });
+          speakAgent.speak();
         }}
       >
-        <span aria-hidden="true">
-          {speakFinding.state.status === 'loading' && '…'}
-          {speakFinding.state.status === 'playing' && '⏸'}
-          {speakFinding.state.status === 'suppressed' && '🔇'}
-          {(speakFinding.state.status === 'idle' || speakFinding.state.status === 'error') && '🔊'}
+        <span className="btn-speak-finding-icon" aria-hidden="true">
+          {status === 'generating' && '⏳'}
+          {status === 'playing' && '⏸'}
+          {status === 'suppressed' && '🔇'}
+          {status === 'error' && '⚠'}
+          {status === 'idle' && '🔊'}
+          {status === 'generating' && <span className="btn-speak-finding-ring" aria-hidden="true" />}
+          {status === 'playing' && (
+            <span className="btn-speak-finding-eq" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+          )}
         </span>
+        {inFlight && (
+          <span className="btn-speak-finding-stop" aria-hidden="true">×</span>
+        )}
       </button>
       {timingLine && (
         <span className="finding-speech-timing" title={timingTitle}>

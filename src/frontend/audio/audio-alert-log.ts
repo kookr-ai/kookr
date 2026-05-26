@@ -2,6 +2,12 @@ import { useSyncExternalStore } from 'react';
 
 export type AudioAlertSource = 'finding' | 'task_completion' | 'manual_test' | 'finding_speak';
 
+/**
+ * Mirror of `SpeakStatus` from useSpeakAgent. Inlined to keep this module
+ * free of hook-layer imports (the hook imports from here).
+ */
+export type SpeakStatus = 'idle' | 'generating' | 'playing' | 'suppressed' | 'error';
+
 export type AudioAlertOutcome =
   | 'scheduled'
   | 'suppressed_muted'
@@ -56,6 +62,8 @@ export interface LocalAudioAlertDecision extends AudioAlertContext {
   audioContextFinalState?: AudioContextState;
   resumeAttempted?: boolean;
   resumeFailed?: boolean;
+  /** Speak-hook phase at which the in-flight operation was aborted (user cancel, client timeout). */
+  abortedAtPhase?: SpeakStatus;
   repeatCount?: number;
   firstSeenAt?: string;
   lastSeenAt?: string;
