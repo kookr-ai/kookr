@@ -196,7 +196,11 @@ describe('Monitor', () => {
     expect(state?.taskName).toBe('Fix duplicate task prompt in activity panel.');
   });
 
-  test('getSnapshot populates lastEventSeq from the last event eventSeq', () => {
+  test('getSnapshot lastEventSeq tracks the monotonic event counter across snapshots', () => {
+    // The speak-summary consumer compares lastEventSeq before and after TTS
+    // playback to detect fresh activity. This test exercises that delta-detection
+    // contract by sampling lastEventSeq at two points in time and asserting
+    // strict monotonic growth.
     const task = createTaskForMutation(taskStore, { prompt: 'work', cwd: '/repo' });
     taskStore.addSession(task.id, {
       tmuxSession: 'agent-seq',
@@ -208,13 +212,14 @@ describe('Monitor', () => {
 
     monitor.processEvents('agent-seq', [makeToolUse('s1', 'Read')]);
     monitor.processEvents('agent-seq', [makeToolUse('s1', 'Bash')]);
-    monitor.processEvents('agent-seq', [makeToolUse('s1', 'Edit')]);
+    const initialSeq = monitor.getSnapshot()
+      .find((agent) => agent.agentId === 'agent-seq')!.lastEventSeq!;
+    expect(initialSeq).toBe(2);
 
-    const state = monitor.getSnapshot().find((agent) => agent.agentId === 'agent-seq');
-    expect(state).toBeDefined();
-    expect(state!.events.length).toBe(3);
-    expect(state!.events.at(-1)?.eventSeq).toBe(3);
-    expect(state!.lastEventSeq).toBe(3);
+    monitor.processEvents('agent-seq', [makeToolUse('s1', 'Edit')]);
+    const finalState = monitor.getSnapshot().find((agent) => agent.agentId === 'agent-seq');
+    expect(finalState!.lastEventSeq).toBeGreaterThan(initialSeq);
+    expect(finalState!.lastEventSeq).toBe(3);
   });
 
   test('getSnapshot reports lastEventSeq=0 for an agent with no events', () => {
@@ -239,6 +244,25 @@ describe('Monitor', () => {
 
     const state = monitor.getSnapshot().find((agent) => agent.taskId === task.id);
     expect(state).toBeDefined();
+    expect(state!.events).toEqual([]);
+    expect(state!.lastEventSeq).toBe(0);
+  });
+
+  test('getSnapshot reports lastEventSeq=0 for synthetic terminal entries', () => {
+    const task = createTaskForMutation(taskStore, { prompt: 'finished', cwd: '/repo' });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-done',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:00:00Z'),
+      lastStatus: 'completed',
+    });
+    taskStore.completeTask(task.id);
+
+    const state = monitor.getSnapshot().find((agent) => agent.taskId === task.id);
+    expect(state).toBeDefined();
+    expect(state!.taskStatus).toBe('completed');
+    expect(state!.events).toEqual([]);
     expect(state!.lastEventSeq).toBe(0);
   });
 

@@ -97,19 +97,25 @@ describe('validateSettings', () => {
     }
   });
 
-  it("clamps invalid speakVerbosity to 'medium' with a warning", () => {
+  it("clamps invalid speakVerbosity string to 'medium' with a warning", () => {
     const result = validateSettingsWithWarnings({ speakVerbosity: 'bogus' });
     expect(result.settings.speakVerbosity).toBe('medium');
     expect(result.warnings).toEqual([
-      'speakVerbosity: invalid value "bogus", clamped to \'medium\'',
+      'Unknown speakVerbosity value "bogus"; clamped to "medium"',
     ]);
   });
 
-  it("clamps non-string speakVerbosity to 'medium' with a warning", () => {
-    const result = validateSettingsWithWarnings({ speakVerbosity: 42 });
+  it.each([
+    { value: 42, serialized: '42' },
+    { value: null, serialized: 'null' },
+    { value: true, serialized: 'true' },
+    { value: [], serialized: '[]' },
+    { value: {}, serialized: '{}' },
+  ])("clamps non-string speakVerbosity ($serialized) to 'medium' with a warning", ({ value, serialized }) => {
+    const result = validateSettingsWithWarnings({ speakVerbosity: value });
     expect(result.settings.speakVerbosity).toBe('medium');
     expect(result.warnings).toEqual([
-      "speakVerbosity: invalid value 42, clamped to 'medium'",
+      `Unknown speakVerbosity value ${serialized}; clamped to "medium"`,
     ]);
   });
 

@@ -6,7 +6,7 @@ import {
 } from '../shared/contracts/shortcut-bindings.js';
 import type { VerbosityScale } from '../shared/contracts/speech.js';
 
-const VERBOSITY_VALUES: readonly VerbosityScale[] = ['terse', 'brief', 'medium', 'detailed'] as const;
+const VERBOSITY_VALUES: readonly VerbosityScale[] = ['terse', 'brief', 'medium', 'detailed'];
 const DEFAULT_VERBOSITY: VerbosityScale = 'medium';
 
 export interface KookrSettings {
@@ -36,7 +36,7 @@ export interface KookrSettings {
   /**
    * Default verbosity level for speak-agent summaries. Out-of-range values
    * clamp to `'medium'` and emit a warning. Consumed by the speak route's
-   * summarizer (see {@link rfc-speak-agent-summary-v2}).
+   * summarizer (see docs/rfc/rfc-speak-agent-summary-v2.md).
    */
   speakVerbosity: VerbosityScale;
 }
@@ -117,13 +117,13 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
   let speakVerbosity: VerbosityScale = DEFAULT_VERBOSITY;
   if (raw.speakVerbosity !== undefined) {
     if (
-      typeof raw.speakVerbosity === 'string'
-      && (VERBOSITY_VALUES as readonly string[]).includes(raw.speakVerbosity)
+      typeof raw.speakVerbosity === 'string' &&
+      (VERBOSITY_VALUES as readonly string[]).includes(raw.speakVerbosity)
     ) {
       speakVerbosity = raw.speakVerbosity as VerbosityScale;
     } else {
       verbosityWarnings.push(
-        `speakVerbosity: invalid value ${JSON.stringify(raw.speakVerbosity)}, clamped to '${DEFAULT_VERBOSITY}'`,
+        `Unknown speakVerbosity value ${JSON.stringify(raw.speakVerbosity)}; clamped to "${DEFAULT_VERBOSITY}"`,
       );
     }
   }
