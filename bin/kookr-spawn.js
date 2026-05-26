@@ -447,6 +447,23 @@ function formatTaskAge(createdAt) {
   return rem === 0 ? `running ${hours}h` : `running ${hours}h ${rem}m`;
 }
 
+/**
+ * Print the server-error message. If the server returned 404 and we sent a
+ * parentTaskId, surface a targeted hint about --no-parent-task / --parent-task-id
+ * instead of the generic "server returned 404: ..." form. Shared between the
+ * initial-POST and dedupe-retry call sites so the wording stays in sync.
+ */
+function reportServerError({ result, baseUrl, parentTaskId, err }) {
+  if (result.status === 404 && parentTaskId) {
+    err.error(
+      `kookr-spawn: parent task ${parentTaskId} not found on server (${baseUrl}).\n` +
+      `Re-run with --no-parent-task to launch detached, or --parent-task-id <uuid> to override.`,
+    );
+    return;
+  }
+  err.error(`kookr-spawn: server returned ${result.status}: ${result.message}`);
+}
+
 function formatPromptDiff(existingPrompt, newPrompt) {
   const existingLines = String(existingPrompt ?? '').split('\n');
   const newLines = String(newPrompt ?? '').split('\n');
@@ -605,14 +622,7 @@ async function main({
   }
 
   if (result.kind === 'server_error') {
-    if (result.status === 404 && parentTaskId) {
-      err.error(
-        `kookr-spawn: parent task ${parentTaskId} not found on server (${baseUrl}).\n` +
-        `Re-run with --no-parent-task to launch detached, or --parent-task-id <uuid> to override.`,
-      );
-    } else {
-      err.error(`kookr-spawn: server returned ${result.status}: ${result.message}`);
-    }
+    reportServerError({ result, baseUrl, parentTaskId, err });
     return exit(EXIT_SERVER_ERROR);
   }
 
@@ -653,14 +663,7 @@ async function main({
       return exit(EXIT_SERVER_ERROR);
     }
     if (result.kind === 'server_error') {
-      if (result.status === 404 && parentTaskId) {
-        err.error(
-          `kookr-spawn: parent task ${parentTaskId} not found on server (${baseUrl}).\n` +
-          `Re-run with --no-parent-task to launch detached, or --parent-task-id <uuid> to override.`,
-        );
-      } else {
-        err.error(`kookr-spawn: server returned ${result.status}: ${result.message}`);
-      }
+      reportServerError({ result, baseUrl, parentTaskId, err });
       return exit(EXIT_SERVER_ERROR);
     }
     if (result.kind === 'duplicate') {

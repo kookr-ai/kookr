@@ -1021,6 +1021,86 @@ describe('main', () => {
     }
   });
 
+  it('forwards parentTaskId on the dedupe-retry POST after confirmation', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      const body = JSON.parse(bodyText);
+      bodies.push(body);
+      if (bodies.length === 1) {
+        return {
+          status: 200,
+          body: JSON.stringify({
+            duplicate: true,
+            task: { id: 'dup-1', status: 'inProgress', cwd: tmpCwd, prompt: 'hello' },
+          }),
+        };
+      }
+      return {
+        status: 201,
+        body: JSON.stringify({ id: 'dup-2', agentType: 'claude-code', cwd: tmpCwd, parentTaskId: 'env-parent' }),
+      };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl, KOOKR_TASK_ID: 'env-parent' },
+        stdin: interactiveStdin('y\n'),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodies).toHaveLength(2);
+      expect(bodies[0].parentTaskId).toBe('env-parent');
+      expect(bodies[1].parentTaskId).toBe('env-parent');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('surfaces the parent-404 message on the dedupe-retry path too', async () => {
+    let postCount = 0;
+    const { server, baseUrl } = await startFakeApi(() => {
+      postCount += 1;
+      if (postCount === 1) {
+        return {
+          status: 200,
+          body: JSON.stringify({
+            duplicate: true,
+            task: { id: 'dup-1', status: 'inProgress', cwd: tmpCwd, prompt: 'hello' },
+          }),
+        };
+      }
+      return { status: 404, body: JSON.stringify({ error: 'Parent task not found: stale-parent' }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl, KOOKR_TASK_ID: 'stale-parent' },
+        stdin: interactiveStdin('y\n'),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      const combined = errBucket.errors.join('\n');
+      expect(combined).toContain('parent task stale-parent not found');
+      expect(combined).toContain('--no-parent-task');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it('surfaces a clear message and exits 4 when server 404s the parent', async () => {
     const { server, baseUrl } = await startFakeApi(() => ({
       status: 404,
