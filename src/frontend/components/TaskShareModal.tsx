@@ -8,7 +8,7 @@ import type {
   TaskShareTicket,
   TaskShareOwnerState,
   TaskShareSummary,
-} from '../../remote/share-contract.js';
+} from '../../shared/contracts/remote-share.js';
 import type {
   ContactShareInboxItem,
   KookrContact,

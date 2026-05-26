@@ -1,5 +1,5 @@
 import type { NodeId, Seq, SessionEpoch, SessionId } from '../../remote/ids.js';
-import type { TaskShareGrant, TaskShareGrantRequest } from '../../remote/share-contract.js';
+import type { TaskShareGrant, TaskShareGrantRequest } from './remote-share.js';
 
 export type MemberBlockedReason =
   | 'policy.grantRequired'

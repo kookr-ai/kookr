@@ -1,4 +1,4 @@
-import type { RemoteTaskProjectionV1 } from '../../remote/share-contract.js';
+import type { RemoteTaskProjectionV1 } from './remote-share.js';
 
 export const COLLABORATION_CONTACT_SHARE_INVITE_SCHEMA_VERSION = 'collaboration-contact-share-invite.v1' as const;
 export const COLLABORATION_SHARED_TASK_UPDATES_SCHEMA_VERSION = 'collaboration-shared-task-updates.v1' as const;

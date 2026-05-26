@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import type { BackendStats } from '../adapters/terminal-backend.js';
 import type { RemoteNodeStatus } from '../remote/node-client.js';
-import type { TaskShareSummary } from '../remote/share-contract.js';
+import type { TaskShareSummary } from '../shared/contracts/remote-share.js';
 import type { OwnerRemediation, OwnerTerminalSharingStatus } from '../shared/contracts/session-sharing-owner.js';
 
 interface EnvSnapshot {

@@ -2,7 +2,7 @@ import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Task } from '../core/tasks.js';
 import type { AgentEvent } from '../shared/contracts/agent-events.js';
 import type { NodeId, SessionId } from '../remote/ids.js';
-import type { RemoteTaskProjectionStatus, RemoteTaskProjectionV1 } from '../remote/share-contract.js';
+import type { RemoteTaskProjectionStatus, RemoteTaskProjectionV1 } from '../shared/contracts/remote-share.js';
 import { buildPermissionRequestBinding, latestPermissionRequestEvent } from '../shared/contracts/permission-request-binding.js';
 
 export const REMOTE_TASK_LABEL_MAX_LENGTH = 80;

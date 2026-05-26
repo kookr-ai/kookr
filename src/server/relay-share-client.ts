@@ -20,7 +20,7 @@ import type {
   ResolveTaskShareGrantRequestApiResponse,
   TaskShareTicket,
   TaskShareSummary,
-} from '../remote/share-contract.js';
+} from '../shared/contracts/remote-share.js';
 import type { ContactShareEnvelope } from '../shared/contracts/contact-share.js';
 
 // Share TTL bounds. The relay re-validates with its own `NODE_SHARE_*`

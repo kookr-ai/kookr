@@ -1,7 +1,7 @@
 import { createHash, createSign, randomUUID } from 'node:crypto';
 
 import type { ContactShareReadModel } from '../core/contact-share.js';
-import type { RemoteTaskProjectionV1 } from '../remote/share-contract.js';
+import type { RemoteTaskProjectionV1 } from '../shared/contracts/remote-share.js';
 import {
   COLLABORATION_SHARED_TASK_UPDATES_SCHEMA_VERSION,
   type CollaborationSharedTaskRemoval,

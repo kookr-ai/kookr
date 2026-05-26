@@ -1,4 +1,4 @@
-import type { TaskShareSummary } from '../../remote/share-contract.js';
+import type { TaskShareSummary } from '../../shared/contracts/remote-share.js';
 
 export type TaskShareHeaderStatusKind =
   | 'none'

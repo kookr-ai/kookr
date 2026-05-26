@@ -15,7 +15,7 @@ import type {
   TaskShareTicket,
   TaskShareOwnerState,
   TaskShareSummary,
-} from '../remote/share-contract.js';
+} from '../shared/contracts/remote-share.js';
 import type { RelayShareClient } from './relay-share-client.js';
 import { projectTaskForRemoteShare } from './share-projection.js';
 

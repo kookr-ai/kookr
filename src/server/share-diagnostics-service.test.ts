@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { RemoteNodeStatus } from '../remote/node-client.js';
-import type { TaskShareSummary } from '../remote/share-contract.js';
+import type { TaskShareSummary } from '../shared/contracts/remote-share.js';
 import { asNodeEpoch, asNodeId } from '../remote/ids.js';
 import { RELAY_TRUSTED_ENV_NAME } from '../remote/handshake.js';
 import { ShareDiagnosticsService, terminalAdapterAvailableFromStats } from './share-diagnostics-service.js';
