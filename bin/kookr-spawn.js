@@ -45,13 +45,24 @@ Options:
   -a, --agent <type>       claude-code or codex-cli (default: server default).
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
+      --parent-task-id <uuid>  Override the parent task linkage explicitly.
+      --no-parent-task     Launch detached, ignoring KOOKR_TASK_ID.
   -f, --prompt-file <path> Read prompt from a file (hook-safe).
   -h, --help               Show this help.
+
+Parent-task linking:
+  When launched from inside a Kookr-managed task, kookr-spawn auto-forwards
+  KOOKR_TASK_ID as parentTaskId so the new task shows up as a child in the
+  dashboard. Pass --parent-task-id to override or --no-parent-task to opt out.
+  Outside a managed task (no KOOKR_TASK_ID) the field is omitted entirely.
 
 Environment:
   KOOKR_API_BASE_URL              Base URL of a running Kookr server
                                    (overrides auto-detect).
   KOOKR_PORT                      Specific port on 127.0.0.1 (overrides auto-detect).
+  KOOKR_TASK_ID                   Current Kookr task id; auto-forwarded as
+                                   parentTaskId unless --no-parent-task is set
+                                   or --parent-task-id overrides it.
   KOOKR_SPAWN_MAX_PROMPT_BYTES    Max bytes for piped stdin (default: 1048576).
   KOOKR_SPAWN_CONNECT_RETRIES     Connectivity sweep retries (default: 3, max: 10).
 
@@ -79,6 +90,8 @@ function parseArgs(argv) {
     criteria: null,
     dedupe: 'warn',
     promptFile: null,
+    parentTaskId: null,
+    noParentTask: false,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -102,6 +115,12 @@ function parseArgs(argv) {
       out.dedupe = eat();
     } else if (tok.startsWith('--dedupe=')) {
       out.dedupe = tok.slice('--dedupe='.length);
+    } else if (tok === '--parent-task-id') {
+      out.parentTaskId = eat();
+    } else if (tok.startsWith('--parent-task-id=')) {
+      out.parentTaskId = tok.slice('--parent-task-id='.length);
+    } else if (tok === '--no-parent-task') {
+      out.noParentTask = true;
     } else if (tok === '-f' || tok === '--prompt-file') {
       out.promptFile = eat();
     } else if (tok === '--') {
@@ -120,7 +139,38 @@ function parseArgs(argv) {
   if (!DEDUPE_MODES.has(out.dedupe)) {
     throw new UsageError(`--dedupe must be "warn", "block", or "skip" (got: ${out.dedupe})`);
   }
+  if (out.parentTaskId !== null) {
+    const trimmed = out.parentTaskId.trim();
+    if (trimmed === '') {
+      throw new UsageError('--parent-task-id requires a non-empty value');
+    }
+    out.parentTaskId = trimmed;
+  }
+  if (out.parentTaskId !== null && out.noParentTask) {
+    throw new UsageError('--parent-task-id and --no-parent-task are mutually exclusive');
+  }
   return out;
+}
+
+/**
+ * Resolve the parent task id to send to POST /api/tasks.
+ *
+ * Precedence:
+ *   1. --no-parent-task         → null (intentionally detached)
+ *   2. --parent-task-id <uuid>  → that value
+ *   3. KOOKR_TASK_ID env var    → that value (the "auto-link" path)
+ *   4. otherwise                → null
+ *
+ * Server-side validation (404 when the parent no longer exists) is preserved:
+ * postTask will surface that error rather than the CLI silently dropping it.
+ */
+function resolveParentTaskId({ args, env }) {
+  if (args.noParentTask) return null;
+  if (args.parentTaskId !== null) return args.parentTaskId;
+  const raw = env.KOOKR_TASK_ID;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 class UsageError extends Error {}
@@ -300,12 +350,13 @@ function defaultSleep(ms) {
 
 // ---------- HTTP POST ----------
 
-async function postTask({ baseUrl, prompt, cwd, agent, criteria, disableDedup = false, metadataIntent = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
   if (disableDedup) body.disableDedup = true;
   if (metadataIntent) body.metadata = { intent: metadataIntent };
+  if (parentTaskId) body.parentTaskId = parentTaskId;
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
     method: 'POST',
@@ -347,15 +398,22 @@ function formatSuccess({ task, baseUrl, queued }) {
   const id = task?.id ?? '';
   const agent = task?.agentType ?? '';
   const cwd = task?.cwd ?? '';
+  const parent = typeof task?.parentTaskId === 'string' && task.parentTaskId.length > 0
+    ? task.parentTaskId
+    : null;
   const status = queued ? '⌛ Task queued' : '✓ Task created';
-  const lines = [
-    `task_id=${id}`,
+  const lines = [`task_id=${id}`];
+  if (parent) lines.push(`parent_task_id=${parent}`);
+  lines.push(
     status,
     `   agent:  ${agent}`,
     `   cwd:    ${cwd}`,
     `   server: ${baseUrl}`,
     `   open:   ${baseUrl}/#/tasks/${id}`,
-  ];
+  );
+  if (parent) {
+    lines.push(`   parent: ${baseUrl}/#/tasks/${parent}`);
+  }
   return lines.join('\n');
 }
 
@@ -387,6 +445,23 @@ function formatTaskAge(createdAt) {
   const hours = Math.floor(minutes / 60);
   const rem = minutes % 60;
   return rem === 0 ? `running ${hours}h` : `running ${hours}h ${rem}m`;
+}
+
+/**
+ * Print the server-error message. If the server returned 404 and we sent a
+ * parentTaskId, surface a targeted hint about --no-parent-task / --parent-task-id
+ * instead of the generic "server returned 404: ..." form. Shared between the
+ * initial-POST and dedupe-retry call sites so the wording stays in sync.
+ */
+function reportServerError({ result, baseUrl, parentTaskId, err }) {
+  if (result.status === 404 && parentTaskId) {
+    err.error(
+      `kookr-spawn: parent task ${parentTaskId} not found on server (${baseUrl}).\n` +
+      `Re-run with --no-parent-task to launch detached, or --parent-task-id <uuid> to override.`,
+    );
+    return;
+  }
+  err.error(`kookr-spawn: server returned ${result.status}: ${result.message}`);
 }
 
 function formatPromptDiff(existingPrompt, newPrompt) {
@@ -525,6 +600,7 @@ async function main({
   }
 
   const baseUrl = resolved.baseUrl;
+  const parentTaskId = resolveParentTaskId({ args, env });
 
   let result;
   try {
@@ -536,6 +612,7 @@ async function main({
       criteria: args.criteria,
       disableDedup: args.dedupe === 'skip',
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
+      parentTaskId,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -545,7 +622,7 @@ async function main({
   }
 
   if (result.kind === 'server_error') {
-    err.error(`kookr-spawn: server returned ${result.status}: ${result.message}`);
+    reportServerError({ result, baseUrl, parentTaskId, err });
     return exit(EXIT_SERVER_ERROR);
   }
 
@@ -577,6 +654,7 @@ async function main({
         criteria: args.criteria,
         disableDedup: true,
         metadataIntent: 'keep_as_duplicate',
+        parentTaskId,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -585,7 +663,7 @@ async function main({
       return exit(EXIT_SERVER_ERROR);
     }
     if (result.kind === 'server_error') {
-      err.error(`kookr-spawn: server returned ${result.status}: ${result.message}`);
+      reportServerError({ result, baseUrl, parentTaskId, err });
       return exit(EXIT_SERVER_ERROR);
     }
     if (result.kind === 'duplicate') {
@@ -638,5 +716,6 @@ export {
   probeHealth,
   resolveBaseUrl,
   resolveCwd,
+  resolveParentTaskId,
   resolvePrompt,
 };

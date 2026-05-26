@@ -22,6 +22,7 @@ import {
   probeHealth,
   resolveBaseUrl,
   resolveCwd,
+  resolveParentTaskId,
   resolvePrompt,
 } from '../../bin/kookr-spawn.js';
 
@@ -121,6 +122,51 @@ describe('parseArgs', () => {
   it('throws when an option value is missing', () => {
     expect(() => parseArgs(['-C'])).toThrow(UsageError);
     expect(() => parseArgs(['--cwd'])).toThrow(UsageError);
+  });
+
+  it('parses --parent-task-id and --no-parent-task', () => {
+    expect(parseArgs(['--parent-task-id', 'abc']).parentTaskId).toBe('abc');
+    expect(parseArgs(['--parent-task-id=def']).parentTaskId).toBe('def');
+    expect(parseArgs([]).parentTaskId).toBeNull();
+    expect(parseArgs([]).noParentTask).toBe(false);
+    expect(parseArgs(['--no-parent-task']).noParentTask).toBe(true);
+  });
+
+  it('rejects empty --parent-task-id and conflict with --no-parent-task', () => {
+    expect(() => parseArgs(['--parent-task-id', '   '])).toThrow(UsageError);
+    expect(() => parseArgs(['--parent-task-id', 'abc', '--no-parent-task'])).toThrow(UsageError);
+    expect(() => parseArgs(['--no-parent-task', '--parent-task-id', 'abc'])).toThrow(UsageError);
+  });
+});
+
+// ---------- resolveParentTaskId ----------
+
+describe('resolveParentTaskId', () => {
+  it('returns env KOOKR_TASK_ID by default (auto-link path)', () => {
+    const args = parseArgs([]);
+    expect(resolveParentTaskId({ args, env: { KOOKR_TASK_ID: 'env-parent' } })).toBe('env-parent');
+  });
+
+  it('trims surrounding whitespace from env value', () => {
+    const args = parseArgs([]);
+    expect(resolveParentTaskId({ args, env: { KOOKR_TASK_ID: '  env-parent  ' } })).toBe('env-parent');
+  });
+
+  it('returns null when env is unset, empty, or whitespace (outside Kookr)', () => {
+    const args = parseArgs([]);
+    expect(resolveParentTaskId({ args, env: {} })).toBeNull();
+    expect(resolveParentTaskId({ args, env: { KOOKR_TASK_ID: '' } })).toBeNull();
+    expect(resolveParentTaskId({ args, env: { KOOKR_TASK_ID: '   ' } })).toBeNull();
+  });
+
+  it('--parent-task-id overrides env', () => {
+    const args = parseArgs(['--parent-task-id', 'explicit']);
+    expect(resolveParentTaskId({ args, env: { KOOKR_TASK_ID: 'env-parent' } })).toBe('explicit');
+  });
+
+  it('--no-parent-task wins over env', () => {
+    const args = parseArgs(['--no-parent-task']);
+    expect(resolveParentTaskId({ args, env: { KOOKR_TASK_ID: 'env-parent' } })).toBeNull();
   });
 });
 
@@ -465,6 +511,35 @@ describe('postTask', () => {
     }
   });
 
+  it('includes parentTaskId when provided and omits it otherwise', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodies.push(JSON.parse(bodyText));
+      return { status: 201, body: JSON.stringify({ id: 't' }) };
+    });
+    try {
+      await postTask({
+        baseUrl,
+        prompt: 'hi',
+        cwd: '/tmp',
+        agent: null,
+        criteria: null,
+        parentTaskId: 'parent-uuid',
+      });
+      await postTask({
+        baseUrl,
+        prompt: 'hi',
+        cwd: '/tmp',
+        agent: null,
+        criteria: null,
+      });
+      expect(bodies[0].parentTaskId).toBe('parent-uuid');
+      expect(bodies[1].parentTaskId).toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it('includes explicit duplicate intent when requested', async () => {
     let bodySeen: any = null;
     const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
@@ -520,6 +595,25 @@ describe('output formatting', () => {
     });
     expect(out.split('\n')[0]).toBe('task_id=abc');
     expect(out).toContain('already exists');
+  });
+
+  it('formatSuccess includes parent_task_id when the task has a parent', () => {
+    const out = formatSuccess({
+      task: { id: 'abc', agentType: 'claude-code', cwd: '/tmp', parentTaskId: 'parent-1' },
+      baseUrl: 'http://127.0.0.1:4800',
+      queued: false,
+    });
+    expect(out).toContain('parent_task_id=parent-1');
+    expect(out).toContain('http://127.0.0.1:4800/#/tasks/parent-1');
+  });
+
+  it('formatSuccess omits parent_task_id when the task has none', () => {
+    const out = formatSuccess({
+      task: { id: 'abc', agentType: 'claude-code', cwd: '/tmp' },
+      baseUrl: 'http://127.0.0.1:4800',
+      queued: false,
+    });
+    expect(out).not.toContain('parent_task_id=');
   });
 });
 
@@ -812,6 +906,227 @@ describe('main', () => {
     });
     expect(codes).toEqual([EXIT_USER_ERROR]);
     expect(errBucket.errors.join('\n')).toMatch(/KOOKR_PORT/i);
+  });
+
+  it('forwards KOOKR_TASK_ID as parentTaskId by default (auto-link path)', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return {
+        status: 201,
+        body: JSON.stringify({ id: 'child-1', agentType: 'claude-code', cwd: tmpCwd, parentTaskId: 'env-parent' }),
+      };
+    });
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl, KOOKR_TASK_ID: 'env-parent' },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodySeen.parentTaskId).toBe('env-parent');
+      expect(logs.join('\n')).toContain('parent_task_id=env-parent');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--no-parent-task drops KOOKR_TASK_ID from the request body', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 't1', agentType: 'claude-code', cwd: tmpCwd }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--no-parent-task', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl, KOOKR_TASK_ID: 'env-parent' },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodySeen.parentTaskId).toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--parent-task-id overrides KOOKR_TASK_ID', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 't1', agentType: 'claude-code', cwd: tmpCwd }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--parent-task-id', 'explicit-parent', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl, KOOKR_TASK_ID: 'env-parent' },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodySeen.parentTaskId).toBe('explicit-parent');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('omits parentTaskId entirely outside a Kookr task (no env)', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 't1', agentType: 'claude-code', cwd: tmpCwd }) };
+    });
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl }, // KOOKR_TASK_ID intentionally absent
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect('parentTaskId' in bodySeen).toBe(false);
+      expect(logs.join('\n')).not.toContain('parent_task_id=');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('forwards parentTaskId on the dedupe-retry POST after confirmation', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      const body = JSON.parse(bodyText);
+      bodies.push(body);
+      if (bodies.length === 1) {
+        return {
+          status: 200,
+          body: JSON.stringify({
+            duplicate: true,
+            task: { id: 'dup-1', status: 'inProgress', cwd: tmpCwd, prompt: 'hello' },
+          }),
+        };
+      }
+      return {
+        status: 201,
+        body: JSON.stringify({ id: 'dup-2', agentType: 'claude-code', cwd: tmpCwd, parentTaskId: 'env-parent' }),
+      };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl, KOOKR_TASK_ID: 'env-parent' },
+        stdin: interactiveStdin('y\n'),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodies).toHaveLength(2);
+      expect(bodies[0].parentTaskId).toBe('env-parent');
+      expect(bodies[1].parentTaskId).toBe('env-parent');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('surfaces the parent-404 message on the dedupe-retry path too', async () => {
+    let postCount = 0;
+    const { server, baseUrl } = await startFakeApi(() => {
+      postCount += 1;
+      if (postCount === 1) {
+        return {
+          status: 200,
+          body: JSON.stringify({
+            duplicate: true,
+            task: { id: 'dup-1', status: 'inProgress', cwd: tmpCwd, prompt: 'hello' },
+          }),
+        };
+      }
+      return { status: 404, body: JSON.stringify({ error: 'Parent task not found: stale-parent' }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl, KOOKR_TASK_ID: 'stale-parent' },
+        stdin: interactiveStdin('y\n'),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      const combined = errBucket.errors.join('\n');
+      expect(combined).toContain('parent task stale-parent not found');
+      expect(combined).toContain('--no-parent-task');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('surfaces a clear message and exits 4 when server 404s the parent', async () => {
+    const { server, baseUrl } = await startFakeApi(() => ({
+      status: 404,
+      body: JSON.stringify({ error: 'Parent task not found: stale-parent' }),
+    }));
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl, KOOKR_TASK_ID: 'stale-parent' },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      const combined = errBucket.errors.join('\n');
+      expect(combined).toContain('parent task stale-parent not found');
+      expect(combined).toContain('--no-parent-task');
+    } finally {
+      await closeServer(server);
+    }
   });
 
   it('exits 3 when auto-detect finds both instances (ambiguous)', async () => {
