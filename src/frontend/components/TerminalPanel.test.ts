@@ -531,7 +531,7 @@ describe('TerminalPanel', () => {
     expect(ws.send).not.toHaveBeenCalled();
   });
 
-  test('forwards bare Enter when no empty agent prompt is visible', () => {
+  test('captures bare Enter with an empty terminal draft even before output arrives', () => {
     const onEmptySubmit = vi.fn();
     act(() => {
       root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
@@ -545,8 +545,8 @@ describe('TerminalPanel', () => {
       terminal.dataHandler?.('\r');
     });
 
-    expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
   });
 
   test('forwards Enter after terminal input has content', () => {
@@ -619,6 +619,76 @@ describe('TerminalPanel', () => {
     expect(ws.send).toHaveBeenCalledWith('\r');
   });
 
+  test('forwards Enter when Claude composer shows visible draft text after replay', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: '\r\n❯ run tests\r\n' });
+    });
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith('\r');
+  });
+
+  test('captures empty terminal Enter while the agent is streaming', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: '\r\n• Working (7m 32s • esc to interrupt)\r\n' });
+    });
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  test('captures real keyboard empty Enter while the agent is streaming', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: '\r\n• Working (7m 32s • esc to interrupt)\r\n' });
+    });
+    ws.send.mockClear();
+    const xtermContainer = container.querySelector('.terminal-xterm');
+    expect(xtermContainer).not.toBeNull();
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      xtermContainer!.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
   test('forwards Enter after terminal control input such as history navigation', () => {
     const onEmptySubmit = vi.fn();
     act(() => {
@@ -654,6 +724,27 @@ describe('TerminalPanel', () => {
     const ws = mocks.webSocketInstances[0];
     act(() => {
       ws.onmessage?.({ data: '\r\nAllow this command? Allow  Deny\r\n❯ \r\n' });
+    });
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith('\r');
+  });
+
+  test('does not treat shell prompts as empty terminal submits', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: '\r\nuser@host:~/repo$ \r\n' });
     });
     ws.send.mockClear();
 
@@ -927,19 +1018,16 @@ describe('TerminalPanel', () => {
     expect(wsC.send).not.toHaveBeenCalled();
   });
 
-  test('agentPromptReady fires empty-Enter even before the new session has streamed any output', () => {
-    // The reliability bug: when navigation advances to a new task whose
-    // terminal buffer hasn't repainted yet, the local pane-pattern scan can't
-    // see the idle prompt and would forward `\r` to the new PTY. The server-
-    // derived `agentPromptReady` hint short-circuits that race because it
-    // travels through the same React render that switched `tmuxName`.
+  test('captures empty Enter even before the new session has streamed any output', () => {
+    // The reliability bug: after navigation advances to a new task, the next
+    // Enter may arrive before the terminal buffer repaints. With no local draft
+    // present, it must still be task navigation rather than a raw newline.
     const onEmptySubmit = vi.fn();
     act(() => {
       root.render(React.createElement(TerminalPanel, {
         tmuxName: 'kookr-task-A',
         visible: true,
         onEmptySubmit,
-        agentPromptReady: true,
       }));
     });
     const terminal = mocks.terminalInstances[0];
@@ -956,14 +1044,13 @@ describe('TerminalPanel', () => {
     expect(ws.send).not.toHaveBeenCalled();
   });
 
-  test('agentPromptReady fires empty-Enter on real keyboard Enter without buffer confirmation', () => {
+  test('captures real keyboard empty Enter without buffer confirmation', () => {
     const onEmptySubmit = vi.fn();
     act(() => {
       root.render(React.createElement(TerminalPanel, {
         tmuxName: 'kookr-task-A',
         visible: true,
         onEmptySubmit,
-        agentPromptReady: true,
       }));
     });
     const ws = mocks.webSocketInstances[0];
@@ -984,16 +1071,15 @@ describe('TerminalPanel', () => {
     expect(ws.send).not.toHaveBeenCalled();
   });
 
-  test('agentPromptReady never suppresses Enter when the user has typed a draft', () => {
-    // Server-side hint must not override draft tracking — if the user typed
-    // something at the prompt, Enter must submit that, not skip the finding.
+  test('forwards Enter when the user has typed a draft', () => {
+    // If the user typed something at the prompt, Enter must submit that text,
+    // not advance to another task.
     const onEmptySubmit = vi.fn();
     act(() => {
       root.render(React.createElement(TerminalPanel, {
         tmuxName: 'kookr-task-A',
         visible: true,
         onEmptySubmit,
-        agentPromptReady: true,
       }));
     });
     const terminal = mocks.terminalInstances[0];
@@ -1012,7 +1098,7 @@ describe('TerminalPanel', () => {
     expect(ws.send).toHaveBeenCalledWith('\r');
   });
 
-  test('agentPromptReady survives the tmuxName transition before the new session streams', () => {
+  test('empty Enter survives the tmuxName transition before the new session streams', () => {
     // The end-to-end reliability scenario the bug actually describes:
     // Task A → empty Enter advances → task B is now selected → the next
     // empty Enter must ALSO advance, even though B's WS hasn't sent any
@@ -1023,7 +1109,6 @@ describe('TerminalPanel', () => {
         tmuxName: 'kookr-task-A',
         visible: true,
         onEmptySubmit,
-        agentPromptReady: true,
       }));
     });
     const terminal = mocks.terminalInstances[0];
@@ -1031,86 +1116,37 @@ describe('TerminalPanel', () => {
     act(() => { wsA.onmessage?.({ data: '\r\n❯ \r\n' }); });
     wsA.send.mockClear();
 
-    // First Enter at A's idle prompt fires empty-Enter (buffer + hint both agree).
+    // First Enter at A's idle prompt fires empty-Enter.
     act(() => { terminal.dataHandler?.('\r'); });
     expect(onEmptySubmit).toHaveBeenCalledTimes(1);
     expect(wsA.send).not.toHaveBeenCalled();
 
-    // Parent navigates to task B with the same idle hint. B's WS is reopened
-    // but no pane content has streamed yet — the local buffer is effectively
-    // empty after `terminal.clear()`.
+    // Parent navigates to task B. B's WS is reopened but no pane content has
+    // streamed yet — the local buffer is effectively empty after
+    // `terminal.clear()`.
     act(() => {
       root.render(React.createElement(TerminalPanel, {
         tmuxName: 'kookr-task-B',
         visible: true,
         onEmptySubmit,
-        agentPromptReady: true,
       }));
     });
     const wsB = mocks.webSocketInstances[mocks.webSocketInstances.length - 1];
     expect(wsB).not.toBe(wsA);
     wsB.send.mockClear();
 
-    // Without the hint, this Enter would race the WS handoff and land in B's
-    // PTY as a raw `\r`. With the hint, empty-Enter fires deterministically.
     act(() => { terminal.dataHandler?.('\r'); });
     expect(onEmptySubmit).toHaveBeenCalledTimes(2);
     expect(wsB.send).not.toHaveBeenCalled();
   });
 
-  test('agentPromptReady tracks live prop changes through the ref bridge', () => {
-    // When `agentPromptReady` flips false→true on a prop update WITHOUT a
-    // tmuxName change (e.g., the same task transitions from running to
-    // completed_turn mid-session), the next Enter must observe the new value
-    // — the long-lived onData closure has to read it through the ref.
+  test('empty terminal Enter remains navigation across same-session rerenders', () => {
     const onEmptySubmit = vi.fn();
     act(() => {
       root.render(React.createElement(TerminalPanel, {
         tmuxName: 'kookr-task-X',
         visible: true,
         onEmptySubmit,
-        agentPromptReady: false,
-      }));
-    });
-    const terminal = mocks.terminalInstances[0];
-    const ws = mocks.webSocketInstances[0];
-    ws.send.mockClear();
-
-    // Without the hint and with an empty buffer, Enter forwards to the PTY.
-    act(() => { terminal.dataHandler?.('\r'); });
-    expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
-    ws.send.mockClear();
-
-    // Same session, hint flips on (e.g., turnState transitions to completed_turn).
-    act(() => {
-      root.render(React.createElement(TerminalPanel, {
-        tmuxName: 'kookr-task-X',
-        visible: true,
-        onEmptySubmit,
-        agentPromptReady: true,
-      }));
-    });
-    act(() => { terminal.dataHandler?.('\r'); });
-    expect(onEmptySubmit).toHaveBeenCalledOnce();
-    expect(ws.send).not.toHaveBeenCalled();
-  });
-
-  test('agentPromptReady prop decrease (true → false) re-arms the buffer-scan fallback', () => {
-    // Symmetric guard to the false → true ref-bridge test: when the same
-    // session transitions back from completed_turn to running (the user sent
-    // a follow-up and Claude resumed streaming), the next Enter must NOT
-    // fire empty-Enter from the hint and must instead fall back to the
-    // buffer scan — which with an empty buffer means forwarding `\r` to the
-    // PTY. Without the ref decreasing on prop change, a stale `true` would
-    // silently skip past an active turn.
-    const onEmptySubmit = vi.fn();
-    act(() => {
-      root.render(React.createElement(TerminalPanel, {
-        tmuxName: 'kookr-task-Y',
-        visible: true,
-        onEmptySubmit,
-        agentPromptReady: true,
       }));
     });
     const terminal = mocks.terminalInstances[0];
@@ -1123,18 +1159,51 @@ describe('TerminalPanel', () => {
     onEmptySubmit.mockClear();
     ws.send.mockClear();
 
-    // Same session, hint flips off (turnState transitioned to running).
+    // Same session rerender.
+    act(() => {
+      root.render(React.createElement(TerminalPanel, {
+        tmuxName: 'kookr-task-X',
+        visible: true,
+        onEmptySubmit,
+      }));
+    });
+    act(() => { terminal.dataHandler?.('\r'); });
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  test('empty terminal Enter stays routed through navigation after rerender', () => {
+    // Empty terminal Enter is a navigation shortcut. The draft, permission, and
+    // shell guards still decide when Enter should reach the PTY.
+    const onEmptySubmit = vi.fn();
     act(() => {
       root.render(React.createElement(TerminalPanel, {
         tmuxName: 'kookr-task-Y',
         visible: true,
         onEmptySubmit,
-        agentPromptReady: false,
+      }));
+    });
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    ws.send.mockClear();
+
+    act(() => { terminal.dataHandler?.('\r'); });
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+    onEmptySubmit.mockClear();
+    ws.send.mockClear();
+
+    // Same session rerender after activity changes elsewhere in the parent.
+    act(() => {
+      root.render(React.createElement(TerminalPanel, {
+        tmuxName: 'kookr-task-Y',
+        visible: true,
+        onEmptySubmit,
       }));
     });
     act(() => { terminal.dataHandler?.('\r'); });
-    expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
   });
 
   test('empty-Enter fires repeatedly within the same task as the user mashes Enter', () => {

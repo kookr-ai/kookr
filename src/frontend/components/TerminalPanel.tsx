@@ -8,21 +8,12 @@ import { useKookrStore } from '../store/useStore.js';
 import { registerTerminalSend } from '../terminal-send.js';
 import { isMultilinePaste, buildPasteFrame } from '../terminal-paste.js';
 import { track } from '../telemetry.js';
-import { analyzePaneSemantics } from '../../shared/pane-semantics.js';
+import { analyzePaneSemantics, hasVisibleComposerDraft } from '../../shared/pane-semantics.js';
 
 interface Props {
   tmuxName: string | null;
   visible: boolean;
   onEmptySubmit?: () => void;
-  /**
-   * Server-derived "agent is idle at an empty Claude/Codex prompt" hint that
-   * survives `tmuxName` transitions. When true, empty-Enter fires even before
-   * the new session's terminal buffer has repainted — otherwise the keypress
-   * races the WebSocket handoff and gets sent to the new PTY as a raw `\r`.
-   * Travels alongside `tmuxName` through React props so the two are always
-   * coherent (the same render that switches sessions provides the new hint).
-   */
-  agentPromptReady?: boolean;
 }
 
 interface MenuState {
@@ -68,11 +59,6 @@ function updateTerminalInputDraft(draft: string, data: string): string {
   return next;
 }
 
-function isEmptyAgentPromptVisible(outputTail: string): boolean {
-  const semantics = analyzePaneSemantics(outputTail);
-  return semantics.state === 'input_prompt' && semantics.confidence === 'high';
-}
-
 function getVisibleTerminalTail(terminal: Terminal): string {
   try {
     const buffer = terminal.buffer.active;
@@ -91,18 +77,23 @@ function shouldHandleEmptyTerminalEnter(
   terminal: Terminal,
   draft: string,
   outputTail: string,
-  agentPromptReady: boolean,
   onEmptySubmit?: () => void,
 ): boolean {
   if (draft.length !== 0 || !onEmptySubmit) return false;
-  // Trust the server-derived idle hint: it survives `tmuxName` transitions
-  // where the local buffer briefly resets to empty and the buffer scan would
-  // otherwise miss-detect the prompt and forward `\r` to the new PTY.
-  if (agentPromptReady) return true;
-  return isEmptyAgentPromptVisible(getVisibleTerminalTail(terminal)) || isEmptyAgentPromptVisible(outputTail);
+  const visibleTail = getVisibleTerminalTail(terminal);
+  if (hasVisibleComposerDraft(visibleTail) || hasVisibleComposerDraft(outputTail)) return false;
+
+  const visibleSemantics = analyzePaneSemantics(visibleTail);
+  const outputSemantics = analyzePaneSemantics(outputTail);
+  const disallowedStates = new Set(['permission_dialog', 'shell_prompt']);
+  if (disallowedStates.has(visibleSemantics.state) || disallowedStates.has(outputSemantics.state)) return false;
+
+  // Empty terminal Enter is a navigation shortcut whenever no draft is present.
+  // That keeps rapid task triage reliable even while an agent is streaming.
+  return true;
 }
 
-export function TerminalPanel({ tmuxName, visible, onEmptySubmit, agentPromptReady }: Props) {
+export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -114,7 +105,6 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, agentPromptRea
   const terminalOutputTailRef = useRef('');
   const terminalOutputDecoderRef = useRef(new TextDecoder());
   const onEmptySubmitRef = useRef(onEmptySubmit);
-  const agentPromptReadyRef = useRef(agentPromptReady ?? false);
   const searchOpenRef = useRef(false);
   const visibleRef = useRef(visible);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -167,10 +157,6 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, agentPromptRea
   useEffect(() => {
     onEmptySubmitRef.current = onEmptySubmit;
   }, [onEmptySubmit]);
-
-  useEffect(() => {
-    agentPromptReadyRef.current = agentPromptReady ?? false;
-  }, [agentPromptReady]);
 
   useEffect(() => {
     visibleRef.current = visible;
@@ -336,7 +322,6 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, agentPromptRea
         terminal,
         terminalInputDraftRef.current,
         terminalOutputTailRef.current,
-        agentPromptReadyRef.current,
         onEmptySubmitRef.current,
       )) {
         return;
@@ -571,7 +556,6 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, agentPromptRea
           terminal,
           terminalInputDraftRef.current,
           terminalOutputTailRef.current,
-          agentPromptReadyRef.current,
           onEmptySubmitRef.current,
         )
       ) {
