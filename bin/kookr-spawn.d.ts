@@ -21,7 +21,14 @@ export interface ParsedArgs {
   criteria: string | null;
   dedupe: 'warn' | 'block' | 'skip';
   promptFile: string | null;
+  parentTaskId: string | null;
+  noParentTask: boolean;
   help: boolean;
+}
+
+export interface ResolveParentTaskIdInputs {
+  args: ParsedArgs;
+  env: Record<string, string | undefined>;
 }
 
 export interface ResolvePromptInputs {
@@ -55,6 +62,7 @@ export interface PostTaskArgs {
   criteria: string | null;
   disableDedup?: boolean;
   metadataIntent?: 'keep_as_duplicate' | null;
+  parentTaskId?: string | null;
 }
 
 export interface TaskPayload {
@@ -100,6 +108,7 @@ export function resolvePrompt(inputs: ResolvePromptInputs): Promise<string>;
 export function resolveCwd(explicit: string | null, pwd: string): string;
 export function probeHealth(baseUrl: string, timeoutMs: number): Promise<boolean>;
 export function resolveBaseUrl(deps: ResolveBaseUrlDeps): Promise<BaseUrlResolution>;
+export function resolveParentTaskId(inputs: ResolveParentTaskIdInputs): string | null;
 export function postTask(args: PostTaskArgs): Promise<PostTaskResult>;
 export function formatSuccess(args: FormatSuccessArgs): string;
 export function formatDedup(args: FormatDedupArgs): string;
