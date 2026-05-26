@@ -210,6 +210,60 @@ describe('deploy-routes', () => {
       expect(script).toContain('ln -sfn "${ENV_ROOT_DIR}/.env" "${PROD_DIR}/.env"');
     });
 
+    it('prod-update discards tracked local changes in the production worktree before switching', async () => {
+      const origin = join(root, 'origin.git');
+      const dev = join(root, 'dev');
+      const bin = join(root, 'bin');
+      await mkdir(origin);
+      await mkdir(join(mainDir, 'scripts'), { recursive: true });
+      await mkdir(bin, { recursive: true });
+      execFileSync('git', ['init', '--bare', '-b', 'main'], { cwd: origin, env: cleanEnv });
+      execFileSync('git', ['clone', origin, prodDir], { env: cleanEnv });
+      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: prodDir, env: cleanEnv });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: prodDir, env: cleanEnv });
+      await writeFile(join(prodDir, 'README.md'), 'clean\n', 'utf8');
+      execFileSync('git', ['add', 'README.md'], { cwd: prodDir, env: cleanEnv });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: prodDir, env: cleanEnv });
+      execFileSync('git', ['push', 'origin', 'main'], { cwd: prodDir, env: cleanEnv });
+      execFileSync('git', ['clone', origin, dev], { env: cleanEnv });
+      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: dev, env: cleanEnv });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dev, env: cleanEnv });
+      await writeFile(join(dev, 'README.md'), 'updated\n', 'utf8');
+      execFileSync('git', ['add', 'README.md'], { cwd: dev, env: cleanEnv });
+      execFileSync('git', ['commit', '-m', 'update readme'], { cwd: dev, env: cleanEnv });
+      execFileSync('git', ['push', 'origin', 'main'], { cwd: dev, env: cleanEnv });
+      await writeFile(join(prodDir, 'README.md'), 'dirty\n', 'utf8');
+      await writeFile(
+        join(mainDir, 'scripts', 'prod-update.sh'),
+        readFileSync(join(process.cwd(), 'scripts', 'prod-update.sh'), 'utf8'),
+        'utf8',
+      );
+      await writeFile(join(mainDir, 'scripts', 'prod-restart.sh'), '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+      await writeFile(join(bin, 'pnpm'), '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+      await chmod(join(mainDir, 'scripts', 'prod-update.sh'), 0o755);
+      await chmod(join(mainDir, 'scripts', 'prod-restart.sh'), 0o755);
+      await chmod(join(bin, 'pnpm'), 0o755);
+
+      const output = execFileSync('bash', [join(mainDir, 'scripts', 'prod-update.sh')], {
+        cwd: mainDir,
+        env: {
+          ...cleanEnv,
+          KOOKR_PROD_DIR: prodDir,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+        },
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      });
+
+      expect(output).toContain('HEAD is now at');
+      expect(readFileSync(join(prodDir, 'README.md'), 'utf8')).toBe('updated\n');
+      expect(execFileSync('git', ['status', '--short', '--untracked-files=no'], {
+        cwd: prodDir,
+        env: cleanEnv,
+        encoding: 'utf-8',
+      })).toBe('');
+    });
+
     it('prod-update keeps the prod .env symlink pointed at the sibling main checkout when run from kookr-prod', async () => {
       const main = join(root, 'kookr');
       const prod = join(root, 'kookr-prod');
