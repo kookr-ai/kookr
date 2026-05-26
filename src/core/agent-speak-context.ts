@@ -47,6 +47,12 @@ export function truncateAtWord(text: string, max: number): string {
  * `sectionName` and `agentId` are surfaced only in the log line; they do not
  * influence the regex.
  */
+// Format / control / combining marks must be stripped before the regex test
+// because NFKC alone does not collapse zero-width characters (U+200B ZWSP,
+// U+200C ZWNJ, U+FEFF). An attacker can otherwise insert ZWSPs between the
+// keyword letters (e.g. `<<<E​ND>>>`) and evade the keyword match.
+const INVISIBLE_CHARS_REGEX = /[\p{Cf}\p{Mn}]/gu;
+
 export function stripDelimiters(
   text: string,
   sectionName: string,
@@ -54,7 +60,7 @@ export function stripDelimiters(
   logger: StripDelimitersLogger = defaultLogger,
 ): string {
   if (!text) return '';
-  const normalized = text.normalize('NFKC');
+  const normalized = text.normalize('NFKC').replace(INVISIBLE_CHARS_REGEX, '');
   if (DELIMITER_REGEX.test(normalized)) {
     logger(sectionName, agentId);
     return DELIMITER_REPLACEMENT;

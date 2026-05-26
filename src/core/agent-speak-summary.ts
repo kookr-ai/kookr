@@ -269,9 +269,3 @@ export async function summarizeAgent(
   };
 }
 
-export const RUNG_MAX_TOKENS: Record<VerbosityScale, number> = {
-  terse: RUNG_CONFIG.terse.maxTokens,
-  brief: RUNG_CONFIG.brief.maxTokens,
-  medium: RUNG_CONFIG.medium.maxTokens,
-  detailed: RUNG_CONFIG.detailed.maxTokens,
-};

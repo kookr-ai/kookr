@@ -249,16 +249,24 @@ export class AgentSpeakCache {
 
     const existing = this.inflight.get(cacheKey);
     if (existing) {
-      this.hits += 1;
-      this.singleflightJoins += 1;
-      this.byVerbosityByMode[keyInput.verbosity][keyInput.resolvedMode].hits += 1;
-      const { entry } = await existing;
-      return {
-        cacheKey,
-        cachedAt: entry.cachedAt,
-        cached: true,
-        result: { ...entry.result, llmMs: 0, ttsMs: 0 },
-      };
+      try {
+        const { entry } = await existing;
+        this.hits += 1;
+        this.singleflightJoins += 1;
+        this.byVerbosityByMode[keyInput.verbosity][keyInput.resolvedMode].hits += 1;
+        return {
+          cacheKey,
+          cachedAt: entry.cachedAt,
+          cached: true,
+          result: { ...entry.result, llmMs: 0, ttsMs: 0 },
+        };
+      } catch (err) {
+        // The leader's work failed (or its signal aborted). A joiner that did
+        // NOT abort must not inherit the leader's outcome — instead, fall
+        // through and run its own fetch bound to its own signal. If the
+        // joiner's signal is also aborted, surface that to the route's catch.
+        if (signal?.aborted) throw err;
+      }
     }
 
     this.misses += 1;

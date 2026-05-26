@@ -161,6 +161,77 @@ describe('AgentSpeakCache.get', () => {
     expect(stats.size).toBe(0);
   });
 
+  test('joiner re-fetches with its own signal when leader aborts', async () => {
+    // Reproduces the singleflight inheritance bug: leader A starts, joiner B
+    // joins, leader A's signal aborts. B's signal never aborted, so B must
+    // not inherit A's AbortError — instead B should re-run the work.
+    const leaderCtrl = new AbortController();
+    let fetchCalls = 0;
+
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init?: RequestInit) => {
+      fetchCalls += 1;
+      // First call: leader's. Wait for the leader to abort.
+      if (fetchCalls === 1) {
+        await new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          }, { once: true });
+        });
+        return mockTtsResponse();
+      }
+      // Second call: joiner's fresh fetch after leader's failure.
+      return mockTtsResponse('JOINER_AUDIO');
+    }) as unknown as typeof globalThis.fetch;
+
+    const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
+    const key = { agentId: 'a1', resolvedMode: 'activity' as const, verbosity: 'medium' as const, lastEventSeq: 1, anomalyDetectedAt: null };
+
+    const joinerCtrl = new AbortController();
+    const leaderPromise = cache.get(key, fakeContext, leaderCtrl.signal);
+    // Yield so the leader has registered inflight before joiner attaches.
+    await Promise.resolve();
+    const joinerPromise = cache.get(key, fakeContext, joinerCtrl.signal);
+
+    // Abort the leader; the joiner's signal stays clear.
+    leaderCtrl.abort();
+
+    await expect(leaderPromise).rejects.toBeDefined();
+    const joinerResult = await joinerPromise;
+    expect(joinerResult.cached).toBe(false);
+    expect(joinerResult.result.audioBase64).toBe('JOINER_AUDIO');
+    expect(fetchCalls).toBe(2);
+  });
+
+  test('joiner that also aborted surfaces the abort to its caller', async () => {
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init?: RequestInit) => {
+      await new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const err = new Error('aborted');
+          err.name = 'AbortError';
+          reject(err);
+        }, { once: true });
+      });
+      return mockTtsResponse();
+    }) as unknown as typeof globalThis.fetch;
+
+    const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
+    const key = { agentId: 'a1', resolvedMode: 'activity' as const, verbosity: 'medium' as const, lastEventSeq: 1, anomalyDetectedAt: null };
+
+    const leaderCtrl = new AbortController();
+    const joinerCtrl = new AbortController();
+    const leaderPromise = cache.get(key, fakeContext, leaderCtrl.signal);
+    await Promise.resolve();
+    const joinerPromise = cache.get(key, fakeContext, joinerCtrl.signal);
+
+    // Both abort.
+    joinerCtrl.abort();
+    leaderCtrl.abort();
+    await expect(leaderPromise).rejects.toBeDefined();
+    await expect(joinerPromise).rejects.toBeDefined();
+  });
+
   test('cached entry retains AgentSpeakContext for preview lookups', async () => {
     const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
     const key = { agentId: 'a1', resolvedMode: 'finding' as const, verbosity: 'brief' as const, lastEventSeq: 1, anomalyDetectedAt: new Date('2026-05-26T00:00:00Z') };
