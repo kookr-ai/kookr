@@ -430,6 +430,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         taskStore.getLifetimeSpendUsd(),
         snoozes,
         suppressionState,
+        taskStore.listRelations(),
       );
     } catch (err) {
       console.error('Error saving tasks:', err);

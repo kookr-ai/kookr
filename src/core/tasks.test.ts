@@ -1051,6 +1051,275 @@ describe('TaskStore', () => {
   });
 });
 
+describe('Task-relation graph (issue #599)', () => {
+  let store: TaskStore;
+
+  beforeEach(() => {
+    store = new TaskStore();
+  });
+
+  test('createTask with parentTaskId records a high-confidence spawned_by relation', () => {
+    const parent = store.createTask('Parent', '/cwd');
+    const child = store.createTask('Child', '/cwd', undefined, parent.id);
+
+    const relations = store.listRelations();
+    expect(relations).toHaveLength(1);
+    const [rel] = relations;
+    expect(rel.sourceTaskId).toBe(child.id);
+    expect(rel.targetTaskId).toBe(parent.id);
+    expect(rel.type).toBe('spawned_by');
+    expect(rel.confidence).toBe(1);
+    expect(rel.source).toBe('api');
+    expect(rel.lifecycle).toBe('active');
+    expect(rel.evidence).toHaveLength(1);
+    expect(rel.evidence[0].snippet).toContain('parentTaskId');
+    expect(rel.evidence[0].observedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test('createTask without parentTaskId records no relations', () => {
+    store.createTask('Standalone', '/cwd');
+    expect(store.listRelations()).toHaveLength(0);
+  });
+
+  test('parentTaskId still mutates parentTaskId / childTaskIds (backward compat)', () => {
+    const parent = store.createTask('Parent', '/cwd');
+    const child = store.createTask('Child', '/cwd', undefined, parent.id);
+    expect(child.parentTaskId).toBe(parent.id);
+    expect(store.getTask(parent.id)!.childTaskIds).toEqual([child.id]);
+  });
+
+  test('upsertRelation deduplicates by (source, target, type)', () => {
+    const a = store.createTask('A', '/cwd');
+    const b = store.createTask('B', '/cwd');
+
+    const first = store.upsertRelation({
+      sourceTaskId: a.id,
+      targetTaskId: b.id,
+      type: 'related_to',
+      confidence: 0.5,
+      source: 'llm-inference',
+      evidence: [{ snippet: 'first', observedAt: new Date(0).toISOString() }],
+    });
+    const second = store.upsertRelation({
+      sourceTaskId: a.id,
+      targetTaskId: b.id,
+      type: 'related_to',
+      confidence: 0.75,
+      source: 'transcript',
+      evidence: [{ snippet: 'second', observedAt: new Date(1000).toISOString() }],
+    });
+
+    const stored = store.listRelations({ sourceTaskId: a.id, targetTaskId: b.id, type: 'related_to' });
+    expect(stored).toHaveLength(1);
+    expect(stored[0].id).toBe(first.id);
+    expect(stored[0].id).toBe(second.id);
+    expect(stored[0].confidence).toBe(0.75);
+    expect(stored[0].source).toBe('transcript');
+    expect(stored[0].evidence.map((e) => e.snippet)).toEqual(['first', 'second']);
+  });
+
+  test('upsertRelation does not mutate parentTaskId even at confidence 1', () => {
+    const a = store.createTask('A', '/cwd');
+    const b = store.createTask('B', '/cwd');
+    store.upsertRelation({
+      sourceTaskId: a.id,
+      targetTaskId: b.id,
+      type: 'spawned_by',
+      confidence: 1,
+      source: 'llm-inference',
+    });
+    expect(store.getTask(a.id)!.parentTaskId).toBeUndefined();
+    expect(store.getTask(b.id)!.childTaskIds).toBeUndefined();
+  });
+
+  test('upsertRelation supports low-confidence inferred edges without parent mutation', () => {
+    const a = store.createTask('A', '/cwd');
+    const b = store.createTask('B', '/cwd');
+    store.upsertRelation({
+      sourceTaskId: a.id,
+      targetTaskId: b.id,
+      type: 'same_chain',
+      confidence: 0.2,
+      source: 'llm-inference',
+      evidence: [{ snippet: 'maybe same chain', observedAt: new Date().toISOString() }],
+    });
+    const stored = store.listRelations();
+    expect(stored).toHaveLength(1);
+    expect(stored[0].confidence).toBe(0.2);
+    expect(store.getTask(a.id)!.parentTaskId).toBeUndefined();
+  });
+
+  test('upsertRelation rejects out-of-range confidence', () => {
+    const a = store.createTask('A', '/cwd');
+    const b = store.createTask('B', '/cwd');
+    expect(() => store.upsertRelation({
+      sourceTaskId: a.id, targetTaskId: b.id, type: 'related_to',
+      confidence: 1.5, source: 'manual',
+    })).toThrow('confidence');
+    expect(() => store.upsertRelation({
+      sourceTaskId: a.id, targetTaskId: b.id, type: 'related_to',
+      confidence: -0.1, source: 'manual',
+    })).toThrow('confidence');
+    expect(() => store.upsertRelation({
+      sourceTaskId: a.id, targetTaskId: b.id, type: 'related_to',
+      confidence: Number.NaN, source: 'manual',
+    })).toThrow('confidence');
+  });
+
+  test('listRelations supports source/target/taskId/type filters', () => {
+    const a = store.createTask('A', '/cwd');
+    const b = store.createTask('B', '/cwd');
+    const c = store.createTask('C', '/cwd');
+    store.upsertRelation({ sourceTaskId: a.id, targetTaskId: b.id, type: 'related_to', confidence: 0.5, source: 'manual' });
+    store.upsertRelation({ sourceTaskId: a.id, targetTaskId: c.id, type: 'related_to', confidence: 0.5, source: 'manual' });
+    store.upsertRelation({ sourceTaskId: b.id, targetTaskId: c.id, type: 'depends_on', confidence: 0.5, source: 'manual' });
+
+    expect(store.listRelations({ sourceTaskId: a.id })).toHaveLength(2);
+    expect(store.listRelations({ targetTaskId: c.id })).toHaveLength(2);
+    expect(store.listRelations({ type: 'depends_on' })).toHaveLength(1);
+    expect(store.listRelations({ taskId: c.id })).toHaveLength(2);
+  });
+
+  test('loadRelations replaces the relation set and dedups by key', () => {
+    const a = store.createTask('A', '/cwd');
+    const b = store.createTask('B', '/cwd');
+    store.upsertRelation({ sourceTaskId: a.id, targetTaskId: b.id, type: 'related_to', confidence: 0.5, source: 'manual' });
+
+    const nowIso = new Date().toISOString();
+    store.loadRelations([
+      {
+        id: 'rel-1', sourceTaskId: a.id, targetTaskId: b.id, type: 'depends_on',
+        confidence: 0.9, source: 'kookr-spawn', evidence: [],
+        createdAt: nowIso, updatedAt: nowIso, lifecycle: 'active',
+      },
+      {
+        id: 'rel-2', sourceTaskId: a.id, targetTaskId: b.id, type: 'depends_on',
+        confidence: 0.4, source: 'transcript', evidence: [],
+        createdAt: nowIso, updatedAt: nowIso, lifecycle: 'active',
+      },
+    ]);
+    const stored = store.listRelations();
+    expect(stored).toHaveLength(1);
+    expect(stored[0].id).toBe('rel-2');
+    expect(stored[0].source).toBe('transcript');
+  });
+
+  test('deleteTask drops every relation that references the deleted task', () => {
+    const a = store.createTask('A', '/cwd');
+    const b = store.createTask('B', '/cwd');
+    const c = store.createTask('C', '/cwd');
+    store.upsertRelation({ sourceTaskId: a.id, targetTaskId: b.id, type: 'related_to', confidence: 0.5, source: 'manual' });
+    store.upsertRelation({ sourceTaskId: c.id, targetTaskId: a.id, type: 'depends_on', confidence: 0.5, source: 'manual' });
+    store.upsertRelation({ sourceTaskId: b.id, targetTaskId: c.id, type: 'blocks', confidence: 0.5, source: 'manual' });
+
+    store.deleteTask(a.id);
+    const remaining = store.listRelations();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].sourceTaskId).toBe(b.id);
+    expect(remaining[0].targetTaskId).toBe(c.id);
+  });
+
+  test('listRelations returns snapshots — external mutation does not leak back', () => {
+    const a = store.createTask('A', '/cwd');
+    const b = store.createTask('B', '/cwd');
+    store.upsertRelation({
+      sourceTaskId: a.id, targetTaskId: b.id, type: 'related_to',
+      confidence: 0.5, source: 'manual',
+      evidence: [{ snippet: 'orig', observedAt: new Date().toISOString() }],
+    });
+    const snap = store.listRelations()[0];
+    snap.confidence = 0.99;
+    snap.evidence.push({ snippet: 'mutated', observedAt: new Date().toISOString() });
+    const reread = store.listRelations()[0];
+    expect(reread.confidence).toBe(0.5);
+    expect(reread.evidence).toHaveLength(1);
+  });
+});
+
+describe('Task-relation persistence (issue #599)', () => {
+  let store: TaskStore;
+
+  beforeEach(() => {
+    store = new TaskStore();
+  });
+
+  test('relations round-trip through the persistence envelope', async () => {
+    const { saveTasks, loadTasks } = await import('./task-persistence.js');
+    const { mkdtemp, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-relations-'));
+    try {
+      const parent = store.createTask('Parent', '/cwd');
+      const child = store.createTask('Child', '/cwd', undefined, parent.id);
+      store.upsertRelation({
+        sourceTaskId: child.id, targetTaskId: parent.id, type: 'same_chain',
+        confidence: 0.6, source: 'transcript',
+        evidence: [{ path: '/var/log/x.log', observedAt: new Date().toISOString() }],
+      });
+
+      const file = join(dir, 'tasks.json');
+      await saveTasks(store.getAllTasks(), file, 0, undefined, undefined, store.listRelations());
+
+      const loaded = await loadTasks(file);
+      expect(loaded.relations ?? []).toHaveLength(2);
+      const keys = (loaded.relations ?? []).map((r) => `${r.sourceTaskId}|${r.targetTaskId}|${r.type}`).sort();
+      expect(keys).toContain(`${child.id}|${parent.id}|spawned_by`);
+      expect(keys).toContain(`${child.id}|${parent.id}|same_chain`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('legacy task files (no relations key) deserialize with relations === undefined', async () => {
+    const { loadTasks } = await import('./task-persistence.js');
+    const { mkdtemp, rm, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-relations-'));
+    try {
+      const file = join(dir, 'tasks.json');
+      const legacy = { version: 2, lifetimeSpendUsd: 0, tasks: [] };
+      await writeFile(file, JSON.stringify(legacy), 'utf-8');
+      const loaded = await loadTasks(file);
+      expect(loaded.relations).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('malformed relation entries are dropped silently on load', async () => {
+    const { loadTasks } = await import('./task-persistence.js');
+    const { mkdtemp, rm, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-relations-'));
+    try {
+      const file = join(dir, 'tasks.json');
+      const envelope = {
+        version: 2,
+        lifetimeSpendUsd: 0,
+        tasks: [],
+        relations: [
+          { id: 'good', sourceTaskId: 's', targetTaskId: 't', type: 'related_to', confidence: 0.5, source: 'manual', evidence: [], createdAt: 'x', updatedAt: 'x', lifecycle: 'active' },
+          { id: 'bad-type', sourceTaskId: 's', targetTaskId: 't', type: 'not_a_type', confidence: 0.5, source: 'manual', evidence: [], createdAt: 'x', updatedAt: 'x', lifecycle: 'active' },
+          { id: 'bad-conf', sourceTaskId: 's', targetTaskId: 't', type: 'related_to', confidence: 5, source: 'manual', evidence: [], createdAt: 'x', updatedAt: 'x', lifecycle: 'active' },
+          'not-an-object',
+        ],
+      };
+      await writeFile(file, JSON.stringify(envelope), 'utf-8');
+      const loaded = await loadTasks(file);
+      expect(loaded.relations ?? []).toHaveLength(1);
+      expect((loaded.relations ?? [])[0].id).toBe('good');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('status classification helpers', () => {
   // Exhaustive coverage — if TaskStatus grows, these tables force a decision.
   const terminal: TaskStatus[] = ['completed', 'terminated', 'cancelled'];

@@ -401,6 +401,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStore.loadTasks(persisted.tasks, persisted.lifetimeSpendUsd);
     console.log(`Loaded ${persisted.tasks.length} task(s) from ${tasksFile} (lifetime spend: $${taskStore.getLifetimeSpendUsd().toFixed(2)})`);
   }
+  if (persisted.relations && persisted.relations.length > 0) {
+    taskStore.loadRelations(persisted.relations);
+  }
 
   await worktreeRegistry.refresh(serverCwd);
 
@@ -905,6 +908,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       taskStore.getLifetimeSpendUsd(),
       snoozes,
       suppressionState,
+      taskStore.listRelations(),
     );
   };
 
@@ -1049,7 +1053,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Final save
     try {
       const snoozedFindings = serializeSnoozed(queue, taskStore);
-      await saveTasks(taskStore.getAllTasks(), tasksFile, taskStore.getLifetimeSpendUsd(), snoozedFindings);
+      await saveTasks(
+        taskStore.getAllTasks(),
+        tasksFile,
+        taskStore.getLifetimeSpendUsd(),
+        snoozedFindings,
+        undefined,
+        taskStore.listRelations(),
+      );
       await ossAttemptStore.save();
       await projectConfigStore.save();
       await scheduleStore.persist();
