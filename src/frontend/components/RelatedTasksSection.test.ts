@@ -89,6 +89,14 @@ describe('RelatedTasksSection (#601)', () => {
     const inferredEntry = parent?.querySelector('[data-inferred="true"]');
     expect(inferredEntry).not.toBeNull();
     expect(inferredEntry?.classList.contains('related-task-entry--inferred')).toBe(true);
+
+    // Deterministic child entry must NOT carry the inferred styling or badge —
+    // the visual distinction is asserted on both sides so a regression that
+    // tagged everything as inferred would fail this test.
+    const deterministicEntry = children?.querySelector('[data-inferred="false"]');
+    expect(deterministicEntry).not.toBeNull();
+    expect(deterministicEntry?.classList.contains('related-task-entry--inferred')).toBe(false);
+    expect(deterministicEntry?.querySelector('[data-testid="related-task-badge-inferred"]')).toBeNull();
   });
 
   test('hides completed descendants when the filter checkbox is toggled on', () => {
@@ -160,6 +168,44 @@ describe('RelatedTasksSection (#601)', () => {
     expect(evidence?.textContent).toContain('KOOKR_PARENT_TASK_ID matched p1');
   });
 
+  test('clicking "Show chain" sets the store filter to chain rooted at this task', () => {
+    const focus = makeAgent({ agentId: 'parent-agent', taskId: 'p1', taskName: 'Parent task' });
+    useKookrStore.setState({
+      agents: [
+        focus,
+        makeAgent({ agentId: 'child-agent', taskId: 'c1', taskName: 'Child task' }),
+      ],
+      taskRelations: [rel({ sourceTaskId: 'c1', targetTaskId: 'p1' })],
+    });
+
+    act(() => {
+      root.render(React.createElement(RelatedTasksSection, { agent: focus }));
+    });
+
+    const chainBtn = container.querySelector(
+      '[data-testid="related-tasks-scope-chain"]',
+    ) as HTMLButtonElement;
+    expect(chainBtn.getAttribute('aria-checked')).toBe('false');
+
+    act(() => {
+      chainBtn.click();
+    });
+
+    const updated = useKookrStore.getState().relationFilter;
+    expect(updated).toEqual({ mode: 'chain', rootTaskId: 'p1' });
+    // And the button reflects the active state after the click.
+    const chainBtnAfter = container.querySelector(
+      '[data-testid="related-tasks-scope-chain"]',
+    ) as HTMLButtonElement;
+    expect(chainBtnAfter.getAttribute('aria-checked')).toBe('true');
+
+    act(() => {
+      const allBtn = container.querySelector('[data-testid="related-tasks-scope-all"]') as HTMLButtonElement;
+      allBtn.click();
+    });
+    expect(useKookrStore.getState().relationFilter).toEqual({ mode: 'off', rootTaskId: null });
+  });
+
   test('renders nothing when the focused agent has no relations', () => {
     const focus = makeAgent({ agentId: 'a1', taskId: 'lonely-task', taskName: 'Lonely' });
     useKookrStore.setState({
@@ -189,15 +235,16 @@ describe('ChildRollupPill (#601)', () => {
     container.remove();
   });
 
-  test('shows count + breakdown and tags severity when a child finding is present', () => {
+  test('shows count + asymmetric running/completed/blocked breakdown and severity tint', () => {
     const agent = makeAgent({
       agentId: 'parent',
       taskId: 'p1',
       childRollup: {
-        childCount: 3,
-        running: 1,
-        completed: 1,
-        blocked: 1,
+        childCount: 10,
+        // Asymmetric numbers so a swap (e.g. blocked/completed) is observable.
+        running: 2,
+        completed: 5,
+        blocked: 3,
         mostUrgentChildFinding: {
           childTaskId: 'c1',
           severity: 'critical',
@@ -213,9 +260,26 @@ describe('ChildRollupPill (#601)', () => {
 
     const pill = container.querySelector('[data-testid="child-rollup-pill"]');
     expect(pill).not.toBeNull();
-    expect(pill?.textContent).toContain('3c');
-    expect(pill?.textContent).toContain('1/1/1');
+    expect(pill?.textContent).toContain('10c');
+    expect(pill?.textContent).toContain('2/5/3');
     expect(pill?.classList.contains('child-rollup-pill--critical')).toBe(true);
+  });
+
+  test('omits severity tint when no child finding is present', () => {
+    const agent = makeAgent({
+      agentId: 'parent',
+      taskId: 'p1',
+      childRollup: { childCount: 2, running: 2, completed: 0, blocked: 0 },
+    });
+
+    act(() => {
+      root.render(React.createElement(ChildRollupPill, { agent }));
+    });
+
+    const pill = container.querySelector('[data-testid="child-rollup-pill"]');
+    expect(pill).not.toBeNull();
+    expect(pill?.classList.contains('child-rollup-pill--critical')).toBe(false);
+    expect(pill?.classList.contains('child-rollup-pill--warning')).toBe(false);
   });
 
   test('renders nothing when there is no rollup', () => {

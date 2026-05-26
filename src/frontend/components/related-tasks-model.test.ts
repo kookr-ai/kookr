@@ -132,6 +132,17 @@ describe('computeChainMembership', () => {
     ];
     expect(computeChainMembership('a', relations)).toEqual(new Set(['a']));
   });
+
+  it('terminates on cycles via the visited-set guard', () => {
+    // a → b → a cycle (illegal upstream but possible from inference). Without
+    // the visited-set guard this would loop forever; the assertion shape
+    // pins that the traversal terminates AND returns both nodes.
+    const relations: TaskRelation[] = [
+      relation({ sourceTaskId: 'b', targetTaskId: 'a', type: 'spawned_by' }),
+      relation({ sourceTaskId: 'a', targetTaskId: 'b', type: 'spawned_by', id: 'rev' }),
+    ];
+    expect(computeChainMembership('a', relations)).toEqual(new Set(['a', 'b']));
+  });
 });
 
 describe('computeDescendants', () => {
@@ -143,5 +154,14 @@ describe('computeDescendants', () => {
     ];
     const descendants = computeDescendants('a', relations);
     expect(descendants).toEqual(new Set(['b', 'c', 'd']));
+  });
+
+  it('terminates on cycles between descendants without including the root', () => {
+    const relations: TaskRelation[] = [
+      relation({ sourceTaskId: 'b', targetTaskId: 'a', type: 'spawned_by' }),
+      relation({ sourceTaskId: 'c', targetTaskId: 'b', type: 'spawned_by' }),
+      relation({ sourceTaskId: 'b', targetTaskId: 'c', type: 'spawned_by', id: 'cycle' }),
+    ];
+    expect(computeDescendants('a', relations)).toEqual(new Set(['b', 'c']));
   });
 });

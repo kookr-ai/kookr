@@ -10190,6 +10190,41 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   font-weight: 600;
 }
 
+.related-tasks-filters {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.related-tasks-scope-group {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.related-tasks-scope-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+  color: inherit;
+  border-right: 1px solid var(--border);
+}
+
+.related-tasks-scope-btn:last-child {
+  border-right: 0;
+}
+
+.related-tasks-scope-btn--active {
+  background: var(--accent, rgba(64, 128, 255, 0.18));
+  color: var(--accent-fg, currentColor);
+  font-weight: 600;
+}
+
 .related-tasks-filter {
   display: inline-flex;
   align-items: center;

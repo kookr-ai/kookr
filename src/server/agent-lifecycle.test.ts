@@ -792,6 +792,7 @@ describe('promotePendingTasks', () => {
         .mockReturnValueOnce(undefined),
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
+      listRelations: vi.fn().mockReturnValue([]),
     };
     const lifecycleDeps = makeDeps();
     (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
@@ -824,6 +825,7 @@ describe('promotePendingTasks', () => {
         .mockReturnValueOnce(undefined),
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
+      listRelations: vi.fn().mockReturnValue([]),
     };
     const lifecycleDeps = makeDeps();
     (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
@@ -896,6 +898,7 @@ describe('promotePendingTasks', () => {
         .mockReturnValueOnce(undefined),
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
+      listRelations: vi.fn().mockReturnValue([]),
     };
     const deps = makePromotionDeps({
       taskStore: mockTaskStore as any,

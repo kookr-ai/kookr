@@ -409,14 +409,6 @@ describe('snapshot use cases', () => {
       expect(msg.agents[0]).not.toHaveProperty('childRollup');
     });
 
-    it('omits taskRelations when the store returns no active relations', () => {
-      const msg = createSnapshotMessage({
-        monitor: { getSnapshot: () => [] as any },
-        serverCwd: '/repo',
-        relationTaskStore: { listRelations: () => [] },
-      });
-      expect(msg).not.toHaveProperty('taskRelations');
-    });
 
     it('projects active relations and decorates the parent agent with a rollup', () => {
       const monitor = {
@@ -468,13 +460,27 @@ describe('snapshot use cases', () => {
       expect(inferred?.confidence).toBe(0.35);
     });
 
-    it('bumps the parent attention severity when a child has an urgent anomaly', () => {
+    it('bumps the parent attention severity when a child finding is strictly worse than the parent', () => {
       // Acceptance criterion: "Parent/orchestrator task priority rises when a
       // child has needs_input / permission_blocked / pending too long … or
-      // similar urgent state."
+      // similar urgent state."  This test pins the *strict* bump: parent's
+      // own anomaly is `info` and the child is `warning`, so the effective
+      // severity must end at `warning` — not at the parent's original `info`.
       const monitor = {
         getSnapshot: () => [
-          { agentId: 'parent-agent', taskId: 'p1', events: [], anomaly: null, taskStatus: 'inProgress' },
+          {
+            agentId: 'parent-agent',
+            taskId: 'p1',
+            events: [],
+            taskStatus: 'inProgress',
+            anomaly: {
+              agentId: 'parent-agent',
+              type: 'needs_input',
+              severity: 'info',
+              explanation: 'parent waiting on supervisor',
+              detectedAt: new Date('2026-05-26T10:00:00.000Z'),
+            },
+          },
           {
             agentId: 'child-agent',
             taskId: 'c1',
@@ -496,7 +502,7 @@ describe('snapshot use cases', () => {
         relationTaskStore: { listRelations: () => [baseRelation({})] },
       });
       const parent = msg.agents.find((a) => a.taskId === 'p1');
-      expect(parent?.anomaly).toBeNull();
+      expect(parent?.anomaly?.severity).toBe('info');
       expect(parent?.effectiveAttentionSeverity).toBe('warning');
       expect(parent?.childRollup?.mostUrgentChildFinding).toMatchObject({
         childTaskId: 'c1',
@@ -505,14 +511,55 @@ describe('snapshot use cases', () => {
       });
     });
 
-    it('does not mutate parent.anomaly even when a child finding bumps the effective severity', () => {
+    it('does not downgrade a parent that is already more severe than its worst child', () => {
+      const monitor = {
+        getSnapshot: () => [
+          {
+            agentId: 'parent-agent',
+            taskId: 'p1',
+            events: [],
+            taskStatus: 'inProgress',
+            anomaly: {
+              agentId: 'parent-agent',
+              type: 'permission_blocked',
+              severity: 'critical',
+              explanation: 'parent awaiting allow',
+              detectedAt: new Date('2026-05-26T10:00:00.000Z'),
+            },
+          },
+          {
+            agentId: 'child-agent',
+            taskId: 'c1',
+            events: [],
+            taskStatus: 'inProgress',
+            anomaly: {
+              agentId: 'child-agent',
+              type: 'needs_input',
+              severity: 'warning',
+              explanation: 'mild child finding',
+              detectedAt: new Date('2026-05-26T10:00:00.000Z'),
+            },
+          },
+        ] as any,
+      };
+      const msg = createSnapshotMessage({
+        monitor,
+        serverCwd: '/repo',
+        relationTaskStore: { listRelations: () => [baseRelation({})] },
+      });
+      const parent = msg.agents.find((a) => a.taskId === 'p1');
+      expect(parent?.effectiveAttentionSeverity).toBe('critical');
+    });
+
+    it('does not mutate the parent agent object even when a child finding bumps the effective severity', () => {
       const parentAgentObj = {
         agentId: 'parent-agent',
         taskId: 'p1',
-        events: [],
+        events: [] as any[],
         anomaly: null,
-        taskStatus: 'inProgress',
+        taskStatus: 'inProgress' as const,
       };
+      const before = structuredClone(parentAgentObj);
       const monitor = {
         getSnapshot: () => [
           parentAgentObj,
@@ -531,12 +578,26 @@ describe('snapshot use cases', () => {
           },
         ] as any,
       };
-      createSnapshotMessage({
+      const msg = createSnapshotMessage({
         monitor,
         serverCwd: '/repo',
         relationTaskStore: { listRelations: () => [baseRelation({})] },
       });
-      expect(parentAgentObj.anomaly).toBeNull();
+      // Source object is untouched in every field, not just `anomaly`.
+      expect(parentAgentObj).toEqual(before);
+      // And the projected parent is a different reference — no shared state.
+      const projectedParent = msg.agents.find((a) => a.taskId === 'p1');
+      expect(projectedParent).not.toBe(parentAgentObj);
+      expect(projectedParent?.childRollup?.mostUrgentChildFinding?.severity).toBe('critical');
+    });
+
+    it('ships an empty taskRelations array when the active set is empty (clears sticky cache)', () => {
+      const msg = createSnapshotMessage({
+        monitor: { getSnapshot: () => [] as any },
+        serverCwd: '/repo',
+        relationTaskStore: { listRelations: () => [] },
+      });
+      expect(msg.taskRelations).toEqual([]);
     });
   });
 });

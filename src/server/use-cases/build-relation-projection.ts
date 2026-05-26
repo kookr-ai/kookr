@@ -47,12 +47,6 @@ export function buildRelationProjection(
   taskStore: RelationStoreLike,
   agents: readonly AgentState[],
 ): BuildRelationProjectionResult {
-  // Defensive: partial test mocks may pass a store object that lacks
-  // listRelations. In that case treat it the same as "no relations" rather
-  // than crashing the snapshot broadcast.
-  if (typeof taskStore.listRelations !== 'function') {
-    return { taskRelations: [], rollupsByParentTaskId: new Map() };
-  }
   const activeRelations = taskStore
     .listRelations()
     .filter((rel) => rel.lifecycle === 'active');

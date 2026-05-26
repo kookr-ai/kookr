@@ -131,8 +131,20 @@ export interface TransportSessionSlice {
    * Active typed task-relation graph (#599) projected onto the most recent
    * snapshot (#601). Sticky: snapshots that omit the field don't reset the
    * cache, because high-frequency event-pipeline broadcasts don't carry it.
+   * Snapshots that ship an empty array WILL clear the cache — that's how the
+   * client learns about deletions, which hard-drop relations without a
+   * lifecycle transition.
    */
   taskRelations: TaskRelation[];
+  /**
+   * Dashboard task-list filter rooted in a relation graph (#601 UX). `chain`
+   * scopes the task list to `computeChainMembership(rootTaskId)`; `children`
+   * scopes it to `computeDescendants(rootTaskId)`. `off` disables the filter.
+   * The hide-completed-descendants checkbox is *local* to the related-tasks
+   * section and lives in component state, not here.
+   */
+  relationFilter: { mode: 'off' | 'chain' | 'children'; rootTaskId: string | null };
+  setRelationFilter: (filter: { mode: 'off' | 'chain' | 'children'; rootTaskId: string | null }) => void;
 
   handleSnapshot: (
     agents: AgentState[],

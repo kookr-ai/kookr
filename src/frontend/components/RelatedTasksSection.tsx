@@ -3,6 +3,8 @@ import type { AgentState } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { buildRelatedTaskGroups, type RelatedTaskEntry } from './related-tasks-model.js';
 
+type RelationFilterMode = 'off' | 'chain' | 'children';
+
 interface RelatedTasksSectionProps {
   agent: AgentState;
 }
@@ -18,6 +20,8 @@ interface RelatedTasksSectionProps {
 export function RelatedTasksSection({ agent }: RelatedTasksSectionProps): React.ReactElement | null {
   const taskRelations = useKookrStore((state) => state.taskRelations);
   const agents = useKookrStore((state) => state.agents);
+  const relationFilter = useKookrStore((state) => state.relationFilter);
+  const setRelationFilter = useKookrStore((state) => state.setRelationFilter);
   const [hideCompleted, setHideCompleted] = useState(false);
   const [openEvidenceFor, setOpenEvidenceFor] = useState<string | null>(null);
 
@@ -26,8 +30,10 @@ export function RelatedTasksSection({ agent }: RelatedTasksSectionProps): React.
     for (const a of agents) {
       if (!a.taskId) continue;
       const prior = map.get(a.taskId);
-      // Prefer an agent that actually carries a status over a synthetic one.
-      if (!prior || (!prior && a.taskStatus)) map.set(a.taskId, a.taskStatus);
+      // First-write-wins keeps the agent_order-preserved status. Synthetic
+      // entries (no taskStatus) get overwritten by a later real session.
+      if (!prior && a.taskStatus) map.set(a.taskId, a.taskStatus);
+      else if (!map.has(a.taskId)) map.set(a.taskId, a.taskStatus);
     }
     return map;
   }, [agents]);
@@ -40,6 +46,18 @@ export function RelatedTasksSection({ agent }: RelatedTasksSectionProps): React.
     }
     return map;
   }, [agents]);
+
+  const activeFilterRootIsMe =
+    relationFilter.mode !== 'off' && relationFilter.rootTaskId === agent.taskId;
+  const activeFilterMode: RelationFilterMode = activeFilterRootIsMe ? relationFilter.mode : 'off';
+
+  const setMode = (mode: RelationFilterMode): void => {
+    if (mode === 'off') {
+      setRelationFilter({ mode: 'off', rootTaskId: null });
+    } else {
+      setRelationFilter({ mode, rootTaskId: agent.taskId ?? null });
+    }
+  };
 
   const groups = useMemo(() => {
     if (!agent.taskId) return [];
@@ -58,15 +76,49 @@ export function RelatedTasksSection({ agent }: RelatedTasksSectionProps): React.
     <section className="related-tasks-section" data-testid="related-tasks-section" aria-label="Related tasks">
       <header className="related-tasks-header">
         <h3>Related tasks</h3>
-        <label className="related-tasks-filter">
-          <input
-            type="checkbox"
-            checked={hideCompleted}
-            onChange={(event) => setHideCompleted(event.target.checked)}
-            data-testid="related-tasks-hide-completed"
-          />
-          <span>Hide completed descendants</span>
-        </label>
+        <div className="related-tasks-filters">
+          <div className="related-tasks-scope-group" role="radiogroup" aria-label="Scope dashboard task list">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={activeFilterMode === 'off'}
+              className={`related-tasks-scope-btn${activeFilterMode === 'off' ? ' related-tasks-scope-btn--active' : ''}`}
+              onClick={() => setMode('off')}
+              data-testid="related-tasks-scope-all"
+            >
+              All tasks
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={activeFilterMode === 'chain'}
+              className={`related-tasks-scope-btn${activeFilterMode === 'chain' ? ' related-tasks-scope-btn--active' : ''}`}
+              onClick={() => setMode('chain')}
+              data-testid="related-tasks-scope-chain"
+            >
+              Show chain
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={activeFilterMode === 'children'}
+              className={`related-tasks-scope-btn${activeFilterMode === 'children' ? ' related-tasks-scope-btn--active' : ''}`}
+              onClick={() => setMode('children')}
+              data-testid="related-tasks-scope-children"
+            >
+              Show children
+            </button>
+          </div>
+          <label className="related-tasks-filter">
+            <input
+              type="checkbox"
+              checked={hideCompleted}
+              onChange={(event) => setHideCompleted(event.target.checked)}
+              data-testid="related-tasks-hide-completed"
+            />
+            <span>Hide completed descendants</span>
+          </label>
+        </div>
       </header>
       {groups.length === 0 ? (
         <p className="related-tasks-empty">No related tasks for this focus.</p>

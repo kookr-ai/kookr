@@ -253,7 +253,12 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
         },
       ),
     } : {}),
-    ...(taskRelations && taskRelations.length > 0 ? { taskRelations } : {}),
+    // Always ship the field (possibly an empty array) when the relation store is
+    // wired: clients use the presence of the field as a signal to overwrite their
+    // sticky cache. Omitting on empty would leave stale edges visible after a
+    // task is deleted, since deletion hard-removes its relations without a
+    // `superseded` transition. See PR #601 review notes.
+    ...(taskRelations !== undefined ? { taskRelations } : {}),
   };
 }
 
