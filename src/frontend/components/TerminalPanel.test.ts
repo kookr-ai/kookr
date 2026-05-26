@@ -598,7 +598,7 @@ describe('TerminalPanel', () => {
     expect(ws.send).not.toHaveBeenCalled();
   });
 
-  test('forwards Enter when Codex composer shows visible draft text after replay', () => {
+  test('captures Enter when replayed Codex output looks like a draft but the local draft is empty', () => {
     const onEmptySubmit = vi.fn();
     act(() => {
       root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
@@ -615,11 +615,11 @@ describe('TerminalPanel', () => {
       terminal.dataHandler?.('\r');
     });
 
-    expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
   });
 
-  test('forwards Enter when Claude composer shows visible draft text after replay', () => {
+  test('captures Enter when replayed Claude output looks like a draft but the local draft is empty', () => {
     const onEmptySubmit = vi.fn();
     act(() => {
       root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
@@ -636,8 +636,29 @@ describe('TerminalPanel', () => {
       terminal.dataHandler?.('\r');
     });
 
-    expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  test('captures Enter when Claude empty prompt is followed by a decorative separator', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: '\r\n────────────────────────\r\n❯ ────────────────────────\r\n  esc to interrupt · ctrl+t to hide tasks\r\n' });
+    });
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
   });
 
   test('captures empty terminal Enter while the agent is streaming', () => {
@@ -714,7 +735,7 @@ describe('TerminalPanel', () => {
     expect(ws.send).toHaveBeenNthCalledWith(2, '\r');
   });
 
-  test('does not treat permission prompts as empty terminal submits', () => {
+  test('captures empty terminal Enter without inspecting permission-looking output', () => {
     const onEmptySubmit = vi.fn();
     act(() => {
       root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
@@ -731,11 +752,11 @@ describe('TerminalPanel', () => {
       terminal.dataHandler?.('\r');
     });
 
-    expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
   });
 
-  test('does not treat shell prompts as empty terminal submits', () => {
+  test('captures empty terminal Enter without inspecting shell-looking output', () => {
     const onEmptySubmit = vi.fn();
     act(() => {
       root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
@@ -752,8 +773,8 @@ describe('TerminalPanel', () => {
       terminal.dataHandler?.('\r');
     });
 
-    expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
   });
 
   // kookr #356 — a multiline paste must be intercepted before xterm streams
@@ -778,6 +799,30 @@ describe('TerminalPanel', () => {
     // Exactly one frame — not one per line.
     expect(ws.send).toHaveBeenCalledTimes(1);
     expect(ws.send).toHaveBeenCalledWith(buildPasteFrame('line1\nline2\nline3'));
+  });
+
+  test('forwards Enter after a multiline safe paste marks the local draft non-empty', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    const xtermContainer = container.querySelector('.terminal-xterm');
+    expect(xtermContainer).not.toBeNull();
+
+    act(() => {
+      dispatchPaste(xtermContainer!, 'line1\nline2');
+    });
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith('\r');
   });
 
   test('leaves a single-line paste on xterm\'s raw byte-transparent path', () => {

@@ -105,6 +105,24 @@ test.describe('Terminal empty Enter navigation', () => {
     await expect.poll(() => selectedFindingName(page), { timeout: 5000 }).not.toBe(firstSelected);
   });
 
+  test('pressing Enter advances when an empty Claude prompt is followed by a separator rule', async ({ page, request }) => {
+    const tmuxA = await launchStoppedTask(page, request, 'Terminal Rule Alpha', '/test/terminal-rule-alpha');
+    await setTerminalContent(request, tmuxA, '\r\n────────────────────────────────────────\r\n❯ ────────────────────────────────────────\r\n  esc to interrupt · ctrl+t to hide tasks\r\n');
+    await launchStoppedTask(page, request, 'Terminal Rule Beta', '/test/terminal-rule-beta');
+    await showAllProjects(page);
+    await expect(page.locator('.finding-card')).toHaveCount(2);
+
+    await page.keyboard.press('Alt+n');
+    const firstSelected = await selectedFindingName(page);
+    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
+    await expect(page.locator('.terminal-xterm')).toContainText('❯');
+    await page.locator('.terminal-xterm').click();
+
+    await page.keyboard.press('Enter');
+
+    await expect.poll(() => selectedFindingName(page), { timeout: 5000 }).not.toBe(firstSelected);
+  });
+
   test('pressing Enter with an empty terminal draft advances while the agent is streaming', async ({ page, request }) => {
     await launchViaUI(page, 'Terminal Streaming Alpha', '/test/terminal-streaming-alpha');
     const tmuxA = await getLatestTmuxName(request);
