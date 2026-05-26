@@ -575,9 +575,11 @@ export class TaskStore {
       existing.lifecycle = input.lifecycle ?? existing.lifecycle;
       existing.updatedAt = nowIso;
       if (inputEvidence.length > 0) {
-        const seen = new Set(existing.evidence.map((e) => `${e.snippet ?? ''}|${e.path ?? ''}`));
+        const evidenceKey = (e: { snippet?: string; path?: string }): string =>
+          JSON.stringify([e.snippet ?? null, e.path ?? null]);
+        const seen = new Set(existing.evidence.map(evidenceKey));
         for (const ev of inputEvidence) {
-          const dedupKey = `${ev.snippet ?? ''}|${ev.path ?? ''}`;
+          const dedupKey = evidenceKey(ev);
           if (seen.has(dedupKey)) continue;
           seen.add(dedupKey);
           existing.evidence.push({ ...ev });
