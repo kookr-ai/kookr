@@ -17,7 +17,7 @@ import type {
   ListTaskSharesApiResponse,
   ResolveTaskShareGrantRequestApiResponse,
   RevokeTaskShareApiResponse,
-} from '../../remote/share-contract.js';
+} from '../../shared/contracts/remote-share.js';
 import {
   RelayShareError,
   TASK_SHARE_DEFAULT_TTL_MS,

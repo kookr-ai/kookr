@@ -45,7 +45,7 @@ import type {
   ShareSessionProjectionV1,
   TaskShareGrant,
   TaskShareMutableGrant,
-} from '../src/remote/share-contract.js';
+} from '../src/shared/contracts/remote-share.js';
 import { InvitationStore, isGuestLinkTaskShare, type InvitationRecord } from './src/invitations/store.js';
 import { buildMemberShareState, type MemberNodeState } from './src/member-state.js';
 import { createPushFanout, type PushDeliveryOutcome, type PushFanout, type PushSender } from './src/push/fanout.js';

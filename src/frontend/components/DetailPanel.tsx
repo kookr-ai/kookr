@@ -12,7 +12,7 @@ import { computeTerminalVisible } from './detail-panel-visibility.js';
 import { isActiveFinding } from '../store/finding-helpers.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
-import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../remote/share-contract.js';
+import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../shared/contracts/remote-share.js';
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import { TaskDependencyEditor } from './TaskDependencyEditor.js';
 import { CoordinatorChainStripView } from './CoordinatorSurfaces.js';

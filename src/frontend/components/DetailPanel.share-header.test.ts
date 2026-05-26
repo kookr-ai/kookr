@@ -4,7 +4,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import type { TaskShareSummary } from '../../remote/share-contract.js';
+import type { TaskShareSummary } from '../../shared/contracts/remote-share.js';
 import type { AgentState } from '../../shared/protocol.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { DetailPanel } from './DetailPanel.js';

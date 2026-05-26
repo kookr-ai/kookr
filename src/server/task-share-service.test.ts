@@ -7,7 +7,7 @@ import { buildPermissionRequestBinding } from '../shared/contracts/permission-re
 import type { RemoteControlEvent } from '../remote/control-events.js';
 import { asGrantId, asNodeEpoch, asNodeId, asPolicyVersion, asSeq, asServerRevision, asSessionEpoch, asSessionId } from '../remote/ids.js';
 import { RemotePolicyCache } from '../remote/policy-cache.js';
-import type { RemoteTaskProjectionEnvelopeV1, TaskShareSummary } from '../remote/share-contract.js';
+import type { RemoteTaskProjectionEnvelopeV1, TaskShareSummary } from '../shared/contracts/remote-share.js';
 import type { RelayShareClient } from './relay-share-client.js';
 import { TaskShareService, type TaskShareServiceOptions } from './task-share-service.js';
 

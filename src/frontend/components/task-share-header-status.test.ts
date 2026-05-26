@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { TaskShareSummary } from '../../remote/share-contract.js';
+import type { TaskShareSummary } from '../../shared/contracts/remote-share.js';
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 
 function share(overrides: Partial<TaskShareSummary> = {}): TaskShareSummary {

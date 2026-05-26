@@ -1,5 +1,5 @@
 import type { NodeId, SessionEpoch, SessionId } from '../../remote/ids.js';
-import type { RemoteTaskProjectionStatus } from '../../remote/share-contract.js';
+import type { RemoteTaskProjectionStatus } from './remote-share.js';
 
 export const SHARED_TASK_ID_PREFIX = 'shared:';
 

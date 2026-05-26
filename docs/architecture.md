@@ -527,7 +527,6 @@ kookr/
 │   │       └── fake-telegram-server.ts    # Test/dev fake server
 │   │
 │   ├── remote/                            # Session-sharing / hosted-relay domain
-│   │   ├── share-contract.ts              # Shared session contract
 │   │   ├── share-policy.ts                # Share/mutation policy
 │   │   ├── grants.ts                      # Access grants
 │   │   ├── handshake.ts                   # Relay handshake

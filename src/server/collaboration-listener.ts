@@ -17,7 +17,7 @@ import {
   type CollaborationSharedTaskUpdate,
   type ListCollaborationSharedTaskUpdatesResponse,
 } from '../shared/contracts/collaboration-share.js';
-import type { RemoteTaskProjectionV1 } from '../remote/share-contract.js';
+import type { RemoteTaskProjectionV1 } from '../shared/contracts/remote-share.js';
 import {
   readPrivateNetworkCollaborationConfig,
   type CollaborationConfigEnv,

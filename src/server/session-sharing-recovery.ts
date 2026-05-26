@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-import type { TaskShareSummary } from '../remote/share-contract.js';
+import type { TaskShareSummary } from '../shared/contracts/remote-share.js';
 import type {
   SessionSharingRecoveryAction,
   SessionSharingRecoveryActionDescriptor,

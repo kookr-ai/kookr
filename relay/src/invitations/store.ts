@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from
 import type { GrantId, NodeId, PolicyVersion } from '../../../src/remote/ids.js';
 import { asGrantId, asPolicyVersion } from '../../../src/remote/ids.js';
 import type { PolicyGrantRecord, ShareGrant, ShareSubject } from '../../../src/remote/policy-sync.js';
-import type { TaskShareGrantRequest, TaskShareMutableGrant } from '../../../src/remote/share-contract.js';
+import type { TaskShareGrantRequest, TaskShareMutableGrant } from '../../../src/shared/contracts/remote-share.js';
 
 export interface InvitationRecord {
   invitationId: string;

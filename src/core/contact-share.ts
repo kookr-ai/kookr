@@ -7,7 +7,7 @@ import type {
   KookrContact,
   SharedTask,
 } from '../shared/contracts/contact-share.js';
-import type { RemoteTaskProjectionV1 } from '../remote/share-contract.js';
+import type { RemoteTaskProjectionV1 } from '../shared/contracts/remote-share.js';
 import {
   isContactShareEnvelope,
   sharedTaskIdForShare,
