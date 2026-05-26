@@ -227,6 +227,12 @@ export function useSpeakAgent(
       return;
     }
 
+    // Retry paths from `suspended` / `error` leave the previous AudioContext
+    // and any armed client timeout in place. Dispose them before starting a
+    // new attempt so we never stack two AudioContexts or have a stale timer
+    // fire against the new request.
+    cleanup();
+
     let ctx: AudioContext;
     try {
       ctx = new AudioContext();
@@ -258,16 +264,21 @@ export function useSpeakAgent(
     const requestStartedAt = nowMs();
     setState({ status: 'generating' });
 
-    // If we never leave `generating` within CLIENT_TIMEOUT_MS, abort the
-    // request and surface a recoverable error. Cleared at every state
-    // transition out of `generating`.
-    timeoutRef.current = setTimeout(() => {
+    // Guard the client timeout: if the user kicks off a new speak (or stops
+    // the hook), `cleanup()` aborts the old `ac` and the next `speak()` clears
+    // `timeoutRef.current`. The callback below verifies the timer is still
+    // the active one *and* the AbortController hasn't been retired before
+    // taking action — that way a stale 20s timer can never sabotage a
+    // subsequent request.
+    const ownTimer = setTimeout(() => {
+      if (timeoutRef.current !== ownTimer || abortRef.current !== ac) return;
       timeoutRef.current = null;
       if (ac.signal.aborted) return;
       logDecision(context, 'audio_context_error', 'timeout_client', { abortedAtPhase: 'generating' });
       cleanup();
       setState({ status: 'error', errorReason: 'timeout-client' });
     }, CLIENT_TIMEOUT_MS);
+    timeoutRef.current = ownTimer;
 
     const verbosity = getSpeakVerbositySnapshot();
     const requestUrl = endpoint ?? `/api/agents/${encodeURIComponent(agentId)}/speak`;
@@ -411,8 +422,12 @@ export function useSpeakAgent(
       currentTimings = playTimings;
 
       // Detect the case where the tab is backgrounded so AudioContext stays
-      // 'suspended' after start() — audio would silently never play.
+      // 'suspended' after start() — audio would silently never play. Clear
+      // the client timeout here so the stale timer can't fire 20s later and
+      // wrongly mark the recovered/retried attempt as a timeout-client
+      // failure (see #624 review Finding 1).
       if (ctx.state !== 'running') {
+        clearClientTimeout();
         const decision = logDecision(context, 'audio_context_suspended', 'audio_context_suspended', {
           audioContextInitialState,
           audioContextFinalState: ctx.state,

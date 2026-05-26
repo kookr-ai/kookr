@@ -44,14 +44,15 @@ interface VerbosityChoice {
   value: VerbosityScale;
   label: string;
   description: string;
-  tooltip: string;
+  /** Approximate spoken duration, shown inline so the hint isn't hover-gated. */
+  lengthHint: string;
 }
 
 const VERBOSITY_CHOICES: readonly VerbosityChoice[] = [
-  { value: 'terse', label: 'Headline', description: 'At-a-glance announcement', tooltip: 'Headline — one short sentence (~2–3 spoken seconds).' },
-  { value: 'brief', label: 'Brief', description: 'One-line subject + context', tooltip: 'Brief — subject plus a clause of context (~3–5 spoken seconds).' },
-  { value: 'medium', label: 'Standard', description: 'Default', tooltip: 'Standard — a couple of spoken lines (~6–10 seconds).' },
-  { value: 'detailed', label: 'Detailed', description: 'Full picture, ~8–10 spoken lines', tooltip: 'Detailed — full picture (~15–25 seconds spoken).' },
+  { value: 'terse', label: 'Headline', description: 'At-a-glance announcement', lengthHint: '(~2–3s spoken)' },
+  { value: 'brief', label: 'Brief', description: 'One-line subject + context', lengthHint: '(~3–5s spoken)' },
+  { value: 'medium', label: 'Standard', description: 'Default', lengthHint: '(~6–10s spoken)' },
+  { value: 'detailed', label: 'Detailed', description: 'Full picture, ~8–10 spoken lines', lengthHint: '(~15–25s spoken)' },
 ];
 
 /** Settings field to scroll-and-focus on open. */
@@ -806,21 +807,16 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                         <span className="settings-toggle-knob" />
                       </button>
                     </div>
-                    <div className="settings-row">
-                      <div className="settings-row-info">
-                        <span className="settings-label">Spoken summary length</span>
+                    <div className="settings-row settings-row-fieldset">
+                      <fieldset className="settings-radio-group">
+                        <legend className="settings-label">Spoken summary length</legend>
                         <span className="settings-desc">
                           Controls how much detail Kookr speaks when you press the per-agent speak
-                          button (or {formatShortcutBinding(resolvedShortcuts.speak_agent)}). The same
-                          rung is sent on every press unless overridden per request.
+                          button (or {formatShortcutBinding(resolvedShortcuts.speak_agent)}).
+                          This applies to every press until you change it here.
                         </span>
-                      </div>
-                      <fieldset
-                        className="settings-radio-group"
-                        aria-label="Spoken summary length"
-                      >
                         {VERBOSITY_CHOICES.map((choice) => (
-                          <label key={choice.value} className="settings-radio-option" title={choice.tooltip}>
+                          <label key={choice.value} className="settings-radio-option">
                             <input
                               type="radio"
                               name="speakVerbosity"
@@ -829,7 +825,9 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                               onChange={() => handleSpeakVerbosityChange(choice.value)}
                             />
                             <span className="settings-radio-label">{choice.label}</span>
-                            <span className="settings-radio-desc">{choice.description}</span>
+                            <span className="settings-radio-desc">
+                              {choice.description} <span className="settings-radio-meta">{choice.lengthHint}</span>
+                            </span>
                           </label>
                         ))}
                       </fieldset>
