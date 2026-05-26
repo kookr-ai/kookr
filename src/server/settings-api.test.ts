@@ -62,6 +62,7 @@ describe('Settings API', () => {
       defaultAgentType: 'claude-code',
       roundRobinIndex: 0,
       shortcutBindings: {},
+      speakVerbosity: 'medium',
       loadedFromDefaults: true,
       warnings: [],
     });

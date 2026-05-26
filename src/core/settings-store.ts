@@ -4,6 +4,10 @@ import {
   validateShortcutBindingOverrides,
   type PlatformShortcutBindingOverrides,
 } from '../shared/contracts/shortcut-bindings.js';
+import type { VerbosityScale } from '../shared/contracts/speech.js';
+
+const VERBOSITY_VALUES: readonly VerbosityScale[] = ['terse', 'brief', 'medium', 'detailed'];
+const DEFAULT_VERBOSITY: VerbosityScale = 'medium';
 
 export interface KookrSettings {
   githubPollingEnabled: boolean;
@@ -29,6 +33,12 @@ export interface KookrSettings {
    * actions use platform defaults; empty/invalid values are ignored.
    */
   shortcutBindings: PlatformShortcutBindingOverrides;
+  /**
+   * Default verbosity level for speak-agent summaries. Out-of-range values
+   * clamp to `'medium'` and emit a warning. Consumed by the speak route's
+   * summarizer (see docs/rfc/rfc-speak-agent-summary-v2.md).
+   */
+  speakVerbosity: VerbosityScale;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -41,6 +51,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   defaultAgentType: DEFAULT_AGENT_TYPE,
   roundRobinIndex: 0,
   shortcutBindings: {},
+  speakVerbosity: DEFAULT_VERBOSITY,
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -102,8 +113,23 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
 
   const shortcutValidation = validateShortcutBindingOverrides(raw.shortcutBindings);
 
+  const verbosityWarnings: string[] = [];
+  let speakVerbosity: VerbosityScale = DEFAULT_VERBOSITY;
+  if (raw.speakVerbosity !== undefined) {
+    if (
+      typeof raw.speakVerbosity === 'string' &&
+      (VERBOSITY_VALUES as readonly string[]).includes(raw.speakVerbosity)
+    ) {
+      speakVerbosity = raw.speakVerbosity as VerbosityScale;
+    } else {
+      verbosityWarnings.push(
+        `Unknown speakVerbosity value ${JSON.stringify(raw.speakVerbosity)}; clamped to "${DEFAULT_VERBOSITY}"`,
+      );
+    }
+  }
+
   return {
-    warnings: shortcutValidation.warnings,
+    warnings: [...shortcutValidation.warnings, ...verbosityWarnings],
     settings: {
       githubPollingEnabled: enabled,
       githubPollingIntervalSec: interval,
@@ -114,6 +140,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       defaultAgentType,
       roundRobinIndex,
       shortcutBindings: shortcutValidation.overrides,
+      speakVerbosity,
     },
   };
 }
