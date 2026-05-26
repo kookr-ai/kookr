@@ -24,6 +24,7 @@ import type {
   CollaborationCapabilities,
   CoordinatorSnapshotState,
   LaunchDependency,
+  TaskRelation,
 } from '../../shared/protocol.js';
 import type {
   ProjectSidebarCatalogEntry,
@@ -126,6 +127,12 @@ export interface TransportSessionSlice {
    */
   maxActiveTasks: number;
   coordinator: CoordinatorSnapshotState | null;
+  /**
+   * Active typed task-relation graph (#599) projected onto the most recent
+   * snapshot (#601). Sticky: snapshots that omit the field don't reset the
+   * cache, because high-frequency event-pipeline broadcasts don't carry it.
+   */
+  taskRelations: TaskRelation[];
 
   handleSnapshot: (
     agents: AgentState[],

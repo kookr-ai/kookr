@@ -21,7 +21,12 @@ export function compareRoutableAgents(
   if (leftChip !== rightChip) return leftChip ? -1 : 1;
 
   if (options.includeSeverity !== false && left.anomaly && right.anomaly) {
-    const bySeverity = SEVERITY_ORDER[left.anomaly.severity] - SEVERITY_ORDER[right.anomaly.severity];
+    // Effective severity bumps the parent up when a child has an urgent
+    // finding (#601). Falls back to the agent's own anomaly severity when no
+    // child bump applies.
+    const leftSeverity = left.effectiveAttentionSeverity ?? left.anomaly.severity;
+    const rightSeverity = right.effectiveAttentionSeverity ?? right.anomaly.severity;
+    const bySeverity = SEVERITY_ORDER[leftSeverity] - SEVERITY_ORDER[rightSeverity];
     if (bySeverity !== 0) return bySeverity;
   }
 
