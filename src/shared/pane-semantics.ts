@@ -63,11 +63,9 @@ function visibleLinesFromTerminalText(text: string): string[] {
 
 // Claude Code's input prompt: ❯ on its own line, often surrounded by horizontal rules.
 const CLAUDE_INPUT_PROMPT_RE = /^❯\s*$/;
-const CLAUDE_COMPOSER_DRAFT_RE = /^❯\s+\S/;
 
 // Codex empty idle composer row.
 const CODEX_INPUT_PROMPT_RE = /^›\s*$/;
-const CODEX_COMPOSER_DRAFT_RE = /^›\s+\S/;
 // Codex composer/footer line that accompanies the idle prompt.
 const CODEX_COMPOSER_FOOTER_RE = /^\s{2}(?:gpt-[\w.-].*|Fast on\s*$|.*Plan mode.*|.*(?:% left|context left).*)$/i;
 
@@ -155,22 +153,6 @@ export function analyzePaneSemantics(paneText: string): PaneSemantics {
   }
 
   return { state: 'unknown', confidence: 'low' };
-}
-
-export function hasVisibleComposerDraft(paneText: string): boolean {
-  const cleanText = stripTerminalControls(paneText);
-  const visibleLines = visibleLinesFromTerminalText(cleanText);
-  const lastLines = visibleLines
-    .map((line) => line.trimEnd())
-    .filter((line) => line.length > 0)
-    .slice(-15);
-
-  for (let i = lastLines.length - 1; i >= Math.max(0, lastLines.length - 5); i--) {
-    if (CLAUDE_COMPOSER_DRAFT_RE.test(lastLines[i]) || CODEX_COMPOSER_DRAFT_RE.test(lastLines[i])) {
-      return true;
-    }
-  }
-  return false;
 }
 
 export function normalizePaneForActivity(paneText: string): string {

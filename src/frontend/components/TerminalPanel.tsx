@@ -8,7 +8,6 @@ import { useKookrStore } from '../store/useStore.js';
 import { registerTerminalSend } from '../terminal-send.js';
 import { isMultilinePaste, buildPasteFrame } from '../terminal-paste.js';
 import { track } from '../telemetry.js';
-import { analyzePaneSemantics, hasVisibleComposerDraft } from '../../shared/pane-semantics.js';
 
 interface Props {
   tmuxName: string | null;
@@ -37,7 +36,6 @@ const CTRL_C = '\u0003';
 const CTRL_U = '\u0015';
 const BACKSPACE = '\b';
 const DELETE = '\u007f';
-const TERMINAL_OUTPUT_TAIL_LIMIT = 20_000;
 
 function getValidatedResize(cols: unknown, rows: unknown): { cols: number; rows: number } | null {
   if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
@@ -59,38 +57,11 @@ function updateTerminalInputDraft(draft: string, data: string): string {
   return next;
 }
 
-function getVisibleTerminalTail(terminal: Terminal): string {
-  try {
-    const buffer = terminal.buffer.active;
-    const start = Math.max(0, buffer.length - 15);
-    const lines: string[] = [];
-    for (let i = start; i < buffer.length; i++) {
-      lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
-    }
-    return lines.join('\n');
-  } catch {
-    return '';
-  }
-}
-
 function shouldHandleEmptyTerminalEnter(
-  terminal: Terminal,
   draft: string,
-  outputTail: string,
   onEmptySubmit?: () => void,
 ): boolean {
-  if (draft.length !== 0 || !onEmptySubmit) return false;
-  const visibleTail = getVisibleTerminalTail(terminal);
-  if (hasVisibleComposerDraft(visibleTail) || hasVisibleComposerDraft(outputTail)) return false;
-
-  const visibleSemantics = analyzePaneSemantics(visibleTail);
-  const outputSemantics = analyzePaneSemantics(outputTail);
-  const disallowedStates = new Set(['permission_dialog', 'shell_prompt']);
-  if (disallowedStates.has(visibleSemantics.state) || disallowedStates.has(outputSemantics.state)) return false;
-
-  // Empty terminal Enter is a navigation shortcut whenever no draft is present.
-  // That keeps rapid task triage reliable even while an agent is streaming.
-  return true;
+  return draft.length === 0 && Boolean(onEmptySubmit);
 }
 
 export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
@@ -102,8 +73,6 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   const wsRef = useRef<WebSocket | null>(null);
   const currentTmuxRef = useRef<string | null>(null);
   const terminalInputDraftRef = useRef('');
-  const terminalOutputTailRef = useRef('');
-  const terminalOutputDecoderRef = useRef(new TextDecoder());
   const onEmptySubmitRef = useRef(onEmptySubmit);
   const searchOpenRef = useRef(false);
   const visibleRef = useRef(visible);
@@ -319,9 +288,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     function handleKeyDownCapture(e: KeyboardEvent) {
       if (e.key !== 'Enter' || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
       if (!shouldHandleEmptyTerminalEnter(
-        terminal,
         terminalInputDraftRef.current,
-        terminalOutputTailRef.current,
         onEmptySubmitRef.current,
       )) {
         return;
@@ -407,6 +374,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
    * paste, instead of raw bytes whose newlines each submit a prompt.
    */
   function sendSafePaste(text: string) {
+    terminalInputDraftRef.current += text;
     sendOverWs(buildPasteFrame(text));
   }
 
@@ -417,6 +385,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
    * misread as a JSON control frame.
    */
   function sendRawPaste(text: string) {
+    terminalInputDraftRef.current = updateTerminalInputDraft(terminalInputDraftRef.current, text);
     sendOverWs(new TextEncoder().encode(text));
   }
 
@@ -467,8 +436,6 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
 
     searchOpenRef.current = false;
     terminalInputDraftRef.current = '';
-    terminalOutputTailRef.current = '';
-    terminalOutputDecoderRef.current = new TextDecoder();
     setSearchOpen(false);
     setSearchTerm('');
     setSearchFound(null);
@@ -524,11 +491,8 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       // legacy TerminalBridge path) pass through unchanged.
       if (event.data instanceof ArrayBuffer) {
         const bytes = new Uint8Array(event.data);
-        terminalOutputTailRef.current = (terminalOutputTailRef.current + terminalOutputDecoderRef.current.decode(bytes, { stream: true }))
-          .slice(-TERMINAL_OUTPUT_TAIL_LIMIT);
         terminal.write(bytes);
       } else {
-        terminalOutputTailRef.current = (terminalOutputTailRef.current + event.data).slice(-TERMINAL_OUTPUT_TAIL_LIMIT);
         terminal.write(event.data);
       }
     };
@@ -553,9 +517,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       if (
         data === '\r'
         && shouldHandleEmptyTerminalEnter(
-          terminal,
           terminalInputDraftRef.current,
-          terminalOutputTailRef.current,
           onEmptySubmitRef.current,
         )
       ) {
