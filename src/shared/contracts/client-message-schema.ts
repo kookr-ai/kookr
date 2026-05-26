@@ -92,6 +92,20 @@ const ClientMessageSchemaImpl = z.union([
   z.object({ type: z.literal('directReply'), agentId: z.string(), input: z.string() }),
   z.object({ type: z.literal('navigate'), agentId: z.string() }),
   z.object({ type: z.literal('getNext') }),
+  z.object({
+    type: z.literal('selectionChanged'),
+    selectedTaskId: z.string().nullable(),
+    selectedSessionId: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal('emptyEnterIntent'),
+    intentId: z.string(),
+    taskId: z.string(),
+    sessionId: z.string(),
+    selectionVersion: z.number().int().nonnegative(),
+    inputStateEpoch: z.string(),
+    observedReadinessVersion: z.number().int().nonnegative(),
+  }),
   z.object({ type: z.literal('skip'), agentId: z.string() }),
   z.object({ type: z.literal('skipAll'), agentIds: z.array(z.string()) }),
   z.object({

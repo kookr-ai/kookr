@@ -25,6 +25,7 @@ import {
   SessionGoneError,
   WriteTimeoutError,
 } from '../adapters/terminal-backend.js';
+import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
 
 class FakeWs {
   public readyState = 1;
@@ -100,6 +101,31 @@ describe('SessionBridge', () => {
     const written = backend.getWrittenBytes('s1');
     expect(written.length).toBeGreaterThan(0);
     expect(Array.from(written[0])).toEqual(Array.from(bytes));
+  });
+
+  it('routes browser terminal input through the terminal input writer port', async () => {
+    const backend = await makeReadySession('s1');
+    const writeInput = vi.fn().mockResolvedValue({ sessionId: 's1', readinessVersion: 1 });
+    const writer: TerminalInputWriterPort = {
+      writeInput,
+      writeInputSequence: vi.fn().mockResolvedValue({ sessionId: 's1', readinessVersion: 1 }),
+    };
+    const ws = new FakeWs();
+    const bridge = new SessionBridge('s1', ws as unknown as never, backend, writer);
+    await bridge.start();
+
+    const bytes = Buffer.from([0x61, 0x0d]);
+    ws.emit('message', bytes, true);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(writeInput).toHaveBeenCalledWith(
+      's1',
+      expect.any(Uint8Array),
+      { reason: 'browser-terminal-input' },
+    );
+    const writtenBytes = writeInput.mock.calls[0][1] as Uint8Array;
+    expect(Array.from(writtenBytes)).toEqual(Array.from(bytes));
+    expect(backend.getWrittenBytes('s1')).toHaveLength(0);
   });
 
   it('routes resize JSON text frames to backend.resize', async () => {

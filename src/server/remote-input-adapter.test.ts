@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ControllerLeaseManager } from '../remote/controller-lease.js';
@@ -17,6 +17,7 @@ import {
   asSessionId,
 } from '../remote/ids.js';
 import { createRemoteInputAdapter, isSubmitMessageRequest, type SubmitMessageCommand } from './remote-input-adapter.js';
+import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
 
 function command(overrides: Partial<SubmitMessageCommand> = {}): SubmitMessageCommand {
   const base = {
@@ -77,6 +78,33 @@ describe('remote input adapter', () => {
     await expect(adapter.submit(command())).resolves.toEqual({ bytesWritten: 17, appendNewline: true });
 
     expect(backend.getWrittenText('s1')).toBe('hello from relay\r');
+  });
+
+  it('routes semantic submitted text through the terminal input writer port', async () => {
+    const writeInput = vi.fn().mockResolvedValue({ sessionId: 's1', readinessVersion: 1 });
+    const writer: TerminalInputWriterPort = {
+      writeInput,
+      writeInputSequence: vi.fn().mockResolvedValue({ sessionId: 's1', readinessVersion: 1 }),
+    };
+    const leases = leaseManager();
+    leases.acquireRemote({
+      sessionId: asSessionId('s1'),
+      sessionEpoch: asSessionEpoch('1'),
+      actorId: asActorId('owner-1'),
+      clientId: asClientId('client-1'),
+      leaseId: asLeaseId('lease-1'),
+    });
+    const adapter = await createRemoteInputAdapter({ terminalInputWriter: writer, leaseManager: leases });
+
+    await expect(adapter.submit(command())).resolves.toEqual({ bytesWritten: 17, appendNewline: true });
+
+    expect(writeInput).toHaveBeenCalledWith(
+      asSessionId('s1'),
+      expect.any(Uint8Array),
+      { reason: 'remote-submit-message' },
+    );
+    const writtenBytes = writeInput.mock.calls[0][1] as Uint8Array;
+    expect(new TextDecoder().decode(writtenBytes)).toBe('hello from relay\r');
   });
 
   it('allows a bare enter semantic submission', async () => {

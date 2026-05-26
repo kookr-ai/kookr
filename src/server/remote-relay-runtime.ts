@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
+import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { BuildInfo } from '../core/build-info.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
@@ -30,6 +31,7 @@ interface RemoteRelayRuntimeDeps {
   serverStartedAt: string;
   buildInfo: BuildInfo;
   terminalBackend: TerminalBackend;
+  terminalInputWriter?: TerminalInputWriterPort;
   taskStore: TaskStore;
   queue: AttentionQueue;
   monitor: Monitor;
@@ -260,6 +262,7 @@ export async function createRemoteRelayRuntime(deps: RemoteRelayRuntimeDeps): Pr
     if (remoteTerminalInputFeatureEnabled({ ...process.env, KOOKR_RELAY_URL: credentials.relayUrl })) {
       const { createRemoteInputAdapter } = await import('./remote-input-adapter.js');
       remoteInputAdapter = await createRemoteInputAdapter({
+        terminalInputWriter: deps.terminalInputWriter,
         terminalBackend: deps.terminalBackend,
         leaseManager: controllerLeaseManager,
         getCurrentSeq: (sessionId, sessionEpoch) => {

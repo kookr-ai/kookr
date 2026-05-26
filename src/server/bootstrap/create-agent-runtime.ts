@@ -5,6 +5,10 @@ import { ClaudeCodeAdapter } from '../../adapters/claude-code-adapter.js';
 import { CodexCliAdapter } from '../../adapters/codex-cli-adapter.js';
 import { RoutingAgentAdapter } from '../../adapters/routing-agent-adapter.js';
 import type { TerminalBackend } from '../../adapters/terminal-backend.js';
+import {
+  asTerminalInputWriterPort,
+  type TerminalInputWriterPort,
+} from '../../core/ports/terminal-input-writer-port.js';
 import type { TaskStore } from '../../core/tasks.js';
 import {
   runAdapterPreflights,
@@ -14,6 +18,7 @@ import {
 
 export interface AgentRuntimeDeps {
   terminalBackend: TerminalBackend;
+  terminalInputWriter?: TerminalInputWriterPort;
   taskStore: TaskStore;
   hooksDir: string;
   settingsDir: string;
@@ -35,7 +40,9 @@ export interface AgentRuntime {
 }
 
 export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentRuntime> {
+  const terminalInputWriter = deps.terminalInputWriter ?? asTerminalInputWriterPort(deps.terminalBackend);
   const claudeCodeAdapter = new ClaudeCodeAdapter(deps.terminalBackend, deps.taskStore, {
+    terminalInputWriter,
     hooksDir: deps.hooksDir,
     settingsDir: deps.settingsDir,
     writeFile: (path, content) => writeFile(path, content, 'utf-8'),
@@ -45,6 +52,7 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     kookrDataDir: deps.kookrDir,
   });
   const codexCliAdapter = new CodexCliAdapter(deps.terminalBackend, deps.taskStore, {
+    terminalInputWriter,
     hooksDir: deps.hooksDir,
     settingsDir: deps.settingsDir,
     writeFile: (path, content) => writeFile(path, content, 'utf-8'),

@@ -31,6 +31,8 @@ import type { WorkspaceAttemptRepository } from '../core/workspace-attempt-repos
 import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
 import { createSnapshotMessage, getProjectSummaries } from './use-cases/get-snapshot.js';
+import type { DashboardSelectionController } from './dashboard-selection-controller.js';
+import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 
 export interface WsConnectionDeps {
   taskStore: TaskStore;
@@ -91,6 +93,8 @@ export interface WsConnectionDeps {
   takePredeleteSnapshot?: () => Promise<void>;
   /** Persistent store for user-flagged supervisor FP/FN cases (offline analysis). */
   supervisorFeedbackCaseStore?: import('./supervisor-feedback-case-store.js').SupervisorFeedbackCaseStore;
+  selectionController?: DashboardSelectionController;
+  terminalInputCoordinator?: TerminalInputCoordinator;
 }
 
 /**
@@ -113,6 +117,8 @@ export function handleWsConnection(
   } = deps;
 
   clients.add(ws);
+  const connectionId = Math.random().toString(36).slice(2);
+  deps.selectionController?.registerConnection(connectionId);
 
   const router = new MessageRouter({
     taskStore, queue, monitor, adapter,
@@ -146,6 +152,9 @@ export function handleWsConnection(
     projectConfigStore,
     broadcastProjectSummaries,
     supervisorFeedbackCaseStore: deps.supervisorFeedbackCaseStore,
+    connectionId,
+    selectionController: deps.selectionController,
+    terminalInputCoordinator: deps.terminalInputCoordinator,
   });
 
   // Send initial snapshot
@@ -269,6 +278,7 @@ export function handleWsConnection(
             },
             getMaxActiveTasks: deps.getMaxActiveTasks,
             relationTaskStore: taskStore,
+            terminalInputSnapshots: deps.terminalInputCoordinator,
           }));
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
@@ -349,6 +359,7 @@ export function handleWsConnection(
         },
         getMaxActiveTasks: deps.getMaxActiveTasks,
         relationTaskStore: taskStore,
+        terminalInputSnapshots: deps.terminalInputCoordinator,
       }));
       broadcastProjectSummaries();
     } catch (err) {
@@ -358,5 +369,6 @@ export function handleWsConnection(
 
   ws.on('close', () => {
     clients.delete(ws);
+    deps.selectionController?.unregisterConnection(connectionId);
   });
 }

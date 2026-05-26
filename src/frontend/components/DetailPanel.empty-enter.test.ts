@@ -132,6 +132,50 @@ describe('DetailPanel empty Enter behavior', () => {
     });
   });
 
+  test('sends an empty-enter intent when a server terminal-input snapshot is present', () => {
+    const agent = {
+      ...makeAgent('agent-1', null),
+      terminalInputSnapshot: {
+        sessionId: 'agent-1',
+        taskId: 'task-agent-1',
+        inputStateEpoch: 'epoch-1',
+        readinessVersion: 42,
+        promptReady: true,
+      },
+    };
+    useKookrStore.setState({
+      agents: [agent],
+      selectedAgentId: agent.agentId,
+      dashboardSelection: {
+        selectedTaskId: agent.taskId!,
+        selectedSessionId: agent.agentId,
+        selectionVersion: 7,
+      },
+    });
+    const sent: ClientMessage[] = [];
+    root = renderDetailPanel(container, agent, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+
+    const terminalSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
+    act(() => {
+      terminalSubmit!.click();
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: 'emptyEnterIntent',
+      taskId: agent.taskId,
+      sessionId: agent.agentId,
+      selectionVersion: 7,
+      inputStateEpoch: 'epoch-1',
+      observedReadinessVersion: 42,
+    });
+    expect(sent[0]).toHaveProperty('intentId');
+    expect(useKookrStore.getState().selectedAgentId).toBe(agent.agentId);
+  });
+
   test('treats whitespace-only input as empty when skipping with Enter', () => {
     const first = makeAgent('agent-1', {
       agentId: 'agent-1',

@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { TerminalBackend } from './terminal-backend.js';
+import {
+  asTerminalInputWriterPort,
+  type TerminalInputWriterPort,
+} from '../core/ports/terminal-input-writer-port.js';
 import type { TaskStore } from '../core/tasks.js';
 import type {
   AgentEvent,
@@ -58,6 +62,7 @@ const CODEX_HOOK_SUBSCRIPTIONS = [
 ] as const;
 
 export interface CodexCliAdapterOptions {
+  terminalInputWriter?: TerminalInputWriterPort;
   hooksDir?: string;
   settingsDir?: string;
   writeFile?: (path: string, content: string) => Promise<void>;
@@ -156,12 +161,14 @@ export class CodexCliAdapter implements AgentAdapter {
   private promptFileSupportProbe?: Promise<boolean>;
   private warnedAboutMissingPromptFileSupport = false;
   private probeExec?: ProbeExecRunner;
+  private inputWriter: TerminalInputWriterPort;
 
   constructor(
     private backend: TerminalBackend,
     private taskStore: TaskStore,
     options?: CodexCliAdapterOptions,
   ) {
+    this.inputWriter = options?.terminalInputWriter ?? asTerminalInputWriterPort(backend);
     this.hooksDir = options?.hooksDir ?? '~/.kookr/hooks';
     this.settingsDir = options?.settingsDir ?? '~/.kookr/settings';
     this.writeFile = options?.writeFile;
@@ -388,11 +395,11 @@ export class CodexCliAdapter implements AgentAdapter {
     // as paste and NOT submitting. `writeSequence` keeps the two-syscall
     // split under one mutex acquisition, so concurrent writers can't
     // interleave but Codex's heuristic still sees two distinct writes.
-    await this.backend.writeSequence(tmuxName, [textEncoder.encode(text), ENTER_BYTES]);
+    await this.inputWriter.writeInputSequence(tmuxName, [textEncoder.encode(text), ENTER_BYTES], { reason: 'adapter-send-input' });
   }
 
   async sendKeystroke(tmuxName: string, key: string): Promise<void> {
-    await this.backend.write(tmuxName, translateKeystroke(key));
+    await this.inputWriter.writeInput(tmuxName, translateKeystroke(key), { reason: 'adapter-send-keystroke' });
   }
 
   async stop(tmuxName: string): Promise<void> {

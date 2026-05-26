@@ -19,6 +19,10 @@ import type { TaskCompletionFeedback, TaskPriorityUpdate } from './task.js';
 import type { TaskRelation } from './task-relations.js';
 import type { TelemetryEvent } from './telemetry.js';
 import type {
+  EmptyEnterIntentRequest,
+  EmptyEnterDecision,
+} from '../terminal-input-contract.js';
+import type {
   WorkspaceView,
   CleanupResultSummary,
   CleanupCandidateDetail,
@@ -212,6 +216,13 @@ export type ServerMessage =
   | { type: 'suggestion'; agentId: string; suggestionId?: string; suggestions: string[]; quickActions: QuickAction[] }
   | { type: 'projectSummaries'; projects: ProjectSummary[] }
   | { type: 'coordinator.snapshot'; coordinator: CoordinatorSnapshotState }
+  | {
+      type: 'dashboardSelection';
+      selectedTaskId: string | null;
+      selectedSessionId: string | null;
+      selectionVersion: number;
+    }
+  | { type: 'emptyEnterDecision'; decision: EmptyEnterDecision }
   | { type: 'contributionWarning'; project: string; message: string; severity: 'approaching' | 'exceeded' }
   | { type: 'achievement:unlocked'; id: string; name: string; emoji: string; description: string; unlockedAt: string }
   | { type: 'achievement:reset:ack'; success: boolean; error?: string }
@@ -255,6 +266,12 @@ export type ClientMessage =
   | { type: 'directReply'; agentId: string; input: string }
   | { type: 'navigate'; agentId: string }
   | { type: 'getNext' }
+  | {
+      type: 'selectionChanged';
+      selectedTaskId: string | null;
+      selectedSessionId: string | null;
+    }
+  | EmptyEnterIntentRequest
   | { type: 'skip'; agentId: string }
   | { type: 'skipAll'; agentIds: string[] }
   | { type: 'snooze'; agentId: string; taskId?: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }

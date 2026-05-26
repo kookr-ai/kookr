@@ -85,6 +85,7 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
     totalSpendUsd: 0,
     maxActiveTasks: 0,
     coordinator: null,
+    dashboardSelection: { selectedTaskId: null, selectedSessionId: null, selectionVersion: 0 },
     taskRelations: [],
     relationFilter: { mode: 'off', rootTaskId: null },
     setRelationFilter: (filter) => set(() => ({ relationFilter: filter })),
@@ -141,6 +142,15 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
 
     setConnected: (connected) => {
       set({ connected });
+    },
+
+    handleDashboardSelection: (selection) => {
+      set({
+        dashboardSelection: selection,
+        ...(selection.selectedSessionId !== undefined
+          ? { selectedAgentId: selection.selectedSessionId, selectedAgentSource: 'manual' as const }
+          : {}),
+      });
     },
 
     setTerminalOutput: (agentId, output) => {

@@ -280,7 +280,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     typeof window !== 'undefined' ? window.innerWidth <= NARROW_DETAIL_BREAKPOINT_PX : false,
   );
   const inputRef = useRef<HTMLInputElement>(null);
-  const { selectAgent, nextBottleneck, nextTask, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
+  const { selectAgent, nextBottleneck, nextTask, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts, dashboardSelection } = useKookrStore();
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
 
   // Right-pane mode for the Activity+Terminal|Diff split.
@@ -635,23 +635,30 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   }
 
   function handleEmptyEnterAdvance() {
-    if (!agent) return;
-    if (agent.anomaly) {
-      handleSkip('empty_enter');
+    const snapshot = agent?.terminalInputSnapshot;
+    if (!agent?.taskId || !snapshot) {
+      if (!agent) return;
+      if (agent.anomaly) {
+        handleSkip('empty_enter');
+        return;
+      }
+      const { agents } = useKookrStore.getState();
+      const hasFinding = agents.some(isActiveFinding);
+      track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'input_focused' });
+      if (hasFinding) nextBottleneck();
+      else nextTask();
       return;
     }
-    // Healthy task: nothing to skip on the server. Jump to the next active
-    // finding when one exists, otherwise advance through the unified task list.
-    // Predicate mirrors nextBottleneck/nextTask — both use isActiveFinding so
-    // pending and terminal-status tasks are excluded from navigation.
-    const { agents } = useKookrStore.getState();
-    const hasFinding = agents.some(isActiveFinding);
     track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'input_focused' });
-    if (hasFinding) {
-      nextBottleneck();
-    } else {
-      nextTask();
-    }
+    send({
+      type: 'emptyEnterIntent',
+      intentId: crypto.randomUUID(),
+      taskId: agent.taskId,
+      sessionId: agent.agentId,
+      selectionVersion: dashboardSelection.selectionVersion,
+      inputStateEpoch: snapshot.inputStateEpoch,
+      observedReadinessVersion: snapshot.readinessVersion,
+    });
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {

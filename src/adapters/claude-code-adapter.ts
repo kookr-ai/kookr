@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import type { TerminalBackend } from './terminal-backend.js';
+import {
+  asTerminalInputWriterPort,
+  type TerminalInputWriterPort,
+} from '../core/ports/terminal-input-writer-port.js';
 import type { TaskStore } from '../core/tasks.js';
 import type {
   AgentEvent,
@@ -51,6 +55,7 @@ export interface HookSettings {
 }
 
 export interface ClaudeCodeAdapterOptions {
+  terminalInputWriter?: TerminalInputWriterPort;
   hooksDir?: string;
   settingsDir?: string;
   /** Write a file to disk. Injected so tests can skip real I/O. */
@@ -169,12 +174,14 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private promptBracketedPaste: boolean;
   private promptSubmitConfirmTimeoutMs?: number;
   private promptSubmitRetries?: number;
+  private inputWriter: TerminalInputWriterPort;
 
   constructor(
     private backend: TerminalBackend,
     private taskStore: TaskStore,
     options?: ClaudeCodeAdapterOptions,
   ) {
+    this.inputWriter = options?.terminalInputWriter ?? asTerminalInputWriterPort(backend);
     this.hooksDir = options?.hooksDir ?? '~/.kookr/hooks';
     this.settingsDir = options?.settingsDir ?? '~/.kookr/settings';
     this.writeFile = options?.writeFile;
@@ -305,6 +312,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         // trailing Enter as a keystroke, not paste content. See
         // deliverInitialPromptToSession.
         await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+          inputWriter: this.inputWriter,
           bracketedPaste: this.promptBracketedPaste,
           waitForReady: this.promptBracketedPaste,
           awaitSubmit: this.promptBracketedPaste
@@ -349,15 +357,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
   /** Send developer input (text + Enter) to an agent's session. */
   async sendInput(tmuxName: string, text: string): Promise<void> {
-    await this.backend.writeSequence(tmuxName, [
+    await this.inputWriter.writeInputSequence(tmuxName, [
       textEncoder.encode(text),
       ENTER_BYTES,
-    ]);
+    ], { reason: 'adapter-send-input' });
   }
 
   /** Send a single keystroke without trailing Enter (for permission prompts). */
   async sendKeystroke(tmuxName: string, key: string): Promise<void> {
-    await this.backend.write(tmuxName, translateKeystroke(key));
+    await this.inputWriter.writeInput(tmuxName, translateKeystroke(key), { reason: 'adapter-send-keystroke' });
   }
 
   /** Stop an agent by killing its session. */

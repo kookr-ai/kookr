@@ -5,6 +5,10 @@ import type { Hono } from 'hono';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import type { TerminalBackend } from '../../adapters/terminal-backend.js';
+import {
+  asTerminalInputWriterPort,
+  type TerminalInputWriterPort,
+} from '../../core/ports/terminal-input-writer-port.js';
 import { HOOK_EVENTS, LOAD_BEARING_HOOKS } from '../../core/hook-spec.js';
 import { handleTerminalInput, handleTerminalKeystroke, type TerminalInputDeps } from '../agent-lifecycle.js';
 import { FakeTerminalBridge } from '../fake-terminal-bridge.js';
@@ -17,6 +21,7 @@ export interface HttpAndWebSocketsDeps {
   tasksFile: string;
   hooksDir: string;
   terminalBackend: TerminalBackend;
+  terminalInputWriter?: TerminalInputWriterPort;
   terminalDeps: TerminalInputDeps;
   useFakeTerminalBridge?: boolean;
   onLocalTerminalActivity?: (sessionId: string) => void;
@@ -35,6 +40,7 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   const httpServer = createServer(requestListener);
   const wss = new WebSocketServer({ noServer: true });
   const terminalWss = new WebSocketServer({ noServer: true });
+  const terminalInputWriter = deps.terminalInputWriter ?? asTerminalInputWriterPort(deps.terminalBackend);
 
   httpServer.on('upgrade', (req: IncomingMessage, socket, head) => {
     const url = req.url ?? '';
@@ -79,6 +85,7 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
         sessionName,
         ws,
         deps.terminalBackend,
+        terminalInputWriter,
         (id) => {
           deps.onLocalTerminalActivity?.(id);
           handleTerminalInput(deps.terminalDeps, id);

@@ -127,6 +127,11 @@ export interface TransportSessionSlice {
    */
   maxActiveTasks: number;
   coordinator: CoordinatorSnapshotState | null;
+  dashboardSelection: {
+    selectedTaskId: string | null;
+    selectedSessionId: string | null;
+    selectionVersion: number;
+  };
   /**
    * Active typed task-relation graph (#599) projected onto the most recent
    * snapshot (#601). Sticky: snapshots that omit the field don't reset the
@@ -171,6 +176,11 @@ export interface TransportSessionSlice {
     capabilities?: Partial<Record<LaunchDependency, HostCapability>>,
   ) => void;
   setConnected: (connected: boolean) => void;
+  handleDashboardSelection: (selection: {
+    selectedTaskId: string | null;
+    selectedSessionId: string | null;
+    selectionVersion: number;
+  }) => void;
   setTerminalOutput: (agentId: string, output: string) => void;
   setPlaybooksLoading: (loading: boolean) => void;
   setActiveSTTInput: (id: string | null) => void;

@@ -3,6 +3,10 @@ import { join, resolve } from 'node:path';
 import type { TaskStore } from '../core/tasks.js';
 import { ENTER_BYTES } from './keystroke.js';
 import type { SessionId, TerminalBackend } from './terminal-backend.js';
+import {
+  asTerminalInputWriterPort,
+  type TerminalInputWriterPort,
+} from '../core/ports/terminal-input-writer-port.js';
 
 const promptEncoder = new TextEncoder();
 const promptDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -178,6 +182,7 @@ export async function buildAgentLaunchContext(
 }
 
 export interface DeliverInitialPromptOptions {
+  inputWriter?: TerminalInputWriterPort;
   /**
    * When true, wrap the prompt body in ANSI bracketed-paste markers and
    * deliver the submitting Enter as a separate write after the closing
@@ -345,12 +350,13 @@ export async function deliverInitialPromptToSession(
   prompt: string,
   options?: DeliverInitialPromptOptions,
 ): Promise<void> {
+  const inputWriter = options?.inputWriter ?? asTerminalInputWriterPort(backend);
   if (!options?.bracketedPaste) {
     // Legacy path: prompt chunks + Enter under one mutex acquisition. The
     // delivery path is chosen solely by `options.bracketedPaste`; the
     // `submitDelayMs` / `sleep` options do not apply here.
     const chunks = chunkPromptBytes(promptEncoder.encode(prompt));
-    await backend.writeSequence(sessionId, [...chunks, ENTER_BYTES]);
+    await inputWriter.writeInputSequence(sessionId, [...chunks, ENTER_BYTES], { reason: 'launch-prompt' });
     return;
   }
 
@@ -373,9 +379,9 @@ export async function deliverInitialPromptToSession(
   }
   // Deliver the body wrapped in paste markers, then send Enter as its own
   // write so it is parsed as a keystroke, not paste content.
-  await backend.writeSequence(sessionId, [PASTE_START, ...chunks, PASTE_END]);
+  await inputWriter.writeInputSequence(sessionId, [PASTE_START, ...chunks, PASTE_END], { reason: 'launch-prompt-paste' });
   await sleep(submitDelayMs);
-  await backend.write(sessionId, ENTER_BYTES);
+  await inputWriter.writeInput(sessionId, ENTER_BYTES, { reason: 'launch-prompt-enter' });
 
   // Closed-loop confirmation: if the caller wired an `awaitSubmit` predicate
   // (the adapter does this via the `UserPromptSubmit` hook), wait for the
@@ -401,7 +407,7 @@ export async function deliverInitialPromptToSession(
       if (attempt === submitRetries) return;
       const capture = await backend.captureBytes(sessionId);
       if (isClaudeBusyOrResponding(capture)) return;
-      await backend.write(sessionId, ENTER_BYTES);
+      await inputWriter.writeInput(sessionId, ENTER_BYTES, { reason: 'launch-prompt-retry-enter' });
     }
   }
 }
