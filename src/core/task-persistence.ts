@@ -7,6 +7,12 @@ import type { TaskStore } from './tasks.js';
 import type { PersistedSuppressionEntry } from './snooze-suppression.js';
 import { normalizeAgentType } from './agent-types.js';
 import { atomicWriteFile } from './persistence-utils.js';
+import {
+  isTaskRelationLifecycle,
+  isTaskRelationSource,
+  isTaskRelationType,
+  type TaskRelation,
+} from '../shared/contracts/task-relations.js';
 
 export class CorruptTaskFileError extends Error {
   constructor(filePath: string, cause?: unknown) {
@@ -24,6 +30,8 @@ interface TaskFileEnvelope {
   snoozes?: PersistedSnooze[];
   snoozedFindings?: LegacyPersistedSnooze[];
   suppressionState?: PersistedSuppressionEntry[];
+  /** Typed task-relation graph (issue #599). Absent envelopes pre-#599 deserialize to an empty graph. */
+  relations?: TaskRelation[];
 }
 
 /**
@@ -37,6 +45,7 @@ export async function saveTasks(
   lifetimeSpendUsd?: number,
   snoozes?: PersistedSnooze[],
   suppressionState?: PersistedSuppressionEntry[],
+  relations?: TaskRelation[],
 ): Promise<void> {
   const envelope: TaskFileEnvelope = {
     version: 2,
@@ -48,6 +57,9 @@ export async function saveTasks(
   }
   if (suppressionState && suppressionState.length > 0) {
     envelope.suppressionState = suppressionState;
+  }
+  if (relations && relations.length > 0) {
+    envelope.relations = relations;
   }
   await atomicWriteFile(filePath, JSON.stringify(envelope, null, 2));
 }
@@ -207,8 +219,9 @@ export async function saveTasksWithSnapshotPolicy(
   lifetimeSpendUsd?: number,
   snoozes?: PersistedSnooze[],
   suppressionState?: PersistedSuppressionEntry[],
+  relations?: TaskRelation[],
 ): Promise<void> {
-  await saveTasks(tasks, filePath, lifetimeSpendUsd, snoozes, suppressionState);
+  await saveTasks(tasks, filePath, lifetimeSpendUsd, snoozes, suppressionState, relations);
   switch (policy) {
     case 'daily':
       await applyDailySnapshot(filePath);
@@ -229,6 +242,8 @@ export interface LoadTasksResult {
   snoozes?: PersistedSnooze[];
   snoozedFindings?: LegacyPersistedSnooze[];
   suppressionState?: PersistedSuppressionEntry[];
+  /** Validated relations. Empty array when the file pre-dates #599 or has no relations. */
+  relations?: TaskRelation[];
 }
 
 /**
@@ -252,6 +267,7 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
     let snoozes: PersistedSnooze[] | undefined;
     let snoozedFindings: LegacyPersistedSnooze[] | undefined;
     let suppressionState: PersistedSuppressionEntry[] | undefined;
+    let relations: TaskRelation[] | undefined;
     if (Array.isArray(parsed)) {
       // v1 format: plain array of tasks
       tasks = parsed as Task[];
@@ -262,6 +278,7 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
       snoozes = parsed.snoozes ?? [];
       snoozedFindings = parsed.snoozedFindings ?? [];
       suppressionState = parsed.suppressionState;
+      relations = normalizePersistedRelations(parsed.relations);
     } else {
       throw new Error('Unexpected task file format');
     }
@@ -276,10 +293,64 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
         session.createdAt = new Date(session.createdAt);
       }
     }
-    return { tasks, lifetimeSpendUsd, snoozes, snoozedFindings, suppressionState };
+    return { tasks, lifetimeSpendUsd, snoozes, snoozedFindings, suppressionState, relations };
   } catch (err) {
     throw new CorruptTaskFileError(filePath, err);
   }
+}
+
+/**
+ * Validate persisted task relations on read. Anything that doesn't satisfy
+ * the contract is dropped silently — we'd rather lose a malformed inferred
+ * edge than refuse to start with a corrupt task store. Returns undefined
+ * when no relations key was present (legacy file).
+ */
+function normalizePersistedRelations(raw: unknown): TaskRelation[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) return [];
+  const out: TaskRelation[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Partial<TaskRelation>;
+    if (
+      typeof r.id !== 'string'
+      || typeof r.sourceTaskId !== 'string'
+      || typeof r.targetTaskId !== 'string'
+      || !isTaskRelationType(r.type)
+      || typeof r.confidence !== 'number'
+      || !Number.isFinite(r.confidence)
+      || r.confidence < 0
+      || r.confidence > 1
+      || !isTaskRelationSource(r.source)
+      || typeof r.createdAt !== 'string'
+      || typeof r.updatedAt !== 'string'
+      || !isTaskRelationLifecycle(r.lifecycle)
+    ) {
+      continue;
+    }
+    const evidence = Array.isArray(r.evidence) ? r.evidence : [];
+    out.push({
+      id: r.id,
+      sourceTaskId: r.sourceTaskId,
+      targetTaskId: r.targetTaskId,
+      type: r.type,
+      confidence: r.confidence,
+      source: r.source,
+      evidence: evidence
+        .filter((e): e is { snippet?: string; path?: string; observedAt: string } => (
+          !!e && typeof e === 'object' && typeof (e as { observedAt?: unknown }).observedAt === 'string'
+        ))
+        .map((e) => ({
+          ...(typeof e.snippet === 'string' ? { snippet: e.snippet } : {}),
+          ...(typeof e.path === 'string' ? { path: e.path } : {}),
+          observedAt: e.observedAt,
+        })),
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      lifecycle: r.lifecycle,
+    });
+  }
+  return out;
 }
 
 /**

@@ -11,6 +11,22 @@ import type {
   Task,
   TaskCompletionFeedback,
 } from './task-read-model.js';
+import {
+  DETERMINISTIC_RELATION_CONFIDENCE,
+  taskRelationKey,
+  type TaskRelation,
+  type TaskRelationInput,
+  type TaskRelationType,
+} from '../shared/contracts/task-relations.js';
+
+export type {
+  TaskRelation,
+  TaskRelationEvidence,
+  TaskRelationInput,
+  TaskRelationLifecycle,
+  TaskRelationSource,
+  TaskRelationType,
+} from '../shared/contracts/task-relations.js';
 
 export type {
   BurnedOutTarget,
@@ -76,6 +92,14 @@ function cloneTask(task: Task): Task {
 
 export class TaskStore {
   private tasks = new Map<string, Task>();
+  /**
+   * Typed task-relation graph (issue #599). Keyed by
+   * {@link taskRelationKey}`(source, target, type)` so dedup is a single map
+   * lookup. The deterministic `parentTaskId` field on Task is the source of
+   * truth for parent linkage; the relation graph is a parallel store that
+   * detectors and inference can append to without ever mutating that field.
+   */
+  private relations = new Map<string, TaskRelation>();
   /** Monotonically increasing lifetime spending counter (USD). Survives task deletion. */
   private lifetimeSpendUsd: number = 0;
 
@@ -148,6 +172,23 @@ export class TaskStore {
       }
       parent.childTaskIds.push(task.id);
       parent.updatedAt = new Date();
+
+      // Issue #599 acceptance criterion: a deterministic parentTaskId launch
+      // also records a high-confidence `spawned_by` edge in the relation
+      // graph. Source is 'api' because every parent-bearing createTask call
+      // ultimately originates from the launch API surface (HTTP, kookr-spawn,
+      // or programmatic). The parent pointer itself is unchanged.
+      this.upsertRelation({
+        sourceTaskId: task.id,
+        targetTaskId: parentTaskId,
+        type: 'spawned_by',
+        confidence: DETERMINISTIC_RELATION_CONFIDENCE,
+        source: 'api',
+        evidence: [{
+          snippet: `parentTaskId set on createTask for ${task.id}`,
+          observedAt: now.toISOString(),
+        }],
+      });
     }
 
     return cloneTask(task);
@@ -230,6 +271,12 @@ export class TaskStore {
       }
     }
     this.tasks.delete(id);
+    // Drop any relation that references the deleted task on either side.
+    for (const [key, rel] of this.relations) {
+      if (rel.sourceTaskId === id || rel.targetTaskId === id) {
+        this.relations.delete(key);
+      }
+    }
   }
 
   /** Count tasks that are actively running (inProgress with live sessions). */
@@ -500,6 +547,90 @@ export class TaskStore {
   /** Get all tasks as an array (for serialization) */
   getAllTasks(): Task[] {
     return Array.from(this.tasks.values()).map(cloneTask);
+  }
+
+  /**
+   * Upsert a typed relation. Returns the resulting record. Dedup key is
+   * `(sourceTaskId, targetTaskId, type)`: if a record already exists under
+   * that key, the input updates its `confidence`, `source`, `lifecycle` and
+   * extends `evidence` (each evidence entry deduped on `snippet|path`), and
+   * bumps `updatedAt`. `id` and `createdAt` are preserved.
+   *
+   * Existence of source/target tasks is NOT validated — callers may record a
+   * relation that points to a task they have not yet stored (used by detectors
+   * working from external state).
+   */
+  upsertRelation(input: TaskRelationInput): TaskRelation {
+    if (!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) {
+      throw new Error(`relation confidence must be in [0, 1], got ${input.confidence}`);
+    }
+    const key = taskRelationKey(input.sourceTaskId, input.targetTaskId, input.type);
+    const nowIso = new Date().toISOString();
+    const inputEvidence = input.evidence ?? [];
+    const existing = this.relations.get(key);
+
+    if (existing) {
+      existing.confidence = input.confidence;
+      existing.source = input.source;
+      existing.lifecycle = input.lifecycle ?? existing.lifecycle;
+      existing.updatedAt = nowIso;
+      if (inputEvidence.length > 0) {
+        const seen = new Set(existing.evidence.map((e) => `${e.snippet ?? ''}|${e.path ?? ''}`));
+        for (const ev of inputEvidence) {
+          const dedupKey = `${ev.snippet ?? ''}|${ev.path ?? ''}`;
+          if (seen.has(dedupKey)) continue;
+          seen.add(dedupKey);
+          existing.evidence.push({ ...ev });
+        }
+      }
+      return structuredClone(existing) as TaskRelation;
+    }
+
+    const record: TaskRelation = {
+      id: randomUUID(),
+      sourceTaskId: input.sourceTaskId,
+      targetTaskId: input.targetTaskId,
+      type: input.type,
+      confidence: input.confidence,
+      source: input.source,
+      evidence: inputEvidence.map((e) => ({ ...e })),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      lifecycle: input.lifecycle ?? 'active',
+    };
+    this.relations.set(key, record);
+    return structuredClone(record) as TaskRelation;
+  }
+
+  /** Return all stored relations. Snapshot copies; safe to mutate. */
+  listRelations(filter?: {
+    sourceTaskId?: string;
+    targetTaskId?: string;
+    type?: TaskRelationType;
+    taskId?: string;
+  }): TaskRelation[] {
+    const out: TaskRelation[] = [];
+    for (const rel of this.relations.values()) {
+      if (filter?.sourceTaskId && rel.sourceTaskId !== filter.sourceTaskId) continue;
+      if (filter?.targetTaskId && rel.targetTaskId !== filter.targetTaskId) continue;
+      if (filter?.type && rel.type !== filter.type) continue;
+      if (filter?.taskId && rel.sourceTaskId !== filter.taskId && rel.targetTaskId !== filter.taskId) continue;
+      out.push(structuredClone(rel) as TaskRelation);
+    }
+    return out;
+  }
+
+  /**
+   * Bulk-replace the relation set, e.g. on persistence load. Records are
+   * accepted as-is (after a key dedup pass); callers MUST have already
+   * validated/normalized them.
+   */
+  loadRelations(relations: TaskRelation[]): void {
+    this.relations.clear();
+    for (const rel of relations) {
+      const key = taskRelationKey(rel.sourceTaskId, rel.targetTaskId, rel.type);
+      this.relations.set(key, structuredClone(rel) as TaskRelation);
+    }
   }
 
   /** Load tasks from an array (for deserialization) */
