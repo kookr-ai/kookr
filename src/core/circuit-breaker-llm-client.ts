@@ -28,6 +28,10 @@ export class CircuitBreakerLlmClient implements LlmClient {
         console.warn(`[llm] Circuit breaker open — skipping LLM call`);
         return null;
       }
+      // Abort must escape the outer wrapper — otherwise the route-level
+      // cancellation guarantee (rfc-speak-agent-summary-v2 R8 / D18) is
+      // silently nullified here.
+      if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
       // The inner call failed and the breaker recorded it. Return null to match
       // the existing LlmClient contract (null = failure).
       return null;

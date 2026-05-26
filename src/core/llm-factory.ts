@@ -28,12 +28,22 @@ export class FallbackLlmClient implements LlmClient {
 
   async complete(request: LlmCompletionRequest): Promise<string | null> {
     for (const client of this.clients) {
+      // Re-check between providers so an abort that fired during the previous
+      // attempt does not silently retry on the next provider. See R8 in
+      // rfc-speak-agent-summary-v2 — the route's cancellation guarantee
+      // depends on this loop short-circuiting.
+      if (request.signal?.aborted) {
+        const err = new Error('Request aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
       try {
         const result = await client.complete(request);
         if (result !== null) return result;
         // null means the provider returned empty — try next
         console.warn(`[llm] ${client.provider} (${client.model}) returned empty response, trying next provider`);
       } catch (err) {
+        if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
         console.warn(
           `[llm] ${client.provider} (${client.model}) failed: ${err instanceof Error ? err.message : err}, trying next provider`,
         );

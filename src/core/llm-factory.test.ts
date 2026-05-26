@@ -327,6 +327,50 @@ describe('createLlmClient', () => {
   });
 });
 
+describe('FallbackLlmClient.complete abort propagation', () => {
+  function client(provider: string, impl: () => Promise<string | null>) {
+    return { provider, model: `${provider}-model`, complete: vi.fn().mockImplementation(impl) };
+  }
+
+  test('re-throws AbortError instead of advancing to the next provider', async () => {
+    const abortErr = Object.assign(new Error('abort'), { name: 'AbortError' });
+    const a = client('a', async () => { throw abortErr; });
+    const b = client('b', async () => 'should not happen');
+    const fb = new FallbackLlmClient([a, b]);
+    await expect(fb.complete({ maxTokens: 10, userMessage: 'hi' })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(b.complete).not.toHaveBeenCalled();
+  });
+
+  test('honors an already-aborted signal before the first provider runs', async () => {
+    const a = client('a', async () => 'ignored');
+    const fb = new FallbackLlmClient([a]);
+    const ctrl = new AbortController();
+    ctrl.abort();
+    await expect(fb.complete({ maxTokens: 10, userMessage: 'hi', signal: ctrl.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(a.complete).not.toHaveBeenCalled();
+  });
+
+  test('aborts between providers when the signal fires mid-loop', async () => {
+    const ctrl = new AbortController();
+    const a = client('a', async () => {
+      ctrl.abort();
+      return null;
+    });
+    const b = client('b', async () => 'should not run');
+    const fb = new FallbackLlmClient([a, b]);
+    await expect(fb.complete({ maxTokens: 10, userMessage: 'hi', signal: ctrl.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(b.complete).not.toHaveBeenCalled();
+  });
+
+  test('non-abort errors still advance to the next provider', async () => {
+    const a = client('a', async () => { throw new Error('boom'); });
+    const b = client('b', async () => 'final answer');
+    const fb = new FallbackLlmClient([a, b]);
+    await expect(fb.complete({ maxTokens: 10, userMessage: 'hi' })).resolves.toBe('final answer');
+    expect(b.complete).toHaveBeenCalledOnce();
+  });
+});
+
 describe('readLlmProvider', () => {
   const original = process.env.KOOKR_LLM_PROVIDER;
   afterEach(() => {
