@@ -48,32 +48,6 @@ function isTerminalTaskStatus(status: TaskStatus | undefined): boolean {
   return status !== undefined && isTerminalStatus(status);
 }
 
-/**
- * Server-derived "Claude/Codex is idle at the empty input prompt" signal,
- * coherent with the agent's current `tmuxName` because both come from the
- * same React render. The TerminalPanel uses this to dispatch empty-Enter
- * during the brief window after a session switch where the terminal buffer
- * hasn't repainted yet and the local pane-pattern scan would otherwise miss
- * the prompt and forward `\r` to the new PTY.
- *
- * Only `completed_turn` and `waiting_for_input` qualify — those are the two
- * states where Claude is sitting at the empty prompt. `running` / `blocked`
- * / `unknown` / undefined fall through to the local buffer scan.
- *
- * `permission_blocked` is the only anomaly type the hint suppresses: those
- * findings show an Allow/Deny dialog that requires an explicit choice, so
- * Enter must never silently advance past them. (`turnState` for a permission
- * request is `blocked` and would already disqualify, but the explicit guard
- * is defense-in-depth against a server-side race where the anomaly outlives
- * the `permission_request` event.) Other anomaly types are safe to advance
- * past because `handleEmptyEnterAdvance` routes them all through
- * `handleSkip`, which is the documented empty-Enter behavior.
- */
-function isAgentIdleAtPrompt(agent: AgentState): boolean {
-  if (agent.anomaly?.type === 'permission_blocked') return false;
-  return agent.turnState === 'completed_turn' || agent.turnState === 'waiting_for_input';
-}
-
 function agentProjectLabel(agent: AgentState): string {
   return agent.projectDisplayLabel ?? projectLabel(agent.cwd);
 }
@@ -280,7 +254,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     typeof window !== 'undefined' ? window.innerWidth <= NARROW_DETAIL_BREAKPOINT_PX : false,
   );
   const inputRef = useRef<HTMLInputElement>(null);
-  const { selectAgent, nextBottleneck, nextTask, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts, dashboardSelection } = useKookrStore();
+  const { selectAgent, nextBottleneck, nextTask, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
 
   // Right-pane mode for the Activity+Terminal|Diff split.
@@ -635,30 +609,19 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   }
 
   function handleEmptyEnterAdvance() {
-    const snapshot = agent?.terminalInputSnapshot;
-    if (!agent?.taskId || !snapshot) {
-      if (!agent) return;
-      if (agent.anomaly) {
-        handleSkip('empty_enter');
-        return;
-      }
-      const { agents } = useKookrStore.getState();
-      const hasFinding = agents.some(isActiveFinding);
-      track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'input_focused' });
-      if (hasFinding) nextBottleneck();
-      else nextTask();
+    if (!agent) return;
+    if (agent.anomaly) {
+      handleSkip('empty_enter');
       return;
     }
+    // Local dashboard navigation must not depend on terminal readiness. The
+    // server-side terminal-input coordinator can lag until an idle notification
+    // arrives, which made empty Enter appear to work once and then stall.
+    const { agents } = useKookrStore.getState();
+    const hasFinding = agents.some(isActiveFinding);
     track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'input_focused' });
-    send({
-      type: 'emptyEnterIntent',
-      intentId: crypto.randomUUID(),
-      taskId: agent.taskId,
-      sessionId: agent.agentId,
-      selectionVersion: dashboardSelection.selectionVersion,
-      inputStateEpoch: snapshot.inputStateEpoch,
-      observedReadinessVersion: snapshot.readinessVersion,
-    });
+    if (hasFinding) nextBottleneck();
+    else nextTask();
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -979,7 +942,6 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                         tmuxName={agent.agentId}
                         visible={terminalVisible}
                         onEmptySubmit={handleEmptyEnterAdvance}
-                        agentPromptReady={isAgentIdleAtPrompt(agent)}
                       />
                     </Suspense>
                   </div>

@@ -13,11 +13,10 @@ vi.mock('../telemetry.js', () => ({ track: vi.fn(), trackClick: vi.fn() }));
 vi.mock('./ActivityPanel.js', () => ({ ActivityPanel: () => React.createElement('div', { 'data-testid': 'activity-panel' }) }));
 vi.mock('./GitHubPanel.js', () => ({ GitHubPanel: () => React.createElement('div', { 'data-testid': 'github-panel' }) }));
 vi.mock('./TerminalPanel.js', () => ({
-  TerminalPanel: ({ onEmptySubmit, agentPromptReady }: { onEmptySubmit?: () => void; agentPromptReady?: boolean }) => React.createElement(
+  TerminalPanel: ({ onEmptySubmit }: { onEmptySubmit?: () => void }) => React.createElement(
     'button',
     {
       'data-testid': 'terminal-empty-submit',
-      'data-agent-prompt-ready': agentPromptReady ? 'true' : 'false',
       onClick: onEmptySubmit,
     },
     'terminal',
@@ -132,7 +131,7 @@ describe('DetailPanel empty Enter behavior', () => {
     });
   });
 
-  test('sends an empty-enter intent when a server terminal-input snapshot is present', () => {
+  test('terminal-input snapshot does not block immediate local empty Enter navigation', () => {
     const agent = {
       ...makeAgent('agent-1', null),
       terminalInputSnapshot: {
@@ -143,8 +142,9 @@ describe('DetailPanel empty Enter behavior', () => {
         promptReady: true,
       },
     };
+    const second = makeAgent('agent-2', null);
     useKookrStore.setState({
-      agents: [agent],
+      agents: [agent, second],
       selectedAgentId: agent.agentId,
       dashboardSelection: {
         selectedTaskId: agent.taskId!,
@@ -163,17 +163,14 @@ describe('DetailPanel empty Enter behavior', () => {
       terminalSubmit!.click();
     });
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({
-      type: 'emptyEnterIntent',
-      taskId: agent.taskId,
-      sessionId: agent.agentId,
-      selectionVersion: 7,
-      inputStateEpoch: 'epoch-1',
-      observedReadinessVersion: 42,
+    expect(sent).toEqual([]);
+    expect(useKookrStore.getState().selectedAgentId).toBe(second.agentId);
+    expect(track).toHaveBeenCalledWith({
+      type: 'shortcut_used',
+      key: 'Enter',
+      action: 'advance_empty_input',
+      context: 'input_focused',
     });
-    expect(sent[0]).toHaveProperty('intentId');
-    expect(useKookrStore.getState().selectedAgentId).toBe(agent.agentId);
   });
 
   test('treats whitespace-only input as empty when skipping with Enter', () => {
@@ -448,93 +445,6 @@ describe('DetailPanel empty Enter behavior', () => {
     expect(useKookrStore.getState().selectedAgentId).toBe(healthy.agentId);
   });
 
-  test('passes agentPromptReady=true to TerminalPanel when turnState is completed_turn', () => {
-    // The terminal needs a coherent React-prop hint to dispatch empty-Enter
-    // during the brief window after a session switch where the buffer hasn't
-    // repainted yet. completed_turn is the canonical "Claude is idle at the
-    // empty prompt awaiting follow-up" signal.
-    const idle = makeAgent('agent-idle', null);
-    idle.turnState = 'completed_turn';
-    useKookrStore.setState({ agents: [idle], selectedAgentId: idle.agentId });
-    root = renderDetailPanel(container, idle, () => true);
-
-    const terminalSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
-    expect(terminalSubmit?.dataset.agentPromptReady).toBe('true');
-  });
-
-  test('passes agentPromptReady=true to TerminalPanel when turnState is waiting_for_input', () => {
-    const waiting = makeAgent('agent-waiting', null);
-    waiting.turnState = 'waiting_for_input';
-    useKookrStore.setState({ agents: [waiting], selectedAgentId: waiting.agentId });
-    root = renderDetailPanel(container, waiting, () => true);
-
-    const terminalSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
-    expect(terminalSubmit?.dataset.agentPromptReady).toBe('true');
-  });
-
-  test('passes agentPromptReady=false to TerminalPanel when turnState is running', () => {
-    // Claude is actively streaming — Enter at the terminal must NOT be
-    // interpreted as advance regardless of any buffer-scan misfire.
-    const running = makeAgent('agent-running', null);
-    running.turnState = 'running';
-    useKookrStore.setState({ agents: [running], selectedAgentId: running.agentId });
-    root = renderDetailPanel(container, running, () => true);
-
-    const terminalSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
-    expect(terminalSubmit?.dataset.agentPromptReady).toBe('false');
-  });
-
-  test('passes agentPromptReady=false to TerminalPanel when turnState is blocked', () => {
-    // `blocked` covers non-permission hard-blocks (api_error stops, etc.).
-    // The hint must stay false so the buffer scan owns the decision.
-    const blocked = makeAgent('agent-blocked-turn', null);
-    blocked.turnState = 'blocked';
-    useKookrStore.setState({ agents: [blocked], selectedAgentId: blocked.agentId });
-    root = renderDetailPanel(container, blocked, () => true);
-
-    const terminalSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
-    expect(terminalSubmit?.dataset.agentPromptReady).toBe('false');
-  });
-
-  test('passes agentPromptReady=false to TerminalPanel when turnState is unknown or absent', () => {
-    // Pinning the default branch — synthetic pending/terminal entries have
-    // no turnState, and `unknown` is the explicit "no events yet" placeholder.
-    // Both must fall through to the local buffer scan rather than override.
-    const noState = makeAgent('agent-no-state', null);
-    useKookrStore.setState({ agents: [noState], selectedAgentId: noState.agentId });
-    root = renderDetailPanel(container, noState, () => true);
-    const noStateSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
-    expect(noStateSubmit?.dataset.agentPromptReady).toBe('false');
-
-    const unknown = makeAgent('agent-unknown', null);
-    unknown.turnState = 'unknown';
-    useKookrStore.setState({ agents: [unknown], selectedAgentId: unknown.agentId });
-    act(() => root?.unmount());
-    root = renderDetailPanel(container, unknown, () => true);
-    const unknownSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
-    expect(unknownSubmit?.dataset.agentPromptReady).toBe('false');
-  });
-
-  test('passes agentPromptReady=false to TerminalPanel when anomaly is permission_blocked', () => {
-    // Permission dialog needs an explicit Allow/Deny choice — empty-Enter
-    // must not silently advance past it. The buffer scan already returns
-    // false for permission dialogs; the React hint mirrors that policy so
-    // the two signals can't disagree and let a misfire through.
-    const blocked = makeAgent('agent-blocked', {
-      agentId: 'agent-blocked',
-      type: 'permission_blocked',
-      severity: 'warning',
-      explanation: 'awaiting choice',
-      detectedAt: new Date('2026-05-24T16:00:00.000Z'),
-    });
-    blocked.turnState = 'waiting_for_input';
-    useKookrStore.setState({ agents: [blocked], selectedAgentId: blocked.agentId });
-    root = renderDetailPanel(container, blocked, () => true);
-
-    const terminalSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
-    expect(terminalSubmit?.dataset.agentPromptReady).toBe('false');
-  });
-
   test('terminal empty-submit callback uses the same empty Enter advance path', () => {
     const first = makeAgent('agent-1', {
       agentId: 'agent-1',
@@ -570,6 +480,32 @@ describe('DetailPanel empty Enter behavior', () => {
       agentId: 'agent-1',
       anomalyType: 'needs_input',
       method: 'empty_enter',
+    });
+  });
+
+  test('terminal empty-submit callback advances from a healthy running task', () => {
+    const first = makeAgent('agent-1', null);
+    const second = makeAgent('agent-2', null);
+    useKookrStore.setState({ agents: [first, second], selectedAgentId: first.agentId });
+    const sent: ClientMessage[] = [];
+    root = renderDetailPanel(container, first, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+
+    const terminalSubmit = container.querySelector<HTMLButtonElement>('[data-testid="terminal-empty-submit"]');
+    expect(terminalSubmit).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      terminalSubmit!.click();
+    });
+
+    expect(sent).toEqual([]);
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
+    expect(track).toHaveBeenCalledWith({
+      type: 'shortcut_used',
+      key: 'Enter',
+      action: 'advance_empty_input',
+      context: 'input_focused',
     });
   });
 });
