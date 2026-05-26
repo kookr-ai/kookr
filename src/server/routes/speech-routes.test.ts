@@ -286,16 +286,13 @@ describe('POST /api/agents/:agentId/speak', () => {
     expect(body.requestId).toBe('req-fixed');
   });
 
-  test('legacy /api/findings/:agentId/speak alias routes to the same handler', async () => {
+  test('legacy /api/findings/:agentId/speak alias is removed', async () => {
     const cache = fakeCache({
       result: { text: 'Refactor auth. needs approval.', audioBase64: 'AUDIO', mimeType: 'audio/wav', durationMs: 1, usedFallback: false, fallbackReason: null, llmMs: 0, ttsMs: 0 },
     });
     const app = mkApp({ agents: [fakeAgent()], cache, ttsUrl: 'http://tts' });
     const res = await app.request('/api/findings/agent-1/speak', { method: 'POST' });
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.audioBase64).toBe('AUDIO');
-    expect(body.requestId).toBe('req-fixed');
+    expect(res.status).toBe(404);
   });
 });
 

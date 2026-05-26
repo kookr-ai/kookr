@@ -4,7 +4,7 @@ import {
   formatSpeakFindingTimingTitle,
 } from '../speech-presentation.js';
 
-describe('speak finding timing formatting', () => {
+describe('speak agent timing formatting', () => {
   test('shows generation, synthesis, decode, and audio timing', () => {
     expect(formatSpeakFindingTimingLine({
       llmMs: 1234,

@@ -36,6 +36,8 @@ import {
   resolveShortcutBindings,
   type PlatformShortcutBindingOverrides,
 } from '../shared/contracts/shortcut-bindings.js';
+import type { VerbosityScale } from '../shared/contracts/speech.js';
+import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { buildBugReportBundle } from './bug-report-bundle.js';
 import { getBugReportAlerts, getBugReportWireObservations } from './bug-report-recorder.js';
@@ -173,8 +175,10 @@ export function App() {
     let cancelled = false;
     fetch('/api/settings')
       .then((r) => r.json())
-      .then((settings: { shortcutBindings?: PlatformShortcutBindingOverrides }) => {
-        if (!cancelled) setShortcutOverrides(settings.shortcutBindings ?? {});
+      .then((settings: { shortcutBindings?: PlatformShortcutBindingOverrides; speakVerbosity?: VerbosityScale }) => {
+        if (cancelled) return;
+        setShortcutOverrides(settings.shortcutBindings ?? {});
+        setSpeakVerbositySnapshot(settings.speakVerbosity);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -358,7 +362,7 @@ export function App() {
           replyInput.focus();
         }
       }
-      if (matchesShortcutAction(e, shortcutBindings, 'speak_finding')) {
+      if (matchesShortcutAction(e, shortcutBindings, 'speak_agent')) {
         // Skip when the user is typing into any editable field so the keystroke
         // reaches the input. .closest covers <input>/<textarea> as well as
         // contenteditable subtrees (rich composers, code editors).
@@ -369,11 +373,11 @@ export function App() {
           (focused?.isContentEditable ?? false);
         if (!inEditable) {
           const state = useKookrStore.getState();
-          const speakButton = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-testid="speak-finding-button"]'))
+          const speakButton = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-testid="speak-button"]'))
             .find((button) => button.dataset.agentId === state.selectedAgentId) ?? null;
           if (speakButton && !speakButton.disabled) {
             e.preventDefault();
-            track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.speak_finding), action: 'speak_finding', context: 'global' });
+            track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.speak_agent), action: 'speak_agent', context: 'global' });
             speakButton.click();
           }
         }
@@ -903,7 +907,10 @@ export function App() {
           <SettingsDialog
             onClose={() => { setShowSettings(false); setSettingsFocus(undefined); }}
             focusField={settingsFocus}
-            onSettingsSaved={(settings) => setShortcutOverrides(settings.shortcutBindings ?? {})}
+            onSettingsSaved={(settings) => {
+              setShortcutOverrides(settings.shortcutBindings ?? {});
+              setSpeakVerbositySnapshot(settings.speakVerbosity);
+            }}
           />
         </Suspense>
       )}

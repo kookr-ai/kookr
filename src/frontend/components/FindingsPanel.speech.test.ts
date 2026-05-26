@@ -104,7 +104,7 @@ function renderPanel(
   return root;
 }
 
-describe('FindingsPanel speak finding control', () => {
+describe('FindingsPanel speak agent control', () => {
   let container: HTMLDivElement;
   let root: Root | null;
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -166,7 +166,7 @@ describe('FindingsPanel speak finding control', () => {
     root = renderPanel(container, [makeFinding()]);
 
     const card = container.querySelector('.finding-card');
-    const button = card?.querySelector<HTMLButtonElement>('[data-testid="speak-finding-button"]');
+    const button = card?.querySelector<HTMLButtonElement>('[data-testid="speak-button"]');
 
     expect(button).toBeTruthy();
     expect(button?.dataset.agentId).toBe('agent-1');
@@ -177,7 +177,7 @@ describe('FindingsPanel speak finding control', () => {
     root = renderPanel(container, [makeFinding()], 'agent-1');
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-testid="speak-finding-button"]')!.click();
+      container.querySelector<HTMLButtonElement>('[data-testid="speak-button"]')!.click();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -187,7 +187,7 @@ describe('FindingsPanel speak finding control', () => {
     }));
     expect(fakeSources).toHaveLength(1);
     expect(fakeSources[0].start).toHaveBeenCalledOnce();
-    expect(container.querySelector<HTMLButtonElement>('[data-testid="speak-finding-button"]')?.getAttribute('aria-label'))
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="speak-button"]')?.getAttribute('aria-label'))
       .toBe('Stop spoken task summary for Some task');
     expect(container.querySelector('.finding-speech-timing')?.textContent)
       .toContain('LLM 1.2s');
@@ -198,7 +198,7 @@ describe('FindingsPanel speak finding control', () => {
     root = renderPanel(container, [makeFinding()], 'agent-1');
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-testid="speak-finding-button"]')!.click();
+      container.querySelector<HTMLButtonElement>('[data-testid="speak-button"]')!.click();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -207,7 +207,7 @@ describe('FindingsPanel speak finding control', () => {
     expect(fakeAudioContexts[0].resume).toHaveBeenCalledOnce();
     expect(fakeSources).toHaveLength(1);
     expect(fakeSources[0].start).toHaveBeenCalledOnce();
-    expect(container.querySelector<HTMLButtonElement>('[data-testid="speak-finding-button"]')?.getAttribute('aria-label'))
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="speak-button"]')?.getAttribute('aria-label'))
       .toBe('Stop spoken task summary for Some task');
   });
 
@@ -271,7 +271,7 @@ describe('FindingsPanel speak finding control', () => {
     await act(async () => { await Promise.resolve(); });
 
     const selectedCard = container.querySelector('.finding-card.selected');
-    const button = selectedCard?.querySelector<HTMLButtonElement>('[data-testid="speak-finding-button"]');
+    const button = selectedCard?.querySelector<HTMLButtonElement>('[data-testid="speak-button"]');
 
     expect(selectedCard).toBeTruthy();
     expect(button?.dataset.agentId).toBe('agent-2');

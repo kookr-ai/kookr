@@ -10,6 +10,7 @@ import {
   type PlatformShortcutBindingOverrides,
   type ShortcutActionId,
 } from '../../shared/contracts/shortcut-bindings.js';
+import type { VerbosityScale } from '../../shared/contracts/speech.js';
 import { useSoundPreference } from '../audio/sound.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
@@ -34,9 +35,24 @@ interface ServerSettings {
   maxActiveTasks: number;
   defaultAgentType: AgentSelection;
   shortcutBindings: PlatformShortcutBindingOverrides;
+  speakVerbosity?: VerbosityScale;
   loadedFromDefaults?: boolean;
   warnings?: string[];
 }
+
+interface VerbosityChoice {
+  value: VerbosityScale;
+  label: string;
+  description: string;
+  tooltip: string;
+}
+
+const VERBOSITY_CHOICES: readonly VerbosityChoice[] = [
+  { value: 'terse', label: 'Headline', description: 'At-a-glance announcement', tooltip: 'Headline — one short sentence (~2–3 spoken seconds).' },
+  { value: 'brief', label: 'Brief', description: 'One-line subject + context', tooltip: 'Brief — subject plus a clause of context (~3–5 spoken seconds).' },
+  { value: 'medium', label: 'Standard', description: 'Default', tooltip: 'Standard — a couple of spoken lines (~6–10 seconds).' },
+  { value: 'detailed', label: 'Detailed', description: 'Full picture, ~8–10 spoken lines', tooltip: 'Detailed — full picture (~15–25 seconds spoken).' },
+];
 
 /** Settings field to scroll-and-focus on open. */
 export type SettingsFocusField = 'maxActiveTasks' | 'relayConnection';
@@ -632,6 +648,13 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     void saveSettings(updated);
   }
 
+  function handleSpeakVerbosityChange(value: VerbosityScale) {
+    if (!settings) return;
+    const updated = { ...settings, speakVerbosity: value };
+    setSettings(updated);
+    void saveSettings(updated);
+  }
+
   function handleSoundToggle() {
     sound.setEnabled(!sound.enabled);
   }
@@ -782,6 +805,34 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                       >
                         <span className="settings-toggle-knob" />
                       </button>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Spoken summary length</span>
+                        <span className="settings-desc">
+                          Controls how much detail Kookr speaks when you press the per-agent speak
+                          button (or {formatShortcutBinding(resolvedShortcuts.speak_agent)}). The same
+                          rung is sent on every press unless overridden per request.
+                        </span>
+                      </div>
+                      <fieldset
+                        className="settings-radio-group"
+                        aria-label="Spoken summary length"
+                      >
+                        {VERBOSITY_CHOICES.map((choice) => (
+                          <label key={choice.value} className="settings-radio-option" title={choice.tooltip}>
+                            <input
+                              type="radio"
+                              name="speakVerbosity"
+                              value={choice.value}
+                              checked={(settings.speakVerbosity ?? 'medium') === choice.value}
+                              onChange={() => handleSpeakVerbosityChange(choice.value)}
+                            />
+                            <span className="settings-radio-label">{choice.label}</span>
+                            <span className="settings-radio-desc">{choice.description}</span>
+                          </label>
+                        ))}
+                      </fieldset>
                     </div>
                   </div>
 
