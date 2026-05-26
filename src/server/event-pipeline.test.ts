@@ -75,6 +75,7 @@ function createMockDeps(): {
       findTaskBySession: vi.fn().mockReturnValue(null),
       updateSession: vi.fn(),
       listTasks: vi.fn().mockReturnValue([]),
+      listRelations: vi.fn().mockReturnValue([]),
     } as any,
     tokenTracker: {
       register: vi.fn(),

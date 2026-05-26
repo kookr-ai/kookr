@@ -24,6 +24,7 @@ export function registerCoordinatorRoutes(app: Hono, deps: CoordinatorRouteDeps)
       serverCwd,
       activityMetaProvider: hookIngestion,
       coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
+      relationTaskStore: taskStore,
     }));
   }
 

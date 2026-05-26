@@ -27,6 +27,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       serverCwd,
       activityMetaProvider: hookIngestion,
       coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
+      relationTaskStore: taskStore,
     }));
   }
 
@@ -59,7 +60,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     }
 
     const updated = taskStore.renameTask(id, body.name);
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
     return c.json({ ok: true, task: updated });
   });
 
@@ -164,7 +165,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         return c.json({ task, duplicate: true }, 200);
       }
 
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({ ...task, ...(queued ? { queued: true } : {}) }, 201);
     } catch (err) {
       if (isLaunchDependencyValidationError(err)) {
@@ -197,7 +198,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         activityLedger: deps.activityLedger,
         hookIngestion: deps.hookIngestion,
       }, id);
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

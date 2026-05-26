@@ -66,6 +66,18 @@ export type {
   TTSCapability,
 } from './contracts/speech.js';
 export type { TaskCompletionFeedback } from './contracts/task.js';
+export type {
+  TaskRelation,
+  TaskRelationEvidence,
+  TaskRelationLifecycle,
+  TaskRelationRollup,
+  TaskRelationSource,
+  TaskRelationType,
+} from './contracts/task-relations.js';
+export {
+  DETERMINISTIC_RELATION_CONFIDENCE,
+  HIGH_CONFIDENCE_RELATION_THRESHOLD,
+} from './contracts/task-relations.js';
 export type { TurnState } from './contracts/task-status.js';
 export { TELEMETRY_EVENT_TYPES } from './contracts/telemetry.js';
 export type { TelemetryEvent, TelemetryEventType } from './contracts/telemetry.js';

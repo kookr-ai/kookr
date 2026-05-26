@@ -141,7 +141,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     const result = await ralphLoopService.modifyBurnedTargets(id, { remove: remove as string[], clear });
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
     }
     return c.json({ ok: true, burnedOutTargets: result.value });
   });
@@ -155,7 +155,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     const result = ralphLoopService.cancelLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
     }
     return c.json({ ok: true, status: result.value });
   });
@@ -169,7 +169,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     const result = ralphLoopService.completeLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
     }
     return c.json({ ok: true, status: result.value });
   });
@@ -189,7 +189,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
 
     const result = await ralphLoopService.updatePrompt(task, body.prompt);
     if (!result.ok) return c.json(result.body, result.status);
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
     return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
   });
 
@@ -202,7 +202,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     const result = ralphLoopService.pauseLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
     }
     return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
   });
@@ -216,7 +216,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     const result = await ralphLoopService.resumeLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
     }
     return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
   });
@@ -250,7 +250,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
         scope,
       });
 
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({ ...result.task, ...(result.queued ? { queued: true } : {}) }, 201);
     } catch (err) {
       return ralphLaunchErrorResponse(c, err);
@@ -333,7 +333,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
         scope,
       });
 
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json(
         {
           ...result.task,

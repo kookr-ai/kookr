@@ -1,10 +1,11 @@
 import type { AgentType } from './agent-types.js';
 import type { AgentEvent } from './agent-events.js';
 import type { AgentActivityMeta } from './hook-events.js';
-import type { Anomaly, FindingEvidenceAuditRecord } from './anomalies.js';
+import type { Anomaly, AnomalySeverity, FindingEvidenceAuditRecord } from './anomalies.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { RalphLoopState, TaskCompletionFeedback, TaskDependencyEdge, TaskLaunchHealthSummary, TaskPriority } from './task.js';
 import type { TaskStatus, TurnState } from './task-status.js';
+import type { TaskRelationRollup } from './task-relations.js';
 import type { TokenUsage } from './usage.js';
 import type { WorktreeHealth } from './session.js';
 
@@ -57,4 +58,23 @@ export interface AgentState {
    * fresh activity arrived between cache hit and TTS playback.
    */
   lastEventSeq?: number;
+  /**
+   * Per-parent rollup of child task state. Populated by the snapshot builder
+   * (#601) when this agent's task has at least one active child relation. The
+   * rollup is derived from the typed relation graph (#599) joined with live
+   * agent state at projection time — the parent's persisted anomaly is never
+   * mutated. Frontend uses the rollup for the parent-row pill and the
+   * "show children" filter.
+   */
+  childRollup?: TaskRelationRollup;
+  /**
+   * Derived severity used for attention ranking. When a child task carries an
+   * active anomaly more severe than the parent's own (or the parent has no
+   * own anomaly at all), the snapshot builder sets this to the child's
+   * severity so the parent surfaces alongside its child without inheriting
+   * the child's actionable state. Equal to `anomaly.severity` when no child
+   * is more severe. Absent when the parent has no own anomaly and no child
+   * finding to bump from.
+   */
+  effectiveAttentionSeverity?: AnomalySeverity;
 }

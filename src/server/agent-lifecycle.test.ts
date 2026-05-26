@@ -735,6 +735,7 @@ function makePromotionDeps(overrides: Partial<PromotionDeps> = {}): PromotionDep
       getActiveCount: vi.fn().mockReturnValue(0),
       getNextPending: vi.fn().mockReturnValue(undefined),
       cancelTask: vi.fn(),
+      listRelations: vi.fn().mockReturnValue([]),
     } as any,
     adapterRegistry: createAdapterRegistry(adapter),
     lifecycleDeps: makeDeps(),
@@ -860,6 +861,7 @@ describe('promotePendingTasks', () => {
       getNextPending: vi.fn().mockReturnValue(stuckTask), // always returns same task
       getTask: vi.fn().mockReturnValue(stuckTask),
       cancelTask: vi.fn(),
+      listRelations: vi.fn().mockReturnValue([]),
     };
     const lifecycleDeps = makeDeps();
     (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);

@@ -72,7 +72,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
   } = deps;
 
   const broadcastSnapshot = () => {
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: deps.hookIngestion }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: deps.hookIngestion, relationTaskStore: taskStore }));
   };
   const publishTaskProjection = (taskId: string) => {
     deps.taskShareService?.publishTaskProjectionForTask(taskId);

@@ -115,7 +115,7 @@ export function registerAgentRoutes(app: Hono, deps: AgentRouteDeps): void {
         interactionLog,
       }, agentId, body.input);
 
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion }));
+      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, ...(deps.taskStore ? { relationTaskStore: deps.taskStore } : {}) }));
       return c.json({ ok: true, agentId, delivered: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

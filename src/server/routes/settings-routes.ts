@@ -35,6 +35,7 @@ export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
         sttUrl: deps.sttUrl,
         activityMetaProvider: deps.hookIngestion,
         getMaxActiveTasks: deps.getMaxActiveTasks,
+        relationTaskStore: deps.taskStore,
       }));
       // Return what the server actually committed, not `validated`: the update
       // path overrides server-managed fields (e.g. roundRobinIndex) that the

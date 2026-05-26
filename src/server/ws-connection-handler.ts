@@ -268,6 +268,7 @@ export function handleWsConnection(
               suppressions: deps.coordinatorSuppressions,
             },
             getMaxActiveTasks: deps.getMaxActiveTasks,
+            relationTaskStore: taskStore,
           }));
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
@@ -347,6 +348,7 @@ export function handleWsConnection(
           suppressions: deps.coordinatorSuppressions,
         },
         getMaxActiveTasks: deps.getMaxActiveTasks,
+        relationTaskStore: taskStore,
       }));
       broadcastProjectSummaries();
     } catch (err) {

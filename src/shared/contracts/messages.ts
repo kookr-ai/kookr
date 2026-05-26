@@ -16,6 +16,7 @@ import type { ScheduleResponse, ScheduleStatusSnapshot } from './schedule.js';
 import type { CollaborationCapabilities } from './speech.js';
 import type { CoordinatorSnapshotState } from './coordinator.js';
 import type { TaskCompletionFeedback, TaskPriorityUpdate } from './task.js';
+import type { TaskRelation } from './task-relations.js';
 import type { TelemetryEvent } from './telemetry.js';
 import type {
   WorkspaceView,
@@ -144,6 +145,14 @@ export type SnapshotMessage = {
    */
   maxActiveTasks?: number;
   coordinator?: CoordinatorSnapshotState;
+  /**
+   * Typed task-relation graph projection (#601). Includes every `active`
+   * relation in a flat array keyed by `(sourceTaskId, targetTaskId, type)`.
+   * Frontend uses it to render the "Related tasks" detail section, the
+   * evidence panel, and inferred-vs-deterministic styling. Omitted when no
+   * relations exist or the snapshot builder was not wired with a task store.
+   */
+  taskRelations?: TaskRelation[];
 };
 
 type LaunchPlaybookBaseMessage = {
