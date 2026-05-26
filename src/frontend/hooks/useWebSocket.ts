@@ -48,6 +48,13 @@ export function dispatchSnapshotMessageForClient(
     msg.coordinator,
     msg.ttsUrl,
   );
+  // Sticky: only overwrite the cached graph when the server actually shipped
+  // one. High-frequency event-pipeline broadcasts omit it on purpose, and we
+  // want the detail panel to keep rendering the last-known relations until
+  // the next full snapshot refresh.
+  if (Array.isArray(msg.taskRelations)) {
+    useKookrStore.setState({ taskRelations: msg.taskRelations });
+  }
 }
 
 export function dispatchAlertMessageForClient(

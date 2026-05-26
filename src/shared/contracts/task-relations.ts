@@ -137,3 +137,34 @@ export function taskRelationKey(
 ): string {
   return JSON.stringify([sourceTaskId, targetTaskId, type]);
 }
+
+/**
+ * Per-parent rollup of child task state, derived at snapshot projection time
+ * by joining the deterministic `spawned_by` edges of the relation graph with
+ * the live per-agent status/anomaly state. Travels on `AgentState.childRollup`
+ * so the dashboard can render the parent rollup pill (#601) without N+1
+ * queries.
+ *
+ * `running` / `completed` / `blocked` are mutually exclusive bucket counts:
+ * a child contributes to exactly one based on its `taskStatus` and active
+ * anomaly. `childCount` is the total number of distinct children associated
+ * by an *active* relation (regardless of bucket).
+ *
+ * `mostUrgentChildFinding` surfaces the highest-severity active anomaly on
+ * any child, ranked using the same `SEVERITY_ORDER` the attention queue
+ * uses (`critical < warning < info`). Absent when no child has an active
+ * anomaly.
+ */
+export interface TaskRelationRollup {
+  childCount: number;
+  running: number;
+  completed: number;
+  blocked: number;
+  mostUrgentChildFinding?: {
+    childTaskId: string;
+    childAgentId?: string;
+    severity: 'info' | 'warning' | 'critical';
+    anomalyType: string;
+    explanation: string;
+  };
+}

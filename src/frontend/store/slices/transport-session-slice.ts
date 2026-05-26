@@ -85,6 +85,9 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
     totalSpendUsd: 0,
     maxActiveTasks: 0,
     coordinator: null,
+    taskRelations: [],
+    relationFilter: { mode: 'off', rootTaskId: null },
+    setRelationFilter: (filter) => set(() => ({ relationFilter: filter })),
 
     handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities, coordinator, ttsUrl) => {
       set((prev) => {

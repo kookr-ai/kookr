@@ -956,6 +956,7 @@ export class RalphLoopService {
     this.deps.broadcastToAll(createSnapshotMessage({
       monitor: this.deps.monitor,
       serverCwd: this.deps.serverCwd,
+      relationTaskStore: this.deps.taskStore,
     }));
   }
 }

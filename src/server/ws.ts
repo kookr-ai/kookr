@@ -233,6 +233,7 @@ export class MessageRouter {
         suppressions: this.deps.coordinatorSuppressions,
       },
       getMaxActiveTasks: this.deps.getMaxActiveTasks,
+      relationTaskStore: this.deps.taskStore,
     }));
   }
 

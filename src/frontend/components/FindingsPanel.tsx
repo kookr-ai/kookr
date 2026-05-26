@@ -19,6 +19,7 @@ import { useSpeakAgent, type SpeakStatus } from '../hooks/useSpeakAgent.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { sendRalphLoopCommand, type RalphLoopCommand } from '../ralph-loop-api.js';
 import { CoordinatorTaskChipView, coordinatorChipForTask } from './CoordinatorSurfaces.js';
+import { ChildRollupPill } from './RelatedTasksSection.js';
 
 export const HEALTHY_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.healthy';
 export const PENDING_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.pending';
@@ -449,6 +450,7 @@ function FindingCard({ agent, selected, send }: {
           if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null; }
         }} />
         <PriorityBadge agent={agent} />
+        <ChildRollupPill agent={agent} />
         <div className="finding-context">
           <TaskIdCopyButton taskId={agent.taskId} compact />
           {showProjectBadge && agentProjectLabel(agent) && (
@@ -599,6 +601,7 @@ function HealthyRow({ agent, selected, send }: {
                 {agent.taskName ?? agent.agentId}
               </span>
               <PriorityBadge agent={agent} />
+              <ChildRollupPill agent={agent} />
               <TaskIdCopyButton taskId={agent.taskId} compact />
             </div>
             <div className="healthy-row-footer">
@@ -821,6 +824,7 @@ function PendingRow({ agent, selected, send }: {
             {agent.taskName ?? agent.agentId}
           </span>
           <PriorityBadge agent={agent} />
+          <ChildRollupPill agent={agent} />
           <TaskIdCopyButton taskId={agent.taskId} compact />
           <SpeakTaskSummaryControl agent={agent} selected={selected} />
         </div>
@@ -876,6 +880,7 @@ function SnoozedRow({ agent, selected, send }: {
             {agent.taskName ?? agent.agentId}
           </span>
           <PriorityBadge agent={agent} />
+          <ChildRollupPill agent={agent} />
           <TaskIdCopyButton taskId={agent.taskId} compact />
           <SpeakTaskSummaryControl agent={agent} selected={selected} />
         </div>
@@ -1006,6 +1011,7 @@ function CompletedRow({ agent, selected, send }: {
             {agent.taskName ?? agent.agentId}
           </span>
           <PriorityBadge agent={agent} />
+          <ChildRollupPill agent={agent} />
           <TaskIdCopyButton taskId={agent.taskId} compact />
           <SpeakTaskSummaryControl agent={agent} selected={selected} />
           <span className="completed-row-meta">

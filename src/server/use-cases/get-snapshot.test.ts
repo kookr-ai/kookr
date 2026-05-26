@@ -384,4 +384,220 @@ describe('snapshot use cases', () => {
       kind: 'issue', number: 42, taskId: 'task-1', taskName: 'Fix #42',
     });
   });
+
+  describe('relation projection (#601)', () => {
+    const baseRelation = (overrides: Record<string, unknown>) => ({
+      id: 'rel-1',
+      sourceTaskId: 'c1',
+      targetTaskId: 'p1',
+      type: 'spawned_by',
+      confidence: 1,
+      source: 'api',
+      evidence: [],
+      createdAt: '2026-05-26T10:00:00.000Z',
+      updatedAt: '2026-05-26T10:00:00.000Z',
+      lifecycle: 'active',
+      ...overrides,
+    });
+
+    it('omits taskRelations when no relationTaskStore is wired', () => {
+      const msg = createSnapshotMessage({
+        monitor: { getSnapshot: () => [{ agentId: 'a1', events: [], anomaly: null }] as any },
+        serverCwd: '/repo',
+      });
+      expect(msg).not.toHaveProperty('taskRelations');
+      expect(msg.agents[0]).not.toHaveProperty('childRollup');
+    });
+
+
+    it('projects active relations and decorates the parent agent with a rollup', () => {
+      const monitor = {
+        getSnapshot: () => [
+          { agentId: 'parent-agent', taskId: 'p1', events: [], anomaly: null, taskStatus: 'inProgress' },
+          { agentId: 'child-agent', taskId: 'c1', events: [], anomaly: null, taskStatus: 'inProgress' },
+        ] as any,
+      };
+      const relations = [
+        baseRelation({}),
+        baseRelation({ id: 'rel-superseded', sourceTaskId: 'c2', lifecycle: 'superseded' }),
+      ];
+      const msg = createSnapshotMessage({
+        monitor,
+        serverCwd: '/repo',
+        relationTaskStore: { listRelations: () => relations },
+      });
+
+      expect(msg.taskRelations).toHaveLength(1);
+      expect(msg.taskRelations?.[0]).toMatchObject({ sourceTaskId: 'c1', targetTaskId: 'p1', lifecycle: 'active' });
+
+      const parent = msg.agents.find((a) => a.taskId === 'p1');
+      expect(parent?.childRollup).toMatchObject({ childCount: 1, running: 1, completed: 0, blocked: 0 });
+      const child = msg.agents.find((a) => a.taskId === 'c1');
+      expect(child?.childRollup).toBeUndefined();
+    });
+
+    it('keeps deterministic and inferred relations distinguishable by confidence/source', () => {
+      const monitor = { getSnapshot: () => [] as any };
+      const relations = [
+        baseRelation({ id: 'det', confidence: 1, source: 'api' }),
+        baseRelation({
+          id: 'inferred',
+          sourceTaskId: 'c2',
+          targetTaskId: 'p1',
+          type: 'related_to',
+          confidence: 0.35,
+          source: 'llm-inference',
+        }),
+      ];
+      const msg = createSnapshotMessage({
+        monitor,
+        serverCwd: '/repo',
+        relationTaskStore: { listRelations: () => relations },
+      });
+      const det = msg.taskRelations?.find((r) => r.source === 'api');
+      const inferred = msg.taskRelations?.find((r) => r.source === 'llm-inference');
+      expect(det?.confidence).toBe(1);
+      expect(inferred?.confidence).toBe(0.35);
+    });
+
+    it('bumps the parent attention severity when a child finding is strictly worse than the parent', () => {
+      // Acceptance criterion: "Parent/orchestrator task priority rises when a
+      // child has needs_input / permission_blocked / pending too long … or
+      // similar urgent state."  This test pins the *strict* bump: parent's
+      // own anomaly is `info` and the child is `warning`, so the effective
+      // severity must end at `warning` — not at the parent's original `info`.
+      const monitor = {
+        getSnapshot: () => [
+          {
+            agentId: 'parent-agent',
+            taskId: 'p1',
+            events: [],
+            taskStatus: 'inProgress',
+            anomaly: {
+              agentId: 'parent-agent',
+              type: 'needs_input',
+              severity: 'info',
+              explanation: 'parent waiting on supervisor',
+              detectedAt: new Date('2026-05-26T10:00:00.000Z'),
+            },
+          },
+          {
+            agentId: 'child-agent',
+            taskId: 'c1',
+            events: [],
+            taskStatus: 'inProgress',
+            anomaly: {
+              agentId: 'child-agent',
+              type: 'needs_input',
+              severity: 'warning',
+              explanation: 'needs review',
+              detectedAt: new Date('2026-05-26T10:00:00.000Z'),
+            },
+          },
+        ] as any,
+      };
+      const msg = createSnapshotMessage({
+        monitor,
+        serverCwd: '/repo',
+        relationTaskStore: { listRelations: () => [baseRelation({})] },
+      });
+      const parent = msg.agents.find((a) => a.taskId === 'p1');
+      expect(parent?.anomaly?.severity).toBe('info');
+      expect(parent?.effectiveAttentionSeverity).toBe('warning');
+      expect(parent?.childRollup?.mostUrgentChildFinding).toMatchObject({
+        childTaskId: 'c1',
+        severity: 'warning',
+        anomalyType: 'needs_input',
+      });
+    });
+
+    it('does not downgrade a parent that is already more severe than its worst child', () => {
+      const monitor = {
+        getSnapshot: () => [
+          {
+            agentId: 'parent-agent',
+            taskId: 'p1',
+            events: [],
+            taskStatus: 'inProgress',
+            anomaly: {
+              agentId: 'parent-agent',
+              type: 'permission_blocked',
+              severity: 'critical',
+              explanation: 'parent awaiting allow',
+              detectedAt: new Date('2026-05-26T10:00:00.000Z'),
+            },
+          },
+          {
+            agentId: 'child-agent',
+            taskId: 'c1',
+            events: [],
+            taskStatus: 'inProgress',
+            anomaly: {
+              agentId: 'child-agent',
+              type: 'needs_input',
+              severity: 'warning',
+              explanation: 'mild child finding',
+              detectedAt: new Date('2026-05-26T10:00:00.000Z'),
+            },
+          },
+        ] as any,
+      };
+      const msg = createSnapshotMessage({
+        monitor,
+        serverCwd: '/repo',
+        relationTaskStore: { listRelations: () => [baseRelation({})] },
+      });
+      const parent = msg.agents.find((a) => a.taskId === 'p1');
+      expect(parent?.effectiveAttentionSeverity).toBe('critical');
+    });
+
+    it('does not mutate the parent agent object even when a child finding bumps the effective severity', () => {
+      const parentAgentObj = {
+        agentId: 'parent-agent',
+        taskId: 'p1',
+        events: [] as any[],
+        anomaly: null,
+        taskStatus: 'inProgress' as const,
+      };
+      const before = structuredClone(parentAgentObj);
+      const monitor = {
+        getSnapshot: () => [
+          parentAgentObj,
+          {
+            agentId: 'child-agent',
+            taskId: 'c1',
+            events: [],
+            taskStatus: 'inProgress',
+            anomaly: {
+              agentId: 'child-agent',
+              type: 'permission_blocked',
+              severity: 'critical',
+              explanation: 'awaiting allow',
+              detectedAt: new Date('2026-05-26T10:00:00.000Z'),
+            },
+          },
+        ] as any,
+      };
+      const msg = createSnapshotMessage({
+        monitor,
+        serverCwd: '/repo',
+        relationTaskStore: { listRelations: () => [baseRelation({})] },
+      });
+      // Source object is untouched in every field, not just `anomaly`.
+      expect(parentAgentObj).toEqual(before);
+      // And the projected parent is a different reference — no shared state.
+      const projectedParent = msg.agents.find((a) => a.taskId === 'p1');
+      expect(projectedParent).not.toBe(parentAgentObj);
+      expect(projectedParent?.childRollup?.mostUrgentChildFinding?.severity).toBe('critical');
+    });
+
+    it('ships an empty taskRelations array when the active set is empty (clears sticky cache)', () => {
+      const msg = createSnapshotMessage({
+        monitor: { getSnapshot: () => [] as any },
+        serverCwd: '/repo',
+        relationTaskStore: { listRelations: () => [] },
+      });
+      expect(msg.taskRelations).toEqual([]);
+    });
+  });
 });

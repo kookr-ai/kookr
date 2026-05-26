@@ -16,6 +16,8 @@ import type { FindingEvidenceAuditRecord } from '../../shared/contracts/anomalie
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider, type CoordinatorTask } from '../coordinator/detectors.js';
 import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
+import { buildRelationProjection, deriveEffectiveAttentionSeverity } from './build-relation-projection.js';
+import type { TaskRelation } from '../../shared/contracts/task-relations.js';
 
 export interface SnapshotQueryDeps {
   monitor: Pick<Monitor, 'getSnapshot'>;
@@ -57,6 +59,13 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
     auditTailProvider?: CoordinatorAuditTailProvider;
     suppressions?: CoordinatorSuppressionReader;
   };
+  /**
+   * Task-relation graph source for the snapshot's `taskRelations` projection
+   * and per-agent `childRollup` (#601). When omitted the snapshot ships
+   * without relation data — existing consumers continue working unchanged
+   * because the new fields are all optional.
+   */
+  relationTaskStore?: Pick<TaskStore, 'listRelations'>;
 }
 
 const LOCAL_NODE_DEVICE_ID = 'local-node';
@@ -194,7 +203,27 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ttsUrl: deps.ttsUrl,
     now: deps.now,
   });
-  const agents = getSnapshotAgentsForClient(deps);
+  const baseAgents = getSnapshotAgentsForClient(deps);
+
+  let taskRelations: TaskRelation[] | undefined;
+  let agents = baseAgents;
+  if (deps.relationTaskStore) {
+    const projection = buildRelationProjection(deps.relationTaskStore, baseAgents);
+    taskRelations = projection.taskRelations;
+    if (projection.rollupsByParentTaskId.size > 0) {
+      agents = baseAgents.map((agent) => {
+        const rollup = agent.taskId ? projection.rollupsByParentTaskId.get(agent.taskId) : undefined;
+        if (!rollup) return agent;
+        const effectiveSeverity = deriveEffectiveAttentionSeverity(agent.anomaly?.severity, rollup);
+        return {
+          ...agent,
+          childRollup: rollup,
+          ...(effectiveSeverity ? { effectiveAttentionSeverity: effectiveSeverity } : {}),
+        };
+      });
+    }
+  }
+
   return {
     type: 'snapshot',
     agents,
@@ -224,6 +253,12 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
         },
       ),
     } : {}),
+    // Always ship the field (possibly an empty array) when the relation store is
+    // wired: clients use the presence of the field as a signal to overwrite their
+    // sticky cache. Omitting on empty would leave stale edges visible after a
+    // task is deleted, since deletion hard-removes its relations without a
+    // `superseded` transition. See PR #601 review notes.
+    ...(taskRelations !== undefined ? { taskRelations } : {}),
   };
 }
 

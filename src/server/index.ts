@@ -509,6 +509,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       activityMetaProvider: hookIngestion,
       coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
       getMaxActiveTasks,
+      relationTaskStore: taskStore,
     }));
     broadcastProjectSummaries();
   });
@@ -545,6 +546,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             activityMetaProvider: hookIngestion,
             coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
             getMaxActiveTasks,
+            relationTaskStore: taskStore,
           }));
         }
       })
@@ -638,7 +640,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Terminal input deps — used by terminal bridge handlers
   const terminalDeps: TerminalInputDeps = {
-    monitor, watchdog, abortPendingSuggestion, broadcastToAll, serverCwd,
+    monitor, watchdog, abortPendingSuggestion, broadcastToAll, serverCwd, taskStore,
   };
 
   const startupRecoverySummary = await runStartupRecoveryPhase({
@@ -691,6 +693,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         serverCwd,
         activityMetaProvider: hookIngestion,
         coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
+        relationTaskStore: taskStore,
       });
       return JSON.stringify(msg).length;
     },

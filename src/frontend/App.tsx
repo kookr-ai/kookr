@@ -9,6 +9,7 @@ import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
 import { track } from './telemetry.js';
 import { buildAgentBuckets } from './agent-buckets.js';
+import { computeChainMembership, computeDescendants } from './components/related-tasks-model.js';
 import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
@@ -525,6 +526,17 @@ export function App() {
     () => deriveProjectPriorityRanks(projectSummaries, projectSidebarPrefs),
     [projectSummaries, projectSidebarPrefs],
   );
+  const taskRelations = useKookrStore((state) => state.taskRelations);
+  const relationFilter = useKookrStore((state) => state.relationFilter);
+  const agentsAfterRelationFilter = useMemo(() => {
+    if (relationFilter.mode === 'off' || !relationFilter.rootTaskId) return agents;
+    const allowed =
+      relationFilter.mode === 'chain'
+        ? computeChainMembership(relationFilter.rootTaskId, taskRelations)
+        : computeDescendants(relationFilter.rootTaskId, taskRelations);
+    if (relationFilter.mode === 'children') allowed.add(relationFilter.rootTaskId);
+    return agents.filter((a) => !a.taskId || allowed.has(a.taskId));
+  }, [agents, relationFilter, taskRelations]);
   const {
     filteredAgents,
     pending,
@@ -535,8 +547,8 @@ export function App() {
     activeTaskCount,
     completedTaskCount,
   } = useMemo(
-    () => buildAgentBuckets(agents, selectedProject, coordinator, projectPriorityRanks),
-    [agents, selectedProject, coordinator, projectPriorityRanks],
+    () => buildAgentBuckets(agentsAfterRelationFilter, selectedProject, coordinator, projectPriorityRanks),
+    [agentsAfterRelationFilter, selectedProject, coordinator, projectPriorityRanks],
   );
 
   useEffect(() => {

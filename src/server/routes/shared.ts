@@ -96,6 +96,13 @@ export interface AgentRouteDeps {
   serverStartedAt: string;
   hookIngestion?: HookIngestion;
   broadcastToAll: (msg: ServerMessage) => void;
+  /**
+   * Optional task store reference used to populate `taskRelations` on
+   * snapshots broadcast from these routes (#601). When absent the relation
+   * field is omitted from this broadcast; the next snapshot from any other
+   * path will re-populate it.
+   */
+  taskStore?: TaskStore;
 }
 
 /** Narrower deps for the read-only /api/cost-comparison telemetry route. */

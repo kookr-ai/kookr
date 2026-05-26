@@ -118,6 +118,8 @@ export interface TerminalInputDeps {
   abortPendingSuggestion: (agentId: string, outcome?: 'used' | 'cleared') => void;
   broadcastToAll: (msg: ServerMessage) => void;
   serverCwd: string;
+  /** Optional task-store reference for snapshot relation projection (#601). */
+  taskStore?: TaskStore;
 }
 
 /**
@@ -133,7 +135,11 @@ export function handleTerminalInput(
   if (changed) {
     deps.watchdog?.recordInputReceived(sessionName);
     deps.abortPendingSuggestion(sessionName);
-    deps.broadcastToAll(createSnapshotMessage({ monitor: deps.monitor, serverCwd: deps.serverCwd }));
+    deps.broadcastToAll(createSnapshotMessage({
+      monitor: deps.monitor,
+      serverCwd: deps.serverCwd,
+      ...(deps.taskStore ? { relationTaskStore: deps.taskStore } : {}),
+    }));
   }
 }
 
@@ -408,7 +414,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
 
   if (promoted > 0) {
     const monitor = lifecycleDeps.monitor as Monitor;
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd }));
+    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, relationTaskStore: taskStore }));
   }
 
   return promoted;

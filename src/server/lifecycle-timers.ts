@@ -343,6 +343,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         monitor,
         serverCwd,
         activityMetaProvider: deps.activityMetaProvider,
+        relationTaskStore: taskStore,
       }));
     }
   }, 5_000);
