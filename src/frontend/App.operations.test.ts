@@ -57,7 +57,10 @@ async function flush() {
 
 async function waitForElement<T extends Element>(container: Element, selector: string): Promise<T> {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 1_000) {
+  // 5s is generous but matches the App-level render budget the spec exercises;
+  // the previous 1s budget flaked under full-suite parallel load (the operations
+  // panel can take ~1.2s to mount when 380+ test files compete for the CPU).
+  while (Date.now() - startedAt < 5_000) {
     await flush();
     const element = container.querySelector<T>(selector);
     if (element) return element;
