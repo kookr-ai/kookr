@@ -1015,11 +1015,10 @@ kbd {
 }
 
 .healthy-row.running-accent {
-  animation: accent-pulse 2s ease-in-out infinite;
+  border-left-color: rgba(52,211,153,0.7);
 }
-@keyframes accent-pulse {
-  0%, 100% { border-left-color: rgba(52, 211, 153, 0.4); }
-  50% { border-left-color: rgba(52, 211, 153, 0.9); }
+.healthy-row.selected.running-accent {
+  border-left-color: var(--teal);
 }
 
 /* --- Playbook Group --- */
@@ -10392,4 +10391,3 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   border-color: var(--warning-fg, #b8860b);
   color: var(--warning-fg, #b8860b);
 }
-
