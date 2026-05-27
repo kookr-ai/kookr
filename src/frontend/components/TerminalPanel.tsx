@@ -36,6 +36,7 @@ const CTRL_C = '\u0003';
 const CTRL_U = '\u0015';
 const BACKSPACE = '\b';
 const DELETE = '\u007f';
+const ESC = '\u001b';
 
 function getValidatedResize(cols: unknown, rows: unknown): { cols: number; rows: number } | null {
   if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
@@ -43,9 +44,28 @@ function getValidatedResize(cols: unknown, rows: unknown): { cols: number; rows:
   return { cols, rows };
 }
 
+// xterm.onData forwards more than user keystrokes — focus tracking (DECSET 1004
+// sends `ESC [ I` on focus and `ESC [ O` on blur) arrives here too, even though
+// no key was pressed. Counting those bytes as draft input would mask empty-Enter
+// navigation right after the user clicks the terminal: Claude Code's TUI enables
+// focus tracking, the click sends `ESC [ I`, and the first Enter then forwards
+// instead of advancing to the next task. Strip those two sequences specifically;
+// leave other ESC traffic (arrow keys, bracketed-paste markers) alone so an
+// arrow-up-recall followed by Enter still submits to the agent.
 function updateTerminalInputDraft(draft: string, data: string): string {
   let next = draft;
-  for (const char of data) {
+  let i = 0;
+  while (i < data.length) {
+    if (
+      data[i] === ESC
+      && i + 2 < data.length
+      && data[i + 1] === '['
+      && (data[i + 2] === 'I' || data[i + 2] === 'O')
+    ) {
+      i += 3;
+      continue;
+    }
+    const char = data[i];
     if (char === '\r' || char === '\n' || char === CTRL_C || char === CTRL_U) {
       next = '';
     } else if (char === DELETE || char === BACKSPACE) {
@@ -53,6 +73,7 @@ function updateTerminalInputDraft(draft: string, data: string): string {
     } else {
       next += char;
     }
+    i++;
   }
   return next;
 }
