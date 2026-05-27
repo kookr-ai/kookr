@@ -735,6 +735,93 @@ describe('TerminalPanel', () => {
     expect(ws.send).toHaveBeenNthCalledWith(2, '\r');
   });
 
+  // Claude Code enables focus tracking (DECSET 1004), so xterm forwards `ESC [ I`
+  // through onData on focus. Without filtering, that 3-byte sequence inflated the
+  // local draft and the user had to press Enter twice — first to clear the bogus
+  // bytes, then to actually navigate. Codex didn't reproduce because its TUI
+  // doesn't enable focus tracking. Regression coverage for #642 follow-up.
+  test('focus tracking sequences do not inflate the local input draft', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: '\r\n❯ \r\n' });
+    });
+    ws.send.mockClear();
+    act(() => {
+      terminal.dataHandler?.('\x1b[I');
+    });
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    // The focus byte is still forwarded to the PTY so the agent knows about
+    // focus, but `\r` must not reach it — empty-Enter is navigation, not submit.
+    expect(ws.send).not.toHaveBeenCalledWith('\r');
+  });
+
+  test('blur tracking sequence is also filtered out of the input draft', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: '\r\n❯ \r\n' });
+    });
+    ws.send.mockClear();
+    act(() => {
+      terminal.dataHandler?.('\x1b[I');
+      terminal.dataHandler?.('\x1b[O');
+      terminal.dataHandler?.('\x1b[I');
+    });
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalledWith('\r');
+  });
+
+  // Negative control: the focus-tracking filter must be narrow enough that real
+  // typed text following a focus event still defeats the empty-Enter shortcut.
+  // Without this, someone broadening the filter to strip all CSI sequences
+  // would silently regress empty-Enter detection during typing.
+  test('focus event followed by typed text leaves Enter as a normal submit', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: '\r\n❯ \r\n' });
+    });
+    ws.send.mockClear();
+    act(() => {
+      terminal.dataHandler?.('\x1b[I');
+      terminal.dataHandler?.('a');
+    });
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith('a');
+    expect(ws.send).toHaveBeenCalledWith('\r');
+  });
+
   test('captures empty terminal Enter without inspecting permission-looking output', () => {
     const onEmptySubmit = vi.fn();
     act(() => {
