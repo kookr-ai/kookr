@@ -46,6 +46,25 @@ function normalizeInjectedEvent(tmuxName: string, event: Record<string, unknown>
 async function main() {
   mkdirSync(claudeDir, { recursive: true });
 
+  if (process.env.E2E_PROMPT_SUBMIT_AUTO_HOOK === '1') {
+    const originalCreateSession = terminal.createSession.bind(terminal);
+    terminal.createSession = (async (...args: unknown[]) => {
+      await (originalCreateSession as (...innerArgs: unknown[]) => Promise<void>)(...args);
+      const firstArg = args[0];
+      const tmuxName =
+        typeof firstArg === 'string'
+          ? firstArg
+          : typeof firstArg === 'object'
+            && firstArg !== null
+            && 'id' in firstArg
+            && typeof firstArg.id === 'string'
+            ? firstArg.id
+            : null;
+      if (!tmuxName) return;
+      terminal.emit(tmuxName, '\x1b[?2004hClaudeCode\n❯ ');
+    }) as typeof terminal.createSession;
+  }
+
   if (process.env.E2E_WITH_RELAY === '1') {
     relayHandle = createRelayServer({ adminToken: 'admin-secret' });
     await new Promise<void>((resolve) => relayHandle!.httpServer.listen(0, '127.0.0.1', () => resolve()));
@@ -89,6 +108,34 @@ async function main() {
     // Dummy STT URL so the mic button renders in the UI (no real STT service needed)
     sttUrl: 'ws://localhost:9999',
   });
+
+  if (process.env.E2E_PROMPT_SUBMIT_AUTO_HOOK === '1') {
+    const originalWrite = terminal.write.bind(terminal);
+    const confirmed = new Set<string>();
+    terminal.write = async (tmuxName, data) => {
+      await originalWrite(tmuxName, data);
+      if (confirmed.has(tmuxName)) return;
+      const text = terminal.getWrittenText(tmuxName);
+      if (!text.includes('\x1b[200~') || !text.endsWith('\r')) return;
+
+      confirmed.add(tmuxName);
+      const sessionId = stableInjectedSessionId(tmuxName);
+      const transcriptPath = `/tmp/e2e-${tmuxName}.jsonl`;
+      server.adapter.injectHookEvent(tmuxName, JSON.stringify({
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        cwd: '/test/project',
+        hook_event_name: 'SessionStart',
+      }));
+      server.adapter.injectHookEvent(tmuxName, JSON.stringify({
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        cwd: '/test/project',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: text,
+      }));
+    };
+  }
 
   // --- Test-only API routes ---
 
@@ -329,6 +376,18 @@ async function main() {
       return c.json({ error: `Session not found: ${tmuxName}` }, 404);
     }
     return c.json({ tmuxName, keysReceived: session.keysReceived });
+  });
+
+  // Get all UTF-8 terminal input written to a fake terminal session. This is
+  // byte-shape inspection for E2E tests that need to distinguish raw input
+  // from structured bracketed-paste delivery.
+  server.app.get('/api/test/written-text/:tmuxName', (c) => {
+    const tmuxName = c.req.param('tmuxName');
+    const session = terminal.sessions.get(tmuxName);
+    if (!session) {
+      return c.json({ error: `Session not found: ${tmuxName}` }, 404);
+    }
+    return c.json({ tmuxName, writtenText: terminal.getWrittenText(tmuxName) });
   });
 
   // Backdate an anomaly's detectedAt (for age badge tests)

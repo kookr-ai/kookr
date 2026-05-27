@@ -70,10 +70,7 @@ describe('ClaudeCodeAdapter', () => {
     // deliverInitialPromptToSession.
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
-      // No UserPromptSubmit hook is injected in this argv/write-shape test;
-      // tune the closed-loop confirmation to fall through quickly so the
-      // launch promise resolves on the open-loop guarantees alone.
-      promptSubmitConfirmTimeoutMs: 5,
+      promptSubmitConfirmTimeoutMs: 5_000,
       promptSubmitRetries: 0,
     });
     const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
@@ -85,6 +82,14 @@ describe('ClaudeCodeAdapter', () => {
     const pendingSessionId = [...backend.sessions.keys()][0]!;
     expect(backend.getWrittenText(pendingSessionId)).toBe('');
     backend.emit(pendingSessionId, 'ClaudeCode\n❯ ');
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: 'shape-test-session',
+      transcript_path: '/tmp/claude/transcripts/shape.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Fix bug',
+    }));
     const sessionId = await launchPromise;
 
     // Body wrapped in ESC[200~ … ESC[201~; Enter is a separate write
@@ -106,17 +111,24 @@ describe('ClaudeCodeAdapter', () => {
     vi.stubEnv('KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE', undefined);
     try {
       const defaultAdapter = new ClaudeCodeAdapter(backend, taskStore, {
-        // Same rationale as the explicit-bracketed-paste test above: no hook
-        // is delivered so let the closed-loop confirmation fall through fast.
-        promptSubmitConfirmTimeoutMs: 5,
+        promptSubmitConfirmTimeoutMs: 5_000,
         promptSubmitRetries: 0,
       });
+      const writeSpy = vi.spyOn(backend, 'write');
       const task = taskStore.createTask('Fix bug', '/cwd');
       const launchPromise = defaultAdapter.launch(task.id, 'Fix bug', '/cwd');
       await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
       const pendingSessionId = [...backend.sessions.keys()][0]!;
       expect(backend.getWrittenText(pendingSessionId)).toBe('');
       backend.emit(pendingSessionId, 'ClaudeCode\n❯ ');
+      await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+      defaultAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+        session_id: 'default-test-session',
+        transcript_path: '/tmp/claude/transcripts/default.jsonl',
+        cwd: '/cwd',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'Fix bug',
+      }));
       const sessionId = await launchPromise;
       expect(backend.getWrittenText(sessionId)).toBe('\x1b[200~Fix bug\x1b[201~\r');
     } finally {
@@ -339,29 +351,28 @@ describe('ClaudeCodeAdapter', () => {
     await launchPromise;
   });
 
-  test('bracketed-paste launch resends Enter when the UserPromptSubmit hook never arrives', async () => {
-    // Open-loop fallback: a misconfigured deployment where hooks do not
-    // reach the adapter must still produce a launched session. The launch
-    // sends the configured number of retry Enters, then proceeds — better
-    // a launched task with an extra harmless Enter than a stuck one.
+  test('bracketed-paste launch resends Enter then fails when the UserPromptSubmit hook never arrives', async () => {
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
       promptSubmitConfirmTimeoutMs: 5,
       promptSubmitRetries: 2,
     });
     const writeSpy = vi.spyOn(backend, 'write');
+    const killSpy = vi.spyOn(backend, 'killSession');
     const task = taskStore.createTask('Fix bug', '/cwd');
     const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const pendingSessionId = [...backend.sessions.keys()][0]!;
     backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
 
-    await launchPromise;
+    await expect(launchPromise).rejects.toThrow(/Initial prompt submission was not confirmed/);
     // Initial Enter + promptSubmitRetries (2) resends = 3 Enter writes total.
     expect(writeSpy).toHaveBeenCalledTimes(3);
     for (const call of writeSpy.mock.calls) {
       expect(Array.from(call[1])).toEqual([0x0d]);
     }
+    expect(killSpy).toHaveBeenCalledWith(pendingSessionId);
+    expect(backend.sessions.get(pendingSessionId)?.alive).toBe(false);
   });
 
   test('launch does NOT include --dangerously-skip-permissions or --setting-sources by default', async () => {

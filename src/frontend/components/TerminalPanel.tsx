@@ -97,6 +97,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   const onEmptySubmitRef = useRef(onEmptySubmit);
   const searchOpenRef = useRef(false);
   const visibleRef = useRef(visible);
+  const lastSafePasteAtRef = useRef(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -304,9 +305,26 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     }
     container.addEventListener('paste', handlePasteCapture, { capture: true });
 
-    // Real keyboard Enter reaches xterm as a DOM event before `onData`. Catch
-    // empty prompts here so xterm never forwards the newline to the agent.
+    // DOM keyboard events arrive before xterm's `onData`. Use that early
+    // phase for paste fallback and empty-Enter navigation before xterm can
+    // forward ambiguous bytes to the agent.
     function handleKeyDownCapture(e: KeyboardEvent) {
+      if (
+        e.type === 'keydown'
+        && e.key.toLowerCase() === 'v'
+        && (e.ctrlKey || e.metaKey)
+        && !e.altKey
+        && !e.isComposing
+      ) {
+        const keydownAt = Date.now();
+        window.setTimeout(() => {
+          if (lastSafePasteAtRef.current >= keydownAt) return;
+          void pasteFromClipboard((text) => {
+            if (isMultilinePaste(text)) sendSafePaste(text);
+          });
+        }, 0);
+        return;
+      }
       if (e.key !== 'Enter' || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
       if (!shouldHandleEmptyTerminalEnter(
         terminalInputDraftRef.current,
@@ -395,6 +413,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
    * paste, instead of raw bytes whose newlines each submit a prompt.
    */
   function sendSafePaste(text: string) {
+    lastSafePasteAtRef.current = Date.now();
     terminalInputDraftRef.current += text;
     sendOverWs(buildPasteFrame(text));
   }

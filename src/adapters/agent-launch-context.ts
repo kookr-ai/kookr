@@ -236,6 +236,18 @@ export interface DeliverInitialPromptOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+export type InitialPromptDeliveryStatus =
+  | 'open-loop'
+  | 'confirmed'
+  | 'assumed-submitted'
+  | 'unconfirmed';
+
+export interface InitialPromptDeliveryResult {
+  status: InitialPromptDeliveryStatus;
+  confirmationAttempts: number;
+  enterWrites: number;
+}
+
 function realSleep(ms: number): Promise<void> {
   return ms > 0 ? new Promise((res) => setTimeout(res, ms)) : Promise.resolve();
 }
@@ -349,7 +361,7 @@ export async function deliverInitialPromptToSession(
   sessionId: SessionId,
   prompt: string,
   options?: DeliverInitialPromptOptions,
-): Promise<void> {
+): Promise<InitialPromptDeliveryResult> {
   const inputWriter = options?.inputWriter ?? asTerminalInputWriterPort(backend);
   if (!options?.bracketedPaste) {
     // Legacy path: prompt chunks + Enter under one mutex acquisition. The
@@ -357,7 +369,7 @@ export async function deliverInitialPromptToSession(
     // `submitDelayMs` / `sleep` options do not apply here.
     const chunks = chunkPromptBytes(promptEncoder.encode(prompt));
     await inputWriter.writeInputSequence(sessionId, [...chunks, ENTER_BYTES], { reason: 'launch-prompt' });
-    return;
+    return { status: 'open-loop', confirmationAttempts: 0, enterWrites: 1 };
   }
 
   // Bracketed-paste path. Strip any bracketed-paste markers already present
@@ -382,6 +394,7 @@ export async function deliverInitialPromptToSession(
   await inputWriter.writeInputSequence(sessionId, [PASTE_START, ...chunks, PASTE_END], { reason: 'launch-prompt-paste' });
   await sleep(submitDelayMs);
   await inputWriter.writeInput(sessionId, ENTER_BYTES, { reason: 'launch-prompt-enter' });
+  let enterWrites = 1;
 
   // Closed-loop confirmation: if the caller wired an `awaitSubmit` predicate
   // (the adapter does this via the `UserPromptSubmit` hook), wait for the
@@ -403,13 +416,22 @@ export async function deliverInitialPromptToSession(
   // semantics.
   if (options.awaitSubmit) {
     for (let attempt = 0; attempt <= submitRetries; attempt += 1) {
-      if (await options.awaitSubmit(submitConfirmTimeoutMs)) return;
-      if (attempt === submitRetries) return;
+      if (await options.awaitSubmit(submitConfirmTimeoutMs)) {
+        return { status: 'confirmed', confirmationAttempts: attempt + 1, enterWrites };
+      }
+      if (attempt === submitRetries) {
+        return { status: 'unconfirmed', confirmationAttempts: attempt + 1, enterWrites };
+      }
       const capture = await backend.captureBytes(sessionId);
-      if (isClaudeBusyOrResponding(capture)) return;
+      if (isClaudeBusyOrResponding(capture)) {
+        return { status: 'assumed-submitted', confirmationAttempts: attempt + 1, enterWrites };
+      }
       await inputWriter.writeInput(sessionId, ENTER_BYTES, { reason: 'launch-prompt-retry-enter' });
+      enterWrites += 1;
     }
   }
+
+  return { status: 'open-loop', confirmationAttempts: 0, enterWrites };
 }
 
 async function resolveGitCommonDir(cwd: string): Promise<string | null> {

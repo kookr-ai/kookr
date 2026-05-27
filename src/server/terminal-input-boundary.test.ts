@@ -14,7 +14,7 @@ const ALLOWLIST = new Set([
 
 describe('terminal input boundary', () => {
   it('keeps direct TerminalBackend writes inside backend implementations and TerminalInputCoordinator', () => {
-    const files = execFileSync('rg', ['--files', 'src'], { cwd: repoRoot, encoding: 'utf8' })
+    const files = listSourceFiles()
       .trim()
       .split('\n')
       .filter((file) => file.endsWith('.ts') || file.endsWith('.tsx'));
@@ -34,3 +34,13 @@ describe('terminal input boundary', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+function listSourceFiles(): string {
+  try {
+    return execFileSync('rg', ['--files', 'src'], { cwd: repoRoot, encoding: 'utf8' });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') throw err;
+    return execFileSync('git', ['ls-files', 'src'], { cwd: repoRoot, encoding: 'utf8' });
+  }
+}

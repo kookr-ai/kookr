@@ -12,19 +12,33 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from '../src/frontend/store/onboarding-status.js';
 
-export const test = base.extend<{ suppressOnboarding: boolean }, { serverURL: string }>({
+export const test = base.extend<{
+  suppressOnboarding: boolean;
+}, {
+  serverURL: string;
+  promptBracketedPaste: boolean;
+}>({
   // Test-level option: when true (default), the fixture pre-marks the
   // onboarding tour as seen so its overlay does not intercept clicks meant
   // for other dialogs. The tour's own spec sets this to false.
   suppressOnboarding: [true, { option: true }],
+  // Worker/server option: most legacy E2E specs keep the older prompt+Enter
+  // fake backend path for speed. Specs that validate Claude prompt delivery
+  // can opt into the production bracketed-paste launch path.
+  promptBracketedPaste: [false, { option: true, scope: 'worker' }],
 
   // Worker-scoped: one server per Playwright worker process
-  serverURL: [async ({}, use) => {
+  serverURL: [async ({ promptBracketedPaste }, use) => {
     const proc: ChildProcess = spawn(
       'node',
       ['--import', 'tsx', join(__dirname, 'test-server.ts')],
       {
-        env: { ...process.env, E2E_PORT: '0' },
+        env: {
+          ...process.env,
+          E2E_PORT: '0',
+          KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE: promptBracketedPaste ? '1' : '0',
+          E2E_PROMPT_SUBMIT_AUTO_HOOK: promptBracketedPaste ? '1' : '0',
+        },
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     );

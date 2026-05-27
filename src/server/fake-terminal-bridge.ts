@@ -1,4 +1,11 @@
 import type { WebSocket } from 'ws';
+import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
+import {
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
+} from './session-bridge.js';
+
+const encoder = new TextEncoder();
 
 /**
  * A fake terminal bridge that streams pre-scripted ANSI content to xterm.js
@@ -38,6 +45,7 @@ export class FakeTerminalBridge {
     private tmuxName: string,
     private ws: WebSocket,
     opts?: FakeTerminalContent,
+    private inputWriter?: TerminalInputWriterPort,
   ) {
     const resolved = opts ?? FakeTerminalBridge.getContent(tmuxName);
     const text = resolved?.text ?? FakeTerminalBridge.defaultContent(tmuxName);
@@ -77,17 +85,45 @@ export class FakeTerminalBridge {
       }, this.lineDelayMs);
     }
 
-    // Handle incoming messages (resize, keystrokes — mostly ignored)
+    // Handle incoming messages. The fake bridge is display-oriented, but E2E
+    // tests still need browser terminal input to reach FakeTerminalBackend so
+    // they can assert on the same byte path as SessionBridge.
     this.ws.on('message', (data) => {
       const msg = data.toString();
       if (msg.startsWith('{"type":"resize"')) {
         // Acknowledge resize but don't act on it
+        return;
       }
+      if (msg.startsWith('{"type":"paste"')) {
+        try {
+          const parsed = JSON.parse(msg) as { type?: unknown; text?: unknown };
+          if (parsed.type === 'paste' && typeof parsed.text === 'string') {
+            const sanitized = parsed.text
+              .replaceAll(BRACKETED_PASTE_START, '')
+              .replaceAll(BRACKETED_PASTE_END, '');
+            this.forwardInput(BRACKETED_PASTE_START + sanitized + BRACKETED_PASTE_END);
+          }
+        } catch {
+          // Treat malformed paste control frames as raw input.
+          this.forwardInput(msg);
+        }
+        return;
+      }
+      this.forwardInput(data instanceof Buffer ? new Uint8Array(data) : msg);
     });
 
     this.ws.on('close', () => {
       this.dispose();
     });
+  }
+
+  private forwardInput(data: string | Uint8Array): void {
+    const bytes = typeof data === 'string' ? encoder.encode(data) : data;
+    this.inputWriter?.writeInput(this.tmuxName, bytes, { reason: 'fake-browser-terminal-input' })
+      .catch(() => {
+        // Fake bridge is test/demo support. Keep display streaming even if the
+        // backing fake session was reset between websocket connect and input.
+      });
   }
 
   /** Send raw text to the xterm.js client. */

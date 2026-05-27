@@ -384,7 +384,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
     const sleep = vi.fn(async (_ms: number) => {});
     const awaitSubmit = vi.fn(async (_timeoutMs: number) => true);
 
-    await deliverInitialPromptToSession(backend, 's-confirm', 'go', {
+    const result = await deliverInitialPromptToSession(backend, 's-confirm', 'go', {
       bracketedPaste: true,
       submitDelayMs: 0,
       submitRetries: 2,
@@ -398,6 +398,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
     expect(Array.from(writeSpy.mock.calls[0][1])).toEqual([0x0d]);
     expect(awaitSubmit).toHaveBeenCalledTimes(1);
     expect(awaitSubmit).toHaveBeenCalledWith(1234);
+    expect(result).toEqual({ status: 'confirmed', confirmationAttempts: 1, enterWrites: 1 });
   });
 
   test('resends Enter on every timeout up to submitRetries, then stops', async () => {
@@ -409,7 +410,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
     // false so the launch falls through after exhausting submitRetries.
     const awaitSubmit = vi.fn(async (_timeoutMs: number) => false);
 
-    await deliverInitialPromptToSession(backend, 's-retry-all', 'go', {
+    const result = await deliverInitialPromptToSession(backend, 's-retry-all', 'go', {
       bracketedPaste: true,
       submitDelayMs: 0,
       submitRetries: 2,
@@ -425,6 +426,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
     }
     // `submitRetries + 1` awaits — one per loop iteration.
     expect(awaitSubmit).toHaveBeenCalledTimes(3);
+    expect(result).toEqual({ status: 'unconfirmed', confirmationAttempts: 3, enterWrites: 3 });
   });
 
   test('with submitRetries=0, awaits once but never resends Enter', async () => {
@@ -437,7 +439,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
     const sleep = vi.fn(async (_ms: number) => {});
     const awaitSubmit = vi.fn(async (_timeoutMs: number) => false);
 
-    await deliverInitialPromptToSession(backend, 's-no-retry', 'go', {
+    const result = await deliverInitialPromptToSession(backend, 's-no-retry', 'go', {
       bracketedPaste: true,
       submitDelayMs: 0,
       submitRetries: 0,
@@ -448,6 +450,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
 
     expect(writeSpy).toHaveBeenCalledTimes(1);
     expect(awaitSubmit).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ status: 'unconfirmed', confirmationAttempts: 1, enterWrites: 1 });
   });
 
   test('skips the retry Enter when the post-await display shows Claude is busy', async () => {
@@ -467,7 +470,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
       return false;
     });
 
-    await deliverInitialPromptToSession(backend, 's-busy', 'go', {
+    const result = await deliverInitialPromptToSession(backend, 's-busy', 'go', {
       bracketedPaste: true,
       submitDelayMs: 0,
       submitRetries: 2,
@@ -480,6 +483,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
     expect(writeSpy).toHaveBeenCalledTimes(1);
     // Exactly one confirmation attempt; the busy check short-circuits the loop.
     expect(awaitSubmit).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ status: 'assumed-submitted', confirmationAttempts: 1, enterWrites: 1 });
   });
 
   test('stops resending the moment awaitSubmit returns true', async () => {
@@ -494,7 +498,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
       return calls >= 2;
     });
 
-    await deliverInitialPromptToSession(backend, 's-retry-mid', 'go', {
+    const result = await deliverInitialPromptToSession(backend, 's-retry-mid', 'go', {
       bracketedPaste: true,
       submitDelayMs: 0,
       submitRetries: 3,
@@ -507,6 +511,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
     // the loop exits before a third Enter is sent.
     expect(writeSpy).toHaveBeenCalledTimes(2);
     expect(awaitSubmit).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ status: 'confirmed', confirmationAttempts: 2, enterWrites: 2 });
   });
 
   test('without awaitSubmit, sends exactly one Enter (open-loop, prior behaviour)', async () => {
@@ -515,7 +520,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
     const writeSpy = vi.spyOn(backend, 'write');
     const sleep = vi.fn(async (_ms: number) => {});
 
-    await deliverInitialPromptToSession(backend, 's-no-await', 'go', {
+    const result = await deliverInitialPromptToSession(backend, 's-no-await', 'go', {
       bracketedPaste: true,
       submitDelayMs: 0,
       sleep,
@@ -523,6 +528,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
 
     expect(writeSpy).toHaveBeenCalledTimes(1);
     expect(Array.from(writeSpy.mock.calls[0][1])).toEqual([0x0d]);
+    expect(result).toEqual({ status: 'open-loop', confirmationAttempts: 0, enterWrites: 1 });
   });
 
   test('exposes documented defaults for submit confirmation tuning', () => {

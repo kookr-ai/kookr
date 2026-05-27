@@ -115,23 +115,85 @@ function assertKookrDiff(before: FileSnapshot, after: FileSnapshot): void {
 }
 
 function writeScriptedAgent(path: string): void {
-  writeFileSync(path, `#!/usr/bin/env bash
-if [[ " $* " == *" --version "* ]]; then
-  printf 'smoke-agent 1.0.0\\n'
-  exit 0
-fi
-printf 'kookr-smoke-agent ready\\n'
-printf 'permission prompt: local operator approval required\\n'
-while true; do
-  if IFS= read -r -t 1 line; then
-    printf 'echo:%s\\n' "$line"
-    if [[ "$line" == *complete* ]]; then
-      printf 'task complete\\n'
-    fi
-  else
-    printf 'kookr-smoke-agent ready\\n'
-  fi
-done
+  writeFileSync(path, `#!/usr/bin/env node
+const { appendFileSync, readFileSync } = require('node:fs');
+const { join } = require('node:path');
+
+if (process.argv.includes('--version')) {
+  process.stdout.write('smoke-agent 1.0.0\\n');
+  process.exit(0);
+}
+
+function settingsPathFromArgv(argv) {
+  const idx = argv.indexOf('--settings');
+  return idx >= 0 ? argv[idx + 1] : undefined;
+}
+
+function userPromptHookTarget() {
+  const settingsPath = settingsPathFromArgv(process.argv);
+  if (!settingsPath) return undefined;
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  const command = settings?.hooks?.UserPromptSubmit?.[0]?.hooks?.[0]?.command;
+  if (typeof command !== 'string') return undefined;
+  const file = command.match(/--file '([^']+)'/)?.[1]
+    ?? command.match(/awk -v file='([^']+)'/)?.[1];
+  const url = command.match(/--url '([^']+)'/)?.[1]
+    ?? command.match(/curl -s -X POST ([^ ]+)/)?.[1];
+  return { file, url };
+}
+
+const hookTarget = userPromptHookTarget();
+const transcriptPath = join(process.cwd(), 'smoke-transcript.jsonl');
+let submitted = false;
+let buffer = '';
+
+function emitUserPromptSubmit(prompt) {
+  if (!hookTarget || submitted) return;
+  submitted = true;
+  appendFileSync(transcriptPath, JSON.stringify({ type: 'user', prompt }) + '\\n');
+  const event = {
+    session_id: 'smoke-session',
+    transcript_path: transcriptPath,
+    cwd: process.cwd(),
+    hook_event_name: 'UserPromptSubmit',
+    prompt,
+  };
+  const line = JSON.stringify(event) + '\\n';
+  if (hookTarget.file) appendFileSync(hookTarget.file, line);
+  if (hookTarget.url) {
+    fetch(hookTarget.url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: line,
+    }).catch(() => {});
+  }
+}
+
+function stripPasteControls(text) {
+  return text.replaceAll('\\x1b[200~', '').replaceAll('\\x1b[201~', '');
+}
+
+process.stdout.write('\\x1b[?2004hClaude Code ❯ kookr-smoke-agent ready\\n');
+process.stdout.write('permission prompt: local operator approval required\\n');
+
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString('utf8');
+  if (buffer.includes('\\x1b[201~')) {
+    emitUserPromptSubmit(stripPasteControls(buffer));
+  }
+  if (!/[\\r\\n]/.test(buffer)) return;
+  const line = stripPasteControls(buffer).replace(/[\\r\\n]+$/g, '');
+  buffer = '';
+  emitUserPromptSubmit(line);
+  process.stdout.write(\`echo:\${line}\\n\`);
+  if (line.includes('complete')) {
+    process.stdout.write('task complete\\n');
+  }
+});
+
+setInterval(() => {
+  process.stdout.write('Claude Code ❯ kookr-smoke-agent ready\\n');
+}, 1000);
 `, 'utf8');
   chmodSync(path, 0o755);
 }
