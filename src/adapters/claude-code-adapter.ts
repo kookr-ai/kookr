@@ -34,6 +34,7 @@ import { inferGitInfoPathFromEvent } from './git-path-inference.js';
 import {
   buildAgentLaunchContext,
   deliverInitialPromptToSession,
+  type InitialPromptDeliveryResult,
   resolveBracketedPasteSubmit,
 } from './agent-launch-context.js';
 import { buildCheckpointLoadInstruction } from '../core/checkpoint-load-instruction.js';
@@ -136,6 +137,16 @@ export const CLAUDE_AGENT_BIN_ENV = 'KOOKR_AGENT_BIN';
 // layers (core/playbook-discovery) to share the same resolution logic.
 import { resolvePluginDir } from '../core/plugin-paths.js';
 export { resolvePluginDir } from '../core/plugin-paths.js';
+
+export class InitialPromptSubmissionNotConfirmedError extends Error {
+  constructor(sessionId: string, result: InitialPromptDeliveryResult) {
+    super(
+      `Initial prompt submission was not confirmed for session ${sessionId} `
+      + `after ${result.confirmationAttempts} confirmation attempt(s) and ${result.enterWrites} Enter write(s)`,
+    );
+    this.name = 'InitialPromptSubmissionNotConfirmedError';
+  }
+}
 
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly agentType = 'claude-code';
@@ -311,7 +322,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         // Submit the prompt via bracketed paste so Claude Code's UI parses the
         // trailing Enter as a keystroke, not paste content. See
         // deliverInitialPromptToSession.
-        await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+        const deliveryResult = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
           inputWriter: this.inputWriter,
           bracketedPaste: this.promptBracketedPaste,
           waitForReady: this.promptBracketedPaste,
@@ -321,6 +332,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
           submitRetries: this.promptSubmitRetries,
         });
+        if (deliveryResult.status === 'unconfirmed') {
+          throw new InitialPromptSubmissionNotConfirmedError(tmuxName, deliveryResult);
+        }
+      } catch (err) {
+        await this.cleanupFailedLaunch(tmuxName);
+        throw err;
       } finally {
         // Free the resolver slot even if delivery throws — a later launch on
         // the same tmuxName (unlikely but possible) must not see a stale
@@ -353,6 +370,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       .catch(() => { /* graceful degradation — no git info displayed */ });
 
     return tmuxName;
+  }
+
+  private async cleanupFailedLaunch(tmuxName: string): Promise<void> {
+    this.initialPromptSubmitResolvers.delete(tmuxName);
+    this.settingsMap.delete(tmuxName);
+    this.tmuxToTaskId.delete(tmuxName);
+    try {
+      await this.backend.killSession(tmuxName);
+    } catch {
+      // Preserve the original launch failure. Backend errors are surfaced via
+      // TerminalBackend diagnostics; launch callers need the prompt-delivery cause.
+    }
   }
 
   /** Send developer input (text + Enter) to an agent's session. */

@@ -888,6 +888,35 @@ describe('TerminalPanel', () => {
     expect(ws.send).toHaveBeenCalledWith(buildPasteFrame('line1\nline2\nline3'));
   });
 
+  test('routes Ctrl+V multiline clipboard text through one structured paste frame', async () => {
+    const readText = vi.fn().mockResolvedValue('line1\nline2\nline3');
+    vi.stubGlobal('navigator', { clipboard: { readText } });
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const ws = mocks.webSocketInstances[0];
+    ws.send.mockClear();
+    const xtermContainer = container.querySelector('.terminal-xterm');
+    expect(xtermContainer).not.toBeNull();
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'v',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => {
+      xtermContainer!.dispatchEvent(event);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(readText).toHaveBeenCalledOnce();
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    expect(ws.send).toHaveBeenCalledWith(buildPasteFrame('line1\nline2\nline3'));
+  });
+
   test('forwards Enter after a multiline safe paste marks the local draft non-empty', () => {
     const onEmptySubmit = vi.fn();
     act(() => {

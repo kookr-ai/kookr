@@ -75,7 +75,7 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
 
       if (bridgeKind === 'fake') {
         const content = FakeTerminalBridge.getContent(sessionName);
-        const bridge = new FakeTerminalBridge(sessionName, ws, content);
+        const bridge = new FakeTerminalBridge(sessionName, ws, content, terminalInputWriter);
         activeBridges.set(ws, bridge);
         bridge.start();
         return;
