@@ -105,6 +105,31 @@ test.describe('Terminal empty Enter navigation', () => {
     await expect.poll(() => selectedFindingName(page), { timeout: 5000 }).not.toBe(firstSelected);
   });
 
+  // Claude Code / Codex CLI both query Primary Device Attributes (`ESC [ c`) at
+  // session start. xterm replies with `ESC [ ? 1 ; 2 c` on the same onData
+  // channel the frontend uses to track draft bytes. Without filtering those
+  // replies the draft is non-empty as soon as the agent boots, so empty-Enter
+  // never navigates on a freshly opened terminal.
+  test('pressing Enter advances even after xterm answers a DA1 query', async ({ page, request }) => {
+    const tmuxA = await launchStoppedTask(page, request, 'Terminal DA1 Alpha', '/test/terminal-da1-alpha');
+    // Drive xterm into emitting a Primary DA reply by sending the query bytes
+    // through the terminal output channel. Real agents emit `\x1b[c` at startup.
+    await setTerminalContent(request, tmuxA, '\x1b[c\r\n╭────────────────╮\r\n❯ \r\n');
+    await launchStoppedTask(page, request, 'Terminal DA1 Beta', '/test/terminal-da1-beta');
+    await showAllProjects(page);
+    await expect(page.locator('.finding-card')).toHaveCount(2);
+
+    await page.keyboard.press('Alt+n');
+    const firstSelected = await selectedFindingName(page);
+    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
+    await expect(page.locator('.terminal-xterm')).toContainText('❯');
+    await page.locator('.terminal-xterm').click();
+
+    await page.keyboard.press('Enter');
+
+    await expect.poll(() => selectedFindingName(page), { timeout: 5000 }).not.toBe(firstSelected);
+  });
+
   test('pressing Enter advances when an empty Claude prompt is followed by a separator rule', async ({ page, request }) => {
     const tmuxA = await launchStoppedTask(page, request, 'Terminal Rule Alpha', '/test/terminal-rule-alpha');
     await setTerminalContent(request, tmuxA, '\r\n────────────────────────────────────────\r\n❯ ────────────────────────────────────────\r\n  esc to interrupt · ctrl+t to hide tasks\r\n');

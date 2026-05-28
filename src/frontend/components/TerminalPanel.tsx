@@ -36,7 +36,6 @@ const CTRL_C = '\u0003';
 const CTRL_U = '\u0015';
 const BACKSPACE = '\b';
 const DELETE = '\u007f';
-const ESC = '\u001b';
 
 function getValidatedResize(cols: unknown, rows: unknown): { cols: number; rows: number } | null {
   if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
@@ -44,28 +43,43 @@ function getValidatedResize(cols: unknown, rows: unknown): { cols: number; rows:
   return { cols, rows };
 }
 
-// xterm.onData forwards more than user keystrokes — focus tracking (DECSET 1004
-// sends `ESC [ I` on focus and `ESC [ O` on blur) arrives here too, even though
-// no key was pressed. Counting those bytes as draft input would mask empty-Enter
-// navigation right after the user clicks the terminal: Claude Code's TUI enables
-// focus tracking, the click sends `ESC [ I`, and the first Enter then forwards
-// instead of advancing to the next task. Strip those two sequences specifically;
-// leave other ESC traffic (arrow keys, bracketed-paste markers) alone so an
-// arrow-up-recall followed by Enter still submits to the agent.
+// xterm.onData forwards more than user keystrokes — it also emits replies
+// xterm generates on its own behalf in response to *agent* queries or DOM focus
+// changes, none of which represent local input. Examples seen on real Claude
+// Code / Codex sessions: focus tracking (`ESC [ I` / `ESC [ O` from DECSET 1004),
+// Primary/Secondary Device Attribute replies (`ESC [ ? 1 ; 2 c`, `ESC [ > 0 ; … c`),
+// Device Status Reports (`ESC [ … n`), Cursor Position Reports (`ESC [ row ; col R`),
+// SGR mouse events, and bracketed-paste markers around xterm's native paste.
+//
+// Treating any of those bytes as draft input masks empty-Enter navigation: the
+// draft looks non-empty even though the user hasn't typed anything. The first
+// concrete symptom was `ESC [ I` on click; the deeper one is `ESC [ ? 1 ; 2 c`
+// which xterm sends as soon as the agent issues `ESC [ c` (Primary DA query) at
+// session start, so the draft is polluted before the user ever interacts.
+//
+// Strip the known xterm-emitted report sequences before accumulating; leave
+// keystroke-driven CSI sequences (arrow keys, function keys) alone so
+// up-arrow-recall + Enter still submits to the agent.
+const TERMINAL_REPORT_PATTERN = new RegExp(
+  [
+    '\\x1b\\[[IO]',                  // focus tracking (DECSET 1004)
+    '\\x1b\\[[?>][0-9;]*c',          // DA1 / DA2 replies (private prefix, final 'c')
+    '\\x1b\\[\\??[0-9;]*n',          // DSR replies (status / cursor-status, final 'n')
+    '\\x1b\\[[0-9]+;[0-9]+R',        // Cursor Position Report (final 'R')
+    '\\x1b\\[<[0-9]+;[0-9]+;[0-9]+[Mm]', // SGR mouse press/release
+    '\\x1b\\[20[01]~',               // bracketed-paste open/close markers
+  ].join('|'),
+  'g',
+);
+
+function stripTerminalReports(data: string): string {
+  return data.replace(TERMINAL_REPORT_PATTERN, '');
+}
+
 function updateTerminalInputDraft(draft: string, data: string): string {
   let next = draft;
-  let i = 0;
-  while (i < data.length) {
-    if (
-      data[i] === ESC
-      && i + 2 < data.length
-      && data[i + 1] === '['
-      && (data[i + 2] === 'I' || data[i + 2] === 'O')
-    ) {
-      i += 3;
-      continue;
-    }
-    const char = data[i];
+  const cleaned = stripTerminalReports(data);
+  for (const char of cleaned) {
     if (char === '\r' || char === '\n' || char === CTRL_C || char === CTRL_U) {
       next = '';
     } else if (char === DELETE || char === BACKSPACE) {
@@ -73,7 +87,6 @@ function updateTerminalInputDraft(draft: string, data: string): string {
     } else {
       next += char;
     }
-    i++;
   }
   return next;
 }
