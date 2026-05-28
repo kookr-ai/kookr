@@ -727,6 +727,81 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().selectedAgentId).toBe('high-finding');
   });
 
+  describe('advanceEmptyEnter (empty-Enter navigation cursor)', () => {
+    const finding = (agentId: string, severity: 'critical' | 'warning' | 'info' = 'warning') => ({
+      agentId,
+      events: [],
+      anomaly: { agentId, type: 'needs_input' as const, severity, explanation: 'Waiting', detectedAt: new Date() },
+    });
+    const healthy = (agentId: string) => ({ agentId, events: [], anomaly: null });
+
+    test('cycles among findings (never lands on a healthy task) while findings exist', () => {
+      store.getState().handleSnapshot([finding('f-1', 'critical'), finding('f-2', 'warning'), healthy('h-1')]);
+      store.getState().selectAgent('f-1');
+
+      store.getState().advanceEmptyEnter();
+
+      expect(store.getState().selectedAgentId).toBe('f-2');
+    });
+
+    test('cycles back to the first finding from the last (never deselects while findings exist)', () => {
+      // f-1 (critical) sorts ahead of f-2 (warning). Selecting the last finding
+      // and advancing must wrap to the first — NOT deselect to null, which would
+      // violate the "cycle findings while any exist" contract.
+      store.getState().handleSnapshot([finding('f-1', 'critical'), finding('f-2', 'warning')]);
+      store.getState().selectAgent('f-2');
+
+      store.getState().advanceEmptyEnter();
+
+      expect(store.getState().selectedAgentId).toBe('f-1');
+    });
+
+    test('stays on the sole finding when it is already selected', () => {
+      store.getState().handleSnapshot([finding('f-1'), healthy('h-1'), healthy('h-2')]);
+      store.getState().selectAgent('f-1');
+
+      store.getState().advanceEmptyEnter();
+
+      expect(store.getState().selectedAgentId).toBe('f-1');
+    });
+
+    test('jumps from a healthy task to a finding when one exists', () => {
+      store.getState().handleSnapshot([healthy('h-1'), finding('f-1')]);
+      store.getState().selectAgent('h-1');
+
+      store.getState().advanceEmptyEnter();
+
+      expect(store.getState().selectedAgentId).toBe('f-1');
+    });
+
+    test('with no findings, cycles through healthy tasks', () => {
+      store.getState().handleSnapshot([healthy('h-1'), healthy('h-2')]);
+      store.getState().selectAgent('h-1');
+
+      store.getState().advanceEmptyEnter();
+
+      expect(store.getState().selectedAgentId).toBe('h-2');
+    });
+
+    test('with nothing selected, advances into the highest-priority finding', () => {
+      store.getState().handleSnapshot([healthy('h-1'), finding('f-1', 'critical')]);
+      store.getState().selectAgent(null);
+
+      store.getState().advanceEmptyEnter();
+
+      expect(store.getState().selectedAgentId).toBe('f-1');
+    });
+
+    test('with nothing selected and no findings, advances into a healthy task', () => {
+      store.getState().handleSnapshot([healthy('h-1'), healthy('h-2')]);
+      store.getState().selectAgent(null);
+
+      store.getState().advanceEmptyEnter();
+
+      expect(store.getState().selectedAgentId).toBe('h-1');
+    });
+  });
+
   test('selectProject auto-selects using task priority ordering', () => {
     store.getState().handleProjectSummaries([
       {
