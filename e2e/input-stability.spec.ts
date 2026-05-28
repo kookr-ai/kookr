@@ -6,12 +6,8 @@
  * "published automatically" when state changes occurred (new findings, etc.).
  */
 import { test, expect } from './fixtures.js';
+import { resetServer } from './reset-server.js';
 import type { Page, APIRequestContext } from '@playwright/test';
-
-
-async function resetServer(request: APIRequestContext) {
-  await request.post('/api/test/reset');
-}
 
 async function getTmuxNameForPrompt(request: APIRequestContext, prompt: string): Promise<string> {
   const deadline = Date.now() + 10000;

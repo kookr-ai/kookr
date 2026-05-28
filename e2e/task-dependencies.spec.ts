@@ -1,9 +1,7 @@
 import { test, expect } from './fixtures.js';
+import { resetServer } from './reset-server.js';
 import type { APIRequestContext, Page } from '@playwright/test';
 
-async function resetServer(request: APIRequestContext) {
-  await request.post('/api/test/reset');
-}
 
 async function currentTaskCount(page: Page): Promise<number> {
   const status = await page.locator('.statusbar').textContent();

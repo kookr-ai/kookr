@@ -11,9 +11,9 @@ import type { Page, APIRequestContext } from '@playwright/test';
 // Helpers (same conventions as kookr.spec.ts)
 // ---------------------------------------------------------------------------
 
-export async function resetServer(request: APIRequestContext) {
-  await request.post('/api/test/reset');
-}
+// Re-exported from the shared module so battle specs that import it from here
+// keep working while there is a single resetServer implementation.
+export { resetServer } from './reset-server.js';
 
 /** Polls until an inProgress task with sessions appears (WebSocket launch is async). */
 export async function getLatestTmuxName(request: APIRequestContext): Promise<string> {

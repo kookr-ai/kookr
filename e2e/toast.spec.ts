@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures.js';
+import { resetServer } from './reset-server.js';
 import type { Page, APIRequestContext } from '@playwright/test';
-
-
-async function resetServer(request: APIRequestContext) {
-  await request.post('/api/test/reset');
-}
 
 /** Broadcast an info-level alert via the test server's WebSocket. */
 async function broadcastInfoAlert(request: APIRequestContext, summary: string) {
