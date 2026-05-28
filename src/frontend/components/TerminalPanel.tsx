@@ -91,11 +91,56 @@ function updateTerminalInputDraft(draft: string, data: string): string {
   return next;
 }
 
+// Last visible rows of the rendered buffer — used only as a menu backstop, not
+// to decide draft emptiness (that stays byte-tracked). `translateToString(true)`
+// trims trailing whitespace per row.
+function getVisibleTerminalTail(terminal: Terminal): string {
+  try {
+    const buffer = terminal.buffer.active;
+    const start = Math.max(0, buffer.length - 15);
+    const lines: string[] = [];
+    for (let i = start; i < buffer.length; i++) {
+      lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
+    }
+    return lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
+// A selected menu row: a TUI selection marker (❯ › ▶ ▸ — deliberately NOT the
+// ASCII ">", which is a common markdown blockquote in agent output) followed by
+// a numbered/lettered option, e.g. "❯ 2. Dark mode" or "› 1. Yes, continue".
+// The idle composer (marker alone, or marker + dim placeholder like `Try "…"`)
+// has no digit/letter-then-delimiter after the marker, so it does not match.
+const MENU_SELECTION_ROW_RE = /^\s*[❯›▶▸]\s*[0-9a-z][.)]\s*\S/i;
+// Footer hint that Enter confirms a selection rather than submits a prompt.
+// Claude: "Enter to select · Esc to cancel"; Codex: "Press enter to continue".
+// `\bpress enter\b` is intentionally broad — if it false-positives on agent
+// prose containing that phrase, the only effect is forwarding Enter to the
+// agent instead of navigating, which is a safe degrade (no menu choice lost).
+const MENU_FOOTER_RE = /\benter to (?:select|continue|confirm|submit|choose)\b|\bpress enter\b/i;
+
+function looksLikeInteractiveMenu(tail: string): boolean {
+  return tail.split('\n').some((line) => MENU_SELECTION_ROW_RE.test(line) || MENU_FOOTER_RE.test(line));
+}
+
 function shouldHandleEmptyTerminalEnter(
   draft: string,
+  terminal: Terminal,
   onEmptySubmit?: () => void,
 ): boolean {
-  return draft.length === 0 && Boolean(onEmptySubmit);
+  // Emptiness stays byte-tracked (reliable across streaming/session switches) —
+  // this preserves the prior draft-only navigation behavior exactly.
+  if (draft.length !== 0 || !onEmptySubmit) return false;
+  // The ONLY added consideration: if the agent is showing a selection menu
+  // (Claude/Codex render these inline, so there is no terminal-mode signal —
+  // only the marked numbered row and the "enter to select"/"press enter"
+  // footer distinguish it), forward Enter so the highlighted choice is
+  // confirmed instead of being swallowed as task navigation. Every non-menu
+  // state behaves identically to before.
+  if (looksLikeInteractiveMenu(getVisibleTerminalTail(terminal))) return false;
+  return true;
 }
 
 export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
@@ -341,6 +386,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       if (e.key !== 'Enter' || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
       if (!shouldHandleEmptyTerminalEnter(
         terminalInputDraftRef.current,
+        terminal,
         onEmptySubmitRef.current,
       )) {
         return;
@@ -571,6 +617,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
         data === '\r'
         && shouldHandleEmptyTerminalEnter(
           terminalInputDraftRef.current,
+          terminal,
           onEmptySubmitRef.current,
         )
       ) {

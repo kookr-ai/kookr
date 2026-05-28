@@ -208,6 +208,7 @@ export interface TriageNavigationSlice {
   selectAgent: (agentId: string | null) => void;
   nextBottleneck: () => void;
   nextTask: () => void;
+  advanceEmptyEnter: () => void;
   previousTask: () => void;
   snoozeAgent: (agentId: string, durationMs: number) => void;
   dismissAlert: (index: number) => void;

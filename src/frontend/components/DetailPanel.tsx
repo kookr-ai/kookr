@@ -9,7 +9,6 @@ import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, f
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
 import { computeTerminalVisible } from './detail-panel-visibility.js';
-import { isActiveFinding } from '../store/finding-helpers.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
 import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../shared/contracts/remote-share.js';
@@ -254,7 +253,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     typeof window !== 'undefined' ? window.innerWidth <= NARROW_DETAIL_BREAKPOINT_PX : false,
   );
   const inputRef = useRef<HTMLInputElement>(null);
-  const { selectAgent, nextBottleneck, nextTask, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
+  const { selectAgent, nextBottleneck, advanceEmptyEnter, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
 
   // Right-pane mode for the Activity+Terminal|Diff split.
@@ -527,32 +526,11 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     }
   }
 
-  function handleSkip(method: 'button' | 'empty_enter' = 'button') {
+  function handleSkip() {
     if (!agent) return;
-    track({ type: 'finding_skipped', agentId: agent.agentId, anomalyType: agent.anomaly?.type ?? null, method });
-    if (method === 'button') {
-      trackClick('skip');
-    } else {
-      track({ type: 'shortcut_used', key: 'Enter', action: 'skip_empty_input', context: 'input_focused' });
-    }
+    track({ type: 'finding_skipped', agentId: agent.agentId, anomalyType: agent.anomaly?.type ?? null, method: 'button' });
+    trackClick('skip');
     send({ type: 'skip', agentId: agent.agentId });
-    // Rapid-skim empty-Enter must keep a selection so the next press fires. If
-    // this is the only remaining finding, nextBottleneck would wrap onto self
-    // and deselect, unmounting the input. Fall through to nextTask. The Skip
-    // BUTTON keeps the deselect-on-last behavior — clicking Skip is a deliberate
-    // "I'm done" action, not a rapid-keyboard skim.
-    if (method === 'empty_enter') {
-      const { agents } = useKookrStore.getState();
-      const hasOtherFinding = agents.some(
-        (other) => other.anomaly !== null
-          && !other.snoozedUntil
-          && !other.suppressed
-          && other.agentId !== agent.agentId,
-      );
-      if (hasOtherFinding) nextBottleneck();
-      else nextTask();
-      return;
-    }
     nextBottleneck();
   }
 
@@ -610,18 +588,14 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
 
   function handleEmptyEnterAdvance() {
     if (!agent) return;
-    if (agent.anomaly) {
-      handleSkip('empty_enter');
-      return;
-    }
-    // Local dashboard navigation must not depend on terminal readiness. The
+    // Empty Enter is pure navigation — it never dismisses a finding. The
+    // finding-vs-healthy cursor rule lives in the store (advanceEmptyEnter) so
+    // the reply input, the terminal, and the global window handler stay in sync.
+    // Local dashboard navigation must not depend on terminal readiness: the
     // server-side terminal-input coordinator can lag until an idle notification
     // arrives, which made empty Enter appear to work once and then stall.
-    const { agents } = useKookrStore.getState();
-    const hasFinding = agents.some(isActiveFinding);
     track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'input_focused' });
-    if (hasFinding) nextBottleneck();
-    else nextTask();
+    advanceEmptyEnter();
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {

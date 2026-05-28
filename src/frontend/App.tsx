@@ -7,6 +7,7 @@ import { useNotifications } from './hooks/useNotifications.js';
 import { useAudibleAlert } from './hooks/useAudibleAlert.js';
 import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
+import { globalEnterShouldNavigate } from './global-enter-nav.js';
 import { track } from './telemetry.js';
 import { buildAgentBuckets } from './agent-buckets.js';
 import { computeChainMembership, computeDescendants } from './components/related-tasks-model.js';
@@ -143,6 +144,7 @@ export function App() {
     selectAgent,
     nextBottleneck,
     nextTask,
+    advanceEmptyEnter,
     previousTask,
     relaunchTask,
     clearRelaunchTask,
@@ -506,10 +508,30 @@ export function App() {
         track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.previous_task), action: 'previous_task', context: 'global' });
         previousTask();
       }
+      // Bare Enter is a global "advance to next task" — usable from anywhere on
+      // the dashboard (no selection, or focus resting on a non-editable element)
+      // so the user can skim tasks without first clicking into a pane. Enter is
+      // deliberately NOT routed through `shortcutBindings`: it is a fixed,
+      // non-rebindable global, so it does not use `matchesShortcutAction` like
+      // the branches above. Do NOT hijack it while the user is composing: the
+      // reply input and the terminal own Enter for their empty-advance / submit
+      // behavior (and call preventDefault when they consume it — hence the
+      // defaultPrevented guard), and an open dialog owns Enter for confirmation.
+      // The interactive-control / dialog decision lives in globalEnterShouldNavigate.
+      if (
+        e.key === 'Enter'
+        && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey
+        && !e.isComposing && !e.defaultPrevented
+        && globalEnterShouldNavigate(document.activeElement ?? (e.target as Element | null))
+      ) {
+        e.preventDefault();
+        track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'global' });
+        advanceEmptyEnter();
+      }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nextBottleneck, nextTask, previousTask, send, shortcutBindings, showBugReport, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive]);
+  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, showBugReport, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;

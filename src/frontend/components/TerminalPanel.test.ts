@@ -572,6 +572,159 @@ describe('TerminalPanel', () => {
     expect(ws.send).toHaveBeenNthCalledWith(2, '\r');
   });
 
+  test('does not navigate when the visible buffer shows a Claude selection menu', () => {
+    // Purely additive menu backstop: every non-menu case behaves exactly as the
+    // draft-only path. When the rendered composer shows a marked numbered row +
+    // an "Enter to select" footer, Enter must confirm the choice, not navigate.
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    setTerminalBufferLines(terminal, [
+      'Choose the text style that looks best with your terminal',
+      ' 1. Auto (match terminal)',
+      '❯ 2. Dark mode ✔',
+      ' 3. Light mode',
+      'Enter to select · Esc to cancel',
+    ]);
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith('\r');
+  });
+
+  test('real keyboard Enter on a Codex selection menu is forwarded, not navigated', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    setTerminalBufferLines(terminal, [
+      'Do you trust the contents of this directory?',
+      '› 1. Yes, continue',
+      '  2. No, quit',
+      'Press enter to continue',
+    ]);
+    const xtermContainer = container.querySelector('.terminal-xterm');
+    expect(xtermContainer).not.toBeNull();
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    act(() => {
+      xtermContainer!.dispatchEvent(event);
+    });
+
+    // Not intercepted as navigation — xterm forwards it to the agent.
+    expect(event.defaultPrevented).toBe(false);
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+  });
+
+  test('navigates normally when the buffer is a plain idle prompt (menu check is a no-op)', () => {
+    // Regression guard: the menu backstop must NOT fire on the ordinary idle
+    // composer, so empty Enter still advances exactly as before.
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    setTerminalBufferLines(terminal, [
+      '────────────────────────',
+      '❯ Try "write a test for <filepath>"',
+      '────────────────────────',
+      '⏵⏵ accept edits on (shift+tab to cycle) · ← for agents',
+    ]);
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  test('menu veto fires on the selection-row signal alone (no footer present)', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    setTerminalBufferLines(terminal, [
+      ' 1. Auto (match terminal)',
+      '❯ 2. Dark mode',
+      ' 3. Light mode',
+    ]);
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith('\r');
+  });
+
+  test('menu veto fires on the footer signal alone (no marked row present)', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    setTerminalBufferLines(terminal, [
+      'Pick a base branch',
+      'main',
+      'develop',
+      'Press enter to continue',
+    ]);
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith('\r');
+  });
+
+  test('a markdown blockquote in agent output is NOT treated as a menu (ASCII > excluded)', () => {
+    // The selection-marker class deliberately excludes ASCII ">" so a quoted
+    // numbered line in agent prose does not suppress navigation.
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    setTerminalBufferLines(terminal, [
+      'Here is the plan:',
+      '> 1. First do the thing',
+      '> 2. Then the other thing',
+      '❯ ',
+    ]);
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
   test('captures Enter after terminal input is erased back to empty', () => {
     const onEmptySubmit = vi.fn();
     act(() => {

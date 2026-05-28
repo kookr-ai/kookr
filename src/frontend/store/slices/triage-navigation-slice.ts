@@ -192,6 +192,26 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       set(activateNavigationSelection(agents, all[nextIdx].agentId, visibleProjectIds));
     },
 
+    // Empty-Enter navigation is pure cursor movement — it never dismisses a
+    // finding. While any active findings exist, cycle among them only so the
+    // most urgent work is never buried under healthy tasks; if the sole finding
+    // is already selected, stay put (nextBottleneck would wrap onto self and
+    // deselect). With zero findings, cycle the healthy tasks until a finding
+    // appears, at which point the next Enter jumps to it. Shared by the reply
+    // input, the terminal, and the global window-level Enter handler.
+    advanceEmptyEnter: () => {
+      const { agents, selectedAgentId } = get();
+      const findings = agents.filter(isActiveFinding);
+      if (findings.length === 0) {
+        get().nextTask();
+        return;
+      }
+      if (findings.length === 1 && findings[0].agentId === selectedAgentId) {
+        return;
+      }
+      get().nextBottleneck();
+    },
+
     previousTask: () => {
       const { agents, selectedAgentId, visibleProjectSummaries } = get();
       const order = getPriorityOrderContext();
