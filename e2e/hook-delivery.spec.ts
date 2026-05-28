@@ -9,12 +9,8 @@
  * Requires: `claude` CLI on PATH, network access to localhost for HTTP push.
  */
 import { test, expect } from './fixtures.js';
+import { resetServer } from './reset-server.js';
 import type { APIRequestContext } from '@playwright/test';
-
-
-async function resetServer(request: APIRequestContext) {
-  await request.post('/api/test/reset');
-}
 
 /** Polls until an inProgress task with sessions appears. */
 async function getLatestTmuxName(request: APIRequestContext): Promise<string> {

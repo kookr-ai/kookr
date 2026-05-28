@@ -1,9 +1,7 @@
 import type { APIRequestContext, Page } from '@playwright/test';
+import { resetServer } from './reset-server.js';
 import { test, expect } from './fixtures.js';
 
-async function resetServer(request: APIRequestContext) {
-  await request.post('/api/test/reset');
-}
 
 async function createTask(request: APIRequestContext) {
   const res = await request.post('/api/tasks', {

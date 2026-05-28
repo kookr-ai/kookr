@@ -1,4 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
+import { resetServer } from './reset-server.js';
 import type { APIRequestContext, Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 
@@ -28,9 +29,6 @@ async function expectNoA11yViolations(page: Page, name: string, includeSelector 
   expect(violations, `${name} accessibility violations`).toEqual([]);
 }
 
-async function resetServer(request: APIRequestContext) {
-  await request.post('/api/test/reset');
-}
 
 async function seedTask(request: APIRequestContext) {
   const response = await request.post('/api/tasks', {

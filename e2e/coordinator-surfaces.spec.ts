@@ -1,9 +1,7 @@
 import { test, expect } from './fixtures.js';
+import { resetServer } from './reset-server.js';
 import type { APIRequestContext, Page } from '@playwright/test';
 
-async function resetServer(request: APIRequestContext) {
-  await request.post('/api/test/reset');
-}
 
 async function launchViaUI(page: Page, prompt: string, cwd = '/test/project') {
   await expect(page.locator('.health-dot-connected')).toBeVisible({ timeout: 5000 });

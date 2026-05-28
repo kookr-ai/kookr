@@ -1,14 +1,10 @@
 import { test, expect } from './fixtures.js';
+import { resetServer } from './reset-server.js';
 import type { Page, APIRequestContext } from '@playwright/test';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-
-async function resetServer(request: APIRequestContext) {
-  await request.post('/api/test/reset');
-}
 
 /** Get the tmux session name of the most recently launched in-progress task.
  *  Polls because the WebSocket launch completes asynchronously after the dialog closes. */

@@ -6,13 +6,8 @@
  *   the server, preserving build info with a new serverStartedAt
  */
 import { test, expect } from './fixtures.js';
-import type { APIRequestContext } from '@playwright/test';
+import { resetServer } from './reset-server.js';
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
-
-
-async function resetServer(request: APIRequestContext) {
-  await request.post('/api/test/reset');
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
