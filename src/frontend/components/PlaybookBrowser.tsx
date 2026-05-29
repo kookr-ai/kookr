@@ -611,7 +611,7 @@ export function PlaybookBrowser({
     const selectedSourceCwd = selected?.sourceCwd.trim();
     const pinnedCwd = selected?.cwd?.trim();
     const targetCwd = effectiveTaskTargetCwd;
-    const payloadTargetCwd = !usesSplitLaunchFields && pinnedCwd ? pinnedCwd : targetCwd;
+    const payloadTargetCwd = pinnedCwd || targetCwd;
     const sourceDiffersFromTarget = Boolean(selectedSourceCwd && selectedSourceCwd !== targetCwd);
     const shouldSendSplitFields = usesSplitLaunchFields || sourceDiffersFromTarget;
     const sourceCwd = usesSplitLaunchFields
@@ -633,7 +633,7 @@ export function PlaybookBrowser({
       ...base,
       playbookSourceCwd: sourceCwd,
       taskTargetCwd: payloadTargetCwd,
-      ...(projectContext?.project ? { projectId: projectContext.project } : {}),
+      ...(projectContext?.project && !pinnedCwd ? { projectId: projectContext.project } : {}),
     };
   }
 
