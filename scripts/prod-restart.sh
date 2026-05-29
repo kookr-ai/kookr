@@ -221,3 +221,20 @@ if [[ "$PROBE_RESULT" == "missing-flag" ]]; then
     echo "      will NOT see the kookr-toolkit. Run \`pnpm codex:rebuild\` to fix."
   } >&2
 fi
+
+# Post-restart readiness nag (issue #660) — /api/health always returns 200 for
+# the dashboard, so the liveness gate above cannot see a wedged terminal
+# backend or an unwritable state directory. /api/ready turns 503 when a
+# critical subsystem is down; surface that as a non-fatal warning rather than
+# failing the restart (the server is live and serving — an operator should
+# investigate, but a partial outage should not block the deploy).
+READY_URL="${KOOKR_READY_URL:-http://127.0.0.1:${PORT}/api/ready}"
+# --max-time so a wedged HTTP layer cannot hang the restart after the server is
+# already live (the liveness gate above is bounded by its own deadline loop).
+if ! curl -sf --max-time 5 "$READY_URL" >/dev/null 2>&1; then
+  {
+    echo "WARN: ${READY_URL} reports NOT READY — a critical subsystem (terminal"
+    echo "      backend or persistence) is degraded. The server is live but may"
+    echo "      be serving from a partial outage; inspect ${LOG_FILE}."
+  } >&2
+fi
