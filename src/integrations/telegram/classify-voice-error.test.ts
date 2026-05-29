@@ -7,8 +7,7 @@
  * See issue #577.
  */
 import { describe, it, expect } from 'vitest';
-import { classifyVoiceError } from './index.js';
-import { TranscriptionError } from './transcribe.js';
+import { classifyVoiceError, TranscriptionError } from './transcribe.js';
 import { TelegramApiError } from './api-client.js';
 
 const UNREACHABLE = 'Transcription server unreachable. Please type — audio will retry on the next message.';
@@ -19,7 +18,7 @@ const FALLBACK = 'Transcription failed. Please type.';
 describe('classifyVoiceError', () => {
   describe('whisper TranscriptionError, status known', () => {
     // The "payload-rejected" bucket is enumerated rather than range-based — see
-    // PAYLOAD_REJECTED_STATUSES in index.ts. Other 4xx (429, 408, 401, 403, ...)
+    // PAYLOAD_REJECTED_STATUSES in transcribe.ts. Other 4xx (429, 408, 401, 403, ...)
     // are infrastructure failures, not bad recordings, and should advise retry.
     it.each([400, 413, 415, 422])('classifies payload-shape status %d as payload-rejected', (status) => {
       expect(classifyVoiceError(new TranscriptionError(status, `whisper ${status}: nope`))).toBe(FOUR_XX);

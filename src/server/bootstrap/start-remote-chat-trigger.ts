@@ -1,6 +1,6 @@
 import type { LlmClient } from '../../core/llm-client.js';
-import type { TelegramHandle } from '../../integrations/telegram/index.js';
-import type { LaunchResult, LaunchOpts } from '../launch-service.js';
+import type { LaunchResult, LaunchOpts } from '../../shared/contracts/launch.js';
+import type { TelegramHandle } from '../../shared/contracts/telegram.js';
 
 type Env = Record<string, string | undefined>;
 
