@@ -6,6 +6,7 @@ import type { Anomaly } from '../core/types.js';
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { Monitor } from '../core/monitor.js';
+import { SnoozeSuppressionTracker, SUPPRESSION_THRESHOLD } from '../core/snooze-suppression.js';
 import { DeferredInteractionLogWriter, readInteractionLog } from '../core/interaction-log.js';
 import { buildPermissionRequestBinding } from '../shared/contracts/permission-request-binding.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
@@ -2299,6 +2300,85 @@ describe('WebSocket MessageRouter — permissionChoice', () => {
     expect(record.userReason).toBe('agent emitted a long review report, not a question');
     expect(record.snapshot.anomalyExplanation).toContain('### Finding 1');
     expect(Array.isArray(record.snapshot.recentEvents)).toBe(true);
+  });
+
+  test('findingFeedback on a liveness finding suppresses re-fire for that agent', async () => {
+    const tracker = new SnoozeSuppressionTracker();
+    const localRouter = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+      suppressionTracker: tracker,
+    });
+
+    await localRouter.handleMessage({
+      type: 'findingFeedback',
+      agentId: 'agent-stale',
+      anomalyType: 'stale_agent',
+      explanation: 'Tool running for 8395s with no response — may be hung',
+      verdict: 'false_positive',
+    });
+
+    // The same stale_agent finding must not re-surface on the next watchdog tick.
+    expect(tracker.shouldSuppress('agent-stale', 'stale_agent')).toBe(true);
+    expect(tracker.isSuppressed('agent-stale')).toBe(true);
+  });
+
+  test('findingFeedback on a non-liveness finding does NOT suppress the agent', async () => {
+    const tracker = new SnoozeSuppressionTracker();
+    const localRouter = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+      suppressionTracker: tracker,
+    });
+
+    await localRouter.handleMessage({
+      type: 'findingFeedback',
+      agentId: 'agent-mc',
+      anomalyType: 'merge_conflict',
+      explanation: 'Agent hit a git merge conflict.',
+      verdict: 'false_positive',
+    });
+
+    expect(tracker.isSuppressed('agent-mc')).toBe(false);
+  });
+
+  test('findingFeedback emits a single auto_suppressed event on the suppression transition', async () => {
+    const tracker = new SnoozeSuppressionTracker();
+    const interactionLogAppends: Array<Record<string, unknown>> = [];
+    const interactionLog = {
+      append: async (e: Record<string, unknown>) => { interactionLogAppends.push(e); },
+    };
+    const localRouter = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: '/test/cwd',
+      suppressionTracker: tracker,
+      interactionLog: interactionLog as never,
+    });
+
+    const flag = () => localRouter.handleMessage({
+      type: 'findingFeedback',
+      agentId: 'agent-stale',
+      anomalyType: 'stale_agent',
+      explanation: 'Tool running for 8395s with no response — may be hung',
+      verdict: 'false_positive',
+    });
+
+    await flag();
+    const suppressedEvents = interactionLogAppends.filter((e) => e.type === 'auto_suppressed');
+    expect(suppressedEvents).toHaveLength(1);
+    expect(suppressedEvents[0]).toMatchObject({
+      type: 'auto_suppressed',
+      agentId: 'agent-stale',
+      anomalyType: 'stale_agent',
+      suppressionCount: SUPPRESSION_THRESHOLD,
+    });
+
+    // A second flag on the already-suppressed agent must not re-emit the event.
+    await flag();
+    expect(interactionLogAppends.filter((e) => e.type === 'auto_suppressed')).toHaveLength(1);
   });
 
   test('missedFinding logs interaction event and persists a false_negative case', async () => {

@@ -37,6 +37,39 @@ describe('SnoozeSuppressionTracker', () => {
     expect(tracker.recordSnooze('agent-1', 'stale_agent')).toBe(false); // already suppressed
   });
 
+  // --- False-positive flag (decisive, immediate suppression) ---
+
+  test('recordFalsePositive suppresses a liveness type on the first flag', () => {
+    const tracker = new SnoozeSuppressionTracker();
+    const newlySuppressed = tracker.recordFalsePositive('agent-1', 'stale_agent');
+    expect(newlySuppressed).toBe(true);
+    expect(tracker.isSuppressed('agent-1')).toBe(true);
+    expect(tracker.shouldSuppress('agent-1', 'stale_agent')).toBe(true);
+    // Also covers hook_disconnected, the other liveness type.
+    expect(tracker.shouldSuppress('agent-1', 'hook_disconnected')).toBe(true);
+  });
+
+  test('recordFalsePositive returns false on the second flag (already suppressed)', () => {
+    const tracker = new SnoozeSuppressionTracker();
+    expect(tracker.recordFalsePositive('agent-1', 'hook_disconnected')).toBe(true);
+    expect(tracker.recordFalsePositive('agent-1', 'hook_disconnected')).toBe(false);
+  });
+
+  test('recordFalsePositive ignores non-liveness types (no state change)', () => {
+    const tracker = new SnoozeSuppressionTracker();
+    expect(tracker.recordFalsePositive('agent-1', 'needs_input')).toBe(false);
+    expect(tracker.isSuppressed('agent-1')).toBe(false);
+  });
+
+  test('reset clears false-positive-driven suppression', () => {
+    const tracker = new SnoozeSuppressionTracker();
+    tracker.recordFalsePositive('agent-1', 'stale_agent');
+    expect(tracker.isSuppressed('agent-1')).toBe(true);
+    tracker.reset('agent-1');
+    expect(tracker.isSuppressed('agent-1')).toBe(false);
+    expect(tracker.shouldSuppress('agent-1', 'stale_agent')).toBe(false);
+  });
+
   // --- Category gating ---
 
   test('ignores non-liveness anomaly types', () => {

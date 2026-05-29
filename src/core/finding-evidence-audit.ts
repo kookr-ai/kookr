@@ -20,7 +20,7 @@ export type {
  * the attention queue. M3/M4 review pipelines distinguish these from natural
  * "finding resolved" transitions when measuring detector quality.
  */
-export type FindingSuppressionReason = 'subagent_running';
+export type FindingSuppressionReason = 'subagent_running' | 'systemic_hook_stall';
 
 export interface FindingEvidenceAuditOptions {
   maxRecords?: number;

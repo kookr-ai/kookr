@@ -4,7 +4,7 @@ import type { Monitor } from '../../core/monitor.js';
 import type { Watchdog } from '../../core/watchdog.js';
 import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
-import type { SnoozeSuppressionTracker } from '../../core/snooze-suppression.js';
+import { SUPPRESSION_THRESHOLD, type SnoozeSuppressionTracker } from '../../core/snooze-suppression.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { nowISO } from '../../core/interaction-log.js';
 import { recordFalseNegative, recordFalsePositive } from '../../core/anomaly-detector.js';
@@ -230,7 +230,7 @@ export class AnomalyHandler {
                 type: 'auto_suppressed',
                 agentId: msg.agentId,
                 anomalyType: snoozeAnomaly.type,
-                suppressionCount: 3,
+                suppressionCount: SUPPRESSION_THRESHOLD,
                 timestamp: snoozeTs,
               });
             }
@@ -325,6 +325,26 @@ export class AnomalyHandler {
           snapshot: this.captureSnapshot(msg.agentId, msg.explanation),
         });
         this.deps.queue.remove(msg.agentId);
+        // An explicit FP flag is a decisive "wrong for this agent" signal —
+        // suppress the liveness type immediately so the same finding does not
+        // re-fire on the next watchdog tick and force the user to flag it
+        // again (the long-running-background-tool re-flag storm). Non-liveness
+        // types are ignored by the tracker. Cleared on respond/resume.
+        if (this.deps.suppressionTracker) {
+          const newlySuppressed = this.deps.suppressionTracker.recordFalsePositive(
+            msg.agentId,
+            msg.anomalyType,
+          );
+          if (newlySuppressed) {
+            await this.deps.interactionLog?.append({
+              type: 'auto_suppressed',
+              agentId: msg.agentId,
+              anomalyType: msg.anomalyType,
+              suppressionCount: SUPPRESSION_THRESHOLD,
+              timestamp: fpTs,
+            });
+          }
+        }
         return;
       }
 

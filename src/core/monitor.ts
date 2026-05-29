@@ -130,6 +130,20 @@ function isWatchdogOwnedType(type: string | undefined): boolean {
   return type !== undefined && WATCHDOG_OWNED_TYPES.has(type);
 }
 
+/**
+ * Minimum number of agents simultaneously carrying a `hook_disconnected`
+ * finding for the monitor to treat the silence as a systemic hook-pipeline
+ * stall (server restart, relay backlog) rather than a per-agent fault.
+ *
+ * When the hook pipeline stalls globally, every active agent goes hook-silent
+ * within a tick or two, so minting one finding per agent is pure noise — a
+ * single infra event surfaces as N false positives. Field data showed two
+ * distinct agents flagged `hook_disconnected` 17s apart, both ~200s silent;
+ * the user flagged both as false positives. At or above this count the
+ * per-agent findings are suppressed and any already-queued ones are purged.
+ */
+const SYSTEMIC_HOOK_STALL_MIN_AGENTS = 2;
+
 export class Monitor {
   private agentEvents = new Map<string, AgentEvent[]>();
   private stoppedAgents = new Set<string>();
@@ -330,6 +344,28 @@ export class Monitor {
       // Suppression tracker opts the agent out of queue entry but the UI still
       // needs to reflect the suppressed state, so report "changed" either way.
       if (this.suppressionTracker?.shouldSuppress(agentId, anomaly.type)) {
+        return true;
+      }
+      // Systemic hook-stall guard: when multiple agents go hook-silent at once
+      // the hook pipeline (not any single agent) is the cause. Suppress this
+      // finding and purge any sibling hook_disconnected entries so one infra
+      // blip does not surface as N per-agent false positives.
+      if (
+        anomaly.type === 'hook_disconnected'
+        && this.countActiveHookDisconnected(agentId) >= SYSTEMIC_HOOK_STALL_MIN_AGENTS
+      ) {
+        recordSuppression('hook_disconnected');
+        const events = this.agentEvents.get(agentId) ?? [];
+        this.findingEvidenceAuditor.observe(agentId, anomaly, events, {
+          source: 'watchdog_tick',
+          paneText: options.paneText,
+        });
+        this.findingEvidenceAuditor.observe(agentId, null, events, {
+          source: 'watchdog_tick',
+          paneText: options.paneText,
+          suppressionReason: 'systemic_hook_stall',
+        });
+        this.purgeSystemicHookStallSiblings(agentId, options.paneText);
         return true;
       }
       this.attentionQueue.enqueue(agentId, anomaly);
@@ -603,6 +639,44 @@ export class Monitor {
     }
     const remaining = this.evictStaleSubagents(agentId, Date.now());
     return remaining > 0 ? null : anomaly;
+  }
+
+  /**
+   * Count agents currently carrying an active `hook_disconnected` finding.
+   * `candidateAgentId` is counted as one even if it is not yet queued (it is
+   * the agent the caller is about to enqueue). Reads the queue without
+   * restoring expired snoozes, so it is side-effect free.
+   */
+  private countActiveHookDisconnected(candidateAgentId?: string): number {
+    let count = 0;
+    let candidateCounted = false;
+    for (const { agentId, anomaly } of this.attentionQueue.inspectActive()) {
+      if (anomaly.type !== 'hook_disconnected') continue;
+      count += 1;
+      if (agentId === candidateAgentId) candidateCounted = true;
+    }
+    if (candidateAgentId !== undefined && !candidateCounted) count += 1;
+    return count;
+  }
+
+  /**
+   * Purge every *sibling* queued `hook_disconnected` finding (systemic-stall
+   * cleanup) and resolve each with a matching `systemic_hook_stall` audit
+   * record so no agent's finding vanishes silently from the review pipeline.
+   * The candidate (caller's agent) is purged too — its own resolution record
+   * is emitted by the caller — so a re-firing candidate is not double-counted.
+   */
+  private purgeSystemicHookStallSiblings(candidateAgentId: string, paneText?: string): void {
+    for (const { agentId, anomaly } of this.attentionQueue.inspectActive()) {
+      if (anomaly.type !== 'hook_disconnected') continue;
+      this.attentionQueue.purge(agentId);
+      if (agentId === candidateAgentId) continue;
+      this.findingEvidenceAuditor.observe(agentId, null, this.agentEvents.get(agentId) ?? [], {
+        source: 'watchdog_tick',
+        paneText,
+        suppressionReason: 'systemic_hook_stall',
+      });
+    }
   }
 
   /**
