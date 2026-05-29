@@ -726,18 +726,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       });
       return JSON.stringify(msg).length;
     },
-    onReport: (report) => {
-      for (const f of report.findings) {
-        if (f.severity === 'critical') {
-          console.error(`[self-diagnostic] ${f.checkId}: ${f.description}`);
-        } else {
-          console.warn(`[self-diagnostic] ${f.checkId}: ${f.description}`);
-        }
-      }
-      broadcastToAll({ type: 'diagnosticReport', report });
-    },
   });
-  diagnosticRunner.start();
+  // Diagnostics are on-demand by default; /api/diagnostic/run triggers runNow().
 
   remoteRelayRuntime = await createRemoteRelayRuntime({
     kookrDir,
@@ -1115,8 +1105,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Drain any pending suggestion lifecycles before shutdown
     drainLifecycles(telemetryLog);
 
-    // Stop diagnostic runner
-    diagnosticRunner.dispose();
     await remoteRelayRuntime?.stop();
 
     // Stop hook watchers and trackers
