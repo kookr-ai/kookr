@@ -1,4 +1,4 @@
-import type { AgentAdapter } from '../adapters/agent-adapter.js';
+import type { AgentInteractionPort } from '../core/ports/agent-interaction-port.js';
 
 export type PresetReplyId = 'continue' | 'yes' | 'no' | 'skip';
 
@@ -14,7 +14,7 @@ export function isPresetReplyId(value: unknown): value is PresetReplyId {
 }
 
 export async function sendPresetReply(
-  adapter: Pick<AgentAdapter, 'sendInput'>,
+  adapter: Pick<AgentInteractionPort, 'sendInput'>,
   sessionId: string,
   presetId: PresetReplyId,
 ): Promise<{ text: string }> {

@@ -18,6 +18,8 @@
  * See: docs/adr/014-local-dtach-backend.md
  */
 
+import type { TerminalSessionStreamPort } from '../core/ports/terminal-session-stream-port.js';
+
 /** Opaque session identifier. Same value used for the dtach socket filename. */
 export type SessionId = string;
 
@@ -59,7 +61,7 @@ export interface BackendStats {
   errorCount: number;
 }
 
-export interface TerminalBackend {
+export interface TerminalBackend extends TerminalSessionStreamPort {
   /**
    * Launch a new child process under a persistence layer (dtach). The backend
    * opens a persistent internal attach so subsequent `write` / `captureBytes` /
