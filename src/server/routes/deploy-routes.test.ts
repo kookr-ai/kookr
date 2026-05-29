@@ -12,9 +12,9 @@ import type { WorktreeEntry } from '../../adapters/git-worktree-registry.js';
 /** Strip GIT_DIR so git subprocesses work in test dirs, not the repo. */
 const cleanEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
 
-function makeApp(serverCwd: string, serverPort: number = 4800, hookHomeDir?: string): Hono {
+function makeApp(serverCwd: string, serverPort: number = 4800, hookHomeDir?: string, pluginUpdateBin?: string): Hono {
   const app = new Hono();
-  registerDeployRoutes(app, { serverCwd, serverPort, hookHomeDir } as unknown as RouteDeps);
+  registerDeployRoutes(app, { serverCwd, serverPort, hookHomeDir, pluginUpdateBin } as unknown as RouteDeps);
   return app;
 }
 
@@ -469,6 +469,191 @@ describe('deploy-routes', () => {
       const body = await res.json();
       expect(body.error).toContain('Refusing to overwrite non-symlink');
       expect(body.toolkit.stale).toBe(true);
+    });
+  });
+
+  describe('POST /api/deploy/plugin-update', () => {
+    async function writePublishedPluginRepo(version: string): Promise<void> {
+      const originDir = join(root, 'origin.git');
+      await mkdir(originDir);
+      execFileSync('git', ['init', '--bare', '-b', 'main'], { cwd: originDir, env: cleanEnv });
+      execFileSync('git', ['clone', originDir, prodDir], { env: cleanEnv });
+      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: prodDir, env: cleanEnv });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: prodDir, env: cleanEnv });
+      await mkdir(join(prodDir, 'plugin', '.claude-plugin'), { recursive: true });
+      await mkdir(join(prodDir, '.claude-plugin'), { recursive: true });
+      await writeFile(
+        join(prodDir, 'plugin', '.claude-plugin', 'plugin.json'),
+        JSON.stringify({ name: 'kookr-toolkit', version }),
+      );
+      await writeFile(
+        join(prodDir, '.claude-plugin', 'marketplace.json'),
+        JSON.stringify({ name: 'kookr', plugins: [{ name: 'kookr-toolkit', source: './plugin' }] }),
+      );
+      execFileSync('git', ['add', '.'], { cwd: prodDir, env: cleanEnv });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: prodDir, env: cleanEnv });
+      execFileSync('git', ['push'], { cwd: prodDir, env: cleanEnv });
+      await writeInstallHooksFixture(prodDir);
+    }
+
+    async function writeInstalledPlugin(home: string, version: string): Promise<void> {
+      await mkdir(join(home, '.claude', 'plugins'), { recursive: true });
+      await writeFile(
+        join(home, '.claude', 'plugins', 'installed_plugins.json'),
+        JSON.stringify({ version: 2, plugins: { 'kookr-toolkit@kookr': [{ scope: 'user', version }] } }),
+      );
+    }
+
+    async function writeFakeClaudeBin(logPath: string, installedVersionAfterUpdate: string): Promise<string> {
+      const bin = join(root, 'fake-claude');
+      await writeFile(bin, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${logPath}"
+if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "update" ] && [ "$4" = "kookr" ]; then
+  exit 0
+fi
+if [ "$1" = "plugin" ] && [ "$2" = "update" ] && [ "$3" = "kookr-toolkit@kookr" ]; then
+  node - "$HOME/.claude/plugins/installed_plugins.json" "${installedVersionAfterUpdate}" <<'NODE'
+const fs = require('node:fs');
+const file = process.argv[2];
+const version = process.argv[3];
+const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+parsed.plugins['kookr-toolkit@kookr'][0].version = version;
+fs.writeFileSync(file, JSON.stringify(parsed));
+NODE
+  exit 0
+fi
+echo "unexpected claude args: $*" >&2
+exit 2
+`);
+      await chmod(bin, 0o755);
+      return bin;
+    }
+
+    async function writeFailingClaudeBin(logPath: string): Promise<string> {
+      const bin = join(root, 'fake-claude-failing');
+      await writeFile(bin, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${logPath}"
+if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "update" ]; then
+  echo "marketplace update failed" >&2
+  exit 17
+fi
+echo "unexpected claude args: $*" >&2
+exit 2
+`);
+      await chmod(bin, 0o755);
+      return bin;
+    }
+
+    async function writeSlowClaudeBin(logPath: string, installedVersionAfterUpdate: string): Promise<string> {
+      const bin = join(root, 'fake-claude-slow');
+      await writeFile(bin, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${logPath}"
+if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "update" ] && [ "$4" = "kookr" ]; then
+  sleep 0.2
+  exit 0
+fi
+if [ "$1" = "plugin" ] && [ "$2" = "update" ] && [ "$3" = "kookr-toolkit@kookr" ]; then
+  node - "$HOME/.claude/plugins/installed_plugins.json" "${installedVersionAfterUpdate}" <<'NODE'
+const fs = require('node:fs');
+const file = process.argv[2];
+const version = process.argv[3];
+const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+parsed.plugins['kookr-toolkit@kookr'][0].version = version;
+fs.writeFileSync(file, JSON.stringify(parsed));
+NODE
+  exit 0
+fi
+echo "unexpected claude args: $*" >&2
+exit 2
+`);
+      await chmod(bin, 0o755);
+      return bin;
+    }
+
+    it('updates the marketplace cache and then the installed plugin', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writePublishedPluginRepo('0.7.4');
+      await writeInstalledPlugin(hookHome, '0.4.1');
+      const fakeClaude = await writeFakeClaudeBin(commandLog, '0.7.4');
+      const app = makeApp(mainDir, 4800, hookHome, fakeClaude);
+
+      const res = await app.request('/api/deploy/plugin-update', { method: 'POST' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('updated');
+      expect(body.plugin.installedVersion).toBe('0.7.4');
+      expect(body.plugin.stale).toBe(false);
+      expect(body.commands.slash).toEqual([
+        '/plugin marketplace update kookr',
+        '/plugin update kookr-toolkit@kookr',
+      ]);
+      expect(readFileSync(commandLog, 'utf8').trim().split('\n')).toEqual([
+        'plugin marketplace update kookr',
+        'plugin update kookr-toolkit@kookr',
+      ]);
+    });
+
+    it('does not try to update when the marketplace plugin is not installed', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writePublishedPluginRepo('0.7.4');
+      const fakeClaude = await writeFakeClaudeBin(commandLog, '0.7.4');
+      const app = makeApp(mainDir, 4800, hookHome, fakeClaude);
+
+      const res = await app.request('/api/deploy/plugin-update', { method: 'POST' });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Toolkit plugin is not installed yet');
+      expect(body.plugin.installedVersion).toBeNull();
+      expect(() => readFileSync(commandLog, 'utf8')).toThrow();
+    });
+
+    it('returns manual commands and current plugin status when the claude command fails', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writePublishedPluginRepo('0.7.4');
+      await writeInstalledPlugin(hookHome, '0.4.1');
+      const fakeClaude = await writeFailingClaudeBin(commandLog);
+      const app = makeApp(mainDir, 4800, hookHome, fakeClaude);
+
+      const res = await app.request('/api/deploy/plugin-update', { method: 'POST' });
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain('marketplace update failed');
+      expect(body.plugin.installedVersion).toBe('0.4.1');
+      expect(body.plugin.stale).toBe(true);
+      expect(body.commands.cli).toEqual([
+        'claude plugin marketplace update kookr',
+        'claude plugin update kookr-toolkit@kookr',
+      ]);
+      expect(readFileSync(commandLog, 'utf8').trim()).toBe('plugin marketplace update kookr');
+    });
+
+    it('serializes concurrent plugin update requests', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writePublishedPluginRepo('0.7.4');
+      await writeInstalledPlugin(hookHome, '0.4.1');
+      const fakeClaude = await writeSlowClaudeBin(commandLog, '0.7.4');
+      const app = makeApp(mainDir, 4800, hookHome, fakeClaude);
+
+      const [first, second] = await Promise.all([
+        app.request('/api/deploy/plugin-update', { method: 'POST' }),
+        app.request('/api/deploy/plugin-update', { method: 'POST' }),
+      ]);
+      const statuses = [first.status, second.status].sort();
+      expect(statuses).toEqual([200, 409]);
+      const rejected = first.status === 409 ? first : second;
+      const body = await rejected.json();
+      expect(body.error).toBe('Plugin update already in progress');
+      expect(readFileSync(commandLog, 'utf8').trim().split('\n')).toEqual([
+        'plugin marketplace update kookr',
+        'plugin update kookr-toolkit@kookr',
+      ]);
     });
   });
 

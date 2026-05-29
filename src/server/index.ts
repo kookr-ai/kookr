@@ -816,7 +816,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
     interactionLog,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
-    serverCwd, serverPort: port, kookrDir, frontendDir, broadcastToAll,
+    serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,
     llmClient,
     ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
     findingEvidenceReviewSampler,
