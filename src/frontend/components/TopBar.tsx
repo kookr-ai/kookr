@@ -3,6 +3,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { DndPill } from './DndPill.js';
 import { FollowPill } from './FollowPill.js';
 import { formatCost } from '../presentation.js';
+import { TOOLKIT_MARKETPLACE_SLUG, type PluginVersionStatus } from '../../shared/contracts/plugin-version.js';
 
 interface Props {
   findings: number;
@@ -51,13 +52,6 @@ interface ToolkitStatus {
   stale: boolean;
   checkedCount: number;
   staleCount: number;
-}
-
-interface PluginVersionStatus {
-  pluginId: string;
-  installedVersion: string | null;
-  availableVersion: string | null;
-  stale: boolean;
 }
 
 function timeAgo(isoString: string): string {
@@ -205,6 +199,9 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
       deployStatus.plugin.installedVersion === null &&
       deployStatus.plugin.availableVersion !== null,
   );
+  // The marketplace name is the part after `@` in the plugin id
+  // ("kookr-toolkit@kookr" → "kookr"); used in the `/plugin marketplace update`
+  // hint. Falls back to the default marketplace name if the id is malformed.
   const pluginMarketplace = deployStatus?.plugin?.pluginId.split('@')[1] ?? 'kookr';
   const hasUpdates =
     (!onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying) ||
@@ -356,7 +353,7 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
                       )}
                     </div>
                     <div className="version-row deploy-checking">
-                      Install in Claude Code: <code>/plugin marketplace add kookr-ai/kookr</code> then{' '}
+                      Install in Claude Code: <code>/plugin marketplace add {TOOLKIT_MARKETPLACE_SLUG}</code> then{' '}
                       <code>/plugin install {deployStatus.plugin.pluginId}</code>
                     </div>
                   </>

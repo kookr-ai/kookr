@@ -1,16 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import type { PluginVersionStatus } from '../shared/contracts/plugin-version.js';
 
-export interface PluginVersionStatus {
-  /** Marketplace plugin identifier, e.g. "kookr-toolkit@kookr". */
-  pluginId: string;
-  /** Version recorded in ~/.claude/plugins/installed_plugins.json, or null if not installed via the marketplace. */
-  installedVersion: string | null;
-  /** Latest published version (from origin/main's plugin manifest), or null if unknown. */
-  availableVersion: string | null;
-  /** True when a marketplace install exists and is strictly behind the available version. */
-  stale: boolean;
-}
+export type { PluginVersionStatus };
 
 interface InstalledPluginRecord {
   version?: unknown;

@@ -1,13 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import { TOOLKIT_MARKETPLACE_SLUG, type PluginVersionStatus } from '../../shared/contracts/plugin-version.js';
 
 export const PLUGIN_INSTALL_DISMISS_KEY = 'kookr-plugin-install-banner-dismissed';
-
-interface PluginVersionStatus {
-  pluginId: string;
-  installedVersion: string | null;
-  availableVersion: string | null;
-  stale: boolean;
-}
 
 function readDismissed(): boolean {
   try {
@@ -67,9 +61,9 @@ export function PluginInstallBanner() {
     <div className="plugin-install-banner">
       <div className="toast toast-info" role="status" aria-live="polite" aria-atomic="true">
         <span className="toast-message">
-          <span>Kookr toolkit plugin isn&rsquo;t installed — its skills &amp; review agents won&rsquo;t load in sessions you start yourself.</span>
+          <span>Toolkit plugin not installed — its skills &amp; review agents won&rsquo;t load in sessions you start yourself.</span>
           <span className="toast-details">
-            In Claude Code, run <code>/plugin marketplace add kookr-ai/kookr</code> then{' '}
+            In Claude Code, run <code>/plugin marketplace add {TOOLKIT_MARKETPLACE_SLUG}</code> then{' '}
             <code>/plugin install {plugin.pluginId}</code>.
           </span>
         </span>

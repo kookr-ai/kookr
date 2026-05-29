@@ -71,6 +71,14 @@ describe('PluginInstallBanner', () => {
     expect(container.querySelector('.plugin-install-banner')).toBeNull();
   });
 
+  test('stays silent when not installed but the available version is unknown', async () => {
+    // installedVersion null + availableVersion null: we can't prove an install
+    // is possible, so the banner must not nudge.
+    mockDeployStatus({ pluginId: 'kookr-toolkit@kookr', installedVersion: null, availableVersion: null, stale: false });
+    await mountAndFlush(root);
+    expect(container.querySelector('.plugin-install-banner')).toBeNull();
+  });
+
   test('does not render when previously dismissed (localStorage), and does not even fetch', async () => {
     window.localStorage.setItem(PLUGIN_INSTALL_DISMISS_KEY, '1');
     const fetchSpy = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
