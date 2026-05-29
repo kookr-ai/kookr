@@ -96,19 +96,19 @@ If you use Claude Code (or Codex CLI) to work on this repo, there is a larger ho
 
 **The four OSS-extension PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) have canonical source in this repo under `hooks/` and `scripts/`, alongside the `pre-pr-review` and `pr-contribution-excellence` skills at `plugin/skills/`, and the reviewer specialists at `plugin/reviewer-specialists/`. The hooks are not under `plugin/` because they integrate with Kookr's HTTP API, `~/.kookr/` config, and `KOOKR_*` env vars — keeping `plugin/` Kookr-agnostic preserves marketplace portability.** Remaining items — `claim-gate.sh`, `ai-coauthor-push-guard.sh`, `kookr-prod-readonly-guard.sh`, `fix-bare-after-worktree.sh`, plus the `oss-gate` and `oss-registry-check` CLIs — still live as standalone files in `~/.claude/hooks/` and `~/.local/bin/`. Bundling those is tracked in the "Future work" section at the bottom.
 
-### Interaction with `kookr-spawn`
+### Interaction with `kookr spawn`
 
-`kookr-spawn` (see `README.md` Terminal Usage section) is a CLI that POSTs prompts to `POST /api/tasks`. Hooks like `pr-workflow-gate.sh` and `oss-stale-scout-gate.sh` inspect `tool_input.command` — the entire bash command text, including argv.
+`kookr spawn` (see `README.md` Terminal Usage section) is a CLI that POSTs prompts to `POST /api/tasks`. Hooks like `pr-workflow-gate.sh` and `oss-stale-scout-gate.sh` inspect `tool_input.command` — the entire bash command text, including argv.
 
 **Hook-safe — prompt NOT on the bash command line:**
-- `kookr-spawn --prompt-file /tmp/prompt.md` — hook sees only the flag and the path.
-- `cat /tmp/prompt.md | kookr-spawn` — hook sees only the pipe, not the file contents.
+- `kookr spawn --prompt-file /tmp/prompt.md` — hook sees only the flag and the path.
+- `cat /tmp/prompt.md | kookr spawn` — hook sees only the pipe, not the file contents.
 
 **Not hook-safe — prompt IS on the bash command line:**
-- `kookr-spawn "please gh pr create for the release branch"` — positional argv.
-- `kookr-spawn --criteria "ensure gh pr create succeeds"` — flag values are argv too.
+- `kookr spawn "please gh pr create for the release branch"` — positional argv.
+- `kookr spawn --criteria "ensure gh pr create succeeds"` — flag values are argv too.
 
-If your prompt or criteria contain strings that PreToolUse hooks match on (`gh pr create`, `git push --force`, `rm -rf`, closing-issue keywords on upstream issues), use `--prompt-file` or piped stdin. The CLI does not try to auto-detect Claude Code sessions or inject workaround magic — see the `kookr-spawn --help` text for the human-facing rule.
+If your prompt or criteria contain strings that PreToolUse hooks match on (`gh pr create`, `git push --force`, `rm -rf`, closing-issue keywords on upstream issues), use `--prompt-file` or piped stdin. The CLI does not try to auto-detect Claude Code sessions or inject workaround magic — see the `kookr spawn --help` text for the human-facing rule.
 
 ### Minimum install for running Claude Code agents in this repo
 

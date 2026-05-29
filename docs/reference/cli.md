@@ -1,6 +1,6 @@
 # CLI Reference
 
-Kookr includes small command-line tools for launching tasks and inspecting a running instance.
+Kookr exposes one public command-line entry point, `kookr`, with subcommands for launching tasks and inspecting a running instance.
 
 Install them globally from a checkout:
 
@@ -9,15 +9,17 @@ pnpm build
 pnpm link --global
 ```
 
-If you linked Kookr before these binaries existed, run `pnpm link --global` again. pnpm records bin symlinks at link time.
+If you linked Kookr before these commands existed, run `pnpm link --global` again. pnpm records bin symlinks at link time.
 
-## `kookr-spawn`
+The standalone aliases `kookr-spawn`, `kookr-status`, and `kookr-ralph` still work for compatibility, but they are deprecated. Prefer the `kookr <subcommand>` forms below.
+
+## `kookr spawn`
 
 Create a Kookr task from your current shell:
 
 ```bash
 cd ~/git/my-project
-kookr-spawn "review the diff since origin/main and write a summary"
+kookr spawn "review the diff since origin/main and write a summary"
 ```
 
 The task uses `$PWD` as its working directory and appears in the dashboard immediately. Output starts with `task_id=<uuid>` for scripting.
@@ -25,9 +27,9 @@ The task uses `$PWD` as its working directory and appears in the dashboard immed
 Prompt sources:
 
 ```bash
-kookr-spawn "fix the auth bug"
-cat prompt.md | kookr-spawn
-kookr-spawn --prompt-file /tmp/prompt.md
+kookr spawn "fix the auth bug"
+cat prompt.md | kookr spawn
+kookr spawn --prompt-file /tmp/prompt.md
 ```
 
 `--prompt-file` is the safest form inside Claude Code sessions because hooks inspect the bash command line, not the file contents.
@@ -35,9 +37,9 @@ kookr-spawn --prompt-file /tmp/prompt.md
 Duplicate prompt handling:
 
 ```bash
-kookr-spawn --dedupe=warn "fix the auth bug"   # default: prompt on active duplicate; blocks when non-interactive
-kookr-spawn --dedupe=block "fix the auth bug"  # exit 5 on active duplicate
-kookr-spawn --dedupe=skip "fix the auth bug"   # create intentionally and suppress duplicate-cluster findings
+kookr spawn --dedupe=warn "fix the auth bug"   # default: prompt on active duplicate; blocks when non-interactive
+kookr spawn --dedupe=block "fix the auth bug"  # exit 5 on active duplicate
+kookr spawn --dedupe=skip "fix the auth bug"   # create intentionally and suppress duplicate-cluster findings
 ```
 
 In interactive `warn` mode, `show diff` prints the stored active prompt against the requested prompt before asking again.
@@ -49,15 +51,15 @@ Claude Code PreToolUse hooks may block commands whose argv contains strings such
 Hook-safe:
 
 ```bash
-kookr-spawn --prompt-file /tmp/prompt.md
-cat /tmp/prompt.md | kookr-spawn
+kookr spawn --prompt-file /tmp/prompt.md
+cat /tmp/prompt.md | kookr spawn
 ```
 
 Not hook-safe:
 
 ```bash
-kookr-spawn "please gh pr create for this branch"
-kookr-spawn --criteria "ensure gh pr create succeeds"
+kookr spawn "please gh pr create for this branch"
+kookr spawn --criteria "ensure gh pr create succeeds"
 ```
 
 ## Dense Supervision From The Shell
@@ -65,14 +67,14 @@ kookr-spawn --criteria "ensure gh pr create succeeds"
 For multi-agent sessions, keep long prompts and command-heavy task descriptions in files:
 
 ```bash
-kookr-spawn --prompt-file /tmp/prompt.md
+kookr spawn --prompt-file /tmp/prompt.md
 ```
 
-This keeps the shell command short, avoids hook false positives, and leaves the dashboard as the main supervision surface. After spawning several tasks, use `kookr-status` for a quick terminal snapshot and use the dashboard's dense-supervision controls for routing: `Alt+N` for the next finding, `Alt+T` for desktop terminal focus mode, `Alt+P` for the project sidebar, and `?` for the full shortcut list.
+This keeps the shell command short, avoids hook false positives, and leaves the dashboard as the main supervision surface. After spawning several tasks, use `kookr status` for a quick terminal snapshot and use the dashboard's dense-supervision controls for routing: `Alt+N` for the next finding, `Alt+T` for desktop terminal focus mode, `Alt+P` for the project sidebar, and `?` for the full shortcut list.
 
 ## Server Discovery
 
-`kookr-spawn` discovers the active Kookr instance with this precedence:
+`kookr spawn` discovers the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
@@ -80,16 +82,27 @@ This keeps the shell command short, avoids hook false positives, and leaves the 
 
 If both default ports respond and no explicit target is set, the command exits with an ambiguity error.
 
-## `kookr-status`
+## `kookr status`
 
 Print a read-only snapshot of the running Kookr instance:
 
 ```bash
-kookr-status
+kookr status
 pnpm status
 ```
 
 The command reads `/api/snapshot` and `/api/health`, then reports server uptime, build version, and per-agent severity counts.
+
+## `kookr ralph`
+
+Inspect or control a Ralph loop:
+
+```bash
+kookr ralph status <taskId>
+kookr ralph pause <taskId>
+kookr ralph resume <taskId>
+kookr ralph cancel <taskId>
+```
 
 ## `kookr`
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// kookr-spawn — create a Kookr task for the current working directory.
+// kookr spawn — create a Kookr task for the current working directory.
 //
 // Usage:
-//   kookr-spawn "prompt text"
-//   kookr-spawn --prompt-file /tmp/prompt.md
-//   cat prompt.md | kookr-spawn
+//   kookr spawn "prompt text"
+//   kookr spawn --prompt-file /tmp/prompt.md
+//   cat prompt.md | kookr spawn
 //
 // Contract with the server: POST {base}/api/tasks with JSON body and
 // X-Kookr-Launch-Source: cli header. Server at /api/health must return
@@ -33,12 +33,13 @@ const DEDUPE_MODES = new Set(['warn', 'block', 'skip']);
 
 // ---------- arg parsing ----------
 
-const HELP_TEXT = `kookr-spawn — create a Kookr task from the current working directory.
+const HELP_TEXT = `kookr spawn — create a Kookr task from the current working directory.
 
 Usage:
-  kookr-spawn [OPTIONS] [PROMPT...]
-  kookr-spawn --prompt-file <path> [OPTIONS]
-  cat prompt.md | kookr-spawn [OPTIONS]
+  kookr spawn [OPTIONS] [PROMPT...]
+  kookr spawn --prompt-file <path> [OPTIONS]
+  cat prompt.md | kookr spawn [OPTIONS]
+  kookr-spawn [OPTIONS] [PROMPT...]        Deprecated compatibility alias.
 
 Options:
   -C, --cwd <path>         Working directory for the task (default: cwd).
@@ -689,6 +690,7 @@ function isInvokedDirectly() {
 }
 
 if (isInvokedDirectly()) {
+  console.error('[kookr] WARNING: `kookr-spawn` is deprecated; use `kookr spawn`.');
   main().catch((e) => {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`kookr-spawn: ${msg}`);

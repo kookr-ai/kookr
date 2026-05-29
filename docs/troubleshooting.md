@@ -158,8 +158,8 @@ pnpm prod:restart
 When launching from inside Claude Code, hooks inspect the bash command line. Use a prompt file or stdin so sensitive command text is not in argv:
 
 ```bash
-kookr-spawn --prompt-file /tmp/prompt.md
-cat /tmp/prompt.md | kookr-spawn
+kookr spawn --prompt-file /tmp/prompt.md
+cat /tmp/prompt.md | kookr spawn
 ```
 
 See [CLI Reference](reference/cli.md).

@@ -1,34 +1,90 @@
 #!/usr/bin/env node
 // npx kookr entry point. Loads the compiled server so users don't have to
 // know about dist/server/start.js. See docs/roadmap.md Phase 2.
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 
-if (process.argv[2] === 'push') {
-  await runPushCommand(process.argv.slice(3));
-  process.exit(0);
+const HELP_TEXT = `kookr - local AI agent supervisor.
+
+Usage:
+  kookr                         Start the built Kookr server.
+  kookr spawn [OPTIONS] [PROMPT...]    Create a task from the current shell.
+  kookr status                  Print a read-only server snapshot.
+  kookr ralph <command> <taskId> Inspect or control a Ralph loop.
+  kookr drain|resume [OPTIONS]  Control operator drain mode.
+  kookr push test <deviceId>    Send a relay push test.
+
+Compatibility aliases:
+  kookr-spawn, kookr-status, and kookr-ralph still work for now, but are deprecated.
+`;
+
+async function main({
+  argv = process.argv.slice(2),
+  env = process.env,
+  out = console,
+  err = console,
+  exit = process.exit,
+} = {}) {
+  const [command, ...rest] = argv;
+
+  if (command === '-h' || command === '--help' || command === 'help') {
+    out.log(HELP_TEXT);
+    return exit(0);
+  }
+
+  if (command === 'spawn') {
+    const { main: runSpawnCli } = await import('./kookr-spawn.js');
+    return runSpawnCli({ argv: rest, env, out, err, exit });
+  }
+
+  if (command === 'status') {
+    const { main: runStatusCli } = await import('./kookr-status.js');
+    return runStatusCli({ argv: rest, env, out, exit });
+  }
+
+  if (command === 'ralph') {
+    const { main: runRalphCli } = await import('./kookr-ralph.js');
+    return runRalphCli({ argv: rest, env, out, err, exit });
+  }
+
+  if (command === 'push') {
+    await runPushCommand(rest);
+    return exit(0);
+  }
+
+  if (command === 'command' && rest[0] === 'outcome') {
+    await runCommandOutcomeCommand(rest.slice(1));
+    return exit(process.exitCode ?? 0);
+  }
+
+  // Operator drain / resume control (issue #659). Runs as a thin HTTP client
+  // against the running server rather than booting one, so it dispatches here.
+  if (command === 'drain' || command === 'resume') {
+    const { runDrainCli } = await import('./kookr-drain.js');
+    return exit(await runDrainCli(argv));
+  }
+
+  if (command !== undefined) {
+    err.error(`[kookr] Unknown command: ${command}`);
+    err.error('Run `kookr --help` for usage.');
+    return exit(2);
+  }
+
+  return startServer({ err, exit });
 }
 
-if (process.argv[2] === 'command' && process.argv[3] === 'outcome') {
-  await runCommandOutcomeCommand(process.argv.slice(4));
-  process.exit(0);
-}
+async function startServer({ err = console, exit = process.exit } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const entry = join(here, '..', 'dist', 'server', 'start.js');
 
-// Operator drain / resume control (issue #659). Runs as a thin HTTP client
-// against the running server rather than booting one, so it dispatches here.
-if (process.argv[2] === 'drain' || process.argv[2] === 'resume') {
-  const { runDrainCli } = await import('./kookr-drain.js');
-  process.exit(await runDrainCli(process.argv.slice(2)));
-}
+  if (!existsSync(entry)) {
+    err.error('[kookr] Build output not found at ' + entry);
+    err.error('[kookr] Run `pnpm build` (or `npm run build`) first.');
+    return exit(1);
+  }
 
-const here = dirname(fileURLToPath(import.meta.url));
-const entry = join(here, '..', 'dist', 'server', 'start.js');
-
-if (!existsSync(entry)) {
-  console.error('[kookr] Build output not found at ' + entry);
-  console.error('[kookr] Run `pnpm build` (or `npm run build`) first.');
-  process.exit(1);
+  await import(entry);
 }
 
 async function runCommandOutcomeCommand(argv) {
@@ -42,8 +98,6 @@ async function runCommandOutcomeCommand(argv) {
   const mod = await import(entry);
   process.exitCode = await mod.runCommandOutcomeCli(argv);
 }
-
-await import(entry);
 
 async function runPushCommand(argv) {
   if (argv[0] !== 'test' || !argv[1] || argv.length > 2) {
@@ -73,3 +127,23 @@ async function runPushCommand(argv) {
   if (body.statusCode) console.log(`statusCode=${body.statusCode}`);
   if (body.error) console.log(`error=${body.error}`);
 }
+
+function isInvokedDirectly() {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return pathToFileURL(realpathSync(argv1)).href === import.meta.url;
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedDirectly()) {
+  main().catch((e) => {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[kookr] ${msg}`);
+    process.exit(1);
+  });
+}
+
+export { HELP_TEXT, main };

@@ -394,6 +394,22 @@ describe('kookr-status main (integration-style)', () => {
     expect(deps.logs).toEqual([]);
   });
 
+  it('prints help and exits 0', async () => {
+    const deps = makeDeps({});
+    await main({ ...deps, argv: ['--help'] });
+    expect(deps.exits).toEqual([0]);
+    expect(deps.logs.join('\n')).toContain('kookr status');
+    expect(deps.errors).toEqual([]);
+  });
+
+  it('rejects unexpected arguments', async () => {
+    const deps = makeDeps({});
+    await main({ ...deps, argv: ['extra'] });
+    expect(deps.exits).toEqual([2]);
+    expect(deps.errors.join('\n')).toContain('Unexpected argument: extra');
+    expect(deps.logs).toEqual([]);
+  });
+
   it('errors out with "not running" when auto-detect finds no server', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED')) as typeof fetch;
     const deps = makeDeps({});
