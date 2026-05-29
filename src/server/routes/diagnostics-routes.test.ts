@@ -67,6 +67,97 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/ready  (issue #660 — subsystem-aware readiness verdict)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/ready', () => {
+    function backend(stats: Partial<{
+      attachedSessions: number;
+      reattachCounts: Record<string, number>;
+      pendingWriters: number;
+      lastError: { kind: string } | null;
+      errorCount: number;
+    }>) {
+      return {
+        getStats: () => ({
+          attachedSessions: 0,
+          reattachCounts: {},
+          pendingWriters: 0,
+          lastError: null,
+          errorCount: 0,
+          ...stats,
+        }),
+      };
+    }
+
+    test('healthy terminal backend + writable persistence ⇒ 200 ready', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ready: true,
+        checks: {
+          terminalBackend: { critical: true, ready: true, status: 'ok' },
+          persistence: { critical: true, ready: true, status: 'ok' },
+        },
+      });
+    });
+
+    test('terminal backend in error (dtach-unavailable) ⇒ 503 not ready', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({ lastError: { kind: 'dtach-unavailable' }, errorCount: 1 }) as never,
+        kookrDir: tempDir,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.ready).toBe(false);
+      expect(body.checks.terminalBackend).toEqual({ critical: true, ready: false, status: 'error' });
+      expect(body.checks.persistence.ready).toBe(true);
+    });
+
+    test('terminal backend degraded (pending writers) ⇒ 200 ready, fail-open', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({ pendingWriters: 2 }) as never,
+        kookrDir: tempDir,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ready).toBe(true);
+      expect(body.checks.terminalBackend).toEqual({ critical: true, ready: true, status: 'degraded' });
+    });
+
+    test('unwritable persistence directory ⇒ 503 not ready', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: join(tempDir, 'does-not-exist'),
+      }).request('/api/ready');
+
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.ready).toBe(false);
+      expect(body.checks.persistence.ready).toBe(false);
+      expect(body.checks.persistence.status).toBe('error');
+      expect(typeof body.checks.persistence.reason).toBe('string');
+    });
+
+    test('no terminal backend wired + no kookrDir ⇒ 200 ready (fail-open)', async () => {
+      const res = await mkApp({}).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ready: true,
+        checks: {
+          persistence: { critical: true, ready: true, status: 'unknown', reason: 'kookr-dir-unset' },
+        },
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/anomaly-stats
   // ---------------------------------------------------------------------------
   describe('GET /api/anomaly-stats', () => {

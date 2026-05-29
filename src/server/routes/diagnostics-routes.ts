@@ -1,5 +1,6 @@
 import type { Context, Hono } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
+import { accessSync, constants as fsConstants } from 'node:fs';
 import { readInteractionLog } from '../../core/interaction-log.js';
 import { readTelemetryLog } from '../../core/telemetry.js';
 import { analyzeSession } from '../../core/friction-analyzer.js';
@@ -18,6 +19,7 @@ import {
 } from '../finding-evidence-review-service.js';
 import { ReviewLogStore } from '../review-log-store.js';
 import { buildDetectorProposalReportResponseV1 } from '../detector-proposal-report.js';
+import type { BackendStats } from '../../adapters/terminal-backend.js';
 import type { RouteDeps } from './shared.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
@@ -35,22 +37,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     let terminalBackendBlock: object | undefined;
     if (terminalBackend) {
       const stats = terminalBackend.getStats();
-      // Status derivation per rfc-v8-tmux-removal.md §/api/health:
-      //   - 'error'    on manifest-corrupt or dtach-unavailable (last error)
-      //   - 'degraded' if there are pending writers or a recent last error
-      //   - 'ok'       otherwise
-      let status: 'ok' | 'degraded' | 'error' = 'ok';
-      if (
-        stats.lastError &&
-        (stats.lastError.kind === 'manifest-corrupt' ||
-          stats.lastError.kind === 'dtach-unavailable')
-      ) {
-        status = 'error';
-      } else if (stats.pendingWriters > 0 || stats.lastError) {
-        status = 'degraded';
-      }
       terminalBackendBlock = {
-        status,
+        status: deriveTerminalBackendStatus(stats),
         attachedSessions: stats.attachedSessions,
         reattachCounts: stats.reattachCounts,
         pendingWriters: stats.pendingWriters,
@@ -66,6 +54,32 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
     });
+  });
+
+  // Machine-readable readiness verdict for orchestrators / load balancers
+  // (issue #660). Unlike /api/health — which always returns 200 so the
+  // dashboard never sees a hard error — /api/ready turns 503 when a *critical*
+  // subsystem is down: the terminal/dtach backend in `error`
+  // (manifest-corrupt / dtach-unavailable) or the persistence directory
+  // unwritable. Non-critical degradation (terminal `degraded`) stays
+  // 200/ready so transient blips do not cordon a node out of rotation.
+  // Read-only and unauthenticated by design: probes must reach it without an
+  // admin token.
+  app.get('/api/ready', (c) => {
+    const checks: Record<string, ReadinessCheck> = {};
+
+    const terminalBackend = deps.terminalBackend;
+    if (terminalBackend) {
+      const status = deriveTerminalBackendStatus(terminalBackend.getStats());
+      checks.terminalBackend = { critical: true, ready: status !== 'error', status };
+    }
+
+    checks.persistence = checkPersistenceWritable(deps.kookrDir);
+
+    // Fail-open: a check only flips readiness when it is both critical and
+    // not-ready. Non-critical checks are reported for visibility only.
+    const ready = Object.values(checks).every((check) => check.ready || !check.critical);
+    return c.json({ ready, checks }, ready ? 200 : 503);
   });
 
   app.get('/api/health/stt', async (c) => {
@@ -420,6 +434,54 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       return c.json({ error: message, sessionId }, 404);
     }
   });
+}
+
+/**
+ * Derive the terminal backend health status from its raw stats.
+ * Per rfc-v8-tmux-removal.md §/api/health:
+ *   - 'error'    on manifest-corrupt or dtach-unavailable (last error)
+ *   - 'degraded' if there are pending writers or a recent last error
+ *   - 'ok'       otherwise
+ * Shared by GET /api/health (reporting) and GET /api/ready (verdict, #660).
+ */
+function deriveTerminalBackendStatus(stats: BackendStats): 'ok' | 'degraded' | 'error' {
+  if (
+    stats.lastError &&
+    (stats.lastError.kind === 'manifest-corrupt' || stats.lastError.kind === 'dtach-unavailable')
+  ) {
+    return 'error';
+  }
+  if (stats.pendingWriters > 0 || stats.lastError) return 'degraded';
+  return 'ok';
+}
+
+/** One subsystem entry in the GET /api/ready verdict (#660). */
+interface ReadinessCheck {
+  /** When true, a not-ready result flips the overall verdict to 503. */
+  critical: boolean;
+  ready: boolean;
+  status: string;
+  /** Machine-readable cause when not ready (e.g. errno code, error kind). */
+  reason?: string;
+}
+
+/**
+ * Cheap, non-flapping persistence writability probe for GET /api/ready:
+ * a single access(2) on the state directory Kookr persists into — no agent
+ * spawn, no file write. When the directory is not wired (tests / non-server
+ * contexts) the check fails open so it never cordons a node it cannot assess.
+ */
+function checkPersistenceWritable(kookrDir: string | undefined): ReadinessCheck {
+  if (!kookrDir) {
+    return { critical: true, ready: true, status: 'unknown', reason: 'kookr-dir-unset' };
+  }
+  try {
+    accessSync(kookrDir, fsConstants.W_OK);
+    return { critical: true, ready: true, status: 'ok' };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    return { critical: true, ready: false, status: 'error', reason: typeof code === 'string' ? code : 'unwritable' };
+  }
 }
 
 function isAuthorizedFindingReviewRequest(remoteAddress: string | undefined, adminTokenHeader: string | undefined): boolean {
