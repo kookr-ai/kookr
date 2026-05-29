@@ -522,7 +522,9 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     void pasteFromClipboard(sendRawPaste);
   }
 
-  // Connect/reconnect WebSocket when tmuxName changes
+  // Connect/reconnect the byte stream only while the terminal is visible.
+  // Keeping hidden panes unsubscribed avoids replay capture and live PTY byte
+  // fan-out for tasks the user is not currently inspecting.
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) return;
@@ -533,13 +535,22 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       wsRef.current = null;
     }
 
-    searchOpenRef.current = false;
-    terminalInputDraftRef.current = '';
-    setSearchOpen(false);
-    setSearchTerm('');
-    setSearchFound(null);
-    setSearchResult(null);
-    searchAddonRef.current?.clearDecorations();
+    const sessionChanged = tmuxName !== currentTmuxRef.current;
+
+    if (sessionChanged) {
+      searchOpenRef.current = false;
+      terminalInputDraftRef.current = '';
+      setSearchOpen(false);
+      setSearchTerm('');
+      setSearchFound(null);
+      setSearchResult(null);
+      searchAddonRef.current?.clearDecorations();
+    }
+
+    if (!visible) {
+      registerTerminalSend(null);
+      return;
+    }
 
     if (!tmuxName) {
       terminal.clear();
@@ -646,7 +657,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       ws.close();
       wsRef.current = null;
     };
-  }, [tmuxName]);
+  }, [tmuxName, visible]);
 
   // Refit + repaint when the parent explicitly reveals the terminal. Driving
   // this from the real pane/tab state is more reliable than observing

@@ -861,8 +861,8 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                 )}
               </div>}
 
-              {/* Right pane: Terminal or Diff (terminal is always mounted so
-                  xterm state and WebSocket connection survive mode toggles) */}
+              {/* Right pane: Terminal or Diff (terminal stays mounted for UI
+                  state, but byte-stream subscription follows visibility) */}
               <div className={`detail-split-right${!rightOnlyMode && narrowTab !== 'terminal' ? ' pane-hidden-narrow' : ''}${!showRightPane ? ' pane-hidden-wide' : ''}`}>
                 <div className="detail-pane-header">
                   <button
