@@ -233,6 +233,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     llmClient,
   } = coreStores;
   const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
+  // #681: live getter for the per-agent-type effort defaults. Reads the live
+  // `currentSettings` binding so an operator's settings PUT takes effect on the
+  // next launch without a restart (the PUT path reassigns `currentSettings`).
+  const getAgentEffort = () => currentSettings.agentEffort;
   const terminalInputCoordinator = new TerminalInputCoordinator(terminalBackend);
 
   const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
@@ -248,6 +252,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     kookrDir,
     preflightOnFatal,
     preflightLogger,
+    getAgentEffort,
   });
 
   const ossServices = await createOssServices({ kookrDir, claudeDir });

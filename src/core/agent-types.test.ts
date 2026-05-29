@@ -8,6 +8,11 @@ import {
   AVAILABLE_AGENT_TYPES,
   ROUND_ROBIN_AGENT_TYPE,
   ROUND_ROBIN_OPTION,
+  CLAUDE_CODE_EFFORT_LEVELS,
+  CODEX_CLI_EFFORT_LEVELS,
+  ALL_EFFORT_LEVELS,
+  effortLevelsForAgent,
+  isValidEffortForAgent,
 } from './agent-types.js';
 
 describe('normalizeAgentType', () => {
@@ -123,5 +128,45 @@ describe('buildAgentSelectionOptions', () => {
   test('falls back to the canonical list (with round-robin) when none are supplied', () => {
     const options = buildAgentSelectionOptions([]);
     expect(options.map((o) => o.type)).toEqual(['claude-code', 'codex-cli', 'round-robin']);
+  });
+});
+
+describe('reasoning-effort levels (#681)', () => {
+  test('claude-code allowed set mirrors the claude CLI exactly', () => {
+    expect([...CLAUDE_CODE_EFFORT_LEVELS]).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(effortLevelsForAgent('claude-code')).toEqual(CLAUDE_CODE_EFFORT_LEVELS);
+  });
+
+  test('codex-cli allowed set mirrors the codex ReasoningEffort enum exactly', () => {
+    expect([...CODEX_CLI_EFFORT_LEVELS]).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+    expect(effortLevelsForAgent('codex-cli')).toEqual(CODEX_CLI_EFFORT_LEVELS);
+  });
+
+  test('isValidEffortForAgent accepts only that agent\'s levels', () => {
+    // `max` is claude-only.
+    expect(isValidEffortForAgent('claude-code', 'max')).toBe(true);
+    expect(isValidEffortForAgent('codex-cli', 'max')).toBe(false);
+    // `minimal`/`none` are codex-only.
+    expect(isValidEffortForAgent('codex-cli', 'minimal')).toBe(true);
+    expect(isValidEffortForAgent('codex-cli', 'none')).toBe(true);
+    expect(isValidEffortForAgent('claude-code', 'minimal')).toBe(false);
+    expect(isValidEffortForAgent('claude-code', 'none')).toBe(false);
+    // Shared levels are valid for both.
+    for (const shared of ['low', 'medium', 'high', 'xhigh']) {
+      expect(isValidEffortForAgent('claude-code', shared)).toBe(true);
+      expect(isValidEffortForAgent('codex-cli', shared)).toBe(true);
+    }
+  });
+
+  test('rejects nonsense and empty strings', () => {
+    expect(isValidEffortForAgent('claude-code', 'ultra')).toBe(false);
+    expect(isValidEffortForAgent('codex-cli', '')).toBe(false);
+    expect(isValidEffortForAgent('claude-code', 'HIGH')).toBe(false);
+  });
+
+  test('ALL_EFFORT_LEVELS is the deduped union of both sets', () => {
+    expect([...ALL_EFFORT_LEVELS].sort()).toEqual(
+      ['high', 'low', 'max', 'medium', 'minimal', 'none', 'xhigh'],
+    );
   });
 });

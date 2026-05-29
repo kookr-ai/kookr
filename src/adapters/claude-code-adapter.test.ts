@@ -1402,3 +1402,69 @@ describe('ClaudeCodeAdapter', () => {
     });
   });
 });
+
+describe('ClaudeCodeAdapter reasoning effort (#681)', () => {
+  let backend: FakeTerminalBackend;
+  let taskStore: TaskStore;
+
+  beforeEach(() => {
+    backend = new FakeTerminalBackend();
+    taskStore = new TaskStore();
+    mockGetGitInfo.mockReset().mockResolvedValue(null);
+  });
+
+  test('no configured default and no override → argv is byte-identical (no --effort)', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore);
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).not.toContain('--effort');
+  });
+
+  test('per-agent-type default getter → pushes --effort <level>', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore, {
+      resolveDefaultEffort: () => 'high',
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    const idx = spec.args.indexOf('--effort');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(spec.args[idx + 1]).toBe('high');
+  });
+
+  test('per-task override (opts.effort) wins over the configured default', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore, {
+      resolveDefaultEffort: () => 'high',
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd', undefined, { effort: 'max' });
+    const spec = backend.sessions.get(sessionId)!.spec;
+    const idx = spec.args.indexOf('--effort');
+    expect(spec.args[idx + 1]).toBe('max');
+    // The default must not also be present.
+    expect(spec.args.filter((a) => a === '--effort')).toHaveLength(1);
+  });
+
+  test('a default getter returning undefined passes no --effort', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore, {
+      resolveDefaultEffort: () => undefined,
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).not.toContain('--effort');
+  });
+
+  test('an effort invalid for claude-code is skipped (defensive guard), not passed', async () => {
+    // `minimal`/`none` are codex-only; `max` is the claude-only top. A value
+    // outside claude's set must never reach the argv (it would break launch).
+    const adapter = new ClaudeCodeAdapter(backend, taskStore, {
+      resolveDefaultEffort: () => 'minimal',
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).not.toContain('--effort');
+  });
+});

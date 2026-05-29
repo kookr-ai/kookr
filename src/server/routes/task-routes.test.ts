@@ -26,7 +26,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, DrainModeError } from '../launch-service.js';
+import { launchTask, DrainModeError, EffortValidationError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 
@@ -351,6 +351,45 @@ describe('POST /api/tasks error paths', () => {
     expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.error).toBe('adapter blew up');
+  });
+
+  test('returns 400 when effort is not a string (#681)', async () => {
+    for (const bad of [3, null, ['high'], { level: 'high' }]) {
+      vi.mocked(launchTask).mockClear();
+      const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'p', cwd: '/cwd', effort: bad }),
+      });
+      expect(res.status, `effort=${JSON.stringify(bad)}`).toBe(400);
+      expect((await res.json()).error).toMatch(/effort must be a string/);
+      // Shape check rejects before launch is attempted.
+      expect(launchTask).not.toHaveBeenCalled();
+    }
+  });
+
+  test('maps EffortValidationError to 400 with code invalid_effort (#681)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(new EffortValidationError('Invalid effort "max" for agent codex-cli'));
+    const taskStore = new TaskStore();
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', agentType: 'codex-cli', effort: 'max' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'invalid_effort' });
+  });
+
+  test('forwards a valid string effort to launchTask (#681)', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', effort: 'max' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ effort: 'max' }));
   });
 });
 

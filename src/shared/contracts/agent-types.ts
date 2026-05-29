@@ -34,6 +34,59 @@ export const AVAILABLE_AGENT_TYPES: AvailableAgentType[] = [
   { type: 'codex-cli', label: 'Codex CLI' },
 ];
 
+/**
+ * Reasoning-effort levels, per agent type (#681). Each set mirrors the agent
+ * binary's own allowed values exactly, so Kookr validation rejects precisely
+ * what the CLI would reject — no more, no less:
+ *
+ * - `claude --effort <level>` accepts: low, medium, high, xhigh, max
+ *   (verified: `claude --effort __bogus__` → "It must be one of: low, medium,
+ *   high, xhigh, max").
+ * - `codex -c model_reasoning_effort=<level>` takes the `ReasoningEffort` enum
+ *   (serde `rename_all = "lowercase"`): none, minimal, low, medium, high, xhigh.
+ *
+ * Effort is only meaningful relative to an agent type: `max` is valid for
+ * claude-code but not codex-cli; `minimal`/`none` are valid for codex-cli but
+ * not claude-code. There is no shared canonical scale — always validate against
+ * {@link effortLevelsForAgent} / {@link isValidEffortForAgent}.
+ */
+export const CLAUDE_CODE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export const CODEX_CLI_EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+
+export type ClaudeCodeEffort = (typeof CLAUDE_CODE_EFFORT_LEVELS)[number];
+export type CodexCliEffort = (typeof CODEX_CLI_EFFORT_LEVELS)[number];
+
+/** Any effort token. Validity is agent-specific — see {@link isValidEffortForAgent}. */
+export type EffortLevel = ClaudeCodeEffort | CodexCliEffort;
+
+/**
+ * Per-agent-type effort defaults, as persisted in kookr settings (`agentEffort`).
+ * Sparse by design: an agent absent from the map (or the whole map empty) means
+ * "no configured effort" — the agent CLI's own default applies and Kookr passes
+ * no effort flag at all, byte-identical to pre-#681 behavior.
+ */
+export type AgentEffortMap = Partial<Record<AgentType, EffortLevel>>;
+
+/** The allowed effort levels for a given agent type. */
+export function effortLevelsForAgent(agent: AgentType): readonly string[] {
+  return agent === 'codex-cli' ? CODEX_CLI_EFFORT_LEVELS : CLAUDE_CODE_EFFORT_LEVELS;
+}
+
+/** True when `effort` is a level the given agent's CLI accepts. */
+export function isValidEffortForAgent(agent: AgentType, effort: string): boolean {
+  return effortLevelsForAgent(agent).includes(effort);
+}
+
+/**
+ * Union of every agent's allowed levels — for cross-agent fast-fail validation
+ * before the concrete agent is known (e.g. the `kookr-spawn` CLI, which cannot
+ * know which agent a `round-robin` launch resolves to). The authoritative,
+ * agent-specific check still runs server-side once the agent is resolved.
+ */
+export const ALL_EFFORT_LEVELS: readonly string[] = [
+  ...new Set<string>([...CLAUDE_CODE_EFFORT_LEVELS, ...CODEX_CLI_EFFORT_LEVELS]),
+];
+
 /** Picker option representing the round-robin selection. */
 export const ROUND_ROBIN_OPTION: AvailableAgentSelection = {
   type: ROUND_ROBIN_AGENT_TYPE,

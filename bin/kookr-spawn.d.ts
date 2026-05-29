@@ -18,6 +18,7 @@ export interface ParsedArgs {
   positional: string[];
   cwd: string | null;
   agent: 'claude-code' | 'codex-cli' | null;
+  effort: string | null;
   criteria: string | null;
   dedupe: 'warn' | 'block' | 'skip';
   promptFile: string | null;
@@ -59,6 +60,7 @@ export interface PostTaskArgs {
   prompt: string;
   cwd: string;
   agent: 'claude-code' | 'codex-cli' | null;
+  effort?: string | null;
   criteria: string | null;
   disableDedup?: boolean;
   metadataIntent?: 'keep_as_duplicate' | null;

@@ -1004,4 +1004,81 @@ describe('CodexCliAdapter', () => {
       expect(helpCalls).toBe(afterFirstLaunch);
     });
   });
+
+  describe('reasoning effort (#681)', () => {
+    /** Index of the `model_reasoning_effort=...` value in argv, or -1. */
+    function effortValueIndex(args: string[]): number {
+      return args.findIndex((a) => a.startsWith('model_reasoning_effort='));
+    }
+
+    test('no configured default and no override → argv is byte-identical (no effort override)', async () => {
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(effortValueIndex(spec.args)).toBe(-1);
+      // The pre-#681 base config flag is untouched.
+      expect(spec.args).toEqual(expect.arrayContaining(['-c', 'features.codex_hooks=true']));
+    });
+
+    test('per-agent-type default getter → pushes -c model_reasoning_effort="<level>"', async () => {
+      const effortAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: forkProbeExec,
+        writeFile: async () => {},
+        resolveDefaultEffort: () => 'high',
+      });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await effortAdapter.launch(task.id, 'Fix bug', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const idx = effortValueIndex(spec.args);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Codex's lever is a `-c key=value` TOML override, not a dedicated flag.
+      expect(spec.args[idx - 1]).toBe('-c');
+      expect(spec.args[idx]).toBe('model_reasoning_effort="high"');
+    });
+
+    test('per-task override (opts.effort) wins over the configured default', async () => {
+      const effortAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: forkProbeExec,
+        writeFile: async () => {},
+        resolveDefaultEffort: () => 'high',
+      });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await effortAdapter.launch(task.id, 'Fix bug', '/cwd', undefined, { effort: 'minimal' });
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const overrides = spec.args.filter((a) => a.startsWith('model_reasoning_effort='));
+      expect(overrides).toEqual(['model_reasoning_effort="minimal"']);
+    });
+
+    test('an effort invalid for codex-cli is skipped (defensive guard), not passed', async () => {
+      // `max` is claude-only; it must never reach codex argv.
+      const effortAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: forkProbeExec,
+        writeFile: async () => {},
+        resolveDefaultEffort: () => 'max',
+      });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await effortAdapter.launch(task.id, 'Fix bug', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(effortValueIndex(spec.args)).toBe(-1);
+    });
+
+    test('the prompt positional stays last even with an effort override (stock codex)', async () => {
+      const stockAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: stockProbeExec,
+        writeFile: async () => {},
+        resolveDefaultEffort: () => 'high',
+      });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await stockAdapter.launch(task.id, 'Fix bug', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      // Effort override is present...
+      expect(effortValueIndex(spec.args)).toBeGreaterThanOrEqual(0);
+      // ...and the trailing positional prompt is still the very last entry.
+      expect(spec.args[spec.args.length - 1]).toBe('Fix bug');
+    });
+  });
 });

@@ -240,6 +240,7 @@ describe('loadSettings / saveSettings', () => {
         mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
       },
       speakVerbosity: 'detailed' as const,
+      agentEffort: { 'claude-code': 'high' as const, 'codex-cli': 'minimal' as const },
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);
@@ -309,5 +310,43 @@ describe('loadSettings / saveSettings', () => {
     const files = await readdir(tmpDir);
     expect(files).toEqual(['settings.json']);
     expect(files).not.toContain('settings.json.tmp');
+  });
+});
+
+describe('agentEffort validation (#681)', () => {
+  it('defaults to an empty map (no configured effort → byte-identical to pre-#681)', () => {
+    expect(validateSettings({}).agentEffort).toEqual({});
+    expect(DEFAULT_SETTINGS.agentEffort).toEqual({});
+  });
+
+  it('keeps valid (agent, level) pairs', () => {
+    const { settings, warnings } = validateSettingsWithWarnings({
+      agentEffort: { 'claude-code': 'max', 'codex-cli': 'minimal' },
+    });
+    expect(settings.agentEffort).toEqual({ 'claude-code': 'max', 'codex-cli': 'minimal' });
+    expect(warnings).toEqual([]);
+  });
+
+  it('drops a level not in the agent-specific set, with a warning', () => {
+    // `max` is claude-only — invalid for codex-cli.
+    const { settings, warnings } = validateSettingsWithWarnings({
+      agentEffort: { 'codex-cli': 'max' },
+    });
+    expect(settings.agentEffort).toEqual({});
+    expect(warnings.some((w) => w.includes('codex-cli'))).toBe(true);
+  });
+
+  it('drops unknown agent keys, with a warning', () => {
+    const { settings, warnings } = validateSettingsWithWarnings({
+      agentEffort: { 'gpt-5': 'high', 'claude-code': 'high' },
+    });
+    expect(settings.agentEffort).toEqual({ 'claude-code': 'high' });
+    expect(warnings.some((w) => w.includes('gpt-5'))).toBe(true);
+  });
+
+  it('drops non-string values and ignores a non-object map', () => {
+    expect(validateSettingsWithWarnings({ agentEffort: { 'claude-code': 3 } }).settings.agentEffort).toEqual({});
+    expect(validateSettingsWithWarnings({ agentEffort: 'high' }).settings.agentEffort).toEqual({});
+    expect(validateSettingsWithWarnings({ agentEffort: ['high'] }).settings.agentEffort).toEqual({});
   });
 });

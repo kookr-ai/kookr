@@ -30,6 +30,14 @@ const EXIT_NO_SERVER = 3;
 const EXIT_SERVER_ERROR = 4;
 const EXIT_DUPLICATE_BLOCKED = 5;
 const DEDUPE_MODES = new Set(['warn', 'block', 'skip']);
+// #681: union of every agent's accepted reasoning-effort levels — claude-code
+// (low|medium|high|xhigh|max) ∪ codex-cli (none|minimal|low|medium|high|xhigh).
+// This is a cross-agent fast-fail check only: the CLI cannot know which agent a
+// `round-robin` launch resolves to, so the authoritative agent-specific check
+// runs server-side and surfaces as a 400 (→ EXIT_SERVER_ERROR) if, e.g., `max`
+// is requested for codex-cli. Keep in sync with ALL_EFFORT_LEVELS in
+// src/shared/contracts/agent-types.ts.
+const EFFORT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 // ---------- arg parsing ----------
 
@@ -44,6 +52,10 @@ Usage:
 Options:
   -C, --cwd <path>         Working directory for the task (default: cwd).
   -a, --agent <type>       claude-code or codex-cli (default: server default).
+      --effort <level>     Reasoning effort for this task (default: server's
+                           per-agent-type setting, else the agent CLI default).
+                           claude-code: low|medium|high|xhigh|max.
+                           codex-cli:   none|minimal|low|medium|high|xhigh.
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
       --parent-task-id <uuid>  Override the parent task linkage explicitly.
@@ -88,6 +100,7 @@ function parseArgs(argv) {
     positional: [],
     cwd: null,
     agent: null,
+    effort: null,
     criteria: null,
     dedupe: 'warn',
     promptFile: null,
@@ -110,6 +123,10 @@ function parseArgs(argv) {
       out.cwd = eat();
     } else if (tok === '-a' || tok === '--agent') {
       out.agent = eat();
+    } else if (tok === '--effort') {
+      out.effort = eat();
+    } else if (tok.startsWith('--effort=')) {
+      out.effort = tok.slice('--effort='.length);
     } else if (tok === '--criteria') {
       out.criteria = eat();
     } else if (tok === '--dedupe') {
@@ -139,6 +156,11 @@ function parseArgs(argv) {
   }
   if (!DEDUPE_MODES.has(out.dedupe)) {
     throw new UsageError(`--dedupe must be "warn", "block", or "skip" (got: ${out.dedupe})`);
+  }
+  if (out.effort !== null && !EFFORT_LEVELS.has(out.effort)) {
+    throw new UsageError(
+      `--effort must be one of: ${[...EFFORT_LEVELS].join(', ')} (got: ${out.effort})`,
+    );
   }
   if (out.parentTaskId !== null) {
     const trimmed = out.parentTaskId.trim();
@@ -351,10 +373,11 @@ function defaultSleep(ms) {
 
 // ---------- HTTP POST ----------
 
-async function postTask({ baseUrl, prompt, cwd, agent, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
+  if (effort) body.effort = effort;
   if (disableDedup) body.disableDedup = true;
   if (metadataIntent) body.metadata = { intent: metadataIntent };
   if (parentTaskId) body.parentTaskId = parentTaskId;
@@ -610,6 +633,7 @@ async function main({
       prompt,
       cwd: cwdAbs,
       agent: args.agent,
+      effort: args.effort,
       criteria: args.criteria,
       disableDedup: args.dedupe === 'skip',
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
@@ -652,6 +676,7 @@ async function main({
         prompt,
         cwd: cwdAbs,
         agent: args.agent,
+        effort: args.effort,
         criteria: args.criteria,
         disableDedup: true,
         metadataIntent: 'keep_as_duplicate',

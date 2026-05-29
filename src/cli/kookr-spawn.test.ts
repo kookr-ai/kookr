@@ -109,6 +109,19 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--agent', 'gpt-4'])).toThrow(UsageError);
   });
 
+  it('parses --effort and --effort=<level>, defaulting to null (#681)', () => {
+    expect(parseArgs([]).effort).toBeNull();
+    expect(parseArgs(['--effort', 'high']).effort).toBe('high');
+    expect(parseArgs(['--effort=max']).effort).toBe('max');
+    // codex-only levels parse fine at the CLI (server does agent-specific check).
+    expect(parseArgs(['--effort', 'minimal']).effort).toBe('minimal');
+  });
+
+  it('rejects an --effort value outside the cross-agent union (#681)', () => {
+    expect(() => parseArgs(['--effort', 'ultra'])).toThrow(UsageError);
+    expect(() => parseArgs(['--effort', ''])).toThrow(UsageError);
+  });
+
   it('rejects invalid --dedupe value', () => {
     expect(() => parseArgs(['--dedupe', 'maybe'])).toThrow(UsageError);
   });
@@ -506,6 +519,22 @@ describe('postTask', () => {
       });
       expect(bodySeen.agentType).toBe('codex-cli');
       expect(bodySeen.criteria).toBe('pass');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('includes effort when provided and omits it otherwise (#681)', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodies.push(JSON.parse(bodyText));
+      return { status: 201, body: JSON.stringify({ id: 't' }) };
+    });
+    try {
+      await postTask({ baseUrl, prompt: 'hi', cwd: '/tmp', agent: null, effort: 'max', criteria: null });
+      await postTask({ baseUrl, prompt: 'hi2', cwd: '/tmp', agent: null, criteria: null });
+      expect(bodies[0].effort).toBe('max');
+      expect(bodies[1]).not.toHaveProperty('effort');
     } finally {
       await closeServer(server);
     }
