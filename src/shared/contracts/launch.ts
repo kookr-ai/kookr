@@ -18,6 +18,15 @@ export interface LaunchOpts {
    * `round-robin` sentinel, which the server resolves to a concrete agent.
    */
   agentType?: AgentSelection;
+  /**
+   * Optional per-task reasoning-effort override (#681). Wins over the
+   * configured per-agent-type default for this one launch. Validated against
+   * the *resolved* agent's allowed set inside `launchTask` (after any
+   * round-robin resolution) — an invalid value throws `EffortValidationError`,
+   * which the API maps to 400. When undefined, the per-agent-type default (or
+   * unset) applies.
+   */
+  effort?: string;
   /** When true, always create a new task instead of returning an existing active duplicate. */
   disableDedup?: boolean;
   /** Explicit operator intent for duplicate-preserving launches. */

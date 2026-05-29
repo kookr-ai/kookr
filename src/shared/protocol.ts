@@ -7,10 +7,14 @@ export type {
   AgentSelection,
   AvailableAgentType,
   AvailableAgentSelection,
+  EffortLevel,
+  AgentEffortMap,
 } from './contracts/agent-types.js';
 export {
   AVAILABLE_AGENT_TYPES,
   buildAgentSelectionOptions,
+  effortLevelsForAgent,
+  isValidEffortForAgent,
 } from './contracts/agent-types.js';
 export type { AgentEvent } from './contracts/agent-events.js';
 export type {

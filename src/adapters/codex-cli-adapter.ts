@@ -29,6 +29,7 @@ import {
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { inferGitInfoPathFromEvent } from './git-path-inference.js';
+import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
 import { buildAgentLaunchContext } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
@@ -112,6 +113,16 @@ export interface CodexCliAdapterOptions {
    * Production callers should leave this unset.
    */
   probeExec?: ProbeExecRunner;
+  /**
+   * Live getter for the configured per-agent-type effort default for
+   * codex-cli (#681). Called on every launch; returning a value pushes
+   * `-c model_reasoning_effort="<level>"` into the argv (unless a per-task
+   * override is supplied via {@link AdapterLaunchOptions.effort}, which wins).
+   * Returning `undefined` — the default when no effort is configured — passes
+   * no effort override, leaving the launch argv byte-identical to pre-#681.
+   * Invalid values are ignored (skip + warn) as a final guard.
+   */
+  resolveDefaultEffort?: () => string | undefined;
 }
 
 /** Env var that overrides the default Codex CLI binary path. */
@@ -161,6 +172,7 @@ export class CodexCliAdapter implements AgentAdapter {
   private promptFileSupportProbe?: Promise<boolean>;
   private warnedAboutMissingPromptFileSupport = false;
   private probeExec?: ProbeExecRunner;
+  private resolveDefaultEffort?: () => string | undefined;
   private inputWriter: TerminalInputWriterPort;
 
   constructor(
@@ -186,6 +198,7 @@ export class CodexCliAdapter implements AgentAdapter {
     // codex-fork supporting --plugin-dir lands. See `probePluginDirSupport`.
     this.pluginDir = resolvePluginDir(options?.pluginDir);
     this.probeExec = options?.probeExec;
+    this.resolveDefaultEffort = options?.resolveDefaultEffort;
   }
 
   async preflight(): Promise<PreflightResult> {
@@ -329,6 +342,26 @@ export class CodexCliAdapter implements AgentAdapter {
       permissionFlagStr,
       '--settings', settingsPath,
     ];
+    // Reasoning-effort override (#681). Codex has no dedicated `--effort` flag;
+    // its lever is the `model_reasoning_effort` config key, overridable from
+    // the CLI via `-c key=value` (value parsed as TOML). Resolution order:
+    // per-task override (opts.effort) → configured per-agent-type default
+    // (resolveDefaultEffort) → unset. When both are absent, nothing is pushed
+    // and the argv is byte-identical to pre-#681. The agent-specific validity
+    // guard is a last line of defense (route + settings validation reject
+    // invalid values upstream). The prompt positional is appended later, so
+    // this flag pair never lands in trailing-positional position.
+    const effort = opts?.effort ?? this.resolveDefaultEffort?.();
+    if (effort) {
+      if (isValidEffortForAgent(this.agentType, effort)) {
+        args.push('-c', `model_reasoning_effort="${effort}"`);
+      } else {
+        console.warn(
+          `[codex-cli-adapter] ignoring invalid effort "${effort}" for ${this.agentType}; ` +
+          `valid: none, minimal, low, medium, high, xhigh`,
+        );
+      }
+    }
     if (promptFileSupported) {
       args.push('--prompt-file', promptPath);
     }

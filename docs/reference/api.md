@@ -21,6 +21,24 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
 | `GET /api/sessions/:sessionId/effective-hook-settings` | Resolved per-session hook settings |
 
+### `POST /api/tasks` body fields
+
+`prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
+`agentType`, `effort`, `disableDedup`, `metadata`, and `dependencies`.
+
+`effort` (optional, string) sets the reasoning-effort level for *this one task*,
+overriding the per-agent-type default (see [Reasoning effort](#reasoning-effort)).
+It is validated against the **resolved** agent's allowed set — `round-robin`
+resolves to a concrete agent first — and an invalid level returns
+`400 {"error", "code": "invalid_effort"}`. Allowed levels:
+
+- `claude-code`: `low`, `medium`, `high`, `xhigh`, `max`
+- `codex-cli`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+Omitting `effort` falls back to the per-agent-type setting, then to the agent
+CLI's own default (no effort flag passed — unchanged from before this field
+existed). The `kookr-spawn --effort <level>` flag maps to this field.
+
 ## Supervisor Surface
 
 | Endpoint | Description |
@@ -79,6 +97,26 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | --- | --- |
 | `GET /api/settings` | Get user and project settings |
 | `PUT /api/settings` | Update settings |
+
+### Reasoning effort
+
+`agentEffort` is a per-agent-type map in settings (`~/.kookr/settings.json`,
+editable in the dashboard's Settings → Task Management) that sets the default
+reasoning-effort level spawned agents launch at:
+
+```json
+{ "agentEffort": { "claude-code": "high", "codex-cli": "medium" } }
+```
+
+When set, the adapter launches `claude-code` with `--effort <level>` and
+`codex-cli` with `-c model_reasoning_effort="<level>"`. Allowed levels are
+agent-specific (`claude-code`: `low|medium|high|xhigh|max`; `codex-cli`:
+`none|minimal|low|medium|high|xhigh`); invalid `(agent, level)` pairs are
+dropped on save with a warning. The map is **empty by default** — an unset
+agent launches at the agent CLI's own default with no effort flag passed
+(identical to behavior before this setting existed). A per-task `effort` on
+`POST /api/tasks` (or `kookr-spawn --effort`) overrides this default for one
+launch. Resolution order: per-task override → per-agent-type setting → unset.
 | `GET /api/circuit-breakers` | Snapshots of wrapped-dependency breakers |
 | `GET /api/diagnostic` | Latest self-diagnostic report and last error |
 | `POST /api/diagnostic/run` | Trigger a self-diagnostic run |

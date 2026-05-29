@@ -4,7 +4,7 @@ import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
 import { normalizeAgentSelection } from '../../core/agent-types.js';
 import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
 import { deleteTask } from '../use-cases/delete-task.js';
-import { launchTask, DrainModeError } from '../launch-service.js';
+import { launchTask, DrainModeError, isEffortValidationError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import type { LaunchDependency } from '../../core/playbook.js';
 import type { Task } from '../../core/tasks.js';
@@ -113,6 +113,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         criteria?: string;
         parentTaskId?: string;
         agentType?: string;
+        effort?: unknown;
         disableDedup?: unknown;
         metadata?: unknown;
         dependencies?: unknown;
@@ -145,6 +146,12 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (metadataIntent === 'keep_as_duplicate' && body.disableDedup !== true) {
         return c.json({ error: 'metadata.intent "keep_as_duplicate" requires disableDedup true' }, 400);
       }
+      // #681: shape check only. The agent-specific allowed-set check runs in
+      // launchTask after round-robin resolution and surfaces as a 400 via
+      // EffortValidationError (mapped below).
+      if (body.effort !== undefined && typeof body.effort !== 'string') {
+        return c.json({ error: 'effort must be a string' }, 400);
+      }
 
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
@@ -155,6 +162,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         criteria: body.criteria,
         parentTaskId: body.parentTaskId,
         agentType: body.agentType ? normalizeAgentSelection(body.agentType) : undefined,
+        effort: typeof body.effort === 'string' ? body.effort : undefined,
         disableDedup: body.disableDedup === true,
         metadataIntent,
         dependencies: parseLaunchDependencies(body.dependencies),
@@ -170,6 +178,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     } catch (err) {
       if (isLaunchDependencyValidationError(err)) {
         return c.json({ error: err.message }, 400);
+      }
+      if (isEffortValidationError(err)) {
+        return c.json({ error: err.message, code: err.code }, 400);
       }
       if (err instanceof LaunchPreflightError) {
         return c.json({ error: err.message, code: 'launch_preflight_failed', findings: err.findings }, 409);

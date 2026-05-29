@@ -10,6 +10,7 @@ import {
   type TerminalInputWriterPort,
 } from '../../core/ports/terminal-input-writer-port.js';
 import type { TaskStore } from '../../core/tasks.js';
+import type { AgentEffortMap } from '../../core/agent-types.js';
 import {
   runAdapterPreflights,
   type AgentPreflightSnapshot,
@@ -29,6 +30,14 @@ export interface AgentRuntimeDeps {
   kookrDir: string;
   preflightOnFatal?: (snapshot: AgentPreflightSnapshot & { status: 'absent' }) => never;
   preflightLogger?: PreflightLogger;
+  /**
+   * Live getter for the configured per-agent-type effort defaults (#681). Each
+   * adapter receives a narrowed `resolveDefaultEffort` closure reading its own
+   * entry, so an operator's settings change applies to the next launch — across
+   * every launch path — without a restart. Omitted in tests that don't exercise
+   * effort: adapters then pass no effort flag (byte-identical to pre-#681).
+   */
+  getAgentEffort?: () => AgentEffortMap;
 }
 
 export interface AgentRuntime {
@@ -50,6 +59,7 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     agentBin: deps.agentBin,
     bypassAllPermissions: deps.bypassAllPermissions,
     kookrDataDir: deps.kookrDir,
+    resolveDefaultEffort: () => deps.getAgentEffort?.()['claude-code'],
   });
   const codexCliAdapter = new CodexCliAdapter(deps.terminalBackend, deps.taskStore, {
     terminalInputWriter,
@@ -60,6 +70,7 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     agentBin: deps.codexBin,
     bypassAllPermissions: deps.bypassAllPermissions,
     kookrDataDir: deps.kookrDir,
+    resolveDefaultEffort: () => deps.getAgentEffort?.()['codex-cli'],
   });
 
   const adapterRegistry = new AdapterRegistry();

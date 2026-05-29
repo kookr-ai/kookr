@@ -6,6 +6,8 @@ import {
   DEFAULT_AGENT_TYPE,
   ROUND_ROBIN_AGENT_TYPE,
   resolveRoundRobinAgent,
+  isValidEffortForAgent,
+  effortLevelsForAgent,
 } from '../core/agent-types.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
@@ -73,6 +75,26 @@ export class DrainModeError extends Error {
     super('Server is draining; not accepting new task launches');
     this.name = 'DrainModeError';
   }
+}
+
+/**
+ * Thrown by {@link launchTask} when a per-task `effort` override is not valid
+ * for the resolved agent type (#681). Validation happens here — not at the
+ * route — because a `round-robin` selection only resolves to a concrete agent
+ * inside this service, and `max` (claude-only) vs `minimal`/`none` (codex-only)
+ * are agent-specific. The API maps this to HTTP 400.
+ */
+export class EffortValidationError extends Error {
+  readonly code = 'invalid_effort';
+  constructor(message: string) {
+    super(message);
+    this.name = 'EffortValidationError';
+  }
+}
+
+/** Type guard for {@link EffortValidationError}, for callers mapping to 400. */
+export function isEffortValidationError(err: unknown): err is EffortValidationError {
+  return err instanceof EffortValidationError;
 }
 
 /** Active statuses — tasks in these states block duplicate submissions. */
@@ -208,6 +230,19 @@ export async function launchTask(
       )
     : requestedAgent;
 
+  // Validate a per-task effort override against the *resolved* agent's allowed
+  // set (#681), before any side effect or task record. Done here — not at the
+  // route — because round-robin only resolves to a concrete agent now, and the
+  // allowed set is agent-specific (`max` is claude-only; `minimal`/`none` are
+  // codex-only). The per-agent-type *default* is applied inside the adapter and
+  // validated when settings are saved, so it is not re-checked here.
+  if (opts.effort !== undefined && !isValidEffortForAgent(agentType, opts.effort)) {
+    throw new EffortValidationError(
+      `Invalid effort "${opts.effort}" for agent ${agentType}; ` +
+      `valid levels: ${effortLevelsForAgent(agentType).join(', ')}`,
+    );
+  }
+
   // R19 trust-boundary check (rfc-remote-chat-trigger §4): Telegram-spawned
   // Codex is opt-in because its permission model is more permissive than
   // Claude Code's supervised path. The integration checks this before
@@ -286,14 +321,24 @@ export async function launchTask(
   // PR4: ralph-loop launches need verdict env injected so iteration 0 can
   // write a verdict. Subsequent iterations get this via `launchFreshRuntime`;
   // this fills the gap on the first launch.
-  const adapterOpts = opts.ralphVerdictEnv
-    ? {
-        extraEnv: {
-          RALPH_VERDICT_FILE: defaultVerdictPath(opts.cwd, task.id),
-          RALPH_ITERATION: '0',
-        },
-      }
-    : undefined;
+  // #681: thread the per-task effort override through to the adapter. The
+  // per-agent-type default is resolved inside the adapter, so this only carries
+  // an explicit override. When neither effort nor ralph verdict env is set,
+  // adapterOpts stays `undefined` — byte-identical to the pre-#681 launch call.
+  const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions | undefined =
+    (opts.ralphVerdictEnv || opts.effort)
+      ? {
+          ...(opts.ralphVerdictEnv
+            ? {
+                extraEnv: {
+                  RALPH_VERDICT_FILE: defaultVerdictPath(opts.cwd, task.id),
+                  RALPH_ITERATION: '0',
+                },
+              }
+            : {}),
+          ...(opts.effort ? { effort: opts.effort } : {}),
+        }
+      : undefined;
 
   try {
     await adapterRegistry.get(agentType).launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts);

@@ -31,6 +31,7 @@ import {
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { inferGitInfoPathFromEvent } from './git-path-inference.js';
+import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
 import {
   buildAgentLaunchContext,
   deliverInitialPromptToSession,
@@ -132,6 +133,17 @@ export interface ClaudeCodeAdapterOptions {
    */
   promptReadyTimeoutMs?: number;
   promptReadyPollMs?: number;
+  /**
+   * Live getter for the configured per-agent-type effort default for
+   * claude-code (#681). Called on every launch; returning a value pushes
+   * `--effort <level>` into the argv (unless a per-task override is supplied
+   * via {@link AdapterLaunchOptions.effort}, which wins). Returning `undefined`
+   * — the default when no effort is configured — passes no effort flag, leaving
+   * the launch argv byte-identical to pre-#681. Wired to live server settings
+   * so an operator's settings change takes effect on the next launch without a
+   * restart. Invalid values are ignored (skip + warn) as a final guard.
+   */
+  resolveDefaultEffort?: () => string | undefined;
 }
 
 /** Env var that overrides the default Claude Code binary path. */
@@ -192,6 +204,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private promptSubmitRetries?: number;
   private promptReadyTimeoutMs?: number;
   private promptReadyPollMs?: number;
+  private resolveDefaultEffort?: () => string | undefined;
   private inputWriter: TerminalInputWriterPort;
 
   constructor(
@@ -216,6 +229,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     this.promptSubmitRetries = options?.promptSubmitRetries;
     this.promptReadyTimeoutMs = options?.promptReadyTimeoutMs;
     this.promptReadyPollMs = options?.promptReadyPollMs;
+    this.resolveDefaultEffort = options?.resolveDefaultEffort;
   }
 
   async preflight(): Promise<PreflightResult> {
@@ -296,6 +310,24 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       }
     }
     if (this.pluginDir) args.push('--plugin-dir', this.pluginDir);
+    // Reasoning-effort flag (#681). Resolution order: per-task override
+    // (opts.effort) → configured per-agent-type default (resolveDefaultEffort)
+    // → unset. When both are absent, no `--effort` is pushed and the argv is
+    // byte-identical to pre-#681. The agent-specific validity guard is a
+    // last line of defense — the route + settings validation already reject
+    // invalid values upstream — so a stray bad value is skipped (+ warn)
+    // rather than passed through to break the launch.
+    const effort = opts?.effort ?? this.resolveDefaultEffort?.();
+    if (effort) {
+      if (isValidEffortForAgent(this.agentType, effort)) {
+        args.push('--effort', effort);
+      } else {
+        console.warn(
+          `[claude-code-adapter] ignoring invalid effort "${effort}" for ${this.agentType}; ` +
+          `valid: low, medium, high, xhigh, max`,
+        );
+      }
+    }
     if (useResume) {
       // --fork-session creates a new sessionId for the resumed branch so the
       // user's pre-crash transcript is preserved as a read-only snapshot.

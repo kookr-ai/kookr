@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { buildAgentSelectionOptions, type AgentSelection } from '../../shared/protocol.js';
+import {
+  buildAgentSelectionOptions,
+  AVAILABLE_AGENT_TYPES,
+  effortLevelsForAgent,
+  type AgentSelection,
+  type AgentType,
+  type AgentEffortMap,
+} from '../../shared/protocol.js';
 import {
   SHORTCUT_ACTIONS,
   detectShortcutPlatform,
@@ -34,6 +41,7 @@ interface ServerSettings {
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
   defaultAgentType: AgentSelection;
+  agentEffort?: AgentEffortMap;
   shortcutBindings: PlatformShortcutBindingOverrides;
   speakVerbosity?: VerbosityScale;
   loadedFromDefaults?: boolean;
@@ -649,6 +657,22 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     void saveSettings(updated);
   }
 
+  // #681: set or clear a per-agent-type reasoning-effort default. An empty
+  // value removes the entry, restoring the agent CLI's own default (no flag
+  // passed at launch). Invalid (agent, level) pairs are dropped server-side.
+  function handleAgentEffortChange(agent: AgentType, level: string) {
+    if (!settings) return;
+    const nextEffort: AgentEffortMap = { ...(settings.agentEffort ?? {}) };
+    if (level === '') {
+      delete nextEffort[agent];
+    } else {
+      nextEffort[agent] = level as AgentEffortMap[AgentType];
+    }
+    const updated = { ...settings, agentEffort: nextEffort };
+    setSettings(updated);
+    void saveSettings(updated);
+  }
+
   function handleSpeakVerbosityChange(value: VerbosityScale) {
     if (!settings) return;
     const updated = { ...settings, speakVerbosity: value };
@@ -935,6 +959,34 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                         />
                       </div>
                     </div>
+                    {/* #681: per-agent-type reasoning-effort default. One row per
+                        concrete agent. "Default" clears the setting, so the agent
+                        CLI's own default applies and no effort flag is passed. */}
+                    {AVAILABLE_AGENT_TYPES.map(({ type, label }) => (
+                      <div className="settings-row" key={`effort-${type}`}>
+                        <div className="settings-row-info">
+                          <span className="settings-label">{label} effort</span>
+                          <span className="settings-desc">
+                            Reasoning-effort level new {label} tasks launch at. "Default" uses the
+                            agent CLI's own default (no flag passed). A per-task override (via the
+                            task API or <code>kookr-spawn --effort</code>) wins over this default.
+                          </span>
+                        </div>
+                        <div className="settings-agent-select">
+                          <select
+                            aria-label={`${label} reasoning effort`}
+                            className="settings-select"
+                            value={settings.agentEffort?.[type] ?? ''}
+                            onChange={(e) => handleAgentEffortChange(type, e.target.value)}
+                          >
+                            <option value="">Default</option>
+                            {effortLevelsForAgent(type).map((level) => (
+                              <option key={level} value={level}>{level}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
                   {/* Keyboard Shortcuts */}
