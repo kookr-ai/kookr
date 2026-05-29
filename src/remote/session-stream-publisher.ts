@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 
-import type { TerminalBackend, SessionId as BackendSessionId } from '../adapters/terminal-backend.js';
+import type { TerminalSessionStreamPort } from '../core/ports/terminal-session-stream-port.js';
 import type { RemoteNodeClient } from './node-client.js';
 import type { Seq, SessionEpoch, SessionId } from './ids.js';
 import type { TerminalBytesEvent } from './stream-events.js';
@@ -8,7 +8,7 @@ import { TerminalPublicationGate, type TerminalPublicationRule, type TerminalPub
 import { encryptContactTerminalPayload } from './terminal-frame-crypto.js';
 
 export interface SessionStreamPublisherOptions {
-  terminalBackend: Pick<TerminalBackend, 'listSessions' | 'onData'>;
+  terminalBackend: TerminalSessionStreamPort;
   remoteNodeClient: Pick<RemoteNodeClient, 'status' | 'publish'>;
   env?: Partial<Record<'KOOKR_RELAY_TRUSTED', string | undefined>>;
   syncIntervalMs?: number;
@@ -23,6 +23,8 @@ interface SessionStreamState {
   nextSeq: number;
   unsubscribe: () => void;
 }
+
+type BackendSessionId = string;
 
 export interface SessionStreamPublisher {
   start(): Promise<void>;
