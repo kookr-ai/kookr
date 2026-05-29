@@ -78,6 +78,7 @@ function assertKookrDiff(before: FileSnapshot, after: FileSnapshot): void {
       || /^tasks\.json\.daily\.\d{8}$/.test(entry)
       || entry === 'oss-attempts.json'
       || entry === 'project-configs.json'
+      || entry === 'detection-stats.json'
       || entry === 'schedules.json'
       || entry === 'activity'
       || entry.startsWith('activity/')

@@ -503,6 +503,50 @@ describe('PlaybookBrowser loopable workflows', () => {
     expect(closeCount).toBe(1);
   });
 
+  test('keeps pinned playbook cwd for standard launches from a project context', async () => {
+    await act(async () => {
+      useKookrStore.setState({
+        playbooks: [{ ...plainPlaybook, sourceCwd: '/catalog', cwd: '/pinned' }],
+      });
+      root.render(
+        React.createElement(PlaybookBrowser, {
+          cwd: '/target',
+          playbookSourceCwd: '/catalog',
+          taskTargetCwd: '/target',
+          projectContext: projectSummary,
+          send: (msg: ClientMessage) => {
+            sent.push(msg);
+            return true;
+          },
+          onClose: () => { closeCount += 1; },
+        }),
+      );
+    });
+    await flush();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLElement>('.playbook-card'))
+        .find((card) => card.textContent?.includes('Plain'))!
+        .click();
+    });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(sent).toEqual([expect.objectContaining({
+      type: 'launchPlaybook',
+      playbookPath: 'plain.md',
+      playbookSourceCwd: '/catalog',
+      taskTargetCwd: '/pinned',
+      parameterValues: {},
+    })]);
+    expect(sent[0]).not.toHaveProperty('cwd');
+    expect(sent[0]).not.toHaveProperty('projectId');
+    expect(container.querySelector('.playbook-target-cwd-field')).toBeNull();
+    expect(closeCount).toBe(1);
+  });
+
   test('edits the project target cwd without leaving playbook detail or looped mode', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
