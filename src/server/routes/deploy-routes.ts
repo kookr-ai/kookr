@@ -1,16 +1,20 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolve, basename } from 'node:path';
-import { access } from 'node:fs/promises';
+import { resolve, basename, join } from 'node:path';
+import { access, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import type { Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
 import { isProtectedWorktreePath } from '../../adapters/worktree-marker.js';
 import { getToolkitSymlinkStatus, type ToolkitSymlinkStatus } from '../toolkit-symlink-status.js';
+import { getPluginVersionStatus, type PluginVersionStatus } from '../plugin-version-status.js';
 
 const execFileAsync = promisify(execFile);
 
 const PROD_PORT = 4800;
+
+/** Fallback marketplace plugin id when the manifests can't be read. */
+const DEFAULT_PLUGIN_ID = 'kookr-toolkit@kookr';
 
 /** Strip GIT_DIR/GIT_WORK_TREE so commands run against the target cwd, not the parent repo. */
 const gitEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
@@ -70,6 +74,95 @@ async function readToolkitStatus(prodDir: string, hookHomeDir: string): Promise<
   }
 }
 
+interface AvailablePlugin {
+  availableVersion: string | null;
+  pluginId: string;
+}
+
+/** Parse `{name, version}` + marketplace name from two JSON manifest strings. */
+function parseAvailablePlugin(pluginJsonRaw: string, marketplaceJsonRaw: string | null): AvailablePlugin {
+  const pluginJson = JSON.parse(pluginJsonRaw) as { name?: unknown; version?: unknown };
+  const availableVersion = typeof pluginJson.version === 'string' ? pluginJson.version : null;
+  const pluginName = typeof pluginJson.name === 'string' ? pluginJson.name : null;
+  let marketplaceName: string | null = null;
+  if (marketplaceJsonRaw !== null) {
+    try {
+      const mkt = JSON.parse(marketplaceJsonRaw) as { name?: unknown };
+      marketplaceName = typeof mkt.name === 'string' ? mkt.name : null;
+    } catch {
+      // marketplace.json malformed — fall back to the default id below.
+    }
+  }
+  const pluginId = pluginName && marketplaceName ? `${pluginName}@${marketplaceName}` : DEFAULT_PLUGIN_ID;
+  return { availableVersion, pluginId };
+}
+
+/** Read the plugin + marketplace manifests directly off disk under `treeDir`. */
+async function readAvailableFromDisk(treeDir: string): Promise<AvailablePlugin | null> {
+  try {
+    const pluginJsonRaw = await readFile(join(treeDir, 'plugin', '.claude-plugin', 'plugin.json'), 'utf8');
+    let marketplaceJsonRaw: string | null = null;
+    try {
+      marketplaceJsonRaw = await readFile(join(treeDir, '.claude-plugin', 'marketplace.json'), 'utf8');
+    } catch {
+      // optional
+    }
+    return parseAvailablePlugin(pluginJsonRaw, marketplaceJsonRaw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the latest *available* toolkit-plugin version + id. Prefers
+ * `origin/main` of the prod tree (the same remote `/plugin marketplace update`
+ * pulls from), then falls back to reading manifests on disk from the prod tree
+ * and finally the running server's own checkout — so the value is present even
+ * for a first-time user who has no `kookr-prod` deploy tree set up.
+ */
+async function resolveAvailablePlugin(prodDir: string | null, serverCwd: string): Promise<AvailablePlugin> {
+  if (prodDir) {
+    try {
+      const pluginJsonRaw = await git(prodDir, 'show', 'origin/main:plugin/.claude-plugin/plugin.json');
+      let marketplaceJsonRaw: string | null = null;
+      try {
+        marketplaceJsonRaw = await git(prodDir, 'show', 'origin/main:.claude-plugin/marketplace.json');
+      } catch {
+        // optional
+      }
+      const fromGit = parseAvailablePlugin(pluginJsonRaw, marketplaceJsonRaw);
+      if (fromGit.availableVersion) return fromGit;
+    } catch {
+      // no origin/main yet — fall through to disk reads
+    }
+  }
+  for (const tree of [prodDir, serverCwd].filter((t): t is string => Boolean(t))) {
+    const fromDisk = await readAvailableFromDisk(tree);
+    if (fromDisk?.availableVersion) return fromDisk;
+  }
+  return { availableVersion: null, pluginId: DEFAULT_PLUGIN_ID };
+}
+
+/**
+ * Best-effort marketplace-plugin status: the installed version (from the user's
+ * `~/.claude/plugins/`) compared against the latest available version. Surfaces
+ * three cases to the dashboard — up to date, behind (stale), and not installed
+ * at all (installedVersion null + availableVersion known) — so a first-time or
+ * not-yet-installed user is nudged to install, not just to update. Never throws.
+ */
+async function readPluginVersionStatus(
+  prodDir: string | null,
+  serverCwd: string,
+  homeDir: string,
+): Promise<PluginVersionStatus | undefined> {
+  try {
+    const { availableVersion, pluginId } = await resolveAvailablePlugin(prodDir, serverCwd);
+    return await getPluginVersionStatus({ homeDir, pluginId, availableVersion });
+  } catch {
+    return undefined;
+  }
+}
+
 function commandFailureMessage(err: unknown): string {
   if (err instanceof Error) {
     const details: string[] = [err.message];
@@ -107,10 +200,16 @@ export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
       );
     }
 
+    // Computed before the prod-existence gate so the install nudge reaches a
+    // first-time user who has no kookr-prod tree (falls back to the running
+    // server's own checkout for the available version).
+    const pluginStatus = await readPluginVersionStatus(prodDir, deps.serverCwd, hookHomeDir);
+    const pluginField = pluginStatus ? { plugin: pluginStatus } : {};
+
     try {
       await access(prodDir);
     } catch {
-      return c.json({ configured: false, runningPort, prodPort: PROD_PORT });
+      return c.json({ configured: false, ...pluginField, runningPort, prodPort: PROD_PORT });
     }
 
     const toolkitStatus = await readToolkitStatus(prodDir, hookHomeDir);
@@ -146,6 +245,7 @@ export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
         available: behindCount > 0,
         deploying,
         ...toolkitStatus,
+        ...pluginField,
         currentCommit,
         currentShort,
         latestCommit,
@@ -161,6 +261,7 @@ export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
           configured: true,
           error: err instanceof Error ? err.message : String(err),
           ...toolkitStatus,
+          ...pluginField,
           runningPort,
           prodPort: PROD_PORT,
         },

@@ -35,6 +35,7 @@ interface DeployStatus {
   deploying?: boolean;
   toolkit?: ToolkitStatus;
   toolkitError?: string;
+  plugin?: PluginVersionStatus;
   currentShort?: string;
   latestShort?: string;
   behindCount?: number;
@@ -50,6 +51,13 @@ interface ToolkitStatus {
   stale: boolean;
   checkedCount: number;
   staleCount: number;
+}
+
+interface PluginVersionStatus {
+  pluginId: string;
+  installedVersion: string | null;
+  availableVersion: string | null;
+  stale: boolean;
 }
 
 function timeAgo(isoString: string): string {
@@ -191,7 +199,18 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
 
   const toolkitStale = Boolean(deployStatus?.toolkit?.stale);
   const showToolkitSection = Boolean(toolkitStale || toolkitRefreshing || deployStatus?.toolkitError);
-  const hasUpdates = (!onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying) || toolkitStale;
+  const pluginStale = Boolean(deployStatus?.plugin?.stale);
+  const pluginNotInstalled = Boolean(
+    deployStatus?.plugin &&
+      deployStatus.plugin.installedVersion === null &&
+      deployStatus.plugin.availableVersion !== null,
+  );
+  const pluginMarketplace = deployStatus?.plugin?.pluginId.split('@')[1] ?? 'kookr';
+  const hasUpdates =
+    (!onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying) ||
+    toolkitStale ||
+    pluginStale ||
+    pluginNotInstalled;
   const operationsNeedsAttention =
     circuitBreakers.some((breaker) => breaker.state !== 'closed') ||
     Boolean(diagnosticReport?.findings.length);
@@ -322,6 +341,38 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
                 >
                   {toolkitRefreshing ? 'Refreshing...' : 'Refresh toolkit links'}
                 </button>
+              </>
+            )}
+
+            {deployStatus?.plugin && (pluginNotInstalled || pluginStale) && (
+              <>
+                <div className="deploy-divider" />
+                {pluginNotInstalled ? (
+                  <>
+                    <div className="toolkit-stale">
+                      Toolkit plugin not installed
+                      {deployStatus.plugin.availableVersion && (
+                        <span className="deploy-range">v{deployStatus.plugin.availableVersion} available</span>
+                      )}
+                    </div>
+                    <div className="version-row deploy-checking">
+                      Install in Claude Code: <code>/plugin marketplace add kookr-ai/kookr</code> then{' '}
+                      <code>/plugin install {deployStatus.plugin.pluginId}</code>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="toolkit-stale">
+                      Toolkit plugin update available
+                      <span className="deploy-range">
+                        {deployStatus.plugin.installedVersion} &rarr; {deployStatus.plugin.availableVersion}
+                      </span>
+                    </div>
+                    <div className="version-row deploy-checking">
+                      Run <code>/plugin marketplace update {pluginMarketplace}</code> in Claude Code to update.
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>

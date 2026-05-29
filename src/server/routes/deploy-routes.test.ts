@@ -197,6 +197,75 @@ describe('deploy-routes', () => {
       expect(body.toolkit.stale).toBe(true);
       expect(body.toolkit.staleCount).toBe(2);
     });
+
+    it('flags the marketplace plugin as stale when the installed version is behind origin/main', async () => {
+      const originDir = join(root, 'origin.git');
+      const hookHome = join(root, 'home');
+      await mkdir(originDir);
+      execFileSync('git', ['init', '--bare', '-b', 'main'], { cwd: originDir, env: cleanEnv });
+      execFileSync('git', ['clone', originDir, prodDir], { env: cleanEnv });
+      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: prodDir, env: cleanEnv });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: prodDir, env: cleanEnv });
+
+      // Publish the plugin + marketplace manifests to origin/main (the source
+      // readPluginVersionStatus reads "available" from).
+      await mkdir(join(prodDir, 'plugin', '.claude-plugin'), { recursive: true });
+      await mkdir(join(prodDir, '.claude-plugin'), { recursive: true });
+      await writeFile(
+        join(prodDir, 'plugin', '.claude-plugin', 'plugin.json'),
+        JSON.stringify({ name: 'kookr-toolkit', version: '0.7.4' }),
+      );
+      await writeFile(
+        join(prodDir, '.claude-plugin', 'marketplace.json'),
+        JSON.stringify({ name: 'kookr', plugins: [{ name: 'kookr-toolkit', source: './plugin' }] }),
+      );
+      execFileSync('git', ['add', '.'], { cwd: prodDir, env: cleanEnv });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: prodDir, env: cleanEnv });
+      execFileSync('git', ['push'], { cwd: prodDir, env: cleanEnv });
+      await writeInstallHooksFixture(prodDir);
+
+      // Installed marketplace copy is behind (0.4.1 < 0.7.4).
+      await mkdir(join(hookHome, '.claude', 'plugins'), { recursive: true });
+      await writeFile(
+        join(hookHome, '.claude', 'plugins', 'installed_plugins.json'),
+        JSON.stringify({ version: 2, plugins: { 'kookr-toolkit@kookr': [{ scope: 'user', version: '0.4.1' }] } }),
+      );
+
+      const app = makeApp(mainDir, 4800, hookHome);
+      const res = await app.request('/api/deploy/status');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.plugin).toBeDefined();
+      expect(body.plugin.pluginId).toBe('kookr-toolkit@kookr');
+      expect(body.plugin.installedVersion).toBe('0.4.1');
+      expect(body.plugin.availableVersion).toBe('0.7.4');
+      expect(body.plugin.stale).toBe(true);
+    });
+
+    it('reports the plugin as not-installed (sourced from the server checkout) for a first-time user with no prod tree', async () => {
+      // First-time user: no kookr-prod sibling, no marketplace install. The
+      // available version must still be resolved from the running server's own
+      // checkout (mainDir/serverCwd) so the dashboard can nudge an install.
+      await mkdir(join(mainDir, 'plugin', '.claude-plugin'), { recursive: true });
+      await writeFile(
+        join(mainDir, 'plugin', '.claude-plugin', 'plugin.json'),
+        JSON.stringify({ name: 'kookr-toolkit', version: '0.7.4' }),
+      );
+      await mkdir(join(mainDir, '.claude-plugin'), { recursive: true });
+      await writeFile(join(mainDir, '.claude-plugin', 'marketplace.json'), JSON.stringify({ name: 'kookr' }));
+      const hookHome = join(root, 'home'); // no installed_plugins.json
+
+      const app = makeApp(mainDir, 4800, hookHome);
+      const res = await app.request('/api/deploy/status');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.configured).toBe(false); // no prod tree
+      expect(body.plugin).toBeDefined();
+      expect(body.plugin.pluginId).toBe('kookr-toolkit@kookr');
+      expect(body.plugin.installedVersion).toBeNull();
+      expect(body.plugin.availableVersion).toBe('0.7.4');
+      expect(body.plugin.stale).toBe(false); // not installed ⇒ not "stale", surfaced as not-installed in the UI
+    });
   });
 
   describe('POST /api/deploy/trigger', () => {
