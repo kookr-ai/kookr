@@ -7,7 +7,7 @@ const LIVENESS_ANOMALY_TYPES: ReadonlySet<AnomalyType> = new Set([
 ]);
 
 /** Number of consecutive liveness snoozes before auto-suppression kicks in. */
-const SUPPRESSION_THRESHOLD = 3;
+export const SUPPRESSION_THRESHOLD = 3;
 
 /** Per-agent suppression state. */
 export interface SuppressionState {
@@ -56,6 +56,35 @@ export class SnoozeSuppressionTracker {
 
     // Return true only on the transition from not-suppressed to suppressed
     return nowSuppressed && !wasSuppressed;
+  }
+
+  /**
+   * Record a user-reported false positive for a liveness finding.
+   *
+   * Unlike a snooze — a soft "not now" that only suppresses after
+   * {@link SUPPRESSION_THRESHOLD} consecutive repeats — an explicit
+   * false-positive flag is a decisive "this detector is wrong for this agent"
+   * signal, so it suppresses the type immediately. This stops the re-flag storm
+   * where a long-running background tool keeps re-crossing the stale threshold
+   * and resurfacing the same finding after each dismissal (the user otherwise
+   * has to flag it again every watchdog tick).
+   *
+   * Suppression is cleared by {@link reset} on respond / resumeMonitoring /
+   * agent cleanup, so a genuine later hang still surfaces once the agent has
+   * demonstrably done something.
+   *
+   * Returns true only on the transition into suppression. Non-liveness types
+   * are ignored (returns false, no state change).
+   */
+  recordFalsePositive(agentId: string, anomalyType: AnomalyType): boolean {
+    if (!LIVENESS_ANOMALY_TYPES.has(anomalyType)) return false;
+    const wasSuppressed = this.state.get(agentId)?.suppressed ?? false;
+    this.state.set(agentId, {
+      consecutiveCount: SUPPRESSION_THRESHOLD,
+      suppressed: true,
+      lastAnomalyType: anomalyType,
+    });
+    return !wasSuppressed;
   }
 
   /**
