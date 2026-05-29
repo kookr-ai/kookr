@@ -43,10 +43,10 @@ not user configuration knobs.
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
-| `KOOKR_API_BASE_URL` | Auto-detect 4800/4801 when unset | HTTP URL | `kookr-spawn` and `kookr ralph` use this URL directly and skip port probing. |
-| `KOOKR_PORT` | Auto-detect 4800/4801 for CLI tools | Integer port, 1-65535 | Forces `kookr-status`, `kookr-spawn`, or `kookr ralph` to talk to one local instance. |
-| `KOOKR_SPAWN_MAX_PROMPT_BYTES` | `1048576` | Positive integer bytes | Maximum prompt size accepted from `kookr-spawn` stdin or `--prompt-file`. |
-| `KOOKR_SPAWN_CONNECT_RETRIES` | `3` | Integer `1` through `10` | Number of `kookr-spawn` connectivity sweeps before reporting no server. |
+| `KOOKR_API_BASE_URL` | Auto-detect 4800/4801 when unset | HTTP URL | `kookr spawn` and `kookr ralph` use this URL directly and skip port probing. |
+| `KOOKR_PORT` | Auto-detect 4800/4801 for CLI tools | Integer port, 1-65535 | Forces `kookr status`, `kookr spawn`, or `kookr ralph` to talk to one local instance. |
+| `KOOKR_SPAWN_MAX_PROMPT_BYTES` | `1048576` | Positive integer bytes | Maximum prompt size accepted from `kookr spawn` stdin or `--prompt-file`. |
+| `KOOKR_SPAWN_CONNECT_RETRIES` | `3` | Integer `1` through `10` | Number of `kookr spawn` connectivity sweeps before reporting no server. |
 
 ## Terminal Backend
 

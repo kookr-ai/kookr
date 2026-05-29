@@ -11,6 +11,15 @@ import { realpathSync } from 'node:fs';
 const PORTS_TO_TRY = [4800, 4801];
 const SEVERITIES = /** @type {const} */ (['critical', 'warning', 'info']);
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
+const HELP_TEXT = `kookr status — print a read-only snapshot of a running Kookr instance.
+
+Usage:
+  kookr status
+  kookr-status        Deprecated compatibility alias.
+
+Environment:
+  KOOKR_PORT          Specific port on 127.0.0.1.
+`;
 
 async function fetchJson(url, timeoutMs = 2000) {
   const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
@@ -141,7 +150,17 @@ function renderReport({ port, health, agents }) {
   return lines.join('\n');
 }
 
-async function main({ env = process.env, out = console, exit = process.exit } = {}) {
+async function main({ argv = process.argv.slice(2), env = process.env, out = console, exit = process.exit } = {}) {
+  if (argv.length > 0) {
+    if (argv.length === 1 && (argv[0] === '-h' || argv[0] === '--help')) {
+      out.log(HELP_TEXT);
+      return exit(0);
+    }
+    out.error(`Unexpected argument: ${argv[0]}`);
+    out.error('Try `kookr status --help`.');
+    return exit(2);
+  }
+
   const resolved = await resolvePort(env);
   if (resolved.kind === 'invalid') {
     out.error(`KOOKR_PORT must be an integer between 1 and 65535 (got: ${JSON.stringify(resolved.raw)}).`);
@@ -199,6 +218,7 @@ function isInvokedDirectly() {
 }
 
 if (isInvokedDirectly()) {
+  console.error('[kookr] WARNING: `kookr-status` is deprecated; use `kookr status`.');
   main().catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`kookr-status: ${msg}`);
@@ -206,4 +226,4 @@ if (isInvokedDirectly()) {
   });
 }
 
-export { formatUptime, formatCost, isActiveFinding, summarize, renderReport, resolvePort, parsePortEnv, main };
+export { HELP_TEXT, formatUptime, formatCost, isActiveFinding, summarize, renderReport, resolvePort, parsePortEnv, main };

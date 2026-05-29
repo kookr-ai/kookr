@@ -216,6 +216,7 @@ function isInvokedDirectly() {
 }
 
 if (isInvokedDirectly()) {
+  console.error('[kookr] WARNING: `kookr-ralph` is deprecated; use `kookr ralph`.');
   main().catch((e) => {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`kookr ralph: ${msg}`);
