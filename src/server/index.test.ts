@@ -988,7 +988,8 @@ describe('createKookrServer', () => {
         revision: expect.any(Number),
         schedules: [],
         status: expect.objectContaining({
-          catchUpEnabled: true,
+          catchUpMode: 'manual',
+          catchUpEnabled: false,
           schedulerHealthy: expect.any(Boolean),
           timezone: expect.any(String),
         }),

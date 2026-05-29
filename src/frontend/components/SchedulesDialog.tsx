@@ -39,7 +39,7 @@ function latestExecutionLabel(schedule: ScheduleResponse): string {
   const latest = schedule.latestExecution;
   if (!latest) return 'never';
   const message = latest.message ? ` · ${latest.message}` : '';
-  return `${latest.outcome} ${formatRelativeTime(latest.triggeredAt ?? latest.evaluatedAt)}${message}`;
+  return `${outcomeLabel(latest.outcome)} ${formatRelativeTime(latest.triggeredAt ?? latest.evaluatedAt)}${message}`;
 }
 
 function nextRunLabel(schedule: ScheduleResponse): string {
@@ -58,6 +58,8 @@ function ledgerDecisionLabel(entry: ScheduleResponse['executionLedger'][number])
   switch (entry.decision) {
     case 'catch_up':
       return 'Catch-up';
+    case 'manual_catch_up':
+      return 'Missed run';
     case 'stale_catch_up':
       return 'Stale catch-up';
     case 'manual_run':
@@ -97,6 +99,8 @@ function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outc
       return 'skipped: capacity';
     case 'skipped_draining':
       return 'skipped: draining';
+    case 'skipped_manual':
+      return 'manual run available';
     case 'skipped_stale':
       return 'skipped: stale';
     case 'unknown_after_restart':
@@ -114,6 +118,8 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'draining';
     case 'previous_run_active':
       return 'previous run active';
+    case 'manual_catch_up_required':
+      return 'Run Now to recover';
     case 'missing_cwd':
       return 'missing working directory';
     case 'missing_playbook':
@@ -333,8 +339,11 @@ export function SchedulesDialog({ onClose }: Props) {
         </div>
       );
     }
-    if (!scheduleStatus.catchUpEnabled) {
-      return <div className="settings-warning">Catch-up is disabled for this session.</div>;
+    if (scheduleStatus.catchUpMode === 'off') {
+      return <div className="settings-warning">Startup catch-up is disabled for this session.</div>;
+    }
+    if (scheduleStatus.catchUpMode === 'manual' || !scheduleStatus.catchUpEnabled) {
+      return <div className="settings-warning">Automatic catch-up is off. Missed runs are recorded and can be started with Run Now.</div>;
     }
     return null;
   }

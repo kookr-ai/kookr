@@ -12,7 +12,7 @@ export interface SchedulePlaybook {
 
 export type ScheduleStopReason = 'trigger_limit_reached';
 export type ScheduleExecutionTrigger = 'cron' | 'manual';
-export type ScheduleExecutionDecision = 'cron_due' | 'manual_run' | 'catch_up' | 'stale_catch_up';
+export type ScheduleExecutionDecision = 'cron_due' | 'manual_run' | 'catch_up' | 'manual_catch_up' | 'stale_catch_up';
 export type ScheduleExecutionOutcome =
   | 'queued'
   | 'running'
@@ -23,6 +23,7 @@ export type ScheduleExecutionOutcome =
   | 'skipped_active'
   | 'skipped_capacity'
   | 'skipped_draining'
+  | 'skipped_manual'
   | 'skipped_stale'
   | 'unknown_after_restart';
 
@@ -31,6 +32,7 @@ export type ScheduleExecutionReasonCode =
   | 'capacity'
   | 'draining'
   | 'previous_run_active'
+  | 'manual_catch_up_required'
   | 'missing_cwd'
   | 'missing_playbook'
   | 'validation'
@@ -119,6 +121,7 @@ export interface ScheduleStatusSnapshot {
   timezone: string;
   runnerStartedAt?: string;
   lastTickCompletedAt?: string;
+  catchUpMode: 'auto' | 'manual' | 'off';
   catchUpEnabled: boolean;
   schedulerHealthy: boolean;
   loadError?: string;
