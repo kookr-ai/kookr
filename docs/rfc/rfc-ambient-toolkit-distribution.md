@@ -2,310 +2,401 @@
 
 ## Status
 
-**Draft v1 — pre-review (ready for `rfc-iterative-review`)**
+**WITHDRAWN (2026-05-30) — superseded by Alt 1 (`/plugin install`).**
+**Draft v2 — post-round-1 critic review + empirical checkpoint**
 **Date:** 2026-05-30
 **Author:** Jean Ibarz (with Claude)
 
-**Relationship to prior art:** This RFC *amends the delivery layer* of
-[`rfc-skill-agent-distribution.md`](./rfc-skill-agent-distribution.md) (v3.1, landed via
-PRs #239/#240/#241/#263) and the symlink-health work in
-[`rfc-stale-toolkit-symlink-refresh.md`](./rfc-stale-toolkit-symlink-refresh.md) (#263+).
-It does **not** touch the two-home authoring model (kookr-internal skills in
-`<kookr>/.claude/skills/`, general-purpose skills + all agents in `<kookr>/plugin/`) —
-that stays exactly as shipped. It revisits one alternative the prior RFC **rejected**
-("Alt 4 — symlink `plugin/` into `~/.claude/`") under a requirement the prior RFC never
-had, and supersedes the prior RFC's §F (`--plugin-dir` as the single Claude Code ship
-mechanism) and §G (per-task Codex overlay) on maintainer machines.
+### Decision
+
+After round-1 review + the empirical checkpoint, the author chose **Alt 1**: keep the
+existing marketplace mechanism (`/plugin install kookr-toolkit@kookr` once per machine,
+accept GitHub-sourced drift) and **not** build the ambient symlink/install machinery. The
+review established that the real gap this RFC closed is narrow (§0): Kookr-spawned agents
+already get the toolkit via `--plugin-dir`, and any session gets it after one
+`/plugin install`. The mechanism's maintenance tax (generalized linking, collision/orphan
+detection, a disable cutover that rewrites invocation notes + the placement-gate hook, two
+unresolved agent-discovery probes) was judged not worth that narrow benefit.
+
+This document is retained — not deleted — as the record of *why*, so the question isn't
+re-litigated. The empirically-verified facts below remain useful (drift mechanics,
+`--plugin-dir` atomicity, the small real cutover blast radius, the unnecessary copy layer).
+
+### Concrete follow-through for the chosen path
+- The plugin is already installed + enabled (`enabledPlugins["kookr-toolkit@kookr"]: true`)
+  but **drifted**: cache `0.4.1`/commit `0f0600f` vs source `0.7.4`. Run
+  **`/plugin marketplace update kookr`** to refresh it — effective only once `0.7.4` is on
+  `origin/main` (the marketplace pulls from GitHub, not the local tree).
+- **Residual Codex gap (accepted, not addressed):** the forked Codex CLI does not read the
+  Claude Code plugin registry, so `/plugin install` does nothing for it. Kookr-*spawned*
+  Codex sessions still get the toolkit via `--plugin-dir` injection (where the fork advertises
+  the flag). The only uncovered slice is **hand-started forked-Codex sessions outside Kookr** —
+  judged rare enough to accept. If it ever matters, the cheapest fix is the skills-only
+  symlink slice (PR-1 below), not the full RFC.
 
 ---
 
+**Major revisions in v2 (round-1 incorporation + empirical checkpoint):**
+- **Dropped the `~/.kookr/plugin/` copy layer.** Symlinks point directly at the existing
+  `kookr-prod/plugin/` tree — the same target the stale-toolkit RFC already designated
+  canonical and the same mechanism the 3 live symlinks use today. Removes `.installed.json`,
+  boot-time sync, and the version-drift detection axis (§D.1). (design-minimalist +
+  socratic-challenger + boundary-critic converged; empirically confirmed — see Critic
+  feedback.)
+- **Struck the "retain `--plugin-dir` for agents only" escape hatch** — empirically CONFIRMED
+  impossible: `--plugin-dir` is one atomic flag serving both `plugin/skills/` and
+  `plugin/agents/` (`claude-code-adapter.ts:289`, `plugin-paths.ts`).
+- **Demoted Goal 4 and the collision-diagnostic claim.** The diagnostic *surfaces* a
+  collision; it does not *resolve* it, and it is silent in the headline "Kookr not running"
+  case. The RFC no longer claims this "answers" the prior rejection — instead it explicitly
+  **supersedes the prior RFC's Design Principle 4** (see §0).
+- **Cutover blast radius measured (was "Open Q1").** Empirically: **zero** executable
+  `subagent_type:"kookr-toolkit:…"` calls; **4 invocation-note lines** plus the placement
+  hook to reconcile. Sequenced *before* the plugin is disabled. (See §E, Migration.)
+- **Agents split from skills into a separate, probe-gated phase.** Native Claude Code
+  user-scope agent resolution (filename vs frontmatter) and forked-Codex `~/.claude/agents/`
+  reading are both UNDETERMINED; skills are well-understood (3 ship this way today). Agents
+  ship only after two cheap external probes (Open Q1/Q2).
+
+**Relationship to prior art:** Amends the *delivery layer* of
+[`rfc-skill-agent-distribution.md`](./rfc-skill-agent-distribution.md) (v3.1, landed via
+#239/#240/#241/#263) and the symlink-health work in
+[`rfc-stale-toolkit-symlink-refresh.md`](./rfc-stale-toolkit-symlink-refresh.md). It does
+**not** touch the two-home authoring model. It explicitly supersedes that RFC's **Design
+Principle 4** (§0 below) and its **Alt 4** rejection, and overrides its §F (`--plugin-dir` as
+the sole Claude Code ship mechanism) and §G (per-task Codex overlay) on maintainer machines.
+
+---
+
+## 0. Premise check (decide this first — author/user only)
+
+The entire RFC rests on one requirement that a critic round cannot settle:
+
+> *"The toolkit must be available in a Claude Code or forked-Codex session I start by hand,
+> in some other repo, with Kookr not necessarily running."*
+
+Two facts bound how much this is worth:
+
+- **Kookr-spawned agents already have the toolkit** via `--plugin-dir` injection. This RFC
+  changes nothing for them except *how* they get it.
+- **Any session already gets the toolkit after one `/plugin install kookr-toolkit@kookr`** —
+  it loads in every Claude Code session for that user, no Kookr involvement. The only gap is
+  (a) hand-started sessions on a machine where that one-time install was never done, and
+  (b) the forked Codex, which can't read the Claude Code plugin registry.
+
+**So the honest scope is narrow:** this RFC buys ambient availability for hand-started
+sessions *without* the one-time marketplace install, plus Codex parity. If the maintainer is
+willing to run `/plugin install` once per machine and accept the marketplace's
+GitHub-sourced drift, **most of this RFC is unnecessary** and the residual Codex gap is
+smaller. The author must decide the requirement is real and frequent enough to justify the
+mechanism below **before** implementation. This is recorded as the top open decision, not
+assumed away. (Raised by socratic-challenger Q5/Q6; see Critic feedback.)
+
+If the requirement holds, the design below is the minimal mechanism that satisfies it.
+
+### Superseding prior Design Principle 4
+
+The prior RFC's Design Principle 4 was: *"User-scope is for personal deps Kookr does not
+own. Stay out of `~/.claude/skills/*` and `~/.claude/agents/*`…"* — and its Alt 4 rejection
+had **two** clauses: (1) "violates user-scope as user-owned," and (2) "silent regression with
+no diagnostic." A diagnostic addresses only clause (2). This RFC does **not** pretend clause
+(1) is dissolved by a TopBar badge. It instead **formally revises Principle 4**:
+
+> *Revised Principle 4: Kookr may own a defined, namespaced set of symlinks under
+> `~/.claude/{skills,agents}/` — exactly the toolkit it ships — provided (a) it never
+> clobbers a user-owned non-symlink, and (b) collisions are surfaced. Everything else in
+> user-scope remains user-owned and untouched.*
+
+This is a deliberate ownership change, justified by the §0 requirement, not a reinterpretation
+of the old principle. The prior RFC already carved out 3 such symlinks
+(`pre-pr-review`, `pr-contribution-excellence`, `reviewer-specialists`) — this RFC
+generalizes that existing, shipped exception and names it as policy.
+
 ## Problem
 
-The landed two-home model makes the curated toolkit (57 skills + 17 review agents in
-`<kookr>/plugin/`) reachable through exactly two paths:
-
-1. **Kookr-spawned agents** — `ClaudeCodeAdapter`/`CodexCliAdapter` inject
-   `--plugin-dir <kookr>/plugin` (codex only when the fork advertises the flag, probed via
-   `--help`). Requires Kookr to spawn the session.
-2. **Opt-in marketplace install** — `/plugin marketplace add kookr-ai/kookr` +
-   `/plugin install kookr-toolkit@kookr`. Requires an explicit per-machine opt-in.
-
-Neither path covers the case the maintainer actually hits daily: **a Claude Code or forked
-Codex session started by hand, in some other repo, with Kookr not spawning it (and possibly
-not running at all).** In that session the toolkit is invisible.
-
-The marketplace path also has two concrete defects observed on this machine:
-
-- **It clones the entire Kookr repo.** `~/.claude/plugins/marketplaces/kookr/` is a full
-  280 KB+ working tree (`src/`, `docs/`, `e2e/`, `.git`) cloned just to read `plugin/`.
-- **It drifts, sourced from GitHub not the local tree.** `installed_plugins.json` pins
-  `kookr-toolkit@kookr` to `installPath …/cache/kookr/kookr-toolkit/0.4.1`
-  (commit `0f0600f`) while the local `plugin/.claude-plugin/plugin.json` is already at
-  **0.7.4**. Claude Code's updater pulls from the GitHub remote on
-  `/plugin marketplace update`, so it will never reflect un-pushed local edits and *fights*
-  any locally-managed copy.
-
-The prior RFC's Codex answer (§G) was a **per-task** `<cwd>/.claude/skills` symlink overlay
-created at launch and cleaned up at task end — by design it only exists while a Kookr task
-runs. It explicitly did **not** attempt ambient availability, and it explicitly rejected
-"vendor into user-scope" to avoid polluting non-Kookr Codex sessions.
-
-**Net gap:** there is no Kookr-*managed* way to make the toolkit ambiently present in every
-local agent session (Claude Code and the forked Codex), independent of Kookr spawning or
-running, with drift owned by Kookr rather than Claude Code's marketplace updater.
+The landed two-home model reaches the toolkit (57 skills + 17 agents in `<kookr>/plugin/`)
+through two paths only: `--plugin-dir` injection (Kookr-spawned sessions) and an opt-in
+marketplace install. Neither covers a hand-started session, outside Kookr, in another repo,
+without the one-time install — and the marketplace path additionally (a) clones the whole
+Kookr repo and (b) is GitHub-sourced, so it drifts from local source (observed: cache
+`0.4.1`/commit `0f0600f` vs source `0.7.4`). The forked Codex can't read the Claude Code
+plugin registry at all, so for Codex the marketplace path doesn't even exist.
 
 ## Goals
 
-1. **Ambient availability.** Every Claude Code session *and* every forked-Codex session on a
-   Kookr maintainer machine sees the toolkit skills + agents, with no per-session Kookr
-   involvement and no marketplace opt-in.
-2. **Works without Kookr running.** Availability is a static filesystem fact (symlinks),
-   durable across Kookr being down.
-3. **Kookr owns drift.** Kookr — not Claude Code's marketplace updater — detects when the
-   installed toolkit is behind source and repairs it. No GitHub round-trip; no whole-repo
-   clone.
-4. **No silent shadowing — with a diagnostic.** When a user-owned same-named skill/agent
-   blocks a toolkit link, that collision is *surfaced* (the precise failure the prior RFC's
-   Alt 4 rejection was about), not silent.
-5. **Single source of truth per tool.** A given skill resolves under exactly one name in a
-   given session — no double-load as both `kookr-toolkit:foo` (plugin) and `foo` (symlink).
+1. **Ambient availability.** Toolkit skills (and, gated, agents) present in every Claude
+   Code session and every forked-Codex session on a Kookr maintainer machine, with no
+   per-session Kookr involvement and no marketplace opt-in.
+2. **Works without Kookr running.** Availability is a static filesystem fact (symlinks).
+3. **No new drift surface.** Reuse the existing `kookr-prod`-as-canonical model and its
+   existing deploy-status freshness machinery; introduce no second mutable copy.
+4. **No silent *clobber*.** Never overwrite a user-owned non-symlink; surface collisions
+   while Kookr is running. (Note: this does **not** claim collisions are *resolved* — see §0
+   and Edge case 1.)
+5. **Single source of truth per tool.** A skill resolves under one name per session.
 
 ## Non-goals
 
-- Changing the **two-home authoring model** or how skills/agents are written. Unchanged.
-- Distributing the maintainer's **personal-deps** user-scope skills/agents (`kb-scout`,
-  `knowledge-base`, `graphify`, `local-research-agent`, `ui-visual-verification`,
-  `playwright-video-verification`) — they stay user-scope, outside this RFC (per
-  `feedback_user_scope_when_deps_personal` and the prior RFC's Non-goals).
-- Removing the **public marketplace listing**. `marketplace.json` stays for *external*
-  GitHub discovery. This RFC only changes how the toolkit is delivered **on Kookr-managed
-  machines** (which stop relying on the marketplace self-install).
-- Splitting the toolkit into multiple plugins (prior RFC Alt 2 — still rejected).
+- The two-home authoring model; how skills/agents are written. Unchanged.
+- Personal-deps user-scope skills/agents (`kb-scout`, `knowledge-base`, `graphify`,
+  `local-research-agent`, `ui-visual-verification`, `playwright-video-verification`).
+- Removing the public marketplace listing (kept for external GitHub discovery).
+- Splitting the toolkit into multiple plugins (prior Alt 2 — still rejected).
+- A unified refresh surface spanning hooks + playbooks + skills + agents (ambition-amplifier
+  proposed it; deferred — see Critic feedback). Hooks keep `install-hooks.sh`; playbooks keep
+  `~/.kookr/playbooks/`.
 
 ## Design
 
-### A. Canonical install at `~/.kookr/plugin/`
+### A. Symlink directly into the existing canonical tree — no copy
 
-Kookr maintains a canonical copy of the plugin tree at **`~/.kookr/plugin/`**, synced from
-the deploy tree (the `kookr-prod` worktree already used as the symlink target in
-`rfc-stale-toolkit-symlink-refresh.md`). This fits the established `~/.kookr/` convention —
-`~/.kookr/{hooks,settings,playbooks,sessions,...}` already live there, and
-`CodexCliAdapter` already defaults `~/.kookr/hooks` + `~/.kookr/settings`. In particular
-`~/.kookr/playbooks/` is *already* the precedent for a user-scope dir "visible in every
-project."
-
-`~/.kookr/plugin/` is a **copy**, not a symlink to the checkout, for three reasons:
-
-- It decouples ambient availability from the checkout path — directly fixing the
-  `mismatch`/`target-missing` fragility today, where links point into a `kookr-prod/…`
-  worktree that rotates on deploy.
-- It gives a stable "installed version" (`~/.kookr/plugin/.installed.json`: version +
-  source commit) to compare against source for drift.
-- Maintainer live-editing is unaffected: the `claude --plugin-dir ~/git/kookr/plugin` +
-  `/reload-plugins` dev loop still reads source directly.
-
-### B. Per-item symlinks into `~/.claude/{skills,agents}/`
-
-For each skill and agent under `~/.kookr/plugin/`, Kookr creates:
+For each skill (and, gated, agent), Kookr creates a per-item symlink:
 
 ```
-~/.claude/skills/<skill>  ->  ~/.kookr/plugin/skills/<skill>
-~/.claude/agents/<agent>  ->  ~/.kookr/plugin/agents/<agent>
+~/.claude/skills/<skill>  ->  <kookr-prod>/plugin/skills/<skill>
+~/.claude/agents/<agent>  ->  <kookr-prod>/plugin/agents/<agent>   (gated — §C)
 ```
 
-**Per-item, not a whole-dir symlink** — `~/.claude/skills/` also holds the user's own and
-personal-deps skills, so the directory itself can't be replaced. This is read by **both**
-Claude Code (user-scope skill/agent discovery) and the forked Codex CLI (same convention),
-needs no running server, and needs no Claude Code plugin registry. The plugin contains only
-`skills/`, `agents/`, `playbooks/`, `reviewer-specialists/`, and a `hooks/` dir — **no slash
-commands, no MCP servers** — so per-item symlinks lose no plugin-container feature. Hooks
-keep their existing `install-hooks.sh` path; playbooks keep `~/.kookr/playbooks`;
-`reviewer-specialists` keeps its existing asset symlink.
+`kookr-prod` is already the canonical, deploy-managed tree (`pnpm prod:update` advances it
+in place; it does **not** rotate paths), already the symlink target the 3 live toolkit
+symlinks use, and already the tree whose freshness the deploy-status popover tracks. So:
+
+- **No `~/.kookr/plugin/` copy, no `.installed.json`, no boot-time sync, no version-drift
+  axis.** Content is live; "is the toolkit current?" reduces to the *existing* question "is
+  `kookr-prod` behind `origin/main`?", which the deploy-status machinery already answers.
+- **Per-item, not whole-dir** — `~/.claude/skills/` also holds the user's own and
+  personal-deps skills, so the directory itself can't be replaced.
 
 `scripts/install-hooks.sh` already provides every primitive: `install_skill_symlink`,
-`install_plugin_asset_symlink`, `uninstall_*`, the **non-symlink clobber guard** ("Refusing
-to overwrite non-symlink…"), and `--print-global-assets`. The change is to (1) source from
-`~/.kookr/plugin/` instead of the checkout, and (2) iterate **all** skills + agents instead
-of the current hardcoded three.
+`install_plugin_asset_symlink`, the non-symlink **clobber guard**, `uninstall_*`, and
+`--print-global-assets`. The change is to **enumerate all `plugin/skills/*`** (and, gated,
+`plugin/agents/*`) instead of the hardcoded three, and to add **orphan pruning** on refresh
+(remove a `~/.claude/...` symlink that points into `kookr-prod/plugin/` but whose target no
+longer exists — `lstat` + `readlink` + target-prefix check; never touch a symlink pointing
+elsewhere). Enumeration must stay a single source of truth: the script enumerates the
+filesystem and emits the list via `--print-global-assets`; `toolkit-symlink-status.ts`
+consumes that list (no second hardcoded list in TS). (boundary-critic finding.)
 
-### C. Why per-item symlinks, not "symlink the plugin"
+### B. Why per-item symlinks, not "install/forge the plugin"
 
-Claude Code does not load a plugin from a directory's mere presence. It is a four-part
-private registry that must agree: `settings.json#enabledPlugins`,
-`plugins/known_marketplaces.json`, `plugins/installed_plugins.json` (schema `version: 2`,
-with `gitCommitSha`), and a versioned `plugins/cache/<mkt>/<plugin>/<ver>/` `installPath`.
-Symlinking a plugin would mean forging/maintaining that undocumented registry — and it is
-**Claude-Code-only**: the forked Codex CLI does not implement this registry (it reads the
-plain `~/.claude/skills` + `~/.claude/agents` convention). Per-item symlinks are the only
-substrate that serves **both** tools and is robust against Claude Code registry changes.
+Claude Code loads a plugin only via a four-part private registry
+(`enabledPlugins` + `known_marketplaces.json` + `installed_plugins.json` v2 with
+`gitCommitSha` + a versioned `cache/.../installPath`). Forging that is brittle and
+**Claude-Code-only** — the forked Codex doesn't implement it. Per-item symlinks into
+`~/.claude/{skills,agents}/` are the only substrate both tools read.
 
-### D. Drift + collision detection (Kookr-owned)
+### C. Agents ship in a separate, probe-gated phase
 
-Extend `src/server/toolkit-symlink-status.ts` from "is each symlink valid?" to two added
-axes, surfaced through the existing `/api/deploy/status` → TopBar affordance:
+Skills via user-scope symlinks are well-understood — 3 already ship this way. **Agents are
+not**: two facts are UNDETERMINED and must be probed before agent symlinks ship (see Open
+Questions):
 
-1. **Version drift.** Compare `~/.kookr/plugin/.installed.json#version` against the source
-   tree's `plugin/.claude-plugin/plugin.json#version`. Source newer ⇒ stale ⇒ offer
-   re-sync.
-2. **Collisions (Goal 4 — the answer to Alt 4's rejection).** For every skill/agent in
-   `~/.kookr/plugin/` whose `~/.claude/...` target is a **non-symlink** (user owns a
-   real same-named dir) or a symlink to a non-Kookr target, report it as
-   `shadowed`. The TopBar shows e.g. *"2 toolkit skills shadowed by user-scope files:
-   `error-handling-patterns`, `tdd-workflow`."* This converts Alt 4's *silent* regression
-   into a visible, actionable diagnostic.
-3. **Orphans.** A `~/.claude/...` symlink that points into `~/.kookr/plugin/` but whose
-   target no longer exists (skill deleted from source) ⇒ prune on refresh.
+- **Q1:** Does Claude Code's *native* user-scope agent discovery resolve
+  `subagent_type:"boundary-critic"` from `~/.claude/agents/boundary-critic.md`, and does it
+  key on filename or frontmatter `name:`? (Kookr's *bypass-mode* re-injection keys on
+  frontmatter `name:` — `file-based-agents.ts` — but that's a different path. All 17 plugin
+  agents have filename == frontmatter name, so the two agree today regardless.)
+- **Q2:** Does the forked Codex read `~/.claude/agents/` at all? (It reads `~/.claude/skills/`
+  per the prior RFC's `loader.rs:479–487` check; the agents path is unverified and the Codex
+  source is external to this repo.)
 
-`POST /api/deploy/toolkit-refresh` is generalized: re-sync `~/.kookr/plugin/` from the
-deploy tree, then re-run the (generalized) `install-hooks.sh` to add new links, repair
-broken ones, and prune orphans — never clobbering non-symlinks (collisions stay reported,
-never overwritten). Kookr also runs this sync once on server boot, so "auto-update on drift"
-needs no manual step on a running instance.
+If either probe fails, agents stay on `--plugin-dir`/the existing path and only **skills** go
+ambient. Skills-only still delivers the bulk of the §0 value.
 
-### E. Single-source-of-truth cutover (kill double-load + name divergence)
+### D. Detection — generalize the existing collision check; add nothing else
 
-With every skill symlinked into `~/.claude/skills/`, a Claude Code session that *also* has
-the plugin enabled would load each skill twice — once as `kookr-toolkit:foo` (plugin) and
-once as `foo` (symlink). To keep one name per session:
+The existing detector (`toolkit-symlink-status.ts`) **already** classifies a user-owned
+same-named directory as `not-symlink` — i.e. collision detection already exists, for the 3
+tracked assets. The only change is to **enumerate all toolkit items** (via §A's generalized
+`--print-global-assets`) so the existing TopBar surface reports drift/broken/collision across
+the full set, and to prune orphans on refresh. **No version-drift axis** (eliminated with the
+copy), **no boot-time mutation**. `POST /api/deploy/toolkit-refresh` keeps its current shape
+(re-run `install-hooks.sh`), now over the full set, and must report **partial success**
+(N of M linked; K collisions skipped) rather than a single ok/fail. (failure-mode +
+boundary-critic findings.)
 
-- Set `settings.json#enabledPlugins["kookr-toolkit@kookr"] = false` on Kookr-managed
-  machines (the marketplace listing stays for external users; it's just not co-enabled
-  locally).
-- Drop the `--plugin-dir` **skill** injection for Kookr-spawned Claude Code agents; they
-  pick the toolkit up from the same `~/.claude` symlinks every other session uses. (Keep
-  `--plugin-dir` only if a plugin-scoped *agent* behavior is found to depend on it — see
-  Open Questions.)
+### E. Single-source cutover (kill double-load), correctly sequenced
 
-Result: bare skill names (`async-flow-control`) resolve identically in every session —
-Kookr-spawned or not, Claude Code or Codex.
+With `--plugin-dir` atomic (CONFIRMED), there is no "skills-only" disable. The cutover is:
 
-### F. Codex: retire the per-task overlay
+1. **Reconcile the 4 invocation-note lines first** (own PR, before anything is disabled):
+   `rfc-iterative-review/SKILL.md:60`, `pre-pr-review/SKILL.md:155,181`,
+   `kookr-skill-naming-convention/SKILL.md:90`. These tell the model to prepend
+   `kookr-toolkit:`. After the plugin is disabled, the qualified name won't resolve, so the
+   notes must change to the form that *will* resolve (bare name, once Open Q1 confirms
+   bare-name agent resolution). **Also reconcile `skill-placement-gate.sh`**, which the
+   round-1 critic reports *enforces* the qualified form — the gate must be updated in the
+   same PR or it will reject the rewritten notes. (This is the real, now-measured "Open Q1"
+   blast radius: small and knowable, but it includes the hook.)
+2. **Only then** set `settings.json#enabledPlugins["kookr-toolkit@kookr"] = false` and drop
+   `--plugin-dir` injection from the adapters — atomically with re-confirming the symlinks
+   are complete. Because this also drops agents from `--plugin-dir`, it is gated on §C's
+   probes passing; if they don't, keep `--plugin-dir` (which keeps the plugin, which means
+   *don't* disable it) and accept that skills are double-named until the probes are resolved
+   — i.e. ship skills ambient but defer the disable.
 
-The prior RFC's §G per-task `<cwd>/.claude/skills` overlay becomes unnecessary on maintainer
-machines: ambient `~/.claude/skills` + `~/.claude/agents` symlinks make the toolkit visible
-to *every* Codex session, Kookr-spawned or not. (Empirically the §G overlay does not appear
-to have landed — `codex-cli-adapter.ts` carries no overlay logic — so this is mostly
-formalizing the actual state. The fork's native `--plugin-dir` support, probed at #241,
-remains the in-Kookr path and is harmless alongside ambient symlinks since it points at the
-same content; but per §E we prefer the symlinks as the single source.)
+Note the coupling the cutover must respect: `git revert` of the disable PR restores
+`--plugin-dir` in code but **not** the manual `settings.json` edit — rollback is two-part and
+must be documented. (delivery-pragmatist finding.)
+
+### F. Codex
+
+Ambient `~/.claude/skills/` symlinks already make skills visible to every Codex session
+(skills-dir reading is verified). Agents depend on Open Q2. The prior RFC's per-task overlay
+(never landed) is moot. Where the fork advertises `--plugin-dir`, that path remains harmless
+alongside the symlinks (same content) but the symlinks are preferred per §E.
 
 ## Separate repository for the plugin? — Recommendation: **No (not now)**
 
-You asked whether the plugin should live in its own repo so the marketplace doesn't clone
-all of Kookr. Findings and recommendation:
-
-- **The clone cost is real but now mostly irrelevant.** `/plugin marketplace add` does clone
-  the whole repo (confirmed, 280 KB+). But under this RFC, **Kookr-managed machines stop
-  using the marketplace path** — they sync `~/.kookr/plugin/` from the local deploy tree.
-  The whole-repo clone only affects *external* opt-in users.
-- **Splitting fights the model we committed to.** The plugin is shipped *and managed by
-  Kookr*: its agents are consumed by Kookr's own `rfc-iterative-review`/`pre-pr-review`
-  workflows, its `plugin.json#version` bump is enforced by Kookr's pre-push hook, and its
-  skills co-evolve with Kookr features. A separate repo means cross-repo sync, two PRs for
-  any coupled change, and submodule/subtree tooling — pure overhead for a single
-  maintainer.
-- **If external clone size ever matters**, the additive, reversible fix is a CI-published
-  **git-subtree mirror** to a thin read-only `kookr-toolkit` repo, with the monorepo
-  remaining the source of truth. Defer until a real external consumer complains.
-
-Recommendation: **keep `plugin/` in the monorepo.** Revisit the subtree mirror only on
-external demand.
+The `/plugin marketplace add` whole-repo clone is real (confirmed 280 KB+, full `src/`/`.git`)
+but becomes irrelevant once Kookr machines stop using the marketplace path. Splitting fights
+the "Kookr ships & manages it" model (the plugin's agents drive Kookr's own RFC-review;
+`plugin.json` version bump is pre-push-enforced; skills co-evolve with Kookr). If external
+clone size ever bites, the additive/reversible fix is a **CI git-subtree mirror** to a thin
+read-only `kookr-toolkit` repo, monorepo staying source of truth. Defer until external demand.
 
 ## Files to change (sketch)
 
-**PR-A — install + symlink-all (`~/.kookr/plugin/` + generalized linking)**
-- `scripts/install-hooks.sh` — add a sync step (copy deploy `plugin/` → `~/.kookr/plugin/`,
-  write `.installed.json`) and iterate **all** `skills/*` + `agents/*` for symlinking;
-  generalize `--print-global-assets` to enumerate the full set.
-- `src/server/…` (boot path) — invoke the sync on server start.
-- `docs/reference/cli.md` / `docs/hooks-setup.md` — document `~/.kookr/plugin/` install +
-  the ambient-availability behavior.
+**PR-1 — generalize linking + collision/orphan over the full set (skills first)**
+- `scripts/install-hooks.sh` — enumerate all `plugin/skills/*` (and, when §C unblocks,
+  `plugin/agents/*`); add orphan prune; keep clobber guard; `--print-global-assets` emits the
+  full list. Define per-item continue-on-collision (no `set -e` abort mid-sweep).
+- `src/server/toolkit-symlink-status.ts` — consume the full list; report collisions/orphans;
+  partial-success shape. **Keep deploy-health and collision concerns separable** so a
+  collision-report failure can't suppress the existing TopBar `stale` signal. (boundary-critic.)
+- `src/server/routes/deploy-routes.ts` / `TopBar.tsx` — surface counts; partial-success.
+- **Pre-step (one-time, documented):** delete the stale real-dir shadow
+  `~/.claude/skills/oss-task-checkpointing/` (the prior RFC's manual step was never run on
+  this machine — confirmed). Otherwise the clobber guard silently skips it forever.
 
-**PR-B — drift + collision detection**
-- `src/server/toolkit-symlink-status.ts` — add version-drift, collision (`shadowed`), and
-  orphan axes.
-- `src/server/routes/deploy-routes.ts` — extend `/api/deploy/status` and generalize
-  `/api/deploy/toolkit-refresh` (re-sync + relink + prune).
-- `src/frontend/components/TopBar.tsx` (+ styles) — surface shadowed/orphan counts and the
-  generalized refresh.
+**PR-2 — invocation-note + placement-gate reconciliation** (only if pursuing the disable)
+- Rewrite the 4 notes (§E.1) + `skill-placement-gate.sh` + its fixtures.
 
-**PR-C — single-source-of-truth cutover** (gated on A+B stable)
-- `settings.json#enabledPlugins["kookr-toolkit@kookr"] = false` (documented manual/host
-  step).
-- Adapter: drop `--plugin-dir` **skill** injection for spawned Claude Code agents (retain
-  for agents only if Open Q1 finds a dependency).
-- `CLAUDE.md` — document the ambient-symlink delivery model and the single-name invariant.
+**PR-3 — disable cutover** (gated on §C probes + PR-2)
+- `enabledPlugins[...]=false` (documented host step, two-part rollback noted); drop
+  `--plugin-dir` injection. If §C probes fail, this PR is skills-ambient-only and the disable
+  is deferred.
 
 ## Edge cases
 
-1. **Collision (user owns a same-named skill).** Never overwritten (clobber guard). Reported
-   as `shadowed` (§D.2). The user's skill wins, *with a diagnostic* — Goal 4.
-2. **Auto-update needs Kookr to run once after a source change.** Availability is durable
-   offline; *refresh* is not. A running instance syncs on boot + on refresh; a never-started
-   instance serves the last-synced snapshot. Acceptable and stated.
-3. **Forked-Codex agent discovery.** Confirm the fork reads `~/.claude/agents/` (not just
-   `~/.claude/skills/`) before relying on agent symlinks. **(Verification required —
-   Open Q2.)**
-4. **Name divergence during migration.** Until PR-C lands, a Kookr-spawned Claude Code
-   session may see both `kookr-toolkit:foo` and `foo`. PR-C removes the duplication; until
-   then, prefer natural-language invocation (resolves either).
-5. **`~/.kookr/plugin/` vs deploy tree skew.** `.installed.json` records source commit; drift
-   detection (§D.1) makes skew visible rather than silent.
-6. **Personal-deps user-scope skills** are out of scope and must not be touched by the
-   symlink sweep (they have no counterpart in `~/.kookr/plugin/`, so the sweep never
-   considers them).
+1. **Collision (user owns a same-named skill).** Never clobbered; reported while Kookr runs.
+   The user's skill wins and the toolkit version stays invisible — this is **not resolved**,
+   only surfaced, and in the "Kookr not running" case not even surfaced. Accepted limitation
+   (§0). The escape is the user deleting their shadow; Kookr will not.
+2. **Existing 3 symlinks already point at `kookr-prod`.** PR-1's generalized run re-asserts
+   them at the same target — a no-op, not a repoint. (No `~/.kookr/plugin/` indirection means
+   no "target doesn't exist yet" window.)
+3. **`oss-task-checkpointing` stale real-dir shadow** — handled by PR-1's documented
+   pre-step.
+4. **Skill vs agent name resolution differ.** Skills key on directory name; Kookr's
+   bypass-mode agent re-injection keys on frontmatter `name:`; native CC agent resolution is
+   Open Q1. Align filename == frontmatter `name:` for all agents (already true for all 17).
+5. **`kookr-oss-issue-scout`** — the prior RFC's §C/§D text about an `oss-issue-scout` agent
+   is stale; the real project agent is `.claude/agents/kookr-oss-issue-scout.md` and the
+   playbook already calls `kookr-oss-issue-scout`. Not in this RFC's path, but noted so the
+   prior RFC's residual cleanup isn't mis-scoped.
 
 ## Alternatives considered
 
-### Alt 1 — Keep the status quo (marketplace opt-in + `--plugin-dir` injection)
-Rejected: does not meet Goal 1/2 (no ambient availability; nothing for non-Kookr sessions),
-and inherits the whole-repo clone + GitHub-sourced drift.
+### Alt 1 — Just `/plugin install` once per machine, accept marketplace drift
+The cheapest option and the real baseline (§0). Rejected **only if** the §0 requirement holds
+(hand-started sessions without the install, + Codex parity). If the author judges the
+requirement marginal, **this is the recommendation** and the rest of the RFC is dropped.
 
-### Alt 2 — Symlink/forge the Claude Code *plugin* into the registry
-Rejected (§C): Claude-Code-only (misses the Codex fork) and requires maintaining an
-undocumented private registry format.
+### Alt 2 — `~/.kookr/plugin/` copy + drift detection (this RFC's v1)
+Rejected: the copy creates the very drift it then needs machinery to detect; `kookr-prod` is
+already canonical and stable. (design-minimalist; empirically confirmed.)
 
-### Alt 3 — Resurrect the prior RFC's per-task Codex overlay and add a Claude Code equivalent
-Rejected: per-task overlays require Kookr to spawn the session — fails Goal 1/2 by
-construction. Ambient symlinks subsume both.
+### Alt 3 — Forge/symlink the Claude Code plugin into the registry
+Rejected (§B): Claude-Code-only; brittle private format.
 
-### Alt 4 — Separate plugin repository
-Rejected for now (see "Separate repository" section): cross-repo sync overhead fights the
-Kookr-manages-it model; CI subtree mirror is the deferred escape hatch.
+### Alt 4 — Separate plugin repo
+Rejected for now (see above); CI subtree mirror is the deferred escape hatch.
 
-### Note on prior-RFC Alt 4 ("symlink plugin into user-scope")
-The prior RFC rejected this for "silent regression with no diagnostic." This RFC adopts the
-mechanism **with** the missing diagnostic (§D.2 collision reporting via the existing TopBar
-surface) and under a new requirement (ambient, cross-tool, Kookr-managed) the prior RFC did
-not weigh. The rejection's premise (no diagnostic) no longer holds.
+### Alt 5 — Unified `~/.kookr/plugin/` → `~/.claude/` sweep over hooks+playbooks+skills+agents
+Deferred (ambition-amplifier). The artifact types have different install semantics and
+different drift characteristics; folding them into one refresh surface is a larger change
+than the §0 requirement needs. Revisit if a second artifact type starts drifting.
 
 ## Open questions
 
-1. **Does any plugin *agent* behavior depend on `--plugin-dir` namespacing
-   (`kookr-toolkit:<agent>`) rather than bare `~/.claude/agents/<agent>` discovery?** If
-   `Agent({subagent_type: "kookr-toolkit:boundary-critic"})` callers exist (the prior RFC
-   rewrote 14 such callers to the qualified form), bare-name symlinks would break them — they
-   expect the `kookr-toolkit:` prefix. **This is load-bearing** and must be probed before
-   PR-C: either (a) keep `--plugin-dir` for agents only, or (b) rewrite qualified
-   `subagent_type` callers back to bare names. Mirrors the prior RFC's round-1 empirical
-   finding (unqualified `subagent_type` did *not* resolve against the namespaced plugin
-   agent) — so option (b) is the likely correct path, and its blast radius must be
-   re-measured.
-2. **Codex fork agent-dir support** (Edge case 3) — verify before relying on agent symlinks.
-3. **Should `~/.kookr/plugin/` sync from `kookr-prod` (deploy tree) or from `main`?** The
-   stale-toolkit RFC chose `kookr-prod` as canonical; reuse it for consistency unless
-   maintainer wants `main`.
+1. **(Load-bearing, cheap, gates agent symlinks.)** Does native Claude Code resolve a
+   bare-name user-scope agent (`~/.claude/agents/boundary-critic.md` →
+   `subagent_type:"boundary-critic"`), and filename vs frontmatter? Runtime probe required.
+2. **(Gates Codex agent parity.)** Does the forked Codex read `~/.claude/agents/`? Probe via
+   `strings $(which codex) | grep '.claude/agents'` or the `jeanibarz/codex` fork loader.
+3. **§0 — is the ambient requirement real and frequent enough to justify this over Alt 1?**
+   Author/user decision; everything else is gated on "yes."
 
 ## Acceptance / done
 
-- A fresh `claude` (or forked `codex`) started by hand in an unrelated repo, **with Kookr
-  not running**, lists the toolkit skills and resolves a toolkit agent.
-- `~/.kookr/plugin/` exists with `.installed.json`; `~/.claude/skills/<skill>` and
-  `~/.claude/agents/<agent>` are symlinks into it for every plugin item (minus reported
-  collisions).
-- TopBar reports version drift, shadowed (collision) items, and orphans; refresh re-syncs +
-  relinks + prunes without clobbering non-symlinks.
-- No skill loads under two names in any session (PR-C): `kookr-toolkit@kookr` disabled in
-  `enabledPlugins`; `--plugin-dir` skill injection removed.
-- Open Q1 resolved with a measured `subagent_type` blast radius before PR-C.
-- `plugin/` remains in the monorepo; no separate repo created.
+- A hand-started `claude` (and, if Open Q1/Q2 pass, forked `codex`) in an unrelated repo,
+  **with Kookr not running**, lists the toolkit skills (and resolves a toolkit agent).
+- `~/.claude/skills/<skill>` are symlinks into `kookr-prod/plugin/skills/` for every plugin
+  skill (minus reported collisions); **no `~/.kookr/plugin/` copy exists**.
+- TopBar reports collisions + orphans over the full set; refresh re-links + prunes without
+  clobbering non-symlinks; partial success reported.
+- If the disable cutover is pursued: 4 notes + placement gate reconciled *before* the disable;
+  no skill loads under two names; two-part rollback documented.
+- `plugin/` stays in the monorepo.
+
+## Critic feedback incorporated
+
+### Round 1 (2026-05-30) — 6 critics + empirical checkpoint
+
+**failure-mode-analyst** — incorporated: partial-success reporting for refresh; orphan-prune
+predicate must be `lstat`+target-prefix (never delete a user symlink); collision is
+"surfaced not prevented" and silent when Kookr is down (drove Goal-4 demotion + §0).
+*Rejected:* the "two-root mismatch" (Finding 10) — empirically REFUTED (`install-hooks.sh`
+runs with `cwd=prodDir`, roots identical). Several copy-layer failure modes (sync race,
+half-applied copy, `.installed.json` absent) became moot when the copy was dropped.
+
+**design-minimalist** — incorporated, decisively: dropped the `~/.kookr/plugin/` copy,
+`.installed.json`, boot-sync, and the version-drift axis; collapsed PR-A/B/C toward the
+minimal set; kept only the collision axis (already exists). This is the single largest v2
+change.
+
+**ambition-amplifier** — incorporated: resolve the `subagent_type` blast radius *now* (done —
+empirical checkpoint measured it: 4 notes + the placement gate); automate/assert the
+`enabledPlugins` state rather than leave it a silent manual step (noted as the two-part
+rollback coupling). *Deferred:* the unified hooks+playbooks+skills+agents refresh surface
+(Alt 5) — larger than the §0 requirement warrants. *ambition-amplifier 2026-05-30: novel
+finding* — the agent-discovery (Q1/Q2) gap was under-specified; drove §C's probe-gated split.
+
+**Adversarial-pair resolution (design-minimalist vs ambition-amplifier):** on the central
+axis — copy layer + scope — **design-minimalist won.** The empirical check confirmed the live
+symlinks already point at `kookr-prod` and work, so the copy and its drift machinery were
+solving a self-inflicted problem; ambition's bigger unified-refresh surface (Alt 5) is
+deferred because no second artifact type is drifting today. ambition's *one* adopted push —
+measure the cutover blast radius now rather than defer it — was correct and is done.
+
+**boundary-critic** — incorporated: keep deploy-health and collision concerns separable in
+the detector; enumeration stays single-source (script enumerates, TS consumes); explicitly
+**supersede Design Principle 4** rather than silently override it (§0); resolve the
+`enabledPlugins` ownership question (it's a host step Kookr already partially owns via
+`install-hooks.sh` jq edits — acknowledged, two-part rollback documented).
+
+**socratic-challenger** — incorporated: stop strawmanning the prior Alt-4 rejection (it had
+two clauses; the diagnostic addresses only one) → §0 supersedes Principle 4 honestly; the
+collision diagnostic "relabels, not resolves" → Goal 4 demoted; **the §0 premise check** (is
+the requirement real vs just `/plugin install` once?) is now the top open decision; "why copy
+at all" → copy dropped.
+
+**design-experimenter (empirical checkpoint, 2026-05-30)** — verdicts:
+- `--plugin-dir` atomicity: **CONFIRMED** — no agents-only injection. Escape hatch struck.
+- Cutover blast radius: **measured** — 0 executable qualified callers; 4 invocation notes
+  (+ placement gate). "Open Q1" reframed from unknown to known-small.
+- `~/.kookr/plugin/` copy unnecessary: **CONFIRMED** — live symlinks point at `kookr-prod`
+  and work; no copy exists today.
+- Two-root mismatch: **REFUTED**.
+- Native CC bare-name agent resolution + Codex `~/.claude/agents/` reading: **UNDETERMINED**
+  → §C probe-gated agent phase (Open Q1/Q2).
+- Stale `oss-task-checkpointing` real-dir + `kookr-oss-issue-scout` naming: **CONFIRMED** →
+  Edge cases 3/5.
+
+### Convergence note
+Round 1 + the empirical checkpoint reshaped the premise (copy dropped, blast radius measured,
+atomicity confirmed) and surfaced one decision only the author can make (§0). Per
+`rfc-iterative-review`, the correct next step is author input on §0, not another speculative
+critic round against a design whose central simplification is already settled. Round 2 should
+run only after §0 is answered "yes" and Open Q1/Q2 are probed.
