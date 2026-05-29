@@ -31,7 +31,8 @@ export class ScheduleService {
   private runnerStartedAt?: string;
   private lastTickCompletedAt?: string;
   private lastError?: string;
-  private catchUpEnabled = true;
+  private catchUpMode: 'auto' | 'manual' | 'off' = 'manual';
+  private catchUpEnabled = false;
 
   constructor(deps: ScheduleServiceDeps) {
     this.store = deps.store;
@@ -55,6 +56,7 @@ export class ScheduleService {
       timezone: currentTimezone(),
       ...(this.runnerStartedAt ? { runnerStartedAt: this.runnerStartedAt } : {}),
       ...(lastTickCompletedAt ? { lastTickCompletedAt } : {}),
+      catchUpMode: this.catchUpMode,
       catchUpEnabled: this.catchUpEnabled,
       schedulerHealthy,
       ...(loadError ? { loadError } : {}),
@@ -62,9 +64,10 @@ export class ScheduleService {
     };
   }
 
-  recordRunnerStarted(catchUpEnabled: boolean): void {
+  recordRunnerStarted(catchUpMode: 'auto' | 'manual' | 'off'): void {
     this.runnerStartedAt = new Date().toISOString();
-    this.catchUpEnabled = catchUpEnabled;
+    this.catchUpMode = catchUpMode;
+    this.catchUpEnabled = catchUpMode === 'auto';
     this.lastError = undefined;
     this.broadcastSchedules();
   }
@@ -190,6 +193,52 @@ export class ScheduleService {
         reasonCode: 'stale_catch_up',
         message,
       }),
+    });
+    await this.store.persist();
+    this.broadcastSchedules();
+  }
+
+  async recordCatchUpDeferred(scheduleId: string, scheduledFor: string, message: string): Promise<void> {
+    const schedule = this.requireSchedule(scheduleId);
+    const evaluatedAt = new Date().toISOString();
+    this.store.replace({
+      ...schedule,
+      lastScheduledFor: evaluatedAt,
+      lastCronEvaluatedAt: evaluatedAt,
+      latestExecution: {
+        executionToken: ledgerKeyFor(schedule.id, 'cron', scheduledFor),
+        scheduledFor,
+        evaluatedAt,
+        trigger: 'cron',
+        outcome: 'skipped_manual',
+        reasonCode: 'manual_catch_up_required',
+        message,
+      },
+      executionLedger: upsertLedgerEntry(schedule.executionLedger, {
+        id: ledgerKeyFor(schedule.id, 'cron', scheduledFor),
+        scheduleId: schedule.id,
+        trigger: 'cron',
+        decision: 'manual_catch_up',
+        scheduledFor,
+        evaluatedAt,
+        completedAt: evaluatedAt,
+        outcome: 'skipped_manual',
+        reasonCode: 'manual_catch_up_required',
+        message,
+      }),
+    });
+    await this.store.persist();
+    this.broadcastSchedules();
+  }
+
+  async suppressCatchUp(scheduleId: string): Promise<void> {
+    const schedule = this.requireSchedule(scheduleId);
+    const evaluatedAt = new Date().toISOString();
+    this.store.replace({
+      ...schedule,
+      lastScheduledFor: evaluatedAt,
+      lastCronEvaluatedAt: evaluatedAt,
+      updatedAt: evaluatedAt,
     });
     await this.store.persist();
     this.broadcastSchedules();

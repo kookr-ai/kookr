@@ -60,7 +60,8 @@ not user configuration knobs.
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_AUTO_RELAUNCH` | enabled | `false` to disable | Disables startup crash recovery and automatic relaunch/resume of tasks marked completed by reconciliation. |
-| `KOOKR_NO_CATCHUP` | unset | Any non-empty value | Disables schedule catch-up work on scheduler startup. Future cron ticks still run. |
+| `KOOKR_AUTO_CATCHUP` | unset | Any non-empty value | Opts in to automatic schedule catch-up on scheduler startup. By default, missed startup runs are recorded in the execution ledger and can be launched manually with Run Now. |
+| `KOOKR_NO_CATCHUP` | unset | Any non-empty value | Legacy kill switch for startup catch-up. Takes precedence over `KOOKR_AUTO_CATCHUP`; future cron ticks still run. |
 
 ## Context And Checkpointing
 

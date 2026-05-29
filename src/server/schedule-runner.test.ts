@@ -50,6 +50,7 @@ Do the test thing.
   afterEach(async () => {
     await Promise.all([...runners].map((runner) => runner.stop()));
     delete process.env.KOOKR_NO_CATCHUP;
+    delete process.env.KOOKR_AUTO_CATCHUP;
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -387,7 +388,40 @@ Do the test thing.
     expect(result.error).toBe('Schedule not found');
   });
 
-  it('catches up a missed schedule within 24h on start', async () => {
+  it('records a missed startup run for manual recovery by default', async () => {
+    const schedule = store.create({
+      name: 'ManualCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    runner.start();
+    await vi.waitFor(() => {
+      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_manual');
+    });
+    await runner.stop();
+
+    expect(launched).toHaveLength(0);
+    expect(service.getStatusSnapshot().catchUpEnabled).toBe(false);
+    expect(store.get(schedule.id)!.executionLedger[0]).toEqual(expect.objectContaining({
+      decision: 'manual_catch_up',
+      outcome: 'skipped_manual',
+      reasonCode: 'manual_catch_up_required',
+      scheduledFor: expect.any(String),
+    }));
+
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(new Date(store.getWithComputed(schedule.id)!.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('catches up a missed schedule within 24h on start when explicitly enabled', async () => {
     const schedule = store.create({
       name: 'Catchup',
       cron: '* * * * *',
@@ -398,6 +432,7 @@ Do the test thing.
       createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
     });
 
+    process.env.KOOKR_AUTO_CATCHUP = '1';
     const runner = createRunner();
     runner.start();
     await vi.waitFor(() => {
@@ -467,6 +502,7 @@ Do the test thing.
       },
     });
 
+    process.env.KOOKR_AUTO_CATCHUP = '1';
     runner.start();
     await vi.waitFor(() => {
       expect(launchStarted).toBe(true);
@@ -486,7 +522,7 @@ Do the test thing.
     expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
   });
 
-  it('skips catch-up when KOOKR_NO_CATCHUP is set', async () => {
+  it('skips all startup catch-up handling when KOOKR_NO_CATCHUP is set', async () => {
     const schedule = store.create({
       name: 'NoCatchup',
       cron: '* * * * *',
@@ -498,13 +534,47 @@ Do the test thing.
     });
 
     process.env.KOOKR_NO_CATCHUP = '1';
+    process.env.KOOKR_AUTO_CATCHUP = '1';
     const runner = createRunner();
     runner.start();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => {
+      expect(store.get(schedule.id)!.lastScheduledFor).toEqual(expect.any(String));
+    });
     await runner.stop();
 
     expect(launched).toHaveLength(0);
     expect(service.getStatusSnapshot().catchUpEnabled).toBe(false);
+    expect(service.getStatusSnapshot().catchUpMode).toBe('off');
+    expect(store.get(schedule.id)!.latestExecution).toBeUndefined();
+
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(new Date(store.getWithComputed(schedule.id)!.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('skips stale startup catch-up ledger handling when KOOKR_NO_CATCHUP is set', async () => {
+    const schedule = store.create({
+      name: 'NoStaleCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 26 * 60 * 60_000).toISOString(),
+    });
+
+    process.env.KOOKR_NO_CATCHUP = '1';
+    const runner = createRunner();
+    runner.start();
+    await vi.waitFor(() => {
+      expect(store.get(schedule.id)!.lastScheduledFor).toEqual(expect.any(String));
+    });
+    await runner.stop();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution).toBeUndefined();
+    expect(store.get(schedule.id)!.executionLedger).toEqual([]);
   });
 
   it('prevents overlapping ticks', async () => {

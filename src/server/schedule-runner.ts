@@ -70,13 +70,17 @@ export class ScheduleRunner {
   }
 
   start(): void {
-    const catchUpEnabled = !process.env.KOOKR_NO_CATCHUP;
-    this.deps.service.recordRunnerStarted(catchUpEnabled);
+    const catchUpMode = getCatchUpMode();
+    this.deps.service.recordRunnerStarted(catchUpMode);
 
-    if (catchUpEnabled) {
+    if (catchUpMode === 'auto') {
       this.trackBackgroundWork('Catch-up', this.catchUp());
+    } else if (catchUpMode === 'manual') {
+      console.log('[schedule] Automatic catch-up disabled; missed runs are recorded for manual Run Now recovery');
+      this.trackBackgroundWork('Catch-up', this.catchUp({ manualOnly: true }));
     } else {
       console.log('[schedule] Catch-up disabled (KOOKR_NO_CATCHUP)');
+      this.trackBackgroundWork('Catch-up', this.catchUp({ suppressOnly: true }));
     }
 
     this.tickInterval = setInterval(() => {
@@ -223,7 +227,7 @@ export class ScheduleRunner {
     }
   }
 
-  private async catchUp(): Promise<void> {
+  private async catchUp(options: { manualOnly?: boolean; suppressOnly?: boolean } = {}): Promise<void> {
     const now = new Date();
     const cutoff = new Date(now.getTime() - CATCHUP_MAX_STALENESS_MS);
 
@@ -238,15 +242,35 @@ export class ScheduleRunner {
       if (!scheduledNext) continue;
 
       if (scheduledNext < now && scheduledNext >= cutoff) {
-        console.log(`[schedule] Catching up "${schedule.name}" (was due ${scheduledNext.toISOString()})`);
-        await this.fire(schedule, 'cron', scheduledNext, 'catch_up');
+        if (options.suppressOnly) {
+          console.log(`[schedule] Suppressing missed run for "${schedule.name}" (due ${scheduledNext.toISOString()}); catch-up is disabled`);
+          await this.deps.service.suppressCatchUp(schedule.id);
+        } else if (options.manualOnly) {
+          const message = `Missed startup run due ${scheduledNext.toISOString()} was recorded for manual Run Now recovery`;
+          console.log(`[schedule] Recording missed run for "${schedule.name}" (due ${scheduledNext.toISOString()}); use Run Now to recover`);
+          await this.deps.service.recordCatchUpDeferred(schedule.id, scheduledNext.toISOString(), message);
+        } else {
+          console.log(`[schedule] Catching up "${schedule.name}" (was due ${scheduledNext.toISOString()})`);
+          await this.fire(schedule, 'cron', scheduledNext, 'catch_up');
+        }
       } else if (scheduledNext < cutoff) {
+        if (options.suppressOnly) {
+          console.log(`[schedule] Suppressing stale missed run for "${schedule.name}" (due ${scheduledNext.toISOString()}); catch-up is disabled`);
+          await this.deps.service.suppressCatchUp(schedule.id);
+          continue;
+        }
         const message = `Due ${scheduledNext.toISOString()} is outside the 24h catch-up window`;
         console.log(`[schedule] Skipping stale catch-up for "${schedule.name}" (due ${scheduledNext.toISOString()}, > 24h ago)`);
         await this.deps.service.recordCatchUpSkipped(schedule.id, scheduledNext.toISOString(), message);
       }
     }
   }
+}
+
+function getCatchUpMode(): 'auto' | 'manual' | 'off' {
+  if (process.env.KOOKR_NO_CATCHUP) return 'off';
+  if (process.env.KOOKR_AUTO_CATCHUP) return 'auto';
+  return 'manual';
 }
 
 function mapErrorToReasonCode(err: unknown) {
