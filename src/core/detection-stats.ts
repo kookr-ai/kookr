@@ -115,6 +115,43 @@ export function recordDetectionFire(type: AnomalyType): void {
   stats.fires[type]++;
 }
 
+/**
+ * Replace the in-memory counters from a persisted snapshot (loaded at server
+ * boot). Without this, the counters are process-local and reset on every
+ * restart, so cumulative detector accuracy (FP/FN/suppression rates) is never
+ * observable across the restarts that happen many times a day — leaving the
+ * operator flying blind on detector quality.
+ *
+ * Defensive: only known per-type keys are copied, and only finite non-negative
+ * numbers; a partial or stale snapshot (e.g. an AnomalyType added since it was
+ * written) hydrates what it can and leaves the rest at zero. Unknown keys are
+ * ignored.
+ */
+export function hydrateDetectionStats(snapshot: Partial<DetectionStats>): void {
+  const perType: Array<keyof Pick<DetectionStats, 'checks' | 'fires' | 'falsePositives' | 'falseNegatives' | 'suppressed'>> = [
+    'checks', 'fires', 'falsePositives', 'falseNegatives', 'suppressed',
+  ];
+  for (const bucket of perType) {
+    const incoming = snapshot[bucket];
+    if (!incoming || typeof incoming !== 'object') continue;
+    for (const key of Object.keys(stats[bucket]) as AnomalyType[]) {
+      const value = (incoming as Record<string, unknown>)[key];
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+        stats[bucket][key] = value;
+      }
+    }
+  }
+  const scalars: Array<keyof Pick<DetectionStats, 'subagentOrphans' | 'subagentSessionsWithOrphans' | 'subagentTtlEvictions'>> = [
+    'subagentOrphans', 'subagentSessionsWithOrphans', 'subagentTtlEvictions',
+  ];
+  for (const key of scalars) {
+    const value = snapshot[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      stats[key] = value;
+    }
+  }
+}
+
 /** Reset stats (for testing). */
 export function resetDetectionStats(): void {
   for (const key of Object.keys(stats.checks) as AnomalyType[]) {

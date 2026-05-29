@@ -22,6 +22,7 @@ import { cleanupSessionResources, promotePendingTasks, type LifecycleDeps, type 
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import type { CheckpointCycler } from '../core/checkpoint-cycler.js';
 import { getCyclableSessions, isCycleDisabled } from '../core/checkpoint-cycler.js';
+import { getDetectionStats, type DetectionStats } from '../core/detection-stats.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -49,6 +50,8 @@ export interface TimerDeps {
   getMaxActiveTasks?: () => number;
   /** Optional suppression tracker for snooze storm auto-suppress. */
   suppressionTracker?: SnoozeSuppressionTracker;
+  /** Optional durable store for cumulative detector telemetry (persisted on the save tick). */
+  detectionStatsStore?: { save(stats: DetectionStats): Promise<void> };
   /** Optional v5 checkpoint cycler — ticked from the existing token scan interval. */
   checkpointCycler?: CheckpointCycler;
   /**
@@ -435,6 +438,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       );
     } catch (err) {
       console.error('Error saving tasks:', err);
+    }
+    // Persist cumulative detector telemetry on the same cadence so FP/FN/
+    // suppression rates survive restarts. Isolated from the task save so a
+    // stats-write failure neither blocks nor is mislabelled as a task error.
+    try {
+      await deps.detectionStatsStore?.save(getDetectionStats());
+    } catch (err) {
+      console.error('Error saving detection stats:', err);
     }
   }, saveIntervalMs);
 

@@ -29,7 +29,8 @@ import { saveSettings, type KookrSettings } from '../core/settings-store.js';
 import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
 import { DiagnosticRunner } from './diagnostic-runner.js';
-import { getDetectionStats } from '../core/detection-stats.js';
+import { getDetectionStats, hydrateDetectionStats } from '../core/detection-stats.js';
+import { DetectionStatsStore } from './detection-stats-store.js';
 import {
   promotePendingStartupTasks,
   runStartupRecoveryPhase,
@@ -771,6 +772,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     : Buffer.alloc(32, 0);
   const findingEvidenceReviewLogStore = ReviewLogStore.forKookrDir(kookrDir);
   const supervisorFeedbackCaseStore = SupervisorFeedbackCaseStore.forKookrDir(kookrDir);
+  const detectionStatsStore = DetectionStatsStore.forKookrDir(kookrDir);
+  // Restore cumulative detector telemetry so FP/FN/suppression rates survive
+  // the daily restarts; a missing/corrupt file just leaves counters at zero.
+  const persistedDetectionStats = await detectionStatsStore.load();
+  if (persistedDetectionStats) hydrateDetectionStats(persistedDetectionStats);
   const findingEvidenceReviewConfig = readFindingEvidenceReviewConfigFromEnv(process.env, findingEvidenceReviewHmacKey, buildInfo.commitHash);
   const findingEvidenceReviewSamplerConfig = readFindingEvidenceReviewSamplerConfigFromEnv(process.env);
   const contactShare = new ContactShareReadModel();
@@ -999,6 +1005,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       shadowRegistry, agentLifecycleDeps: lifecycleDeps,
       quotaAdapter, getMaxActiveTasks, suppressionTracker,
       checkpointCycler, budgetChecker, progressBudgetBurnDiagnostics,
+      detectionStatsStore,
       worktreeRegistry,
       worktreeRegistryRepoPath: serverCwd,
       getDashboardClientCount: () => clients.size,
