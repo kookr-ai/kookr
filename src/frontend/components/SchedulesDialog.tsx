@@ -95,6 +95,8 @@ function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outc
       return 'skipped: active run';
     case 'skipped_capacity':
       return 'skipped: capacity';
+    case 'skipped_draining':
+      return 'skipped: draining';
     case 'skipped_stale':
       return 'skipped: stale';
     case 'unknown_after_restart':
@@ -108,6 +110,8 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'none';
     case 'capacity':
       return 'capacity';
+    case 'draining':
+      return 'draining';
     case 'previous_run_active':
       return 'previous run active';
     case 'missing_cwd':

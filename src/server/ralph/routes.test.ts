@@ -30,7 +30,7 @@ vi.mock('../agent-lifecycle.js', async (importActual) => {
   };
 });
 
-import { launchTask } from '../launch-service.js';
+import { launchTask, DrainModeError } from '../launch-service.js';
 import { registerRalphRoutes } from './routes.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
@@ -371,6 +371,24 @@ Loop route.
       projectId: `local/${basename(targetCwd)}`,
       playbookId: 'workflow.md',
     }));
+  });
+
+  test('returns 503 with code "draining" when launchTask is gated by drain mode (issue #659)', async () => {
+    const taskStore = new TaskStore();
+    vi.mocked(launchTask).mockRejectedValue(new DrainModeError());
+
+    const res = await mkApp(mkRalphDeps(taskStore)).request('/api/playbooks/ralph-loop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        playbookPath: 'workflow.md',
+        cwd: sourceCwd,
+        parameterValues: {},
+      }),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: 'draining' });
   });
 
   test('keeps accepting legacy cwd payloads', async () => {

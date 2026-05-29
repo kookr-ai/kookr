@@ -23,6 +23,7 @@ import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
+import { DrainController } from './drain-state.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
 import { saveSettings, type KookrSettings } from '../core/settings-store.js';
@@ -580,6 +581,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalInputCoordinator,
   };
 
+  // Operator drain / resume state (issue #659). In-memory only: a restarted
+  // node always comes back accepting. Shared by the launch path, the scheduler,
+  // and the admin drain routes so a cordon holds across every launch entry.
+  const drainController = new DrainController();
+
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
   const launchServiceDeps: LaunchServiceDeps = {
@@ -591,6 +597,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     roundRobinCursor,
     interactionLog,
     terminalBackend,
+    isAccepting: () => drainController.isAccepting(),
   };
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
@@ -694,6 +701,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     launchServiceDeps,
     getMaxActiveTasks,
     broadcastToAll,
+    isAccepting: () => drainController.isAccepting(),
   });
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);
@@ -849,6 +857,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     diagnosticRunner,
     terminalBackend,
     coordinatorSuppressions,
+    drainController,
     startupRecoverySummary,
     ralphCycler,
     tokenTracker,

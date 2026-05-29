@@ -22,12 +22,14 @@ export type ScheduleExecutionOutcome =
   | 'dispatch_failed'
   | 'skipped_active'
   | 'skipped_capacity'
+  | 'skipped_draining'
   | 'skipped_stale'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
   | 'none'
   | 'capacity'
+  | 'draining'
   | 'previous_run_active'
   | 'missing_cwd'
   | 'missing_playbook'

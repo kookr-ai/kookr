@@ -219,6 +219,47 @@ Do the test thing.
     expect(store.get(schedule.id)!.enabled).toBe(true);
   });
 
+  it('suppresses firing while the server is draining (issue #659)', async () => {
+    const schedule = store.create({
+      name: 'Draining',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      maxTriggers: 2,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({ isAccepting: () => false });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_draining');
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('draining');
+    expect(store.get(schedule.id)!.latestExecution?.message).toContain('draining');
+    // The cron budget must not be consumed by a drain skip.
+    expect(store.get(schedule.id)!.remainingTriggers).toBe(2);
+    expect(store.get(schedule.id)!.enabled).toBe(true);
+  });
+
+  it('fires normally once the server stops draining', async () => {
+    const schedule = store.create({
+      name: 'Resumed',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({ isAccepting: () => true });
+    await runner.tick();
+
+    expect(launched).toHaveLength(1);
+  });
+
   it('fails when playbook file is missing', async () => {
     const schedule = store.create({
       name: 'Missing Playbook',

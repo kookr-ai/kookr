@@ -26,7 +26,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask } from '../launch-service.js';
+import { launchTask, DrainModeError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 
@@ -310,6 +310,26 @@ describe('POST /api/tasks error paths', () => {
       prompt,
       cwd: '/cwd',
     }));
+  });
+
+  test('returns 503 with code "draining" when launchTask is gated by drain mode (issue #659)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(new DrainModeError());
+
+    const taskStore = new TaskStore();
+    const monitor = new Monitor(taskStore, new AttentionQueue());
+    const res = await mkApp({
+      taskStore,
+      monitor,
+      broadcastToAll: broadcastNoop,
+      serverCwd: '/cwd',
+      launchServiceDeps: {} as never,
+    }).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'while draining', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: 'draining' });
   });
 
   test('returns 500 when launchTask throws', async () => {

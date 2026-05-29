@@ -11,7 +11,7 @@ import { normalizeAgentType } from '../../core/agent-types.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { resolveStallConfig } from '../../shared/contracts/ralph.js';
 import { cancelTask as cancelTaskLifecycle } from '../agent-lifecycle.js';
-import { launchTask } from '../launch-service.js';
+import { launchTask, DrainModeError } from '../launch-service.js';
 import {
   launchLoopedPlaybook,
   LoopedPlaybookLaunchError,
@@ -453,6 +453,9 @@ function ralphLaunchErrorResponse(c: Context, err: unknown) {
   }
   if (err instanceof LaunchPreflightError) {
     return c.json({ error: err.message, code: 'launch_preflight_failed', findings: err.findings }, 409);
+  }
+  if (err instanceof DrainModeError) {
+    return c.json({ error: err.message, code: err.code }, 503);
   }
   const message = err instanceof Error ? err.message : String(err);
   return c.json({ error: message }, 500);
