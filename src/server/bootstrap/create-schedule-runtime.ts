@@ -12,6 +12,8 @@ export interface ScheduleRuntimeDeps {
   launchServiceDeps: LaunchServiceDeps;
   getMaxActiveTasks: () => number;
   broadcastToAll: (msg: ServerMessage) => void;
+  /** Operator drain gate (issue #659): suppress schedule firing while draining. */
+  isAccepting?: () => boolean;
 }
 
 export interface ScheduleRuntime {
@@ -42,6 +44,7 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     launcher: (opts) => launchTask(deps.launchServiceDeps, opts),
     getActiveCount: () => deps.taskStore.getActiveCount(),
     getMaxActiveTasks: deps.getMaxActiveTasks,
+    ...(deps.isAccepting ? { isAccepting: deps.isAccepting } : {}),
     isTaskBlockingSchedule: (taskId) => {
       const task = deps.taskStore.getTask(taskId);
       const blocking = isTaskBlockingSchedule(task);

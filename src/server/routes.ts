@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { registerDiagnosticsRoutes } from './routes/diagnostics-routes.js';
+import { registerAdminRoutes } from './routes/admin-routes.js';
 import { registerProjectRoutes } from './routes/project-routes.js';
 import { registerDeployRoutes } from './routes/deploy-routes.js';
 import { registerScheduleRoutes } from './routes/schedule-routes.js';
@@ -44,6 +45,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   };
 
   registerDiagnosticsRoutes(app, sharedDeps);
+  registerAdminRoutes(app, sharedDeps);
   registerSettingsRoutes(app, sharedDeps);
   registerRalphRoutes(app, sharedDeps);
   registerTaskRoutes(app, sharedDeps);

@@ -4,7 +4,7 @@ import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
 import { normalizeAgentSelection } from '../../core/agent-types.js';
 import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
 import { deleteTask } from '../use-cases/delete-task.js';
-import { launchTask } from '../launch-service.js';
+import { launchTask, DrainModeError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import type { LaunchDependency } from '../../core/playbook.js';
 import type { Task } from '../../core/tasks.js';
@@ -173,6 +173,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       }
       if (err instanceof LaunchPreflightError) {
         return c.json({ error: err.message, code: 'launch_preflight_failed', findings: err.findings }, 409);
+      }
+      if (err instanceof DrainModeError) {
+        return c.json({ error: err.message, code: err.code }, 503);
       }
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);

@@ -15,6 +15,13 @@ if (process.argv[2] === 'command' && process.argv[3] === 'outcome') {
   process.exit(0);
 }
 
+// Operator drain / resume control (issue #659). Runs as a thin HTTP client
+// against the running server rather than booting one, so it dispatches here.
+if (process.argv[2] === 'drain' || process.argv[2] === 'resume') {
+  const { runDrainCli } = await import('./kookr-drain.js');
+  process.exit(await runDrainCli(process.argv.slice(2)));
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const entry = join(here, '..', 'dist', 'server', 'start.js');
 

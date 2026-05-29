@@ -50,6 +50,13 @@ export interface ScheduleRunnerDeps {
   getActiveCount: () => number;
   getMaxActiveTasks: () => number;
   isTaskBlockingSchedule: (taskId: string) => boolean;
+  /**
+   * Operator drain gate (issue #659). When provided and returning false, the
+   * node is draining and schedule firing is suppressed so the scheduler can't
+   * re-launch work behind an operator's back during a cordon. Absent means
+   * always-accepting (back-compat).
+   */
+  isAccepting?: () => boolean;
 }
 
 export class ScheduleRunner {
@@ -159,6 +166,18 @@ export class ScheduleRunner {
         { blockingTaskId },
       );
       return { error: 'Previous run still active' };
+    }
+
+    if (this.deps.isAccepting && !this.deps.isAccepting()) {
+      console.warn(`[schedule] Skipping "${schedule.name}" — server draining (issue #659)`);
+      await this.deps.service.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'skipped_draining',
+        'draining',
+        'Server draining — not accepting new launches',
+      );
+      return { error: 'Server draining' };
     }
 
     if (this.deps.getActiveCount() >= this.deps.getMaxActiveTasks()) {

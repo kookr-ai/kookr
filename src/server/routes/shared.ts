@@ -40,6 +40,7 @@ import type { LlmClient } from '../../core/llm-client.js';
 import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sampler.js';
 import type { CollaborationDiagnostics } from '../../shared/contracts/collaboration-profile.js';
 import type { CoordinatorSuppressionRegistry } from '../coordinator/suppression-store.js';
+import type { DrainController } from '../drain-state.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -240,4 +241,6 @@ export interface RouteDeps {
   findingEvidenceReviewSampler?: Pick<FindingEvidenceReviewSampler, 'getStatus'>;
   /** Shared coordinator recommendation suppressions; routes may write it and snapshots read it. */
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
+  /** Operator drain / resume state (issue #659). Absent disables the admin drain routes. */
+  drainController?: DrainController;
 }

@@ -51,6 +51,25 @@ export interface LaunchServiceDeps {
   roundRobinCursor?: { peek: () => number; advance: () => void };
   interactionLog?: DeferredInteractionLogWriter;
   dependencyPreflightRunner?: DependencyPreflightRunner;
+  /**
+   * Operator drain gate (issue #659). When provided and returning false, the
+   * node is draining and {@link launchTask} refuses new launches by throwing
+   * {@link DrainModeError}. Omitted (or always-true) means the node accepts
+   * launches normally — in-flight agents are never affected either way.
+   */
+  isAccepting?: () => boolean;
+}
+
+/**
+ * Thrown by {@link launchTask} when the server is in operator drain mode and is
+ * refusing new task launches. Callers map this to HTTP 503 (issue #659).
+ */
+export class DrainModeError extends Error {
+  readonly code = 'draining';
+  constructor() {
+    super('Server is draining; not accepting new task launches');
+    this.name = 'DrainModeError';
+  }
 }
 
 export interface LaunchOpts {
@@ -224,6 +243,11 @@ export async function launchTask(
   opts: LaunchOpts,
 ): Promise<LaunchResult> {
   const { taskStore, adapterRegistry, lifecycleDeps } = deps;
+  // Operator drain gate (issue #659): refuse new launches while draining, before
+  // any task record or side effect is created. In-flight agents are untouched.
+  if (deps.isAccepting && !deps.isAccepting()) {
+    throw new DrainModeError();
+  }
   const maxActive = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
   // Resolve the agent for this launch. An explicit per-launch request wins
   // over the configured default; either may be the `round-robin` sentinel,
@@ -405,6 +429,12 @@ async function collectAdvisoryDependencyFindings(
  * Launch a fresh runtime session for an already-existing task (used by the
  * Ralph loop service to re-inject the loop prompt after each iteration).
  * Returns the new tmux session name.
+ *
+ * Deliberately NOT subject to the drain gate (issue #659): this continues
+ * *in-flight* work on an existing task rather than creating a new one, and
+ * drain's contract is that already-running agents and in-flight work run to
+ * completion. The cordon is enforced on {@link launchTask} (new-task creation)
+ * and on the scheduler, not here.
  */
 export async function launchFreshTaskSession(
   deps: LaunchServiceDeps,

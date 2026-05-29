@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, DrainModeError, type LaunchServiceDeps } from './launch-service.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 
 // Minimal stubs for adapter and lifecycle deps
@@ -232,6 +232,37 @@ describe('launchTask', () => {
     expect(result.duplicate).toBeUndefined();
     expect(result.task.prompt).toBe('hello');
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  describe('operator drain gate (issue #659)', () => {
+    it('refuses a launch with DrainModeError while draining, creating no task', async () => {
+      const drainingDeps = { ...deps, isAccepting: () => false };
+      await expect(launchTask(drainingDeps, { prompt: 'blocked', cwd: '/tmp' }))
+        .rejects.toThrow(DrainModeError);
+      // No side effects: no task record, no adapter launch.
+      expect(store.listTasks()).toHaveLength(0);
+      expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    });
+
+    it('does not affect an already-running task when drain begins', async () => {
+      // A task launched before drain stays in the store; drain only gates new launches.
+      const running = await launchTask(deps, { prompt: 'live', cwd: '/tmp' });
+      const drainingDeps = { ...deps, isAccepting: () => false };
+      await expect(launchTask(drainingDeps, { prompt: 'new', cwd: '/tmp' }))
+        .rejects.toThrow(DrainModeError);
+      expect(store.getTask(running.task.id)?.status).toBe(running.task.status);
+      expect(store.listTasks()).toHaveLength(1);
+    });
+
+    it('resumes launches once accepting again', async () => {
+      let accepting = false;
+      const gatedDeps = { ...deps, isAccepting: () => accepting };
+      await expect(launchTask(gatedDeps, { prompt: 'first', cwd: '/tmp' }))
+        .rejects.toThrow(DrainModeError);
+      accepting = true;
+      const result = await launchTask(gatedDeps, { prompt: 'second', cwd: '/tmp' });
+      expect(result.task.prompt).toBe('second');
+    });
   });
 
   it('records declared KB dependency preflight failures as advisory launch health', async () => {
