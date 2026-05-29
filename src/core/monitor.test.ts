@@ -1711,6 +1711,116 @@ describe('Monitor', () => {
       });
     });
 
+    describe('systemic hook-stall correlation guard', () => {
+      const hookAnomalyFor = (id: string) => ({
+        agentId: id,
+        type: 'hook_disconnected' as const,
+        severity: 'warning' as const,
+        explanation: 'no hook events for 200s but agent is visibly active',
+        detectedAt: new Date('2026-04-23T00:00:00Z'),
+      });
+
+      test('a lone hook_disconnected verdict still enqueues (one agent is not systemic)', () => {
+        const changed = monitor.applyWatchdogVerdict(
+          'agent-a',
+          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-a') },
+          { paneCaptureSucceeded: true },
+        );
+        expect(changed).toBe(true);
+        expect(queue.peek('agent-a')?.type).toBe('hook_disconnected');
+        expect(getDetectionStats().suppressed.hook_disconnected).toBe(0);
+      });
+
+      test('a second concurrent hook_disconnected is read as a systemic stall: suppressed and siblings purged', () => {
+        monitor.applyWatchdogVerdict(
+          'agent-a',
+          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-a') },
+          { paneCaptureSucceeded: true },
+        );
+        expect(queue.peek('agent-a')?.type).toBe('hook_disconnected');
+
+        const changed = monitor.applyWatchdogVerdict(
+          'agent-b',
+          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-b') },
+          { paneCaptureSucceeded: true },
+        );
+
+        expect(changed).toBe(true);
+        // The second finding is suppressed (never enqueued)...
+        expect(queue.peek('agent-b')).toBeNull();
+        // ...and the first agent's finding is purged as part of the same infra event.
+        expect(queue.peek('agent-a')).toBeNull();
+        expect(getDetectionStats().suppressed.hook_disconnected).toBe(1);
+
+        const records = monitor.getFindingEvidenceAuditRecords();
+        const suppressed = records.find(
+          (r) => r.agentId === 'agent-b' && r.anomalyType === 'hook_disconnected' && r.status === 'resolved',
+        );
+        expect(suppressed?.verdict).toBe('possible_false_positive');
+        expect(suppressed?.notes.some((n) => n.includes('systemic_hook_stall'))).toBe(true);
+      });
+
+      test('a third concurrent hook_disconnected purges all siblings, each with its own resolution record', () => {
+        // Two agents already queued from prior ticks, a third verdict arrives.
+        monitor.applyWatchdogVerdict(
+          'agent-a',
+          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-a') },
+          { paneCaptureSucceeded: true },
+        );
+        monitor.applyWatchdogVerdict(
+          'agent-b',
+          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-b') },
+          { paneCaptureSucceeded: true },
+        );
+        // agent-a was enqueued; agent-b tripped the guard and purged both. Re-arm
+        // agent-a so two findings sit on the queue when agent-c's verdict lands.
+        monitor.applyWatchdogVerdict(
+          'agent-a',
+          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-a') },
+          { paneCaptureSucceeded: true },
+        );
+
+        const changed = monitor.applyWatchdogVerdict(
+          'agent-c',
+          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-c') },
+          { paneCaptureSucceeded: true },
+        );
+
+        expect(changed).toBe(true);
+        // Every sibling finding is purged — none survive the systemic event.
+        expect(queue.peek('agent-a')).toBeNull();
+        expect(queue.peek('agent-b')).toBeNull();
+        expect(queue.peek('agent-c')).toBeNull();
+
+        // Each purged agent gets its own systemic_hook_stall resolution record,
+        // so no finding vanishes silently from the review pipeline.
+        const records = monitor.getFindingEvidenceAuditRecords();
+        for (const id of ['agent-a', 'agent-c']) {
+          const resolved = records.find(
+            (r) => r.agentId === id && r.anomalyType === 'hook_disconnected' && r.status === 'resolved'
+              && r.notes.some((n) => n.includes('systemic_hook_stall')),
+          );
+          expect(resolved, `${id} should have a systemic_hook_stall resolution`).toBeDefined();
+        }
+      });
+
+      test('a concurrent stale_agent verdict is unaffected by the hook-stall guard', () => {
+        monitor.applyWatchdogVerdict(
+          'agent-a',
+          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-a') },
+          { paneCaptureSucceeded: true },
+        );
+        const changed = monitor.applyWatchdogVerdict(
+          'agent-b',
+          { status: 'stale_agent', anomaly: { ...staleAnomaly, agentId: 'agent-b' } },
+          { paneCaptureSucceeded: true },
+        );
+        expect(changed).toBe(true);
+        expect(queue.peek('agent-b')?.type).toBe('stale_agent');
+        expect(queue.peek('agent-a')?.type).toBe('hook_disconnected');
+      });
+    });
+
     test('suppression tracker prevents enqueue over a pre-populated queue entry', () => {
       // Pre-populate with a different, non-watchdog finding that should NOT be
       // overwritten when the suppression tracker gates the new verdict.
