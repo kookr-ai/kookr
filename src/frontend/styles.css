@@ -3496,6 +3496,23 @@ textarea::-webkit-resizer { background: transparent; }
 }
 .toast-dismiss:hover { color: var(--text); }
 
+/* Persistent (one-time-dismissible) install nudge — top-center so it reads as a
+   page-level prompt, distinct from the transient top-right toast stack. */
+.plugin-install-banner {
+  position: fixed;
+  top: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  width: calc(100% - 32px);
+  max-width: 560px;
+}
+.plugin-install-banner code {
+  background: rgba(0,0,0,0.3);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(20px); }
   to { opacity: 1; transform: translateX(0); }
