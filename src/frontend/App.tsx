@@ -17,6 +17,7 @@ import { FindingsPanel } from './components/FindingsPanel.js';
 import { DetailPanel } from './components/DetailPanel.js';
 import { StatusBar } from './components/StatusBar.js';
 import { Toasts } from './components/Toasts.js';
+import { PluginInstallBanner } from './components/PluginInstallBanner.js';
 import { BugReportDialog } from './components/BugReportDialog.js';
 import { AchievementToasts } from './components/AchievementToast.js';
 import { SentOverlay } from './components/SentOverlay.js';
@@ -853,6 +854,7 @@ export function App() {
         shortcutBindings={shortcutBindings}
       />
       <Toasts />
+      <PluginInstallBanner />
       <AchievementToasts />
       <SentOverlay />
       {showShortcuts && (
