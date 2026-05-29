@@ -321,17 +321,12 @@ async function main() {
     // Also append to the ledger (append-only JSONL) and reload it so the
     // in-memory `ledgerEntries` array picks up the new pr_created record.
     try {
-      const { appendFileSync } = await import('node:fs');
-      const ledgerPath = server.ossAttemptStore.getLedgerPath();
-      appendFileSync(
-        ledgerPath,
-        JSON.stringify({
-          timestamp: record.createdAt,
-          repo,
-          action: 'pr_created',
-          prUrl: record.prUrl,
-        }) + '\n',
-      );
+      await server.ossAttemptStore.appendLedgerEntry({
+        timestamp: record.createdAt,
+        repo,
+        action: 'pr_created',
+        prUrl: record.prUrl,
+      });
       await server.ossAttemptStore.loadFromLedger();
     } catch (e) {
       console.warn('[test-server] ledger append failed:', e);
