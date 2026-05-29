@@ -1669,6 +1669,73 @@ describe('createKookrServer', () => {
       expect(statusSnap.scannedAt).toBe(rescanSnap.scannedAt);
     });
 
+    test('self-diagnostics stay empty until requested on demand', async () => {
+      await server.close();
+      serverClosed = true;
+
+      const localTempDir = mkdtempSync(join(tmpdir(), 'kookr-diagnostic-on-demand-'));
+      let localServer: KookrServerInternal | null = null;
+      let localWs: WebSocket | null = null;
+      try {
+        localServer = await createKookrServerInternal({
+          port: 0,
+          host: '127.0.0.1',
+          kookrDir: localTempDir,
+          tasksFile: join(localTempDir, 'tasks.json'),
+          hooksDir: join(localTempDir, 'hooks'),
+          settingsDir: join(localTempDir, 'settings'),
+          serverCwd: '/test/cwd',
+          frontendDir: join(localTempDir, 'frontend'),
+          saveIntervalMs: 600_000,
+          livenessIntervalMs: 600_000,
+          terminalBackend: new FakeTerminalBackend(),
+          claudeDir: join(localTempDir, 'claude'),
+        });
+        const localPort = getActualPort(localServer);
+        const localBaseUrl = `http://127.0.0.1:${localPort}`;
+        const wsMessages: Array<{ type?: string }> = [];
+        localWs = new WebSocket(`ws://127.0.0.1:${localPort}/ws`);
+
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('WS timeout')), 3000);
+          localWs!.on('message', (data) => {
+            const parsed = JSON.parse(data.toString()) as { type?: string };
+            wsMessages.push(parsed);
+            if (parsed.type === 'snapshot') {
+              clearTimeout(timer);
+              resolve();
+            }
+          });
+          localWs!.on('error', reject);
+        });
+
+        const initialStatus = await (await fetch(`${localBaseUrl}/api/diagnostic`)).json();
+        expect(initialStatus).toEqual({ report: null, lastError: null });
+        expect(wsMessages.some((msg) => msg.type === 'diagnosticReport')).toBe(false);
+
+        const runRes = await fetch(`${localBaseUrl}/api/diagnostic/run`, { method: 'POST' });
+        expect(runRes.status).toBe(200);
+        const runBody = await runRes.json();
+        expect(runBody.report).toEqual(expect.objectContaining({ findings: [] }));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(wsMessages.some((msg) => msg.type === 'diagnosticReport')).toBe(false);
+
+        const statusAfterRun = await (await fetch(`${localBaseUrl}/api/diagnostic`)).json();
+        expect(statusAfterRun.report).toEqual(expect.objectContaining({ findings: [] }));
+      } finally {
+        if (localWs) {
+          localWs.close();
+          await new Promise<void>((resolve) => {
+            if (!localWs || localWs.readyState === WebSocket.CLOSED) return resolve();
+            localWs.once('close', () => resolve());
+            setTimeout(resolve, 100);
+          });
+        }
+        if (localServer) await localServer.close();
+        rmSync(localTempDir, { recursive: true, force: true });
+      }
+    });
+
     test('POST /api/projects/configs persists a project config', async () => {
       const res = await fetch(`${baseUrl}/api/projects/configs`, {
         method: 'POST',
