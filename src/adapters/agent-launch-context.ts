@@ -30,10 +30,10 @@ const PASTE_END = promptEncoder.encode(PASTE_END_TEXT);
  * DECSET sequence Claude Code emits when its TUI enables bracketed-paste
  * parsing. Seeing this in the session's raw captured bytes is the precise
  * signal that subsequent `ESC[200~ … ESC[201~` markers will be honoured as
- * paste delimiters — strictly stronger than the visual `Claude Code + ❯`
- * heuristic, because the composer can paint before bracketed-paste mode is
- * enabled. See {@link isBracketedPasteModeEnabled} and
- * {@link waitForPasteReady}.
+ * paste delimiters. Do not substitute the visual `Claude Code + ❯` prompt
+ * for this signal: Claude Code can paint the composer before paste-mode
+ * parsing is ready, and a prompt delivered in that window can be dropped.
+ * See {@link isBracketedPasteModeEnabled} and {@link waitForPasteReady}.
  */
 const BRACKETED_PASTE_MODE_ENABLE_TEXT = '\x1b[?2004h';
 
@@ -83,7 +83,7 @@ const CLAUDE_BUSY_MARKERS: readonly string[] = [
  */
 const CLAUDE_PERMISSION_PROMPT_RE = /(?:^|\n)\s*(?:❯\s*)?1\.\s+(?:Yes|Allow|Approve|Continue)\b/;
 
-/** Env var that disables bracketed-paste prompt submission when set falsey. */
+/** Env var that opts into/out of bracketed-paste prompt submission. */
 export const PROMPT_BRACKETED_PASTE_ENV = 'KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE';
 
 /**
@@ -91,11 +91,11 @@ export const PROMPT_BRACKETED_PASTE_ENV = 'KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE';
  * paste, from (in precedence order) an explicit caller value, the
  * {@link PROMPT_BRACKETED_PASTE_ENV} env var, then the default `true`.
  *
- * Claude Code's UI coalesces a fast prompt+Enter burst into a single paste
- * and treats the trailing carriage return as a literal newline, leaving the
- * task prompt unsubmitted in the input box. Bracketed paste fixes that, so
- * it is on by default. The env var (`0`/`false`/`no`/`off`) is an opt-out;
- * the test suite uses it to keep the legacy single-write delivery path.
+ * Claude Code's UI can coalesce a fast prompt+Enter burst into a single
+ * paste and treat the trailing carriage return as a literal newline,
+ * leaving the task prompt unsubmitted in the input box. Bracketed paste is
+ * still the default defence; the adapter has a plain-write fallback for
+ * Claude Code versions that drop bracketed paste during startup.
  */
 export function resolveBracketedPasteSubmit(
   explicit?: boolean,
@@ -186,17 +186,18 @@ export interface DeliverInitialPromptOptions {
   /**
    * When true, wrap the prompt body in ANSI bracketed-paste markers and
    * deliver the submitting Enter as a separate write after the closing
-   * marker. Required for Claude Code, whose UI otherwise coalesces a fast
-   * prompt+Enter burst into one paste and treats the carriage return as a
-   * literal newline. When false/absent the body and Enter go out together
-   * in one `writeSequence` (legacy path; Codex CLI). Default false.
+   * marker. This is the default path for Claude Code because it prevents
+   * multiline prompt bodies from being submitted one line at a time. When
+   * false/absent the body and Enter go out together in one `writeSequence`;
+   * callers can still provide `awaitSubmit` so the helper resends Enter
+   * until the prompt is confirmed.
    */
   bracketedPaste?: boolean;
   /**
    * Bracketed-paste mode only: wait until Claude Code's full-screen TUI has
-   * painted its composer before sending the paste block. Without this, the
-   * paste opener can arrive before Claude enables bracketed-paste mode and
-   * the prompt remains visible but unsubmitted.
+   * enabled bracketed-paste parsing before sending the paste block. Without
+   * this, the paste opener can arrive before Claude enables bracketed-paste
+   * mode and be ignored or misparsed.
    */
   waitForReady?: boolean;
   /** Bracketed-paste ready wait timeout. On timeout, delivery proceeds. */
@@ -210,15 +211,15 @@ export interface DeliverInitialPromptOptions {
    */
   submitDelayMs?: number;
   /**
-   * Bracketed-paste mode only: ground-truth predicate that resolves `true`
-   * once the agent has confirmed the prompt was submitted (Kookr observes
-   * this via the `UserPromptSubmit` hook in the adapter layer), or `false`
-   * if no confirmation arrives within `timeoutMs`. When provided, the
-   * delivery sends another Enter on every `false` and gives up after
-   * {@link submitRetries} retries — closing the residual race where the
-   * first Enter is parsed as paste content because bracketed-paste mode
-   * had not yet been finalised. When omitted, delivery is open-loop and
-   * matches the prior behaviour exactly.
+   * Ground-truth predicate that resolves `true` once the agent has confirmed
+   * the prompt was submitted (Kookr observes this via the `UserPromptSubmit`
+   * hook in the adapter layer), or `false` if no confirmation arrives within
+   * `timeoutMs`. When provided, the delivery sends another Enter on every
+   * `false` and gives up after {@link submitRetries} retries. This applies to
+   * both bracketed-paste and plain delivery: the first Enter can be parsed as
+   * paste content in bracketed mode or land after text without submitting in
+   * plain mode. When omitted, delivery is open-loop and matches the prior
+   * behaviour exactly.
    */
   awaitSubmit?: (timeoutMs: number) => Promise<boolean>;
   /** Per-attempt timeout passed to {@link awaitSubmit}. */
@@ -250,11 +251,6 @@ export interface InitialPromptDeliveryResult {
 
 function realSleep(ms: number): Promise<void> {
   return ms > 0 ? new Promise((res) => setTimeout(res, ms)) : Promise.resolve();
-}
-
-export function isClaudeComposerReady(text: string): boolean {
-  const plain = stripTerminalControls(text);
-  return (plain.includes('ClaudeCode') || plain.includes('Claude Code')) && plain.includes('❯');
 }
 
 /**
@@ -296,13 +292,12 @@ function stripTerminalControls(text: string): string {
 }
 
 /**
- * Wait until the session is ready to receive a bracketed paste. Preferred
- * signal: the raw `ESC[?2004h` DECSET — proof that the TUI has enabled
- * bracketed-paste parsing. Fallback signal: the visual `Claude Code + ❯`
- * composer indicator, which can light up slightly before paste mode is
- * enabled but still beats sending blind. Returns when either fires; on
- * timeout returns without throwing so delivery proceeds (matching prior
- * fail-open behaviour).
+ * Wait until the session is ready to receive a bracketed paste. The only
+ * ready signal is the raw `ESC[?2004h` DECSET — proof that the TUI has
+ * enabled bracketed-paste parsing. The visual `Claude Code + ❯` composer
+ * indicator is deliberately not enough because Claude Code can paint it
+ * before paste-mode handling is active. On timeout this still returns
+ * without throwing so delivery proceeds fail-open.
  */
 async function waitForPasteReady(
   backend: TerminalBackend,
@@ -313,7 +308,6 @@ async function waitForPasteReady(
   while (Date.now() <= deadline) {
     const bytes = await backend.captureBytes(sessionId);
     if (isBracketedPasteModeEnabled(bytes)) return;
-    if (isClaudeComposerReady(promptDecoder.decode(bytes))) return;
 
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) break;
@@ -328,6 +322,37 @@ function chunkPromptBytes(promptBytes: Uint8Array): Uint8Array[] {
     chunks.push(promptBytes.subarray(offset, offset + INITIAL_PROMPT_CHUNK_BYTES));
   }
   return chunks;
+}
+
+async function awaitPromptSubmissionConfirmation(
+  backend: TerminalBackend,
+  sessionId: SessionId,
+  inputWriter: TerminalInputWriterPort,
+  options: DeliverInitialPromptOptions,
+  enterWrites: number,
+): Promise<InitialPromptDeliveryResult | null> {
+  if (!options.awaitSubmit) return null;
+
+  const submitConfirmTimeoutMs =
+    options.submitConfirmTimeoutMs ?? DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS;
+  const submitRetries = options.submitRetries ?? DEFAULT_PROMPT_SUBMIT_RETRIES;
+
+  for (let attempt = 0; attempt <= submitRetries; attempt += 1) {
+    if (await options.awaitSubmit(submitConfirmTimeoutMs)) {
+      return { status: 'confirmed', confirmationAttempts: attempt + 1, enterWrites };
+    }
+    if (attempt === submitRetries) {
+      return { status: 'unconfirmed', confirmationAttempts: attempt + 1, enterWrites };
+    }
+    const capture = await backend.captureBytes(sessionId);
+    if (isClaudeBusyOrResponding(capture)) {
+      return { status: 'assumed-submitted', confirmationAttempts: attempt + 1, enterWrites };
+    }
+    await inputWriter.writeInput(sessionId, ENTER_BYTES, { reason: 'launch-prompt-retry-enter' });
+    enterWrites += 1;
+  }
+
+  return { status: 'unconfirmed', confirmationAttempts: submitRetries + 1, enterWrites };
 }
 
 /**
@@ -369,7 +394,14 @@ export async function deliverInitialPromptToSession(
     // `submitDelayMs` / `sleep` options do not apply here.
     const chunks = chunkPromptBytes(promptEncoder.encode(prompt));
     await inputWriter.writeInputSequence(sessionId, [...chunks, ENTER_BYTES], { reason: 'launch-prompt' });
-    return { status: 'open-loop', confirmationAttempts: 0, enterWrites: 1 };
+    const confirmed = await awaitPromptSubmissionConfirmation(
+      backend,
+      sessionId,
+      inputWriter,
+      options ?? {},
+      1,
+    );
+    return confirmed ?? { status: 'open-loop', confirmationAttempts: 0, enterWrites: 1 };
   }
 
   // Bracketed-paste path. Strip any bracketed-paste markers already present
@@ -382,9 +414,6 @@ export async function deliverInitialPromptToSession(
   const submitDelayMs = options.submitDelayMs ?? DEFAULT_PROMPT_SUBMIT_DELAY_MS;
   const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_PROMPT_READY_TIMEOUT_MS;
   const readyPollMs = options.readyPollMs ?? DEFAULT_PROMPT_READY_POLL_MS;
-  const submitConfirmTimeoutMs =
-    options.submitConfirmTimeoutMs ?? DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS;
-  const submitRetries = options.submitRetries ?? DEFAULT_PROMPT_SUBMIT_RETRIES;
   const sleep = options.sleep ?? realSleep;
   if (options.waitForReady) {
     await waitForPasteReady(backend, sessionId, { readyTimeoutMs, readyPollMs, sleep });
@@ -414,22 +443,14 @@ export async function deliverInitialPromptToSession(
   // resends. With `submitRetries = 0` the loop body runs exactly once
   // (await + no resend), matching the documented "skip the retries"
   // semantics.
-  if (options.awaitSubmit) {
-    for (let attempt = 0; attempt <= submitRetries; attempt += 1) {
-      if (await options.awaitSubmit(submitConfirmTimeoutMs)) {
-        return { status: 'confirmed', confirmationAttempts: attempt + 1, enterWrites };
-      }
-      if (attempt === submitRetries) {
-        return { status: 'unconfirmed', confirmationAttempts: attempt + 1, enterWrites };
-      }
-      const capture = await backend.captureBytes(sessionId);
-      if (isClaudeBusyOrResponding(capture)) {
-        return { status: 'assumed-submitted', confirmationAttempts: attempt + 1, enterWrites };
-      }
-      await inputWriter.writeInput(sessionId, ENTER_BYTES, { reason: 'launch-prompt-retry-enter' });
-      enterWrites += 1;
-    }
-  }
+  const confirmed = await awaitPromptSubmissionConfirmation(
+    backend,
+    sessionId,
+    inputWriter,
+    options,
+    enterWrites,
+  );
+  if (confirmed) return confirmed;
 
   return { status: 'open-loop', confirmationAttempts: 0, enterWrites };
 }

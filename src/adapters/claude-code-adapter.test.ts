@@ -81,7 +81,7 @@ describe('ClaudeCodeAdapter', () => {
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const pendingSessionId = [...backend.sessions.keys()][0]!;
     expect(backend.getWrittenText(pendingSessionId)).toBe('');
-    backend.emit(pendingSessionId, 'ClaudeCode\n❯ ');
+    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
     await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
     bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
       session_id: 'shape-test-session',
@@ -120,7 +120,7 @@ describe('ClaudeCodeAdapter', () => {
       await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
       const pendingSessionId = [...backend.sessions.keys()][0]!;
       expect(backend.getWrittenText(pendingSessionId)).toBe('');
-      backend.emit(pendingSessionId, 'ClaudeCode\n❯ ');
+      backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
       await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
       defaultAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
         session_id: 'default-test-session',
@@ -234,6 +234,93 @@ describe('ClaudeCodeAdapter', () => {
     await launchPromise;
     // No third Enter — the hook fired before submitConfirmTimeoutMs elapsed.
     expect(writeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('bracketed-paste launch falls back to plain delivery when bracketed paste never confirms', async () => {
+    // Claude Code v2.1.156 can enable bracketed-paste mode but still drop the
+    // wrapped startup prompt. The adapter should then try the plain write path
+    // before failing closed, and the same UserPromptSubmit waiter should
+    // confirm that fallback submission.
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 500,
+      promptSubmitRetries: 0,
+    });
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+
+    // First writeSequence is bracketed paste; after its single confirm
+    // timeout, fallback sends a second writeSequence with plain text+Enter.
+    await vi.waitFor(
+      () => expect(writeSeqSpy).toHaveBeenCalledTimes(2),
+      { timeout: 2_000 },
+    );
+
+    const rawSessionId = '00000000-0000-0000-0000-dddddddddddd';
+    const transcriptPath = '/tmp/claude/transcripts/fallback-parent.jsonl';
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: transcriptPath,
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    }));
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: transcriptPath,
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Submit me',
+    }));
+
+    await launchPromise;
+    expect(writeSeqSpy).toHaveBeenCalledTimes(2);
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(backend.getWrittenText(pendingSessionId)).toBe('\x1b[200~Submit me\x1b[201~\rSubmit me\r');
+  });
+
+  test('bracketed-paste launch can timeout waiting for paste mode before fallback confirmation', async () => {
+    // Adapter-level coverage for the fail-open readiness timeout: if Claude
+    // paints the composer but never emits ESC[?2004h, launch should not hang.
+    // It proceeds to bracketed delivery, then falls back to plain delivery
+    // when no UserPromptSubmit confirms the bracketed attempt.
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 20,
+      promptReadyPollMs: 5,
+      promptSubmitConfirmTimeoutMs: 500,
+      promptSubmitRetries: 0,
+    });
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, 'ClaudeCode\n❯ ');
+
+    await vi.waitFor(
+      () => expect(writeSeqSpy).toHaveBeenCalledTimes(2),
+      { timeout: 2_000 },
+    );
+
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-eeeeeeeeeeee',
+      transcript_path: '/tmp/claude/transcripts/timeout-fallback-parent.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Submit me',
+    }));
+
+    await launchPromise;
+    expect(writeSeqSpy).toHaveBeenCalledTimes(2);
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(backend.getWrittenText(pendingSessionId)).toBe('\x1b[200~Submit me\x1b[201~\rSubmit me\r');
   });
 
   test('bracketed-paste launch fires the resolver on a UserPromptSubmit that arrives before any SessionStart', async () => {
@@ -357,6 +444,7 @@ describe('ClaudeCodeAdapter', () => {
       promptSubmitConfirmTimeoutMs: 5,
       promptSubmitRetries: 2,
     });
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
     const writeSpy = vi.spyOn(backend, 'write');
     const killSpy = vi.spyOn(backend, 'killSession');
     const task = taskStore.createTask('Fix bug', '/cwd');
@@ -366,8 +454,11 @@ describe('ClaudeCodeAdapter', () => {
     backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
 
     await expect(launchPromise).rejects.toThrow(/Initial prompt submission was not confirmed/);
-    // Initial Enter + promptSubmitRetries (2) resends = 3 Enter writes total.
-    expect(writeSpy).toHaveBeenCalledTimes(3);
+    // Bracketed attempt: initial Enter + 2 retries. Plain fallback:
+    // prompt+Enter in writeSequence + 2 retry Enters. writeSpy sees only
+    // the standalone Enter writes, so 3 + 2 = 5.
+    expect(writeSeqSpy).toHaveBeenCalledTimes(2);
+    expect(writeSpy).toHaveBeenCalledTimes(5);
     for (const call of writeSpy.mock.calls) {
       expect(Array.from(call[1])).toEqual([0x0d]);
     }

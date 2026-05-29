@@ -104,12 +104,10 @@ export interface ClaudeCodeAdapterOptions {
   /**
    * Whether to submit the initial prompt via bracketed paste — the prompt
    * body wrapped in ANSI bracketed-paste markers, followed by a separate
-   * Enter. Claude Code's UI otherwise coalesces a fast prompt+Enter burst
-   * into one paste and treats the trailing carriage return as a literal
-   * newline, leaving the task prompt unsubmitted in the input box.
-   * Resolution: this option > `KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE` env >
-   * `true`. Tests set the env var falsey for the legacy delivery path. See
-   * `resolveBracketedPasteSubmit`.
+   * Enter. Resolution: this option >
+   * `KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE` env > `true`. If bracketed paste
+   * is not confirmed, launch falls back to the plain write+Enter path before
+   * failing closed. See `resolveBracketedPasteSubmit`.
    */
   promptBracketedPaste?: boolean;
   /**
@@ -127,6 +125,13 @@ export interface ClaudeCodeAdapterOptions {
    * use `0` to assert the open-loop path with no resends.
    */
   promptSubmitRetries?: number;
+  /**
+   * Test seam for the bracketed-paste readiness wait. Production callers use
+   * the helper defaults; tests may shorten this to exercise timeout fallback
+   * without waiting for the full startup deadline.
+   */
+  promptReadyTimeoutMs?: number;
+  promptReadyPollMs?: number;
 }
 
 /** Env var that overrides the default Claude Code binary path. */
@@ -185,6 +190,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private promptBracketedPaste: boolean;
   private promptSubmitConfirmTimeoutMs?: number;
   private promptSubmitRetries?: number;
+  private promptReadyTimeoutMs?: number;
+  private promptReadyPollMs?: number;
   private inputWriter: TerminalInputWriterPort;
 
   constructor(
@@ -207,6 +214,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     this.promptBracketedPaste = resolveBracketedPasteSubmit(options?.promptBracketedPaste);
     this.promptSubmitConfirmTimeoutMs = options?.promptSubmitConfirmTimeoutMs;
     this.promptSubmitRetries = options?.promptSubmitRetries;
+    this.promptReadyTimeoutMs = options?.promptReadyTimeoutMs;
+    this.promptReadyPollMs = options?.promptReadyPollMs;
   }
 
   async preflight(): Promise<PreflightResult> {
@@ -322,16 +331,31 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         // Submit the prompt via bracketed paste so Claude Code's UI parses the
         // trailing Enter as a keystroke, not paste content. See
         // deliverInitialPromptToSession.
-        const deliveryResult = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+        const awaitSubmit = (timeoutMs: number) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false);
+        let deliveryResult = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
           inputWriter: this.inputWriter,
           bracketedPaste: this.promptBracketedPaste,
           waitForReady: this.promptBracketedPaste,
-          awaitSubmit: this.promptBracketedPaste
-            ? (timeoutMs) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false)
-            : undefined,
+          awaitSubmit: this.promptBracketedPaste ? awaitSubmit : undefined,
           submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
           submitRetries: this.promptSubmitRetries,
+          readyTimeoutMs: this.promptReadyTimeoutMs,
+          readyPollMs: this.promptReadyPollMs,
         });
+        if (deliveryResult.status === 'unconfirmed' && this.promptBracketedPaste) {
+          // Claude Code v2.1.156 can advertise bracketed-paste mode but still
+          // drop the wrapped prompt during startup. Fall back to the legacy
+          // plain write+Enter path, but keep the same UserPromptSubmit-backed
+          // confirmation loop so the fallback cannot silently strand text in
+          // the composer.
+          deliveryResult = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+            inputWriter: this.inputWriter,
+            bracketedPaste: false,
+            awaitSubmit,
+            submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
+            submitRetries: this.promptSubmitRetries,
+          });
+        }
         if (deliveryResult.status === 'unconfirmed') {
           throw new InitialPromptSubmissionNotConfirmedError(tmuxName, deliveryResult);
         }
