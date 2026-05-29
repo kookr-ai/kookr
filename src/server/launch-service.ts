@@ -1,4 +1,5 @@
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
+import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
 import {
   type AgentType,
   type AgentSelection,
@@ -9,7 +10,6 @@ import {
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { LaunchDependency } from '../core/playbook.js';
-import type { TaskMetadataIntent } from '../shared/contracts/task.js';
 import {
   redactDiagnosticText,
   type DependencyPreflightRunner,
@@ -25,6 +25,9 @@ import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { canonicalizeCwd } from './cwd.js';
 import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails } from './worktree-guardrails.js';
+
+export type { LaunchOpts } from '../shared/contracts/launch.js';
+export type LaunchResult = SharedLaunchResult<Task>;
 
 export interface LaunchServiceDeps {
   taskStore: TaskStore;
@@ -70,70 +73,6 @@ export class DrainModeError extends Error {
     super('Server is draining; not accepting new task launches');
     this.name = 'DrainModeError';
   }
-}
-
-export interface LaunchOpts {
-  prompt: string;
-  cwd: string;
-  criteria?: string;
-  parentTaskId?: string;
-  /** Pre-set task name (e.g. from playbooks). Skips AI naming when set. */
-  name?: string;
-  /** Playbook identifier for traceability. */
-  playbookId?: string;
-  /** Original playbook parameter values, for relaunch pre-fill. */
-  playbookParameterValues?: Record<string, string>;
-  /**
-   * Agent to launch. Defaults to the configured default agent. May be the
-   * `round-robin` sentinel, which is resolved to a concrete agent here; the
-   * created task record always stores a concrete {@link AgentType}.
-   */
-  agentType?: AgentSelection;
-  /** When true, always create a new task instead of returning an existing active duplicate. */
-  disableDedup?: boolean;
-  /** Explicit operator intent for duplicate-preserving launches. */
-  metadataIntent?: TaskMetadataIntent;
-  /** Explicit project ID (e.g., github.com/owner/repo) — skips CWD-based inference. */
-  projectId?: string;
-  /** Where the launch came from — for server-side log provenance. Default: 'api'. */
-  launchSource?: 'cli' | 'ui' | 'api' | 'remote-chat-telegram' | 'remote-relay';
-  /** External services the launch should check and surface as launch health. */
-  dependencies?: LaunchDependency[];
-  /**
-   * When true, inject `RALPH_VERDICT_FILE` and `RALPH_ITERATION` env into
-   * the spawned agent so iteration 0 of a Ralph loop can write a verdict
-   * (subsequent iterations get this via `launchFreshRuntime`'s extraEnv
-   * injection). Path is computed as `defaultVerdictPath(opts.cwd, task.id)`
-   * after the task record exists.
-   *
-   * Coverage and known gaps:
-   * - **Fresh, non-queued launches** (POST /api/tasks/ralph-loop,
-   *   POST /api/playbooks/ralph-loop): covered by PR4. Set this flag to
-   *   true on the launch.
-   * - **Queued ralph launches**: not covered. Promotion via
-   *   `promotePendingTasks` re-launches with bare 3-arg adapter.launch.
-   *   Mitigation: ralph route handlers reject `result.queued: true` with
-   *   a 503 — no half-attached ralph loops.
-   * - **Attach-existing-task** (POST /api/tasks/:id/ralph-loop): NOT
-   *   covered. The existing session predates the loop attach and cannot
-   *   receive new env vars retroactively. Iteration 0 silently misses the
-   *   verdict channel; iteration 1+ get it via `launchFreshRuntime`.
-   *   Documented as a known limitation; relaunch via fresh /api/tasks/ralph-loop
-   *   for full iteration-0 coverage.
-   * - **Crash-recovery resumes**: also not covered (separate path through
-   *   `crash-recovery.ts`); tracked as a follow-up.
-   *
-   * See `docs/rfc/rfc-ralph-loop-stall-handling.md` §8 and PR4 (the
-   * bug-fix companion to PR2 #165).
-   */
-  ralphVerdictEnv?: boolean;
-}
-
-export interface LaunchResult {
-  task: Task;
-  queued: boolean;
-  /** True when an active task with the same prompt already exists. */
-  duplicate?: boolean;
 }
 
 /** Active statuses — tasks in these states block duplicate submissions. */
