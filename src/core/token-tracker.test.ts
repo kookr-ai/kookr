@@ -3,7 +3,7 @@ import { writeFileSync, mkdirSync, rmSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { TokenTracker, computeContextFillFromTranscript, estimateCost, getContextLimit, getPricing } from './token-tracker.js';
+import { TokenTracker, estimateCost, getPricing } from './token-tracker.js';
 
 function makeTempDir(): string {
   const dir = join(tmpdir(), `token-tracker-test-${randomUUID()}`);
@@ -661,48 +661,5 @@ describe('estimateCost', () => {
     expect(getPricing('unknown-model-twice')).toBe(getPricing('unknown-model-twice'));
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith('[pricing-tables] Unknown pricing model "unknown-model-twice"; using default Sonnet pricing');
-  });
-});
-
-describe('context fill model resolution', () => {
-  test('uses the 1M denominator for claude-opus-4-7 transcripts', async () => {
-    const tempDir = makeTempDir();
-    try {
-      const path = join(tempDir, 'opus-4-7-transcript.jsonl');
-      writeJsonl(path, [
-        {
-          type: 'assistant',
-          message: {
-            role: 'assistant',
-            model: 'claude-opus-4-7',
-            usage: {
-              input_tokens: 180_000,
-              cache_creation_input_tokens: 30_000,
-              cache_read_input_tokens: 20_000,
-              output_tokens: 2_000,
-            },
-          },
-        },
-      ]);
-
-      const result = await computeContextFillFromTranscript(path);
-      expect(result).not.toBeNull();
-      expect(result!.totalTokens).toBe(230_000);
-      expect(result!.modelLimit).toBe(1_000_000);
-      expect(result!.ratio).toBeCloseTo(0.23, 4);
-      expect(result!.ratio).toBeLessThan(0.30);
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  test('falls back to 200K and warns once per unknown context model id', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(getContextLimit('claude-future-9-0')).toBe(200_000);
-    expect(getContextLimit('claude-future-9-0')).toBe(200_000);
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith('[token-tracker] Unknown context limit for model "claude-future-9-0"; using default 200000');
   });
 });

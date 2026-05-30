@@ -174,4 +174,4 @@ pnpm prod:update
 
 ## Full Reference
 
-See [Environment Variables](reference/environment-variables.md) for every supported `KOOKR_*`, speech, Telegram, checkpointing, and diagnostic variable.
+See [Environment Variables](reference/environment-variables.md) for every supported `KOOKR_*`, speech, Telegram, and diagnostic variable.

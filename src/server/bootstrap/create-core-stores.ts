@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { BudgetChecker, readBudgetThresholdFromEnv } from '../../core/budget-checker.js';
 import { loadBuildInfo, type BuildInfo } from '../../core/build-info.js';
-import { CheckpointCycler, readMaxCancelledAttemptsFromEnv, readTriggerRatioFromEnv } from '../../core/checkpoint-cycler.js';
 import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
 import { CircuitBreakerLlmClient } from '../../core/circuit-breaker-llm-client.js';
 import { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
@@ -57,7 +56,6 @@ export interface CoreStores {
   suppressionTracker: SnoozeSuppressionTracker;
   monitor: Monitor;
   watchdog: Watchdog;
-  checkpointCycler: CheckpointCycler;
   ralphCycler: RalphCycler;
   tokenTracker: TokenTracker;
   budgetChecker: BudgetChecker;
@@ -129,10 +127,6 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
     staleThresholdMs: currentSettings.watchdogStaleThresholdSec * 1000,
     unconditionalStaleThresholdMs: currentSettings.watchdogStaleThresholdSec * 2 * 1000,
   });
-  const checkpointCycler = new CheckpointCycler({
-    triggerRatio: readTriggerRatioFromEnv(),
-    maxCancelledAttempts: readMaxCancelledAttemptsFromEnv(),
-  });
   const ralphCycler = new RalphCycler();
   const tokenTracker = new TokenTracker();
 
@@ -190,7 +184,6 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
     suppressionTracker,
     monitor,
     watchdog,
-    checkpointCycler,
     ralphCycler,
     tokenTracker,
     budgetChecker,

@@ -94,57 +94,6 @@ describe('agent-launch-context', () => {
     expect(context.permissionAllowlist).toContain(`Write(//${mainGitDir.slice(1)}/**)`);
   });
 
-  test('injects checkpoint dir env var and allowlist entries when provided', async () => {
-    const taskStore = new TaskStore();
-    const task = taskStore.createTask('Long task', '/repo');
-    const repoDir = makeTempDir();
-    mkdirSync(join(repoDir, '.git'));
-    const checkpointDir = join(makeTempDir(), 'checkpoints', 'a-1234abcd', 'feat-x');
-    mkdirSync(checkpointDir, { recursive: true });
-
-    const context = await buildAgentLaunchContext({
-      taskStore,
-      taskId: task.id,
-      cwd: repoDir,
-      checkpointDir,
-    });
-
-    expect(context.env).toEqual({
-      KOOKR_TASK_ID: task.id,
-      KOOKR_GIT_COMMON_DIR: join(repoDir, '.git'),
-      TASK_CHECKPOINT_DIR: checkpointDir,
-    });
-    expect(context.permissionAllowlist).toEqual([
-      'Bash(git *)',
-      `Read(//${join(repoDir, '.git').slice(1)}/**)`,
-      `Write(//${join(repoDir, '.git').slice(1)}/**)`,
-      `Read(//${checkpointDir.slice(1)}/**)`,
-      `Write(//${checkpointDir.slice(1)}/**)`,
-      `Bash(${checkpointDir}/repro.sh*)`,
-    ]);
-  });
-
-  test('omits checkpoint env when checkpointDir is not provided', async () => {
-    const taskStore = new TaskStore();
-    const task = taskStore.createTask('Plain task', '/repo');
-    const repoDir = makeTempDir();
-    mkdirSync(join(repoDir, '.git'));
-
-    const context = await buildAgentLaunchContext({
-      taskStore,
-      taskId: task.id,
-      cwd: repoDir,
-    });
-
-    expect(context.env.TASK_CHECKPOINT_DIR).toBeUndefined();
-    // Guard against regression: also confirm the legacy var name is not set.
-    expect(Object.keys(context.env)).not.toContain('KOOKR_CHECKPOINT_DIR');
-    const checkpointAllowlistEntries = context.permissionAllowlist.filter((e) =>
-      e.includes('checkpoint') || e.includes('repro.sh'),
-    );
-    expect(checkpointAllowlistEntries).toHaveLength(0);
-  });
-
   function makeTempDir(): string {
     const dir = mkdtempSync(join(tmpdir(), 'kookr-agent-launch-'));
     tempDirs.push(dir);

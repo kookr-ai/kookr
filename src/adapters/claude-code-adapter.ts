@@ -38,8 +38,6 @@ import {
   type InitialPromptDeliveryResult,
   resolveBracketedPasteSubmit,
 } from './agent-launch-context.js';
-import { buildCheckpointLoadInstruction } from '../core/checkpoint-load-instruction.js';
-import { resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
@@ -71,14 +69,6 @@ export interface ClaudeCodeAdapterOptions {
    * spawned Claude Code bypasses all permission prompts. Defaults to false.
    */
   bypassAllPermissions?: boolean;
-  /**
-   * Kookr data directory (`~/.kookr` or `~/.kookr-<port>`). When provided,
-   * each launched task gets a per-(repo, branch) checkpoint directory under
-   * `<kookrDataDir>/checkpoints/...` and `TASK_CHECKPOINT_DIR` is injected
-   * into the spawned agent's environment. Without this, checkpointing is
-   * silently disabled (fail-open).
-   */
-  kookrDataDir?: string;
   /**
    * Absolute path to the kookr-toolkit plugin tree (containing
    * `.claude-plugin/plugin.json`). When set and the path is valid, the
@@ -195,7 +185,6 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private agentBin: string;
   private agentBinConfiguredVia: 'env' | 'default';
   private bypassAllPermissions: boolean;
-  private kookrDataDir?: string;
   private pluginDir?: string;
   private probeExec?: ProbeExecRunner;
   private loadAgents: (cwd: string) => Record<string, InlineAgentDef>;
@@ -220,7 +209,6 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     this.agentBin = options?.agentBin ?? 'claude';
     this.agentBinConfiguredVia = options?.agentBin ? 'env' : 'default';
     this.bypassAllPermissions = options?.bypassAllPermissions ?? false;
-    this.kookrDataDir = options?.kookrDataDir;
     this.pluginDir = resolvePluginDir(options?.pluginDir);
     this.probeExec = options?.probeExec;
     this.loadAgents = options?.loadFileBasedAgents ?? ((cwd) => loadFileBasedAgents(cwd));
@@ -251,22 +239,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const tmuxName = opts?.tmuxName ?? `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
-    // Resolve per-(repo, branch) checkpoint dir if data dir is configured.
-    // Returns null on any failure — fail-open so checkpoint problems never
-    // break task launch. See docs/poc/005-checkpoint-cycle-mechanics.md.
-    const checkpointDir = this.kookrDataDir
-      ? (await resolveAndPrepareCheckpointDir({ cwd, kookrDataDir: this.kookrDataDir })) ?? undefined
-      : undefined;
-    const checkpointInstruction = checkpointDir
-      ? await buildCheckpointLoadInstruction(checkpointDir)
-      : undefined;
-
     const launchContext = await buildAgentLaunchContext({
       taskStore: this.taskStore,
       taskId,
       cwd,
       serverPort: this.serverPort,
-      checkpointDir,
     });
 
     // Generate hook settings
@@ -291,8 +268,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // is delivered through the terminal after spawn so large prompts cannot
     // hit ARG_MAX or leak into parent-session hook command scanners.
     // --dangerously-skip-permissions is conditional on opt-in via
-    // KOOKR_BYPASS_ALL_PERMISSIONS=true. --append-system-prompt is conditional
-    // on checkpointing being wired (see docs/poc/005-checkpoint-cycle-mechanics.md).
+    // KOOKR_BYPASS_ALL_PERMISSIONS=true.
     const args: string[] = [];
     if (this.bypassAllPermissions) {
       // --dangerously-skip-permissions + --setting-sources '' are both required:
@@ -332,13 +308,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       // --fork-session creates a new sessionId for the resumed branch so the
       // user's pre-crash transcript is preserved as a read-only snapshot.
       // No prompt arg: the resumed conversation already contains the original
-      // prompt. We still append the current checkpoint protocol so older
-      // sessions learn the semantic CHECKPOINT.json reader contract.
-      if (checkpointInstruction) args.push('--append-system-prompt', checkpointInstruction);
+      // prompt.
       args.push('--resume', resume!.sessionId, '--fork-session');
       args.push('--settings', settingsPath);
     } else {
-      if (checkpointInstruction) args.push('--append-system-prompt', checkpointInstruction);
       args.push('--settings', settingsPath);
     }
 

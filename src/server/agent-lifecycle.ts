@@ -180,8 +180,6 @@ export interface LifecycleDeps {
   suppressionTracker?: { reset(agentId: string): void };
   /** Optional queue — used to clear task-keyed snoozes on terminal transitions. */
   queue?: Pick<AttentionQueue, 'purgeTask'>;
-  /** v5 checkpoint cycler — forget per-session state on cleanup to avoid leaks. */
-  checkpointCycler?: { forget(tmuxName: string): void };
   terminalInputCoordinator?: Pick<TerminalInputCoordinator, 'cleanupSession'>;
   /** Workspace lease service — releases leases on task completion (Phase 1b). */
   leaseService?: { release(worktreePath: string, ownerId: string): boolean };
@@ -206,7 +204,6 @@ function forgetSessionBookkeeping(tmuxName: string, deps: LifecycleDeps): void {
   deps.watchdog?.unregisterAgent(tmuxName);
   deps.shadowRegistry?.unregisterAgent(tmuxName);
   deps.suppressionTracker?.reset(tmuxName);
-  deps.checkpointCycler?.forget(tmuxName);
   deps.terminalInputCoordinator?.cleanupSession(tmuxName);
 }
 

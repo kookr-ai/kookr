@@ -10,10 +10,8 @@ import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { LlmClient } from '../core/llm-client.js';
 import type { DeferredTelemetryLogWriter } from '../core/telemetry.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
-import type { CheckpointCycler } from '../core/checkpoint-cycler.js';
 import type { RalphCycler } from '../core/ralph-cycler.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
-import { createCheckpointStopProcessor } from './event-processors/checkpoint-stop-processor.js';
 import { createGitHubEventProcessor } from './event-processors/github-event-processor.js';
 import { createPermissionBlockAlertProcessor } from './event-processors/permission-block-alert-processor.js';
 import { createPermissionQuickActionsProcessor } from './event-processors/permission-quick-actions-processor.js';
@@ -35,8 +33,6 @@ export interface EventPipelineDeps {
   serverCwd: string;
   broadcastToAll: (msg: ServerMessage) => void;
   telemetryLog?: DeferredTelemetryLogWriter;
-  /** Optional v5 checkpoint cycler — advances state on Stop events. */
-  checkpointCycler?: CheckpointCycler;
   /**
    * Optional callback fired when an agent enters the `permission_blocked`
    * anomaly state. Used by the remote-chat integration (R16) to send a
@@ -103,10 +99,6 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     publishTaskProjection,
   });
   const sessionActivityProcessor = createSessionActivityProcessor({ taskLookup: taskStore });
-  const checkpointStopProcessor = createCheckpointStopProcessor({
-    inputSender: adapter,
-    checkpointCycler: deps.checkpointCycler,
-  });
   const ralphStopProcessor = createRalphStopProcessor({
     taskCostReader: tokenTracker,
     runningLoopHandlingEnabled: Boolean(deps.ralphCycler),
@@ -134,8 +126,8 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     tokenAccountingProcessor.process({ tmuxName, event });
 
     // Cross-session child events do not drive parent anomaly detection,
-    // watchdog liveness, completion summaries, autonomy decisions, or Ralph /
-    // checkpoint cyclers. `unknown` is treated conservatively as parent-ish so
+    // watchdog liveness, completion summaries, autonomy decisions, or the Ralph
+    // cycler. `unknown` is treated conservatively as parent-ish so
     // events that arrive before the parent SessionStart still flow into
     // anomaly detection — V1 SHALL keep existing detection unless a record is
     // confidently classified as non-parent. See rfc §3.
@@ -200,7 +192,6 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     if (event.type === 'stop' || event.type === 'stop_failure') {
       const stopTask = ownerTask ?? undefined;
       stopTokenScanProcessor.process(stopTask);
-      checkpointStopProcessor.process(tmuxName);
       ralphStopProcessor.process(stopTask, tmuxName, event);
     }
 

@@ -69,7 +69,7 @@ loop:
 checklist:
   - Launch parameters validated as data, not executed as shell
   - Target repo resolved to an existing local checkout
-  - Existing checkpoint and prior batch state inspected before selecting work
+  - Existing prior batch state inspected before selecting work
   - Candidate issues filtered for author trust, duplicates, active PRs, and blocked labels
   - Selected issues have a documented non-overlapping write-scope matrix
   - One child Kookr task spawned per selected issue, up to the concurrency cap
@@ -150,7 +150,7 @@ mkdir -p "$PROMPTS_DIR"
 
 State files are outside the target repo so the parent never dirties the target checkout. Every iteration must read existing state first and resume idempotently.
 
-Prior-run state is part of the selection input, not a reason to stop early. A completed checkpoint means "these issues are already handled"; it does not mean "the repository has no more eligible issues."
+Prior-run state is part of the selection input, not a reason to stop early. A completed prior run means "these issues are already handled"; it does not mean "the repository has no more eligible issues."
 
 Terminal markers:
 
@@ -161,14 +161,12 @@ When terminal, write the marker to `$STATE_FILE`, write `STOP: COMPLETE` or `STO
 
 ## Phase 0: Reconstruct Prior Batch State
 
-Before validating candidates or deciding the run is complete, inspect all available checkpoint and batch state for this repo.
+Before validating candidates or deciding the run is complete, inspect all available prior batch state for this repo.
 
 Inputs to read, when present:
 
-1. `$TASK_CHECKPOINT_DIR/CHECKPOINT.json` if it is valid `semantic-checkpoint.v1`.
-2. `$TASK_CHECKPOINT_DIR/CHECKPOINT.md` as the fail-open fallback when JSON is absent or invalid.
-3. Previous state directories under `$HOME/.kookr/playbook-state/parallel-issue-batch/$REPO_SLUG/*`.
-4. Each prior run's `selection.json`, `children.json`, `monitor.md`, and `state.md`.
+1. Previous state directories under `$HOME/.kookr/playbook-state/parallel-issue-batch/$REPO_SLUG/*`.
+2. Each prior run's `selection.json`, `children.json`, `monitor.md`, and `state.md`.
 
 Build a compact prior-run ledger with:
 
@@ -179,21 +177,20 @@ Build a compact prior-run ledger with:
 
 Extraction rules:
 
-- From `CHECKPOINT.json`, prefer structured `evidence[].issue`, `evidence[].pr`, `evidence[].merged_at`, `files_changed`, and `next_actions` fields when available.
-- From `CHECKPOINT.md`, parse evidence lines such as `#123: PR #456 ... merged`, selected issue lists, blocker lines, and the recorded state directory.
+- From `state.md`, parse evidence lines such as `#123: PR #456 ... merged`, selected issue lists, blocker lines, and the recorded state directory.
 - From `children.json`, treat `merged=true` with a PR URL as complete. Treat a non-null `blocker` as blocked. If `mergeAfterImplementation=false` was used and the child has an open PR plus accepted checks in monitor evidence, treat it as complete for that run.
 - Verify ambiguous PR state with `gh pr view` or `gh pr list`; do not trust stale local JSON when GitHub disagrees.
 
 Resume policy:
 
 - If any `active_runs` exist, resume or supervise those runs first. Do not select replacement issues until every active selected issue has a merged/open-policy PR or an explicit blocker.
-- If the latest checkpoint is terminal `DONE`/`done`, use its completed and blocked issues as exclusions and start a fresh `RUN_KEY` for additional eligible work.
-- Never ask the user whether to "find new issues" solely because the checkpoint is terminal. With a blank `issueSelector`, gather remaining open issues automatically. Stop only when no safe candidates remain, all remaining candidates are blocked/unsafe, or human input is genuinely required.
+- If the latest prior run is terminal `DONE`/`done`, use its completed and blocked issues as exclusions and start a fresh `RUN_KEY` for additional eligible work.
+- Never ask the user whether to "find new issues" solely because the prior run is terminal. With a blank `issueSelector`, gather remaining open issues automatically. Stop only when no safe candidates remain, all remaining candidates are blocked/unsafe, or human input is genuinely required.
 
 Persist the ledger in the new run's state:
 
 - Write a `## Prior Runs Considered` section to `$STATE_FILE`.
-- Include excluded issues in `$CANDIDATES_FILE` with `excluded_reason` such as `completed in checkpoint run <run-key>` or `blocked in checkpoint run <run-key>`.
+- Include excluded issues in `$CANDIDATES_FILE` with `excluded_reason` such as `completed in prior run <run-key>` or `blocked in prior run <run-key>`.
 - Do not include excluded issues in `$SELECTION_FILE`.
 
 ## Phase 1: Validate and Resolve
@@ -454,7 +451,7 @@ gh issue list -R "$REPO" --state open --limit 100 --json number,title,url
 gh pr list -R "$REPO" --state open --limit 100 --json number,title,url,headRefName
 ```
 
-Confirm there are no accidental duplicate PRs for selected issues. Also record how many open issues were excluded because prior checkpoint or batch state already completed or blocked them, so the next run can continue from the remaining issue pool without re-discovery.
+Confirm there are no accidental duplicate PRs for selected issues. Also record how many open issues were excluded because prior batch state already completed or blocked them, so the next run can continue from the remaining issue pool without re-discovery.
 
 Then:
 
@@ -472,19 +469,19 @@ echo "STOP: BLOCKED - <reason>" > .batch-stop
 
 ## Idempotency Rules
 
-1. Read checkpoint state, prior batch state, `$SELECTION_FILE`, and `$CHILDREN_FILE` before spawning.
+1. Read prior batch state, `$SELECTION_FILE`, and `$CHILDREN_FILE` before spawning.
 2. Resume active prior runs before selecting replacement or additional issues.
 3. Never spawn a second child for the same issue unless the prior child is terminal and explicitly marked replaced.
 4. Never select an issue that already has an open or merged PR for this run or a prior completed run.
-5. Never treat terminal checkpoint state as repository-wide completion; use it as evidence for exclusions, then gather remaining eligible issues.
+5. Never treat terminal batch state as repository-wide completion; use it as evidence for exclusions, then gather remaining eligible issues.
 6. Never rely on local zero-diff as batch completion; PR/issue state is the source of truth.
 7. Keep parent state outside the target repo.
-8. If the parent task restarts, reconstruct child state from checkpoint files, `$CHILDREN_FILE`, Kookr API task records, and GitHub PR state.
+8. If the parent task restarts, reconstruct child state from prior batch state, `$CHILDREN_FILE`, Kookr API task records, and GitHub PR state.
 
 ## Anti-Patterns
 
-- Stopping at a completed checkpoint when the launch request asks for another batch and open eligible issues remain.
-- Asking the user to find new issues after a terminal checkpoint instead of carrying completed issues forward as exclusions.
+- Stopping at a completed prior run when the launch request asks for another batch and open eligible issues remain.
+- Asking the user to find new issues after a terminal prior run instead of carrying completed issues forward as exclusions.
 - Spawning issues first and checking file overlap later.
 - Letting every child touch `CHANGELOG.md`, release notes, README, or lockfiles in a concurrent batch.
 - Treating a child task's final message as complete without checking PR state.

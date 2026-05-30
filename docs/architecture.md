@@ -342,7 +342,7 @@ kookr/
 │   │   │   ├── sweep-handler.ts           #   cross-project workspace cleanup sweep
 │   │   │   └── workspace-handler.ts       #   workspace cleanup messages
 │   │   ├── event-processors/              # Per-event side effects:
-│   │   │                                  #   checkpoint-stop, GitHub events,
+│   │   │                                  #   GitHub events,
 │   │   │                                  #   permission quick actions/alerts,
 │   │   │                                  #   response assist, session activity,
 │   │   │                                  #   stop-token scanning, token accounting
@@ -399,8 +399,6 @@ kookr/
 │   │   ├── session-read-model.ts          # Session DTOs
 │   │   ├── task-naming.ts                 # AI task naming via LLM (F4.8)
 │   │   ├── token-tracker.ts               # Token/cost tracking per session (F4.9)
-│   │   ├── checkpoint-cycler.ts           # /compact checkpoint cycle + cancel-backoff controller (ADR-015)
-│   │   ├── checkpoint-path.ts             # Checkpoint file path resolver
 │   │   # Supervisor: detection + queue
 │   │   ├── monitor.ts                     # Event-driven supervisor orchestrator
 │   │   ├── anomaly-detector.ts            # Pure detection patterns

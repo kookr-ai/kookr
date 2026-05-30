@@ -34,8 +34,7 @@ relevance-gated `kb search` and injects the post-gate knowledge-base context
 into the turn:
 
 - Calls `kb search "<prompt>" --gate --task-context-file=<f> --format=json`.
-- Assembles `task_context` from `$TASK_CHECKPOINT_DIR/CHECKPOINT.json`
-  (`task_id` + `next_actions`) or the prompt, stamped with a monotonic
+- Assembles `task_context` from the prompt, stamped with a monotonic
   per-session turn id (the freshness contract).
 - Validates the response's `gate_verdict` against the vendored
   relevance-gate schema (`src/core/relevance-gate-schema.ts`).
