@@ -8,6 +8,12 @@ import type { RouteDeps } from './shared.js';
 import { isProtectedWorktreePath } from '../../adapters/worktree-marker.js';
 import { getToolkitSymlinkStatus, type ToolkitSymlinkStatus } from '../toolkit-symlink-status.js';
 import { getPluginVersionStatus, type PluginVersionStatus } from '../plugin-version-status.js';
+import {
+  marketplaceNameFromPluginId,
+  pluginUpdateCommands,
+  type PluginUpdateError,
+  type PluginUpdateResult,
+} from '../../shared/contracts/plugin-version.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -177,12 +183,30 @@ function commandFailureMessage(err: unknown): string {
   return String(err);
 }
 
+async function readPluginStatusForUpdate(
+  deps: RouteDeps,
+  hookHomeDir: string,
+): Promise<PluginVersionStatus | undefined> {
+  let prodDir: string | null = null;
+  try {
+    const candidate = resolveProdDir(deps);
+    await access(candidate);
+    prodDir = candidate;
+  } catch {
+    // Plugin updates do not require a production worktree; fall back to the
+    // running server checkout for available-version discovery.
+  }
+  return await readPluginVersionStatus(prodDir, deps.serverCwd, hookHomeDir);
+}
+
 export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
   const prodUpdateScript = resolveProdUpdateScript(deps.serverCwd);
   const runningPort = deps.serverPort;
   const hookHomeDir = deps.hookHomeDir ?? homedir();
   let deploying = false;
   let toolkitRefreshing = false;
+  let pluginUpdating = false;
+  const pluginUpdateBin = deps.pluginUpdateBin ?? process.env.KOOKR_AGENT_BIN ?? 'claude';
 
   app.get('/api/deploy/status', async (c) => {
     let prodDir: string;
@@ -358,6 +382,68 @@ export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
       }, 500);
     } finally {
       toolkitRefreshing = false;
+    }
+  });
+
+  app.post('/api/deploy/plugin-update', async (c) => {
+    if (pluginUpdating) {
+      const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
+      const pluginId = pluginStatus?.pluginId ?? DEFAULT_PLUGIN_ID;
+      const marketplace = marketplaceNameFromPluginId(pluginId);
+      return c.json<PluginUpdateError>({
+        error: 'Plugin update already in progress',
+        commands: pluginUpdateCommands(pluginId, marketplace),
+        ...(pluginStatus ? { plugin: pluginStatus } : {}),
+      }, 409);
+    }
+
+    pluginUpdating = true;
+    try {
+      const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
+      if (!pluginStatus) {
+        const marketplace = marketplaceNameFromPluginId(DEFAULT_PLUGIN_ID);
+        return c.json<PluginUpdateError>({
+          error: 'Could not determine toolkit plugin status',
+          commands: pluginUpdateCommands(DEFAULT_PLUGIN_ID, marketplace),
+        }, 500);
+      }
+
+      const marketplace = marketplaceNameFromPluginId(pluginStatus.pluginId);
+      const commands = pluginUpdateCommands(pluginStatus.pluginId, marketplace);
+      if (pluginStatus.installedVersion === null) {
+        return c.json<PluginUpdateError>({
+          error: 'Toolkit plugin is not installed yet',
+          commands,
+          plugin: pluginStatus,
+        }, 400);
+      }
+
+      await execFileAsync(pluginUpdateBin, ['plugin', 'marketplace', 'update', marketplace], {
+        cwd: deps.serverCwd,
+        timeout: 120_000,
+        env: { ...gitEnv, HOME: hookHomeDir },
+      });
+      await execFileAsync(pluginUpdateBin, ['plugin', 'update', pluginStatus.pluginId], {
+        cwd: deps.serverCwd,
+        timeout: 120_000,
+        env: { ...gitEnv, HOME: hookHomeDir },
+      });
+      const plugin = await readPluginStatusForUpdate(deps, hookHomeDir) ?? pluginStatus;
+      return c.json<PluginUpdateResult>({ status: 'updated', plugin, commands });
+    } catch (err) {
+      console.error(
+        `[deploy] plugin update failed bin=${pluginUpdateBin} home=${hookHomeDir}: ${commandFailureMessage(err)}`,
+      );
+      const plugin = await readPluginStatusForUpdate(deps, hookHomeDir);
+      const pluginId = plugin?.pluginId ?? DEFAULT_PLUGIN_ID;
+      const marketplace = marketplaceNameFromPluginId(pluginId);
+      return c.json<PluginUpdateError>({
+        error: commandFailureMessage(err),
+        commands: pluginUpdateCommands(pluginId, marketplace),
+        ...(plugin ? { plugin } : {}),
+      }, 500);
+    } finally {
+      pluginUpdating = false;
     }
   });
 }

@@ -16,6 +16,37 @@ export interface PluginVersionStatus {
   stale: boolean;
 }
 
+export interface PluginUpdateCommands {
+  /** Slash commands for a user already inside Claude Code. */
+  slash: string[];
+  /** Equivalent non-interactive CLI commands used by Kookr's backend. */
+  cli: string[];
+}
+
+export interface PluginUpdateResult {
+  status: 'updated';
+  plugin: PluginVersionStatus;
+  commands: PluginUpdateCommands;
+}
+
+export interface PluginUpdateError {
+  error: string;
+  commands: PluginUpdateCommands;
+  plugin?: PluginVersionStatus;
+}
+
+export function marketplaceNameFromPluginId(pluginId: string): string {
+  const [, marketplace] = pluginId.split('@');
+  return marketplace?.trim() || 'kookr';
+}
+
+export function pluginUpdateCommands(pluginId: string, marketplace: string): PluginUpdateCommands {
+  return {
+    slash: [`/plugin marketplace update ${marketplace}`, `/plugin update ${pluginId}`],
+    cli: [`claude plugin marketplace update ${marketplace}`, `claude plugin update ${pluginId}`],
+  };
+}
+
 /**
  * GitHub repo slug for `/plugin marketplace add`. Not recoverable from the
  * plugin/marketplace manifests (which only carry the marketplace *name*), so it

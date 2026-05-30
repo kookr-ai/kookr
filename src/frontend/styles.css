@@ -115,8 +115,10 @@ kbd {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  line-height: inherit;
 }
-.version-badge:hover { border-color: var(--border); color: var(--text); }
+.version-badge:hover,
+.version-badge:focus-visible { border-color: var(--border); color: var(--text); }
 .version-badge.dev { color: var(--amber); border-color: rgba(251,191,36,0.3); }
 .version-built { color: var(--text-muted); }
 
@@ -222,6 +224,7 @@ kbd {
   cursor: pointer;
 }
 .btn-deploy:hover { filter: brightness(1.1); }
+.btn-deploy:disabled { opacity: 0.65; cursor: default; filter: none; }
 .deploy-refresh {
   display: block;
   width: 100%;
@@ -236,6 +239,18 @@ kbd {
 }
 .deploy-refresh:hover { color: var(--text); border-color: var(--border); }
 .deploy-refresh:disabled { opacity: 0.5; cursor: default; }
+.deploy-help {
+  margin-top: 5px;
+  color: var(--text-muted);
+}
+.deploy-help summary {
+  cursor: pointer;
+  font-size: 10.5px;
+}
+.deploy-help .version-row {
+  white-space: normal;
+  line-height: 1.45;
+}
 @keyframes spin { to { transform: rotate(360deg); } }
 .deploy-spinner {
   display: inline-block;

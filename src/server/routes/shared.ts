@@ -137,6 +137,8 @@ export interface RouteDeps {
   serverCwd: string;
   /** Port this server bound to. Surfaced via `/api/deploy/status` so the dashboard can detect dev (non-prod) instances and avoid silently triggering prod deploys. */
   serverPort: number;
+  /** Claude Code binary used for marketplace plugin maintenance. Defaults to KOOKR_AGENT_BIN or `claude`. */
+  pluginUpdateBin?: string;
   /** Stable Kookr state directory, normally `~/.kookr`. */
   kookrDir: string;
   frontendDir: string;
