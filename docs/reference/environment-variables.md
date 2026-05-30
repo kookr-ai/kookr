@@ -37,7 +37,6 @@ not user configuration knobs.
 | `KOOKR_PARENT_TASK_ID` | Injected only for child tasks | Task id string | Identifies the parent task for nested agent work. |
 | `KOOKR_API_BASE_URL` | `http://127.0.0.1:<server port>` when known | HTTP URL | Lets agents and CLIs call back to the active Kookr instance. |
 | `KOOKR_GIT_COMMON_DIR` | Injected when cwd is a Git worktree | Absolute path | Points at the shared Git common directory for worktree-aware workflows. |
-| `TASK_CHECKPOINT_DIR` | Injected when checkpoint support resolves | Absolute path | Per-task checkpoint directory. Agents read and write `CHECKPOINT.md`, `CHECKPOINT.json`, and optional review-only `memory_write_candidates.json` there during long-running work. |
 
 ## CLI Tools
 
@@ -63,13 +62,10 @@ not user configuration knobs.
 | `KOOKR_AUTO_CATCHUP` | unset | Any non-empty value | Opts in to automatic schedule catch-up on scheduler startup. By default, missed startup runs are recorded in the execution ledger and can be launched manually with Run Now. |
 | `KOOKR_NO_CATCHUP` | unset | Any non-empty value | Legacy kill switch for startup catch-up. Takes precedence over `KOOKR_AUTO_CATCHUP`; future cron ticks still run. |
 
-## Context And Checkpointing
+## Context Window
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
-| `KOOKR_CHECKPOINT_TRIGGER_RATIO` | `0.75` | Float greater than `0` and less than `1` | Context-fill ratio that triggers proactive checkpoint cycling. Invalid values fall back to default. |
-| `KOOKR_CHECKPOINT_MAX_CANCELLED_ATTEMPTS` | `3` | Positive integer | Consecutive cancelled/no-progress `/compact` attempts before the cycler gives up for that session. |
-| `KOOKR_CHECKPOINT_CYCLE_DISABLED` | unset | `1` or `true` | Disables proactive checkpoint cycling. Checkpoint directory injection and storage are unaffected. |
 | `KOOKR_CONTEXT_ADVISORY_ENABLED` | unset | `1` to enable | Enables context-window hook advisories. |
 | `KOOKR_CONTEXT_ADVISORY_DISABLED` | unset | `1` to disable | Kill switch for context-window hook advisories. Takes precedence over enablement. |
 
@@ -220,6 +216,5 @@ Use them only for controlled local sessions.
 | `KOOKR_BYPASS_ALL_PERMISSIONS=true` | Removes agent permission prompts. Claude Code gets `--dangerously-skip-permissions`; Codex CLI gets `--dangerously-bypass-approvals-and-sandbox`. |
 | `KOOKR_BACKEND` set to anything except `dtach` | Prevents startup. Remove stale `KOOKR_BACKEND=tmux` entries instead of expecting rollback behavior. |
 | `KOOKR_AUTO_RELAUNCH=false` | Disables crash recovery, so tasks that died while the server was down will not be resumed automatically. |
-| `KOOKR_CHECKPOINT_CYCLE_DISABLED=1` | Disables proactive checkpoint/compact cycling, increasing risk of context-loss on long tasks. |
 | `KOOKR_CONTEXT_ADVISORY_DISABLED=1` | Suppresses context-window advisories even if the feature is enabled. |
 | `KOOKR_AUTO_REFLECT_DISABLE=1` | Suppresses feedback-reflection tasks that would otherwise analyze completed work. |

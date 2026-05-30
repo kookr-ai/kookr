@@ -127,7 +127,7 @@ Run `kb search "<2-line gist of the task>"` before designing or implementing any
 
 - Non-trivial research, architecture, RFC, issue-synthesis, or requirements work.
 - Machine-specific operations, production/deployment work, Kookr runtime behavior, or anything likely to depend on local operating-environment notes.
-- Long-running task handoff, checkpoint resume, crash recovery, or any task expected to cross session boundaries.
+- Long-running task handoff, crash recovery, or any task expected to cross session boundaries.
 - Repeated failures, confusing tool behavior, stale assumptions, or a request that resembles a previous incident.
 - Cross-project work where prior decisions may live outside the current repo.
 

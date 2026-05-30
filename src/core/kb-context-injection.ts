@@ -3,8 +3,8 @@
 // Implements the §11 consumer contract for the knowledge-base-mcp-server
 // relevance gate. Before an agent turn, this logic:
 //
-//   - assembles a freshness-stamped `task_context` (CHECKPOINT.json task_id +
-//     next_actions, or the user prompt — RFC §11);
+//   - assembles a freshness-stamped `task_context` from the user prompt
+//     (RFC §11);
 //   - runs `kb search "<query>" --gate --task-context-file=<f> --format=json`;
 //   - validates the response's `gate_verdict` against the vendored
 //     relevance-gate schema artifact (`relevance-gate-schema.ts`);
@@ -22,10 +22,6 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import {
-  CHECKPOINT_JSON_FILENAME,
-  SEMANTIC_CHECKPOINT_SCHEMA_VERSION,
-} from './checkpoint-contracts.js';
 import {
   parseRelevanceGateVerdict,
   type RelevanceGateVerdict,
@@ -51,42 +47,6 @@ export class KbContextInjectionError extends Error {
 // task_context assembly
 // ---------------------------------------------------------------------------
 
-export interface CheckpointTaskContext {
-  taskId: string;
-  nextActions: string[];
-}
-
-/**
- * Read `task_id` + `next_actions` from a `semantic-checkpoint.v1`
- * CHECKPOINT.json. Fail-soft to `null` — a missing/invalid checkpoint just
- * means `task_context` falls back to the prompt (RFC §11).
- */
-export async function readCheckpointTaskContext(
-  checkpointDir: string | undefined,
-  readFileImpl: (path: string) => Promise<string> = (path) => readFile(path, 'utf-8'),
-): Promise<CheckpointTaskContext | null> {
-  if (checkpointDir === undefined || checkpointDir.trim() === '') return null;
-  let raw: string;
-  try {
-    raw = await readFileImpl(join(checkpointDir, CHECKPOINT_JSON_FILENAME));
-  } catch {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!isRecord(parsed)) return null;
-  if (parsed.schema_version !== SEMANTIC_CHECKPOINT_SCHEMA_VERSION) return null;
-  if (typeof parsed.task_id !== 'string' || parsed.task_id.trim() === '') return null;
-  const nextActions = Array.isArray(parsed.next_actions)
-    ? parsed.next_actions.filter((a): a is string => typeof a === 'string' && a.trim() !== '')
-    : [];
-  return { taskId: parsed.task_id.trim(), nextActions };
-}
-
 /**
  * Build the `task_context` string. Stamped with the monotonic turn id so a
  * stale context is detectable (RFC §11 freshness contract) — the hook also
@@ -95,18 +55,8 @@ export async function readCheckpointTaskContext(
 export function assembleTaskContext(input: {
   prompt: string;
   turnId: number;
-  checkpoint: CheckpointTaskContext | null;
 }): string {
   const lines: string[] = [`[kookr-turn ${input.turnId}]`];
-  if (input.checkpoint !== null) {
-    lines.push(`Active task: ${input.checkpoint.taskId}`);
-    if (input.checkpoint.nextActions.length > 0) {
-      lines.push('Planned next actions:');
-      for (const action of input.checkpoint.nextActions.slice(0, 5)) {
-        lines.push(`- ${action}`);
-      }
-    }
-  }
   lines.push(`Current request: ${input.prompt.trim()}`);
   return lines.join('\n').slice(0, TASK_CONTEXT_MAX_CHARS);
 }
@@ -348,8 +298,7 @@ export async function runKbContextInjection(
 
   let tcFile: string | null = null;
   try {
-    const checkpoint = await readCheckpointTaskContext(deps.env.TASK_CHECKPOINT_DIR);
-    const taskContext = assembleTaskContext({ prompt, turnId, checkpoint });
+    const taskContext = assembleTaskContext({ prompt, turnId });
 
     tcFile = join(tmpdir(), `kookr-kb-task-context-${turnId}-${randomUUID()}.txt`);
     await writeFile(tcFile, taskContext, 'utf-8');

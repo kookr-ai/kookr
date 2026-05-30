@@ -36,7 +36,7 @@ The `hooks/skill-placement-gate.sh` script (called from `.hooks/pre-push`) enfor
 |---|---|---|
 | `.claude/skills/` (kookr-internal) | **must start with `kookr-`** | `kookr-shadow-detection`, `kookr-supervise-tasks`, `kookr-pre-push` |
 | `.claude/agents/` (kookr-internal) | **must start with `kookr-`** | `kookr-oss-issue-scout.md` |
-| `plugin/skills/` (published) | **must NOT start with `kookr-`** | `architecture-drift-signals`, `task-checkpointing` |
+| `plugin/skills/` (published) | **must NOT start with `kookr-`** | `architecture-drift-signals`, `safe-refactoring` |
 | `plugin/agents/` (published) | **must NOT start with `kookr-`** | `boundary-critic.md`, `failure-mode-analyst.md` |
 
 The `kookr-` prefix exists for one reason: when a Kookr-internal skill leaks into a `~/.claude/plugins/marketplaces/kookr/.claude/skills/` mirror or shows up in `/skills` output in another project, the prefix makes it obvious this skill is about Kookr internals — not generally applicable. If the prefix isn't there, a user from another project might trigger the skill expecting it to apply to their codebase, then waste minutes discovering it's about Kookr's terminal backend.

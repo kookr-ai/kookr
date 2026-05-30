@@ -33,8 +33,6 @@ import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
 import { buildAgentLaunchContext } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
-import { buildCheckpointLoadInstruction } from '../core/checkpoint-load-instruction.js';
-import { resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
@@ -80,13 +78,6 @@ export interface CodexCliAdapterOptions {
    * and the sandbox. Defaults to false.
    */
   bypassAllPermissions?: boolean;
-  /**
-   * Kookr data directory (`~/.kookr` or `~/.kookr-<port>`). When provided,
-   * each launched task gets a per-(repo, branch) checkpoint directory under
-   * `<kookrDataDir>/checkpoints/...`. Without this, checkpointing is silently
-   * disabled (fail-open).
-   */
-  kookrDataDir?: string;
   /**
    * Absolute path to the kookr-toolkit plugin tree (containing
    * `.claude-plugin/plugin.json`). When the configured codex binary
@@ -165,7 +156,6 @@ export class CodexCliAdapter implements AgentAdapter {
   private codexConfigPath?: string;
   private trustWorkspace: boolean;
   private bypassAllPermissions: boolean;
-  private kookrDataDir?: string;
   private pluginDir?: string;
   private pluginDirSupportProbe?: Promise<boolean>;
   private warnedAboutMissingPluginDirSupport = false;
@@ -190,7 +180,6 @@ export class CodexCliAdapter implements AgentAdapter {
     this.codexConfigPath = options?.codexConfigPath;
     this.trustWorkspace = options?.trustWorkspace ?? true;
     this.bypassAllPermissions = options?.bypassAllPermissions ?? false;
-    this.kookrDataDir = options?.kookrDataDir;
     // Mirror ClaudeCodeAdapter: auto-discover the kookr-toolkit plugin tree
     // from the compiled module location. The runtime --plugin-dir capability
     // probe (run lazily at first launch) gates whether we actually inject,
@@ -263,21 +252,11 @@ export class CodexCliAdapter implements AgentAdapter {
     const tmuxName = `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
-    // Resolve per-(repo, branch) checkpoint dir if configured. Fail-open.
-    // See docs/poc/005-checkpoint-cycle-mechanics.md.
-    const checkpointDir = this.kookrDataDir
-      ? (await resolveAndPrepareCheckpointDir({ cwd, kookrDataDir: this.kookrDataDir })) ?? undefined
-      : undefined;
-    const checkpointInstruction = checkpointDir
-      ? await buildCheckpointLoadInstruction(checkpointDir)
-      : undefined;
-
     const launchContext = await buildAgentLaunchContext({
       taskStore: this.taskStore,
       taskId,
       cwd,
       serverPort: this.serverPort,
-      checkpointDir,
     });
 
     // Generate hook settings (same format as Claude Code --settings)
@@ -295,16 +274,6 @@ export class CodexCliAdapter implements AgentAdapter {
     }
 
     // Build the Codex CLI command.
-    //
-    // Codex CLI does not (yet) expose `--append-system-prompt`. To inject the
-    // v5 checkpoint-load instruction we prepend it to the user prompt when
-    // checkpointing is wired. Note: this is lossier than the Claude Code path
-    // because the prefix lives in the conversation history (which can be
-    // summarized away by /compact). Inter-session resume still works (each
-    // new task gets the prefix again on launch). Intra-session post-compact
-    // resume on Codex CLI is a known v1 gap — fix in a fork patch later.
-    const checkpointPrefix = checkpointInstruction ? `${checkpointInstruction}\n\n` : '';
-    const promptWithCheckpoint = `${checkpointPrefix}${prompt}`;
     const permissionFlagStr = this.bypassAllPermissions
       ? '--dangerously-bypass-approvals-and-sandbox'
       : '--full-auto';
@@ -324,7 +293,7 @@ export class CodexCliAdapter implements AgentAdapter {
     const promptPath = `${this.settingsDir}/${tmuxName}.prompt.txt`;
     if (promptFileSupported) {
       if (this.writeFile) {
-        await this.writeFile(promptPath, promptWithCheckpoint);
+        await this.writeFile(promptPath, prompt);
       }
     } else if (!this.warnedAboutMissingPromptFileSupport) {
       this.warnedAboutMissingPromptFileSupport = true;
@@ -388,7 +357,7 @@ export class CodexCliAdapter implements AgentAdapter {
     if (!promptFileSupported) {
       // Positional argv fallback for binaries without --prompt-file. Must be
       // the last argv entry (codex treats a trailing bare arg as the prompt).
-      args.push(promptWithCheckpoint);
+      args.push(prompt);
     }
     await this.backend.createSession({
       id: tmuxName,

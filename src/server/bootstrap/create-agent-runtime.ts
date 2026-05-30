@@ -27,7 +27,6 @@ export interface AgentRuntimeDeps {
   agentBin?: string;
   codexBin?: string;
   bypassAllPermissions?: boolean;
-  kookrDir: string;
   preflightOnFatal?: (snapshot: AgentPreflightSnapshot & { status: 'absent' }) => never;
   preflightLogger?: PreflightLogger;
   /**
@@ -58,7 +57,6 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     serverPort: deps.serverPort,
     agentBin: deps.agentBin,
     bypassAllPermissions: deps.bypassAllPermissions,
-    kookrDataDir: deps.kookrDir,
     resolveDefaultEffort: () => deps.getAgentEffort?.()['claude-code'],
   });
   const codexCliAdapter = new CodexCliAdapter(deps.terminalBackend, deps.taskStore, {
@@ -69,7 +67,6 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     serverPort: deps.serverPort,
     agentBin: deps.codexBin,
     bypassAllPermissions: deps.bypassAllPermissions,
-    kookrDataDir: deps.kookrDir,
     resolveDefaultEffort: () => deps.getAgentEffort?.()['codex-cli'],
   });
 
