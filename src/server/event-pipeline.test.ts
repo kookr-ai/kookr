@@ -430,6 +430,25 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     })]);
   });
 
+  test('persists completed_turn on the session at a clean Stop, and updates it on the next turn (#693)', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+
+    // A normal Stop is the durable "graceful finish" signal reconciliation uses
+    // to auto-complete a spawned task whose session later dies. deriveTurnState
+    // maps any `stop` to `completed_turn` regardless of the assistant message,
+    // so makeStopHook()'s "I need your input" body does not change the turn state.
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+    expect(taskStore.findTaskBySession(tmuxName)!.sessions.find(s => s.tmuxSession === tmuxName)!.lastTurnState)
+      .toBe('completed_turn');
+
+    // A follow-up turn resets it so a later crash mid-turn is not mistaken for a
+    // clean finish.
+    adapter.injectHookEvent(tmuxName, makeToolUseHook());
+    expect(taskStore.findTaskBySession(tmuxName)!.sessions.find(s => s.tmuxSession === tmuxName)!.lastTurnState)
+      .toBe('running');
+  });
+
   test('events that do not change anomaly state do not trigger clearing', async () => {
     setup();
     const tmuxName = await launchAgent();
