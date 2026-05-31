@@ -9,14 +9,14 @@ This document defines **what Kookr must do** from the user's perspective. No tec
 ```
 Developer runs several AI coding agents
   ↓
-Developer runs `npx kookr` → browser opens
+Developer runs `npx kookr` → server prints the local dashboard URL
   ↓
 Kookr's supervisor agent watches all agents' output
   ↓
-Agent #3 loops on the same failing test 12 times
+Agent #3 repeats the same failing command without changing approach
   → Supervisor detects the anomaly
-  → Generates explanation: "Agent #3 is stuck: same test failure
-     12 times, not changing approach. Error: TypeError..."
+  → Generates explanation: "Agent #3 is repeatedly hitting
+     TypeError in auth.ts without changing strategy..."
   → Highlights agent #3 in the UI with the explanation
   ↓
 Developer reads the explanation, types a hint → sends
@@ -49,11 +49,11 @@ A bottleneck is not necessarily an error — it is a state where human attention
 
 | ID | Feature | Description |
 |----|---------|-------------|
-| F1.1 | **Auto-discover running agents** | Detect Claude Code, Codex CLI, and Gemini CLI processes already running on the machine. No manual registration needed. |
+| F1.1 | **Auto-discover running agents** | Deferred for externally-started agents. Current V1 tracks Kookr-launched Claude Code and Codex CLI sessions; discovery/takeover of existing Claude, Codex, or Gemini processes remains future work. |
 | F1.2 | **Show agent status** | For each agent: running, waiting for input, errored, completed. Updated in real time. |
 | F1.3 | **Show what each agent is doing** | Display the agent's current activity: what file it's reading, what tool it's using, what it last said. Tool calls and activity are available via hooks (real-time) and transcript JSONL (history). |
 | F1.4 | **Show agent metadata** | Agent type, working directory, how long it's been running, session cost (if available). |
-| F1.5 | **Detect new and exited agents** | When a new agent starts or an existing one exits, update the list automatically. |
+| F1.5 | **Detect new and exited agents** | When a managed Kookr agent starts, stops, exits, or is reconciled after restart, update the list automatically. |
 
 ### F2: Smart Anomaly Detection (Supervisor Agent)
 
@@ -96,8 +96,8 @@ Kookr's supervisor is an AI that watches agent streams and **understands** what 
 |----|---------|-------------|
 | F4.1 | **Launch new agent** | Start a new agent from the GUI with a task description (natural-language prompt) and working directory. Launched in a managed terminal session (interactive mode) for full monitoring and developer access. See [ADR-007](adr/007-managed-terminal-sessions.md). |
 | F4.2 | **Stop agent** | Terminate a running agent from the GUI. Stopping kills the dtach session, stops the hook file watcher, and marks the agent as stopped in the monitor to prevent resurrection from late-arriving hook events. |
-| F4.3 | **Relaunch agent** | Create a new task with the same or modified prompt and working directory. The original task is preserved for history — relaunch creates a new task rather than restarting in-place. |
-| F4.4 | **Task lifecycle management** | Tasks are the unit of work. **One task = one agent session** (no multi-session tasks). Lifecycle: Open → InProgress → Completed/Cancelled. Completing or cancelling a task kills the associated dtach session. Relaunch creates a new task (preserving the original for history). Tasks are persisted locally in JSON. |
+| F4.3 | **Relaunch agent** | Start another attempt from the same or modified prompt and working directory. User-initiated relaunches create successor tasks for history; crash-recovery and looped-playbook recovery can attach additional sessions to the existing task so attempt history is preserved. |
+| F4.4 | **Task lifecycle management** | Tasks are the unit of work; sessions are attempts attached to a task. A task usually has one live managed session, but may retain multiple historical or recovery sessions. Lifecycle: Open → InProgress → Completed/Cancelled/Terminated. Completing or cancelling a task terminates live sessions. Tasks and session metadata are persisted locally in JSON. |
 | F4.5 | **Optional completion criteria** | When launching an agent, the user can provide a definition of done (e.g., "tests pass", "PR created"). Criteria are stored on the task but not auto-evaluated in V1 — the developer must explicitly mark the task complete. |
 | F4.6 | **Attach to agent terminal** | Open an agent's managed dtach session directly from an external terminal when needed. Kookr no longer exposes a GUI button that copies an attach command. See [ADR-007](adr/007-managed-terminal-sessions.md) and [ADR-014](adr/014-local-dtach-backend.md). |
 | F4.7 | **Rename task** | Double-click a task name in the findings panel or detail header to edit it inline. The custom name overrides the auto-generated name (truncated prompt) everywhere in the UI. Clearing the name reverts to the default truncated prompt. |
@@ -131,22 +131,22 @@ The chosen layout is a two-panel "supervisor-first" design. The UI is organized 
 
 | ID | Feature | Description |
 |----|---------|-------------|
-| F5.1 | **Supervisor findings panel** | Left side (340px): rich finding cards ordered by urgency, each with severity badge, supervisor explanation, inline quick-reply input, and skip/snooze/attach actions. Healthy agents collapsed into a compact section at the bottom. |
+| F5.1 | **Supervisor findings panel** | Left side (340px): rich finding cards ordered by urgency, each with severity badge, supervisor explanation, inline quick-reply input, and skip/snooze/response actions. Healthy agents collapsed into a compact section at the bottom. |
 | F5.2 | **Terminal panel** | Main area shows an interactive xterm.js terminal bridged to the selected agent's dtach session via `SessionBridge` over a binary WebSocket. The terminal is always visible when an agent is selected. |
-| F5.3 | **Status bar** | Bottom: task count, finding count, keyboard shortcut hints. Top bar: queue dots showing triage position, findings/healthy counts. Session cost deferred to V2 (R2.5). |
+| F5.3 | **Status bar** | Bottom: task count, finding count, keyboard shortcut hints. Top bar: queue dots showing triage position, findings/healthy counts, and cost where available. |
 | F5.4 | **Keyboard shortcuts** | Ctrl+Enter: send & advance. Ctrl+N: next finding. Tab: skip. Ctrl+L: quick launch. |
 | F5.5 | **Real-time updates** | All panels update live as agent states change. No manual refresh. |
 | F5.6 | **Respond-and-advance loop** | "Send & Next" as primary action. After responding, a confirmation overlay shows what was sent and where the UI is advancing to. Queue dots track triage progress. |
 | F5.7 | **"All clear" state** | When no findings exist, the findings panel shows a calm "all agents working autonomously" state. |
 | F5.8 | **Do Not Disturb** | Top-bar pill silences toasts, desktop notifications, and the audible chime while leaving anomaly detection running. Optional auto-disable after 15m / 30m / 1h / 2h, or until manually turned off. Findings that arrive while DND is on are tagged with a "while away" badge. Persisted in `localStorage` (`kookr-dnd-enabled`, `kookr-dnd-started-at`, `kookr-dnd-expires-at`). |
 
-### F6: Project-Scoped Playbooks ([ADR-011](adr/011-project-scoped-playbooks.md))
+### F6: Playbooks ([ADR-011](adr/011-project-scoped-playbooks.md))
 
-Playbooks are reusable task templates stored as Markdown files in `.kookr/playbooks/` within the project directory. They let developers define recurring workflows (release MRs, design drift checks, test improvement runs) that Kookr can execute as managed agent tasks.
+Playbooks are reusable task templates stored as Markdown files in project, user, or bundled plugin locations. They let developers define recurring workflows (release MRs, design drift checks, test improvement runs) that Kookr can execute as managed agent tasks.
 
 | ID | Feature | Description |
 |----|---------|-------------|
-| F6.1 | **Playbook discovery** | Automatically discover playbooks from `.kookr/playbooks/*.md` in any project CWD. |
+| F6.1 | **Playbook discovery** | Automatically discover playbooks from `.kookr/playbooks/*.md` in any project CWD, `~/.kookr/playbooks/*.md` for user playbooks, and bundled plugin playbooks. Project playbooks take precedence over user playbooks, which take precedence over plugin playbooks. |
 | F6.2 | **Playbook browser** | Browse available playbooks in a tabbed Launch Dialog (Manual \| Playbooks). Shows name, description, and parameter count. |
 | F6.3 | **Parameterized launch** | Fill in playbook parameters before triggering. Parameters use `{{paramName}}` interpolation in the playbook body. Required parameters are validated. |
 | F6.4 | **Checklist as criteria** | Playbook checklist items become the task's completion criteria. |
@@ -281,6 +281,17 @@ Previously marked as deferred; now shipped in V1.
 | FS.3 | **HTTP surface** | `routes/settings-routes.ts` exposes CRUD endpoints for programmatic access. |
 | FS.4 | **Project config** | The `setProjectConfig` WS message updates per-project settings (contribution policy, agent defaults). |
 
+### F16: Optional Session Sharing & Relay
+
+Kookr remains local-first, but can expose a task or terminal stream through explicit sharing flows for review and collaboration.
+
+| ID | Feature | Description |
+|----|---------|-------------|
+| F16.1 | **Task share links** | Create shareable task views from the dashboard. The shared projection is separate from local task ownership. |
+| F16.2 | **Hosted relay pairing** | Pair a local Kookr instance with the hosted relay when remote viewing or input is explicitly enabled. |
+| F16.3 | **Remote terminal viewing and input grants** | Stream selected terminal sessions through the relay. Remote input is permissioned separately and fails closed when grants or relay connectivity are absent. |
+| F16.4 | **Contact-aware sharing** | Remember share contacts and grant metadata so repeated sharing does not require manual link reconstruction. |
+
 ---
 
 ## What Kookr Does NOT Do (explicit non-goals)
@@ -291,9 +302,9 @@ Previously marked as deferred; now shipped in V1.
 | **Execute code** | Agents do the coding. Kookr routes developer attention |
 | **Be a general-purpose AI** | The supervisor agent only watches and explains; it doesn't write code |
 | **Manage git, PRs, or issues** | Agents create PRs and manage git. Kookr *monitors* PRs agents create (F7) but doesn't create or modify them |
-| **Work as a team tool** | V1 is for a single developer managing their own agents |
-| **Run in the cloud** | V1 runs locally. Cloud is a future possibility |
-| **Plugin marketplace** | No plugins in V1. Extensibility comes later if needed |
+| **Replace collaboration tools** | Kookr is still centered on one developer supervising their agents. Optional share/relay flows expose selected sessions but do not make Kookr a general team workspace |
+| **Move supervision to the cloud** | The core supervisor, agent processes, and terminal control run locally. The hosted relay is an optional transport for explicit sharing, not a cloud-hosted Kookr runtime |
+| **General extension marketplace** | Kookr ships the bundled Kookr Toolkit plugin and plugin-tier playbooks, but a third-party extension marketplace remains deferred |
 
 ---
 
@@ -302,7 +313,7 @@ Previously marked as deferred; now shipped in V1.
 ### V1: Managed Terminal Sessions
 
 V1 supports agents **launched by Kookr** in managed terminal sessions ([ADR-007](adr/007-managed-terminal-sessions.md), [ADR-014](adr/014-local-dtach-backend.md)). Two agent types are supported: **Claude Code** (primary) and **Codex CLI** (via a forked binary — see [PoC 003](poc/003-codex-compatibility-gaps.md)). Agents run in **interactive mode** (their native execution mode) inside a dtach-backed session owned by `LocalDtachBackend`:
-- **Monitoring:** Hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, `Notification`, `UserPromptSubmit`, `SessionEnd`, …) are written as JSONL into `~/.kookr/hooks/<session-id>.jsonl` and tailed by the supervisor for anomaly detection. Hooks are configured per agent via the `--settings` flag; they are additive to user hooks. `backend.captureBytes` provides ring-buffer snapshots for the GUI display only. Transcript JSONL tailing is implemented (`transcript-parser.ts`) but not yet wired — it is a V2 enhancement. No ANSI terminal output parsing is needed. See [PoC 001](poc/001-hook-mechanism-validation.md).
+- **Monitoring:** Hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, `Notification`, `UserPromptSubmit`, `SessionEnd`, …) are written as JSONL into `~/.kookr/hooks/<session-id>.jsonl` and tailed by the supervisor for anomaly detection. Hooks are configured per agent via the `--settings` flag; they are additive to user hooks. `backend.captureBytes` provides ring-buffer snapshots for the GUI display only. Transcript JSONL parsing is used for token/cost and freshness tracking, while transcript-derived anomaly events remain a V2 enhancement. No ANSI terminal output parsing is needed. See [PoC 001](poc/001-hook-mechanism-validation.md).
 - **Input delivery:** responses sent as byte-level writes (`backend.write` / `backend.writeSequence`) to the agent's dtach session. Same effect as the developer typing directly.
 - **Crash recovery:** managed dtach sessions survive Kookr crashes. The developer can reattach or restart Kookr without losing agent sessions.
 - **Direct access:** the developer can attach to any agent's dtach session at any time, even outside Kookr (F4.6).
@@ -325,20 +336,20 @@ This approach supersedes the headless mode design from [ADR-004](adr/004-agent-c
 - F3.7: Snooze agent (pause monitoring for a duration)
 - F4.1: Launch new agent from GUI (managed terminal session)
 - F4.4: Store task descriptions locally with full task lifecycle (Open, InProgress, Completed, Cancelled)
-- F5.1: Agent list panel (managed agents only in V1)
+- F5.1: Supervisor findings panel (managed agents only in V1)
 - F5.2: Terminal panel with input box
 - F5.5: Real-time updates
 
 **Nice to have for V1:**
 - F1.3: Show current activity (tool calls, files modified)
 - F2.2: Detect "stuck" state (deferred to V2 AI supervisor; deterministic detection removed)
-- F2.4: Detect permission blocks (detectable via hooks + transcript JSONL)
+- F2.4: Detect permission blocks (detectable via hooks)
 - F2.9: Browser notifications
 - F3.8: Quick action buttons
 - F3.9: AI response suggestions
 - F4.2: Stop agent from GUI
 - F4.5: Optional completion criteria (stored, not auto-evaluated)
-- F4.6: Attach to agent terminal (open managed terminal session directly)
+- F4.6: Attach to agent terminal via the dashboard terminal panel; external `dtach` attach remains available manually
 - F4.8: AI task naming
 - F4.9: Token/cost tracking
 - F5.4: Keyboard shortcuts
@@ -359,14 +370,15 @@ This approach supersedes the headless mode design from [ADR-004](adr/004-agent-c
 - F15 Self-diagnostics
 - F-Settings Settings UI (was previously marked deferred)
 - Codex CLI adapter (was previously marked deferred) — with caveats tracked in [PoC 003](poc/003-codex-compatibility-gaps.md)
+- Optional session sharing and hosted relay flows (F16)
 
 **Explicitly deferred:**
 - F1.1: Agent discovery via session files (managed agents are launched by Kookr, so discovery adds no value without "take over" support for externally-started agents)
 - Gemini CLI support
 - "Take over" discovered agents (resume under Kookr's control)
 - Task inference for discovered agents (reading conversation beginnings)
-- Any plugin/extension system
-- Session history and analytics persistence (beyond the inline session metadata in `tasks.json`)
+- Third-party/general extension system beyond the bundled Kookr Toolkit plugin and plugin-tier playbooks
+- Full cross-session analytics database beyond the local JSON/JSONL/SQLite stores used by current features
 - Windows support
 
 ---
@@ -388,5 +400,5 @@ This approach supersedes the headless mode design from [ADR-004](adr/004-agent-c
 | Can we discover running Claude Code processes? | **Yes.** Read `~/.claude/sessions/{pid}.json`, verify PID alive. (Deferred from V1 — Kookr manages its own agents.) | Research / ADR-004 |
 | Can we inject input into a running interactive session? | **Yes, via managed dtach sessions.** Byte-level writes to the dtach socket deliver keystrokes to the agent — same as the developer typing. | ADR-007 / ADR-014 |
 | How do we send input to agents? | **Byte-level writes** to the agent's dtach session via `backend.write` / `backend.writeSequence`. Supersedes the `--resume` approach from ADR-004 and the `tmux send-keys` path from earlier ADR-007. | ADR-007 / ADR-014 |
-| Is JSONL streaming required for monitoring? | **No, but transcript JSONL is used.** Claude Code interactive mode provides **hooks** (real-time JSON events) and **transcript JSONL files** (full session history). These structured sources are tailed for monitoring — no ANSI terminal output parsing needed. `backend.captureBytes` is used only for GUI display. | PoC / ADR-007 |
-| Does Codex CLI support similar patterns? | **Yes.** `codex exec --json` for JSONL, `codex exec resume <threadId>` for follow-ups. Sessions stored in `~/.codex/sessions/`. (Codex CLI support deferred from V1.) | Research / ADR-004 |
+| Is JSONL streaming required for monitoring? | **No.** Claude Code interactive mode provides **hooks** as the real-time anomaly event source. Transcript JSONL files are used for token/cost and freshness tracking, and remain available for richer future event ingestion. `backend.captureBytes` is used only for GUI display. | PoC / ADR-007 |
+| Does Codex CLI support similar patterns? | **Yes for Kookr-managed sessions.** The forked Codex CLI path is wired through `codex-cli-adapter.ts`, `routing-agent-adapter.ts`, and `codex-config.ts`, with remaining compatibility caveats tracked in [PoC 003](poc/003-codex-compatibility-gaps.md). External Codex session discovery remains deferred. | PoC / ADR-004 |
