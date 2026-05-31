@@ -2,7 +2,7 @@
 
 Fewer phases. Each one demoable and immediately useful.
 
-**V1 = Phases 1 + 2 + 3.** All MVP "must have" features (see [features.md](features.md#mvp-scope-v1)) require Phases 1-3. Phase 4 is V2 (multi-agent-type support + polish).
+**V1 = Phases 1 + 2 + 3.** All MVP "must have" features (see [features.md](features.md#mvp-scope-v1)) require Phases 1-3. Phase 4 began as post-V1 multi-agent-type support + polish; several Phase 4 items have since shipped.
 
 Now informed by concrete research: agents run in interactive mode inside managed dtach sessions. Input via byte-level writes to the dtach socket, monitoring via hooks (and, for V2, transcript JSONL file tailing). `backend.captureBytes` provides ring-buffer snapshots for GUI display only. See [ADR-007](adr/007-managed-terminal-sessions.md) (supersedes ADR-004's headless approach) and [ADR-014](adr/014-local-dtach-backend.md) (replaced tmux with dtach).
 
@@ -38,12 +38,12 @@ Now informed by concrete research: agents run in interactive mode inside managed
 - [x] Frontend SPA: findings panel + terminal panel
 - [x] Implement Proposal 33 layout: findings panel, terminal, Send & Next
 - [x] "New Task" dialog: task description (natural-language prompt) + working directory + optional completion criteria → spawns agent in managed dtach session
-- [x] "Attach to terminal" action: Attach button in DetailPanel and FindingsPanel (copies the `dtach -a` command); interactive xterm.js terminal in browser fully satisfies F4.6
+- [x] Terminal access: interactive xterm.js terminal in browser fully satisfies F4.6. Direct external `dtach -a` remains an operator escape hatch, but the UI no longer exposes a copy-attach button
 - [x] Task lifecycle: Open → InProgress → Completed/Cancelled (persisted in JSON)
 - [x] Stop agent from GUI (kill dtach session)
 - [x] `npx kookr` starts server (via `bin/kookr.js`). Automatic browser-opening is deferred as a small polish item — users currently open the URL printed on startup.
 
-**Demo:** Open Kookr in browser. Supervisor findings panel shows stuck agents with explanations. Click a finding, see its interactive terminal. Send a hint, auto-advance to next finding.
+**Demo:** Open Kookr in browser. Supervisor findings panel shows agents needing attention with explanations. Click a finding, see its interactive terminal. Send a hint, auto-advance to next finding.
 
 ---
 
@@ -53,7 +53,7 @@ Now informed by concrete research: agents run in interactive mode inside managed
 
 - [x] Detect agent questions via `Stop` hook (`last_assistant_message` provides context) — [PoC 001](poc/001-hook-mechanism-validation.md)
 - [x] Detect permission blocks via `PermissionRequest` hook (`tool_name`, `tool_input`, `permission_suggestions`) — [PoC 001](poc/001-hook-mechanism-validation.md)
-- [x] Prioritizer: rank agents by urgency (stuck > permission-blocked > waiting-for-input > errored > running)
+- [x] Prioritizer: rank findings severity-first (critical > warning > info), with V1 examples including `budget_exceeded`, `permission_blocked`, and `needs_input`
 - [x] Input box: type response → deliver via byte-level writes to the dtach session (`backend.write` / `backend.writeSequence`)
 - [x] Auto-advance: after sending, navigate to next bottleneck
 - [x] Skip agent (deprioritize to back of queue, supervisor keeps polling)
@@ -63,9 +63,9 @@ Now informed by concrete research: agents run in interactive mode inside managed
 - [x] Keyboard shortcuts (Ctrl+N = next bottleneck, Ctrl+Enter = send)
 - [ ] Stuck detection: deferred to V2 AI supervisor. Deterministic detection produces false positives; `stuck_loop` type was removed from codebase. V2 will use semantic analysis via the supervisor agent
 - [x] GitHub PR/issue awareness: extract references from agent tool_result events, poll state via `gh` CLI, diff for actionable changes, route alerts through attention queue, display in dashboard GitHub tab ([ADR-012](adr/012-github-pr-awareness.md))
-- [x] AI response suggestions: Claude Haiku generates predicted developer responses for waiting agents
+- [x] AI response suggestions: the configured LLM provider generates predicted developer responses for waiting agents
 - [x] Quick action buttons: extract binary/multiple-choice options from agent messages as clickable buttons
-- [x] AI task naming: Claude Haiku generates concise task names from prompts
+- [x] AI task naming: the configured LLM provider generates concise task names from prompts
 - [x] Token/cost tracking: incremental transcript parsing tracks tokens and costs per session
 - [x] Build version info: commit hash, branch, timestamp shown in TopBar
 - [x] Project-scoped playbooks: Markdown task templates with parameter interpolation ([ADR-011](adr/011-project-scoped-playbooks.md), F6)
@@ -76,17 +76,17 @@ Now informed by concrete research: agents run in interactive mode inside managed
 
 ---
 
-## Phase 4: Multi-Agent Type + Polish (V2)
+## Phase 4: Multi-Agent Type + Polish (post-V1/current)
 
 **Goal:** Support Codex CLI. Production-quality release.
 
-- [~] Codex CLI adapter (`src/adapters/codex-cli-adapter.ts`, `routing-agent-adapter.ts`, `codex-config.ts`) — **in progress**. Core adapter and per-session routing are wired. Remaining fork-side and Kookr-side gaps are tracked in [PoC 003](poc/003-codex-compatibility-gaps.md) (hook `--settings` loader, `features.codex_hooks` flag, missing `SessionEnd` / `PostToolUseFailure`, workspace-trust prompt bypass via `codex-config.ts`, MCP startup hang)
+- [x] Codex CLI adapter (`src/adapters/codex-cli-adapter.ts`, `routing-agent-adapter.ts`, `codex-config.ts`) — Kookr-managed Codex sessions are wired through the forked CLI. Remaining fork-side caveats are tracked in [PoC 003](poc/003-codex-compatibility-gaps.md) and project issue notes
 - [ ] Codex session discovery (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — date-partitioned, no PID, liveness via mtime)
 - [x] Agent type indicators in UI (`AgentTypeSelector.tsx`; agent type shown on finding cards)
 - [ ] Dark/light theme (OS preference)
 - [x] E2E tests with Playwright (concurrent scenarios)
 - [x] `npx kookr` entry point (`bin/kookr.js` launches the built server; publishing to npm is still pending)
-- [ ] Getting-started guide (README quickstart in place; long-form guide pending)
+- [x] Getting-started guide (README quickstart plus `docs/getting-started.md`)
 - [x] Linux + macOS testing
 
 **Demo:** Mixed fleet of Claude Code + Codex CLI agents, all managed from one Kookr instance. `npx kookr` just works.
@@ -98,10 +98,10 @@ Now informed by concrete research: agents run in interactive mode inside managed
 - Agent discovery via `~/.claude/sessions/` and `~/.codex/sessions/` (adopt externally-started agents into Kookr management)
 - Custom prioritization rules (config-based)
 - Anomaly detection patterns as SKILL.md files (community-contributable, V1 uses hardcoded functions)
-- Plugin/extension system (study openclaw's SDK first)
-- Session persistence and history
+- Third-party/general extension marketplace beyond the bundled Kookr Toolkit plugin and plugin-tier playbooks
+- Full session analytics database beyond current local JSON/JSONL/SQLite stores
 - Windows support
 - Gemini CLI adapter
-- Team mode / multi-user
-- Cloud deployment option
+- General team mode / multi-user workspace beyond explicit task/session sharing
+- Cloud-hosted Kookr runtime beyond the optional hosted relay transport
 - ~~GitHub integration (agent PR status)~~ — **Done** (Phase 3, [ADR-012](adr/012-github-pr-awareness.md)). V2: Haiku LLM extraction, webhook support, GitLab integration

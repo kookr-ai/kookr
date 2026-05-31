@@ -16,7 +16,7 @@ docs/roadmap.md        — 4 implementation phases (Phases 1-3 mostly complete)
 docs/adr/              — Architecture Decision Records: accepted technical decisions
 docs/poc/              — Proof-of-concept validation (hook mechanism)
 docs/reports/          — One-time analysis artifacts (gap reports, audits)
-src/core/              — Pure logic: types, parsers, task store, anomaly detection, attention queue, monitor
+src/core/              — Domain logic, contracts, parsers, stores, anomaly detection, attention queue, monitor, local persistence helpers
 src/adapters/          — I/O boundaries: TerminalBackend + LocalDtachBackend, Claude Code adapter, Codex CLI adapter
 src/server/            — HTTP (Hono) + WebSocket server, hook file watcher, reconciliation
 src/frontend/          — React SPA: components, Zustand store, WebSocket hook, CSS
@@ -33,7 +33,7 @@ plugin/agents/         — General-purpose review subagents
 
 1. **Reuse, don't reinvent** — Agent drivers from aegiscore, skill format from Claude Code. Check existing solutions before designing new ones.
 2. **Smart supervisor, not coder** — Kookr's AI understands what agents are doing and explains anomalies. It doesn't write code itself.
-3. **Simple first** — No plugins, no persistence, no cloud for V1. Single package, in-memory state.
+3. **Simple first** — Keep the product local-first and single-package by default. Prefer existing shipped mechanisms (local JSON/JSONL/SQLite stores, Kookr Toolkit plugin, hosted relay transport) before adding new persistence, plugin, or cloud surfaces.
 4. **TypeScript strict** — Full TypeScript stack, strict mode, discriminated unions, exhaustive switches.
 5. **Spec-driven** — Write spec → write tests (Vitest + Playwright) → implement.
 
@@ -43,7 +43,7 @@ plugin/agents/         — General-purpose review subagents
 - Frontend framework: React + Vite, Zustand for state (ADR-002)
 - Deployment: Local Node.js backend + browser frontend (ADR-003)
 - Testing: Vitest (unit/integration) + Playwright (E2E)
-- Agent execution: Managed terminal sessions — agents run in interactive mode inside dtach-backed sessions owned by LocalDtachBackend. One persistent attach per session, ring-buffered for replay. Input via byte-level writes, monitoring via hooks + transcript JSONL (ADR-014 supersedes ADR-007)
+- Agent execution: Managed terminal sessions — agents run in interactive mode inside dtach-backed sessions owned by LocalDtachBackend. One persistent attach per session, ring-buffered for replay. Input via byte-level writes. Anomaly monitoring uses hooks; transcript JSONL feeds token/cost and freshness tracking (ADR-014 supersedes ADR-007)
 - Agent monitoring: Claude Code hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) injected via `--settings` flag. Hooks are additive to user settings. See docs/poc/001-hook-mechanism-validation.md
 - Skill/agent distribution: Kookr Toolkit ships as a Claude Code plugin at `plugin/` with `.claude-plugin/marketplace.json` listing it. `ClaudeCodeAdapter` injects `--plugin-dir <kookr>/plugin` into every spawned `claude` so Kookr-spawned agents see the toolkit regardless of cwd. Other developers install via `/plugin marketplace add kookr-ai/kookr` + `/plugin install kookr-toolkit@kookr`.
 
@@ -111,7 +111,7 @@ A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on 
 - Read `docs/features.md` for what to build
 - Read `docs/architecture.md` for how
 - Before designing any new system, check if aegiscore or openclaw already solved it
-- Keep V1 minimal: single package, no monorepo, no plugins, in-memory state
+- Keep V1-era constraints in mind: single package and local-first. Prefer existing persistence and plugin mechanisms over introducing new surfaces.
 - **Verify with real data, don't assume** — Before designing a fix for any behavior bug, find the actual inputs causing the problem (hook logs in `~/.kookr/hooks/*.jsonl`, transcripts, DB records). Reproduce the issue programmatically with real data. Scan broadly to measure real-world frequency of both false-positives and true-positives. The data may reveal the right solution is fundamentally different from what you'd assume.
 - **Capitalize on gathered knowledge** — When a research task, POC, or debugging session produces reusable knowledge (how a system works, validated patterns, gotchas), distill it into a skill in `.claude/skills/`. Don't let hard-won insights evaporate with the conversation. If a skill already exists for the topic, update it. If not, create one. The bar is: "would a future agent benefit from knowing this without re-discovering it?"
 - **Persistence Mechanism Picker** — When you need to persist anything (a rule, a learning, a correction), consult the picker below **before** choosing where it goes. The system-prompt `# auto memory` section actively trains you toward memory as a default; this section overrides that default for behavioral rules.
