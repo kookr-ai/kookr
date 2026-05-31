@@ -183,6 +183,19 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     permissionBlockAlertProcessor.process({ tmuxName, preState, postState });
 
     const ownerTask = taskStore.findTaskBySession(tmuxName);
+    // Persist the agent's latest turn state on its session as the durable signal
+    // reconciliation later uses to tell a clean finish from a mid-turn crash when
+    // the session dies (see reconciliation.ts `endedOnCleanTurn`, #693). Skip
+    // `unknown` so a trailing `session_end` cannot erase a prior `completed_turn`.
+    if (ownerTask) {
+      const turnState = postState?.turnState;
+      if (turnState && turnState !== 'unknown') {
+        const session = ownerTask.sessions.find((s) => s.tmuxSession === tmuxName);
+        if (session && session.lastTurnState !== turnState) {
+          taskStore.updateSession(ownerTask.id, tmuxName, { lastTurnState: turnState });
+        }
+      }
+    }
     sessionActivityProcessor.process(tmuxName);
     const snapshot = monitor.getSnapshot();
     broadcastSnapshot();

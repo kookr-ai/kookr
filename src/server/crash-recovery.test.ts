@@ -91,6 +91,77 @@ describe('Crash Recovery', () => {
     expect(newSession.lastRelaunchedAt).toBeGreaterThan(0);
   });
 
+  test('does NOT relaunch a spawned task that finished its turn cleanly (#693)', async () => {
+    // A self-continuation chain link (parentTaskId set) that ended on a clean
+    // `completed_turn` is done, not crashed. reconcile auto-completes it; crash
+    // recovery must leave it terminal rather than re-running it and re-spawning
+    // its successor at startup.
+    const cwd = join(tempDir, 'cycle-n');
+    await mkdir(cwd, { recursive: true });
+    const parent = taskStore.createTask('Cycle N-1', cwd);
+    const child = taskStore.createTask({
+      prompt: 'Cycle N: do work then spawn cycle N+1',
+      cwd,
+      parentTaskId: parent.id,
+    });
+    const deadSessionId = `kookr-clean-${child.id.slice(0, 8)}`;
+    taskStore.addSession(child.id, {
+      tmuxSession: deadSessionId,
+      agentType: 'claude-code',
+      cwd,
+      createdAt: new Date(),
+      lastStatus: 'running',
+      lastTurnState: 'completed_turn',
+    });
+
+    // Reconcile auto-completes the clean-finished spawned task.
+    const reconcileResult = await reconcile(taskStore, terminal);
+    expect(reconcileResult.markedCompleted).toContain(deadSessionId);
+    expect(taskStore.getTask(child.id)!.status).toBe('completed');
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(result.relaunched).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].taskId).toBe(child.id);
+    expect(result.skipped[0].reason).toContain('finished its turn cleanly');
+    // Stays terminal — not reopened/relaunched.
+    expect(taskStore.getTask(child.id)!.status).toBe('completed');
+    expect(taskStore.getTask(child.id)!.sessions).toHaveLength(1);
+  });
+
+  test('still relaunches a spawned task that crashed mid-turn (#693 guard is clean-finish-only)', async () => {
+    // The clean-finish skip must not suppress genuine crash recovery: a spawned
+    // task whose newest session died while still `running` is a crash and is
+    // relaunched as before.
+    const cwd = join(tempDir, 'cycle-crash');
+    await mkdir(cwd, { recursive: true });
+    const parent = taskStore.createTask('Cycle parent', cwd);
+    const child = taskStore.createTask({
+      prompt: 'Cycle that crashed mid-work',
+      cwd,
+      parentTaskId: parent.id,
+    });
+    const deadSessionId = `kookr-crashed-${child.id.slice(0, 8)}`;
+    taskStore.addSession(child.id, {
+      tmuxSession: deadSessionId,
+      agentType: 'claude-code',
+      cwd,
+      createdAt: new Date(),
+      lastStatus: 'running',
+      lastTurnState: 'running',
+    });
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    expect(taskStore.getTask(child.id)!.status).toBe('terminated');
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(result.relaunched).toHaveLength(1);
+    expect(result.relaunched[0].taskId).toBe(child.id);
+    expect(taskStore.getTask(child.id)!.status).toBe('inProgress');
+  });
+
   test('skips when CWD does not exist', async () => {
     const cwd = join(tempDir, 'nonexistent-project');
     const task = await setupCrashedTask('Fix bug', cwd);

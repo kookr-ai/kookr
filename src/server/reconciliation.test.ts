@@ -197,6 +197,183 @@ describe('Startup Reconciliation', () => {
     expect(result.tasksTerminated).toContain(task.id);
   });
 
+  test('dead session that finished a clean turn (completed_turn) auto-completes, not terminated', async () => {
+    // #693: a spawned task whose agent emitted a normal Stop (idle, nothing
+    // pending) and then went away is a graceful finish — reconcile completes it
+    // directly instead of routing it to `terminated` for manual ack.
+    const task = taskStore.createTask('Spawn successor then end', '/cwd');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-clean',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'running',
+      lastTurnState: 'completed_turn',
+    });
+
+    // No backend session — the agent process is gone.
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.markedCompleted).toContain('kookr-clean');
+    expect(result.tasksCompleted).toContain(task.id);
+    expect(result.tasksTerminated).not.toContain(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('completed');
+  });
+
+  test('dead session that never reported a turn state (undefined) terminates — default-to-crash', async () => {
+    // The strict `=== 'completed_turn'` guard means a legacy/pre-#693 session
+    // with no recorded turn state defaults to the conservative terminate path.
+    const task = taskStore.createTask('No turn state recorded', '/cwd');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-legacy-noturn',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'running',
+      // lastTurnState intentionally omitted
+    });
+
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.tasksTerminated).toContain(task.id);
+    expect(result.tasksCompleted).not.toContain(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('terminated');
+  });
+
+  test('dead session that died mid-turn (running) still terminates for ack — D1 preserved', async () => {
+    // A crash mid-turn carries no clean-finish signal, so the conservative
+    // rfc-task-loss-prevention D1 behavior (→ terminated, user acks) is kept.
+    const task = taskStore.createTask('Crashed mid-work', '/cwd');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-crash',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'running',
+      lastTurnState: 'running',
+    });
+
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.tasksTerminated).toContain(task.id);
+    expect(result.tasksCompleted).not.toContain(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('terminated');
+  });
+
+  test('dead session blocked on input/permission terminates for ack (not a clean finish)', async () => {
+    const waiting = taskStore.createTask('Waiting on user', '/cwd');
+    taskStore.addSession(waiting.id, {
+      tmuxSession: 'kookr-waiting',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'running',
+      lastTurnState: 'waiting_for_input',
+    });
+
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.tasksTerminated).toContain(waiting.id);
+    expect(taskStore.getTask(waiting.id)!.status).toBe('terminated');
+  });
+
+  test('2-link spawn chain: link N auto-completes on clean finish while link N+1 keeps running', async () => {
+    // The acceptance scenario: cycle N spawns cycle N+1 (parentTaskId chain) and
+    // ends its own turn cleanly; its session is gone while N+1's is still live.
+    // N must reach a terminal status without cascade-killing the live successor.
+    const linkN = taskStore.createTask('Cycle N orchestrator', '/cwd');
+    taskStore.addSession(linkN.id, {
+      tmuxSession: 'kookr-cycleN',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'running',
+      lastTurnState: 'completed_turn',
+    });
+
+    const linkN1 = taskStore.createTask({
+      prompt: 'Cycle N+1 orchestrator',
+      cwd: '/cwd',
+      parentTaskId: linkN.id,
+    });
+    taskStore.addSession(linkN1.id, {
+      tmuxSession: 'kookr-cycleN1',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'running',
+    });
+
+    // Only the successor's session is live.
+    await backend.createSession(spec('kookr-cycleN1'));
+
+    const result = await reconcile(taskStore, backend);
+
+    // Link N reaches a terminal status (completed); link N+1 keeps running.
+    expect(result.tasksCompleted).toContain(linkN.id);
+    expect(taskStore.getTask(linkN.id)!.status).toBe('completed');
+    expect(result.resumed).toContain('kookr-cycleN1');
+    expect(taskStore.getTask(linkN1.id)!.status).toBe('inProgress');
+    // The completed parent did not drag down its still-live child's session.
+    expect(taskStore.getTask(linkN1.id)!.sessions[0].lastStatus).toBe('running');
+  });
+
+  test('clean-finish auto-complete is judged by the most recent session in a relaunch chain', async () => {
+    // An earlier session may have finished cleanly, but if the newest leg died
+    // mid-turn the task is a crash and must terminate.
+    const task = taskStore.createTask('Relaunched after clean leg', '/cwd');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-old',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'completed',
+      lastTurnState: 'completed_turn',
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-new',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'running',
+      lastTurnState: 'running',
+    });
+
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.tasksTerminated).toContain(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('terminated');
+  });
+
+  test('Ralph loop with a clean-finished dead session is still exempt (no completion mid-loop)', async () => {
+    // The clean-finish path must not override the Ralph between-iterations
+    // exemption: a `completed_turn` is exactly what a finished iteration looks
+    // like, and completing the parent there would abort the loop.
+    const task = taskStore.createTask('Looped clean turn', '/cwd');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-loop-clean',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'completed',
+      lastTurnState: 'completed_turn',
+    });
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = {
+      prompt: 'iterate',
+      iterationCap: 5,
+      currentIteration: 1,
+      status: 'running',
+      lastIterationStartedAt: 0,
+      cumulativeIterations: 1,
+    };
+
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.tasksCompleted).toHaveLength(0);
+    expect(result.tasksTerminated).toHaveLength(0);
+    expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+  });
+
   test('orphan backend session not in tasks.json - logged as warning', async () => {
     await backend.createSession(spec('kookr-orphan'));
 
