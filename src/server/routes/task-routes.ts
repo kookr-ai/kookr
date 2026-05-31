@@ -4,6 +4,9 @@ import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
 import { normalizeAgentSelection } from '../../core/agent-types.js';
 import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
 import { deleteTask } from '../use-cases/delete-task.js';
+import { completeTask } from '../agent-lifecycle.js';
+import { isTerminalStatus } from '../../core/task-status.js';
+import { InvalidTransitionError } from '../../core/tasks.js';
 import { launchTask, DrainModeError, isEffortValidationError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import type { LaunchDependency } from '../../core/playbook.js';
@@ -215,6 +218,95 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({ ok: true });
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  // Non-destructive terminal transition (issue #691). Marks a finished task
+  // `completed` and tears down its idle dtach session via the same lifecycle
+  // handler the WS `completeTask` message uses — so projections, the schedule
+  // service, and the coordinator all observe the terminal state. Unlike DELETE
+  // this preserves the task's history; unlike cancel it carries no kill/abort
+  // semantics. It is the documented, safe way for an operator or orchestrating
+  // agent to clear its own finished helper tasks.
+  //
+  // A task completed this way has no completion digest, so it never trips the
+  // `done_not_cleared` coordinator finding (that detector only fires on
+  // completed tasks that still carry a digest) — yet it is terminal, so it
+  // leaves the default actionable list like any other completed task.
+  app.post('/api/tasks/:id/complete', async (c) => {
+    const id = c.req.param('id');
+    if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+
+    // Idempotent: re-completing a task that is already `completed`, or one the
+    // user deliberately `cancelled`, is a safe no-op (neither can transition to
+    // `completed`), so retries and double-clicks are harmless. `terminated` is
+    // intentionally NOT short-circuited here — the state machine allows
+    // terminated → completed (the documented "acknowledge a dead-session task"
+    // path), so we fall through and perform that ack below.
+    if (task.status === 'completed' || task.status === 'cancelled') {
+      return c.json({ ok: true, task, alreadyTerminal: true });
+    }
+
+    // An active Ralph loop owns its own iteration lifecycle: a full completeTask
+    // teardown (status flip, lease release, worktree cleanup) here would corrupt
+    // the next iteration's state. Refuse rather than silently break the loop —
+    // use cancel to stop a loop. This reuses the WS handler's active-loop
+    // detection but refuses outright rather than doing the WS path's "complete
+    // this iteration" partial session teardown.
+    if (task.ralphLoop && (task.ralphLoop.status === 'running' || task.ralphLoop.status === 'paused')) {
+      return c.json(
+        { error: 'Task has an active Ralph loop; cancel it to stop the loop', code: 'ralph_loop_active' },
+        409,
+      );
+    }
+
+    // Only `inProgress` (finished its work) and `terminated` (dead sessions
+    // awaiting ack) can become `completed`. The state machine deliberately
+    // forbids open/pending → completed (a task cannot skip inProgress); a task
+    // that never started has no deliverable to mark done — delete or cancel it.
+    if (task.status !== 'inProgress' && task.status !== 'terminated') {
+      return c.json(
+        {
+          error: `Cannot complete a task in status "${task.status}"; only in-progress or terminated tasks can be completed`,
+          code: 'not_in_progress',
+        },
+        409,
+      );
+    }
+
+    try {
+      await completeTask(id, {
+        adapter,
+        monitor,
+        taskStore,
+        hookWatcher,
+        watchdog,
+        shadowRegistry: deps.shadowRegistry,
+        suppressionTracker: deps.suppressionTracker,
+        tokenTracker: deps.tokenTracker,
+        queue: deps.queue,
+        interactionLog: deps.interactionLog,
+      });
+      // Keep the schedule service in lockstep, exactly as the WS path does, so a
+      // scheduled task's execution receipt records the terminal outcome.
+      await deps.scheduleService?.recordTaskTerminalOutcome(id, 'completed');
+      broadcastSnapshotWithCoordinator();
+      return c.json({ ok: true, task: taskStore.getTask(id) });
+    } catch (err) {
+      // Concurrency: if a racing complete moved the task terminal between our
+      // guard read and the transition, taskStore.completeTask throws
+      // InvalidTransitionError. That request effectively succeeded — report the
+      // idempotent no-op rather than a misleading 500.
+      if (err instanceof InvalidTransitionError) {
+        const current = taskStore.getTask(id);
+        if (current && isTerminalStatus(current.status)) {
+          return c.json({ ok: true, task: current, alreadyTerminal: true });
+        }
+      }
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
     }

@@ -29,6 +29,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
 import { launchTask, DrainModeError, EffortValidationError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
+import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
 
 function mkApp(deps: Partial<TaskRouteDeps>): Hono {
   const app = new Hono();
@@ -428,5 +429,173 @@ describe('DELETE /api/tasks/:id error paths', () => {
     }).request('/api/tasks/does-not-exist', { method: 'DELETE' });
     expect(res.status).toBe(404);
     expect(vi.mocked(deleteTask)).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/tasks/:id/complete (issue #691)', () => {
+  function mkCompleteDeps(taskStore: TaskStore): { deps: TaskRouteDeps; stop: ReturnType<typeof vi.fn> } {
+    const queue = new AttentionQueue();
+    const monitor = new Monitor(taskStore, queue);
+    const stop = vi.fn(async () => {});
+    const deps = {
+      taskStore,
+      monitor,
+      queue,
+      adapter: { stop } as never,
+      hookWatcher: { stop: vi.fn(), isWatching: () => false, watch: vi.fn() } as never,
+      watchdog: { unregisterAgent: vi.fn() } as never,
+      broadcastToAll: vi.fn(),
+      serverCwd: '/server',
+    } as unknown as TaskRouteDeps;
+    return { deps, stop };
+  }
+
+  function addLiveSession(taskStore: TaskStore, taskId: string, tmuxSession = 'kookr-live'): void {
+    taskStore.addSession(taskId, {
+      tmuxSession,
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+    });
+  }
+
+  test('marks an in-progress task completed and tears down its live session', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Shipped the PR', '/repo');
+    addLiveSession(taskStore, task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+
+    const { deps, stop } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; task: { status: string } };
+    expect(body.ok).toBe(true);
+    expect(body.task.status).toBe('completed');
+    expect(taskStore.getTask(task.id)!.status).toBe('completed');
+    // The idle dtach session is torn down through the lifecycle handler.
+    expect(stop).toHaveBeenCalledWith('kookr-live');
+    // No completion digest is set, so the task never trips done_not_cleared.
+    expect(taskStore.getTask(task.id)!.completionDigest).toBeUndefined();
+  });
+
+  test('is idempotent: completing an already-terminal task is a no-op 200', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Already done', '/repo');
+    addLiveSession(taskStore, task.id);
+    taskStore.completeTask(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('completed');
+
+    const { deps, stop } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; alreadyTerminal?: boolean };
+    expect(body.ok).toBe(true);
+    expect(body.alreadyTerminal).toBe(true);
+    // No teardown work on a task that was already terminal.
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  test('acknowledges a terminated task by completing it (terminated → completed)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Sessions died mid-run', '/repo');
+    addLiveSession(taskStore, task.id);
+    // terminateTask stops the live session (lastStatus: completed) and moves the
+    // task to the terminal `terminated` state — the dead-session-awaiting-ack case.
+    taskStore.terminateTask(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('terminated');
+
+    const { deps } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; alreadyTerminal?: boolean; task: { status: string } };
+    expect(body.ok).toBe(true);
+    expect(body.alreadyTerminal).toBeUndefined();
+    expect(body.task.status).toBe('completed');
+    expect(taskStore.getTask(task.id)!.status).toBe('completed');
+  });
+
+  test('a cancelled task is an idempotent no-op (cannot transition to completed)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Deliberately killed', '/repo');
+    addLiveSession(taskStore, task.id);
+    taskStore.cancelTask(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('cancelled');
+
+    const { deps } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; alreadyTerminal?: boolean; task: { status: string } };
+    expect(body.alreadyTerminal).toBe(true);
+    expect(taskStore.getTask(task.id)!.status).toBe('cancelled');
+  });
+
+  test('404s for an unknown task id', async () => {
+    const taskStore = new TaskStore();
+    const { deps } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request('/api/tasks/does-not-exist/complete', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  test('409s for a task that never started (cannot skip inProgress)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Queued helper', '/repo'); // status: open
+    const { deps, stop } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(409);
+    const body = await res.json() as { code: string };
+    expect(body.code).toBe('not_in_progress');
+    expect(taskStore.getTask(task.id)!.status).toBe('open');
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  test('409s rather than corrupting a task with an active Ralph loop', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Ralph root', '/repo');
+    addLiveSession(taskStore, task.id);
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = {
+      status: 'running',
+      iteration: 1,
+    } as never;
+
+    const { deps, stop } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(409);
+    const body = await res.json() as { code: string };
+    expect(body.code).toBe('ralph_loop_active');
+    expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  test('403s for remote-owned SharedTask ids', async () => {
+    const taskStore = new TaskStore();
+    const { deps } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request('/api/tasks/shared:abc123/complete', { method: 'POST' });
+    expect(res.status).toBe(403);
+  });
+
+  test('a task completed via this route does not surface as a done_not_cleared finding', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Helper that finished', '/repo');
+    addLiveSession(taskStore, task.id);
+
+    const { deps } = mkCompleteDeps(taskStore);
+    await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    const completed = taskStore.getTask(task.id)!;
+    expect(completed.status).toBe('completed');
+    const state = buildCoordinatorSnapshotState({ tasks: [completed] }, []);
+    expect(state.outputs.some((o) => o.detectorId === 'done_not_cleared')).toBe(false);
+
+    // Control: the detector DOES fire on a completed task that carries a digest,
+    // proving the exclusion above is due to the absent digest, not a no-op setup.
+    taskStore.setCompletionDigest(task.id, { bullets: ['did the thing'], filesChanged: [] });
+    const withDigest = buildCoordinatorSnapshotState({ tasks: [taskStore.getTask(task.id)!] }, []);
+    expect(withDigest.outputs.some((o) => o.detectorId === 'done_not_cleared')).toBe(true);
   });
 });

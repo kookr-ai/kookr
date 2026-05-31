@@ -66,6 +66,14 @@ export interface TaskRouteDeps {
   tasksFile?: string;
   kookrDir?: string;
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
+  /**
+   * Optional lifecycle collaborators consumed by `POST /api/tasks/:id/complete`
+   * (issue #691). They flow through from the full RouteDeps at runtime; the
+   * lifecycle `completeTask` tolerates their absence, so tests may omit them.
+   */
+  interactionLog?: DeferredInteractionLogWriter;
+  scheduleService?: ScheduleService;
+  tokenTracker?: TokenTracker;
 }
 
 /** Narrower deps for coordinator suppression / acknowledgement / mark-prior-done routes. */
