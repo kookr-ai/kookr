@@ -1,6 +1,6 @@
 # Kookr Toolkit — Claude Code Plugin
 
-Skills and review subagents extracted from [Kookr](https://github.com/kookr-ai/kookr) for use with Claude Code in any project.
+Skills and review subagents shipped with [Kookr](https://github.com/kookr-ai/kookr) for use with Claude Code in any project.
 
 ## Install
 
@@ -24,11 +24,16 @@ After installation, the toolkit is available in every Claude Code session on you
 
 **Workflow:** `git-commit-discipline`, `tdd-workflow`, `token-efficiency`, `claude-code-metrics-analysis`, `hook-driven-workflow-enforcement`, `e2e-agent-testing`, `github-issue-workflow`, `github-trending-repos`.
 
+**Kookr operations:** Kookr-specific skills that are useful from any working
+directory, such as task spawning, task supervision, and CLI/API workflows. These
+belong in the plugin because Kookr injects the toolkit into spawned agents
+regardless of cwd.
+
 **OSS contribution:** `oss-fork-manager`, `oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `pr-contribution-excellence` (bundled with per-repo distilled patterns under `repo/`), `find-best-reviewers`, `rust-lang-rust-{tests,pre-push}`.
 
 **Reviewer specialists (`plugin/reviewer-specialists/`):** narrow prompt templates (`conventions-specialist`, `correctness-specialist`, `deadcode-specialist`, `test-specialist`, `a11y-specialist`) consumed by the bundled `pre-pr-review` skill.
 
-**OSS contribution hooks (not in the marketplace plugin):** the PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) live in the Kookr repo's `hooks/` and `scripts/` dirs, not under `plugin/`, because they integrate with Kookr-specific runtime APIs and config — keeping `plugin/` Kookr-agnostic preserves portability for non-Kookr users of the marketplace plugin. Clone the Kookr repo and run the install scripts (see next section) to wire them.
+**OSS contribution hooks (not in the marketplace plugin):** the PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) live in the Kookr repo's `hooks/` and `scripts/` dirs, not under `plugin/`, because they require explicit user-global hook installation and support runtimes where plugin hooks are not injected. Clone the Kookr repo and run the install scripts (see next section) to wire them.
 
 **Reviewer distillation experiment:** `reviewer-distillation-{judge,mutate,predict,prepare,select,meta}`.
 
@@ -64,7 +69,15 @@ claude --plugin-dir ~/git/kookr/plugin
 
 Kookr's `ClaudeCodeAdapter` already injects `--plugin-dir` automatically for every spawned Claude Code agent, so any Kookr-spawned task sees the toolkit regardless of the consumer's plugin install state.
 
-Content under `plugin/` must stay portable for developers who install the toolkit outside the Kookr repo. Do not add Kookr runtime variables, local Kookr state paths, or Kookr development commands here, even behind fallback guards. Kookr-aware personal playbooks belong in the user playbook tier; Kookr project-only skills, agents, and playbooks belong in the repo's project-scope directories.
+Content under `plugin/` is distributed to Kookr-spawned agents in any cwd. It may
+contain both general-purpose engineering guidance and Kookr-specific operational
+guidance when that guidance is useful outside the Kookr source repository.
+
+The project-scope `.claude/skills/` and `.claude/agents/` directories are for
+skills and agents whose natural cwd is the Kookr repository itself, such as
+editing Kookr source, tests, hooks, release scripts, or repo-local architecture
+docs. Do not keep Kookr runtime-operation skills there if agents need them while
+working in other repositories.
 
 ## Versioning
 

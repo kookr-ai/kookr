@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Installer for Kookr's in-repo Claude Code hooks and companion skills.
 #
-# Hooks installed today (live under `hooks/` because they integrate with
-# Kookr's HTTP API, `~/.kookr/` config, and `KOOKR_*` env vars — the
-# `plugin/` tree intentionally stays Kookr-agnostic so the marketplace
-# install remains portable for non-Kookr users):
+# Hooks installed today (live under `hooks/` because they require explicit
+# user-global hook installation and support runtimes where plugin hooks are not
+# injected):
 #   - oss-stale-scout-gate.sh — blocks gh pr create that references a
 #     closed upstream issue. (PreToolUse / Bash)
 #   - pr-workflow-gate.sh — blocks gh pr create until the pre-pr-review
@@ -78,8 +77,7 @@ SKILLS=()
 # Plugin-distributed assets that several skills/playbooks read by user-global
 # path. The symlink makes those `cat ~/.claude/...` lookups resolve to the
 # bundled plugin copy, which avoids forcing every plugin skill to encode a
-# Kookr-specific resolver (the plugin tree must stay portable per
-# `plugin/README.md`).
+# resolver for legacy user-global companion paths.
 PLUGIN_ASSETS=(
   $'plugin/reviewer-specialists\t.claude/reviewer-specialists'
   $'plugin/skills/pre-pr-review\t.claude/skills/pre-pr-review'

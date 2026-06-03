@@ -104,18 +104,18 @@ assert_case \
   ""
 
 assert_case \
-  "plugin skill with kookr prefix warns" \
+  "plugin skill with kookr prefix passes" \
   "$plain_repo" \
   "$(event_write "$plain_repo/plugin/skills/kookr-example/SKILL.md")" \
   0 \
-  "plugin skills must not use"
+  ""
 
 assert_case \
-  "plugin agent with kookr prefix warns" \
+  "plugin agent with kookr prefix passes" \
   "$plain_repo" \
   "$(event_write "$plain_repo/plugin/agents/kookr-agent.md")" \
   0 \
-  "plugin agents must not use"
+  ""
 
 assert_case \
   "kookr project agent without prefix warns" \

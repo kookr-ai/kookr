@@ -48,8 +48,9 @@ assert_fail() {
 TMP=$(mktemp -d)
 trap "rm -rf '$TMP'" EXIT
 
-# Case 1: clean repo — kookr-* in .claude/skills, unprefixed in plugin/skills, empty agents
-mkdir -p "$TMP/c1/.claude/skills/kookr-foo" "$TMP/c1/plugin/skills/general-skill"
+# Case 1: clean repo — kookr-* in .claude/skills, plugin may contain general
+# skills and Kookr-runtime skills useful outside this repo.
+mkdir -p "$TMP/c1/.claude/skills/kookr-foo" "$TMP/c1/plugin/skills/general-skill" "$TMP/c1/plugin/skills/kookr-cli"
 assert_pass "clean repo passes" "$TMP/c1"
 
 # Case 2: unprefixed dir in .claude/skills/
@@ -70,9 +71,9 @@ assert_pass "kookr-* agent in .claude/agents passes" "$TMP/c3b"
 mkdir -p "$TMP/c4/.claude/skills/kookr-foo" "$TMP/c4/plugin/skills/kookr-foo"
 assert_fail "name collision rejected" "$TMP/c4"
 
-# Case 5: kookr- prefix in plugin/skills
+# Case 5: kookr- prefix in plugin/skills is allowed for Kookr-runtime skills
 mkdir -p "$TMP/c5/plugin/skills/kookr-bad"
-assert_fail "kookr- prefix in plugin/skills rejected" "$TMP/c5"
+assert_pass "kookr- prefix in plugin/skills passes" "$TMP/c5"
 
 # Case 6: unqualified subagent_type in plugin/skills
 # Fixture must include plugin/agents/<name>.md so the gate's dynamic AGENT_NAMES
