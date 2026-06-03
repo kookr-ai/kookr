@@ -22,8 +22,8 @@ related: rfc-iterative-review
 │   ├── skills/          ← KOOKR REPO-LOCAL skills: dirs MUST start with `kookr-`
 │   └── agents/          ← KOOKR REPO-LOCAL agents: files MUST start with `kookr-`
 └── plugin/
-    ├── skills/          ← DISTRIBUTED skills for Kookr-spawned agents in any cwd
-    └── agents/          ← DISTRIBUTED agents for Kookr-spawned agents in any cwd
+    ├── skills/          ← DISTRIBUTED skills for plugin-backed agents in any cwd
+    └── agents/          ← DISTRIBUTED agents for plugin-backed agents in any cwd
 ```
 
 `.claude/` artifacts are invisible to other projects — they only load when Claude
@@ -32,7 +32,9 @@ agents whose natural working directory is the Kookr repository itself: editing
 Kookr source, maintaining Kookr tests, or inspecting Kookr repo-local state.
 
 `plugin/` is the distributed Kookr Toolkit. Kookr injects it into spawned agents
-regardless of their cwd, so it is the right home for both:
+regardless of cwd, and non-spawned Claude Code sessions can also see it when the
+plugin is installed or synced into Claude's skill/plugin directories. It is the
+right home for both:
 
 - Kookr-specific operational skills that agents need while working in other
   repositories, such as spawning, supervising, or coordinating Kookr tasks.
@@ -64,8 +66,9 @@ only meaningful while the agent's cwd is the Kookr repository, for example:
   conventions.
 - Inspecting implementation details that only exist in the Kookr checkout.
 
-A skill is **distributed** (must live in `plugin/skills/`) if it is useful to a
-Kookr-spawned agent outside the Kookr repository, including:
+A skill is **distributed** (must live in `plugin/skills/`) if it is useful to an
+agent outside the Kookr repository through plugin injection, marketplace install,
+or local sync, including:
 
 - Kookr operational workflows, such as spawning child tasks, supervising task
   chains, or using Kookr CLI/API commands while working in another repo.
