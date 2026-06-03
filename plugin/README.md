@@ -26,8 +26,9 @@ After installation, the toolkit is available in every Claude Code session on you
 
 **Kookr operations:** Kookr-specific skills that are useful from any working
 directory, such as task spawning, task supervision, and CLI/API workflows. These
-belong in the plugin because Kookr injects the toolkit into spawned agents
-regardless of cwd.
+belong in the plugin because it is the distributed toolkit surface: Kookr
+injects it into spawned agents regardless of cwd, and regular Claude Code
+sessions can also see it when the plugin is installed or synced locally.
 
 **OSS contribution:** `oss-fork-manager`, `oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `pr-contribution-excellence` (bundled with per-repo distilled patterns under `repo/`), `find-best-reviewers`, `rust-lang-rust-{tests,pre-push}`.
 
@@ -67,11 +68,13 @@ claude --plugin-dir ~/git/kookr/plugin
 > /reload-plugins   # picks up edits without restart
 ```
 
-Kookr's `ClaudeCodeAdapter` already injects `--plugin-dir` automatically for every spawned Claude Code agent, so any Kookr-spawned task sees the toolkit regardless of the consumer's plugin install state.
+Kookr's `ClaudeCodeAdapter` already injects `--plugin-dir` automatically for every spawned Claude Code agent, so any Kookr-spawned task sees the toolkit regardless of the consumer's plugin install state. Non-spawned Claude Code sessions can also use the same skills when the plugin is installed from the marketplace or synced into the user's Claude Code skill/plugin directories.
 
-Content under `plugin/` is distributed to Kookr-spawned agents in any cwd. It may
-contain both general-purpose engineering guidance and Kookr-specific operational
-guidance when that guidance is useful outside the Kookr source repository.
+Content under `plugin/` is the canonical distributed toolkit content. It may
+reach agents through Kookr's `--plugin-dir` injection, Claude Code plugin
+installation, or local sync/symlink setup. It may contain both general-purpose
+engineering guidance and Kookr-specific operational guidance when that guidance
+is useful outside the Kookr source repository.
 
 The project-scope `.claude/skills/` and `.claude/agents/` directories are for
 skills and agents whose natural cwd is the Kookr repository itself, such as

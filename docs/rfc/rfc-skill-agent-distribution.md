@@ -82,7 +82,7 @@ Concretely, today the maintainer has shipped what is supposed to be the same `os
 
 ## Design principles
 
-1. **Two homes, not five.** Every Kookr-managed skill or agent is either *repo-local* (loads only in the kookr repo) or *distributed* (ships to Kookr-spawned agents via the toolkit plugin).
+1. **Two homes, not five.** Every Kookr-managed skill or agent is either *repo-local* (loads only in the kookr repo) or *distributed* (ships via the toolkit plugin, whether reached by Kookr injection, marketplace install, or local sync).
 2. **No project-scope agents.** All agents go in the plugin. Eliminates the bypass-mode silent drop.
 3. **The plugin is the only ship surface.** No skills get distributed via copy/symlink/user-scope from this repo.
 4. **User-scope is for personal deps Kookr does not own.** Stay out of `~/.claude/skills/*` and `~/.claude/agents/*` unless the artifact has runtime deps that can't be vendored.
@@ -107,9 +107,11 @@ Rules:
 - A skill whose natural cwd is the Kookr repository, such as editing Kookr
   source, tests, hooks, build/release scripts, or repo-local architecture docs
   → `<kookr>/.claude/skills/kookr-<name>/`.
-- A skill that a Kookr-spawned agent needs while working in another repository
+- A skill that an agent needs while working outside the Kookr repository
   → `<kookr>/plugin/skills/<name>/`. This includes Kookr runtime operations
-  such as `kookr-spawn`, task supervision, and CLI/API usage.
+  such as `kookr-spawn`, task supervision, and CLI/API usage. The agent may get
+  the skill through Kookr's `--plugin-dir` injection, marketplace plugin
+  installation, or local sync/symlink setup.
 - All agents → `<kookr>/plugin/agents/<name>.md`. No project-scope agents.
 
 ### B. Eliminate duplicates (one-time cleanup)
