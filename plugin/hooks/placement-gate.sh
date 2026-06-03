@@ -207,7 +207,7 @@ while IFS= read -r raw_path; do
           kookr-*) ;;
           *)
             warnings="${warnings}
-- $rel: project-scope Kookr skills must start with 'kookr-'. If this is general-purpose, use plugin/skills/$skill/ instead."
+- $rel: project-scope Kookr skills must start with 'kookr-'. If agents need this outside the Kookr repo, use plugin/skills/$skill/ instead."
             ;;
         esac
       fi
@@ -215,17 +215,6 @@ while IFS= read -r raw_path; do
         warnings="${warnings}
 - $rel: plugin/skills/$skill/ already exists; this project-scope skill would shadow or duplicate the plugin skill."
       fi
-      ;;
-    plugin/skills/kookr-*/*)
-      skill=${rel#"plugin/skills/"}
-      skill=${skill%%/*}
-      warnings="${warnings}
-- $rel: plugin skills must not use the 'kookr-' prefix. Drop the prefix for published skills, or move Kookr-internal content to .claude/skills/$skill/."
-      ;;
-    plugin/agents/kookr-*.md)
-      agent=${rel#"plugin/agents/"}
-      warnings="${warnings}
-- $rel: plugin agents must not use the 'kookr-' prefix. Drop the prefix for published agents, or move Kookr-internal content to .claude/agents/$agent."
       ;;
     .claude/agents/*)
       if [ "$is_kookr_repo" = 1 ]; then
@@ -236,7 +225,7 @@ while IFS= read -r raw_path; do
           kookr-*) ;;
           *)
             warnings="${warnings}
-- $rel: project-scope Kookr agents must start with 'kookr-'. General-purpose agents belong in plugin/agents/."
+- $rel: project-scope Kookr agents must start with 'kookr-'. Distributed agents belong in plugin/agents/."
             ;;
         esac
       fi
