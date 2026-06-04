@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { wireEventPipeline, type EventPipelineDeps } from './event-pipeline.js';
+import { HookIngestion, mintEventId } from './hook-ingestion.js';
 import type { AgentEvent, EventMeta } from '../core/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
 import { TaskStore } from '../core/tasks.js';
@@ -1061,5 +1062,111 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #705: end-to-end correlation id. The id minted when a hook event is ingested
+// must appear UNCHANGED on the finding derived from that event, so operators
+// have a single lineage id (hook event -> detector -> finding -> alert).
+// ---------------------------------------------------------------------------
+
+describe('event-pipeline: end-to-end correlation id (#705)', () => {
+  let taskStore: TaskStore;
+  let queue: AttentionQueue;
+  let monitor: Monitor;
+  let terminal: FakeTerminalBackend;
+  let adapter: ClaudeCodeAdapter;
+  let tokenTracker: TokenTracker;
+  let watchdog: Watchdog;
+  let githubScanner: GitHubScannerService;
+
+  beforeEach(() => {
+    _resetLifecycles();
+    taskStore = new TaskStore();
+    queue = new AttentionQueue();
+    monitor = new Monitor(taskStore, queue);
+    terminal = new FakeTerminalBackend();
+    adapter = new ClaudeCodeAdapter(terminal, taskStore);
+    tokenTracker = new TokenTracker();
+    watchdog = new Watchdog();
+    const githubStateStore = new GitHubStateStore();
+    githubScanner = new GitHubScannerService({
+      taskStore, stateStore: githubStateStore,
+      fetcher: { fetchPR: async () => null, fetchIssue: async () => null } as any,
+      config: { enabled: false, scanIntervalMs: 60000, fetchIntervalMs: 60000 },
+      onChanges: () => {},
+    });
+  });
+
+  function setup() {
+    const broadcastToAll = () => {};
+    wireEventPipeline({
+      adapter, monitor, taskStore, tokenTracker, watchdog,
+      githubScanner, llmClient: null, serverCwd: '/test',
+      broadcastToAll,
+      ralphLoopService: new RalphLoopService({
+        taskStore, monitor, serverCwd: '/test', broadcastToAll,
+        interactionLog: undefined, ralphCycler: undefined,
+        terminalBackend: terminal, tokenTracker,
+        launchFreshTaskSession: vi.fn(async () => 'unused-session'),
+        completeTask: vi.fn(async () => undefined),
+      }),
+    });
+  }
+
+  async function launchAgent() {
+    const task = createTaskForMutation(taskStore, 'Test', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Test', '/cwd');
+    monitor.registerAgent(tmuxName);
+    return tmuxName;
+  }
+
+  test('the ingested event and the emitted finding carry the SAME correlation id', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+
+    // Ingest a Stop hook through HookIngestion (wrapping the SAME adapter the
+    // pipeline is wired to). The adapter fires onEvent synchronously, so by the
+    // time ingest returns the monitor has produced the needs_input finding.
+    const ingestion = new HookIngestion({ adapter });
+    const result = ingestion.ingestFromHttp(tmuxName, makeStopHook());
+
+    expect(result.dispatched).toBe(true);
+    expect(result.eventId).toMatch(/^evt_[0-9a-f]{12}_\d+$/);
+
+    const state = monitor.getSnapshot().find((s) => s.agentId === tmuxName);
+    expect(state?.anomaly?.type).toBe('needs_input');
+    // The finding carries the id minted at ingestion — threaded unchanged.
+    expect(state?.anomaly?.eventId).toBe(result.eventId);
+    // And it equals the pure recomputation from (session, sequence).
+    expect(result.eventId).toBe(mintEventId(tmuxName, result.injectResult.sequence!));
+  });
+
+  test('a same-fingerprint re-derivation keeps the FIRST event correlation id (replay/reconnect-safe)', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+
+    const ingestion = new HookIngestion({ adapter });
+    const first = ingestion.ingestFromHttp(tmuxName, makeStopHook());
+    expect(monitor.getSnapshot().find((s) => s.agentId === tmuxName)?.anomaly?.eventId)
+      .toBe(first.eventId);
+
+    // A SECOND Stop with identical content re-derives the same needs_input
+    // finding (same fingerprint) but advances the sequence — a naive impl would
+    // re-mint a fresh id. Inject straight through the adapter to bypass
+    // HookIngestion dedup so the pipeline actually re-runs detection on the new
+    // sequence. The freshly-minted id (sequence 2) must differ from the first.
+    const naiveSecondId = mintEventId(tmuxName, 2);
+    expect(naiveSecondId).not.toBe(first.eventId);
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+
+    const state = monitor.getSnapshot().find((s) => s.agentId === tmuxName);
+    expect(state?.anomaly?.type).toBe('needs_input');
+    // First-seen-wins: the persisting finding keeps the id of the event that
+    // originally raised it, so the lineage id is stable across re-derivation
+    // (and a later snapshot rebuild on reconnect returns that same id).
+    expect(state?.anomaly?.eventId).toBe(first.eventId);
+    expect(state?.anomaly?.eventId).not.toBe(naiveSecondId);
   });
 });

@@ -30,6 +30,16 @@ export interface Anomaly {
   subType?: 'stop' | 'ask_user_question';
   /** Shadow-only: strategy confidence for offline precision analysis. */
   confidence?: AnomalyConfidence;
+  /**
+   * End-to-end correlation id (#705). Minted when the triggering hook event is
+   * ingested ({@link mintEventId} in `hook-ingestion.ts`) and threaded unchanged
+   * into the finding so operators have a single lineage id tying a hook event →
+   * the detector that fired → this finding → the emitted alert. Stable across
+   * durable replay and WebSocket reconnect — never regenerated downstream.
+   * Absent on findings not derived from a hook event (e.g. watchdog-only
+   * liveness verdicts). Kept in sync with `shared/contracts/anomalies.ts`.
+   */
+  eventId?: string;
 }
 
 /** Serialized anomaly for persistence - detectedAt is ISO string, not Date. */

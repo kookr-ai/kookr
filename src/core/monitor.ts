@@ -184,7 +184,7 @@ export class Monitor {
    * Appends to the existing event window (capped at windowSize) and runs anomaly detection.
    * Silently drops events for explicitly stopped agents to prevent resurrection.
    */
-  processEvents(agentId: string, events: AgentEvent[]): void {
+  processEvents(agentId: string, events: AgentEvent[], opts?: { eventId?: string }): void {
     // Guard: reject events for explicitly stopped agents (prevents hook watcher race)
     if (this.stoppedAgents.has(agentId)) return;
 
@@ -218,7 +218,11 @@ export class Monitor {
     // the counter once per snapshot tick instead of once per suppressed Stop.
     const evaluation = evaluateAnomalies(capped, agentId, this.anomalyConfig);
     const rawAnomaly = evaluation.anomaly;
-    const anomaly = this.stabilizeEventAnomaly(agentId, this.suppressIfSubagentsRunning(rawAnomaly, agentId));
+    const anomaly = this.stabilizeEventAnomaly(
+      agentId,
+      this.suppressIfSubagentsRunning(rawAnomaly, agentId),
+      opts?.eventId,
+    );
     this.recordDetectionTelemetry(agentId, evaluation.checkedTypes, anomaly);
     if (rawAnomaly?.type === 'needs_input' && anomaly === null) {
       recordSuppression('needs_input');
@@ -514,12 +518,21 @@ export class Monitor {
     this.stoppedAgents.add(agentId);
   }
 
-  private stabilizeEventAnomaly(agentId: string, anomaly: Anomaly | null): Anomaly | null {
+  private stabilizeEventAnomaly(
+    agentId: string,
+    anomaly: Anomaly | null,
+    eventId?: string,
+  ): Anomaly | null {
     if (!anomaly) {
       this.lastEventAnomaly.delete(agentId);
       return null;
     }
-    const stable = this.withStableEventDetectedAt(agentId, anomaly);
+    // Stamp the triggering event's correlation id (#705) before stabilizing.
+    // withStableEventDetectedAt keeps the FIRST occurrence's id for a persisting
+    // finding (same fingerprint), so the lineage id points at the event that
+    // originally raised the finding and is stable across replay/reconnect.
+    const stamped = eventId !== undefined ? { ...anomaly, eventId } : anomaly;
+    const stable = this.withStableEventDetectedAt(agentId, stamped);
     this.lastEventAnomaly.set(agentId, stable);
     return stable;
   }
@@ -527,7 +540,14 @@ export class Monitor {
   private withStableEventDetectedAt(agentId: string, anomaly: Anomaly): Anomaly {
     const previous = this.lastEventAnomaly.get(agentId);
     if (!previous || anomalyFingerprint(previous) !== anomalyFingerprint(anomaly)) return anomaly;
-    return { ...anomaly, detectedAt: previous.detectedAt };
+    // Preserve both the first-seen detectedAt and the first-seen correlation id
+    // (#705) so a finding that persists across snapshot/read ticks keeps a
+    // stable lineage id even though those read paths don't carry a fresh one.
+    return {
+      ...anomaly,
+      detectedAt: previous.detectedAt,
+      ...(previous.eventId !== undefined ? { eventId: previous.eventId } : {}),
+    };
   }
 
   private recordDetectionTelemetry(

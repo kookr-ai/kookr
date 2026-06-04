@@ -1,5 +1,5 @@
 import type { Monitor } from '../core/monitor.js';
-import type { HookIngestion } from './hook-ingestion.js';
+import { type HookIngestion, mintEventId } from './hook-ingestion.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { TokenTracker } from '../core/token-tracker.js';
 import type { Watchdog } from '../core/watchdog.js';
@@ -224,17 +224,46 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
         break;
     }
 
+    // Recompute the end-to-end correlation id (#705) from the SAME stable
+    // `(kookrSessionId, sequence)` the id was minted from at ingestion. Because
+    // mintEventId is pure, this yields the identical id rather than a fresh one,
+    // so the value is threaded unchanged into the derived finding via the monitor.
+    const eventId = mintEventId(tmuxName, meta.sequence);
+
     // ⚠ ORDERING CONTRACT: pre-capture must precede processEvents();
     // post-capture must follow it. The anomaly-diff detects any transition
     // away from needs_input (e.g. tool_use, session_start) and clears stale suggestions.
     const preState = monitor.getSnapshot().find(s => s.agentId === tmuxName);
     const wasNeedsInput = preState?.anomaly?.type === 'needs_input';
 
-    monitor.processEvents(tmuxName, [event]);
+    monitor.processEvents(tmuxName, [event], { eventId });
     watchdog.recordEvents(tmuxName, [event]);
 
     // Post-event: if anomaly transitioned away from needs_input, clear stale suggestions
     const postState = monitor.getSnapshot().find(s => s.agentId === tmuxName);
+
+    // Structured lineage log (#705): emit one line tying the correlation id to a
+    // finding when an anomaly newly appears or changes type/severity/subType.
+    // Persisting, unchanged findings are not re-logged to avoid per-event spam.
+    const post = postState?.anomaly;
+    const pre = preState?.anomaly;
+    if (
+      post &&
+      (!pre ||
+        pre.type !== post.type ||
+        pre.severity !== post.severity ||
+        pre.subType !== post.subType)
+    ) {
+      console.debug('[event-pipeline] finding', {
+        eventId: post.eventId ?? eventId,
+        agentId: tmuxName,
+        anomalyType: post.type,
+        severity: post.severity,
+        eventType: event.type,
+        sequence: meta.sequence,
+      });
+    }
+
     const isNeedsInput = postState?.anomaly?.type === 'needs_input';
     if (wasNeedsInput && !isNeedsInput) {
       console.debug(`[event-pipeline] needs_input cleared for ${tmuxName} by ${event.type}`);

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HookIngestion, type HookEventInjector } from './hook-ingestion.js';
+import { HookIngestion, mintEventId, type HookEventInjector } from './hook-ingestion.js';
 import { ActivityLedger, type HookEnvelopeV1 } from '../core/activity-ledger.js';
 
 function envelopeRow(overrides: Partial<HookEnvelopeV1>): { envelope: HookEnvelopeV1; projection: 'parent_activity' | 'child_activity' | 'diagnostic_only' } {
@@ -551,5 +551,47 @@ describe('HookIngestion — diagnostic_only projection of duplicates (issue #357
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('HookIngestion — end-to-end correlation id (#705)', () => {
+  it('mints a deterministic, redaction-safe correlation id from (session, sequence)', () => {
+    const id = mintEventId('kookr-session-1', 7);
+    expect(id).toMatch(/^evt_[0-9a-f]{12}_7$/);
+    // Pure function: identical inputs → identical id (the thread-unchanged guarantee).
+    expect(mintEventId('kookr-session-1', 7)).toBe(id);
+    // Different session or sequence → different id.
+    expect(mintEventId('kookr-session-2', 7)).not.toBe(id);
+    expect(mintEventId('kookr-session-1', 8)).not.toBe(id);
+    // The raw session id is hashed, not embedded verbatim.
+    expect(id).not.toContain('kookr-session-1');
+  });
+
+  it('surfaces the minted id on the ingest result, matching the allocated sequence', () => {
+    const adapter = makeStubAdapter();
+    const ingestion = new HookIngestion({ adapter });
+
+    const raw = JSON.stringify({ session_id: 'x', hook_event_name: 'SessionStart' });
+    const result = ingestion.ingestFromHttp('kookr-1', raw);
+
+    expect(result.dispatched).toBe(true);
+    expect(result.injectResult.sequence).toBe(1);
+    expect(result.eventId).toBe(mintEventId('kookr-1', 1));
+  });
+
+  it('reports the SAME correlation id for a dual-delivery duplicate', () => {
+    const adapter = makeStubAdapter();
+    const ingestion = new HookIngestion({ adapter });
+
+    const raw = JSON.stringify({ session_id: 'x', hook_event_name: 'SessionStart' });
+    // HTTP delivers first and dispatches; the file watcher then replays the
+    // identical record within the dedup TTL → a duplicate.
+    const first = ingestion.ingestFromHttp('kookr-1', raw);
+    const duplicate = ingestion.ingestFromHttp('kookr-1', raw);
+
+    expect(first.dispatched).toBe(true);
+    expect(duplicate.reason).toBe('duplicate');
+    // Both arrivals are the same logical event → same correlation id.
+    expect(duplicate.eventId).toBe(first.eventId);
   });
 });
