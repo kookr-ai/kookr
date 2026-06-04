@@ -13,6 +13,7 @@ Usage:
   kookr status                  Print a read-only server snapshot.
   kookr ralph <command> <taskId> Inspect or control a Ralph loop.
   kookr drain|resume [OPTIONS]  Control operator drain mode.
+  kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr push test <deviceId>    Send a relay push test.
 
 Compatibility aliases:
@@ -65,6 +66,13 @@ async function main({
     return exit(await runDrainCli(argv));
   }
 
+  // Data-directory retention/compaction sweep (issue #706). Operates directly
+  // on the on-disk data dir rather than booting a server, so it dispatches here.
+  if (command === 'maintenance') {
+    await runMaintenanceCommand(rest);
+    return exit(process.exitCode ?? 0);
+  }
+
   if (command !== undefined) {
     err.error(`[kookr] Unknown command: ${command}`);
     err.error('Run `kookr --help` for usage.');
@@ -85,6 +93,18 @@ async function startServer({ err = console, exit = process.exit } = {}) {
   }
 
   await import(entry);
+}
+
+async function runMaintenanceCommand(argv) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const entry = join(here, '..', 'dist', 'cli', 'kookr-maintenance.js');
+  if (!existsSync(entry)) {
+    console.error('[kookr] Build output not found at ' + entry);
+    console.error('[kookr] Run `pnpm build:server` (or `npm run build`) first.');
+    process.exit(1);
+  }
+  const mod = await import(entry);
+  process.exitCode = await mod.runMaintenanceCli(argv);
 }
 
 async function runCommandOutcomeCommand(argv) {
