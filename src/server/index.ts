@@ -40,8 +40,10 @@ import type { KookrServerInternal } from './server-test-helpers.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
 import { RalphLoopService } from './ralph-loop-service.js';
-import { createSystemResourceSampler } from './system-resource-sampler.js';
+import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 import { createResourceStatusService } from './resource-status-service.js';
+import { readOperationalAlertConfigFromEnv } from './config.js';
+import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
 import {
   FindingEvidenceReviewQueueStore,
   FindingEvidenceReviewSampler,
@@ -951,9 +953,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     );
   };
 
+  const operationalAlertConfig = readOperationalAlertConfigFromEnv();
+  const operationalAlertEvaluator = createOperationalAlertEvaluator(operationalAlertConfig);
+  if (operationalAlertEvaluator.hasEnabledRules()) {
+    const sustainSeconds = (operationalAlertConfig.sustainSamples * RESOURCE_STATUS_INTERVAL_MS) / 1000;
+    console.log(
+      `[ops-alerts] thresholds: cpu=${operationalAlertConfig.cpuPercent || 'off'}% ` +
+        `mem=${operationalAlertConfig.memoryPercent || 'off'}% ` +
+        `eventLoopDelay=${operationalAlertConfig.eventLoopDelayMs || 'off'}ms ` +
+        `(fires after ${operationalAlertConfig.sustainSamples} samples ≈ ${sustainSeconds}s sustained)`,
+    );
+  } else {
+    console.log('[ops-alerts] Operational alerts disabled (set KOOKR_ALERT_* thresholds to enable)');
+  }
   const resourceStatusService = createResourceStatusService({
     sampler: createSystemResourceSampler(),
     broadcastToAll,
+    alertEvaluator: operationalAlertEvaluator,
   });
 
   // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---

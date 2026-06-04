@@ -7,9 +7,20 @@ export interface ResourceStatusSampler {
   sample(expectedAtMs?: number | null): SystemResourceStatus;
 }
 
+/**
+ * Edge-triggered evaluator that turns an already-sampled resource status into
+ * zero or more alert messages. Decoupled to an interface so the service does
+ * not depend on the concrete rules implementation.
+ */
+export interface ResourceAlertEvaluator {
+  evaluate(status: SystemResourceStatus): ServerMessage[];
+}
+
 export interface ResourceStatusServiceDeps {
   sampler: ResourceStatusSampler;
   broadcastToAll: (msg: ServerMessage) => void;
+  /** Optional operational-alert evaluator fed each broadcast sample. */
+  alertEvaluator?: ResourceAlertEvaluator;
   intervalMs?: number;
   nowMs?: () => number;
   nowIso?: () => string;
@@ -21,6 +32,7 @@ export interface ResourceStatusServiceDeps {
 export class ResourceStatusService {
   private readonly sampler: ResourceStatusSampler;
   private readonly broadcastToAll: (msg: ServerMessage) => void;
+  private readonly alertEvaluator: ResourceAlertEvaluator | null;
   private readonly intervalMs: number;
   private readonly nowMs: () => number;
   private readonly nowIso: () => string;
@@ -31,10 +43,12 @@ export class ResourceStatusService {
   private running = false;
   private latest: SystemResourceStatus | null = null;
   private samplerErrorLogged = false;
+  private alertEvaluatorErrorLogged = false;
 
   constructor(deps: ResourceStatusServiceDeps) {
     this.sampler = deps.sampler;
     this.broadcastToAll = deps.broadcastToAll;
+    this.alertEvaluator = deps.alertEvaluator ?? null;
     this.intervalMs = deps.intervalMs ?? RESOURCE_STATUS_INTERVAL_MS;
     this.nowMs = deps.nowMs ?? (() => Date.now());
     this.nowIso = deps.nowIso ?? (() => new Date().toISOString());
@@ -71,8 +85,34 @@ export class ResourceStatusService {
     this.latest = status;
     this.broadcastToAll({ type: 'resourceStatus', status });
 
+    for (const alert of this.evaluateAlerts(status)) {
+      // Log every fire/recovery server-side so an operator can confirm from
+      // logs alone that the alert path executed during an incident. The
+      // summary text is self-describing (it says "Recovered" on clear).
+      if (alert.type === 'alert') {
+        this.logger.warn('[ops-alerts]', alert.summary);
+      }
+      this.broadcastToAll(alert);
+    }
+
     const nextExpectedAtMs = this.nowMs() + this.intervalMs;
     this.timeout = this.setTimeoutFn(() => this.tick(nextExpectedAtMs), this.intervalMs);
+  }
+
+  private evaluateAlerts(status: SystemResourceStatus): ServerMessage[] {
+    if (!this.alertEvaluator) return [];
+    try {
+      return this.alertEvaluator.evaluate(status);
+    } catch (err) {
+      if (!this.alertEvaluatorErrorLogged) {
+        this.alertEvaluatorErrorLogged = true;
+        this.logger.warn(
+          '[resource-status] alert evaluator failed:',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+      return [];
+    }
   }
 
   private takeSample(expectedAtMs: number | null): SystemResourceStatus {
