@@ -95,6 +95,12 @@ export interface WsConnectionDeps {
   supervisorFeedbackCaseStore?: import('./supervisor-feedback-case-store.js').SupervisorFeedbackCaseStore;
   selectionController?: DashboardSelectionController;
   terminalInputCoordinator?: TerminalInputCoordinator;
+  /** Where task feedback bundles are written. */
+  feedbackDir?: string;
+  /** Where task-reflection worktrees are created. */
+  reflectWorktreesDir?: string;
+  /** Where hook JSONLs live. */
+  hooksDir?: string;
 }
 
 /**
@@ -149,6 +155,9 @@ export function handleWsConnection(
     leaseService: deps.leaseService,
     serverProjectId: deps.serverProjectId,
     takePredeleteSnapshot: deps.takePredeleteSnapshot,
+    feedbackDir: deps.feedbackDir,
+    reflectWorktreesDir: deps.reflectWorktreesDir,
+    hooksDir: deps.hooksDir,
     projectConfigStore,
     broadcastProjectSummaries,
     supervisorFeedbackCaseStore: deps.supervisorFeedbackCaseStore,

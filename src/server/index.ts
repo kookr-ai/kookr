@@ -992,6 +992,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     supervisorFeedbackCaseStore,
     selectionController,
     terminalInputCoordinator,
+    feedbackDir: join(kookrDir, 'feedback'),
+    reflectWorktreesDir: join(kookrDir, 'reflect-worktrees'),
+    hooksDir,
   };
 
   const backgroundServices = startBackgroundServices({

@@ -214,10 +214,10 @@ export class LifecycleHandler {
         await this.deps.scheduleService?.recordTaskTerminalOutcome(msg.taskId, 'completed');
         this.finalizeCompletionMetadata(completingTask, preEvents);
 
-        // Apply optional feedback + auto-trigger reflect on thumbs-down.
+        // Apply optional feedback + trigger reflect according to the client.
         // Failure here is fail-open (logged) — never blocks completion.
         if (msg.feedback && completingTask) {
-          await this.applyFeedback(msg.taskId, sanitizeFeedback(msg.feedback), 'submit');
+          await this.applyFeedback(msg.taskId, sanitizeFeedback(msg.feedback), 'submit', msg.requestReflect);
         }
 
         await this.deps.tryPromotePending();
@@ -380,9 +380,9 @@ export class LifecycleHandler {
 
   /**
    * Persist feedback, write the bundle snapshot, log the interaction event, and
-   * (on thumbs-down) auto-spawn a reflect task. Mode controls which interaction
-   * event type is emitted: `submit` for first-write inside completeTask,
-   * `amend` for post-completion changes via setTaskFeedback.
+   * optionally spawn a reflect task. Mode controls which interaction event type
+   * is emitted: `submit` for first-write inside completeTask, `amend` for
+   * post-completion changes via setTaskFeedback.
    *
    * Failures here are fail-open and logged — feedback is enrichment, never a
    * blocker for the completion lifecycle.
@@ -391,6 +391,7 @@ export class LifecycleHandler {
     taskId: string,
     feedback: TaskCompletionFeedback,
     mode: 'submit' | 'amend',
+    requestReflect?: boolean,
   ): Promise<void> {
     const task = this.deps.taskStore.getTask(taskId);
     if (!task) return;
@@ -430,15 +431,16 @@ export class LifecycleHandler {
       }
     }
 
-    // Auto-trigger reflect on thumbs-down, kill switch is checked inside.
+    // Legacy clients omit requestReflect; preserve the old thumbs-down auto-reflect behavior.
+    const shouldReflect = requestReflect ?? feedback.rating === 'down';
     if (
-      feedback.rating === 'down' &&
+      shouldReflect &&
       bundlePath &&
       this.deps.reflectWorktreesDir &&
       this.deps.launchTask
     ) {
       const result = await requestTaskReflect(
-        { sourceTaskId: taskId, bundlePath, direction: 'down' },
+        { sourceTaskId: taskId, bundlePath, direction: feedback.rating },
         {
           taskStore: this.deps.taskStore,
           reflectWorktreesDir: this.deps.reflectWorktreesDir,

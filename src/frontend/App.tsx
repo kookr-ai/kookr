@@ -271,6 +271,7 @@ export function App() {
   const [confirmAction, setConfirmAction] = useState<'cancel' | 'complete' | null>(null);
   const [pendingComplete, setPendingComplete] = useState<PendingCompleteConfirmation | null>(null);
   const [completeFeedback, setCompleteFeedback] = useState<TaskCompletionFeedback | undefined>(undefined);
+  const [completeRequestReflect, setCompleteRequestReflect] = useState(false);
   const [showProjectSidebarManager, setShowProjectSidebarManager] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsFocus, setSettingsFocus] = useState<SettingsFocusField | undefined>(undefined);
@@ -1080,7 +1081,9 @@ export function App() {
           footer={
             <CompleteDialogFooter
               feedback={completeFeedback}
+              requestReflect={completeRequestReflect}
               onChange={setCompleteFeedback}
+              onRequestReflectChange={setCompleteRequestReflect}
             />
           }
           onConfirm={() => {
@@ -1089,15 +1092,18 @@ export function App() {
               type: 'completeTask',
               taskId: pendingComplete.taskId,
               ...(completeFeedback ? { feedback: completeFeedback } : {}),
+              ...(completeFeedback ? { requestReflect: completeRequestReflect } : {}),
             });
             setConfirmAction(null);
             setPendingComplete(null);
             setCompleteFeedback(undefined);
+            setCompleteRequestReflect(false);
           }}
           onClose={() => {
             setConfirmAction(null);
             setPendingComplete(null);
             setCompleteFeedback(undefined);
+            setCompleteRequestReflect(false);
           }}
         />
       )}
