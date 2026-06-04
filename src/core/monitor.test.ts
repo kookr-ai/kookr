@@ -784,6 +784,54 @@ describe('Monitor', () => {
       const after = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
       expect(after!.turnState).toBe('completed_turn');
     });
+
+    test('final Stop with no active background work clears stale subagent suppression', () => {
+      monitor.processEvents('agent-1', [
+        makeSubagentStart('s1', 'phantom-subagent'),
+        {
+          type: 'stop',
+          sessionId: 's1',
+          lastMessage: 'Done. Issue is merged and closed.',
+          activeBackgroundTaskCount: 0,
+          activeSessionCronCount: 0,
+        },
+        makeSubagentStop('s1', 'cleanup-subagent'),
+        {
+          type: 'notification',
+          sessionId: 's1',
+          notificationType: 'idle_prompt',
+          message: 'Claude is waiting for your input',
+        },
+      ]);
+
+      const agent = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+      expect(agent!.turnState).toBe('completed_turn');
+      expect(agent!.anomaly?.type).toBe('needs_input');
+    });
+
+    test('final Stop with an active session cron keeps subagent suppression', () => {
+      monitor.processEvents('agent-1', [
+        makeSubagentStart('s1', 'cron-owned-subagent'),
+        {
+          type: 'stop',
+          sessionId: 's1',
+          lastMessage: 'Waiting on scheduled work.',
+          activeBackgroundTaskCount: 0,
+          activeSessionCronCount: 1,
+        },
+        makeSubagentStop('s1', 'cleanup-subagent'),
+        {
+          type: 'notification',
+          sessionId: 's1',
+          notificationType: 'idle_prompt',
+          message: 'Claude is waiting for your input',
+        },
+      ]);
+
+      const agent = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+      expect(agent!.turnState).toBe('running');
+      expect(agent!.anomaly).toBeNull();
+    });
   });
 
   test('processEvents after unregisterAgent does NOT resurrect agent', () => {

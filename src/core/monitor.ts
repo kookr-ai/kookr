@@ -574,7 +574,10 @@ export class Monitor {
   /**
    * Update outstanding-subagent tracking for one event. SubagentStart adds the
    * subagentId with a Date.now() timestamp; SubagentStop removes it; session_end
-   * flushes the map for the agent and emits the orphan metric if non-empty.
+   * flushes the map for the agent and emits the orphan metric if non-empty. A
+   * Stop hook with explicit zero active background tasks/crons is authoritative
+   * provider evidence that no subordinate work remains, so it clears stale
+   * entries without counting them as orphans.
    */
   private updateSubagentTracking(agentId: string, event: AgentEvent): void {
     if (event.type === 'subagent_start' && event.agentId) {
@@ -586,6 +589,12 @@ export class Monitor {
       map.set(event.agentId, Date.now());
     } else if (event.type === 'subagent_stop' && event.agentId) {
       this.outstandingSubagents.get(agentId)?.delete(event.agentId);
+    } else if (
+      event.type === 'stop'
+      && event.activeBackgroundTaskCount === 0
+      && event.activeSessionCronCount === 0
+    ) {
+      this.outstandingSubagents.delete(agentId);
     } else if (event.type === 'session_end') {
       this.flushAndDeleteSubagents(agentId);
     }
