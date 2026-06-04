@@ -23,6 +23,7 @@ export type {
   CodexHookCapabilities,
   CodexHookHandlerFeatures,
   EventMeta,
+  EventOrigin,
   EventParentage,
   HookEventBase,
   HookEventName,
