@@ -21,8 +21,19 @@ Environment:
   KOOKR_PORT          Specific port on 127.0.0.1.
 `;
 
+// Issue #708: a non-loopback server requires a bearer token. kookr-status only
+// issues safe GETs (which the gate lets through), but the token is attached when
+// present so the CLI keeps working if read endpoints are gated in the future.
+function apiAuthHeaders(env = process.env) {
+  const token = env.KOOKR_API_TOKEN && env.KOOKR_API_TOKEN.trim();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function fetchJson(url, timeoutMs = 2000) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  const res = await fetch(url, {
+    headers: apiAuthHeaders(),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -226,4 +237,4 @@ if (isInvokedDirectly()) {
   });
 }
 
-export { HELP_TEXT, formatUptime, formatCost, isActiveFinding, summarize, renderReport, resolvePort, parsePortEnv, main };
+export { HELP_TEXT, apiAuthHeaders, formatUptime, formatCost, isActiveFinding, summarize, renderReport, resolvePort, parsePortEnv, main };

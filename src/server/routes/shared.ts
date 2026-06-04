@@ -41,6 +41,7 @@ import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sa
 import type { CollaborationDiagnostics } from '../../shared/contracts/collaboration-profile.js';
 import type { CoordinatorSuppressionRegistry } from '../coordinator/suppression-store.js';
 import type { DrainController } from '../drain-state.js';
+import type { ApiAuthConfig } from '../auth.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -253,4 +254,11 @@ export interface RouteDeps {
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /** Operator drain / resume state (issue #659). Absent disables the admin drain routes. */
   drainController?: DrainController;
+  /**
+   * Resolved API-token auth posture (issue #708). When `required` is true (the
+   * server bound to a non-loopback host), a global middleware enforces a bearer
+   * token on state-changing requests. Absent or `required: false` leaves the
+   * loopback flow completely token-free.
+   */
+  apiAuth?: ApiAuthConfig;
 }

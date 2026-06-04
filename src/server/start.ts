@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { LocalDtachBackend } from '../adapters/local-dtach-backend.js';
 import { createKookrServer } from './index.js';
+import { resolveApiAuth, type ApiAuthConfig } from './auth.js';
 import { resolveListenPort } from './resolve-listen-port.js';
 import { parseSTTDevice, startSTT, type STTManager } from './stt-manager.js';
 import { DEFAULT_TTS_VOICE, parseTTSDeviceFromEnv, startTTS, type TTSManager } from './tts-manager.js';
@@ -66,12 +67,43 @@ function resolveDtachBinaryOrExit(): string {
   }
 }
 
+/**
+ * Issue #708: resolve the API-token auth posture from the bind host + env,
+ * print the operator-facing summary, and fail-closed (exit 1) when a
+ * non-loopback bind has neither a token nor the explicit opt-out. Returns the
+ * `ApiAuthConfig` to thread into the server.
+ */
+function resolveApiAuthOrExit(host: string): ApiAuthConfig {
+  const resolution = resolveApiAuth({ host, env: process.env });
+  switch (resolution.kind) {
+    case 'loopback':
+      return resolution.config;
+    case 'token-provided':
+      console.log(`[auth] Non-loopback bind (KOOKR_HOST=${host}); API token auth ENABLED (KOOKR_API_TOKEN).`);
+      return resolution.config;
+    case 'token-generated':
+      console.log(
+        `[auth] Non-loopback bind (KOOKR_HOST=${host}); no KOOKR_API_TOKEN set — auto-generated one for this run.\n` +
+          `[auth] API token: ${resolution.token}\n` +
+          '[auth] Send it as `Authorization: Bearer <token>` (or `?token=<token>` on the WebSocket).\n' +
+          '[auth] Set KOOKR_API_TOKEN to pin a stable token across restarts.',
+      );
+      return resolution.config;
+    case 'fail-closed':
+      console.error(`[fatal] ${resolution.reason}`);
+      process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
   // Resolve KOOKR_PORT: validate, probe for EADDRINUSE with actionable
   // guidance, or scan for a free port when KOOKR_PORT=auto. See
   // src/server/resolve-listen-port.ts.
   const portResolution = await resolveListenPort(process.env.KOOKR_PORT, HOST);
   const PORT = portResolution.port;
+  // Resolve API-token auth before binding. Exits (fail-closed) when a
+  // non-loopback bind lacks both a token and the explicit opt-out.
+  const apiAuth = resolveApiAuthOrExit(HOST);
   const KOOKR_DIR = PORT === 4800 ? join(homedir(), '.kookr') : join(homedir(), `.kookr-${PORT}`);
   // Per-instance namespace so kookr-prod (4800) and kookr-dev (4801) keep
   // their dtach sockets + manifest separate under /tmp/kookr-dtach/<uid>/.
@@ -168,6 +200,7 @@ async function main(): Promise<void> {
     codexBin: CODEX_BIN,
     bypassAllPermissions: BYPASS_ALL_PERMISSIONS,
     lifecycleSignal: lifecycleAc.signal,
+    apiAuth,
   });
 
   async function shutdown(signal: string): Promise<void> {

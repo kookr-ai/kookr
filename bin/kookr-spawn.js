@@ -371,6 +371,17 @@ function defaultSleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// ---------- auth ----------
+
+// Issue #708: when the server binds to a non-loopback host it requires a bearer
+// token on state-changing requests (POST /api/tasks). Read it from
+// KOOKR_API_TOKEN and send it as `Authorization: Bearer <token>`. Loopback
+// servers ignore the header, so it is always safe to attach when present.
+function apiAuthHeaders(env = process.env) {
+  const token = env.KOOKR_API_TOKEN && env.KOOKR_API_TOKEN.trim();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 // ---------- HTTP POST ----------
 
 async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null }) {
@@ -388,6 +399,7 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, 
       'Content-Type': 'application/json',
       'X-Kookr-Launch-Source': 'cli',
       'User-Agent': `kookr-spawn/${CLI_VERSION} node/${process.versions.node}`,
+      ...apiAuthHeaders(),
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(POST_TIMEOUT_MS),
@@ -725,6 +737,7 @@ if (isInvokedDirectly()) {
 
 export {
   CLI_VERSION,
+  apiAuthHeaders,
   EXIT_DUPLICATE_BLOCKED,
   EXIT_NO_SERVER,
   EXIT_OK,
