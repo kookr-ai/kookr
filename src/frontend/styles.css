@@ -378,14 +378,60 @@ kbd {
 
 /* --- Findings Panel (left) --- */
 .findings-panel {
-  flex: 0 0 clamp(340px, 28vw, 420px);
-  width: clamp(340px, 28vw, 420px);
-  min-width: 340px;
+  /* Width defaults to the responsive clamp (floor 340px); once the user drags
+     the divider, App.tsx sets --findings-panel-width on .main and that override
+     wins. min-width is the lower 280px (MIN_FINDINGS_WIDTH) so a deliberate drag
+     can go narrower than the untouched default. */
+  flex: 0 0 var(--findings-panel-width, clamp(340px, 28vw, 420px));
+  width: var(--findings-panel-width, clamp(340px, 28vw, 420px));
+  min-width: 280px;
   min-height: 0;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+}
+
+/* --- Findings / terminal resizable divider --- */
+.findings-resizer {
+  flex: 0 0 6px;
+  align-self: stretch;
+  margin: 0 -3px;
+  z-index: 2;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  touch-action: none;
+}
+.findings-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.findings-resizer:hover::after,
+.findings-resizer:focus-visible::after,
+.main-resizing .findings-resizer::after {
+  background: var(--teal);
+}
+.findings-resizer:focus-visible {
+  outline: none;
+}
+.findings-resizer:focus-visible::after {
+  width: 2px;
+}
+/* While dragging, suppress text selection and force the resize cursor. */
+.main-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .findings-resizer::after { transition: none; }
 }
 
 .findings-header {
