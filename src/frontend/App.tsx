@@ -33,6 +33,13 @@ import { OnboardingTour } from './components/OnboardingTour.js';
 import { CoordinatorFindingsPane } from './components/CoordinatorSurfaces.js';
 import { maybeOpenForFirstRun } from './store/onboarding-store.js';
 import {
+  clampFindingsWidth,
+  loadFindingsWidth,
+  saveFindingsWidth,
+  MIN_FINDINGS_WIDTH,
+  MAX_FINDINGS_WIDTH,
+} from './store/dashboard-layout-prefs.js';
+import {
   detectShortcutPlatform,
   formatShortcutBinding,
   matchesShortcutAction,
@@ -85,9 +92,149 @@ interface PendingCompleteConfirmation {
 
 const MOBILE_BREAKPOINT_PX = 768;
 const WIDE_DETAIL_BREAKPOINT_PX = 1200;
+// Horizontal space (project sidebar + divider + minimum terminal viewport)
+// reserved when the findings panel is resized, so the terminal can never be
+// squeezed to an unusable width on narrow desktops.
+const MIN_TERMINAL_RESERVE_PX = 480;
 
 function reflectionDismissKey(sessionId: string): string {
   return `kookr-reflection-dismissed-${sessionId}`;
+}
+
+/**
+ * Largest findings width the layout can currently show. Derived from the live
+ * container width (which is laid out immediately) rather than the sibling pane
+ * widths (the terminal pane mounts lazily and reports 0 during that window,
+ * which would wrongly collapse the bound). Clamped into the absolute range.
+ */
+function maxFindingsWidthFor(container: HTMLElement | null): number {
+  if (!container) return MAX_FINDINGS_WIDTH;
+  return Math.max(
+    MIN_FINDINGS_WIDTH,
+    Math.min(MAX_FINDINGS_WIDTH, container.clientWidth - MIN_TERMINAL_RESERVE_PX),
+  );
+}
+
+/**
+ * Draggable, keyboard-accessible divider between the findings panel and the
+ * terminal/detail viewport (issue #707). It reports the desired findings-panel
+ * width back to the parent (which owns persistence and applies it as a CSS
+ * variable). The panel's actual rendered width is measured from the divider's
+ * previous sibling so both drag deltas and the exposed ARIA value stay accurate
+ * whether the width is the CSS default or a persisted override.
+ *
+ * Defined inline rather than under components/ to keep the issue #707 write
+ * scope narrow; it is self-contained and could be extracted later.
+ */
+function FindingsResizer({
+  containerRef,
+  onResizeStateChange,
+  onResize,
+  onCommit,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  onResizeStateChange: (active: boolean) => void;
+  onResize: (width: number) => void;
+  onCommit: (width: number) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [valueNow, setValueNow] = useState<number>(MIN_FINDINGS_WIDTH);
+  const [valueMax, setValueMax] = useState<number>(MAX_FINDINGS_WIDTH);
+  // Teardown for an in-flight pointer drag, so listeners are removed even if the
+  // component unmounts mid-drag (e.g. the selected agent is cleared by a
+  // WebSocket update while the user is dragging).
+  const dragCleanup = useRef<(() => void) | null>(null);
+
+  const panelWidth = useCallback((): number => {
+    const panel = ref.current?.previousElementSibling as HTMLElement | null;
+    return panel ? panel.getBoundingClientRect().width : valueNow;
+  }, [valueNow]);
+
+  // Observe the container so window resizes (which shrink the panes) re-evaluate
+  // both the exposed ARIA bounds and the live width, and re-clamp a previously
+  // committed width that no longer fits — keeping the terminal usable.
+  useEffect(() => {
+    const main = containerRef.current;
+    if (!main || typeof ResizeObserver === 'undefined') return;
+    const update = () => {
+      const max = maxFindingsWidthFor(main);
+      setValueMax(max);
+      const width = panelWidth();
+      setValueNow(Math.round(width));
+      if (width > max + 0.5) onResize(max);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(main);
+    return () => observer.disconnect();
+    // panelWidth/onResize are stable across renders for our usage; observe once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [containerRef]);
+
+  // Tear down any in-flight drag on unmount.
+  useEffect(() => () => dragCleanup.current?.(), []);
+
+  const beginDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = panelWidth();
+    onResizeStateChange(true);
+
+    const computeNext = (clientX: number) =>
+      clampFindingsWidth(startWidth + (clientX - startX), maxFindingsWidthFor(containerRef.current));
+
+    const handleMove = (moveEvent: PointerEvent) => onResize(computeNext(moveEvent.clientX));
+    const teardown = () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+      onResizeStateChange(false);
+      dragCleanup.current = null;
+    };
+    function handleUp(upEvent: PointerEvent) {
+      const next = computeNext(upEvent.clientX);
+      teardown();
+      onCommit(next);
+    }
+    dragCleanup.current = teardown;
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 48 : 16;
+    const current = panelWidth();
+    const max = maxFindingsWidthFor(containerRef.current);
+    let next: number;
+    switch (event.key) {
+      case 'ArrowLeft': next = current - step; break;
+      case 'ArrowRight': next = current + step; break;
+      case 'Home': next = MIN_FINDINGS_WIDTH; break;
+      case 'End': next = max; break;
+      default: return;
+    }
+    event.preventDefault();
+    const clamped = clampFindingsWidth(next, max);
+    onResize(clamped);
+    onCommit(clamped);
+  };
+
+  return (
+    <div
+      ref={ref}
+      className="findings-resizer"
+      data-testid="findings-resizer"
+      role="separator"
+      tabIndex={0}
+      aria-orientation="vertical"
+      aria-label="Resize findings panel"
+      aria-valuenow={valueNow}
+      aria-valuemin={MIN_FINDINGS_WIDTH}
+      aria-valuemax={valueMax}
+      onPointerDown={beginDrag}
+      onKeyDown={handleKeyDown}
+    />
+  );
 }
 
 export function App() {
@@ -107,6 +254,16 @@ export function App() {
     typeof window !== 'undefined' ? window.innerWidth > WIDE_DETAIL_BREAKPOINT_PX : false,
   );
   const [mobileTab, setMobileTab] = useState<MobileDashboardTab>('findings');
+  // Persisted desktop split between the findings panel and the terminal
+  // viewport. `null` means "use the CSS default width". Live drag updates state
+  // for instant feedback; the value is persisted on drag-end / keyboard commit.
+  const mainRef = useRef<HTMLDivElement>(null);
+  const [findingsWidth, setFindingsWidth] = useState<number | null>(() => loadFindingsWidth());
+  const [isResizingSplit, setIsResizingSplit] = useState(false);
+  const commitFindingsWidth = useCallback((width: number) => {
+    setFindingsWidth(width);
+    saveFindingsWidth(width);
+  }, []);
   const [showLaunch, setShowLaunch] = useState(false);
   const [showQuickLaunch, setShowQuickLaunch] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -835,11 +992,25 @@ export function App() {
           </div>
         </>
       ) : (
-        <div className="main">
+        <div
+          ref={mainRef}
+          className={`main${isResizingSplit ? ' main-resizing' : ''}`}
+          style={findingsWidth != null
+            ? ({ '--findings-panel-width': `${findingsWidth}px` } as React.CSSProperties)
+            : undefined}
+        >
           {projectSidebar}
           {projectDetailDrawer}
           {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
           {findingsPanel}
+          {!terminalFocusActive && selectedAgentShowsSplit && (
+            <FindingsResizer
+              containerRef={mainRef}
+              onResizeStateChange={setIsResizingSplit}
+              onResize={setFindingsWidth}
+              onCommit={commitFindingsWidth}
+            />
+          )}
           {detailPanel}
         </div>
       )}
