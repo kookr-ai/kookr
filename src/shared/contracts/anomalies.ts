@@ -25,6 +25,16 @@ export interface Anomaly {
   count?: number;
   subType?: 'stop' | 'ask_user_question';
   confidence?: AnomalyConfidence;
+  /**
+   * End-to-end correlation id (#705). Minted when the triggering hook event is
+   * ingested ({@link mintEventId} in `hook-ingestion.ts`) and threaded unchanged
+   * into the finding so operators have a single lineage id tying a hook event →
+   * the detector that fired → this finding → the emitted alert. Stable across
+   * durable replay and WebSocket reconnect — it is never regenerated downstream.
+   * Absent on findings not derived from a hook event (e.g. watchdog-only
+   * liveness verdicts).
+   */
+  eventId?: string;
 }
 
 export type FindingEvidenceObservationSource = 'event' | 'watchdog_tick';

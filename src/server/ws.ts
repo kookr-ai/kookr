@@ -447,13 +447,29 @@ export class MessageRouter {
     }
   }
 
-  /** Broadcast an alert for an anomaly. */
+  /**
+   * Broadcast an alert for an anomaly.
+   *
+   * The anomaly's end-to-end correlation id (#705) is surfaced in the alert
+   * `details` so operators can trace the alert back to the originating hook
+   * event, and emitted as a structured log field. `broadcastUpdate` carries the
+   * same id structurally via `state.anomaly.eventId`.
+   */
   broadcastAlert(agentId: string, anomaly: Anomaly): void {
+    const lineage = anomaly.eventId ? `, Event: ${anomaly.eventId}` : '';
+    if (anomaly.eventId) {
+      console.debug('[ws] alert', {
+        eventId: anomaly.eventId,
+        agentId,
+        anomalyType: anomaly.type,
+        severity: anomaly.severity,
+      });
+    }
     this.deps.send({
       type: 'alert',
       agentId,
       summary: anomaly.explanation,
-      details: `Type: ${anomaly.type}, Count: ${anomaly.count ?? 'N/A'}`,
+      details: `Type: ${anomaly.type}, Count: ${anomaly.count ?? 'N/A'}${lineage}`,
       severity: anomaly.severity,
     });
   }

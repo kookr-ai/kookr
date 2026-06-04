@@ -108,6 +108,28 @@ describe('WebSocket MessageRouter', () => {
     }
   });
 
+  test('broadcastAlert surfaces the anomaly correlation id in the alert (#705)', () => {
+    const anomaly: Anomaly = {
+      agentId: 's1',
+      type: 'needs_input',
+      severity: 'warning',
+      explanation: 'Agent is waiting for input',
+      detectedAt: new Date(),
+      eventId: 'evt_abc123def456_42',
+    };
+
+    router.broadcastAlert('s1', anomaly);
+
+    const alert = sentMessages.find((m) => m.type === 'alert');
+    expect(alert).toBeDefined();
+    if (alert?.type === 'alert') {
+      expect(alert.agentId).toBe('s1');
+      // The end-to-end correlation id is surfaced so operators can trace the
+      // alert back to the originating hook event.
+      expect(alert.details).toContain('evt_abc123def456_42');
+    }
+  });
+
   test('emptyEnterIntent skips the selected finding only after prompt and selection CAS pass', async () => {
     const task = taskStore.createTask('Needs review', '/test/cwd');
     taskStore.getTaskForMutation(task.id)!.sessions.push({
