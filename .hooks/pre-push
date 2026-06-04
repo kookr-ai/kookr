@@ -193,25 +193,27 @@ if ! pnpm test; then
   exit 1
 fi
 
-# --- kookr-toolkit plugin classification + version bump enforcement ---
-# Reject pushes that introduce Kookr-internal references inside plugin/ (which
-# ships to all consumers via the marketplace), or that change plugin/skills/**
-# or plugin/agents/** without bumping plugin/.claude-plugin/plugin.json#version.
+# --- kookr-toolkit plugin portability + version bump enforcement ---
+# The toolkit ships *with* Kookr, so plugin/ content may reference Kookr's
+# runtime, env, and commands — intentional coupling is allowed. The only hard
+# rule is that plugin/ must not hardcode an absolute, machine-specific path:
+# that breaks for everyone (including Kookr itself on CI or another machine),
+# which is a portability bug, not deliberate coupling. Also enforce the
+# plugin.json#version bump on plugin/skills/** and plugin/agents/** changes.
 if [ -d plugin ]; then
   # Three-dot symmetric form so unrelated origin/main movement doesn't pollute
   # the diff (same fix rationale as the review-gate range above).
   RANGE="origin/main...HEAD"
   git rev-parse --verify --quiet origin/main >/dev/null 2>&1 || RANGE="HEAD"
 
-  # 1. Classification grep — Kookr-internal references must not appear in plugin/.
-  BAD=$(grep -rIE 'pnpm (prod|dev|start:dev|build:server|check:|prod:update|codex:|setup|rebuild)|KOOKR_(API_BASE_URL|TASK_ID|BACKEND|DATA_DIR|PARENT_TASK_ID|GIT_COMMON_DIR|CHECKPOINT_DIR|TTS|TTS_URL|URL)|~/\.kookr/|/home/[^/]+/git/kookr|\.hooks/(pre-push|post-push)' plugin/ 2>/dev/null || true)
+  # 1. Hardcoded absolute home path — breaks any checkout but the author's.
+  BAD=$(grep -rIE '/home/[^/]+/git/kookr' plugin/ 2>/dev/null || true)
   if [ -n "$BAD" ]; then
     echo ""
-    echo "Push rejected: plugin/ contains Kookr-internal references."
-    echo "These break the toolkit when other developers install it via /plugin install."
-    echo "Guarded or fallback-only Kookr integrations still make the file Kookr-specific."
-    echo "Move the offending skill/agent/playbook to .claude/ or ~/.kookr/playbooks,"
-    echo "or remove the Kookr-specific behavior before shipping it in plugin/."
+    echo "Push rejected: plugin/ contains a hardcoded absolute home path."
+    echo "Absolute paths like /home/<user>/git/kookr break every checkout but"
+    echo "yours (CI, other developers, marketplace installs). Use a relative path,"
+    echo "a '~/...' reference, or discover the path at runtime instead."
     echo ""
     echo "$BAD" | head -20
     exit 1
