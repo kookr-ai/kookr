@@ -81,6 +81,9 @@ jobs:
       - name: Validate documented commands
         run: pnpm validate:docs-commands
 
+      - name: Validate documented environment variables
+        run: pnpm validate:docs-env-vars
+
       - name: Validate requirements status matrix
         run: pnpm validate:requirements
 
