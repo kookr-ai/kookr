@@ -578,6 +578,13 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     onRequestComplete();
   }
 
+  function handleCompleteAndReflect() {
+    if (!agent?.taskId) return;
+    track({ type: 'task_completed', agentId: agent.agentId, method: 'complete_reflect_button' });
+    trackClick('complete_task_reflect');
+    send({ type: 'completeTask', taskId: agent.taskId, requestReflect: true });
+  }
+
   function handleCancel() {
     if (!agent?.taskId) return;
     if (!confirm(`Cancel task "${agent.taskName ?? agent.agentId}"? The agent session will be terminated.`)) return;
@@ -712,6 +719,14 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           {agent.taskId && agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && (
             <>
               <button data-testid="action-complete" className="action-btn action-btn--success" onClick={handleComplete}>Complete</button>
+              <button
+                data-testid="action-complete-reflect"
+                className="action-btn action-btn--reflect"
+                title="Complete this task and start a self-reflection task"
+                onClick={handleCompleteAndReflect}
+              >
+                Complete + Reflect
+              </button>
               <button data-testid="action-cancel" className="action-btn action-btn--danger" onClick={handleCancel}>Cancel</button>
             </>
           )}

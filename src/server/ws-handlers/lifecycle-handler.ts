@@ -218,6 +218,8 @@ export class LifecycleHandler {
         // Failure here is fail-open (logged) — never blocks completion.
         if (msg.feedback && completingTask) {
           await this.applyFeedback(msg.taskId, sanitizeFeedback(msg.feedback), 'submit', msg.requestReflect);
+        } else if (msg.requestReflect && completingTask) {
+          await this.requestReflectWithoutExplicitFeedback(msg.taskId);
         }
 
         await this.deps.tryPromotePending();
@@ -413,45 +415,66 @@ export class LifecycleHandler {
     });
 
     // Write feedback bundle snapshot. Best-effort.
-    let bundlePath: string | undefined;
-    if (
-      this.deps.feedbackDir &&
-      this.deps.hooksDir &&
-      this.deps.readInteractionLogSnapshot
-    ) {
-      try {
-        const result = await writeFeedbackBundle(task, feedback, {
-          feedbackDir: this.deps.feedbackDir,
-          hooksDir: this.deps.hooksDir,
-          readInteractionLog: this.deps.readInteractionLogSnapshot,
-        });
-        bundlePath = result.bundlePath;
-      } catch (err) {
-        console.warn(`[feedback] bundle write failed for ${taskId}:`, err);
-      }
-    }
+    const bundlePath = await this.writeFeedbackBundleSnapshot(task, feedback);
 
     // Legacy clients omit requestReflect; preserve the old thumbs-down auto-reflect behavior.
     const shouldReflect = requestReflect ?? feedback.rating === 'down';
+    if (shouldReflect && bundlePath) {
+      await this.spawnTaskReflect(taskId, bundlePath, feedback.rating);
+    }
+  }
+
+  private async requestReflectWithoutExplicitFeedback(taskId: string): Promise<void> {
+    const task = this.deps.taskStore.getTask(taskId);
+    if (!task) return;
+    const feedback: TaskCompletionFeedback = { rating: 'up' };
+    const bundlePath = await this.writeFeedbackBundleSnapshot(task, feedback);
+    if (!bundlePath) return;
+    await this.spawnTaskReflect(taskId, bundlePath, feedback.rating);
+  }
+
+  private async writeFeedbackBundleSnapshot(
+    task: Task,
+    feedback: TaskCompletionFeedback,
+  ): Promise<string | undefined> {
     if (
-      shouldReflect &&
-      bundlePath &&
-      this.deps.reflectWorktreesDir &&
-      this.deps.launchTask
+      !this.deps.feedbackDir ||
+      !this.deps.hooksDir ||
+      !this.deps.readInteractionLogSnapshot
     ) {
-      const result = await requestTaskReflect(
-        { sourceTaskId: taskId, bundlePath, direction: feedback.rating },
-        {
-          taskStore: this.deps.taskStore,
-          reflectWorktreesDir: this.deps.reflectWorktreesDir,
-          launchTask: this.deps.launchTask,
-        },
-      );
-      if (result.spawned) {
-        console.log(`[feedback] auto-reflect spawned ${result.reflectTaskId} for ${taskId}`);
-      } else {
-        console.log(`[feedback] auto-reflect skipped for ${taskId}: ${result.reason}`);
-      }
+      return undefined;
+    }
+    try {
+      const result = await writeFeedbackBundle(task, feedback, {
+        feedbackDir: this.deps.feedbackDir,
+        hooksDir: this.deps.hooksDir,
+        readInteractionLog: this.deps.readInteractionLogSnapshot,
+      });
+      return result.bundlePath;
+    } catch (err) {
+      console.warn(`[feedback] bundle write failed for ${task.id}:`, err);
+      return undefined;
+    }
+  }
+
+  private async spawnTaskReflect(
+    taskId: string,
+    bundlePath: string,
+    direction: 'up' | 'down',
+  ): Promise<void> {
+    if (!this.deps.reflectWorktreesDir || !this.deps.launchTask) return;
+    const result = await requestTaskReflect(
+      { sourceTaskId: taskId, bundlePath, direction },
+      {
+        taskStore: this.deps.taskStore,
+        reflectWorktreesDir: this.deps.reflectWorktreesDir,
+        launchTask: this.deps.launchTask,
+      },
+    );
+    if (result.spawned) {
+      console.log(`[feedback] auto-reflect spawned ${result.reflectTaskId} for ${taskId}`);
+    } else {
+      console.log(`[feedback] auto-reflect skipped for ${taskId}: ${result.reason}`);
     }
   }
 

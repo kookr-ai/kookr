@@ -1408,6 +1408,8 @@ kbd {
 .action-btn--neutral:hover { background: var(--bg-card); color: var(--text); }
 .action-btn--success { border-color: var(--green); color: var(--green); }
 .action-btn--success:hover { background: rgba(74,222,128,0.12); }
+.action-btn--reflect { border-color: var(--blue); color: var(--blue); }
+.action-btn--reflect:hover { background: rgba(96,165,250,0.12); }
 .action-btn--danger { border-color: var(--red); color: var(--red); }
 .action-btn--danger:hover { background: rgba(248,113,113,0.12); }
 

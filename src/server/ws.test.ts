@@ -1,7 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { Anomaly } from '../core/types.js';
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
@@ -19,6 +21,8 @@ import type { LaunchOpts, LaunchResult } from './launch-service.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+
+const execFile = promisify(execFileCb);
 
 describe('WebSocket MessageRouter', () => {
   let taskStore: TaskStore;
@@ -922,6 +926,68 @@ describe('WebSocket MessageRouter', () => {
 
       expect(taskStore.getTask(task.id)?.completionFeedback).toEqual({ rating: 'down' });
       expect(launchTask).not.toHaveBeenCalled();
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('completeTask can request reflection without explicit thumbs feedback', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'feedback-reflect-'));
+    const sourceRepo = join(tempRoot, 'source-repo');
+    const launchTask = vi.fn(async (opts: LaunchOpts): Promise<LaunchResult> => ({
+      task: taskStore.createTask({ prompt: opts.prompt, cwd: opts.cwd, agentType: 'claude-code' }),
+      queued: false,
+    }));
+    try {
+      await mkdir(sourceRepo, { recursive: true });
+      await execFile('git', ['-C', sourceRepo, 'init', '-b', 'main']);
+      await writeFile(join(sourceRepo, 'README.md'), 'test repo\n', 'utf-8');
+      await execFile('git', ['-C', sourceRepo, 'add', 'README.md']);
+      await execFile('git', [
+        '-C',
+        sourceRepo,
+        '-c',
+        'user.name=Kookr Test',
+        '-c',
+        'user.email=kookr@example.test',
+        'commit',
+        '-m',
+        'init',
+      ]);
+
+      const feedbackRouter = new MessageRouter({
+        taskStore, queue, monitor, adapter,
+        send: (msg) => { sentMessages.push(msg); },
+        serverCwd: '/test/cwd',
+        launchTask,
+        feedbackDir: join(tempRoot, 'feedback'),
+        hooksDir: join(tempRoot, 'hooks'),
+        reflectWorktreesDir: join(tempRoot, 'reflect-worktrees'),
+        lifecycleExtras: {
+          watchdog: {
+            unregisterAgent: vi.fn(),
+            recordInputReceived: watchdogRecordInputReceived,
+          },
+        },
+        ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
+      });
+      await mkdir(join(tempRoot, 'hooks'), { recursive: true });
+      const task = taskStore.createTask('Fix bug', sourceRepo);
+      taskStore.startTask(task.id);
+
+      await feedbackRouter.handleMessage({
+        type: 'completeTask',
+        taskId: task.id,
+        requestReflect: true,
+      });
+
+      expect(taskStore.getTask(task.id)?.completionFeedback).toBeUndefined();
+      expect(launchTask).toHaveBeenCalledOnce();
+      expect(launchTask.mock.calls[0]?.[0].prompt).toContain('task-feedback-reflect');
+      const reflectTask = taskStore.listTasks().find((candidate) => candidate.reflectMeta?.sourceTaskId === task.id);
+      expect(reflectTask?.reflectMeta?.direction).toBe('up');
+      const bundle = JSON.parse(await readFile(join(reflectTask!.reflectMeta!.bundlePath, 'bundle.json'), 'utf-8')) as { rating: string };
+      expect(bundle.rating).toBe('up');
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
