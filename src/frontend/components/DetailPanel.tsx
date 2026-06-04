@@ -856,6 +856,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                       onOpenDiff={handleOpenDiff}
                       activityMeta={agent.activityMeta}
                       taskId={agent.taskId}
+                      isActive={agent.turnState === 'running'}
                     />
                   </Suspense>
                 )}
