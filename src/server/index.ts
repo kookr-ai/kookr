@@ -38,6 +38,7 @@ import {
 } from './startup-recovery.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
+import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
@@ -681,6 +682,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     monitor, watchdog, abortPendingSuggestion, broadcastToAll, serverCwd, taskStore,
   };
 
+  // Ephemeral worktrees for per-task self-reflect. Shared between the startup
+  // sweep (below) and the WsConnection deps that spawn reflect tasks.
+  const reflectWorktreesDir = join(kookrDir, 'reflect-worktrees');
+
   const startupRecoverySummary = await runStartupRecoveryPhase({
     taskStore,
     queue,
@@ -706,6 +711,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcastToAll,
     serverCwd,
   });
+
+  // Reclaim reflect worktrees orphaned by a crash between `git worktree add`
+  // and reflect-task completion (plus a 7-day TTL backstop). Best-effort —
+  // a sweep failure must never block startup.
+  try {
+    const { removed, kept } = await sweepReflectWorktrees({ reflectWorktreesDir, taskStore });
+    if (removed > 0) {
+      console.log(`[reflect-sweep] removed ${removed} orphaned reflect worktree(s), kept ${kept}`);
+    }
+  } catch (err) {
+    console.warn('[reflect-sweep] startup sweep failed:', err instanceof Error ? err.message : err);
+  }
 
   const { scheduleStore, scheduleService, scheduleRunner } = await createScheduleRuntime({
     kookrDir,
@@ -1009,7 +1026,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     selectionController,
     terminalInputCoordinator,
     feedbackDir: join(kookrDir, 'feedback'),
-    reflectWorktreesDir: join(kookrDir, 'reflect-worktrees'),
+    reflectWorktreesDir,
     hooksDir,
   };
 
