@@ -40,6 +40,17 @@ export interface HookEventBase {
 export type EventParentage = 'parent' | 'child' | 'foreign' | 'unknown';
 
 /**
+ * Whether a hook record came from a live agent session or was replayed into
+ * Kookr by a developer tool (e.g. `scripts/replay-hooks.ts`) to reproduce
+ * detector behavior locally. Replayed records are always scoped to a dedicated
+ * synthetic session, so they can never be mistaken for fresh output on a live
+ * session — which would otherwise clear safety UI too early. Surfaced on
+ * {@link InjectHookEventResult}; defaults to `'live'` when unset. See issue
+ * #701 and KB lesson `distinguish-replayed-events-from-fresh-events`.
+ */
+export type EventOrigin = 'live' | 'replay';
+
+/**
  * Outer metadata attached to every parsed hook event as it travels through
  * the ingestion pipeline.
  */
@@ -89,4 +100,11 @@ export interface InjectHookEventResult {
   agentType: AgentType;
   /** Free-text reason when parseStatus !== 'ok'. */
   error?: string;
+  /**
+   * Whether this record was injected from a live session or replayed for
+   * local reproduction. Set by {@link HookIngestion} from the session id and
+   * surfaced so callers/tests can confirm replayed records are tagged
+   * `'replay'`, never `'live'`. Defaults to `'live'` when unset.
+   */
+  origin?: EventOrigin;
 }

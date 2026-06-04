@@ -2,16 +2,45 @@ import { createHash } from 'node:crypto';
 import type { HttpPushTracker } from '../core/http-push-tracker.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { ActivityLedger, ActivityLedgerRow, HookEnvelopeV1 } from '../core/activity-ledger.js';
-import type { AgentActivityMeta, InjectHookEventResult } from '../core/types.js';
+import type { AgentActivityMeta, EventOrigin, InjectHookEventResult } from '../core/types.js';
 import type { CoordinatorAuditTailRow } from './coordinator/detectors.js';
+
+/**
+ * Synthetic Kookr session id prefix that marks a session as replay-only.
+ * `scripts/replay-hooks.ts` feeds a recorded hook JSONL into a running dev
+ * instance against a session whose id starts with this prefix; ingestion then
+ * tags every such record `origin: 'replay'`. Scoping replay to a dedicated
+ * synthetic session (never a live tmux name) is the structural guard against
+ * replayed events leaking into a live session's state — see issue #701 and KB
+ * lesson `scope-replay-streams-by-negotiated-epochs`.
+ */
+export const REPLAY_SESSION_PREFIX = 'kookr-replay-';
+
+/**
+ * Classify a Kookr session id as `'replay'` (synthetic reproduction session)
+ * or `'live'` (a real agent session). The session id is the single source of
+ * truth so the HTTP route needs no extra parameter and a replayed record can
+ * never be mistaken for fresh live output.
+ */
+export function deriveEventOrigin(kookrSessionId: string): EventOrigin {
+  return kookrSessionId.startsWith(REPLAY_SESSION_PREFIX) ? 'replay' : 'live';
+}
 
 /**
  * Narrow surface the {@link HookIngestion} service needs from an adapter.
  * Decouples the watcher and HTTP route from the full {@link AgentAdapter}
  * interface so ingestion can be tested in isolation with a 1-method stub.
+ *
+ * `options.origin` is forwarded so a future detector/monitor change can honor
+ * replay-vs-live without re-deriving it; existing adapters may safely ignore it.
  */
 export interface HookEventInjector {
-  injectHookEvent(tmuxName: string, rawJson: string, sequence?: number): InjectHookEventResult;
+  injectHookEvent(
+    tmuxName: string,
+    rawJson: string,
+    sequence?: number,
+    options?: { origin?: EventOrigin },
+  ): InjectHookEventResult;
 }
 
 export interface HookIngestionDeps {
@@ -55,6 +84,9 @@ export interface IngestResult {
    *  classification on a dedup hit). Surfaced so callers can inspect parse
    *  status / parentage without re-parsing. */
   injectResult: InjectHookEventResult;
+  /** Live vs. replayed, derived from the session id. Surfaced so the replay
+   *  harness (and tests) can confirm replayed records are tagged `'replay'`. */
+  origin: EventOrigin;
 }
 
 /**
@@ -142,13 +174,15 @@ export class HookIngestion implements HookEventInjector {
   private ingest({ kookrSessionId, raw, source }: IngestInput): IngestResult {
     const normalized = raw.trim();
     const contentHash = createHash('sha256').update(normalized).digest('hex');
+    const origin = deriveEventOrigin(kookrSessionId);
     if (!normalized) {
       return {
         dispatched: false,
         reason: 'empty',
         contentHash,
         eventId: mintEventId(kookrSessionId, 0),
-        injectResult: { parseStatus: 'dropped', agentType: 'claude-code', error: 'empty payload' },
+        origin,
+        injectResult: { parseStatus: 'dropped', agentType: 'claude-code', error: 'empty payload', origin },
       };
     }
 
@@ -175,13 +209,15 @@ export class HookIngestion implements HookEventInjector {
           kookrSessionId,
           normalized,
           existing.result.sequence,
+          { origin },
         );
+        result.origin = origin;
         this.cache.set(key, { ts: now, result, firstSource: existing.firstSource });
         this.bumpMeta(kookrSessionId, { duplicate: false, result });
         // Replay re-dispatch: recompute the correlation id from the ORIGINAL
         // sequence so the id is identical to the pre-restart dispatch.
         const eventId = mintEventId(kookrSessionId, result.sequence ?? existing.result.sequence ?? 0);
-        return { dispatched: result.parseStatus === 'ok', contentHash, eventId, injectResult: result };
+        return { dispatched: result.parseStatus === 'ok', contentHash, eventId, origin, injectResult: result };
       }
       // Steady-state dual-delivery: the OTHER source already dispatched this
       // record. Reuse the original sequence number on the diagnostic ledger
@@ -200,7 +236,7 @@ export class HookIngestion implements HookEventInjector {
       // occurrence (recomputed from the original sequence) — both arrivals are
       // the same logical event.
       const eventId = mintEventId(kookrSessionId, existing.result.sequence ?? 0);
-      return { dispatched: false, reason: 'duplicate', contentHash, eventId, injectResult: existing.result };
+      return { dispatched: false, reason: 'duplicate', contentHash, eventId, origin, injectResult: { ...existing.result, origin } };
     }
 
     httpTrackerCall();
@@ -215,7 +251,8 @@ export class HookIngestion implements HookEventInjector {
 
     let result: InjectHookEventResult;
     try {
-      result = this.adapter.injectHookEvent(kookrSessionId, normalized, sequence);
+      result = this.adapter.injectHookEvent(kookrSessionId, normalized, sequence, { origin });
+      result.origin = origin;
     } catch (err) {
       // Adapters MUST NOT throw on a malformed payload, but if a different
       // bug surfaces, record a malformed ledger row and rethrow so callers
@@ -224,6 +261,7 @@ export class HookIngestion implements HookEventInjector {
         parseStatus: 'malformed',
         agentType: 'claude-code',
         error: err instanceof Error ? err.message : String(err),
+        origin,
       };
       this.bumpMeta(kookrSessionId, { duplicate: false, result: malformed });
       this.writeLedger({
@@ -282,7 +320,7 @@ export class HookIngestion implements HookEventInjector {
       parseStatus: result.parseStatus,
       ...(result.rawHookEventName ? { rawHookEventName: result.rawHookEventName } : {}),
     });
-    return { dispatched: result.parseStatus === 'ok', contentHash, eventId, injectResult: result };
+    return { dispatched: result.parseStatus === 'ok', contentHash, eventId, origin, injectResult: result };
   }
 
   /**

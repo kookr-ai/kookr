@@ -108,6 +108,31 @@ kookr ralph cancel <taskId>
 
 The `kookr` binary is the package entry point. Most local development still uses `pnpm dev`, `pnpm start`, or the focused helper commands above.
 
+## Replay Hook Events
+
+`scripts/replay-hooks.ts` feeds a recorded hook-event JSONL file — a captured real session or a crafted fixture — into a running dev instance so you can deterministically reproduce a detector firing without spinning up a real agent and recreating conditions by hand.
+
+```bash
+# Replay a captured session's hook log into the running dev instance
+node --import tsx scripts/replay-hooks.ts ~/.kookr/hooks/kookr-task-abc.jsonl
+
+# Replay a fixture into a named session, pacing 50ms between records
+node --import tsx scripts/replay-hooks.ts fixture.jsonl --session repro-660 --delay-ms 50
+
+# Parse + classify records without sending anything
+node --import tsx scripts/replay-hooks.ts fixture.jsonl --dry-run
+```
+
+It parses the JSONL with the same `splitHookRecords` the production watcher uses and pushes each record through `POST /api/hook-event/:sessionId`. Every record is replayed against a dedicated **synthetic** session whose id starts with `kookr-replay-` (the prefix is prepended automatically). Ingestion derives `origin: 'replay'` from that prefix, so replayed records are tagged replay-not-live and are scoped to a session that can never be mistaken for — or collide with — a live agent's state.
+
+Options:
+
+- `--session <id>` — target session id (forced into a `kookr-replay-` session)
+- `--base-url <url>` — target instance; defaults to `KOOKR_API_BASE_URL`, then `KOOKR_PORT`, then a probe of ports `4800`/`4801`
+- `--delay-ms <n>` — fixed delay between records (default `0`)
+- `--limit <n>` — replay only the first N records
+- `--dry-run` — parse and classify records (`parsed`/`unknown`/`malformed`) and print a summary without POSTing
+
 ## Related Commands
 
 ```bash

@@ -2,7 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HookIngestion, mintEventId, type HookEventInjector } from './hook-ingestion.js';
+import {
+  HookIngestion,
+  REPLAY_SESSION_PREFIX,
+  deriveEventOrigin,
+  mintEventId,
+  type HookEventInjector,
+} from './hook-ingestion.js';
+import type { EventOrigin } from '../core/types.js';
 import { ActivityLedger, type HookEnvelopeV1 } from '../core/activity-ledger.js';
 
 function envelopeRow(overrides: Partial<HookEnvelopeV1>): { envelope: HookEnvelopeV1; projection: 'parent_activity' | 'child_activity' | 'diagnostic_only' } {
@@ -593,5 +600,99 @@ describe('HookIngestion — end-to-end correlation id (#705)', () => {
     expect(duplicate.reason).toBe('duplicate');
     // Both arrivals are the same logical event → same correlation id.
     expect(duplicate.eventId).toBe(first.eventId);
+  });
+});
+
+describe('HookIngestion — replay-vs-live origin tagging (issue #701)', () => {
+  function makeOriginAdapter(): HookEventInjector & {
+    origins: Array<EventOrigin | undefined>;
+  } {
+    const origins: Array<EventOrigin | undefined> = [];
+    return {
+      origins,
+      injectHookEvent(_tmux, _raw, sequence, options) {
+        origins.push(options?.origin);
+        return {
+          parseStatus: 'ok' as const,
+          agentType: 'claude-code' as const,
+          parentage: 'parent' as const,
+          rawSessionId: 'x',
+          sequence: sequence ?? 0,
+        };
+      },
+    };
+  }
+
+  it('deriveEventOrigin classifies replay-prefixed sessions as replay, others as live', () => {
+    expect(deriveEventOrigin(`${REPLAY_SESSION_PREFIX}demo`)).toBe('replay');
+    expect(deriveEventOrigin('kookr-task-123')).toBe('live');
+  });
+
+  it('tags records on a replay session as origin=replay and forwards it to the adapter', () => {
+    const adapter = makeOriginAdapter();
+    const ingestion = new HookIngestion({ adapter });
+
+    const raw = JSON.stringify({ session_id: 'x', hook_event_name: 'SessionStart' });
+    const result = ingestion.ingestFromHttp(`${REPLAY_SESSION_PREFIX}demo`, raw);
+
+    expect(result.dispatched).toBe(true);
+    expect(result.origin).toBe('replay');
+    expect(result.injectResult.origin).toBe('replay');
+    expect(adapter.origins).toEqual(['replay']);
+  });
+
+  it('tags records on a real session as origin=live', () => {
+    const adapter = makeOriginAdapter();
+    const ingestion = new HookIngestion({ adapter });
+
+    const raw = JSON.stringify({ session_id: 'x', hook_event_name: 'SessionStart' });
+    const result = ingestion.ingestFromHttp('kookr-task-1', raw);
+
+    expect(result.origin).toBe('live');
+    expect(result.injectResult.origin).toBe('live');
+    expect(adapter.origins).toEqual(['live']);
+  });
+
+  it('does not let a replayed record dedup against an identical live record (per-session scoping)', () => {
+    // KB lesson distinguish-replayed-events-from-fresh-events: a replayed tail
+    // record must never be confused with fresh live output. Because dedup is
+    // keyed by session id and replay uses a dedicated synthetic session, the
+    // same payload dispatches independently on each, each tagged by origin.
+    const adapter = makeOriginAdapter();
+    const ingestion = new HookIngestion({ adapter });
+
+    const raw = JSON.stringify({ session_id: 'x', hook_event_name: 'Stop' });
+    const live = ingestion.ingestFromHttp('kookr-task-1', raw);
+    const replay = ingestion.ingestFromHttp(`${REPLAY_SESSION_PREFIX}demo`, raw);
+
+    expect(live.dispatched).toBe(true);
+    expect(replay.dispatched).toBe(true);
+    expect(live.origin).toBe('live');
+    expect(replay.origin).toBe('replay');
+    expect(adapter.origins).toEqual(['live', 'replay']);
+  });
+
+  it('tags the duplicate (dual-delivery) arrival origin=replay without re-dispatching', () => {
+    const adapter = makeOriginAdapter();
+    const ingestion = new HookIngestion({ adapter });
+
+    const raw = JSON.stringify({ session_id: 'x', hook_event_name: 'SessionStart' });
+    const session = `${REPLAY_SESSION_PREFIX}demo`;
+    ingestion.ingestFromHttp(session, raw);            // first observation dispatches
+    const dup = ingestion.ingestFromHttp(session, raw); // dual-delivery duplicate
+
+    expect(dup).toMatchObject({ dispatched: false, reason: 'duplicate', origin: 'replay' });
+    expect(dup.injectResult.origin).toBe('replay');
+    expect(adapter.origins).toEqual(['replay']); // adapter called once
+  });
+
+  it('reports origin=replay on the empty-payload rejection path', () => {
+    const adapter = makeOriginAdapter();
+    const ingestion = new HookIngestion({ adapter });
+
+    const result = ingestion.ingestFromHttp(`${REPLAY_SESSION_PREFIX}demo`, '   ');
+    expect(result).toMatchObject({ dispatched: false, reason: 'empty', origin: 'replay' });
+    expect(result.injectResult.origin).toBe('replay');
+    expect(adapter.origins).toHaveLength(0);
   });
 });
