@@ -9484,6 +9484,107 @@ button.act-tool-entry:focus-visible {
   color: var(--red);
 }
 
+/* Scheduled "auto" DND state — a quiet-hours window is currently active. */
+.dnd-pill-auto {
+  color: var(--text-bright);
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.08);
+}
+.dnd-pill-auto .dnd-pill-icon { color: var(--blue); }
+.dnd-pill-auto + .dnd-pill-caret {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.04);
+}
+.dnd-pill-auto-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 15px;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: rgba(96, 165, 250, 0.16);
+  color: var(--blue);
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.dnd-pill-menu-note {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+/* Quiet-hours editor in the Settings dialog. */
+.settings-quiet-hours {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.settings-quiet-hours-window {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: var(--bg-card);
+}
+.settings-quiet-hours-times {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.settings-quiet-hours-time {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.settings-quiet-hours-time input {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-input, var(--bg-panel));
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+.settings-quiet-hours-days {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.settings-quiet-hours-day {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.settings-quiet-hours-day:hover {
+  color: var(--text-bright);
+  border-color: var(--border);
+}
+.settings-quiet-hours-day.active {
+  color: var(--blue);
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.1);
+}
+.settings-quiet-hours-day:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+
 /* "Arrived during DND" badge on FindingCard */
 .dnd-arrived-badge {
   display: inline-flex;

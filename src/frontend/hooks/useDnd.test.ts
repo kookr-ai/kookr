@@ -8,6 +8,8 @@ import {
   enableDnd,
   getDndState,
   isDndEnabled,
+  isQuietHoursActive,
+  setQuietHoursWindows,
 } from './useDnd.js';
 
 let store: Map<string, string>;
@@ -158,5 +160,96 @@ describe('DND state', () => {
     expect(isDndEnabled()).toBe(true);
     window.dispatchEvent(new StorageEvent('storage', { key: 'unrelated-key' }));
     expect(isDndEnabled()).toBe(true);
+  });
+});
+
+describe('quiet hours', () => {
+  // Inside the 22:00–08:00 window; Jan 5 2026 is a Monday.
+  const INSIDE = new Date(2026, 0, 5, 23, 0);
+  const OUTSIDE = new Date(2026, 0, 5, 9, 0);
+  const NIGHTLY = [{ start: '22:00', end: '08:00' }];
+
+  afterEach(() => {
+    setQuietHoursWindows([]);
+  });
+
+  test('an active window silences alerts via the effective DND gate', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(INSIDE);
+    setQuietHoursWindows(NIGHTLY);
+    expect(isQuietHoursActive()).toBe(true);
+    expect(isDndEnabled()).toBe(true);
+    expect(getDndState().source).toBe('quiet-hours');
+  });
+
+  test('alerts resume automatically once the window ends', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(INSIDE);
+    setQuietHoursWindows(NIGHTLY);
+    expect(isDndEnabled()).toBe(true);
+
+    // Time advances past the window; the periodic re-evaluation flips it back.
+    vi.setSystemTime(OUTSIDE);
+    vi.advanceTimersByTime(60_000);
+    expect(isDndEnabled()).toBe(false);
+    expect(getDndState().source).toBe('off');
+  });
+
+  test('outside the window, DND stays off', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(OUTSIDE);
+    setQuietHoursWindows(NIGHTLY);
+    expect(isQuietHoursActive()).toBe(false);
+    expect(isDndEnabled()).toBe(false);
+  });
+
+  test('manual DND takes precedence over an active window', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(INSIDE);
+    setQuietHoursWindows(NIGHTLY);
+    enableDnd();
+    expect(getDndState().source).toBe('manual');
+
+    // Turning manual DND off falls back to the still-active quiet-hours window.
+    disableDnd();
+    expect(getDndState().source).toBe('quiet-hours');
+    expect(isDndEnabled()).toBe(true);
+  });
+
+  test('invalid windows are dropped before they take effect', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(INSIDE);
+    setQuietHoursWindows([{ start: '99:99', end: '08:00' }]);
+    expect(isDndEnabled()).toBe(false);
+  });
+
+  test('resumes exactly at the window end boundary (end is exclusive)', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 0, 5, 7, 59));
+    setQuietHoursWindows(NIGHTLY);
+    expect(isDndEnabled()).toBe(true);
+
+    vi.setSystemTime(new Date(2026, 0, 5, 8, 0)); // exclusive end
+    vi.advanceTimersByTime(60_000);
+    expect(isDndEnabled()).toBe(false);
+  });
+
+  test('matches a later window when an earlier one in the list does not', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(INSIDE); // 23:00 — outside lunch, inside nightly
+    setQuietHoursWindows([{ start: '12:00', end: '13:00' }, ...NIGHTLY]);
+    expect(isDndEnabled()).toBe(true);
+    expect(getDndState().source).toBe('quiet-hours');
+  });
+
+  test('a quiet-hours storage event from another tab is honored', () => {
+    expect(isDndEnabled()).toBe(false);
+    vi.useFakeTimers();
+    vi.setSystemTime(INSIDE);
+    // Another tab persisted a schedule; we only receive the storage event.
+    store.set('kookr-quiet-hours', JSON.stringify(NIGHTLY));
+    window.dispatchEvent(new StorageEvent('storage', { key: 'kookr-quiet-hours' }));
+    expect(isDndEnabled()).toBe(true);
+    expect(getDndState().source).toBe('quiet-hours');
   });
 });
