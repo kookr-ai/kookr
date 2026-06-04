@@ -6,6 +6,7 @@ import type { Watchdog } from '../core/watchdog.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import type { GitHubScannerService } from '../core/github-scanner-service.js';
 import type { AgentEvent, EventMeta } from '../core/types.js';
+import type { Anomaly } from '../shared/contracts/anomalies.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { LlmClient } from '../core/llm-client.js';
 import type { DeferredTelemetryLogWriter } from '../core/telemetry.js';
@@ -56,20 +57,66 @@ export interface EventPipelineDeps {
   /** Optional publisher for refreshing remote task-share projections after local task state changes. */
   taskShareService?: { publishTaskProjectionForTask(taskId: string): void };
   terminalInputCoordinator?: TerminalInputCoordinator;
+  /**
+   * Coalescing window (ms) for centralized snapshot broadcasts (#704). A burst
+   * of events within this window collapses to a single full-snapshot rebuild
+   * plus a single WebSocket fan-out; the trailing flush always rebuilds from
+   * the live monitor snapshot, so clients converge on final state. Attention
+   * transitions (a newly-entered warning/critical anomaly) bypass coalescing
+   * and flush immediately so "an agent needs you" is never delayed.
+   *
+   * Defaults to 16ms (one display frame — imperceptible for single interactive
+   * updates). Set to `0` to disable coalescing and flush synchronously.
+   */
+  snapshotCoalesceWindowMs?: number;
+}
+
+const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS = 16;
+
+/**
+ * Anomalies that warrant interrupting the operator — these bypass broadcast
+ * coalescing so the dashboard reflects "needs attention" without the
+ * coalescing-window delay. `info`-severity anomalies ride the coalesced path.
+ */
+function isAttentionAnomaly(anomaly: Anomaly | null | undefined): boolean {
+  return !!anomaly && (anomaly.severity === 'warning' || anomaly.severity === 'critical');
 }
 
 /**
  * Wire adapter events into the monitor, watchdog, token tracker, smart response assist,
  * and GitHub scanner. Returns a cleanup function to cancel any pending suggestions.
  */
-export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSuggestion: (agentId: string, outcome?: 'used' | 'cleared') => void } {
+export function wireEventPipeline(deps: EventPipelineDeps): {
+  abortPendingSuggestion: (agentId: string, outcome?: 'used' | 'cleared') => void;
+  /** Force any pending coalesced snapshot broadcast to fan out now (#704). */
+  flushSnapshotNow: () => void;
+} {
   const {
     adapter, monitor, taskStore, tokenTracker, watchdog,
     githubScanner, llmClient, serverCwd, broadcastToAll,
     telemetryLog,
   } = deps;
 
-  const broadcastSnapshot = () => {
+  // --- Snapshot broadcast coalescing (#704) ----------------------------------
+  // Every processed hook event asks for a full-snapshot rebuild + fan-out. On a
+  // busy fleet, bursts within a few ms produce N redundant rebuilds and N
+  // fan-outs. We collapse a burst to a single trailing rebuild + fan-out: each
+  // request marks the snapshot dirty and (re)arms a short timer; the timer's
+  // flush rebuilds from the live monitor snapshot, so the broadcast always
+  // reflects final state. `flushSnapshotNow` is the immediate-flush escape used
+  // internally for attention transitions and exposed on the wire result for
+  // callers that need a synchronous flush (e.g. a future shutdown drain).
+  const coalesceWindowMs = deps.snapshotCoalesceWindowMs ?? DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS;
+  let snapshotDirty = false;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const flushSnapshotNow = () => {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    if (!snapshotDirty) return;
+    snapshotDirty = false;
     broadcastToAll(createSnapshotMessage({
       monitor,
       serverCwd,
@@ -77,6 +124,20 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
       relationTaskStore: taskStore,
       terminalInputSnapshots: deps.terminalInputCoordinator,
     }));
+  };
+
+  const broadcastSnapshot = () => {
+    snapshotDirty = true;
+    if (coalesceWindowMs <= 0) {
+      flushSnapshotNow();
+      return;
+    }
+    if (flushTimer === null) {
+      flushTimer = setTimeout(flushSnapshotNow, coalesceWindowMs);
+      // Don't let a pending coalesce window keep the process (or a test runner)
+      // alive; the flush is best-effort UI state, not a durability guarantee.
+      flushTimer.unref?.();
+    }
   };
   const publishTaskProjection = (taskId: string) => {
     deps.taskShareService?.publishTaskProjectionForTask(taskId);
@@ -199,6 +260,19 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
     sessionActivityProcessor.process(tmuxName);
     const snapshot = monitor.getSnapshot();
     broadcastSnapshot();
+    // Attention transition: an anomaly that newly becomes (or escalates to a
+    // different type/severity within) warning/critical is a low-frequency,
+    // latency-sensitive alert — flush immediately so it bypasses the coalescing
+    // window. A persisting, unchanged attention anomaly stays coalesced so a
+    // burst of stuck-state events doesn't fan out N times.
+    if (
+      isAttentionAnomaly(postState?.anomaly) &&
+      (!isAttentionAnomaly(preState?.anomaly) ||
+        preState?.anomaly?.type !== postState?.anomaly?.type ||
+        preState?.anomaly?.severity !== postState?.anomaly?.severity)
+    ) {
+      flushSnapshotNow();
+    }
     if (ownerTask) publishTaskProjection(ownerTask.id);
 
     // On stop/stop_failure events, immediately scan transcript for updated spending
@@ -217,5 +291,8 @@ export function wireEventPipeline(deps: EventPipelineDeps): { abortPendingSugges
   // Wire adapter events to the shared event handler
   adapter.onEvent(handleEvent);
 
-  return { abortPendingSuggestion: responseAssistProcessor.abortPendingSuggestion };
+  return {
+    abortPendingSuggestion: responseAssistProcessor.abortPendingSuggestion,
+    flushSnapshotNow,
+  };
 }
