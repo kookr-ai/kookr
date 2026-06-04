@@ -120,6 +120,14 @@ function suggestionBroadcasts(broadcasts: ServerMessage[]): ServerMessage[] {
   return broadcasts.filter((m) => m.type === 'suggestion');
 }
 
+function snapshotBroadcasts(
+  broadcasts: ServerMessage[],
+): Extract<ServerMessage, { type: 'snapshot' }>[] {
+  return broadcasts.filter(
+    (m): m is Extract<ServerMessage, { type: 'snapshot' }> => m.type === 'snapshot',
+  );
+}
+
 describe('event-pipeline: anomaly-diff clearing (mock-based)', () => {
   let deps: EventPipelineDeps;
   let fireEvent: (tmuxName: string, event: AgentEvent, meta?: Partial<EventMeta>) => void;
@@ -840,5 +848,199 @@ describe('event-pipeline: parentage gating (rfc-activity-log-reliability)', () =
     expect(deps.tokenTracker.register).toHaveBeenCalledWith('/t/child.jsonl', 'parent-task-1');
     // But the child must NOT drive parent anomaly detection.
     expect(deps.monitor.processEvents).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #704: snapshot broadcast coalescing on the event hot path.
+//
+// Every processed hook event requests a full-snapshot rebuild + WebSocket
+// fan-out. These tests lock in that a burst collapses to a single rebuild +
+// fan-out (reflecting final state), that the disabled path (window 0) still
+// fans out per event, and that attention transitions bypass coalescing.
+// ---------------------------------------------------------------------------
+
+describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
+  const toolUse = (id: string): AgentEvent =>
+    ({ type: 'tool_use', toolName: 'Read', toolUseId: id } as AgentEvent);
+
+  beforeEach(() => {
+    _resetLifecycles();
+  });
+
+  test('collapses a burst of events into a single rebuild + fan-out reflecting final state', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      // Snapshot evolves over the burst; the coalesced flush must reflect the
+      // LATEST state, not the state at the first event.
+      let current: any[] = [{ agentId: 'agent-1', anomaly: null, events: [] }];
+      (deps.monitor.getSnapshot as any).mockImplementation(() => current);
+      wireEventPipeline(deps); // default 16ms window
+
+      for (let i = 0; i < 5; i++) {
+        current = [{ agentId: 'agent-1', anomaly: null, events: [], seq: i } as any];
+        fireEvent('agent-1', toolUse(`tu-${i}`));
+      }
+
+      // Trailing-edge: nothing has fanned out yet during the burst.
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+
+      vi.advanceTimersByTime(16);
+
+      // Exactly one snapshot rebuild + fan-out for the whole burst …
+      const snaps = snapshotBroadcasts(broadcasts);
+      expect(snaps).toHaveLength(1);
+      // … and it reflects the final state (seq from the 5th event).
+      expect((snaps[0].agents[0] as any).seq).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('window 0 disables coalescing — one fan-out per event (redundant baseline)', () => {
+    const { deps, fireEvent, broadcasts } = createMockDeps();
+    deps.snapshotCoalesceWindowMs = 0;
+    (deps.monitor.getSnapshot as any).mockReturnValue([
+      { agentId: 'agent-1', anomaly: null, events: [] },
+    ]);
+    wireEventPipeline(deps);
+
+    for (let i = 0; i < 3; i++) fireEvent('agent-1', toolUse(`tu-${i}`));
+
+    // Coalescing off: each event fans out synchronously. This is the N-rebuild
+    // baseline the default 16ms window collapses to 1.
+    expect(snapshotBroadcasts(broadcasts)).toHaveLength(3);
+  });
+
+  test('attention transition flushes immediately, bypassing the coalescing window', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      // State machine: pre = healthy, post = needs_input (warning). processEvents
+      // is the transition trigger (same pattern as the R16 guard tests).
+      let phase: 'pre' | 'post' = 'pre';
+      (deps.monitor.getSnapshot as any).mockImplementation(() =>
+        phase === 'pre'
+          ? [{ agentId: 'agent-1', anomaly: null, events: [] }]
+          : [{ agentId: 'agent-1', anomaly: { type: 'needs_input', severity: 'warning' }, events: [] }],
+      );
+      (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
+      wireEventPipeline(deps); // default 16ms window
+
+      fireEvent('agent-1', { type: 'stop', sessionId: 's1', lastMessage: 'need input' } as AgentEvent);
+
+      // Flushed synchronously — no timer advance needed.
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+      const blocked = snapshotBroadcasts(broadcasts)[0].agents[0] as any;
+      expect(blocked.anomaly?.type).toBe('needs_input');
+
+      // And the immediate flush consumed the pending window — no duplicate later.
+      vi.advanceTimersByTime(16);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('info-severity anomaly does NOT bypass coalescing (stays on the windowed path)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      let phase: 'pre' | 'post' = 'pre';
+      (deps.monitor.getSnapshot as any).mockImplementation(() =>
+        phase === 'pre'
+          ? [{ agentId: 'agent-1', anomaly: null, events: [] }]
+          : [{ agentId: 'agent-1', anomaly: { type: 'stale_agent', severity: 'info' }, events: [] }],
+      );
+      (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
+      wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-info'));
+
+      // info severity is not attention-worthy → no immediate flush yet.
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+      vi.advanceTimersByTime(16);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a second burst re-arms the window and fans out again (timer/dirty reset)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      wireEventPipeline(deps);
+
+      for (let i = 0; i < 3; i++) fireEvent('agent-1', toolUse(`a-${i}`));
+      vi.advanceTimersByTime(16);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+
+      // A regression that left snapshotDirty=true or failed to re-arm the timer
+      // would either double-fire here or never fire the second burst.
+      for (let i = 0; i < 3; i++) fireEvent('agent-1', toolUse(`b-${i}`));
+      vi.advanceTimersByTime(16);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a coalesced event after an immediate attention flush still fans out once', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      let phase: 'pre' | 'post' = 'pre';
+      // First event drives the attention transition (immediate flush); after
+      // that the snapshot reports a steady healthy state for the routine event.
+      (deps.monitor.getSnapshot as any).mockImplementation(() =>
+        phase === 'pre'
+          ? [{ agentId: 'agent-1', anomaly: null, events: [] }]
+          : [{ agentId: 'agent-1', anomaly: { type: 'needs_input', severity: 'warning' }, events: [] }],
+      );
+      (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
+      wireEventPipeline(deps);
+
+      fireEvent('agent-1', { type: 'stop', sessionId: 's1', lastMessage: 'need input' } as AgentEvent);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1); // immediate flush
+
+      // Steady state now — a routine event must still arm a fresh coalescing
+      // window and fan out once (immediate flush must not corrupt coalescer state).
+      const routine = [{ agentId: 'agent-1', anomaly: { type: 'needs_input', severity: 'warning' }, events: [] }];
+      (deps.monitor.getSnapshot as any).mockReturnValue(routine);
+      fireEvent('agent-1', toolUse('routine-1'));
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1); // still coalesced
+      vi.advanceTimersByTime(16);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('flushSnapshotNow() forces a pending coalesced broadcast out (immediate-flush escape)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { flushSnapshotNow } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+
+      flushSnapshotNow();
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+
+      // Idempotent when nothing is dirty.
+      flushSnapshotNow();
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
