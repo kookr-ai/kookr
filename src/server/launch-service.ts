@@ -326,7 +326,7 @@ export async function launchTask(
   // an explicit override. When neither effort nor ralph verdict env is set,
   // adapterOpts stays `undefined` — byte-identical to the pre-#681 launch call.
   const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions | undefined =
-    (opts.ralphVerdictEnv || opts.effort)
+    (opts.ralphVerdictEnv || opts.effort || opts.sandboxProfile)
       ? {
           ...(opts.ralphVerdictEnv
             ? {
@@ -337,6 +337,7 @@ export async function launchTask(
               }
             : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
+          ...(opts.sandboxProfile ? { sandboxProfile: opts.sandboxProfile } : {}),
         }
       : undefined;
 

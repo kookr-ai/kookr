@@ -42,6 +42,8 @@ export interface LaunchOpts {
    * the spawned agent so iteration 0 of a Ralph loop can write a verdict.
    */
   ralphVerdictEnv?: boolean;
+  /** Launch inside the restricted sandbox profile for per-task reflection worktrees. */
+  sandboxProfile?: 'reflect';
 }
 
 export interface LaunchResult<TaskShape extends { id: string } = { id: string }> {

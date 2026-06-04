@@ -886,6 +886,47 @@ describe('WebSocket MessageRouter', () => {
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 
+  test('completeTask honors explicit requestReflect=false for thumbs-down feedback', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'feedback-reflect-'));
+    const launchTask = vi.fn(async (opts: LaunchOpts): Promise<LaunchResult> => ({
+      task: taskStore.createTask({ prompt: opts.prompt, cwd: opts.cwd, agentType: 'claude-code' }),
+      queued: false,
+    }));
+    try {
+      const feedbackRouter = new MessageRouter({
+        taskStore, queue, monitor, adapter,
+        send: (msg) => { sentMessages.push(msg); },
+        serverCwd: '/test/cwd',
+        launchTask,
+        feedbackDir: join(tempRoot, 'feedback'),
+        hooksDir: join(tempRoot, 'hooks'),
+        reflectWorktreesDir: join(tempRoot, 'reflect-worktrees'),
+        lifecycleExtras: {
+          watchdog: {
+            unregisterAgent: vi.fn(),
+            recordInputReceived: watchdogRecordInputReceived,
+          },
+        },
+        ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
+      });
+      await mkdir(join(tempRoot, 'hooks'), { recursive: true });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      taskStore.startTask(task.id);
+
+      await feedbackRouter.handleMessage({
+        type: 'completeTask',
+        taskId: task.id,
+        feedback: { rating: 'down' },
+        requestReflect: false,
+      });
+
+      expect(taskStore.getTask(task.id)?.completionFeedback).toEqual({ rating: 'down' });
+      expect(launchTask).not.toHaveBeenCalled();
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test.each([['running' as const], ['paused' as const]])(
     'completeTask on a Ralph child (loop=%s) is iteration-done, not task-done',
     async (loopStatus) => {

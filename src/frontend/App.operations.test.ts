@@ -159,6 +159,103 @@ describe('App operations modal shortcuts', () => {
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Thumbs down"]')).toBeInstanceOf(HTMLButtonElement);
   });
 
+  test('complete dialog can request reflection after thumbs-up feedback', async () => {
+    useKookrStore.setState({
+      agents: [{
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        taskName: 'Reflection task',
+        events: [],
+        anomaly: null,
+        cwd: '/tmp/kookr',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskStatus: 'inProgress',
+      }],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+
+    const thumbsUp = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Thumbs up"]');
+    await act(async () => {
+      thumbsUp.click();
+    });
+
+    const reflectCheckbox = await waitForElement<HTMLInputElement>(
+      container,
+      '.complete-feedback-checkbox input[type="checkbox"]',
+    );
+    expect(reflectCheckbox.checked).toBe(false);
+    await act(async () => {
+      reflectCheckbox.click();
+    });
+
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({
+      type: 'completeTask',
+      taskId: 'task-1',
+      feedback: { rating: 'up' },
+      requestReflect: true,
+    });
+  });
+
+  test('complete dialog proposes reflection by default for thumbs-down feedback', async () => {
+    useKookrStore.setState({
+      agents: [{
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        taskName: 'Broken task',
+        events: [],
+        anomaly: null,
+        cwd: '/tmp/kookr',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskStatus: 'inProgress',
+      }],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+
+    const thumbsDown = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Thumbs down"]');
+    await act(async () => {
+      thumbsDown.click();
+    });
+
+    const checkboxes = Array.from(container.querySelectorAll<HTMLInputElement>('.complete-feedback-checkbox input[type="checkbox"]'));
+    expect(checkboxes).toHaveLength(2);
+    expect(checkboxes[1]!.checked).toBe(true);
+
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({
+      type: 'completeTask',
+      taskId: 'task-1',
+      feedback: { rating: 'down' },
+      requestReflect: true,
+    });
+  });
+
   test('complete confirmation keeps the task selected when the dialog opened', async () => {
     useKookrStore.setState({
       agents: [

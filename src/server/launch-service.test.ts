@@ -252,6 +252,11 @@ describe('launchTask', () => {
       expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ effort: 'max' });
     });
 
+    it('threads the reflect sandbox profile to the adapter', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', sandboxProfile: 'reflect' });
+      expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ sandboxProfile: 'reflect' });
+    });
+
     it('validates against the RESOLVED agent: max is rejected for codex-cli', async () => {
       await expect(
         launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', effort: 'max' }),

@@ -4,7 +4,7 @@ import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Monitor } from '../core/monitor.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
+import { readInteractionLog, type DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import type { DeferredTelemetryLogWriter } from '../core/telemetry.js';
 import type { BuildInfo } from '../core/build-info.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
@@ -85,6 +85,12 @@ export interface MessageRouterDeps {
    * `await` this without handling errors.
    */
   takePredeleteSnapshot?: () => Promise<void>;
+  /** Where task feedback bundles are written. */
+  feedbackDir?: string;
+  /** Where task-reflection worktrees are created. */
+  reflectWorktreesDir?: string;
+  /** Where hook JSONLs live. */
+  hooksDir?: string;
   /** Project config persistence for `setProjectConfig` messages. */
   projectConfigStore?: ProjectConfigStore;
   /** Rebroadcasts `projectSummaries` to all clients after config changes. */
@@ -164,6 +170,13 @@ export class MessageRouter {
       broadcastToAll: this.deps.broadcastToAll,
       activityMetaProvider: this.deps.activityMetaProvider,
       takePredeleteSnapshot: this.deps.takePredeleteSnapshot,
+      feedbackDir: this.deps.feedbackDir,
+      reflectWorktreesDir: this.deps.reflectWorktreesDir,
+      hooksDir: this.deps.hooksDir,
+      readInteractionLogSnapshot: async () => {
+        const logPath = this.deps.interactionLog?.getFilePath() ?? null;
+        return logPath ? readInteractionLog(logPath) : [];
+      },
       getLifecycleDeps: () => this.lifecycleDeps,
       tryPromotePending: () => this.tryPromotePending(),
     });

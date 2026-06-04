@@ -142,13 +142,15 @@ export async function requestTaskReflect(
   try {
     result = await deps.launchTask({
       prompt,
-      cwd: sourceRepoRoot,
+      cwd: worktreePath,
       agentType: 'claude-code',
       disableDedup: true,
       launchSource: 'api',
+      sandboxProfile: 'reflect',
     });
   } catch (err) {
     // Clean up worktree on launch failure
+    await execFile('git', ['worktree', 'remove', '--force', worktreePath]).catch(() => {});
     await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
     return { spawned: false, reason: `launch_failed: ${(err as Error).message}` };
   }
