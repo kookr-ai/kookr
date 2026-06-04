@@ -8,7 +8,7 @@
  * Usage: bun scripts/session-analyzer.ts [options]
  */
 
-import { readFileSync, readdirSync, statSync, existsSync, createReadStream } from "fs";
+import { readdirSync, statSync, existsSync, createReadStream, openSync, readSync, closeSync } from "fs";
 import { join, basename } from "path";
 import { createInterface } from "readline";
 import { homedir } from "os";
@@ -39,6 +39,7 @@ interface SessionMeta {
   projectPath: string;    // raw project dir name
   projectName: string;    // friendly name (e.g., "kookr")
   jsonlPath: string;
+  provider: "claude-code" | "codex-cli";
   dirPath?: string;       // session directory if exists
   fileSize: number;
   startedAt?: string;     // ISO timestamp from first message
@@ -59,9 +60,11 @@ interface ParsedMessage {
   // User-specific
   isHumanInput?: boolean;  // true when user typed it (no toolUseResult)
   humanText?: string;
+  codexEventKind?: "response_user" | "event_user" | "token_snapshot" | "function_call";
   toolUseResult?: boolean;
   permissionMode?: string;
   // Assistant-specific
+  isSyntheticAssistantEvent?: boolean;
   textContent?: string;
   thinkingContent?: string;
   toolCalls?: ToolCall[];
@@ -107,6 +110,7 @@ interface SessionAnalysis {
 const CLAUDE_DIR = join(homedir(), ".claude");
 const PROJECTS_DIR = join(CLAUDE_DIR, "projects");
 const SESSIONS_DIR = join(CLAUDE_DIR, "sessions");
+const CODEX_SESSIONS_DIR = process.env.CODEX_HOME ?? join(homedir(), ".codex", "sessions");
 
 const CORRECTION_PATTERNS = [
   /\bi told you\b/i,
@@ -292,7 +296,7 @@ Examples:
 function discoverSessions(args: CliArgs): SessionMeta[] {
   const sessions: SessionMeta[] = [];
 
-  if (!existsSync(PROJECTS_DIR)) return sessions;
+  if (!existsSync(PROJECTS_DIR)) return discoverCodexSessions(args);
 
   const projectDirs = readdirSync(PROJECTS_DIR);
 
@@ -335,13 +339,132 @@ function discoverSessions(args: CliArgs): SessionMeta[] {
         projectPath: projDir,
         projectName,
         jsonlPath,
+        provider: "claude-code",
         dirPath: hasDirPath ? dirPath : undefined,
         fileSize: stat.size,
       });
     }
   }
 
+  sessions.push(...discoverCodexSessions(args));
   return sessions;
+}
+
+function discoverCodexSessions(args: CliArgs): SessionMeta[] {
+  if (!existsSync(CODEX_SESSIONS_DIR)) return [];
+
+  const sessions: SessionMeta[] = [];
+  for (const jsonlPath of walkCodexRollouts(CODEX_SESSIONS_DIR)) {
+    const stat = statSync(jsonlPath);
+    const meta = readCodexSessionMeta(jsonlPath);
+    const sessionId = meta.sessionId || basename(jsonlPath).replace(/^rollout-/, "").replace(/\.jsonl$/, "");
+
+    if (args.session && !sessionId.startsWith(args.session)) continue;
+
+    const projectPath = meta.cwd || "codex-cli";
+    const projectName = projectPath ? basename(projectPath) : "codex-cli";
+    if (args.project) {
+      const normalizedPath = projectPath.toLowerCase().replace(/-/g, "");
+      const normalizedName = projectName.toLowerCase().replace(/-/g, "");
+      const normalizedPrompt = meta.firstUserText.toLowerCase().replace(/-/g, "");
+      const query = args.project.toLowerCase().replace(/-/g, "");
+      const invocationProject = basename(process.cwd()).toLowerCase().replace(/-/g, "");
+      const isRuntimeContextForInvocationProject = normalizedName.startsWith(".") && invocationProject.includes(query);
+      if (!isRuntimeContextForInvocationProject && !normalizedPath.includes(query) && !normalizedName.includes(query) && !normalizedPrompt.includes(query)) continue;
+    }
+
+    sessions.push({
+      sessionId,
+      projectPath,
+      projectName,
+      jsonlPath,
+      provider: "codex-cli",
+      fileSize: stat.size,
+      startedAt: meta.startedAt,
+    });
+  }
+  return sessions;
+}
+
+function walkCodexRollouts(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...walkCodexRollouts(path));
+    } else if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
+      out.push(path);
+    }
+  }
+  return out;
+}
+
+function readCodexSessionMeta(path: string): { sessionId: string; cwd: string; startedAt?: string; firstUserText: string } {
+  const lines = readInitialLines(path, 24);
+  const first = lines[0];
+  if (!first) return { sessionId: "", cwd: "", firstUserText: "" };
+  try {
+    const obj = JSON.parse(first) as Record<string, unknown>;
+    if (obj.type !== "session_meta") return { sessionId: "", cwd: "", firstUserText: extractFirstCodexUserText(lines.slice(1)) };
+    const payload = (obj.payload as Record<string, unknown> | undefined) ?? {};
+    return {
+      sessionId: typeof payload.id === "string" ? payload.id : "",
+      cwd: typeof payload.cwd === "string" ? payload.cwd : "",
+      startedAt: typeof payload.timestamp === "string" ? payload.timestamp : undefined,
+      firstUserText: extractFirstCodexUserText(lines.slice(1)),
+    };
+  } catch {
+    return { sessionId: "", cwd: "", firstUserText: "" };
+  }
+}
+
+function readInitialLines(path: string, maxLines: number): string[] {
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let offset = 0;
+    let text = "";
+    while (true) {
+      const bytes = readSync(fd, buffer, 0, buffer.length, offset);
+      if (bytes <= 0) break;
+      text += buffer.subarray(0, bytes).toString("utf-8");
+      const lines = text.split("\n");
+      if (lines.length > maxLines) {
+        return lines.slice(0, maxLines);
+      }
+      offset += bytes;
+      if (offset >= 2 * 1024 * 1024) {
+        return lines.slice(0, maxLines);
+      }
+    }
+    return text ? text.split("\n").slice(0, maxLines) : [];
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function extractFirstCodexUserText(lines: string[]): string {
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const obj = JSON.parse(line) as Record<string, unknown>;
+      if (obj.type === "response_item") {
+        const payload = (obj.payload as Record<string, unknown> | undefined) ?? {};
+        if (payload.type === "message" && payload.role === "user") {
+          return extractCodexText(payload.content);
+        }
+      }
+      if (obj.type === "event_msg") {
+        const payload = (obj.payload as Record<string, unknown> | undefined) ?? {};
+        if (payload.type === "user_message" && typeof payload.message === "string") {
+          return payload.message;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+  return "";
 }
 
 function deriveProjectName(projDir: string): string {
@@ -358,7 +481,7 @@ function deriveProjectName(projDir: string): string {
 
 // ─── JSONL Parsing ───────────────────────────────────────────────────────────
 
-async function parseSessionJsonl(path: string, fullMessages: boolean): Promise<ParsedMessage[]> {
+async function parseSessionJsonl(path: string, fullMessages: boolean, provider: SessionMeta["provider"]): Promise<ParsedMessage[]> {
   const messages: ParsedMessage[] = [];
 
   const stream = createReadStream(path, { encoding: "utf-8" });
@@ -368,14 +491,150 @@ async function parseSessionJsonl(path: string, fullMessages: boolean): Promise<P
     if (!line.trim()) continue;
     try {
       const obj = JSON.parse(line);
-      const msg = parseMessage(obj, fullMessages);
+      const msg = provider === "codex-cli"
+        ? parseCodexMessage(obj, fullMessages)
+        : parseMessage(obj, fullMessages);
       if (msg) messages.push(msg);
     } catch {
       // Skip malformed lines
     }
   }
 
-  return messages;
+  return provider === "codex-cli" ? normalizeCodexMessages(messages) : messages;
+}
+
+function normalizeCodexMessages(messages: ParsedMessage[]): ParsedMessage[] {
+  const responseUserTexts = new Set(
+    messages
+      .filter((msg) => msg.codexEventKind === "response_user" && msg.humanText)
+      .map((msg) => msg.humanText!.trim()),
+  );
+
+  const withoutDuplicateUserEvents = messages.filter((msg) => {
+    if (msg.codexEventKind !== "event_user" || !msg.humanText) return true;
+    return !responseUserTexts.has(msg.humanText.trim());
+  });
+
+  let lastTokenSnapshotIndex = -1;
+  for (let i = 0; i < withoutDuplicateUserEvents.length; i++) {
+    if (withoutDuplicateUserEvents[i].codexEventKind === "token_snapshot") {
+      lastTokenSnapshotIndex = i;
+    }
+  }
+
+  if (lastTokenSnapshotIndex < 0) return withoutDuplicateUserEvents;
+  return withoutDuplicateUserEvents.map((msg, index) => {
+    if (msg.codexEventKind !== "token_snapshot" || index === lastTokenSnapshotIndex) {
+      return msg;
+    }
+    return {
+      ...msg,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    };
+  });
+}
+
+function parseCodexMessage(obj: Record<string, unknown>, fullContent: boolean): ParsedMessage | null {
+  const type = obj.type as string | undefined;
+  if (!type) return null;
+
+  const base: ParsedMessage = {
+    type: "system",
+    timestamp: obj.timestamp as string | undefined,
+  };
+
+  if (type === "session_meta") {
+    const payload = (obj.payload as Record<string, unknown> | undefined) ?? {};
+    return {
+      ...base,
+      subtype: "session_meta",
+      sessionId: typeof payload.id === "string" ? payload.id : undefined,
+      cwd: typeof payload.cwd === "string" ? payload.cwd : undefined,
+    };
+  }
+
+  if (type === "response_item") {
+    const payload = (obj.payload as Record<string, unknown> | undefined) ?? {};
+    const payloadType = payload.type as string | undefined;
+    if (payloadType === "message") {
+      const role = payload.role as string | undefined;
+      if (role === "user") {
+        return {
+          ...base,
+          type: "user",
+          codexEventKind: "response_user",
+          isHumanInput: true,
+          humanText: extractCodexText(payload.content),
+        };
+      }
+      if (role === "assistant") {
+        return {
+          ...base,
+          type: "assistant",
+          textContent: fullContent ? extractCodexText(payload.content) : truncate(extractCodexText(payload.content), 200),
+        };
+      }
+    }
+    if (payloadType === "function_call") {
+      const name = typeof payload.name === "string" ? payload.name : "tool";
+      const args = typeof payload.arguments === "string" ? payload.arguments : JSON.stringify(payload.arguments ?? {});
+      return {
+        ...base,
+        type: "assistant",
+        codexEventKind: "function_call",
+        isSyntheticAssistantEvent: true,
+        toolCalls: [{ name, inputSummary: truncate(args, 80) }],
+      };
+    }
+    return null;
+  }
+
+  if (type === "event_msg") {
+    const payload = (obj.payload as Record<string, unknown> | undefined) ?? {};
+    const eventType = payload.type as string | undefined;
+    if (eventType === "user_message" && typeof payload.message === "string") {
+      return {
+        ...base,
+        type: "user",
+        codexEventKind: "event_user",
+        isHumanInput: true,
+        humanText: payload.message,
+      };
+    }
+    if (eventType === "token_count") {
+      const info = payload.info as Record<string, unknown> | undefined;
+      const total = info?.total_token_usage as Record<string, unknown> | undefined;
+      if (!total) return null;
+      return {
+        ...base,
+        type: "assistant",
+        codexEventKind: "token_snapshot",
+        isSyntheticAssistantEvent: true,
+        inputTokens: typeof total.input_tokens === "number" ? total.input_tokens : 0,
+        outputTokens: typeof total.output_tokens === "number" ? total.output_tokens : 0,
+        cacheReadTokens: typeof total.cached_input_tokens === "number" ? total.cached_input_tokens : 0,
+      };
+    }
+    return null;
+  }
+
+  return null;
+}
+
+function extractCodexText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const texts: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    const text = b.text ?? b.input_text ?? b.output_text;
+    if (typeof text === "string") texts.push(text);
+  }
+  return texts.join("\n");
 }
 
 function parseMessage(obj: Record<string, unknown>, fullContent: boolean): ParsedMessage | null {
@@ -546,9 +805,13 @@ function analyzeMessages(meta: SessionMeta, messages: ParsedMessage[]): SessionA
     }
 
     if (msg.type === "user" && msg.isHumanInput && msg.humanText) {
+      const text = msg.humanText.trim();
+      if (isAnalyzerNoise(text)) {
+        continue;
+      }
+
       analysis.humanTurns++;
 
-      const text = msg.humanText.trim();
       if (text === "[Request interrupted by user]") {
         analysis.interruptions++;
       }
@@ -569,7 +832,9 @@ function analyzeMessages(meta: SessionMeta, messages: ParsedMessage[]): SessionA
     }
 
     if (msg.type === "assistant") {
-      analysis.assistantTurns++;
+      if (!msg.isSyntheticAssistantEvent) {
+        analysis.assistantTurns++;
+      }
       analysis.totalInputTokens += msg.inputTokens || 0;
       analysis.totalOutputTokens += msg.outputTokens || 0;
       analysis.totalCacheRead += msg.cacheReadTokens || 0;
@@ -610,6 +875,20 @@ function isCorrection(text: string): boolean {
   if (text.length < 5) return false;
   if (text === "[Request interrupted by user]") return false;
   return CORRECTION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function isAnalyzerNoise(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("<environment_context>")) return true;
+  if (trimmed.startsWith("<turn_aborted>")) return true;
+  if (trimmed.startsWith("# AGENTS.md instructions")) return true;
+  if (trimmed.startsWith("<task-notification>")) return true;
+  if (trimmed.startsWith("Base directory for this skill:")) return true;
+  if (trimmed.startsWith("---\n")) return true;
+  if (trimmed.startsWith("## Worktree isolation")) return true;
+  if (/do not commit/i.test(trimmed) && /worktree/i.test(trimmed)) return true;
+  if (/^Implement .* issue #\d+ .*end-to-end/i.test(trimmed) && /(Hard constraints:|Worktree isolation)/i.test(trimmed)) return true;
+  return false;
 }
 
 // ─── Timestamp Filtering ─────────────────────────────────────────────────────
@@ -712,6 +991,7 @@ function renderSummary(analyses: SessionAnalysis[]): void {
     console.log(`\n${"═".repeat(72)}`);
     console.log(`Session: ${a.meta.sessionId}`);
     console.log(`Project: ${a.meta.projectName} (${a.meta.projectPath})`);
+    console.log(`Provider: ${a.meta.provider}`);
     if (a.firstTimestamp) console.log(`Started: ${formatDate(a.firstTimestamp)}`);
     if (a.firstTimestamp && a.lastTimestamp) {
       const dur = new Date(a.lastTimestamp).getTime() - new Date(a.firstTimestamp).getTime();
@@ -799,7 +1079,7 @@ function renderCorrections(analyses: SessionAnalysis[]): void {
     totalCorrections += a.corrections.length;
 
     console.log(`\n${"═".repeat(72)}`);
-    console.log(`Session: ${a.meta.sessionId} | ${a.meta.projectName} | ${formatDate(a.firstTimestamp || "")}`);
+    console.log(`Session: ${a.meta.sessionId} | ${a.meta.projectName} | ${a.meta.provider} | ${formatDate(a.firstTimestamp || "")}`);
     console.log(`Corrections: ${a.corrections.length} / ${a.humanTurns} human turns`);
     console.log(`${"─".repeat(72)}`);
 
@@ -924,6 +1204,7 @@ function renderToolsReport(analyses: SessionAnalysis[]): void {
   const sorted = Object.entries(aggregate).sort((a, b) => b[1].count - a[1].count);
 
   console.log(`\nTool Usage Report (${sessionCount} sessions)\n`);
+  renderProviderCoverage(analyses);
   const header = `${"Tool".padEnd(24)} ${"Total".padStart(7)} ${"Avg/Sess".padStart(10)} ${"Sessions".padStart(10)}`;
   console.log(header);
   console.log("─".repeat(header.length));
@@ -937,6 +1218,8 @@ function renderToolsReport(analyses: SessionAnalysis[]): void {
 
 function renderPatterns(analyses: SessionAnalysis[]): void {
   console.log(`\nCross-Session Pattern Analysis (${analyses.length} sessions)\n`);
+  renderProviderCoverage(analyses);
+  console.log();
 
   // 1. Correction frequency
   const sessionsWithCorrections = analyses.filter((a) => a.corrections.length > 0);
@@ -1022,6 +1305,8 @@ function renderPatterns(analyses: SessionAnalysis[]): void {
 
 function renderUserMessages(analyses: SessionAnalysis[]): void {
   console.log(`\nUser Messages Across ${analyses.length} Sessions\n`);
+  renderProviderCoverage(analyses);
+  console.log();
 
   let totalMessages = 0;
   for (const a of analyses) {
@@ -1031,7 +1316,7 @@ function renderUserMessages(analyses: SessionAnalysis[]): void {
     if (msgs.length === 0) continue;
 
     console.log(`${"═".repeat(72)}`);
-    console.log(`Session: ${a.meta.sessionId.slice(0, 8)} | ${a.meta.projectName} | ${a.firstTimestamp ? formatDate(a.firstTimestamp) : "unknown"}`);
+    console.log(`Session: ${a.meta.sessionId.slice(0, 8)} | ${a.meta.projectName} | ${a.meta.provider} | ${a.firstTimestamp ? formatDate(a.firstTimestamp) : "unknown"}`);
     console.log(`${"─".repeat(72)}`);
 
     for (const msg of msgs) {
@@ -1105,8 +1390,7 @@ function renderRepeatedInstructions(analyses: SessionAnalysis[], threshold: numb
     for (const msg of a.humanMessages) {
       const text = msg.text.trim();
       if (text === "[Request interrupted by user]" || text.length < 5) continue;
-      // Skip playbook/skill-injected prompts (they start with ## or contain frontmatter)
-      if (text.startsWith("##") || text.startsWith("---\n") || text.startsWith("Base directory for this skill:")) continue;
+      if (isAnalyzerNoise(text)) continue;
 
       allMessages.push({
         normalized: normalizeForMatching(text),
@@ -1202,10 +1486,19 @@ function renderIntentSummary(allMessages: Array<{ intent: string }>): void {
   console.log("User Input Intent Classification:\n");
   const sorted = Object.entries(intentCounts).sort((a, b) => b[1] - a[1]);
   for (const [intent, count] of sorted) {
-    const pct = ((count / allMessages.length) * 100).toFixed(0);
+    const pct = allMessages.length > 0 ? ((count / allMessages.length) * 100).toFixed(0) : "0";
     console.log(`  ${intent.padEnd(15)} ${count.toString().padStart(4)} (${pct}%)`);
   }
   console.log(`  ${"total".padEnd(15)} ${allMessages.length.toString().padStart(4)}`);
+}
+
+function renderProviderCoverage(analyses: SessionAnalysis[]): void {
+  const counts: Record<string, number> = {};
+  for (const analysis of analyses) {
+    counts[analysis.meta.provider] = (counts[analysis.meta.provider] || 0) + 1;
+  }
+  if (Object.keys(counts).length <= 1) return;
+  console.log(`Provider coverage: ${Object.entries(counts).map(([provider, count]) => `${provider}=${count}`).join(", ")}`);
 }
 
 // ─── JSON Output ─────────────────────────────────────────────────────────────
@@ -1215,6 +1508,7 @@ function renderJson(analyses: SessionAnalysis[]): void {
     sessionId: a.meta.sessionId,
     project: a.meta.projectName,
     projectPath: a.meta.projectPath,
+    provider: a.meta.provider,
     fileSize: a.meta.fileSize,
     startedAt: a.firstTimestamp,
     endedAt: a.lastTimestamp,
@@ -1352,7 +1646,7 @@ async function main(): Promise<void> {
     const batch = toProcess.slice(i, i + batchSize);
     const batchResults = await Promise.all(
       batch.map(async (session) => {
-        const messages = await parseSessionJsonl(session.jsonlPath, fullContent);
+        const messages = await parseSessionJsonl(session.jsonlPath, fullContent, session.provider);
         return analyzeMessages(session, messages);
       }),
     );
