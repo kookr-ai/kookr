@@ -13,6 +13,7 @@ import { HOOK_EVENTS, LOAD_BEARING_HOOKS } from '../../core/hook-spec.js';
 import { handleTerminalInput, handleTerminalKeystroke, type TerminalInputDeps } from '../agent-lifecycle.js';
 import { FakeTerminalBridge } from '../fake-terminal-bridge.js';
 import { SessionBridge } from '../session-bridge.js';
+import { isAuthorizedUpgrade, type ApiAuthConfig } from '../auth.js';
 
 export interface HttpAndWebSocketsDeps {
   app: Hono;
@@ -24,6 +25,13 @@ export interface HttpAndWebSocketsDeps {
   terminalInputWriter?: TerminalInputWriterPort;
   terminalDeps: TerminalInputDeps;
   useFakeTerminalBridge?: boolean;
+  /**
+   * Resolved API-token auth posture (issue #708). When `required` is true (a
+   * non-loopback bind), every WebSocket upgrade must present a valid bearer
+   * token (header or `?token=` query param) or the socket is rejected with a
+   * 401 handshake. Absent/`required: false` accepts all upgrades (loopback).
+   */
+  apiAuth?: ApiAuthConfig;
   onLocalTerminalActivity?: (sessionId: string) => void;
   onDashboardConnection: (ws: WebSocket) => void;
 }
@@ -44,12 +52,25 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
 
   httpServer.on('upgrade', (req: IncomingMessage, socket, head) => {
     const url = req.url ?? '';
+    // Dispatch on the pathname only — the auth token may ride on a `?token=`
+    // query string (browsers cannot set WS handshake headers), so an exact
+    // `url === '/ws'` check would misroute an authenticated `/ws?token=...`.
+    const path = url.split('?', 1)[0];
 
-    if (url === '/ws') {
+    // Issue #708: on a non-loopback bind, reject unauthenticated upgrades before
+    // any handshake. The dashboard WS carries the full live snapshot stream and
+    // terminal I/O, so it must be gated alongside state-changing HTTP routes.
+    if (deps.apiAuth && !isAuthorizedUpgrade(deps.apiAuth, req)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    if (path === '/ws') {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit('connection', ws, req);
       });
-    } else if (url.startsWith('/ws/terminal/')) {
+    } else if (path.startsWith('/ws/terminal/')) {
       terminalWss.handleUpgrade(req, socket, head, (ws) => {
         terminalWss.emit('connection', ws, req);
       });

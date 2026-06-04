@@ -81,6 +81,7 @@ import { RuntimeAttentionMissSampler } from './attention-miss-runtime-sampler.js
 import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
 import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
+import type { ApiAuthConfig } from './auth.js';
 
 // --- Exported types ---
 
@@ -143,6 +144,13 @@ export interface KookrConfig {
   ossSourceWatcherDebounceMs?: number;
   /** Server-lifecycle abort signal — see `VoiceWarmupOpts.lifecycleSignal` and issue #188. */
   lifecycleSignal?: AbortSignal;
+  /**
+   * Resolved API-token auth posture (issue #708). When `required` is true (a
+   * non-loopback bind), state-changing routes and the WebSocket upgrade require
+   * a bearer token. Absent defaults to no auth (loopback flow). Resolved in
+   * `src/server/start.ts` via `resolveApiAuth`.
+   */
+  apiAuth?: ApiAuthConfig;
 }
 
 function getOrCreatePrivateNetworkNodeId(kookrDir: string): NodeId {
@@ -854,6 +862,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     coordinatorSuppressions,
     drainController,
+    apiAuth: config.apiAuth,
     startupRecoverySummary,
     ralphCycler,
     tokenTracker,
@@ -1021,6 +1030,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalInputWriter: terminalInputCoordinator,
     terminalDeps,
     useFakeTerminalBridge,
+    apiAuth: config.apiAuth,
     onLocalTerminalActivity: (sessionId) => remoteRelayRuntime?.recordLocalTerminalActivity(sessionId),
     onDashboardConnection: (ws) => handleWsConnection(ws, clients, wsConnectionDeps),
   });

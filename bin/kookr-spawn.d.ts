@@ -102,6 +102,7 @@ export interface MainDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
+export function apiAuthHeaders(env?: Record<string, string | undefined>): Record<string, string>;
 export function parseArgs(argv: string[]): ParsedArgs;
 export function parseMaxBytes(raw: string | undefined): number;
 export function parsePortEnv(raw: string | undefined): PortEnvParse;

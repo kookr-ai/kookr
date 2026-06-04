@@ -458,6 +458,41 @@ describe('postTask', () => {
     }
   });
 
+  it('sends Authorization: Bearer when KOOKR_API_TOKEN is set (issue #708)', async () => {
+    let authSeen: string | undefined;
+    const { server, baseUrl } = await startFakeApi((req) => {
+      authSeen = req.headers['authorization'] as string | undefined;
+      return { status: 201, body: JSON.stringify({ id: 'task-1' }) };
+    });
+    const prev = process.env.KOOKR_API_TOKEN;
+    process.env.KOOKR_API_TOKEN = 'lan-secret';
+    try {
+      await postTask({ baseUrl, prompt: 'hi', cwd: '/tmp/x', agent: null, criteria: null });
+      expect(authSeen).toBe('Bearer lan-secret');
+    } finally {
+      if (prev === undefined) delete process.env.KOOKR_API_TOKEN;
+      else process.env.KOOKR_API_TOKEN = prev;
+      await closeServer(server);
+    }
+  });
+
+  it('omits Authorization when KOOKR_API_TOKEN is unset (loopback flow)', async () => {
+    let authSeen: string | undefined = 'unset-sentinel';
+    const { server, baseUrl } = await startFakeApi((req) => {
+      authSeen = req.headers['authorization'] as string | undefined;
+      return { status: 201, body: JSON.stringify({ id: 'task-1' }) };
+    });
+    const prev = process.env.KOOKR_API_TOKEN;
+    delete process.env.KOOKR_API_TOKEN;
+    try {
+      await postTask({ baseUrl, prompt: 'hi', cwd: '/tmp/x', agent: null, criteria: null });
+      expect(authSeen).toBeUndefined();
+    } finally {
+      if (prev !== undefined) process.env.KOOKR_API_TOKEN = prev;
+      await closeServer(server);
+    }
+  });
+
   it('returns kind=duplicate when server signals dedup', async () => {
     const { server, baseUrl } = await startFakeApi(() => ({
       status: 200,

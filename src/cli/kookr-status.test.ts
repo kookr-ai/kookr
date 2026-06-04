@@ -9,8 +9,22 @@ import {
   renderReport,
   parsePortEnv,
   resolvePort,
+  apiAuthHeaders,
   main,
 } from '../../bin/kookr-status.js';
+
+describe('kookr-status apiAuthHeaders (issue #708)', () => {
+  it('returns a Bearer header when KOOKR_API_TOKEN is set', () => {
+    expect(apiAuthHeaders({ KOOKR_API_TOKEN: '  lan-secret  ' })).toEqual({
+      Authorization: 'Bearer lan-secret',
+    });
+  });
+
+  it('returns no header when KOOKR_API_TOKEN is unset or blank', () => {
+    expect(apiAuthHeaders({})).toEqual({});
+    expect(apiAuthHeaders({ KOOKR_API_TOKEN: '   ' })).toEqual({});
+  });
+});
 
 describe('kookr-status formatUptime', () => {
   it('renders seconds-only durations', () => {

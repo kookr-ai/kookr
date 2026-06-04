@@ -53,4 +53,79 @@ describe('startHttpAndWebSockets', () => {
     });
     expect(dashboardConnections).toHaveLength(1);
   });
+
+  // Issue #708: the WS upgrade gate is the security-critical runtime path — it
+  // protects the live snapshot stream + terminal I/O on a non-loopback bind.
+  // Drive a real upgrade against a server configured with `apiAuth.required`.
+  describe('WebSocket upgrade auth gate (non-loopback bind)', () => {
+    async function startGated(): Promise<{ port: number; dashboardConnections: WebSocket[] }> {
+      const app = new Hono();
+      const dashboardConnections: WebSocket[] = [];
+      runtime = await startHttpAndWebSockets({
+        app,
+        port: 0,
+        host: '0.0.0.0',
+        tasksFile: '/tmp/tasks.json',
+        hooksDir: '/tmp/hooks',
+        terminalBackend: new FakeTerminalBackend(),
+        terminalDeps: {
+          monitor: {} as never,
+          abortPendingSuggestion: () => {},
+          broadcastToAll: () => {},
+          serverCwd: '/repo',
+        },
+        apiAuth: { required: true, token: 'secret' },
+        onDashboardConnection: (ws) => {
+          dashboardConnections.push(ws);
+          ws.close();
+        },
+      });
+      const address = runtime.httpServer.address();
+      return { port: (address as { port: number }).port, dashboardConnections };
+    }
+
+    test('rejects an upgrade with no token', async () => {
+      const { port, dashboardConnections } = await startGated();
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      const err = await new Promise<Error | null>((resolve) => {
+        ws.on('open', () => resolve(null));
+        ws.on('error', (e) => resolve(e));
+      });
+      expect(err).toBeInstanceOf(Error);
+      expect(dashboardConnections).toHaveLength(0);
+    });
+
+    test('accepts an upgrade with the token via ?token= (browser-style)', async () => {
+      const { port, dashboardConnections } = await startGated();
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=secret`);
+      await new Promise<void>((resolve, reject) => {
+        ws.on('close', () => resolve());
+        ws.on('error', reject);
+      });
+      expect(dashboardConnections).toHaveLength(1);
+    });
+
+    test('accepts an upgrade with the token via the Authorization header', async () => {
+      const { port, dashboardConnections } = await startGated();
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+        headers: { authorization: 'Bearer secret' },
+      });
+      await new Promise<void>((resolve, reject) => {
+        ws.on('close', () => resolve());
+        ws.on('error', reject);
+      });
+      expect(dashboardConnections).toHaveLength(1);
+    });
+
+    test('rejects an upgrade with a wrong token', async () => {
+      const { port, dashboardConnections } = await startGated();
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=nope`);
+      const err = await new Promise<Error | null>((resolve) => {
+        ws.on('open', () => resolve(null));
+        ws.on('error', (e) => resolve(e));
+      });
+      expect(err).toBeInstanceOf(Error);
+      expect(dashboardConnections).toHaveLength(0);
+    });
+  });
 });
