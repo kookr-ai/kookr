@@ -39,6 +39,7 @@ export {
   compactToolSummary,
   pasteBurstLabel,
   summarizeActivity,
+  toolLabel,
 } from './contracts/activity-summary.js';
 export type { BuildInfo } from './contracts/build-info.js';
 export type { CircuitBreakerSnapshot } from './contracts/circuit-breaker.js';
