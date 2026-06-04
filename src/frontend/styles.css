@@ -4969,6 +4969,12 @@ textarea::-webkit-resizer { background: transparent; }
   word-break: break-word;
   max-width: 72ch;
 }
+/* When the terminal/diff pane is hidden the activity pane fills the width;
+   relax the prose cap so text uses more of the space and needs less vertical
+   scrolling, while keeping a generous bound for readability on wide screens. */
+.detail-split-left-only .act-msg-text {
+  max-width: 110ch;
+}
 .act-msg-collapsed .act-msg-text {
   max-height: 16.5rem;
   overflow: hidden;
