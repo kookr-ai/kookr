@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
 import { mkdtemp, rm, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { loadSettings, saveSettings, validateSettings, validateSettingsWithWarnings, DEFAULT_SETTINGS } from './settings-store.js';
+import {
+  loadSettings,
+  saveSettings,
+  validateSettings,
+  validateSettingsWithWarnings,
+  isWithinQuietHours,
+  DEFAULT_SETTINGS,
+} from './settings-store.js';
 
 describe('validateSettings', () => {
   it('returns defaults for empty object', () => {
@@ -241,6 +248,7 @@ describe('loadSettings / saveSettings', () => {
       },
       speakVerbosity: 'detailed' as const,
       agentEffort: { 'claude-code': 'high' as const, 'codex-cli': 'minimal' as const },
+      quietHours: [{ start: '22:00', end: '08:00' }],
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);
@@ -348,5 +356,100 @@ describe('agentEffort validation (#681)', () => {
     expect(validateSettingsWithWarnings({ agentEffort: { 'claude-code': 3 } }).settings.agentEffort).toEqual({});
     expect(validateSettingsWithWarnings({ agentEffort: 'high' }).settings.agentEffort).toEqual({});
     expect(validateSettingsWithWarnings({ agentEffort: ['high'] }).settings.agentEffort).toEqual({});
+  });
+});
+
+describe('quietHours validation', () => {
+  it('defaults to an empty array', () => {
+    expect(validateSettings({}).quietHours).toEqual([]);
+  });
+
+  it('keeps a valid window list', () => {
+    const windows = [{ start: '22:00', end: '08:00' }, { start: '12:00', end: '13:00', days: [1, 2, 3] }];
+    expect(validateSettings({ quietHours: windows }).quietHours).toEqual(windows);
+  });
+
+  it('drops a window with an invalid time and warns', () => {
+    const { settings, warnings } = validateSettingsWithWarnings({
+      quietHours: [{ start: '25:00', end: '08:00' }, { start: '22:00', end: '08:00' }],
+    });
+    expect(settings.quietHours).toEqual([{ start: '22:00', end: '08:00' }]);
+    expect(warnings.some((w) => w.includes('invalid time'))).toBe(true);
+  });
+
+  it('drops an ambiguous window where start equals end', () => {
+    const { settings, warnings } = validateSettingsWithWarnings({
+      quietHours: [{ start: '09:00', end: '09:00' }],
+    });
+    expect(settings.quietHours).toEqual([]);
+    expect(warnings.some((w) => w.includes('start equals end'))).toBe(true);
+  });
+
+  it('ignores a non-array quietHours value and warns', () => {
+    const { settings, warnings } = validateSettingsWithWarnings({ quietHours: 'nope' });
+    expect(settings.quietHours).toEqual([]);
+    expect(warnings.some((w) => w.includes('must be an array'))).toBe(true);
+  });
+
+  it('normalizes days: dedups, sorts, drops out-of-range, warns', () => {
+    const { settings, warnings } = validateSettingsWithWarnings({
+      quietHours: [{ start: '22:00', end: '08:00', days: [2, 1, 2, 9, -1] }],
+    });
+    expect(settings.quietHours).toEqual([{ start: '22:00', end: '08:00', days: [1, 2] }]);
+    expect(warnings.some((w) => w.includes('invalid entries'))).toBe(true);
+  });
+
+  it('treats a full week of days as "every day" (days omitted)', () => {
+    const result = validateSettings({
+      quietHours: [{ start: '22:00', end: '08:00', days: [0, 1, 2, 3, 4, 5, 6] }],
+    });
+    expect(result.quietHours).toEqual([{ start: '22:00', end: '08:00' }]);
+  });
+
+  it('caps the number of windows', () => {
+    const many = Array.from({ length: 25 }, () => ({ start: '01:00', end: '02:00' }));
+    const { settings, warnings } = validateSettingsWithWarnings({ quietHours: many });
+    expect(settings.quietHours).toHaveLength(20);
+    expect(warnings.some((w) => w.includes('capped'))).toBe(true);
+  });
+});
+
+describe('isWithinQuietHours', () => {
+  // Local-time fixtures. Jan 2026: 1st=Thu(4), 2nd=Fri(5), 3rd=Sat(6), 4th=Sun(0), 5th=Mon(1).
+  const at = (day: number, hour: number, minute = 0) => new Date(2026, 0, day, hour, minute);
+
+  it('returns false with no windows', () => {
+    expect(isWithinQuietHours([], at(5, 23))).toBe(false);
+  });
+
+  it('matches a same-day window with inclusive start and exclusive end', () => {
+    const w = [{ start: '12:00', end: '13:00' }];
+    expect(isWithinQuietHours(w, at(5, 12, 0))).toBe(true);
+    expect(isWithinQuietHours(w, at(5, 12, 30))).toBe(true);
+    expect(isWithinQuietHours(w, at(5, 11, 59))).toBe(false);
+    expect(isWithinQuietHours(w, at(5, 13, 0))).toBe(false);
+  });
+
+  it('matches a window that wraps past midnight', () => {
+    const w = [{ start: '22:00', end: '08:00' }];
+    expect(isWithinQuietHours(w, at(5, 23, 0))).toBe(true); // evening half
+    expect(isWithinQuietHours(w, at(6, 2, 0))).toBe(true); // morning half (next day)
+    expect(isWithinQuietHours(w, at(5, 8, 0))).toBe(false); // end exclusive
+    expect(isWithinQuietHours(w, at(5, 21, 59))).toBe(false); // before start
+    expect(isWithinQuietHours(w, at(5, 9, 0))).toBe(false); // mid-day
+  });
+
+  it('applies a weekday filter to the start day of a wrap window', () => {
+    const fridayNight = [{ start: '22:00', end: '08:00', days: [5] }]; // Fri 22:00 → Sat 08:00
+    expect(isWithinQuietHours(fridayNight, at(2, 23, 0))).toBe(true); // Fri evening
+    expect(isWithinQuietHours(fridayNight, at(3, 2, 0))).toBe(true); // Sat morning belongs to Fri
+    expect(isWithinQuietHours(fridayNight, at(3, 23, 0))).toBe(false); // Sat evening — not Friday
+    expect(isWithinQuietHours(fridayNight, at(4, 2, 0))).toBe(false); // Sun morning belongs to Sat
+  });
+
+  it('applies a weekday filter to a same-day window', () => {
+    const weekdayLunch = [{ start: '12:00', end: '13:00', days: [1, 2, 3, 4, 5] }];
+    expect(isWithinQuietHours(weekdayLunch, at(5, 12, 30))).toBe(true); // Monday
+    expect(isWithinQuietHours(weekdayLunch, at(4, 12, 30))).toBe(false); // Sunday
   });
 });

@@ -13,7 +13,11 @@ import {
   validateShortcutBindingOverrides,
   type PlatformShortcutBindingOverrides,
 } from '../shared/contracts/shortcut-bindings.js';
+import { validateQuietHours, type QuietHoursWindow } from '../shared/contracts/quiet-hours.js';
 import type { VerbosityScale } from '../shared/contracts/speech.js';
+
+export type { QuietHoursWindow } from '../shared/contracts/quiet-hours.js';
+export { isWithinQuietHours } from '../shared/contracts/quiet-hours.js';
 
 const VERBOSITY_VALUES: readonly VerbosityScale[] = ['terse', 'brief', 'medium', 'detailed'];
 const DEFAULT_VERBOSITY: VerbosityScale = 'medium';
@@ -58,6 +62,12 @@ export interface KookrSettings {
    * Invalid (agent, level) pairs are dropped with a warning during validation.
    */
   agentEffort: AgentEffortMap;
+  /**
+   * Recurring quiet-hours windows. While local time falls inside any window the
+   * frontend auto-suppresses chimes and desktop notifications (reusing the DND
+   * path) and resumes automatically afterward. Empty = no scheduled silencing.
+   */
+  quietHours: QuietHoursWindow[];
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -72,6 +82,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   shortcutBindings: {},
   speakVerbosity: DEFAULT_VERBOSITY,
   agentEffort: {},
+  quietHours: [],
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -133,6 +144,8 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
 
   const shortcutValidation = validateShortcutBindingOverrides(raw.shortcutBindings);
 
+  const quietHoursValidation = validateQuietHours(raw.quietHours);
+
   const verbosityWarnings: string[] = [];
   let speakVerbosity: VerbosityScale = DEFAULT_VERBOSITY;
   if (raw.speakVerbosity !== undefined) {
@@ -151,7 +164,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
   const { agentEffort, warnings: agentEffortWarnings } = validateAgentEffort(raw.agentEffort);
 
   return {
-    warnings: [...shortcutValidation.warnings, ...verbosityWarnings, ...agentEffortWarnings],
+    warnings: [...shortcutValidation.warnings, ...verbosityWarnings, ...agentEffortWarnings, ...quietHoursValidation.warnings],
     settings: {
       githubPollingEnabled: enabled,
       githubPollingIntervalSec: interval,
@@ -164,6 +177,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       shortcutBindings: shortcutValidation.overrides,
       speakVerbosity,
       agentEffort,
+      quietHours: quietHoursValidation.windows,
     },
   };
 }

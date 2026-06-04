@@ -64,6 +64,7 @@ describe('Settings API', () => {
       shortcutBindings: {},
       speakVerbosity: 'medium',
       agentEffort: {},
+      quietHours: [],
       loadedFromDefaults: true,
       warnings: [],
     });
