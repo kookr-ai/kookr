@@ -407,6 +407,200 @@ describe('HookFileWatcher', () => {
     expect(events).toHaveLength(0);
   }, 6000);
 
+  test('recovers from truncation: resets offset and ingests post-truncation events (issue #703)', async () => {
+    const hookFile = join(tempDir, 'kookr-trunc.jsonl');
+    writeFileSync(hookFile, '');
+
+    const task = taskStore.createTask('Test', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-trunc', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-trunc',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    watcher.watch('kookr-trunc');
+
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    appendFileSync(hookFile, event1 + '\n');
+    await watcher.drainNow('kookr-trunc');
+    expect(events.length).toBe(1);
+    const advancedOffset = watcher.getOffset('kookr-trunc')!;
+    expect(advancedOffset).toBeGreaterThan(0);
+
+    // Truncate the file out from under the watcher (clear / rotate). Without
+    // recovery the stale offset would sit past EOF forever and every later
+    // record would be silently sliced away.
+    writeFileSync(hookFile, '');
+    await watcher.drainNow('kookr-trunc');
+    // Offset must have been reset to 0; no spurious re-injection of event1.
+    expect(watcher.getOffset('kookr-trunc')).toBe(0);
+    expect(events.length).toBe(1);
+
+    // New events on the fresh file are now picked up exactly once.
+    const event2 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      permission_mode: 'acceptEdits',
+    });
+    appendFileSync(hookFile, event2 + '\n');
+    await watcher.drainNow('kookr-trunc');
+    expect(events.length).toBe(2);
+    expect(events.map((e) => e.type)).toEqual(['session_start', 'tool_use']);
+  });
+
+  test('recovers when the file is replaced in-place with smaller content (issue #703)', async () => {
+    const hookFile = join(tempDir, 'kookr-rotate.jsonl');
+    writeFileSync(hookFile, '');
+
+    const task = taskStore.createTask('Test', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-rotate', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-rotate',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    watcher.watch('kookr-rotate');
+
+    // A long first record so the offset is comfortably larger than the
+    // replacement file — exercises the in-place `content.length < offset`
+    // shrink branch without going through an empty intermediate.
+    const big = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      note: 'x'.repeat(500),
+    });
+    appendFileSync(hookFile, big + '\n');
+    await watcher.drainNow('kookr-rotate');
+    expect(events.length).toBe(1);
+    expect(watcher.getOffset('kookr-rotate')).toBeGreaterThan(500);
+
+    // Replace the whole file with a single shorter record.
+    const small = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      permission_mode: 'acceptEdits',
+    });
+    writeFileSync(hookFile, small + '\n');
+    expect(small.length + 1).toBeLessThan(watcher.getOffset('kookr-rotate')!);
+
+    await watcher.drainNow('kookr-rotate');
+    // Exactly two events, in order: the reset must not re-emit the original
+    // SessionStart as a phantom third event (the test adapter has no dedup).
+    expect(events.map((e) => e.type)).toEqual(['session_start', 'tool_use']);
+  });
+
+  test('recovers from truncation when content is multibyte (byte/char offset skew, issue #703)', async () => {
+    const hookFile = join(tempDir, 'kookr-utf8.jsonl');
+    writeFileSync(hookFile, '');
+
+    const task = taskStore.createTask('Test', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-utf8', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-utf8',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    watcher.watch('kookr-utf8');
+
+    // Multibyte payload: byte-length far exceeds char-length, so a recovery
+    // that keyed off bytes instead of chars would mis-detect the shrink. The
+    // offset advanced here is a CHARACTER count.
+    const big = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/项目/🚀/ワークスペース',
+      hook_event_name: 'SessionStart',
+      note: '日本語'.repeat(200),
+    });
+    appendFileSync(hookFile, big + '\n');
+    await watcher.drainNow('kookr-utf8');
+    expect(events.length).toBe(1);
+
+    // Replace in place with a shorter (still multibyte) record.
+    const small = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/项目/🚀',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+    });
+    writeFileSync(hookFile, small + '\n');
+    // The replacement is shorter in CHARACTERS than the tracked offset.
+    expect(small.length + 1).toBeLessThan(watcher.getOffset('kookr-utf8')!);
+
+    await watcher.drainNow('kookr-utf8');
+    expect(events.map((e) => e.type)).toEqual(['session_start', 'tool_use']);
+  });
+
+  test('backup poll drives truncation recovery without fs.watch (issue #703)', async () => {
+    const pollWatcher = new HookFileWatcher(tempDir, adapter, { pollIntervalMs: 50 });
+    const hookFile = join(tempDir, 'kookr-poll-trunc.jsonl');
+    writeFileSync(hookFile, '');
+
+    const task = taskStore.createTask('Test', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-poll-trunc', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-poll-trunc',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    try {
+      pollWatcher.watch('kookr-poll-trunc');
+
+      const big = JSON.stringify({
+        session_id: 'sess-1',
+        transcript_path: '/path/to/transcript.jsonl',
+        cwd: '/cwd',
+        hook_event_name: 'SessionStart',
+        note: 'y'.repeat(500),
+      });
+      appendFileSync(hookFile, big + '\n');
+      await pollWatcher.drainNow('kookr-poll-trunc');
+      expect(events.length).toBe(1);
+
+      // Replace with a shorter record and let ONLY the backup poll observe
+      // the shrink and recover (no drainNow, no reliance on fs.watch).
+      const small = JSON.stringify({
+        session_id: 'sess-1',
+        transcript_path: '/path/to/transcript.jsonl',
+        cwd: '/cwd',
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+      });
+      writeFileSync(hookFile, small + '\n');
+
+      const deadline = Date.now() + 3000;
+      while (events.length < 2 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(events.length).toBe(2);
+      expect(events[1].type).toBe('tool_use');
+    } finally {
+      pollWatcher.stopAll();
+    }
+  }, 6000);
+
   test('replayExisting=false (default) skips existing content', async () => {
     const hookFile = join(tempDir, 'kookr-skip.jsonl');
 

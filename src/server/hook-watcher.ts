@@ -215,7 +215,24 @@ export class HookFileWatcher {
 
     try {
       const content = await readFile(filePath, 'utf-8');
-      const offset = this.offsets.get(tmuxName) ?? 0;
+      let offset = this.offsets.get(tmuxName) ?? 0;
+
+      // Truncation / rotation recovery. The offset only ever grows, so if it
+      // now sits past end-of-file the hook file was truncated, rotated, or
+      // replaced with a smaller one. Left unhandled, `slice(offset)` returns
+      // '' forever and every record written below the stale offset is silently
+      // dropped until the process restarts (issue #703). Reset to 0 and
+      // re-read from the start of the new file. Overlap with already-consumed
+      // records is absorbed by HookIngestion's content-hash dedup; the common
+      // truncate-to-0 / rotate-to-fresh-file case has no overlap at all.
+      //
+      // Size-based shrink is the portable baseline. Inode-identity detection
+      // for a same-size rotation is intentionally out of scope: a rotated file
+      // is born at size 0, which trips this guard on its first observation.
+      if (offset > content.length) {
+        offset = 0;
+      }
+
       const newContent = content.slice(offset);
       const { records, consumedChars } = splitHookRecords(newContent);
       this.offsets.set(tmuxName, offset + consumedChars);
@@ -249,8 +266,16 @@ export class HookFileWatcher {
       try {
         const fileStat = await stat(filePath);
         const knownOffset = this.offsets.get(tmuxName) ?? 0;
-        if (fileStat.size > knownOffset) {
-          // File grew but fs.watch didn't fire (or hasn't fired yet) — read now
+        if (fileStat.size !== knownOffset) {
+          // The file size diverged from our offset. Growth means fs.watch
+          // missed an append; shrink means the file was truncated, rotated, or
+          // replaced (issue #703), and fs.watch may not fire for an in-place
+          // truncate. Either way, defer to readNewLines — the single authority
+          // on framing: it re-reads from the offset and, when the offset now
+          // sits past EOF, resets to 0 first. Routing both directions through
+          // one read keeps this size-vs-offset check a coarse change trigger,
+          // not a correctness gate, so the byte/char unit mismatch here can
+          // never drop a record on its own.
           await this.readNewLines(tmuxName, filePath);
         }
       } catch {
