@@ -1,8 +1,9 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { TaskStore } from '../../core/tasks.js';
 import { DrainController } from '../drain-state.js';
 import { registerAdminRoutes, isAuthorizedAdminRequest } from './admin-routes.js';
+import { getLogLevel, resetLogLevel } from '../runtime-log-level.js';
 import type { RouteDeps } from './shared.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
@@ -100,5 +101,126 @@ describe('admin drain routes', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ accepting: true, draining: false, runningTasks: 0 });
     expect(drainController.isAccepting()).toBe(true);
+  });
+});
+
+describe('admin log-level routes (issue #662)', () => {
+  const headers = { 'x-kookr-admin-token': 'secret' };
+
+  // app.request() carries no socket, so production-shaped requests look
+  // non-loopback; configure a token to authorize them in these tests.
+  const post = (app: Hono, body: unknown, authorized = true) =>
+    app.request('http://example.com/api/admin/log-level', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(authorized ? headers : {}) },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+  const get = (app: Hono, authorized = true) =>
+    app.request('http://example.com/api/admin/log-level', {
+      method: 'GET',
+      headers: authorized ? headers : {},
+    });
+
+  beforeEach(() => {
+    delete process.env.KOOKR_DEBUG;
+    process.env.KOOKR_ADMIN_TOKEN = 'secret';
+    resetLogLevel();
+  });
+
+  afterEach(() => {
+    delete process.env.KOOKR_ADMIN_TOKEN;
+    delete process.env.KOOKR_DEBUG;
+    vi.useRealTimers();
+    resetLogLevel();
+  });
+
+  test('registers even when no drainController is wired', async () => {
+    const res = await get(mkApp({ taskStore: new TaskStore() }));
+    expect(res.status).toBe(200);
+  });
+
+  test('GET returns the current level seeded to info by default', async () => {
+    const res = await get(mkApp({}));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ level: 'info', default: 'info', ttlExpiresAt: null });
+  });
+
+  test('GET default is seeded from KOOKR_DEBUG', async () => {
+    process.env.KOOKR_DEBUG = 'true';
+    resetLogLevel();
+    expect(await (await get(mkApp({}))).json()).toEqual({
+      level: 'debug',
+      default: 'debug',
+      ttlExpiresAt: null,
+    });
+  });
+
+  test('GET requires authorization', async () => {
+    const res = await get(mkApp({}), false);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'admin-forbidden' });
+  });
+
+  test('POST sets the level and the change is observable process-wide', async () => {
+    const res = await post(mkApp({}), { level: 'debug' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ level: 'debug', default: 'info', ttlExpiresAt: null });
+    expect(getLogLevel()).toBe('debug');
+  });
+
+  test('POST requires authorization and does not mutate state when rejected', async () => {
+    const res = await post(mkApp({}), { level: 'debug' }, false);
+    expect(res.status).toBe(403);
+    expect(getLogLevel()).toBe('info');
+  });
+
+  test('POST rejects an invalid level with 400 and lists valid levels', async () => {
+    const res = await post(mkApp({}), { level: 'verbose' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'invalid-level',
+      validLevels: ['error', 'warn', 'info', 'debug'],
+    });
+    expect(getLogLevel()).toBe('info');
+  });
+
+  test('POST rejects a non-positive ttl with 400', async () => {
+    const res = await post(mkApp({}), { level: 'debug', ttlSeconds: 0 });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('invalid-ttl');
+    expect(getLogLevel()).toBe('info');
+  });
+
+  test('POST rejects a malformed JSON body with 400', async () => {
+    const res = await post(mkApp({}), 'not json');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid-json' });
+  });
+
+  test('POST with a ttl auto-reverts to the default after it elapses', async () => {
+    vi.useFakeTimers();
+    const res = await post(mkApp({}), { level: 'debug', ttlSeconds: 60 });
+    const body = await res.json();
+    expect(body.level).toBe('debug');
+    expect(typeof body.ttlExpiresAt).toBe('string');
+    expect(getLogLevel()).toBe('debug');
+
+    vi.advanceTimersByTime(60_000);
+    expect(getLogLevel()).toBe('info');
+
+    const after = await (await get(mkApp({}))).json();
+    expect(after).toEqual({ level: 'info', default: 'info', ttlExpiresAt: null });
+  });
+
+  // Infinity/NaN aren't representable in a JSON body (they serialize to null,
+  // which means "no ttl"), so the non-finite branch is exercised directly in
+  // runtime-log-level.test.ts. Here we cover the values a client can actually send.
+  test('rejects a negative, string, or sub-second ttl with 400', async () => {
+    for (const ttlSeconds of [-5, 'abc', 0.5]) {
+      const res = await post(mkApp({}), { level: 'debug', ttlSeconds });
+      expect(res.status, `ttl=${String(ttlSeconds)}`).toBe(400);
+      expect((await res.json()).error).toBe('invalid-ttl');
+      expect(getLogLevel()).toBe('info');
+    }
   });
 });
