@@ -161,6 +161,39 @@ describe('Anomaly Detector', () => {
       expect(anomaly!.explanation).toContain('AskUserQuestion');
     });
 
+    test('pending AskUserQuestion with trailing PermissionRequest + Notification is needs_input, not permission_blocked', () => {
+      // Real Claude Code hook ordering while the user is still at the choice
+      // menu: PreToolUse(AskUserQuestion) → PermissionRequest(AskUserQuestion) →
+      // Notification(permission_prompt). Without the AskUserQuestion guard in
+      // detectPermissionBlocked, this short-circuited to `permission_blocked`
+      // ("blocked on permission for tool: AskUserQuestion") and the agent showed
+      // as "working" instead of "Needs Input". See incident task 64f2e614.
+      const events: AgentEvent[] = [
+        makeToolUse('s1', 'Bash'),
+        makeToolResult('s1', 'Bash'),
+        makeToolUse('s1', 'AskUserQuestion'),
+        makePermissionRequest('s1', 'AskUserQuestion'),
+        { type: 'notification', sessionId: 's1', notificationType: 'permission_prompt', message: '' },
+      ];
+
+      const anomaly = detectAnomalies(events, agentId);
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.type).toBe('needs_input');
+      expect(anomaly!.severity).toBe('warning');
+      expect(anomaly!.explanation).toContain('AskUserQuestion');
+    });
+
+    test('a genuine tool-permission block (non-AskUserQuestion) still reads as permission_blocked', () => {
+      const events: AgentEvent[] = [
+        makeToolUse('s1', 'Bash'),
+        makePermissionRequest('s1', 'Bash'),
+      ];
+
+      const anomaly = detectAnomalies(events, agentId);
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.type).toBe('permission_blocked');
+    });
+
     test('AskUserQuestion followed by tool_result clears anomaly', () => {
       const events: AgentEvent[] = [
         makeToolUse('s1', 'AskUserQuestion'),
