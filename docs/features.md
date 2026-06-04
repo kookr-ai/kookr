@@ -76,6 +76,8 @@ Kookr's supervisor is an AI that watches agent streams and **understands** what 
 
 **Implementation approach:** V1 detection patterns are implemented as pure functions in `anomaly-detector.ts`, co-located with their tests for simplicity. The SKILL.md approach (community-contributable, discoverable patterns) remains a valid V2 direction. V2 can also add LLM-powered analysis for nuanced detection (trajectory drift, strategic dead ends).
 
+**Reference:** The [Findings Reference](reference/findings.md) catalogs every anomaly type with its trigger, recommended response, and suppression/tuning knobs. A drift-guard test keeps it in sync with the `AnomalyType` union.
+
 ### F3: The "Loop" — Respond & Advance
 
 | ID | Feature | Description |
