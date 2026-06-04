@@ -11,6 +11,35 @@ export type AnomalyType =
   | 'api_error'
   | 'budget_exceeded';
 
+/**
+ * Runtime list of every {@link AnomalyType}. Use this where the union must be
+ * enumerated at runtime (e.g. the docs drift guard in `anomaly-types.test.ts`,
+ * which checks that `docs/reference/findings.md` documents every type).
+ *
+ * The two compile-time guards below keep this array in lockstep with the
+ * `AnomalyType` union:
+ * - `satisfies readonly AnomalyType[]` rejects typos or extra entries.
+ * - the `_AssertNever` alias rejects any union member missing from the array.
+ */
+export const ANOMALY_TYPES = [
+  'needs_input',
+  'permission_blocked',
+  'repeated_error',
+  'merge_conflict',
+  'stale_agent',
+  'hook_disconnected',
+  'hook_missing',
+  'tmux_unresponsive',
+  'api_error',
+  'budget_exceeded',
+] as const satisfies readonly AnomalyType[];
+
+// Fails to compile if a member is added to AnomalyType but not to ANOMALY_TYPES.
+type _AssertNever<T extends never> = T;
+type _AnomalyTypesExhaustive = _AssertNever<
+  Exclude<AnomalyType, (typeof ANOMALY_TYPES)[number]>
+>;
+
 export type AnomalySeverity = 'info' | 'warning' | 'critical';
 
 /**

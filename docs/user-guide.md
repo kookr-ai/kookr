@@ -82,6 +82,8 @@ Kookr prioritizes findings by urgency. Common V1 cases include:
 - GitHub PR or CI events tied to an agent-created branch
 - Budget or cost warnings
 
+For the full catalog — every anomaly type, what triggers it, the recommended response, and how to suppress or tune it — see the [Findings Reference](reference/findings.md).
+
 LLM-powered trajectory analysis is a later direction. The current system favors reliable signals before speculative interpretation.
 
 ## Multi-Project Tracking
