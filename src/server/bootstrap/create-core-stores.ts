@@ -28,6 +28,7 @@ import {
   JsonlProgressBudgetBurnDiagnosticSink,
   ProgressBudgetBurnDiagnostics,
 } from '../../core/progress-budget-burn-diagnostics.js';
+import { createPermissionAlertBreaker } from '../permission-alert-breaker.js';
 
 export interface CoreStoresDeps {
   kookrDir: string;
@@ -50,6 +51,7 @@ export interface CoreStores {
   llmBreaker: CircuitBreaker;
   githubBreaker: CircuitBreaker;
   hookWatcherBreaker: CircuitBreaker;
+  permissionAlertBreaker: CircuitBreaker;
   taskStore: TaskStore;
   worktreeRegistry: WorktreeRegistry;
   queue: AttentionQueue;
@@ -110,9 +112,11 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
   const llmBreaker = new CircuitBreaker({ name: 'llm', failureThreshold: 5, failureWindowMs: 60_000, resetTimeoutMs: 30_000 });
   const githubBreaker = new CircuitBreaker({ name: 'github', failureThreshold: 5, failureWindowMs: 60_000, resetTimeoutMs: 60_000 });
   const hookWatcherBreaker = new CircuitBreaker({ name: 'hook-watcher', failureThreshold: 10, failureWindowMs: 60_000, resetTimeoutMs: 30_000 });
+  const permissionAlertBreaker = createPermissionAlertBreaker();
   circuitBreakerRegistry.register(llmBreaker);
   circuitBreakerRegistry.register(githubBreaker);
   circuitBreakerRegistry.register(hookWatcherBreaker);
+  circuitBreakerRegistry.register(permissionAlertBreaker);
 
   const taskStore = new TaskStore();
   const worktreeRegistry = new WorktreeRegistry();
@@ -178,6 +182,7 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
     llmBreaker,
     githubBreaker,
     hookWatcherBreaker,
+    permissionAlertBreaker,
     taskStore,
     worktreeRegistry,
     queue,

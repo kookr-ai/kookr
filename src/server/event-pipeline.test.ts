@@ -26,6 +26,7 @@ import { TokenTracker } from '../core/token-tracker.js';
 import { Watchdog } from '../core/watchdog.js';
 import { GitHubScannerService } from '../core/github-scanner-service.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
+import { CircuitBreaker } from '../core/circuit-breaker.js';
 import {
   _resetLifecycles,
   getActiveSuggestionId,
@@ -603,6 +604,38 @@ describe('event-pipeline: R16 onPermissionBlocked transition guard', () => {
     // any downstream work.
     try { fireEvent('sess-1', permEvent); } catch { /* downstream noise */ }
     expect(onPermissionBlocked).toHaveBeenCalled();
+  });
+
+  test('uses injected breaker to suppress repeated callback failures', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const permissionAlertBreaker = new CircuitBreaker({
+      name: 'permission-alert-test',
+      failureThreshold: 2,
+      failureWindowMs: 60_000,
+      resetTimeoutMs: 60_000,
+    });
+    deps.permissionAlertBreaker = permissionAlertBreaker;
+    onPermissionBlocked.mockImplementation(() => { throw new Error('integration is broken'); });
+    wireEventPipeline(deps);
+
+    const fireBlockedTransition = () => {
+      const { permEvent } = setupTransition(null, 'blocked');
+      expect(() => fireEvent('sess-1', permEvent)).not.toThrow();
+    };
+
+    fireBlockedTransition();
+    expect(permissionAlertBreaker.getState()).toBe('closed');
+    fireBlockedTransition();
+    expect(permissionAlertBreaker.getState()).toBe('open');
+    fireBlockedTransition();
+
+    expect(onPermissionBlocked).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(
+      '[permission-block-alert-processor] permission-alert breaker open; skipped onPermissionBlocked',
+    );
+
+    permissionAlertBreaker.dispose();
+    warn.mockRestore();
   });
 });
 

@@ -5,6 +5,7 @@ import type { TokenTracker } from '../core/token-tracker.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import type { GitHubScannerService } from '../core/github-scanner-service.js';
+import type { CircuitBreaker } from '../core/circuit-breaker.js';
 import type { AgentEvent, EventMeta } from '../core/types.js';
 import type { Anomaly } from '../shared/contracts/anomalies.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
@@ -41,13 +42,15 @@ export interface EventPipelineDeps {
    *
    * The callback receives `(taskId, promptText)` where `promptText` is a
    * human-readable summary of the tool call awaiting approval (e.g.,
-   * "Bash(git push origin feat-x)"). The callback MUST NOT throw; the
-   * pipeline does not handle errors and a thrown rejection would propagate
-   * through the existing fire-and-forget `captureDisplay` chain.
+   * "Bash(git push origin feat-x)"). The pipeline isolates callback failures
+   * behind the permission-alert circuit breaker so remote integration outages
+   * degrade that alert path without interrupting event processing.
    *
    * See `docs/rfc/rfc-remote-chat-trigger.md` §7 (R16).
    */
   onPermissionBlocked?: (taskId: string, promptText: string) => void;
+  /** Circuit breaker isolating remote permission-block alert callbacks from the event pipeline. */
+  permissionAlertBreaker?: CircuitBreaker;
   /** Optional Ralph iteration cycler — drives the loop state machine on Stop events. */
   ralphCycler?: RalphCycler;
   /** Singleton Ralph loop service shared with routes and startup recovery. */
@@ -151,6 +154,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
   const permissionBlockAlertProcessor = createPermissionBlockAlertProcessor({
     taskLookup: taskStore,
     onPermissionBlocked: deps.onPermissionBlocked,
+    permissionAlertBreaker: deps.permissionAlertBreaker,
   });
   const stopTokenScanProcessor = createStopTokenScanProcessor({
     tokenUsageWriter: taskStore,

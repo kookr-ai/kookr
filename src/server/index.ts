@@ -226,6 +226,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     settingsFile,
     circuitBreakerRegistry,
     githubBreaker,
+    permissionAlertBreaker,
     taskStore,
     worktreeRegistry,
     queue,
@@ -675,6 +676,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       onPermissionBlockedHolder?.(taskId, promptText);
       remoteRelayRuntime?.publishPermissionBlocked(taskId);
     },
+    permissionAlertBreaker,
   });
 
   // Terminal input deps — used by terminal bridge handlers
