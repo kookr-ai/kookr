@@ -115,6 +115,25 @@ KOOKR_CODEX_BIN=/path/to/codex
 
 Kookr's Codex adapter defaults to `codex` on `PATH`; the local fork is maintained separately at `~/git/codex`.
 
+## Ralph Loop Stopped Or Shows "Replace With New"
+
+After a Kookr server crash, OS restart, WSL shutdown, or agent runtime crash, a Ralph loop can look like it is still active even though the underlying agent is no longer making progress. Common symptoms:
+
+- Relaunching the same playbook reports `409 matching looped playbook task already exists`.
+- The launch flow shows a **Replace with new** dialog for an existing loop.
+- The old task is still visible, but the terminal and Ralph iteration log have no recent activity.
+
+This happens because Kookr preserves loop state across restarts so healthy dtach-backed sessions can continue. On startup, Kookr probes each running Ralph loop for a live terminal session. If the probe confirms a live session, the loop is preserved. If not, the loop is marked failed with `exitReason: 'kookr_crash'`. Some crash shapes still leave the dtach session alive while the agent child has exited, so Kookr cannot prove at startup that the loop is dead; those cases reach the duplicate-loop recovery flow instead.
+
+To recover:
+
+1. If the **Replace with new** dialog appears, first check whether the existing loop has recent activity. Choose **Open the running loop** when it is still working and you want to keep its context.
+2. Choose **Replace with new** when the loop is stale after a crash. Kookr cancels the old task and starts a fresh loop with the same playbook, cwd, and parameters. The new agent does not inherit the old conversation.
+3. If you are using the API directly, the equivalent recovery endpoint is `POST /api/tasks/:taskId/ralph-loop/replace-with-new`. Use it only for the task that caused the duplicate-loop conflict; Kookr validates that the replacement request still matches the old playbook key.
+4. If replacement fails repeatedly, capture a bug report before changing local state. Wiping `~/.kookr/tasks.json` or the whole `~/.kookr/` directory is a last resort because it removes task history, loop state, and persisted supervision context.
+
+For the underlying recovery model, see [System Architecture](architecture.md#the-supervisor-agent) and [RFC: Ralph loop crash-restart](rfc/rfc-ralph-loop-crash-restart-recovery.md).
+
 ## Optional Voice Services Do Not Start
 
 Voice features require Docker only when using the bundled services.

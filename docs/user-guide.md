@@ -24,6 +24,8 @@ Use the dashboard **Launch** button for an interactive start:
 
 Kookr starts the agent in a persistent dtach session. If the server restarts, the dtach master keeps the child process alive and Kookr reconciles state on startup.
 
+For Ralph loops that look stopped after a crash or show a **Replace with new** recovery dialog, see [Ralph Loop Stopped Or Shows "Replace With New"](troubleshooting.md#ralph-loop-stopped-or-shows-replace-with-new).
+
 ## Responding To Findings
 
 When a finding appears:
