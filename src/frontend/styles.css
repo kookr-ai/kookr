@@ -1499,19 +1499,145 @@ kbd {
   border-bottom: 1px solid var(--border-dim);
   background: var(--bg-panel);
 }
-.task-dependencies-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 6px;
-}
 .task-dependencies-title {
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.task-dependencies--compact {
+  position: relative;
+  padding: 0;
+  background: rgba(15,17,23,0.52);
+}
+.task-dependencies-summary {
+  min-height: 36px;
+  padding: 6px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.task-dependencies--blocking {
+  border-bottom-color: color-mix(in srgb, var(--amber) 32%, var(--border-dim));
+  background: color-mix(in srgb, var(--amber) 7%, var(--bg-panel));
+}
+.task-dependencies--empty {
+  background: var(--bg-panel);
+}
+.dependency-blocking-copy,
+.dependency-muted-copy {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.dependency-blocking-copy strong,
+.dependency-muted-copy strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-bright);
+}
+.dependency-blocking-copy strong {
+  color: var(--amber);
+}
+.dependency-blocking-copy span,
+.dependency-muted-copy span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.dependency-summary-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.dependency-open-related {
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.dependency-open-related:hover {
+  color: var(--text-bright);
+}
+.dependency-menu-trigger {
+  min-width: 28px;
+  height: 26px;
+  padding: 0 8px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+}
+.dependency-menu-trigger:hover,
+.dependency-menu-trigger[aria-expanded="true"] {
+  background: var(--bg-card);
+  color: var(--text-bright);
+}
+.dependency-menu-trigger span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+.dependency-menu {
+  position: absolute;
+  top: calc(100% - 1px);
+  right: 12px;
+  z-index: 35;
+  width: min(440px, calc(100vw - 32px));
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  box-shadow: 0 14px 32px rgba(0,0,0,0.45);
+}
+.dependency-menu-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.dependency-menu-close {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.dependency-menu-close:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-bright);
+}
+.dependency-menu .dependency-edge-row {
+  grid-template-columns: 76px minmax(0, 1fr);
+}
+.dependency-menu .dependency-edge-row + .dependency-edge-row {
+  margin-top: 7px;
+}
+.dependency-menu-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-dim);
 }
 .dependency-edge-row {
   display: grid;
@@ -1576,6 +1702,9 @@ kbd {
 }
 .dependency-chip button:focus-visible,
 .dependency-modal-close:focus-visible,
+.dependency-menu-close:focus-visible,
+.dependency-menu-trigger:focus-visible,
+.dependency-open-related:focus-visible,
 .dependency-field-toggle button:focus-visible,
 .dependency-result:focus-visible,
 .dependency-free-text:focus-visible {
@@ -8786,13 +8915,6 @@ a.project-drawer-stat-row-link:focus-visible {
   .detail-header-left,
   .detail-header-right {
     width: 100%;
-  }
-  .task-dependencies-header {
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .task-dependencies-header .action-btn {
-    justify-content: center;
   }
   .dependency-edge-row {
     grid-template-columns: 1fr;

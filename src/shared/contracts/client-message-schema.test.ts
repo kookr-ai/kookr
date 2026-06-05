@@ -129,6 +129,15 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(result.success).toBe(true);
   });
 
+  test('rejects clearCompleted with a blank project scope', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'clearCompleted',
+      projectId: '   ',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   test('rejects an unknown agentType on launch', () => {
     const result = ClientMessageSchema.safeParse({
       type: 'launch',

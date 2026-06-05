@@ -50,10 +50,12 @@ function normalizeMilestoneInput(input: string): TaskDependencyEdge | null {
 
 export function TaskDependencyEditor({ agent }: Props) {
   const agents = useKookrStore((s) => s.agents);
+  const selectAgent = useKookrStore((s) => s.selectAgent);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [blocks, setBlocks] = useState<TaskDependencyEdge[]>(agent.blocks ?? []);
   const [blockedBy, setBlockedBy] = useState<TaskDependencyEdge[]>(agent.blocked_by ?? []);
   const [open, setOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [field, setField] = useState<EdgeField>('blocked_by');
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -85,6 +87,14 @@ export function TaskDependencyEditor({ agent }: Props) {
   }, [agent.taskId, agents]);
 
   const tasksById = useMemo(() => new Map(taskOptions.map((task) => [task.taskId, task])), [taskOptions]);
+  const agentsByTaskId = useMemo(() => {
+    const byId = new Map<string, AgentState>();
+    for (const candidate of agents) {
+      if (!candidate.taskId || byId.has(candidate.taskId)) continue;
+      byId.set(candidate.taskId, candidate);
+    }
+    return byId;
+  }, [agents]);
 
   const matches = useMemo(() => {
     const q = debouncedQuery;
@@ -152,42 +162,83 @@ export function TaskDependencyEditor({ agent }: Props) {
   }
 
   if (!agent.taskId) return null;
+  const relationCount = blocks.length + blockedBy.length;
+
+  const firstBlocker = blockedBy[0];
+  const firstBlockerAgent = firstBlocker?.startsWith('task:')
+    ? agentsByTaskId.get(firstBlocker.slice('task:'.length))
+    : undefined;
+  const firstBlockerLabel = firstBlocker ? labelForEdge(firstBlocker, tasksById) : null;
+
+  function openAddDialog(nextField: EdgeField) {
+    setField(nextField);
+    setOpen(true);
+    setMenuOpen(false);
+    setError(null);
+  }
 
   return (
-    <section className="task-dependencies" aria-label="Task dependencies" data-testid="task-dependencies">
-      <div className="task-dependencies-header">
-        <span className="task-dependencies-title">Dependencies</span>
-        <button
-          ref={triggerRef}
-          type="button"
-          className="action-btn action-btn--neutral"
-          data-testid="add-dependency-button"
-          onClick={() => {
-            setField('blocked_by');
-            setOpen(true);
-            setError(null);
-          }}
-        >
-          Add dependency
-        </button>
+    <section
+      className={`task-dependencies task-dependencies--compact${blockedBy.length > 0 ? ' task-dependencies--blocking' : ''}${relationCount === 0 ? ' task-dependencies--empty' : ''}`}
+      aria-label="Task dependencies"
+      data-testid="task-dependencies"
+    >
+      <div className="task-dependencies-summary">
+        {blockedBy.length > 0 ? (
+          <div className="dependency-blocking-copy">
+            <strong>Blocked by {firstBlockerLabel}</strong>
+            <span>
+              {blockedBy.length > 1
+                ? `${blockedBy.length - 1} more blocker${blockedBy.length === 2 ? '' : 's'}`
+                : 'Complete this dependency before continuing.'}
+            </span>
+          </div>
+        ) : (
+          <div className="dependency-muted-copy">
+            <strong>Relationships</strong>
+            <span>
+              {relationCount === 0
+                ? 'No dependencies'
+                : `${blocks.length} downstream task${blocks.length === 1 ? '' : 's'}`}
+            </span>
+          </div>
+        )}
+        <div className="dependency-summary-actions">
+          {firstBlockerAgent && (
+            <button
+              type="button"
+              className="dependency-open-related"
+              onClick={() => selectAgent(firstBlockerAgent.agentId)}
+            >
+              Open blocker
+            </button>
+          )}
+          <button
+            ref={triggerRef}
+            type="button"
+            className="dependency-menu-trigger"
+            aria-label={`Task relationships, ${relationCount} total`}
+            aria-haspopup="dialog"
+            aria-expanded={menuOpen}
+            aria-controls="task-dependency-menu"
+            onClick={() => setMenuOpen((current) => !current)}
+          >
+            <span>{relationCount}</span>
+          </button>
+        </div>
       </div>
 
-      <EdgeList
-        label="Blocked by"
-        field="blocked_by"
-        edges={blockedBy}
-        tasksById={tasksById}
-        saving={saving}
-        onRemove={removeEdge}
-      />
-      <EdgeList
-        label="Blocks"
-        field="blocks"
-        edges={blocks}
-        tasksById={tasksById}
-        saving={saving}
-        onRemove={removeEdge}
-      />
+      {menuOpen && (
+        <TaskDependencyMenu
+          blockedBy={blockedBy}
+          blocks={blocks}
+          tasksById={tasksById}
+          saving={saving}
+          onRemove={removeEdge}
+          onAdd={openAddDialog}
+          onClose={() => setMenuOpen(false)}
+        />
+      )}
 
       {open && (
         <TaskDependencyModal
@@ -204,6 +255,85 @@ export function TaskDependencyEditor({ agent }: Props) {
         />
       )}
     </section>
+  );
+}
+
+function TaskDependencyMenu({
+  blockedBy,
+  blocks,
+  tasksById,
+  saving,
+  onRemove,
+  onAdd,
+  onClose,
+}: {
+  blockedBy: TaskDependencyEdge[];
+  blocks: TaskDependencyEdge[];
+  tasksById: ReadonlyMap<string, TaskOption>;
+  saving: boolean;
+  onRemove: (field: EdgeField, edge: TaskDependencyEdge) => void;
+  onAdd: (field: EdgeField) => void;
+  onClose: () => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useDialogFocus({ dialogRef: menuRef, initialFocusRef: menuRef });
+  useEscapeToClose(onClose);
+
+  return (
+    <div
+      ref={menuRef}
+      id="task-dependency-menu"
+      className="dependency-menu"
+      role="dialog"
+      aria-label="Task relationships"
+      tabIndex={-1}
+    >
+      <div className="dependency-menu-header">
+        <span className="task-dependencies-title">Relationships</span>
+        <button
+          type="button"
+          className="dependency-menu-close"
+          aria-label="Close relationships menu"
+          onClick={onClose}
+        >
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <EdgeList
+        label="Blocked by"
+        field="blocked_by"
+        edges={blockedBy}
+        tasksById={tasksById}
+        saving={saving}
+        onRemove={onRemove}
+      />
+      <EdgeList
+        label="Blocks"
+        field="blocks"
+        edges={blocks}
+        tasksById={tasksById}
+        saving={saving}
+        onRemove={onRemove}
+      />
+      <div className="dependency-menu-actions">
+        <button
+          type="button"
+          className="action-btn action-btn--neutral"
+          data-testid="add-dependency-button"
+          onClick={() => onAdd('blocked_by')}
+        >
+          Add blocker
+        </button>
+        <button
+          type="button"
+          className="action-btn action-btn--neutral"
+          onClick={() => onAdd('blocks')}
+        >
+          Add downstream
+        </button>
+      </div>
+    </div>
   );
 }
 
