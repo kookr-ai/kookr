@@ -3,6 +3,11 @@ import { createKookrStore, type KookrStore } from './useStore.js';
 import { __resetDndForTests, disableDnd, enableDnd } from '../hooks/useDnd.js';
 import type { AgentState } from '../../shared/protocol.js';
 import { getBugReportAlerts, resetBugReportRecorderForTests } from '../bug-report-recorder.js';
+import {
+  clearDebugTimeline,
+  getDebugTimelineEntries,
+  setDebugTimelineEnabledForTests,
+} from '../debug-timeline.js';
 
 describe('Kookr Zustand Store', () => {
   let store: ReturnType<typeof createKookrStore>;
@@ -18,12 +23,16 @@ describe('Kookr Zustand Store', () => {
     });
     __resetDndForTests();
     resetBugReportRecorderForTests();
+    setDebugTimelineEnabledForTests(null);
+    clearDebugTimeline();
     store = createKookrStore();
   });
 
   afterEach(() => {
     disableDnd();
     __resetDndForTests();
+    setDebugTimelineEnabledForTests(null);
+    clearDebugTimeline();
   });
 
   test('handleSnapshot populates agents', () => {
@@ -51,6 +60,29 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().agents).toHaveLength(2);
     expect(store.getState().agents[0].agentId).toBe('agent-1');
     expect(store.getState().agents[1].agentId).toBe('agent-2');
+  });
+
+  test('debug timeline records store mutations and finding lifecycle through the store setter', () => {
+    setDebugTimelineEnabledForTests(true);
+    store = createKookrStore();
+
+    store.getState().handleSnapshot([{ agentId: 'agent-1', events: [], anomaly: null }]);
+    store.getState().handleUpdate('agent-1', {
+      agentId: 'agent-1',
+      events: [],
+      anomaly: {
+        agentId: 'agent-1',
+        type: 'needs_input',
+        severity: 'warning',
+        explanation: 'Sensitive customer context',
+        detectedAt: new Date('2026-06-05T00:00:00.000Z'),
+      },
+    });
+
+    const entries = getDebugTimelineEntries();
+    expect(entries.some((entry) => entry.kind === 'store' && entry.tags.includes('agents'))).toBe(true);
+    expect(entries.some((entry) => entry.kind === 'finding-lifecycle' && entry.summary.includes('created needs_input'))).toBe(true);
+    expect(JSON.stringify(entries)).not.toContain('Sensitive customer context');
   });
 
   test('handleSnapshot stores serverCwd', () => {

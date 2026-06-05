@@ -51,6 +51,7 @@ import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { buildBugReportBundle } from './bug-report-bundle.js';
 import { getBugReportAlerts, getBugReportWireObservations } from './bug-report-recorder.js';
+import { getDebugTimelineEntries, isDebugTimelineEnabled } from './debug-timeline.js';
 import './critical.css';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -71,6 +72,11 @@ const ContributionWorkspace = lazy(() => import('./components/ContributionWorksp
 const OssProductivityView = lazy(() => import('./components/OssProductivityView.js').then((m) => ({ default: pickLazyExport<typeof m.OssProductivityView>(m, 'OssProductivityView') })));
 const CostComparisonPanel = lazy(() => import('./components/CostComparisonPanel.js').then((m) => ({ default: pickLazyExport<typeof m.CostComparisonPanel>(m, 'CostComparisonPanel') })));
 const OperationsPanel = lazy(() => import('./components/OperationsPanel.js').then((m) => ({ default: pickLazyExport<typeof m.OperationsPanel>(m, 'OperationsPanel') })));
+const DebugTimelinePanel = lazy(() => (
+  (import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV === true
+    ? import('./components/DebugTimelinePanel.js').then((m) => ({ default: pickLazyExport<typeof m.DebugTimelinePanel>(m, 'DebugTimelinePanel') }))
+    : Promise.resolve({ default: (() => null) as React.ComponentType<{ onExport: () => void }> })
+));
 
 interface ReflectionSuggestion {
   sessionId: string;
@@ -281,6 +287,7 @@ export function App() {
   const [showOperations, setShowOperations] = useState(false);
   const [showCoordinatorFindings, setShowCoordinatorFindings] = useState(false);
   const [showBugReport, setShowBugReport] = useState(false);
+  const [debugTimelineEnabled] = useState(() => isDebugTimelineEnabled());
   const [bugReportNote, setBugReportNote] = useState('');
   const [shortcutOverrides, setShortcutOverrides] = useState<PlatformShortcutBindingOverrides>({});
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
@@ -419,9 +426,33 @@ export function App() {
       serverStartedAt,
       alerts: getBugReportAlerts(),
       wireObservations: getBugReportWireObservations(),
+      debugTimeline: getDebugTimelineEntries(),
       note: bugReportNote,
     });
   }, [agents, bugReportNote, buildInfo, selectedAgentId, selectedProject, serverStartedAt, showBugReport]);
+
+  const exportDebugTrace = useCallback(() => {
+    const { bundle, serialized } = buildBugReportBundle({
+      agents,
+      selectedAgentId,
+      selectedProject,
+      buildInfo,
+      serverStartedAt,
+      alerts: getBugReportAlerts(),
+      wireObservations: [],
+      debugTimeline: getDebugTimelineEntries(),
+      note: 'Debug timeline export',
+    });
+    const blob = new Blob([serialized], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `kookr-debug-trace-${bundle.generatedAt.replace(/[:.]/g, '-')}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, [agents, buildInfo, selectedAgentId, selectedProject, serverStartedAt]);
 
   useEffect(() => {
     if (wideDetailActive) return;
@@ -1026,6 +1057,11 @@ export function App() {
         shortcutBindings={shortcutBindings}
       />
       <Toasts />
+      {debugTimelineEnabled && (
+        <Suspense fallback={null}>
+          <DebugTimelinePanel onExport={exportDebugTrace} />
+        </Suspense>
+      )}
       <PluginInstallBanner />
       <AchievementToasts />
       <SentOverlay />
