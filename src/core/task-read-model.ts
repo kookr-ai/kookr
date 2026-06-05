@@ -39,6 +39,13 @@ export interface ReflectMeta {
   bundlePath: string;
   /** 'up' triggers reinforcement branch in the skill; 'down' triggers fix-proposal branch. */
   direction: 'up' | 'down';
+  /**
+   * Absolute path of the ephemeral worktree allocated for this reflect task.
+   * Set at spawn so the terminal-state cleanup can remove exactly this worktree
+   * without scanning. Optional for backward-compat with reflect tasks persisted
+   * before this field existed — those fall back to the startup sweep.
+   */
+  worktreePath?: string;
 }
 
 export interface CreateTaskOptions {

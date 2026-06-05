@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import {
   REFLECT_IDENTITY_FILE,
   REFLECT_IDENTITY_SCHEMA,
+  removeReflectWorktree,
   requestTaskReflect,
   sweepReflectWorktrees,
 } from './request-task-reflect.js';
@@ -142,6 +143,7 @@ describe('requestTaskReflect', () => {
       sourceTaskId: sourceTask.id,
       bundlePath,
       direction: 'up',
+      worktreePath: launchOpts.cwd,
     });
   });
 });
@@ -308,5 +310,66 @@ describe('sweepReflectWorktrees', () => {
     });
 
     expect(result).toEqual({ removed: 0, kept: 0 });
+  });
+});
+
+describe('removeReflectWorktree', () => {
+  let baseDir: string;
+
+  beforeEach(() => {
+    baseDir = mkdtempSync(join(tmpdir(), 'reflect-remove-'));
+  });
+
+  afterEach(() => {
+    rmSync(baseDir, { recursive: true, force: true });
+  });
+
+  it('removes a real git worktree that carries the identity marker', async () => {
+    const repoDir = join(baseDir, 'repo');
+    mkdirSync(repoDir);
+    initGitRepo(repoDir);
+    const worktreePath = join(baseDir, `${VALID_UUID_A}-2026-06-05T00-00-00-000Z`);
+    git(repoDir, 'worktree', 'add', '--detach', worktreePath, 'main');
+    writeIdentity(worktreePath, {
+      schema: REFLECT_IDENTITY_SCHEMA,
+      sourceTaskId: VALID_UUID_A,
+      createdAt: new Date().toISOString(),
+    });
+
+    const removed = await removeReflectWorktree(worktreePath);
+
+    expect(removed).toBe(true);
+    expect(existsSync(worktreePath)).toBe(false);
+  });
+
+  it('falls back to rm for a plain dir carrying the identity marker', async () => {
+    const dir = join(baseDir, `${VALID_UUID_A}-plain`);
+    mkdirSync(dir);
+    writeIdentity(dir, {
+      schema: REFLECT_IDENTITY_SCHEMA,
+      sourceTaskId: VALID_UUID_A,
+      createdAt: new Date().toISOString(),
+    });
+
+    const removed = await removeReflectWorktree(dir);
+
+    expect(removed).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('is a no-op when the path is undefined', async () => {
+    expect(await removeReflectWorktree(undefined)).toBe(false);
+  });
+
+  it('refuses to delete a directory that lacks the identity marker', async () => {
+    const dir = join(baseDir, 'not-a-reflect-worktree');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'keep.txt'), 'precious');
+
+    const removed = await removeReflectWorktree(dir);
+
+    expect(removed).toBe(false);
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(join(dir, 'keep.txt'))).toBe(true);
   });
 });
