@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import type { CompletionDigest } from './completion-digest.js';
+import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
 import type { TaskDependencyEdge, TaskPriorityUpdate } from '../shared/contracts/task.js';
 import type { ChildSessionInfo, GitInfo, SessionInfo, WorktreeHealth } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
@@ -206,6 +207,42 @@ export class TaskStore {
    */
   getTaskForMutation(id: string): Task | undefined {
     return this.tasks.get(id);
+  }
+
+  /**
+   * Read the pending agent → user signal for a task (RFC:
+   * rfc-agent-signal-surface). Used by the snapshot projection to join the
+   * signal onto the client-facing AgentState. Returns undefined for unknown
+   * tasks or tasks with no raised signal.
+   */
+  getPendingSignal(taskId: string): PendingAgentSignal | undefined {
+    return this.tasks.get(taskId)?.pendingSignal;
+  }
+
+  /**
+   * Raise (or replace) the pending signal for a task. Idempotent per task: a
+   * repeat call overwrites the prior signal rather than stacking. No-op for
+   * unknown tasks. Returns true when a task was found and updated.
+   */
+  setPendingSignal(taskId: string, signal: PendingAgentSignal): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task) return false;
+    task.pendingSignal = signal;
+    task.updatedAt = new Date();
+    return true;
+  }
+
+  /**
+   * Clear any pending signal for a task. No-op when the task is unknown or has
+   * no signal. Returns true when a signal was actually cleared (so callers can
+   * skip a redundant broadcast).
+   */
+  clearPendingSignal(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task?.pendingSignal) return false;
+    delete task.pendingSignal;
+    task.updatedAt = new Date();
+    return true;
   }
 
   listTasks(filter?: { status?: TaskStatus }): Task[] {

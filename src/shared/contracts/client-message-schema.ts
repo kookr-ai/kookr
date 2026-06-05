@@ -158,6 +158,7 @@ const ClientMessageSchemaImpl = z.union([
   }),
   z.object({ type: z.literal('cancelTask'), taskId: z.string() }),
   z.object({ type: z.literal('reopenTask'), taskId: z.string() }),
+  z.object({ type: z.literal('dismissAgentSignal'), taskId: z.string() }),
   z.object({ type: z.literal('deleteTask'), taskId: z.string() }),
   z.object({ type: z.literal('renameTask'), taskId: z.string(), name: z.string() }),
   z.object({ type: z.literal('setTaskPriority'), taskId: z.string(), priority: taskPriorityUpdate }),

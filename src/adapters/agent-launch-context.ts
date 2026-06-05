@@ -140,6 +140,13 @@ export async function buildAgentLaunchContext(
     env.KOOKR_PARENT_TASK_ID = task.parentTaskId;
   }
 
+  // Propagate the Stop-hook nudge kill switch (RFC: rfc-agent-signal-surface §7)
+  // so the baked Stop hook can read it. (In-flight tasks are disabled via the
+  // /dev/shm runtime marker the nudge script also stats.)
+  if (process.env.KOOKR_NUDGE_DISABLED) {
+    env.KOOKR_NUDGE_DISABLED = process.env.KOOKR_NUDGE_DISABLED;
+  }
+
   if (opts.serverPort) {
     env.KOOKR_PORT = String(opts.serverPort);
     env.KOOKR_API_BASE_URL = `http://127.0.0.1:${opts.serverPort}`;
