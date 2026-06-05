@@ -1366,6 +1366,7 @@ describe('Monitor', () => {
 
       expect(queue.next()).toBeNull();
       expect(getDetectionStats().suppressed.needs_input).toBe(1);
+      expect(getDetectionStats().suppressionReasons.needs_input.subagent_running).toBe(1);
     });
 
     test('after subagent_stop drains the set, the next Stop fires needs_input', () => {
@@ -1706,6 +1707,7 @@ describe('Monitor', () => {
         expect(changed).toBe(true);
         expect(queue.peek(agentId)).toBeNull();
         expect(getDetectionStats().suppressed.stale_agent).toBe(1);
+        expect(getDetectionStats().suppressionReasons.stale_agent.subagent_running).toBe(1);
 
         const records = monitor.getFindingEvidenceAuditRecords();
         const suppressed = records.find((r) => r.anomalyType === 'stale_agent' && r.status === 'resolved');
@@ -1725,6 +1727,7 @@ describe('Monitor', () => {
         expect(changed).toBe(true);
         expect(queue.peek(agentId)).toBeNull();
         expect(getDetectionStats().suppressed.hook_disconnected).toBe(1);
+        expect(getDetectionStats().suppressionReasons.hook_disconnected.subagent_running).toBe(1);
 
         // Audit trail must surface every suppressed actionable verdict, not just stale_agent.
         const records = monitor.getFindingEvidenceAuditRecords();
@@ -1886,6 +1889,7 @@ describe('Monitor', () => {
         // ...and the first agent's finding is purged as part of the same infra event.
         expect(queue.peek('agent-a')).toBeNull();
         expect(getDetectionStats().suppressed.hook_disconnected).toBe(1);
+        expect(getDetectionStats().suppressionReasons.hook_disconnected.systemic_hook_stall).toBe(1);
 
         const records = monitor.getFindingEvidenceAuditRecords();
         const suppressed = records.find(
@@ -1985,6 +1989,8 @@ describe('Monitor', () => {
       expect(changed).toBe(true);
       // The tracker must not overwrite the existing entry.
       expect(queue.peek(agentId)?.type).toBe('budget_exceeded');
+      expect(getDetectionStats().suppressed.needs_input).toBe(1);
+      expect(getDetectionStats().suppressionReasons.needs_input.snooze_false_positive).toBe(1);
     });
   });
 });
