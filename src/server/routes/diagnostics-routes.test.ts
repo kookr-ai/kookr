@@ -8,6 +8,7 @@ import { AttentionQueue } from '../../core/attention-queue.js';
 import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
 import { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import { GitHubStateStore } from '../../core/github-state-store.js';
+import { recordSuppression, resetDetectionStats } from '../../core/detection-stats.js';
 import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
 import type { RouteDeps } from './shared.js';
 import type { LlmClient } from '../../core/llm-client.js';
@@ -35,6 +36,7 @@ describe('diagnostics routes', () => {
     delete process.env.KOOKR_FINDING_REVIEW_DAILY_COST_CENTS;
     delete process.env.KOOKR_FINDING_REVIEW_TOKEN;
     delete process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN;
+    resetDetectionStats();
   });
 
   afterEach(() => {
@@ -43,6 +45,7 @@ describe('diagnostics routes', () => {
     delete process.env.KOOKR_FINDING_REVIEW_DAILY_COST_CENTS;
     delete process.env.KOOKR_FINDING_REVIEW_TOKEN;
     delete process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN;
+    resetDetectionStats();
   });
 
   // ---------------------------------------------------------------------------
@@ -162,6 +165,8 @@ describe('diagnostics routes', () => {
   // ---------------------------------------------------------------------------
   describe('GET /api/anomaly-stats', () => {
     test('returns current DetectionStats shape', async () => {
+      recordSuppression('hook_disconnected', 'systemic_hook_stall');
+
       const res = await mkApp({}).request('/api/anomaly-stats');
       expect(res.status).toBe(200);
       const body = await res.json();
@@ -170,10 +175,12 @@ describe('diagnostics routes', () => {
         fires: expect.any(Object),
         falsePositives: expect.any(Object),
         suppressed: expect.any(Object),
+        suppressionReasons: expect.any(Object),
         subagentOrphans: expect.any(Number),
         subagentSessionsWithOrphans: expect.any(Number),
         subagentTtlEvictions: expect.any(Number),
       }));
+      expect(body.suppressionReasons.hook_disconnected.systemic_hook_stall).toBe(1);
     });
   });
 

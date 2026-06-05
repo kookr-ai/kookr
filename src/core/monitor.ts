@@ -225,7 +225,7 @@ export class Monitor {
     );
     this.recordDetectionTelemetry(agentId, evaluation.checkedTypes, anomaly);
     if (rawAnomaly?.type === 'needs_input' && anomaly === null) {
-      recordSuppression('needs_input');
+      recordSuppression('needs_input', 'subagent_running');
     }
 
     if (anomaly) {
@@ -313,7 +313,7 @@ export class Monitor {
         // swallowed, mirroring the non-actionable purge guard below: only
         // purge watchdog-owned types, and only when no event-derived anomaly
         // is currently shadowing the queue.
-        recordSuppression(rawAnomaly.type);
+        recordSuppression(rawAnomaly.type, 'subagent_running');
         const queued = this.attentionQueue.peek(agentId);
         if (queued && isWatchdogOwnedType(queued.type) && !this.getEventAnomaly(agentId)) {
           this.attentionQueue.purge(agentId);
@@ -348,6 +348,7 @@ export class Monitor {
       // Suppression tracker opts the agent out of queue entry but the UI still
       // needs to reflect the suppressed state, so report "changed" either way.
       if (this.suppressionTracker?.shouldSuppress(agentId, anomaly.type)) {
+        recordSuppression(anomaly.type, 'snooze_false_positive');
         return true;
       }
       // Systemic hook-stall guard: when multiple agents go hook-silent at once
@@ -358,7 +359,7 @@ export class Monitor {
         anomaly.type === 'hook_disconnected'
         && this.countActiveHookDisconnected(agentId) >= SYSTEMIC_HOOK_STALL_MIN_AGENTS
       ) {
-        recordSuppression('hook_disconnected');
+        recordSuppression('hook_disconnected', 'systemic_hook_stall');
         const events = this.agentEvents.get(agentId) ?? [];
         this.findingEvidenceAuditor.observe(agentId, anomaly, events, {
           source: 'watchdog_tick',

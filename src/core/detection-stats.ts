@@ -1,5 +1,13 @@
 import type { AnomalyType } from './types.js';
 
+export const SUPPRESSION_REASONS = [
+  'subagent_running',
+  'systemic_hook_stall',
+  'snooze_false_positive',
+] as const;
+
+export type SuppressionReason = (typeof SUPPRESSION_REASONS)[number];
+
 /**
  * Configuration surface for the anomaly detector. Kept in this module alongside
  * the detection-stats counters so callers that only touch configuration/telemetry
@@ -25,6 +33,8 @@ export interface DetectionStats {
   falseNegatives: Record<AnomalyType, number>;
   /** Anomalies returned null at the suppression layer (e.g. needs_input while subagents running). */
   suppressed: Record<AnomalyType, number>;
+  /** Suppressed anomalies split by bounded reason for post-hoc diagnostics. */
+  suppressionReasons: Record<AnomalyType, Record<SuppressionReason, number>>;
   /** Outstanding subagent entries dropped at session/agent end (lost SubagentStop). */
   subagentOrphans: number;
   /** Distinct sessions that ended with at least one orphan — correct denominator for orphan-rate. */
@@ -46,12 +56,25 @@ const ZERO_COUNTS: Record<AnomalyType, number> = {
   budget_exceeded: 0,
 };
 
+const ZERO_SUPPRESSION_REASON_COUNTS: Record<SuppressionReason, number> = {
+  subagent_running: 0,
+  systemic_hook_stall: 0,
+  snooze_false_positive: 0,
+};
+
+function createZeroSuppressionReasons(): Record<AnomalyType, Record<SuppressionReason, number>> {
+  return Object.fromEntries(
+    Object.keys(ZERO_COUNTS).map((type) => [type, { ...ZERO_SUPPRESSION_REASON_COUNTS }]),
+  ) as Record<AnomalyType, Record<SuppressionReason, number>>;
+}
+
 const stats: DetectionStats = {
   checks: { ...ZERO_COUNTS },
   fires: { ...ZERO_COUNTS },
   falsePositives: { ...ZERO_COUNTS },
   falseNegatives: { ...ZERO_COUNTS },
   suppressed: { ...ZERO_COUNTS },
+  suppressionReasons: createZeroSuppressionReasons(),
   subagentOrphans: 0,
   subagentSessionsWithOrphans: 0,
   subagentTtlEvictions: 0,
@@ -65,6 +88,9 @@ export function getDetectionStats(): DetectionStats {
     falsePositives: { ...stats.falsePositives },
     falseNegatives: { ...stats.falseNegatives },
     suppressed: { ...stats.suppressed },
+    suppressionReasons: Object.fromEntries(
+      Object.entries(stats.suppressionReasons).map(([type, reasons]) => [type, { ...reasons }]),
+    ) as Record<AnomalyType, Record<SuppressionReason, number>>,
     subagentOrphans: stats.subagentOrphans,
     subagentSessionsWithOrphans: stats.subagentSessionsWithOrphans,
     subagentTtlEvictions: stats.subagentTtlEvictions,
@@ -86,8 +112,9 @@ export function recordFalseNegative(type: AnomalyType): void {
 }
 
 /** Record a suppressed anomaly (returned null at the suppression layer). */
-export function recordSuppression(type: AnomalyType): void {
+export function recordSuppression(type: AnomalyType, reason: SuppressionReason): void {
   stats.suppressed[type]++;
+  stats.suppressionReasons[type][reason]++;
 }
 
 /** Record a session ending with outstanding subagents. Pass distinct session count separately. */
@@ -141,6 +168,19 @@ export function hydrateDetectionStats(snapshot: Partial<DetectionStats>): void {
       }
     }
   }
+  const suppressionReasons = snapshot.suppressionReasons;
+  if (suppressionReasons && typeof suppressionReasons === 'object') {
+    for (const type of Object.keys(stats.suppressionReasons) as AnomalyType[]) {
+      const incomingByReason = (suppressionReasons as Record<string, unknown>)[type];
+      if (!incomingByReason || typeof incomingByReason !== 'object') continue;
+      for (const reason of SUPPRESSION_REASONS) {
+        const value = (incomingByReason as Record<string, unknown>)[reason];
+        if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+          stats.suppressionReasons[type][reason] = value;
+        }
+      }
+    }
+  }
   const scalars: Array<keyof Pick<DetectionStats, 'subagentOrphans' | 'subagentSessionsWithOrphans' | 'subagentTtlEvictions'>> = [
     'subagentOrphans', 'subagentSessionsWithOrphans', 'subagentTtlEvictions',
   ];
@@ -160,6 +200,9 @@ export function resetDetectionStats(): void {
     stats.falsePositives[key] = 0;
     stats.falseNegatives[key] = 0;
     stats.suppressed[key] = 0;
+    for (const reason of SUPPRESSION_REASONS) {
+      stats.suppressionReasons[key][reason] = 0;
+    }
   }
   stats.subagentOrphans = 0;
   stats.subagentSessionsWithOrphans = 0;

@@ -594,14 +594,17 @@ describe('Anomaly Detector', () => {
   });
 
   describe('subagent suppression telemetry (rfc-subagent-aware-needs-input)', () => {
-    test('recordSuppression increments per-type counter', () => {
-      recordSuppression('needs_input');
-      recordSuppression('needs_input');
-      recordSuppression('permission_blocked');
+    test('recordSuppression increments per-type and per-reason counters', () => {
+      recordSuppression('needs_input', 'subagent_running');
+      recordSuppression('needs_input', 'subagent_running');
+      recordSuppression('permission_blocked', 'snooze_false_positive');
       const stats = getDetectionStats();
       expect(stats.suppressed.needs_input).toBe(2);
       expect(stats.suppressed.permission_blocked).toBe(1);
       expect(stats.suppressed.repeated_error).toBe(0);
+      expect(stats.suppressionReasons.needs_input.subagent_running).toBe(2);
+      expect(stats.suppressionReasons.needs_input.snooze_false_positive).toBe(0);
+      expect(stats.suppressionReasons.permission_blocked.snooze_false_positive).toBe(1);
     });
 
     test('recordSubagentOrphans accumulates orphan and session counts independently', () => {
@@ -619,24 +622,26 @@ describe('Anomaly Detector', () => {
     });
 
     test('resetDetectionStats clears all new counters', () => {
-      recordSuppression('needs_input');
+      recordSuppression('needs_input', 'subagent_running');
       recordSubagentOrphans(2, 1);
       recordSubagentTtlEviction(1);
       resetDetectionStats();
       const stats = getDetectionStats();
       expect(stats.suppressed.needs_input).toBe(0);
+      expect(stats.suppressionReasons.needs_input.subagent_running).toBe(0);
       expect(stats.subagentOrphans).toBe(0);
       expect(stats.subagentSessionsWithOrphans).toBe(0);
       expect(stats.subagentTtlEvictions).toBe(0);
     });
 
-    test('all four new fields are observable through the recording functions', () => {
+    test('all suppression telemetry fields are observable through the recording functions', () => {
       // Live-counter assertion: deleting any record function breaks this test
-      recordSuppression('needs_input');
+      recordSuppression('needs_input', 'subagent_running');
       recordSubagentOrphans(2, 1);
       recordSubagentTtlEviction(3);
       const stats = getDetectionStats();
       expect(stats.suppressed.needs_input).toBe(1);
+      expect(stats.suppressionReasons.needs_input.subagent_running).toBe(1);
       expect(stats.subagentOrphans).toBe(2);
       expect(stats.subagentSessionsWithOrphans).toBe(1);
       expect(stats.subagentTtlEvictions).toBe(3);
