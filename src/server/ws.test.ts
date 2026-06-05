@@ -16,6 +16,7 @@ import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
 import type { GitHubReference, GitHubPRState, GitHubIssueState } from '../core/github-types.js';
 import { MessageRouter } from './ws.js';
+import { getSnapshotAgentsRaw } from './use-cases/get-snapshot.js';
 import type { ServerMessage, ClientMessage } from '../shared/protocol.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
 import { RalphLoopService } from './ralph-loop-service.js';
@@ -1069,12 +1070,12 @@ describe('WebSocket MessageRouter', () => {
 
     // Agent events should be cleared (unregistered from monitor),
     // but completed tasks still appear as synthetic entries with empty events
-    const after = monitor.getSnapshot().find(a => a.agentId === tmuxName);
+    const after = getSnapshotAgentsRaw({ monitor }).find(a => a.agentId === tmuxName);
     expect(after).toBeDefined();
     expect(after!.events).toEqual([]);
     expect(after!.taskStatus).toBe('completed');
     await vi.waitFor(() => {
-      const withDigest = monitor.getSnapshot().find(a => a.agentId === tmuxName);
+      const withDigest = getSnapshotAgentsRaw({ monitor }).find(a => a.agentId === tmuxName);
       expect(withDigest!.completionDigest).toBeDefined();
       expect(withDigest!.completionDigest!.bullets.length).toBeGreaterThan(0);
     });
@@ -1211,7 +1212,7 @@ describe('WebSocket MessageRouter', () => {
     await router.handleMessage({ type: 'cancelTask', taskId: task.id });
 
     // Agent events cleared (unregistered), but cancelled tasks still appear as synthetic entries
-    const after = monitor.getSnapshot().find(a => a.agentId === tmuxName);
+    const after = getSnapshotAgentsRaw({ monitor }).find(a => a.agentId === tmuxName);
     expect(after).toBeDefined();
     expect(after!.events).toEqual([]);
     expect(after!.taskStatus).toBe('cancelled');
@@ -1603,7 +1604,7 @@ describe('WebSocket MessageRouter', () => {
     taskStore.cancelTask(t2.id);
     taskStore.pendTask(t3.id);
 
-    const snapshotBefore = monitor.getSnapshot();
+    const snapshotBefore = getSnapshotAgentsRaw({ monitor });
     expect(snapshotBefore.some(s => s.taskId === t1.id && s.taskStatus === 'completed')).toBe(true);
     expect(snapshotBefore.some(s => s.taskId === t2.id && s.taskStatus === 'cancelled')).toBe(true);
     expect(snapshotBefore.some(s => s.taskId === t3.id && s.taskStatus === 'pending')).toBe(true);
@@ -1612,7 +1613,7 @@ describe('WebSocket MessageRouter', () => {
 
     // D2 revised: both user-initiated terminal states are swept. The pending
     // task stays; cancellation audit still lives in the interaction log.
-    const snapshotAfter = monitor.getSnapshot();
+    const snapshotAfter = getSnapshotAgentsRaw({ monitor });
     expect(snapshotAfter.some(s => s.taskId === t1.id)).toBe(false);
     expect(snapshotAfter.some(s => s.taskId === t2.id)).toBe(false);
     expect(snapshotAfter.some(s => s.taskId === t3.id)).toBe(true);

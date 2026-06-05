@@ -355,11 +355,11 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     broadcastMessages = [];
   });
 
-  function setup() {
+  function setup(overrides: Partial<Pick<EventPipelineDeps, 'llmClient'>> = {}) {
     const broadcastToAll = (msg: ServerMessage) => { broadcastMessages.push(msg); };
     return wireEventPipeline({
       adapter, monitor, taskStore, tokenTracker, watchdog,
-      githubScanner, llmClient: null, serverCwd: '/test',
+      githubScanner, llmClient: overrides.llmClient ?? null, serverCwd: '/test',
       broadcastToAll,
       ralphLoopService: new RalphLoopService({
         taskStore,
@@ -376,9 +376,9 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     });
   }
 
-  async function launchAgent() {
-    const task = createTaskForMutation(taskStore, 'Test', '/cwd');
-    const tmuxName = await adapter.launch(task.id, 'Test', '/cwd');
+  async function launchAgent(prompt = 'Test', cwd = '/cwd') {
+    const task = createTaskForMutation(taskStore, prompt, cwd);
+    const tmuxName = await adapter.launch(task.id, prompt, cwd);
     monitor.registerAgent(tmuxName);
     return tmuxName;
   }
@@ -412,6 +412,27 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
       suggestions: [],
       quickActions: [],
     })]);
+  });
+
+  test('response assist receives projected task metadata from raw monitor snapshot', async () => {
+    const complete = vi.fn().mockResolvedValue(JSON.stringify({ responses: ['yes, continue'] }));
+    setup({
+      llmClient: {
+        provider: 'test',
+        model: 'test-model',
+        complete,
+      },
+    });
+    const tmuxName = await launchAgent('Projected pipeline task', '/project');
+
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+
+    await vi.waitFor(() => {
+      expect(complete).toHaveBeenCalled();
+    });
+    const request = complete.mock.calls[0][0];
+    expect(request.userMessage).toContain('Task: Projected pipeline task');
+    expect(request.userMessage).toContain('Working directory: /project');
   });
 
   test('user_prompt also clears via anomaly-diff', async () => {
