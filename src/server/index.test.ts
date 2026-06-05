@@ -6,6 +6,8 @@ import { WebSocket } from 'ws';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { createKookrServerInternal } from './index.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
+import type { ResourceStatusSampler } from './resource-status-service.js';
+import type { SystemResourceStatus } from '../shared/contracts/messages.js';
 import { createRelayServer } from '../../relay/server.js';
 
 const RELAY_TRUSTED_ENV = 'KOOKR_RELAY_' + 'TRUSTED';
@@ -52,6 +54,34 @@ function waitForMalformedAlert(ws: WebSocket, label: string): Promise<MalformedA
   });
 }
 
+function waitForOperationalAlert(ws: WebSocket, summaryText: string): Promise<MalformedAlertMessage> {
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const onMsg = (data: unknown) => {
+      const parsed = JSON.parse((data as Buffer).toString()) as MalformedAlertMessage;
+      if (
+        parsed.type !== 'alert'
+        || parsed.severity !== 'warning'
+        || typeof parsed.summary !== 'string'
+        || !parsed.summary.includes(summaryText)
+      ) {
+        return;
+      }
+
+      clearTimeout(timer);
+      ws.off('message', onMsg);
+      resolve(parsed);
+    };
+
+    timer = setTimeout(() => {
+      ws.off('message', onMsg);
+      reject(new Error(`No operational alert containing ${summaryText}`));
+    }, 2000);
+
+    ws.on('message', onMsg);
+  });
+}
+
 async function waitForCondition(predicate: () => boolean): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const started = Date.now();
@@ -65,6 +95,32 @@ async function waitForCondition(predicate: () => boolean): Promise<void> {
       }
     }, 10);
   });
+}
+
+class FixedResourceSampler implements ResourceStatusSampler {
+  start(): void {}
+  stop(): void {}
+  sample(): SystemResourceStatus {
+    return {
+      source: { kind: 'server-host' },
+      sampledAt: '2026-06-05T00:00:00.000Z',
+      sampleGapMs: null,
+      timerDriftMs: null,
+      host: {
+        cpuUsagePercent: 10,
+        memoryUsedPercent: 95,
+        memoryFreeBytes: 5,
+        memoryTotalBytes: 100,
+      },
+      server: {
+        eventLoopDelayP95Ms: 1,
+        processRssBytes: 1,
+        processHeapUsedBytes: 1,
+        processHeapTotalBytes: 1,
+      },
+      unavailable: [],
+    };
+  }
 }
 
 async function memberWebSocketNonce(relayUrl: string, memberToken: string, deviceId?: string): Promise<string> {
@@ -151,6 +207,91 @@ describe('createKookrServer', () => {
   });
 
   describe('HTTP API', () => {
+    test('admin alert-config update changes the live operational alert evaluator', async () => {
+      await server.close();
+      serverClosed = true;
+
+      const previousAdminToken = process.env.KOOKR_ADMIN_TOKEN;
+      const previousCpu = process.env.KOOKR_ALERT_CPU_PERCENT;
+      const previousMemory = process.env.KOOKR_ALERT_MEMORY_PERCENT;
+      const previousLoop = process.env.KOOKR_ALERT_EVENT_LOOP_DELAY_MS;
+      const previousSustain = process.env.KOOKR_ALERT_SUSTAIN_SAMPLES;
+      process.env.KOOKR_ADMIN_TOKEN = 'secret';
+      delete process.env.KOOKR_ALERT_CPU_PERCENT;
+      delete process.env.KOOKR_ALERT_MEMORY_PERCENT;
+      delete process.env.KOOKR_ALERT_EVENT_LOOP_DELAY_MS;
+      delete process.env.KOOKR_ALERT_SUSTAIN_SAMPLES;
+
+      let alertServer: KookrServerInternal | null = null;
+      let ws: WebSocket | null = null;
+      try {
+        alertServer = await createKookrServerInternal({
+          port: 0,
+          host: '127.0.0.1',
+          kookrDir: join(tempDir, 'alert-kookr'),
+          tasksFile: join(tempDir, 'alert-tasks.json'),
+          hooksDir: join(tempDir, 'alert-hooks'),
+          settingsDir: join(tempDir, 'alert-settings'),
+          serverCwd: '/test/cwd',
+          frontendDir: join(tempDir, 'frontend'),
+          saveIntervalMs: 600_000,
+          livenessIntervalMs: 600_000,
+          terminalBackend: new FakeTerminalBackend(),
+          claudeDir: join(tempDir, 'claude'),
+          resourceStatusSampler: new FixedResourceSampler(),
+          resourceStatusIntervalMs: 20,
+        });
+
+        const alertPort = getActualPort(alertServer);
+        ws = new WebSocket(`ws://127.0.0.1:${alertPort}/ws`);
+        await new Promise<void>((resolve) => ws!.once('open', () => resolve()));
+        const alertPromise = waitForOperationalAlert(ws, 'High host memory usage');
+
+        const res = await fetch(`http://127.0.0.1:${alertPort}/api/admin/operational-alert-config`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-kookr-admin-token': 'secret',
+          },
+          body: JSON.stringify({ memoryPercent: 90, sustainSamples: 1 }),
+        });
+        expect(res.status).toBe(200);
+        expect(await alertPromise).toMatchObject({
+          type: 'alert',
+          severity: 'warning',
+          agentId: 'system',
+        });
+      } finally {
+        ws?.close();
+        await alertServer?.close();
+        if (previousAdminToken === undefined) {
+          delete process.env.KOOKR_ADMIN_TOKEN;
+        } else {
+          process.env.KOOKR_ADMIN_TOKEN = previousAdminToken;
+        }
+        if (previousCpu === undefined) {
+          delete process.env.KOOKR_ALERT_CPU_PERCENT;
+        } else {
+          process.env.KOOKR_ALERT_CPU_PERCENT = previousCpu;
+        }
+        if (previousMemory === undefined) {
+          delete process.env.KOOKR_ALERT_MEMORY_PERCENT;
+        } else {
+          process.env.KOOKR_ALERT_MEMORY_PERCENT = previousMemory;
+        }
+        if (previousLoop === undefined) {
+          delete process.env.KOOKR_ALERT_EVENT_LOOP_DELAY_MS;
+        } else {
+          process.env.KOOKR_ALERT_EVENT_LOOP_DELAY_MS = previousLoop;
+        }
+        if (previousSustain === undefined) {
+          delete process.env.KOOKR_ALERT_SUSTAIN_SAMPLES;
+        } else {
+          process.env.KOOKR_ALERT_SUSTAIN_SAMPLES = previousSustain;
+        }
+      }
+    });
+
     test('connects remote node client only when relay env is configured and stops it on close', async () => {
       await server.close();
       serverClosed = true;

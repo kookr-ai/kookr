@@ -4,6 +4,10 @@ import { TaskStore } from '../../core/tasks.js';
 import { DrainController } from '../drain-state.js';
 import { registerAdminRoutes, isAuthorizedAdminRequest } from './admin-routes.js';
 import { getLogLevel, resetLogLevel } from '../runtime-log-level.js';
+import {
+  getOperationalAlertConfig,
+  resetOperationalAlertConfig,
+} from '../operational-alert-config.js';
 import type { RouteDeps } from './shared.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
@@ -36,6 +40,98 @@ describe('isAuthorizedAdminRequest', () => {
   test('rejects a wrong token from a non-loopback address', () => {
     process.env.KOOKR_ADMIN_TOKEN = 'secret';
     expect(isAuthorizedAdminRequest('10.0.0.5', 'nope')).toBe(false);
+  });
+});
+
+describe('admin operational-alert-config routes (issue #737)', () => {
+  const headers = { 'x-kookr-admin-token': 'secret' };
+
+  const post = (app: Hono, body: unknown, authorized = true) =>
+    app.request('http://example.com/api/admin/operational-alert-config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(authorized ? headers : {}) },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+  const get = (app: Hono, authorized = true) =>
+    app.request('http://example.com/api/admin/operational-alert-config', {
+      method: 'GET',
+      headers: authorized ? headers : {},
+    });
+
+  beforeEach(() => {
+    process.env.KOOKR_ADMIN_TOKEN = 'secret';
+    resetOperationalAlertConfig({
+      KOOKR_ALERT_CPU_PERCENT: '70',
+      KOOKR_ALERT_SUSTAIN_SAMPLES: '3',
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.KOOKR_ADMIN_TOKEN;
+    resetOperationalAlertConfig({});
+  });
+
+  test('registers even when no drainController is wired', async () => {
+    const res = await get(mkApp({ taskStore: new TaskStore() }));
+    expect(res.status).toBe(200);
+  });
+
+  test('GET returns current config and boot defaults', async () => {
+    const res = await get(mkApp({}));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      config: { cpuPercent: 70, memoryPercent: 0, eventLoopDelayMs: 0, sustainSamples: 3 },
+      default: { cpuPercent: 70, memoryPercent: 0, eventLoopDelayMs: 0, sustainSamples: 3 },
+    });
+  });
+
+  test('GET requires authorization', async () => {
+    const res = await get(mkApp({}), false);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'admin-forbidden' });
+  });
+
+  test('POST applies a valid partial update process-wide', async () => {
+    const res = await post(mkApp({}), { memoryPercent: 88, sustainSamples: 2 });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      config: { cpuPercent: 70, memoryPercent: 88, eventLoopDelayMs: 0, sustainSamples: 2 },
+      default: { cpuPercent: 70, memoryPercent: 0, eventLoopDelayMs: 0, sustainSamples: 3 },
+    });
+    expect(getOperationalAlertConfig()).toEqual({
+      cpuPercent: 70,
+      memoryPercent: 88,
+      eventLoopDelayMs: 0,
+      sustainSamples: 2,
+    });
+  });
+
+  test('POST requires authorization and does not mutate state when rejected', async () => {
+    const res = await post(mkApp({}), { cpuPercent: 95 }, false);
+    expect(res.status).toBe(403);
+    expect(getOperationalAlertConfig().cpuPercent).toBe(70);
+  });
+
+  test('POST rejects an invalid update without mutating state', async () => {
+    const res = await post(mkApp({}), { cpuPercent: 95, sustainSamples: 0 });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'invalid-sustain-samples',
+      field: 'sustainSamples',
+      validFields: ['cpuPercent', 'memoryPercent', 'eventLoopDelayMs', 'sustainSamples'],
+    });
+    expect(getOperationalAlertConfig()).toEqual({
+      cpuPercent: 70,
+      memoryPercent: 0,
+      eventLoopDelayMs: 0,
+      sustainSamples: 3,
+    });
+  });
+
+  test('POST rejects malformed JSON with 400', async () => {
+    const res = await post(mkApp({}), 'not json');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid-json' });
   });
 });
 

@@ -2,6 +2,11 @@ import type { Context, Hono } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import type { RouteDeps } from './shared.js';
 import { LOG_LEVELS, getLogLevelState, setLogLevel } from '../runtime-log-level.js';
+import {
+  OPERATIONAL_ALERT_CONFIG_FIELDS,
+  getOperationalAlertConfigState,
+  setOperationalAlertConfig,
+} from '../operational-alert-config.js';
 
 const ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
 
@@ -48,6 +53,10 @@ function logLevelBody() {
   };
 }
 
+function operationalAlertConfigBody() {
+  return getOperationalAlertConfigState();
+}
+
 /**
  * Runtime debug-verbosity control (issue #662).
  *
@@ -89,6 +98,51 @@ function registerLogLevelRoutes(app: Hono, authorize: (c: Context) => boolean): 
 }
 
 /**
+ * Runtime operational-alert threshold control (issue #737).
+ *
+ *   GET  /api/admin/operational-alert-config
+ *     → { config: OperationalAlertConfig, default: OperationalAlertConfig }
+ *   POST /api/admin/operational-alert-config
+ *     { cpuPercent?, memoryPercent?, eventLoopDelayMs?, sustainSamples? }
+ *
+ * Env remains the boot default; POST mutates only this running process so alert
+ * sensitivity can be tuned without restarting supervised agent sessions.
+ */
+function registerOperationalAlertConfigRoutes(app: Hono, authorize: (c: Context) => boolean): void {
+  app.get('/api/admin/operational-alert-config', (c) => {
+    if (!authorize(c)) return c.json({ error: 'admin-forbidden' }, 403);
+    return c.json(operationalAlertConfigBody());
+  });
+
+  app.post('/api/admin/operational-alert-config', async (c) => {
+    if (!authorize(c)) return c.json({ error: 'admin-forbidden' }, 403);
+
+    let payload: unknown;
+    try {
+      payload = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid-json' }, 400);
+    }
+
+    const result = setOperationalAlertConfig(payload);
+    if (!result.ok) {
+      return c.json(
+        {
+          error: result.error,
+          field: result.field,
+          validFields: OPERATIONAL_ALERT_CONFIG_FIELDS,
+        },
+        400,
+      );
+    }
+
+    const body = operationalAlertConfigBody();
+    console.warn(`[admin] operational alert config updated: ${JSON.stringify(body.config)}`);
+    return c.json(body);
+  });
+}
+
+/**
  * Operator drain / resume control (issue #659).
  *
  *   GET  /api/admin/drain   → { accepting, draining, since?, runningTasks }
@@ -96,8 +150,8 @@ function registerLogLevelRoutes(app: Hono, authorize: (c: Context) => boolean): 
  *   POST /api/admin/resume  → leave drain mode (accept launches)
  *
  * Drain routes are registered only when a {@link DrainController} is wired in;
- * absent it, those endpoints don't exist. The log-level routes (issue #662)
- * carry no such dependency and always register.
+ * absent it, those endpoints don't exist. Runtime config routes with no wired
+ * dependency (log level, operational alerts) always register.
  */
 export function registerAdminRoutes(app: Hono, deps: RouteDeps): void {
   const { drainController, taskStore } = deps;
@@ -106,6 +160,7 @@ export function registerAdminRoutes(app: Hono, deps: RouteDeps): void {
     isAuthorizedAdminRequest(getRemoteAddress(c), c.req.header(ADMIN_TOKEN_HEADER));
 
   registerLogLevelRoutes(app, authorize);
+  registerOperationalAlertConfigRoutes(app, authorize);
 
   if (!drainController) return;
 

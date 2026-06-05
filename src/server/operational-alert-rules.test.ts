@@ -210,4 +210,35 @@ describe('OperationalAlertEvaluator', () => {
     expect(summaries).toContain('memory');
     expect(summaries).not.toContain('event-loop');
   });
+
+  test('reads config changes on subsequent samples', () => {
+    let config: OperationalAlertConfig = { ...DISABLED };
+    const evaluator = createOperationalAlertEvaluator(() => config);
+
+    expect(evaluator.hasEnabledRules()).toBe(false);
+    expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toEqual([]);
+
+    config = { ...config, cpuPercent: 90, sustainSamples: 1 };
+
+    expect(evaluator.hasEnabledRules()).toBe(true);
+    expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toHaveLength(1);
+
+    config = { ...config, cpuPercent: 0 };
+    expect(evaluator.hasEnabledRules()).toBe(false);
+    expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toEqual([]);
+  });
+
+  test('changing threshold resets accumulated breach streaks', () => {
+    let config: OperationalAlertConfig = { ...DISABLED, cpuPercent: 80, sustainSamples: 3 };
+    const evaluator = createOperationalAlertEvaluator(() => config);
+
+    expect(alertsFor(evaluator, status({ cpuUsagePercent: 85 }))).toEqual([]);
+    expect(alertsFor(evaluator, status({ cpuUsagePercent: 85 }))).toEqual([]);
+
+    config = { ...config, cpuPercent: 90 };
+
+    expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toEqual([]);
+    expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toEqual([]);
+    expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toHaveLength(1);
+  });
 });

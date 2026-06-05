@@ -1,5 +1,5 @@
 import type { ServerMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
-import { RESOURCE_STATUS_INTERVAL_MS, type SystemResourceSampler } from './system-resource-sampler.js';
+import { RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 
 export interface ResourceStatusSampler {
   start(): void;
@@ -150,6 +150,6 @@ export function createUnavailableResourceStatus(sampledAt: string): SystemResour
   };
 }
 
-export function createResourceStatusService(deps: Omit<ResourceStatusServiceDeps, 'sampler'> & { sampler: SystemResourceSampler }): ResourceStatusService {
+export function createResourceStatusService(deps: ResourceStatusServiceDeps): ResourceStatusService {
   return new ResourceStatusService(deps);
 }
