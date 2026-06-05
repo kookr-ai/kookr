@@ -3,11 +3,6 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
 import { loadTasks, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
-import { GitHubStateStore } from '../core/github-state-store.js';
-import { GitHubScannerService } from '../core/github-scanner-service.js';
-import { DEFAULT_GITHUB_SCANNER_CONFIG } from '../core/github-types.js';
-import { ghCliFetcher, fetchBatchRepoHealth, getGhUserLogin } from '../adapters/github-fetcher.js';
-import { CircuitBreakerGitHubFetcher } from '../adapters/circuit-breaker-github-fetcher.js';
 import { reconcile } from './reconciliation.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
@@ -17,7 +12,6 @@ import { HookIngestion } from './hook-ingestion.js';
 import { ActivityLedger } from '../core/activity-ledger.js';
 import { generateTaskName } from '../core/task-naming.js';
 import type { BackendError, TerminalBackend } from '../adapters/terminal-backend.js';
-import { formatGitHubAlert } from '../core/github-alerts.js';
 import { wireEventPipeline } from './event-pipeline.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
@@ -67,6 +61,7 @@ import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
 import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
 import { createAgentRuntime } from './bootstrap/create-agent-runtime.js';
 import { createCoreStores } from './bootstrap/create-core-stores.js';
+import { createGitHubRuntime } from './bootstrap/create-github-runtime.js';
 import { createOssServices, createOssSourceWatchers } from './bootstrap/create-oss-services.js';
 import { createRealtimeServices } from './bootstrap/create-realtime-services.js';
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
@@ -364,64 +359,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getAgents: () => getSnapshotAgentsForClient({ monitor }),
   });
 
-  // Create GitHub scanner with user-configured intervals
-  const githubStateStore = new GitHubStateStore();
-  const githubScannerConfig = {
-    ...DEFAULT_GITHUB_SCANNER_CONFIG,
-    stateFetchIntervalMs: currentSettings.githubPollingIntervalSec * 1000,
-    referenceExtractionIntervalMs: currentSettings.githubPollingIntervalSec * 1000,
-  };
   // Forward-declared so onRepoHealthChanged can call back into the broadcast
   // function which references githubScanner.getRepoHealthSnapshot().
   let broadcastProjectSummariesRef: (() => void) | null = null;
-  const githubScanner = new GitHubScannerService({
+  const { githubStateStore, githubScanner } = createGitHubRuntime({
     taskStore,
-    stateStore: githubStateStore,
-    fetcher: new CircuitBreakerGitHubFetcher(ghCliFetcher, githubBreaker),
-    config: githubScannerConfig,
-    repoHealthFetcher: fetchBatchRepoHealth,
-    ghUserLoginResolver: getGhUserLogin,
+    githubBreaker,
+    githubPollingIntervalSec: currentSettings.githubPollingIntervalSec,
+    broadcastToAll,
     onRepoHealthChanged: () => {
       broadcastProjectSummariesRef?.();
-    },
-    onStateUpdate: (taskId) => {
-      // Broadcast initial state when first fetched (no changes yet)
-      const state = githubStateStore.getTaskState(taskId);
-      broadcastToAll({
-        type: 'githubUpdate',
-        taskId,
-        prs: state.prs,
-        issues: state.issues,
-        changes: [],
-      });
-    },
-    onChanges: (taskId, changes) => {
-      // Broadcast GitHub state update to all clients
-      const state = githubStateStore.getTaskState(taskId);
-      broadcastToAll({
-        type: 'githubUpdate',
-        taskId,
-        prs: state.prs,
-        issues: state.issues,
-        changes,
-      });
-
-      // Raise alerts for actionable changes
-      for (const change of changes) {
-        const ref = change.ref;
-        const label = `${ref.owner}/${ref.repo}#${ref.number}`;
-        const alert = formatGitHubAlert(change, label);
-
-        if (alert) {
-          broadcastToAll({
-            type: 'alert',
-            agentId: ref.detectedFrom,
-            summary: alert.summary,
-            details: '',
-            severity: alert.severity,
-          });
-        }
-      }
     },
   });
   realtime.setProjectSummaryGitHubDeps({
