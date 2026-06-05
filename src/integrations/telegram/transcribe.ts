@@ -3,8 +3,8 @@
  *
  * The server (image: fedirz/faster-whisper-server, port 8010) exposes an
  * OpenAI-compatible HTTP endpoint at POST /v1/audio/transcriptions. We POST
- * Telegram audio bytes as a multipart form (`file=<audio>`, `model=whisper-1`)
- * and read the JSON `{ text }` reply.
+ * Telegram audio bytes as a multipart form (`file=<audio>`, `model=<configured
+ * faster-whisper model>`) and read the JSON `{ text }` reply.
  *
  * Faster-whisper accepts Telegram voice, uploaded audio, and MP4 video-note
  * containers directly — no client-side conversion is needed. See issues #574
@@ -13,7 +13,7 @@
 
 import { TelegramApiError } from './api-client.js';
 
-const MODEL_NAME = 'whisper-1';
+const DEFAULT_MODEL_NAME = 'base';
 
 export interface TranscribeOpts {
   /** Base URL of the whisper server, e.g. `http://127.0.0.1:8010`. */
@@ -30,6 +30,11 @@ export interface TranscribeOpts {
   mimeType?: string;
   /** Optional external cancellation signal, used by integration shutdown. */
   signal?: AbortSignal;
+  /**
+   * faster-whisper-server model name. Defaults to WHISPER_MODEL when set, then
+   * `base`, matching the bundled CPU/explicit-prod default.
+   */
+  model?: string;
 }
 
 export class TranscriptionError extends Error {
@@ -119,6 +124,7 @@ export async function transcribeVoice(audioBytes: Buffer, opts: TranscribeOpts):
   const url = `${opts.whisperUrl.replace(/\/$/, '')}/v1/audio/transcriptions`;
   const filename = opts.filename ?? 'voice.oga';
   const mimeType = opts.mimeType ?? 'audio/ogg';
+  const model = opts.model ?? process.env.WHISPER_MODEL ?? DEFAULT_MODEL_NAME;
 
   // Use the runtime-builtin FormData / Blob (Node 18+ ships them; the rest of
   // the codebase already relies on global fetch).
@@ -126,7 +132,7 @@ export async function transcribeVoice(audioBytes: Buffer, opts: TranscribeOpts):
   // Buffer is a Uint8Array, which Blob accepts. faster-whisper-server/ffmpeg
   // still sniffs the bytes, but the MIME hint keeps multipart metadata honest.
   form.append('file', new Blob([new Uint8Array(audioBytes)], { type: mimeType }), filename);
-  form.append('model', MODEL_NAME);
+  form.append('model', model);
 
   const controller = new AbortController();
   const abortFromOuter = () => controller.abort();
