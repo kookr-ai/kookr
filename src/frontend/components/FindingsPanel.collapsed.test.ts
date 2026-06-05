@@ -12,7 +12,7 @@ import {
   PENDING_SECTION_COLLAPSED_KEY,
 } from './FindingsPanel.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
-import type { AgentState } from '../../shared/protocol.js';
+import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -41,6 +41,10 @@ function renderPanel(container: HTMLElement, lists: {
   pending?: AgentState[];
   snoozed?: AgentState[];
   completed?: AgentState[];
+  send?: (msg: ClientMessage) => void;
+  clearCompletedFinishedCount?: number;
+  clearCompletedTerminatedCount?: number;
+  clearCompletedProjectId?: string;
 }): Root {
   const root = createRoot(container);
   act(() => {
@@ -51,9 +55,10 @@ function renderPanel(container: HTMLElement, lists: {
       snoozed: lists.snoozed ?? [],
       completed: lists.completed ?? [],
       selectedAgentId: null,
-      send: vi.fn(),
-      globalFinishedCount: 0,
-      globalTerminatedCount: 0,
+      send: lists.send ?? vi.fn(),
+      clearCompletedFinishedCount: lists.clearCompletedFinishedCount ?? 0,
+      clearCompletedTerminatedCount: lists.clearCompletedTerminatedCount ?? 0,
+      clearCompletedProjectId: lists.clearCompletedProjectId,
     }));
   });
   return root;
@@ -165,5 +170,57 @@ describe('FindingsPanel collapsed-state persistence', () => {
       expect(after, `${selector} did not write to ${expectedKey}`).not.toBe(before);
       expect(after === '1' || after === '0').toBe(true);
     }
+  });
+
+  test('clear completed sends the selected project scope when provided', async () => {
+    const send = vi.fn();
+    root = renderPanel(container, {
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+      send,
+      clearCompletedFinishedCount: 1,
+      clearCompletedProjectId: 'github.com/acme/project',
+    });
+
+    const clearButton = container.querySelector<HTMLButtonElement>('button.btn-clear-completed')!;
+    await act(async () => {
+      clearButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const deleteButton = Array.from(document.querySelectorAll<HTMLButtonElement>('.confirm-dialog button'))
+      .find((button) => button.textContent === 'Delete')!;
+    await act(async () => {
+      deleteButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(send).toHaveBeenCalledWith({
+      type: 'clearCompleted',
+      includeTerminated: false,
+      projectId: 'github.com/acme/project',
+    });
+  });
+
+  test('clear completed omits project scope for the all-projects panel', async () => {
+    const send = vi.fn();
+    root = renderPanel(container, {
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+      send,
+      clearCompletedFinishedCount: 1,
+    });
+
+    const clearButton = container.querySelector<HTMLButtonElement>('button.btn-clear-completed')!;
+    await act(async () => {
+      clearButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const deleteButton = Array.from(document.querySelectorAll<HTMLButtonElement>('.confirm-dialog button'))
+      .find((button) => button.textContent === 'Delete')!;
+    await act(async () => {
+      deleteButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(send).toHaveBeenCalledWith({
+      type: 'clearCompleted',
+      includeTerminated: false,
+    });
   });
 });

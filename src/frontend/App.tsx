@@ -834,14 +834,14 @@ export function App() {
     setReflectionSuggestion(null);
   }
 
-  // Clear-completed counts are derived from UNFILTERED agents so the confirm
-  // dialog never promises a narrower sweep than the server performs. The server
-  // has no project scope in clearCompleted — it operates globally — so the
-  // counts shown to the user must also be global. Per review, showing filtered
-  // counts here would produce "Delete 2 finished tasks?" while silently
-  // sweeping 12 across other projects.
-  const globalFinishedCount = agents.filter((a) => a.taskStatus === 'completed' || a.taskStatus === 'cancelled').length;
-  const globalTerminatedCount = agents.filter((a) => a.taskStatus === 'terminated').length;
+  // Clear-completed counts must match the server-side sweep scope. The
+  // all-projects panel omits projectId and sweeps globally; project panels pass
+  // projectId and sweep only tasks in that project.
+  const clearCompletedScopeAgents = selectedProject
+    ? agents.filter((a) => a.projectId === selectedProject)
+    : agents;
+  const clearCompletedFinishedCount = clearCompletedScopeAgents.filter((a) => a.taskStatus === 'completed' || a.taskStatus === 'cancelled').length;
+  const clearCompletedTerminatedCount = clearCompletedScopeAgents.filter((a) => a.taskStatus === 'terminated').length;
 
   const findingsPanel = (
     <FindingsPanel
@@ -852,8 +852,9 @@ export function App() {
       snoozed={snoozed}
       selectedAgentId={selectedAgentId}
       send={send}
-      globalFinishedCount={globalFinishedCount}
-      globalTerminatedCount={globalTerminatedCount}
+      clearCompletedFinishedCount={clearCompletedFinishedCount}
+      clearCompletedTerminatedCount={clearCompletedTerminatedCount}
+      clearCompletedProjectId={selectedProject ?? undefined}
     />
   );
 

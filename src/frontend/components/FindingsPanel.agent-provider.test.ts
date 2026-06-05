@@ -47,8 +47,8 @@ function renderPanel(container: HTMLElement, lists: {
       completed: lists.completed ?? [],
       selectedAgentId: null,
       send: vi.fn(),
-      globalFinishedCount: 0,
-      globalTerminatedCount: 0,
+      clearCompletedFinishedCount: 0,
+      clearCompletedTerminatedCount: 0,
     }));
   });
   return root;

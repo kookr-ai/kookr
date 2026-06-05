@@ -120,6 +120,15 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(result.success).toBe(true);
   });
 
+  test('accepts clearCompleted scoped to a project', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'clearCompleted',
+      projectId: 'github.com/acme/project',
+      includeTerminated: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
   test('rejects an unknown agentType on launch', () => {
     const result = ClientMessageSchema.safeParse({
       type: 'launch',

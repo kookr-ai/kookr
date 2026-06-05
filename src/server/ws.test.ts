@@ -1452,6 +1452,37 @@ describe('WebSocket MessageRouter', () => {
     expect(remaining).toEqual([t3.id, t4.id].sort());
   });
 
+  test('clearCompleted with projectId only sweeps completed + cancelled tasks in that project', async () => {
+    const projectADone = taskStore.createTask({ prompt: 'A done', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const projectACancelled = taskStore.createTask({ prompt: 'A cancelled', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const projectAActive = taskStore.createTask({ prompt: 'A active', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const projectATerminated = taskStore.createTask({ prompt: 'A terminated', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const projectBDone = taskStore.createTask({ prompt: 'B done', cwd: '/cwd/b', projectId: 'github.com/org/b' });
+    const unscopedDone = taskStore.createTask('Unscoped done', '/cwd/unscoped');
+
+    taskStore.startTask(projectADone.id);
+    taskStore.completeTask(projectADone.id);
+    taskStore.startTask(projectACancelled.id);
+    taskStore.cancelTask(projectACancelled.id);
+    taskStore.startTask(projectAActive.id);
+    taskStore.startTask(projectATerminated.id);
+    taskStore.terminateTask(projectATerminated.id);
+    taskStore.startTask(projectBDone.id);
+    taskStore.completeTask(projectBDone.id);
+    taskStore.startTask(unscopedDone.id);
+    taskStore.completeTask(unscopedDone.id);
+
+    await router.handleMessage({ type: 'clearCompleted', projectId: 'github.com/org/a' });
+
+    const remaining = taskStore.listTasks().map((t) => t.id).sort();
+    expect(remaining).toEqual([
+      projectAActive.id,
+      projectATerminated.id,
+      projectBDone.id,
+      unscopedDone.id,
+    ].sort());
+  });
+
   test('clearCompleted invokes takePredeleteSnapshot when sweeping any task', async () => {
     const t = taskStore.createTask('Done', '/cwd');
     taskStore.startTask(t.id);
@@ -1527,6 +1558,30 @@ describe('WebSocket MessageRouter', () => {
     // Only the inProgress task survives; all three terminal states are swept.
     expect(remaining).toHaveLength(1);
     expect(remaining[0].id).toBe(t4.id);
+  });
+
+  test('clearCompleted with projectId and includeTerminated only sweeps terminal tasks in that project', async () => {
+    const projectATerminated = taskStore.createTask({ prompt: 'A terminated', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const projectBDone = taskStore.createTask({ prompt: 'B done', cwd: '/cwd/b', projectId: 'github.com/org/b' });
+    const projectBTerminated = taskStore.createTask({ prompt: 'B terminated', cwd: '/cwd/b', projectId: 'github.com/org/b' });
+    const projectBActive = taskStore.createTask({ prompt: 'B active', cwd: '/cwd/b', projectId: 'github.com/org/b' });
+
+    taskStore.startTask(projectATerminated.id);
+    taskStore.terminateTask(projectATerminated.id);
+    taskStore.startTask(projectBDone.id);
+    taskStore.completeTask(projectBDone.id);
+    taskStore.startTask(projectBTerminated.id);
+    taskStore.terminateTask(projectBTerminated.id);
+    taskStore.startTask(projectBActive.id);
+
+    await router.handleMessage({
+      type: 'clearCompleted',
+      projectId: 'github.com/org/b',
+      includeTerminated: true,
+    });
+
+    const remaining = taskStore.listTasks().map((t) => t.id).sort();
+    expect(remaining).toEqual([projectATerminated.id, projectBActive.id].sort());
   });
 
   test('clearCompleted is a no-op when no completed or cancelled tasks exist', async () => {

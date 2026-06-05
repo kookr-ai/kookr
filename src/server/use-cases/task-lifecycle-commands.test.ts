@@ -168,4 +168,46 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     expect(taskStore.getTask(active.id)?.status).toBe('inProgress');
     expect(stop).not.toHaveBeenCalled();
   });
+
+  test('deletes finished tasks only within the requested project scope', async () => {
+    const taskStore = new TaskStore();
+    const projectADone = taskStore.createTask({ prompt: 'A done', cwd: '/repo-a', projectId: 'github.com/org/a' });
+    const projectBDone = taskStore.createTask({ prompt: 'B done', cwd: '/repo-b', projectId: 'github.com/org/b' });
+    const projectATerminated = taskStore.createTask({ prompt: 'A terminated', cwd: '/repo-a', projectId: 'github.com/org/a' });
+    taskStore.startTask(projectADone.id);
+    taskStore.completeTask(projectADone.id);
+    taskStore.startTask(projectBDone.id);
+    taskStore.completeTask(projectBDone.id);
+    taskStore.startTask(projectATerminated.id);
+    taskStore.terminateTask(projectATerminated.id);
+    const { deps } = makeDeps(taskStore, { takePredeleteSnapshot: vi.fn(async () => undefined) });
+
+    const result = await new TaskLifecycleCommands(deps).clearFinishedTasks({
+      includeTerminated: true,
+      projectId: 'github.com/org/a',
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'cleared',
+      deletedTaskIds: expect.arrayContaining([projectADone.id, projectATerminated.id]),
+    });
+    expect(taskStore.getTask(projectADone.id)).toBeUndefined();
+    expect(taskStore.getTask(projectATerminated.id)).toBeUndefined();
+    expect(taskStore.getTask(projectBDone.id)?.status).toBe('completed');
+  });
+
+  test('treats blank project scope as a no-op instead of a global clear', async () => {
+    const taskStore = new TaskStore();
+    const completed = taskStore.createTask({ prompt: 'Done', cwd: '/repo', projectId: 'github.com/org/a' });
+    taskStore.startTask(completed.id);
+    taskStore.completeTask(completed.id);
+    const takePredeleteSnapshot = vi.fn(async () => undefined);
+    const { deps } = makeDeps(taskStore, { takePredeleteSnapshot });
+
+    const result = await new TaskLifecycleCommands(deps).clearFinishedTasks({ projectId: '   ' });
+
+    expect(result).toEqual({ outcome: 'cleared', deletedTaskIds: [] });
+    expect(takePredeleteSnapshot).not.toHaveBeenCalled();
+    expect(taskStore.getTask(completed.id)?.status).toBe('completed');
+  });
 });

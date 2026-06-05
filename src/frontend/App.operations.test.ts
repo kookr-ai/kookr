@@ -8,6 +8,7 @@ import { App } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
 import { recordOutbound, recordReportableAlert, resetBugReportRecorderForTests } from './bug-report-recorder.js';
 import { clearDebugTimeline, setDebugTimelineEnabledForTests } from './debug-timeline.js';
+import type { AgentState } from '../shared/protocol.js';
 
 const websocketMock = vi.hoisted(() => ({
   send: vi.fn(() => true),
@@ -67,6 +68,20 @@ async function waitForElement<T extends Element>(container: Element, selector: s
     if (element) return element;
   }
   throw new Error(`Timed out waiting for ${selector}`);
+}
+
+function makeAgent(overrides: Partial<AgentState>): AgentState {
+  return {
+    agentId: overrides.agentId ?? 'agent-1',
+    taskId: overrides.taskId ?? 'task-1',
+    taskName: overrides.taskName ?? 'Example task',
+    events: [],
+    anomaly: null,
+    cwd: overrides.cwd ?? '/tmp/kookr',
+    startedAt: '2026-05-24T00:00:00.000Z',
+    taskStatus: overrides.taskStatus ?? 'inProgress',
+    ...overrides,
+  } as AgentState;
 }
 
 describe('App operations modal shortcuts', () => {
@@ -163,6 +178,51 @@ describe('App operations modal shortcuts', () => {
     expect(container.textContent).toContain('Complete Task');
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Thumbs up"]')).toBeInstanceOf(HTMLButtonElement);
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Thumbs down"]')).toBeInstanceOf(HTMLButtonElement);
+  });
+
+  test('clear completed from a selected project panel sends project scope', async () => {
+    useKookrStore.setState({
+      agents: [
+        makeAgent({
+          agentId: 'project-a-done',
+          taskId: 'task-a',
+          taskName: 'Project A done',
+          projectId: 'github.com/acme/a',
+          taskStatus: 'completed',
+        }),
+        makeAgent({
+          agentId: 'project-b-done',
+          taskId: 'task-b',
+          taskName: 'Project B done',
+          projectId: 'github.com/acme/b',
+          taskStatus: 'completed',
+        }),
+      ],
+      selectedProject: 'github.com/acme/a',
+      selectedAgentId: null,
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const clearButton = await waitForElement<HTMLButtonElement>(container, 'button.btn-clear-completed');
+    await act(async () => {
+      clearButton.click();
+    });
+
+    expect(container.querySelector('.confirm-dialog-message')?.textContent).toContain('Delete 1 finished task?');
+
+    const deleteButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-danger');
+    await act(async () => {
+      deleteButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({
+      type: 'clearCompleted',
+      includeTerminated: false,
+      projectId: 'github.com/acme/a',
+    });
   });
 
   test('complete dialog can request reflection after thumbs-up feedback', async () => {
