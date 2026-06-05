@@ -97,6 +97,8 @@ export interface WsConnectionDeps {
   terminalInputCoordinator?: TerminalInputCoordinator;
   /** Where task feedback bundles are written. */
   feedbackDir?: string;
+  /** Where anytime task snapshot reflection bundles are written. */
+  taskSnapshotDir?: string;
   /** Where task-reflection worktrees are created. */
   reflectWorktreesDir?: string;
   /** Where hook JSONLs live. */
@@ -155,12 +157,13 @@ export function handleWsConnection(
     leaseService: deps.leaseService,
     serverProjectId: deps.serverProjectId,
     takePredeleteSnapshot: deps.takePredeleteSnapshot,
-    feedbackDir: deps.feedbackDir,
-    reflectWorktreesDir: deps.reflectWorktreesDir,
-    hooksDir: deps.hooksDir,
     projectConfigStore,
     broadcastProjectSummaries,
     supervisorFeedbackCaseStore: deps.supervisorFeedbackCaseStore,
+    feedbackDir: deps.feedbackDir,
+    taskSnapshotDir: deps.taskSnapshotDir,
+    reflectWorktreesDir: deps.reflectWorktreesDir,
+    hooksDir: deps.hooksDir,
     connectionId,
     selectionController: deps.selectionController,
     terminalInputCoordinator: deps.terminalInputCoordinator,

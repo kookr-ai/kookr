@@ -150,6 +150,10 @@ const ClientMessageSchemaImpl = z.union([
     direction: z.enum(['up', 'down']),
   }),
   z.object({
+    type: z.literal('requestTaskSnapshotReflect'),
+    taskId: z.string(),
+  }),
+  z.object({
     type: z.literal('relaunch'),
     taskId: z.string(),
     prompt: z.string(),

@@ -985,11 +985,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverProjectId,
     takePredeleteSnapshot,
     supervisorFeedbackCaseStore,
-    selectionController,
-    terminalInputCoordinator,
     feedbackDir: join(kookrDir, 'feedback'),
+    taskSnapshotDir: join(kookrDir, 'task-snapshots'),
     reflectWorktreesDir,
     hooksDir,
+    selectionController,
+    terminalInputCoordinator,
   };
 
   const backgroundServices = startBackgroundServices({

@@ -50,6 +50,8 @@ export interface LifecycleHandlerDeps {
   tryPromotePending: () => Promise<void>;
   /** Where feedback bundles are written. Typically `<kookrDir>/feedback`. Optional — feedback is fail-open. */
   feedbackDir?: string;
+  /** Where anytime task snapshot bundles are written. Typically `<kookrDir>/task-snapshots`. */
+  taskSnapshotDir?: string;
   /** Where ephemeral reflect worktrees live. Typically `<kookrDir>/reflect-worktrees`. */
   reflectWorktreesDir?: string;
   /** Where hook JSONLs live. Typically `<kookrDir>/hooks`. */
@@ -75,6 +77,7 @@ type LifecycleMessage = Extract<ClientMessage, {
     | 'getNext'
     | 'setTaskFeedback'
     | 'requestTaskReflect'
+    | 'requestTaskSnapshotReflect'
 }>;
 
 /**
@@ -99,6 +102,7 @@ export class LifecycleHandler {
       activityMetaProvider: deps.activityMetaProvider,
       takePredeleteSnapshot: deps.takePredeleteSnapshot,
       feedbackDir: deps.feedbackDir,
+      taskSnapshotDir: deps.taskSnapshotDir,
       reflectWorktreesDir: deps.reflectWorktreesDir,
       hooksDir: deps.hooksDir,
       readInteractionLogSnapshot: deps.readInteractionLogSnapshot,
@@ -207,6 +211,11 @@ export class LifecycleHandler {
 
       case 'requestTaskReflect': {
         await this.commands.requestTaskReflect(msg.taskId, msg.direction);
+        return { duplicate: false };
+      }
+
+      case 'requestTaskSnapshotReflect': {
+        assertCommandSucceeded(await this.commands.requestTaskSnapshotReflect(msg.taskId));
         return { duplicate: false };
       }
 

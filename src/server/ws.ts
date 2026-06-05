@@ -85,12 +85,6 @@ export interface MessageRouterDeps {
    * `await` this without handling errors.
    */
   takePredeleteSnapshot?: () => Promise<void>;
-  /** Where task feedback bundles are written. */
-  feedbackDir?: string;
-  /** Where task-reflection worktrees are created. */
-  reflectWorktreesDir?: string;
-  /** Where hook JSONLs live. */
-  hooksDir?: string;
   /** Project config persistence for `setProjectConfig` messages. */
   projectConfigStore?: ProjectConfigStore;
   /** Rebroadcasts `projectSummaries` to all clients after config changes. */
@@ -101,6 +95,14 @@ export interface MessageRouterDeps {
    * log and stats counters but no rich case snapshot is persisted for offline review.
    */
   supervisorFeedbackCaseStore?: import('./supervisor-feedback-case-store.js').SupervisorFeedbackCaseStore;
+  /** Where completed-feedback reflection bundles are written. */
+  feedbackDir?: string;
+  /** Where anytime task snapshot reflection bundles are written. */
+  taskSnapshotDir?: string;
+  /** Where ephemeral reflect worktrees are created. */
+  reflectWorktreesDir?: string;
+  /** Where hook JSONL files live. */
+  hooksDir?: string;
   connectionId?: string;
   selectionController?: DashboardSelectionController;
   terminalInputCoordinator?: TerminalInputCoordinator;
@@ -171,6 +173,7 @@ export class MessageRouter {
       activityMetaProvider: this.deps.activityMetaProvider,
       takePredeleteSnapshot: this.deps.takePredeleteSnapshot,
       feedbackDir: this.deps.feedbackDir,
+      taskSnapshotDir: this.deps.taskSnapshotDir,
       reflectWorktreesDir: this.deps.reflectWorktreesDir,
       hooksDir: this.deps.hooksDir,
       readInteractionLogSnapshot: async () => {
@@ -387,6 +390,8 @@ export class MessageRouter {
         return;
       }
       case 'completeTask':
+      case 'setTaskFeedback':
+      case 'requestTaskReflect':
       case 'cancelTask':
       case 'reopenTask':
       case 'dismissAgentSignal':
@@ -396,6 +401,7 @@ export class MessageRouter {
       case 'stop':
       case 'clearCompleted':
       case 'ackTerminatedTask':
+      case 'requestTaskSnapshotReflect':
         await this.lifecycleHandler.handle(msg);
         return;
 
