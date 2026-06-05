@@ -542,6 +542,54 @@ kbd {
 .finding-card.input { border-left-color: var(--blue); }
 /* A completed turn is idle, not hung — calmer green accent vs an alert color. */
 .finding-card.turn-complete { border-left-color: var(--green); }
+.root-cause-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(45, 212, 191, 0.12);
+  border: 1px solid rgba(45, 212, 191, 0.24);
+  color: var(--teal);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.root-cause-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.root-cause-root {
+  position: relative;
+}
+.root-cause-root > .finding-card {
+  padding-right: 36px;
+}
+.root-cause-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.root-cause-toggle:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+.root-cause-related {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 14px;
+  border-left: 1px solid rgba(45, 212, 191, 0.24);
+}
 
 /* --- Finding Groups (duplicate anomaly grouping) --- */
 .finding-group {

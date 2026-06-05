@@ -696,6 +696,93 @@ describe('Monitor', () => {
     expect(a1!.taskName).toBe('Auth fix');
   });
 
+  test('getSnapshot links descendant findings to a likely root cause finding', () => {
+    const parent = createTaskForMutation(taskStore, { prompt: 'Coordinate release', cwd: '/repo' });
+    const childA = createTaskForMutation(taskStore, { prompt: 'Implement frontend', cwd: '/repo', parentTaskId: parent.id });
+    const childB = createTaskForMutation(taskStore, { prompt: 'Implement backend', cwd: '/repo', parentTaskId: parent.id });
+
+    taskStore.addSession(parent.id, {
+      tmuxSession: 'agent-parent',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:00:00Z'),
+    });
+    taskStore.addSession(childA.id, {
+      tmuxSession: 'agent-child-a',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:01:00Z'),
+    });
+    taskStore.addSession(childB.id, {
+      tmuxSession: 'agent-child-b',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:02:00Z'),
+    });
+
+    monitor.processEvents('agent-parent', [makeStop('s-parent', 'Waiting on child decisions')]);
+    monitor.processEvents('agent-child-a', [makeStop('s-child-a', 'Need parent direction')]);
+    monitor.processEvents('agent-child-b', [makeStop('s-child-b', 'Need parent direction')]);
+
+    const snapshot = monitor.getSnapshot();
+    const root = snapshot.find((s) => s.agentId === 'agent-parent')!.anomaly!;
+    const childAFinding = snapshot.find((s) => s.agentId === 'agent-child-a')!.anomaly!;
+    const childBFinding = snapshot.find((s) => s.agentId === 'agent-child-b')!.anomaly!;
+
+    expect(root.likelyRootCause).toBe(true);
+    expect(root.relatedFindingIds).toEqual(['agent-child-a', 'agent-child-b']);
+    expect(root.causalityReason).toContain(parent.id);
+    expect(childAFinding.rootCauseFindingId).toBe('agent-parent');
+    expect(childBFinding.rootCauseFindingId).toBe('agent-parent');
+    expect(childAFinding.causalityReason).toContain('agent-parent');
+  });
+
+  test('getSnapshot picks the highest-priority anomalous ancestor as root cause', () => {
+    const grandparent = createTaskForMutation(taskStore, { prompt: 'Coordinate launch', cwd: '/repo' });
+    const parent = createTaskForMutation(taskStore, { prompt: 'Implement API', cwd: '/repo', parentTaskId: grandparent.id });
+    const child = createTaskForMutation(taskStore, { prompt: 'Implement endpoint', cwd: '/repo', parentTaskId: parent.id });
+
+    taskStore.addSession(grandparent.id, {
+      tmuxSession: 'agent-grandparent',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:00:00Z'),
+    });
+    taskStore.addSession(parent.id, {
+      tmuxSession: 'agent-parent',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:01:00Z'),
+    });
+    taskStore.addSession(child.id, {
+      tmuxSession: 'agent-child',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:02:00Z'),
+    });
+    monitor.registerAgent('agent-grandparent');
+    queue.enqueue('agent-grandparent', {
+      agentId: 'agent-grandparent',
+      type: 'repeated_error',
+      severity: 'critical',
+      explanation: 'Same error repeated: launch command fails',
+      detectedAt: new Date('2026-05-24T10:00:00Z'),
+    });
+    monitor.processEvents('agent-parent', [makeStop('s-parent', 'Need launch direction')]);
+    monitor.processEvents('agent-child', [makeStop('s-child', 'Need API direction')]);
+
+    const snapshot = monitor.getSnapshot();
+    const root = snapshot.find((s) => s.agentId === 'agent-grandparent')!.anomaly!;
+    const parentFinding = snapshot.find((s) => s.agentId === 'agent-parent')!.anomaly!;
+    const childFinding = snapshot.find((s) => s.agentId === 'agent-child')!.anomaly!;
+
+    expect(root.likelyRootCause).toBe(true);
+    expect(root.relatedFindingIds).toEqual(['agent-child', 'agent-parent']);
+    expect(parentFinding.likelyRootCause).toBeUndefined();
+    expect(parentFinding.rootCauseFindingId).toBe('agent-grandparent');
+    expect(childFinding.rootCauseFindingId).toBe('agent-grandparent');
+  });
+
   test('getSnapshot truncates long task prompts for taskName', () => {
     const longPrompt = 'Refactor the authentication middleware to support OAuth2 with PKCE flow and add comprehensive integration tests for all edge cases';
     const task = createTaskForMutation(taskStore, longPrompt, '/cwd');
