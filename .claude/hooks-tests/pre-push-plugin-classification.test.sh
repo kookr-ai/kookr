@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Regression test for issue #195: guarded Kookr runtime references still make
-# plugin-tier content Kookr-specific and must be rejected.
+# Regression test for the current plugin pre-push policy: runtime Kookr
+# environment references are allowed in bundled plugin content, but hardcoded
+# machine-specific home paths are still rejected.
 #
 # Run: bash .claude/hooks-tests/pre-push-plugin-classification.test.sh
 # Or:  pnpm test:hooks
@@ -56,21 +57,42 @@ exit 0
 PNPM
 chmod +x "$TMPDIR/bin/pnpm"
 
+OUT=$(cd "$TMPDIR" && PATH="$TMPDIR/bin:$PATH" bash "$HOOK" 2>&1)
+if printf '%s' "$OUT" | grep -q 'Push rejected'; then
+  printf 'FAIL: guarded Kookr runtime reference should be allowed in plugin/\n' >&2
+  printf '%s\n' "$OUT" >&2
+  exit 1
+fi
+
+printf 'PASS: guarded Kookr runtime reference in plugin/ is allowed\n'
+
+cat > "$TMPDIR/plugin/playbooks/absolute-path.md" <<'PLAYBOOK'
+# Hardcoded local checkout
+
+```bash
+cd /home/alice/git/kookr
+```
+PLAYBOOK
+git -C "$TMPDIR" add plugin/playbooks/absolute-path.md
+git -C "$TMPDIR" commit -q -m "add hardcoded plugin path"
+HEAD_SHA=$(git -C "$TMPDIR" rev-parse HEAD)
+printf '{"sha":"%s","status":"approved"}\n' "$HEAD_SHA" > "$TMPDIR/.review-state/feature.json"
+
 set +e
 OUT=$(cd "$TMPDIR" && PATH="$TMPDIR/bin:$PATH" bash "$HOOK" 2>&1)
 STATUS=$?
 set -e
 
 if [ "$STATUS" -eq 0 ]; then
-  printf 'FAIL: expected pre-push to reject guarded Kookr reference in plugin/\n' >&2
+  printf 'FAIL: expected pre-push to reject hardcoded home path in plugin/\n' >&2
   printf '%s\n' "$OUT" >&2
   exit 1
 fi
 
-if ! printf '%s' "$OUT" | grep -q 'Guarded or fallback-only Kookr integrations still make the file Kookr-specific'; then
-  printf 'FAIL: rejection did not explain guarded Kookr references\n' >&2
+if ! printf '%s' "$OUT" | grep -q 'plugin/ contains a hardcoded absolute home path'; then
+  printf 'FAIL: rejection did not explain hardcoded home paths\n' >&2
   printf '%s\n' "$OUT" >&2
   exit 1
 fi
 
-printf 'PASS: guarded Kookr reference in plugin/ is rejected\n'
+printf 'PASS: hardcoded home path in plugin/ is rejected\n'
