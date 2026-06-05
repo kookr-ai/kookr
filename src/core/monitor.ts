@@ -1,16 +1,13 @@
 import type { AgentActivityMeta, AgentEvent, Anomaly, AnomalyType, TokenUsage, TurnState, WorktreeHealth } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { TaskDependencyEdge } from '../shared/contracts/task.js';
-import { isTerminalStatus, type TaskLaunchHealthSummary, type TaskStore } from './tasks.js';
+import type { Task, TaskLaunchHealthSummary, TaskStore } from './tasks.js';
 import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
 import { anomalyFingerprint } from './anomaly-fingerprint.js';
 import { detectAnomalies, evaluateAnomalies } from './anomaly-detector.js';
 import { deriveTurnState } from './turn-state.js';
-import { projectDisplayLabel } from './project-identity.js';
-import { normalizeTerminalWorktreeHealth } from './worktree-health.js';
-import { displayPromptForTask } from './prompt-display.js';
 import {
   recordDetectionCheck,
   recordDetectionFire,
@@ -78,29 +75,6 @@ export interface AgentState {
   lastEventSeq?: number;
 }
 
-interface SessionSnapshotMeta {
-  taskId: string;
-  name?: string;
-  displayPrompt: string;
-  cwd: string;
-  agentType: import('./agent-types.js').AgentType;
-  createdAt: Date;
-  taskStatus: import('./types.js').TaskStatus;
-  sessionStatus?: import('./types.js').AgentStatus | 'completed' | 'aborted';
-  playbookId?: string;
-  playbookParameterValues?: Record<string, string>;
-  launchHealthSummary?: TaskLaunchHealthSummary;
-  projectId?: string;
-  projectDisplayLabel: string;
-  priority?: import('../shared/contracts/task.js').TaskPriority;
-  gitBranch?: string;
-  gitCommit?: string;
-  gitIsWorktree?: boolean;
-  worktreeHealth?: WorktreeHealth;
-  worktreeHealthObservedAt?: string;
-  worktreeRegistryStale?: boolean;
-}
-
 const DEFAULT_WINDOW_SIZE = 50;
 
 /**
@@ -143,14 +117,6 @@ function isWatchdogOwnedType(type: string | undefined): boolean {
  * per-agent findings are suppressed and any already-queued ones are purged.
  */
 const SYSTEMIC_HOOK_STALL_MIN_AGENTS = 2;
-
-const FINDING_CAUSALITY_SEVERITY_ORDER: Record<Anomaly['severity'], number> = {
-  critical: 0,
-  warning: 1,
-  info: 2,
-};
-
-type SnapshotFindingState = AgentState & { anomaly: Anomaly; taskId: string };
 
 export class Monitor {
   private agentEvents = new Map<string, AgentEvent[]>();
@@ -501,6 +467,14 @@ export class Monitor {
   }
 
   /**
+   * Expose raw task records for server-side snapshot projection.
+   * Monitor deliberately does not turn these into dashboard AgentState entries.
+   */
+  getTaskSnapshot(): Task[] {
+    return this.taskStore.getAllTasks();
+  }
+
+  /**
    * Re-evaluate the Ralph zero-diff signal after the Ralph cycler has updated
    * loop state. Returns true when the queue was mutated (signal inserted or
    * cleared) so callers can decide whether to broadcast a new snapshot.
@@ -735,57 +709,15 @@ export class Monitor {
   }
 
   /**
-   * Get current state snapshot for all known agents.
-   * Enriches each agent with task metadata when a linked task exists.
+   * Get raw live monitor state for all known agents.
    *
-   * @internal Prefer `getSnapshotAgentsForClient` (WebSocket / UI) or
-   * `getSnapshotAgentsRaw` (debug endpoints, server-internal use) from
-   * `src/server/use-cases/get-snapshot.ts`. Direct callers must be listed
-   * in the approved-callers CI guard — see
-   * `docs/rfc/rfc-snapshot-payload-slimming.md`.
+   * This is intentionally limited to event/anomaly/queue-derived state. The
+   * server snapshot use case owns task metadata enrichment and synthetic
+   * pending/terminal entries.
    */
   getSnapshot(): AgentState[] {
-    // Build a lookup: tmuxSession → { task, session } for O(1) enrichment
-    const sessionIndex = new Map<string, SessionSnapshotMeta>();
-    for (const task of this.taskStore.getAllTasks()) {
-      for (const session of task.sessions) {
-        sessionIndex.set(session.tmuxSession, {
-          taskId: task.id,
-          name: task.name,
-          displayPrompt: displayPromptForTask(task),
-          cwd: session.cwd,
-          agentType: session.agentType,
-          createdAt: session.createdAt,
-          taskStatus: task.status,
-          sessionStatus: session.lastStatus,
-          playbookId: task.playbookId,
-          playbookParameterValues: task.playbookParameterValues,
-          launchHealthSummary: task.launchHealthSummary,
-          projectId: task.projectId,
-          projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: session.cwd }),
-          priority: task.priority,
-          gitBranch: session.gitBranch,
-          gitCommit: session.gitCommit,
-          gitIsWorktree: session.gitIsWorktree,
-          worktreeHealth: session.worktreeHealth,
-          worktreeHealthObservedAt: session.worktreeHealthObservedAt,
-          worktreeRegistryStale: session.worktreeRegistryStale,
-        });
-      }
-    }
-
     const states: AgentState[] = [];
     for (const [agentId, events] of this.agentEvents) {
-      const meta = sessionIndex.get(agentId);
-      if (
-        meta
-        && (isTerminalStatus(meta.taskStatus)
-          || meta.sessionStatus === 'completed'
-          || meta.sessionStatus === 'aborted')
-      ) {
-        continue;
-      }
-
       const anomaly = this.getCurrentAnomaly(agentId);
       const state: AgentState = {
         agentId,
@@ -813,214 +745,8 @@ export class Monitor {
         }
       }
 
-      if (meta) {
-        state.taskId = meta.taskId;
-        state.taskName = meta.name ?? truncatePrompt(meta.displayPrompt, 60);
-        state.description = meta.displayPrompt;
-        state.cwd = meta.cwd;
-        state.agentType = meta.agentType;
-        state.startedAt = meta.createdAt.toISOString();
-        state.playbookId = meta.playbookId;
-        state.playbookParameterValues = meta.playbookParameterValues;
-        state.launchHealthSummary = meta.launchHealthSummary;
-        state.gitBranch = meta.gitBranch;
-        state.gitCommit = meta.gitCommit;
-        state.gitIsWorktree = meta.gitIsWorktree;
-        state.worktreeHealth = meta.worktreeHealth;
-        state.worktreeHealthObservedAt = meta.worktreeHealthObservedAt;
-        state.worktreeRegistryStale = meta.worktreeRegistryStale;
-        state.projectId = meta.projectId;
-        state.projectDisplayLabel = meta.projectDisplayLabel;
-        state.priority = meta.priority;
-        // Enrich with token usage, task status, and ralph loop state from the task
-        const task = this.taskStore.getTask(meta.taskId);
-        if (task) {
-          state.taskStatus = task.status;
-          state.parentTaskId = task.parentTaskId;
-          state.childTaskIds = task.childTaskIds;
-          state.blocks = task.blocks;
-          state.blocked_by = task.blocked_by;
-          state.ralphLoop = task.ralphLoop;
-          if (task.tokenUsage) {
-            state.tokenUsage = task.tokenUsage;
-          }
-        }
-      }
-
       states.push(state);
     }
-
-    // Include pending and completed/cancelled tasks as synthetic entries
-    for (const task of this.taskStore.getAllTasks()) {
-      if (task.status === 'pending') {
-        states.push({
-          agentId: `pending-${task.id}`,
-          events: [],
-          anomaly: null,
-          lastEventSeq: 0,
-          taskId: task.id,
-          taskName: task.name ?? truncatePrompt(displayPromptForTask(task), 60),
-          taskStatus: 'pending',
-          parentTaskId: task.parentTaskId,
-          childTaskIds: task.childTaskIds,
-          blocks: task.blocks,
-          blocked_by: task.blocked_by,
-          description: displayPromptForTask(task),
-          cwd: task.cwd,
-          agentType: task.agentType,
-          startedAt: task.createdAt.toISOString(),
-          playbookId: task.playbookId,
-          playbookParameterValues: task.playbookParameterValues,
-          launchHealthSummary: task.launchHealthSummary,
-          projectId: task.projectId,
-          projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: task.cwd }),
-          priority: task.priority,
-          ralphLoop: task.ralphLoop,
-        });
-      } else if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'terminated') {
-        // Terminal-state tasks included as synthetic entries so they surface
-        // in the dashboard's Completed pane. Without this, 'terminated' tasks
-        // would be invisible — and a user couldn't acknowledge them, defeating
-        // rfc-task-loss-prevention D1.
-        //
-        // Only include if not already represented (agent may have been unregistered)
-        if (!states.some((s) => s.taskId === task.id)) {
-          const lastSession = task.sessions[task.sessions.length - 1];
-          states.push({
-            agentId: lastSession?.tmuxSession ?? `done-${task.id}`,
-            events: [],
-            anomaly: null,
-            lastEventSeq: 0,
-            taskId: task.id,
-            taskName: task.name ?? truncatePrompt(displayPromptForTask(task), 60),
-            taskStatus: task.status,
-            parentTaskId: task.parentTaskId,
-            childTaskIds: task.childTaskIds,
-            blocks: task.blocks,
-            blocked_by: task.blocked_by,
-            description: displayPromptForTask(task),
-            cwd: lastSession?.cwd ?? task.cwd,
-            agentType: lastSession?.agentType ?? task.agentType,
-            startedAt: task.createdAt.toISOString(),
-            playbookId: task.playbookId,
-            playbookParameterValues: task.playbookParameterValues,
-            launchHealthSummary: task.launchHealthSummary,
-            projectId: task.projectId,
-            projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: lastSession?.cwd ?? task.cwd }),
-            priority: task.priority,
-            tokenUsage: task.tokenUsage,
-            gitBranch: lastSession?.gitBranch,
-            gitCommit: lastSession?.gitCommit,
-            gitIsWorktree: lastSession?.gitIsWorktree,
-            worktreeHealth: normalizeTerminalWorktreeHealth(task.status, lastSession?.worktreeHealth),
-            worktreeHealthObservedAt: lastSession?.worktreeHealthObservedAt,
-            worktreeRegistryStale: lastSession?.worktreeRegistryStale,
-            completionDigest: task.completionDigest,
-            completionFeedback: task.completionFeedback,
-            ralphLoop: task.ralphLoop,
-          });
-        }
-      }
-    }
-
-    this.annotateFindingCausality(states);
-
     return states;
   }
-
-  private annotateFindingCausality(states: AgentState[]): void {
-    const byAgentId = new Map<string, AgentState>();
-    const parentByTaskId = new Map<string, string>();
-    const findingsByTaskId = new Map<string, SnapshotFindingState>();
-
-    for (const state of states) {
-      byAgentId.set(state.agentId, state);
-      if (state.taskId && state.parentTaskId) {
-        parentByTaskId.set(state.taskId, state.parentTaskId);
-      }
-      if (state.taskId && state.anomaly) {
-        findingsByTaskId.set(state.taskId, state as SnapshotFindingState);
-      }
-    }
-
-    const relatedByRoot = new Map<string, Set<string>>();
-    const rootBySymptom = new Map<string, string>();
-
-    for (const symptom of findingsByTaskId.values()) {
-      const ancestors: SnapshotFindingState[] = [];
-      let parentTaskId = parentByTaskId.get(symptom.taskId);
-
-      while (parentTaskId) {
-        const ancestor = findingsByTaskId.get(parentTaskId);
-        if (ancestor) ancestors.push(ancestor);
-        parentTaskId = parentByTaskId.get(parentTaskId);
-      }
-
-      if (ancestors.length === 0) continue;
-
-      ancestors.sort(compareLikelyRootFinding);
-      const root = ancestors[0];
-      if (root.agentId === symptom.agentId) continue;
-
-      const related = relatedByRoot.get(root.agentId) ?? new Set<string>();
-      related.add(symptom.agentId);
-      relatedByRoot.set(root.agentId, related);
-      rootBySymptom.set(symptom.agentId, root.agentId);
-    }
-
-    for (const [rootAgentId, relatedIds] of relatedByRoot) {
-      const root = byAgentId.get(rootAgentId);
-      if (!root?.anomaly) continue;
-      root.anomaly = withCausality(root.anomaly, {
-        likelyRootCause: true,
-        relatedFindingIds: Array.from(relatedIds).sort(),
-        causalityReason: `Linked by task ancestry: descendant tasks also have active findings under ${root.taskId ?? root.agentId}.`,
-      });
-    }
-
-    for (const [symptomAgentId, rootAgentId] of rootBySymptom) {
-      const symptom = byAgentId.get(symptomAgentId);
-      if (!symptom?.anomaly) continue;
-      symptom.anomaly = withCausality(symptom.anomaly, {
-        rootCauseFindingId: rootAgentId,
-        ...(symptom.anomaly.likelyRootCause ? {} : {
-          causalityReason: `Linked by task ancestry to likely root finding ${rootAgentId}.`,
-        }),
-      });
-    }
-  }
-}
-
-/** Truncate a prompt to maxLen chars at a word boundary, adding "..." if truncated. */
-function truncatePrompt(prompt: string, maxLen: number): string {
-  if (prompt.length <= maxLen) return prompt;
-  const truncated = prompt.slice(0, maxLen);
-  const lastSpace = truncated.lastIndexOf(' ');
-  return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated) + '...';
-}
-
-function compareLikelyRootFinding(a: SnapshotFindingState, b: SnapshotFindingState): number {
-  const severity = FINDING_CAUSALITY_SEVERITY_ORDER[a.anomaly.severity] - FINDING_CAUSALITY_SEVERITY_ORDER[b.anomaly.severity];
-  if (severity !== 0) return severity;
-  const detectedAt = a.anomaly.detectedAt.getTime() - b.anomaly.detectedAt.getTime();
-  if (detectedAt !== 0) return detectedAt;
-  return a.agentId.localeCompare(b.agentId);
-}
-
-function withCausality(
-  anomaly: Anomaly,
-  patch: Partial<Pick<Anomaly, 'causalityReason' | 'likelyRootCause' | 'relatedFindingIds' | 'rootCauseFindingId'>>,
-): Anomaly {
-  const relatedFindingIds = Array.from(new Set([
-    ...(anomaly.relatedFindingIds ?? []),
-    ...(patch.relatedFindingIds ?? []),
-  ])).sort();
-
-  return {
-    ...anomaly,
-    ...(relatedFindingIds.length > 0 ? { relatedFindingIds } : {}),
-    ...(patch.rootCauseFindingId ? { rootCauseFindingId: patch.rootCauseFindingId } : {}),
-    ...(patch.likelyRootCause ? { likelyRootCause: true } : {}),
-    ...(patch.causalityReason ? { causalityReason: patch.causalityReason } : {}),
-  };
 }

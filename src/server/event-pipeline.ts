@@ -11,7 +11,7 @@ import type { Anomaly } from '../shared/contracts/anomalies.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { LlmClient } from '../core/llm-client.js';
 import type { DeferredTelemetryLogWriter } from '../core/telemetry.js';
-import { createSnapshotMessage } from './use-cases/get-snapshot.js';
+import { createSnapshotMessage, getSnapshotAgentsRaw } from './use-cases/get-snapshot.js';
 import type { RalphCycler } from '../core/ralph-cycler.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
 import { createGitHubEventProcessor } from './event-processors/github-event-processor.js';
@@ -145,7 +145,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
   const publishTaskProjection = (taskId: string) => {
     deps.taskShareService?.publishTaskProjectionForTask(taskId);
   };
-  const getAgentState = (agentId: string) => monitor.getSnapshot().find(s => s.agentId === agentId);
+  const getAgentState = (agentId: string) => getSnapshotAgentsRaw({ monitor }).find(s => s.agentId === agentId);
 
   const tokenAccountingProcessor = createTokenAccountingProcessor({
     taskLookup: taskStore,
@@ -291,7 +291,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
       }
     }
     sessionActivityProcessor.process(tmuxName);
-    const snapshot = monitor.getSnapshot();
+    const snapshot = getSnapshotAgentsRaw({ monitor });
     broadcastSnapshot();
     // Attention transition: an anomaly that newly becomes (or escalates to a
     // different type/severity within) warning/critical is a low-frequency,

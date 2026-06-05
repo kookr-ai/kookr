@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildLocalSpeechCapabilities, createSnapshotMessage, getProjectSummaries, getSnapshotAgentsForClient, getSnapshotAgentsRaw } from './get-snapshot.js';
 import type { AgentEvent } from '../../core/types.js';
+import { TaskStore } from '../../core/tasks.js';
 
 // Matches the self-diagnostic's SNAPSHOT_SIZE_WARNING threshold in
 // src/core/self-diagnostic.ts. The projected snapshot of realistic pathological
@@ -127,11 +128,21 @@ describe('snapshot use cases', () => {
     ]);
   });
 
-  it('uses monitor anomaly state when running coordinator done-not-cleared detectors', () => {
+  it('does not attach raw terminal session anomaly to synthetic completed tasks', () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Ship it', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'done-agent',
+      agentType: 'codex-cli',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-21T11:00:00.000Z'),
+    });
+    taskStore.setCompletionDigest(task.id, { bullets: ['done'], filesChanged: [] });
+    taskStore.completeTask(task.id);
+
     const monitor = {
       getSnapshot: () => [{
         agentId: 'done-agent',
-        taskId: 'task-1',
         events: [],
         anomaly: {
           agentId: 'done-agent',
@@ -140,36 +151,57 @@ describe('snapshot use cases', () => {
           explanation: 'Needs review',
           detectedAt: new Date('2026-05-21T12:00:00.000Z'),
         },
+        lastEventSeq: 0,
       }] as any,
+      getTaskSnapshot: () => taskStore.getAllTasks(),
     };
 
     const msg = createSnapshotMessage({
       monitor,
       serverCwd: '/repo',
       coordinator: {
-        taskStore: {
-          listTasks: () => [{
-            id: 'task-1',
-            prompt: 'Ship it',
-            cwd: '/repo',
-            agentType: 'codex-cli',
-            status: 'completed',
-            sessions: [],
-            completionDigest: { bullets: ['done'], filesChanged: [] },
-            createdAt: new Date('2026-05-21T11:00:00.000Z'),
-            updatedAt: new Date('2026-05-21T11:00:00.000Z'),
-          }],
-        },
+        taskStore: { listTasks: () => taskStore.listTasks() },
       },
       now: () => new Date('2026-05-21T12:00:00.000Z'),
     });
 
-    expect(msg.coordinator?.outputs).toEqual([]);
+    expect(msg.coordinator?.outputs).toEqual([
+      expect.objectContaining({
+        detectorId: 'done_not_cleared',
+        taskId: task.id,
+      }),
+    ]);
   });
 
-  it('delegates raw snapshot reads to the monitor', () => {
+  it('preserves raw monitor identity for legacy mocks without task snapshots', () => {
     const agents = [{ agentId: 'x' }] as any;
     expect(getSnapshotAgentsRaw({ monitor: { getSnapshot: () => agents } as any })).toBe(agents);
+  });
+
+  it('assembles dashboard task state from raw monitor and task snapshots', () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Ship the fix', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-24T10:00:00.000Z'),
+    });
+    const monitor = {
+      getSnapshot: () => [{ agentId: 'agent-1', events: [], anomaly: null, lastEventSeq: 0 }] as any,
+      getTaskSnapshot: () => taskStore.getAllTasks(),
+    };
+
+    const [agent] = getSnapshotAgentsRaw({ monitor });
+
+    expect(agent).toMatchObject({
+      agentId: 'agent-1',
+      taskId: task.id,
+      taskName: 'Ship the fix',
+      taskStatus: 'inProgress',
+      cwd: '/repo',
+      agentType: 'claude-code',
+    });
   });
 
   it('projects events for client transport (strips toolResponse, keeps raw via Raw)', () => {

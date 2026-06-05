@@ -20,9 +20,10 @@ import type { CoordinatorSuppressionReader } from '../coordinator/suppression-st
 import { buildRelationProjection, deriveEffectiveAttentionSeverity } from './build-relation-projection.js';
 import type { TaskRelation } from '../../shared/contracts/task-relations.js';
 import type { PromptStatus } from '../../shared/terminal-input-contract.js';
+import { buildSnapshotProjection } from './snapshot-projection.js';
 
 export interface SnapshotQueryDeps {
-  monitor: Pick<Monitor, 'getSnapshot'>;
+  monitor: Pick<Monitor, 'getSnapshot'> & Partial<Pick<Monitor, 'getTaskSnapshot'>>;
   /** Optional provider of per-Kookr-session activity counters. Wires
    *  {@link AgentState.activityMeta} on each snapshot so the activity panel
    *  can disclose partial-window state and child / malformed counts. */
@@ -168,7 +169,7 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
  * See docs/rfc/rfc-snapshot-payload-slimming.md.
  */
 export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[] {
-  return deps.monitor.getSnapshot().map((agent) => {
+  return getProjectedSnapshotAgents(deps).map((agent) => {
     const activityMeta = deps.activityMetaProvider?.getActivityMeta(agent.agentId);
     const terminalSnapshot = agent.taskId
       ? deps.terminalInputSnapshots?.getSnapshot(agent.agentId)
@@ -222,13 +223,26 @@ function projectFindingEvidenceAuditForClient(record: FindingEvidenceAuditRecord
  * server-internal caller that needs the raw toolResponse / toolInput / lastMessage.
  */
 export function getSnapshotAgentsRaw(deps: SnapshotQueryDeps): AgentState[] {
-  const raw = deps.monitor.getSnapshot();
+  const raw = getProjectedSnapshotAgents(deps);
   // Preserve identity when no provider is wired — callers (and tests) that
   // assert reference equality on the bare monitor snapshot stay green.
   if (!deps.activityMetaProvider) return raw;
   return raw.map((agent) => {
     const activityMeta = deps.activityMetaProvider!.getActivityMeta(agent.agentId);
     return activityMeta ? { ...agent, activityMeta } : agent;
+  });
+}
+
+function getProjectedSnapshotAgents(deps: SnapshotQueryDeps): AgentState[] {
+  const rawMonitorStates = deps.monitor.getSnapshot();
+  const taskSnapshot = deps.monitor.getTaskSnapshot?.();
+  // Lightweight tests and legacy mocks may provide only raw monitor state.
+  // The real server Monitor implements getTaskSnapshot, so production
+  // dashboard paths receive task/session projection from this use-case.
+  if (!taskSnapshot) return rawMonitorStates;
+  return buildSnapshotProjection({
+    monitorStates: rawMonitorStates,
+    tasks: taskSnapshot,
   });
 }
 

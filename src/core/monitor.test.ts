@@ -40,18 +40,6 @@ function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
   return task;
 }
 
-function guardedWorktreePrompt(userPrompt: string): string {
-  return [
-    'You are currently in the main checkout `/repo` on branch `main`. Do NOT commit in this checkout — every Kookr task must make tracked-file changes in a fresh git worktree of its own, not in any pre-existing checkout (the main repo, the production runtime worktree, or any sibling worktree spawned for unrelated work).',
-    '- Create one: `git worktree add ../repo-<short-name> -b <feature-branch> HEAD`',
-    '- Perform all tracked-file edits, commits, and pushes from that new worktree.',
-    '- If the task stays read-only, you may remain in the current checkout.',
-    "- After committing, don't end your turn silently — unless the task already told you to deliver, ask the user whether to push the branch and open a PR.",
-    '',
-    userPrompt,
-  ].join('\n');
-}
-
 describe('Monitor', () => {
   let taskStore: TaskStore;
   let queue: AttentionQueue;
@@ -156,7 +144,7 @@ describe('Monitor', () => {
     expect(queue.next()).toBeNull();
   });
 
-  test('getSnapshot excludes stale anomaly state for completed tasks', () => {
+  test('getSnapshot keeps raw live anomaly state without task projection', () => {
     const task = createTaskForMutation(taskStore, { prompt: 'ship it', cwd: '/repo' });
     taskStore.addSession(task.id, {
       tmuxSession: 'agent-1',
@@ -170,30 +158,10 @@ describe('Monitor', () => {
     monitor.processEvents('agent-1', [makeStop('s1', 'done')]);
 
     const snapshot = monitor.getSnapshot();
-    const terminalEntry = snapshot.find((state) => state.taskId === task.id);
     expect(snapshot.filter((state) => state.agentId === 'agent-1')).toHaveLength(1);
-    expect(terminalEntry).toBeDefined();
-    expect(terminalEntry!.taskStatus).toBe('completed');
-    expect(terminalEntry!.anomaly).toBeNull();
-  });
-
-  test('getSnapshot describes tasks with user-authored prompt instead of launch guardrail preamble', () => {
-    const task = createTaskForMutation(taskStore, {
-      prompt: guardedWorktreePrompt('Fix duplicate task prompt in activity panel.'),
-      userPrompt: 'Fix duplicate task prompt in activity panel.',
-      cwd: '/repo',
-    });
-    taskStore.addSession(task.id, {
-      tmuxSession: 'agent-1',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-24T10:00:00Z'),
-    });
-    monitor.registerAgent('agent-1');
-
     const state = monitor.getSnapshot().find((agent) => agent.agentId === 'agent-1');
-    expect(state?.description).toBe('Fix duplicate task prompt in activity panel.');
-    expect(state?.taskName).toBe('Fix duplicate task prompt in activity panel.');
+    expect(state?.taskId).toBeUndefined();
+    expect(state?.anomaly?.type).toBe('needs_input');
   });
 
   test('getSnapshot lastEventSeq tracks the monotonic event counter across snapshots', () => {
@@ -236,104 +204,6 @@ describe('Monitor', () => {
     expect(state).toBeDefined();
     expect(state!.events).toEqual([]);
     expect(state!.lastEventSeq).toBe(0);
-  });
-
-  test('getSnapshot reports lastEventSeq=0 for synthetic pending entries', () => {
-    const task = createTaskForMutation(taskStore, { prompt: 'queued', cwd: '/repo' });
-    taskStore.pendTask(task.id);
-
-    const state = monitor.getSnapshot().find((agent) => agent.taskId === task.id);
-    expect(state).toBeDefined();
-    expect(state!.events).toEqual([]);
-    expect(state!.lastEventSeq).toBe(0);
-  });
-
-  test('getSnapshot reports lastEventSeq=0 for synthetic terminal entries', () => {
-    const task = createTaskForMutation(taskStore, { prompt: 'finished', cwd: '/repo' });
-    taskStore.addSession(task.id, {
-      tmuxSession: 'agent-done',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-24T10:00:00Z'),
-      lastStatus: 'completed',
-    });
-    taskStore.completeTask(task.id);
-
-    const state = monitor.getSnapshot().find((agent) => agent.taskId === task.id);
-    expect(state).toBeDefined();
-    expect(state!.taskStatus).toBe('completed');
-    expect(state!.events).toEqual([]);
-    expect(state!.lastEventSeq).toBe(0);
-  });
-
-  test('getSnapshot projects priority for live task entries', () => {
-    const task = createTaskForMutation(taskStore, { prompt: 'Watch this first', cwd: '/repo' });
-    taskStore.setTaskPriority(task.id, 'high');
-    taskStore.addSession(task.id, {
-      tmuxSession: 'agent-priority',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-24T10:00:00Z'),
-    });
-    monitor.registerAgent('agent-priority');
-
-    const state = monitor.getSnapshot().find((agent) => agent.agentId === 'agent-priority');
-    expect(state?.priority).toBe('high');
-  });
-
-  test('getSnapshot strips known launch guardrail preamble from legacy tasks', () => {
-    const task = createTaskForMutation(taskStore, {
-      prompt: guardedWorktreePrompt('Investigate false positives.'),
-      cwd: '/repo',
-    });
-    taskStore.addSession(task.id, {
-      tmuxSession: 'agent-1',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-24T10:00:00Z'),
-    });
-    monitor.registerAgent('agent-1');
-
-    const state = monitor.getSnapshot().find((agent) => agent.agentId === 'agent-1');
-    expect(state?.description).toBe('Investigate false positives.');
-    expect(state?.taskName).toBe('Investigate false positives.');
-  });
-
-  test('getSnapshot hides completed Ralph iteration sessions while keeping live owner visible', () => {
-    const task = createTaskForMutation(taskStore, { prompt: 'loop', cwd: '/repo' });
-    task.ralphLoop = {
-      prompt: 'again',
-      iterationCap: 5,
-      currentIteration: 2,
-      status: 'running',
-      lastIterationStartedAt: 0,
-      cumulativeIterations: 2,
-      ownerSessionId: 'agent-live',
-    };
-    taskStore.addSession(task.id, {
-      tmuxSession: 'agent-old',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-08T10:00:00Z'),
-      lastStatus: 'completed',
-    });
-    taskStore.addSession(task.id, {
-      tmuxSession: 'agent-live',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-08T10:05:00Z'),
-    });
-
-    monitor.processEvents('agent-old', [makeStop('s1', 'iteration done')]);
-    monitor.registerAgent('agent-live');
-
-    const snapshot = monitor.getSnapshot();
-    expect(snapshot.some((state) => state.agentId === 'agent-old')).toBe(false);
-    const live = snapshot.find((state) => state.agentId === 'agent-live');
-    expect(live).toBeDefined();
-    expect(live!.taskId).toBe(task.id);
-    expect(live!.anomaly).toBeNull();
-    expect(live!.ralphLoop?.ownerSessionId).toBe('agent-live');
   });
 
   test('processEvents accumulates events across calls', () => {
@@ -637,38 +507,13 @@ describe('Monitor', () => {
     expect(a1!.anomaly!.detectedAt.toISOString()).toBe('2026-04-06T10:00:00.000Z');
   });
 
-  test('getSnapshot includes task metadata when task is linked', () => {
+  test('getSnapshot does not enrich linked tasks with dashboard metadata', () => {
     const task = createTaskForMutation(taskStore, 'Fix auth token refresh in the login flow', '/workspace/webapp');
     taskStore.setProjectId(task.id, 'github.com/acme/webapp');
-    const sessionCreatedAt = new Date('2026-03-24T10:00:00Z');
     taskStore.addSession(task.id, {
       tmuxSession: 'agent-1',
       agentType: 'claude-code',
       cwd: '/workspace/webapp',
-      createdAt: sessionCreatedAt,
-    });
-    monitor.processEvents('agent-1', [makeToolUse('s1', 'Bash')]);
-
-    const snapshot = monitor.getSnapshot();
-    const a1 = snapshot.find((s) => s.agentId === 'agent-1');
-
-    expect(a1).toBeDefined();
-    expect(a1!.taskId).toBe(task.id);
-    expect(a1!.taskName).toBe('Fix auth token refresh in the login flow');
-    expect(a1!.cwd).toBe('/workspace/webapp');
-    expect(a1!.agentType).toBe('claude-code');
-    expect(a1!.startedAt).toBe(sessionCreatedAt.toISOString());
-    expect(a1!.projectId).toBe('github.com/acme/webapp');
-    expect(a1!.projectDisplayLabel).toBe('webapp');
-  });
-
-  test('getSnapshot uses projectId for stable display label across worktrees', () => {
-    const task = createTaskForMutation(taskStore, 'Investigate prod issue', '/path/to/kookr-prod');
-    taskStore.setProjectId(task.id, 'github.com/kookr-ai/kookr');
-    taskStore.addSession(task.id, {
-      tmuxSession: 'agent-1',
-      agentType: 'claude-code',
-      cwd: '/path/to/kookr-prod',
       createdAt: new Date('2026-03-24T10:00:00Z'),
     });
     monitor.processEvents('agent-1', [makeToolUse('s1', 'Bash')]);
@@ -676,129 +521,13 @@ describe('Monitor', () => {
     const snapshot = monitor.getSnapshot();
     const a1 = snapshot.find((s) => s.agentId === 'agent-1');
 
-    expect(a1!.projectDisplayLabel).toBe('kookr');
-  });
-
-  test('getSnapshot uses task.name over truncated prompt when set', () => {
-    const task = createTaskForMutation(taskStore, 'Fix auth token refresh in the login flow', '/cwd');
-    taskStore.renameTask(task.id, 'Auth fix');
-    taskStore.addSession(task.id, {
-      tmuxSession: 'agent-1',
-      agentType: 'claude-code',
-      cwd: '/cwd',
-      createdAt: new Date(),
-    });
-    monitor.processEvents('agent-1', [makeToolUse('s1', 'Bash')]);
-
-    const snapshot = monitor.getSnapshot();
-    const a1 = snapshot.find((s) => s.agentId === 'agent-1');
-
-    expect(a1!.taskName).toBe('Auth fix');
-  });
-
-  test('getSnapshot links descendant findings to a likely root cause finding', () => {
-    const parent = createTaskForMutation(taskStore, { prompt: 'Coordinate release', cwd: '/repo' });
-    const childA = createTaskForMutation(taskStore, { prompt: 'Implement frontend', cwd: '/repo', parentTaskId: parent.id });
-    const childB = createTaskForMutation(taskStore, { prompt: 'Implement backend', cwd: '/repo', parentTaskId: parent.id });
-
-    taskStore.addSession(parent.id, {
-      tmuxSession: 'agent-parent',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-24T10:00:00Z'),
-    });
-    taskStore.addSession(childA.id, {
-      tmuxSession: 'agent-child-a',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-24T10:01:00Z'),
-    });
-    taskStore.addSession(childB.id, {
-      tmuxSession: 'agent-child-b',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-24T10:02:00Z'),
-    });
-
-    monitor.processEvents('agent-parent', [makeStop('s-parent', 'Waiting on child decisions')]);
-    monitor.processEvents('agent-child-a', [makeStop('s-child-a', 'Need parent direction')]);
-    monitor.processEvents('agent-child-b', [makeStop('s-child-b', 'Need parent direction')]);
-
-    const snapshot = monitor.getSnapshot();
-    const root = snapshot.find((s) => s.agentId === 'agent-parent')!.anomaly!;
-    const childAFinding = snapshot.find((s) => s.agentId === 'agent-child-a')!.anomaly!;
-    const childBFinding = snapshot.find((s) => s.agentId === 'agent-child-b')!.anomaly!;
-
-    expect(root.likelyRootCause).toBe(true);
-    expect(root.relatedFindingIds).toEqual(['agent-child-a', 'agent-child-b']);
-    expect(root.causalityReason).toContain(parent.id);
-    expect(childAFinding.rootCauseFindingId).toBe('agent-parent');
-    expect(childBFinding.rootCauseFindingId).toBe('agent-parent');
-    expect(childAFinding.causalityReason).toContain('agent-parent');
-  });
-
-  test('getSnapshot picks the highest-priority anomalous ancestor as root cause', () => {
-    const grandparent = createTaskForMutation(taskStore, { prompt: 'Coordinate launch', cwd: '/repo' });
-    const parent = createTaskForMutation(taskStore, { prompt: 'Implement API', cwd: '/repo', parentTaskId: grandparent.id });
-    const child = createTaskForMutation(taskStore, { prompt: 'Implement endpoint', cwd: '/repo', parentTaskId: parent.id });
-
-    taskStore.addSession(grandparent.id, {
-      tmuxSession: 'agent-grandparent',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-24T10:00:00Z'),
-    });
-    taskStore.addSession(parent.id, {
-      tmuxSession: 'agent-parent',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-24T10:01:00Z'),
-    });
-    taskStore.addSession(child.id, {
-      tmuxSession: 'agent-child',
-      agentType: 'claude-code',
-      cwd: '/repo',
-      createdAt: new Date('2026-05-24T10:02:00Z'),
-    });
-    monitor.registerAgent('agent-grandparent');
-    queue.enqueue('agent-grandparent', {
-      agentId: 'agent-grandparent',
-      type: 'repeated_error',
-      severity: 'critical',
-      explanation: 'Same error repeated: launch command fails',
-      detectedAt: new Date('2026-05-24T10:00:00Z'),
-    });
-    monitor.processEvents('agent-parent', [makeStop('s-parent', 'Need launch direction')]);
-    monitor.processEvents('agent-child', [makeStop('s-child', 'Need API direction')]);
-
-    const snapshot = monitor.getSnapshot();
-    const root = snapshot.find((s) => s.agentId === 'agent-grandparent')!.anomaly!;
-    const parentFinding = snapshot.find((s) => s.agentId === 'agent-parent')!.anomaly!;
-    const childFinding = snapshot.find((s) => s.agentId === 'agent-child')!.anomaly!;
-
-    expect(root.likelyRootCause).toBe(true);
-    expect(root.relatedFindingIds).toEqual(['agent-child', 'agent-parent']);
-    expect(parentFinding.likelyRootCause).toBeUndefined();
-    expect(parentFinding.rootCauseFindingId).toBe('agent-grandparent');
-    expect(childFinding.rootCauseFindingId).toBe('agent-grandparent');
-  });
-
-  test('getSnapshot truncates long task prompts for taskName', () => {
-    const longPrompt = 'Refactor the authentication middleware to support OAuth2 with PKCE flow and add comprehensive integration tests for all edge cases';
-    const task = createTaskForMutation(taskStore, longPrompt, '/cwd');
-    taskStore.addSession(task.id, {
-      tmuxSession: 'agent-1',
-      agentType: 'claude-code',
-      cwd: '/cwd',
-      createdAt: new Date(),
-    });
-    monitor.processEvents('agent-1', [makeToolUse('s1', 'Bash')]);
-
-    const snapshot = monitor.getSnapshot();
-    const a1 = snapshot.find((s) => s.agentId === 'agent-1');
-
-    expect(a1!.taskName!.length).toBeLessThanOrEqual(63); // 60 + "..."
-    expect(a1!.taskName).toMatch(/\.\.\.$/);
+    expect(a1).toBeDefined();
+    expect(a1!.taskId).toBeUndefined();
+    expect(a1!.taskName).toBeUndefined();
+    expect(a1!.cwd).toBeUndefined();
+    expect(a1!.agentType).toBeUndefined();
+    expect(a1!.projectId).toBeUndefined();
+    expect(a1!.projectDisplayLabel).toBeUndefined();
   });
 
   test('getSnapshot returns no metadata when agent has no linked task', () => {
@@ -840,7 +569,6 @@ describe('Monitor', () => {
       expect(agent).toBeDefined();
       expect(agent!.turnState).toBe('completed_turn');
       // Lifecycle is unchanged: the task remains open for follow-up.
-      expect(agent!.taskStatus).toBe('inProgress');
       expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
     });
 
@@ -853,7 +581,6 @@ describe('Monitor', () => {
 
       const agent = monitor.getSnapshot().find((s) => s.agentId === 'kookr-claude-1');
       expect(agent!.turnState).toBe('completed_turn');
-      expect(agent!.taskStatus).toBe('inProgress');
     });
 
     test('Stop while a background subagent is still running => turnState running, not completed_turn', () => {
@@ -1097,245 +824,6 @@ describe('Monitor', () => {
       monitor.unregisterAgent('agent-1');
 
       expect(monitor.getPermissionBlockedAgents()).toEqual([]);
-    });
-  });
-
-  describe('getSnapshot synthetic entries', () => {
-    test('includes synthetic entry for pending task with no agent', () => {
-      const task = createTaskForMutation(taskStore, 'Install dependencies', '/workspace/app');
-      taskStore.setTaskPriority(task.id, 'high');
-      // open -> pending
-      taskStore.pendTask(task.id);
-
-      const snapshot = monitor.getSnapshot();
-      const entry = snapshot.find((s) => s.agentId === `pending-${task.id}`);
-
-      expect(entry).toBeDefined();
-      expect(entry!.taskStatus).toBe('pending');
-      expect(entry!.events).toEqual([]);
-      expect(entry!.anomaly).toBeNull();
-      expect(entry!.taskName).toBe('Install dependencies');
-      expect(entry!.cwd).toBe('/workspace/app');
-      expect(entry!.taskId).toBe(task.id);
-      expect(entry!.priority).toBe('high');
-      expect(entry!.description).toBe('Install dependencies');
-      expect(entry!.startedAt).toBe(task.createdAt.toISOString());
-    });
-
-    test('pending task synthetic entry uses display-safe prompt text', () => {
-      const task = createTaskForMutation(taskStore, {
-        prompt: guardedWorktreePrompt('Prepare the release checklist.'),
-        userPrompt: 'Prepare the release checklist.',
-        cwd: '/workspace/app',
-      });
-      taskStore.pendTask(task.id);
-
-      const snapshot = monitor.getSnapshot();
-      const entry = snapshot.find((s) => s.agentId === `pending-${task.id}`);
-
-      expect(entry).toBeDefined();
-      expect(entry!.taskName).toBe('Prepare the release checklist.');
-      expect(entry!.description).toBe('Prepare the release checklist.');
-    });
-
-    test('includes playbookParameterValues in snapshot for playbook tasks', () => {
-      const task = createTaskForMutation(taskStore, {
-        prompt: 'Analyze owner/repo',
-        cwd: '/workspace/app',
-        playbookParameterValues: { repo: 'owner/repo', count: '10' },
-      });
-      // Set playbookId (normally done by launch-service)
-      task.playbookId = 'analyze.md';
-      taskStore.pendTask(task.id);
-
-      const snapshot = monitor.getSnapshot();
-      const entry = snapshot.find((s) => s.taskId === task.id);
-
-      expect(entry).toBeDefined();
-      expect(entry!.playbookId).toBe('analyze.md');
-      expect(entry!.playbookParameterValues).toEqual({ repo: 'owner/repo', count: '10' });
-    });
-
-    test('includes synthetic entry for completed task after agent unregistered', () => {
-      const task = createTaskForMutation(taskStore, 'Run database migration', '/workspace/app');
-      taskStore.setTaskPriority(task.id, 'high');
-      const sessionCreatedAt = new Date('2026-03-30T12:00:00Z');
-      // addSession auto-transitions open -> inProgress
-      taskStore.addSession(task.id, {
-        tmuxSession: 'agent-c1',
-        agentType: 'claude-code',
-        cwd: '/workspace/app',
-        createdAt: sessionCreatedAt,
-      });
-      monitor.registerAgent('agent-c1');
-      monitor.processEvents('agent-c1', [makeToolUse('s1', 'Bash')]);
-
-      // Complete the task and unregister the agent
-      taskStore.completeTask(task.id);
-      monitor.unregisterAgent('agent-c1');
-
-      const snapshot = monitor.getSnapshot();
-      // Agent was unregistered, so synthetic entry uses last session's tmuxSession
-      const entry = snapshot.find((s) => s.taskId === task.id);
-
-      expect(entry).toBeDefined();
-      expect(entry!.agentId).toBe('agent-c1');
-      expect(entry!.taskStatus).toBe('completed');
-      expect(entry!.priority).toBe('high');
-      expect(entry!.events).toEqual([]);
-      expect(entry!.anomaly).toBeNull();
-      expect(entry!.taskName).toBe('Run database migration');
-      expect(entry!.cwd).toBe('/workspace/app');
-      expect(entry!.description).toBe('Run database migration');
-    });
-
-    test('completed task synthetic entry strips known launch guardrail preamble', () => {
-      const task = createTaskForMutation(taskStore, {
-        prompt: guardedWorktreePrompt('Archive completed evidence.'),
-        cwd: '/workspace/app',
-      });
-      taskStore.addSession(task.id, {
-        tmuxSession: 'agent-c1',
-        agentType: 'claude-code',
-        cwd: '/workspace/app',
-        createdAt: new Date('2026-03-30T12:00:00Z'),
-      });
-      taskStore.completeTask(task.id);
-      monitor.unregisterAgent('agent-c1');
-
-      const snapshot = monitor.getSnapshot();
-      const entry = snapshot.find((s) => s.taskId === task.id);
-
-      expect(entry).toBeDefined();
-      expect(entry!.taskName).toBe('Archive completed evidence.');
-      expect(entry!.description).toBe('Archive completed evidence.');
-    });
-
-    test('completed task synthetic entry normalizes legacy missing worktree health as cleaned_up', () => {
-      const task = createTaskForMutation(taskStore, 'Ship implementation PR', '/workspace/app');
-      taskStore.addSession(task.id, {
-        tmuxSession: 'agent-cleaned',
-        agentType: 'claude-code',
-        cwd: '/workspace/app',
-        createdAt: new Date(),
-        worktreeHealth: 'missing',
-      });
-      taskStore.completeTask(task.id);
-
-      const snapshot = monitor.getSnapshot();
-      const entry = snapshot.find((s) => s.taskId === task.id);
-
-      expect(entry).toBeDefined();
-      expect(entry!.taskStatus).toBe('completed');
-      expect(entry!.worktreeHealth).toBe('cleaned_up');
-    });
-
-    test('includes synthetic entry for cancelled task after agent unregistered', () => {
-      const task = createTaskForMutation(taskStore, 'Deploy staging build', '/workspace/app');
-      // addSession auto-transitions open -> inProgress
-      taskStore.addSession(task.id, {
-        tmuxSession: 'agent-x1',
-        agentType: 'claude-code',
-        cwd: '/workspace/app',
-        createdAt: new Date(),
-      });
-      monitor.registerAgent('agent-x1');
-      monitor.processEvents('agent-x1', [makeToolUse('s1', 'Read')]);
-
-      // Cancel the task and unregister the agent
-      taskStore.cancelTask(task.id);
-      monitor.unregisterAgent('agent-x1');
-
-      const snapshot = monitor.getSnapshot();
-      const entry = snapshot.find((s) => s.taskId === task.id);
-
-      expect(entry).toBeDefined();
-      expect(entry!.agentId).toBe('agent-x1');
-      expect(entry!.taskStatus).toBe('cancelled');
-      expect(entry!.events).toEqual([]);
-      expect(entry!.anomaly).toBeNull();
-      expect(entry!.taskName).toBe('Deploy staging build');
-    });
-
-    test('does NOT duplicate entry when task has both active agent and task record', () => {
-      const task = createTaskForMutation(taskStore, 'Fix login bug', '/workspace/app');
-      taskStore.addSession(task.id, {
-        tmuxSession: 'agent-d1',
-        agentType: 'claude-code',
-        cwd: '/workspace/app',
-        createdAt: new Date(),
-      });
-      monitor.registerAgent('agent-d1');
-      monitor.processEvents('agent-d1', [makeToolUse('s1', 'Edit')]);
-
-      const snapshot = monitor.getSnapshot();
-      // Task is inProgress with an active agent — should appear exactly once
-      const entries = snapshot.filter((s) => s.taskId === task.id);
-      expect(entries).toHaveLength(1);
-      expect(entries[0].agentId).toBe('agent-d1');
-    });
-
-    test('completed task synthetic entry includes tokenUsage', () => {
-      const task = createTaskForMutation(taskStore, 'Analyze logs', '/workspace/app');
-      taskStore.addSession(task.id, {
-        tmuxSession: 'agent-t1',
-        agentType: 'claude-code',
-        cwd: '/workspace/app',
-        createdAt: new Date(),
-      });
-      taskStore.updateTokenUsage(task.id, {
-        inputTokens: 1500,
-        outputTokens: 800,
-        cacheRead: 200,
-        cacheWrite: 50,
-        costUsd: 0.042,
-      });
-      taskStore.completeTask(task.id);
-      // No agent registered in monitor — the synthetic path kicks in
-
-      const snapshot = monitor.getSnapshot();
-      const entry = snapshot.find((s) => s.taskId === task.id);
-
-      expect(entry).toBeDefined();
-      expect(entry!.tokenUsage).toEqual({
-        inputTokens: 1500,
-        outputTokens: 800,
-        cacheRead: 200,
-        cacheWrite: 50,
-        costUsd: 0.042,
-      });
-    });
-
-    test('active agent snapshot enriches description from task prompt', () => {
-      const task = createTaskForMutation(taskStore, 'Refactor the payment module', '/workspace/app');
-      taskStore.addSession(task.id, {
-        tmuxSession: 'agent-desc',
-        agentType: 'claude-code',
-        cwd: '/workspace/app',
-        createdAt: new Date(),
-      });
-      monitor.registerAgent('agent-desc');
-      monitor.processEvents('agent-desc', [makeToolUse('s1', 'Bash')]);
-
-      const snapshot = monitor.getSnapshot();
-      const entry = snapshot.find((s) => s.agentId === 'agent-desc');
-
-      expect(entry).toBeDefined();
-      expect(entry!.description).toBe('Refactor the payment module');
-    });
-
-    test('cancelled task without sessions uses done-{id} agentId', () => {
-      const task = createTaskForMutation(taskStore, 'Build docker image', '/workspace/app');
-      // open -> inProgress -> cancelled, no sessions
-      taskStore.startTask(task.id);
-      taskStore.cancelTask(task.id);
-
-      const snapshot = monitor.getSnapshot();
-      const entry = snapshot.find((s) => s.taskId === task.id);
-
-      expect(entry).toBeDefined();
-      expect(entry!.agentId).toBe(`done-${task.id}`);
-      expect(entry!.taskStatus).toBe('cancelled');
     });
   });
 
