@@ -168,4 +168,31 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     expect(taskStore.getTask(active.id)?.status).toBe('inProgress');
     expect(stop).not.toHaveBeenCalled();
   });
+
+  test('projectId scope deletes only matching finished tasks', async () => {
+    const taskStore = new TaskStore();
+    const projectADone = taskStore.createTask({ prompt: 'A done', cwd: '/repo/a', projectId: 'github.com/org/a' });
+    addSession(taskStore, projectADone.id, 'kookr-a-done');
+    taskStore.completeTask(projectADone.id);
+    const projectBDone = taskStore.createTask({ prompt: 'B done', cwd: '/repo/b', projectId: 'github.com/org/b' });
+    addSession(taskStore, projectBDone.id, 'kookr-b-done');
+    taskStore.completeTask(projectBDone.id);
+    const unscopedDone = taskStore.createTask('Unscoped done', '/repo/none');
+    addSession(taskStore, unscopedDone.id, 'kookr-unscoped-done');
+    taskStore.completeTask(unscopedDone.id);
+    const projectAActive = taskStore.createTask({ prompt: 'A active', cwd: '/repo/a', projectId: 'github.com/org/a' });
+    addSession(taskStore, projectAActive.id, 'kookr-a-active');
+    const { deps } = makeDeps(taskStore);
+
+    const result = await new TaskLifecycleCommands(deps).clearFinishedTasks({ projectId: 'github.com/org/a' });
+
+    expect(result).toMatchObject({
+      outcome: 'cleared',
+      deletedTaskIds: [projectADone.id],
+    });
+    expect(taskStore.getTask(projectADone.id)).toBeUndefined();
+    expect(taskStore.getTask(projectBDone.id)?.status).toBe('completed');
+    expect(taskStore.getTask(unscopedDone.id)?.status).toBe('completed');
+    expect(taskStore.getTask(projectAActive.id)?.status).toBe('inProgress');
+  });
 });

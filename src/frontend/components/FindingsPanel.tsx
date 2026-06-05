@@ -37,12 +37,13 @@ interface Props {
   selectedAgentId: string | null;
   send: (msg: ClientMessage) => void;
   /**
-   * Unfiltered counts used by the "Clear completed" confirm dialog. The server
-   * sweeps across all projects — the dialog copy must match that scope, not
-   * the currently-filtered view. See App.tsx for derivation.
+   * Counts used by the "Clear completed" confirm dialog. They must match the
+   * server-side clear scope: all projects from the all-projects view, or the
+   * selected project from a project panel.
    */
-  globalFinishedCount: number;
-  globalTerminatedCount: number;
+  clearCompletedFinishedCount: number;
+  clearCompletedTerminatedCount: number;
+  clearCompletedProjectId?: string;
 }
 
 function agentProjectLabel(agent: AgentState): string {
@@ -1029,12 +1030,10 @@ function SnoozedRow({ agent, selected, send }: {
 // cancelled); terminated is opt-in via the checkbox inside the dialog. See
 // rfc-task-loss-prevention.md D2.
 //
-// Counts are GLOBAL (unfiltered by the current project selection) because
-// the server's clearCompleted has no project scope — it sweeps across all
-// projects. The dialog copy must match that scope, not the visible subset.
-function ClearCompletedButton({ finishedCount, terminatedCount, send }: {
+function ClearCompletedButton({ finishedCount, terminatedCount, projectId, send }: {
   finishedCount: number;
   terminatedCount: number;
+  projectId?: string;
   send: (msg: ClientMessage) => void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -1053,7 +1052,7 @@ function ClearCompletedButton({ finishedCount, terminatedCount, send }: {
   };
   const cancelConfirm = () => setConfirmOpen(false);
   const confirmClear = () => {
-    send({ type: 'clearCompleted', includeTerminated });
+    send({ type: 'clearCompleted', includeTerminated, ...(projectId ? { projectId } : {}) });
     setConfirmOpen(false);
   };
 
@@ -1191,7 +1190,18 @@ function groupHealthyAgents(agents: AgentState[]): { standalone: AgentState[]; g
   return { standalone, groups: realGroups };
 }
 
-export function FindingsPanel({ findings, healthy, pending, completed, snoozed, selectedAgentId, send, globalFinishedCount, globalTerminatedCount }: Props) {
+export function FindingsPanel({
+  findings,
+  healthy,
+  pending,
+  completed,
+  snoozed,
+  selectedAgentId,
+  send,
+  clearCompletedFinishedCount,
+  clearCompletedTerminatedCount,
+  clearCompletedProjectId,
+}: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const totalAgents = findings.length + healthy.length + pending.length + completed.length + snoozed.length;
   const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -1359,8 +1369,9 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
                 <span className="section-chevron">{completedCollapsed ? '▸' : '▾'}</span>
                 <span className="completed-label">Completed ({completed.length})</span>
                 <ClearCompletedButton
-                  finishedCount={globalFinishedCount}
-                  terminatedCount={globalTerminatedCount}
+                  finishedCount={clearCompletedFinishedCount}
+                  terminatedCount={clearCompletedTerminatedCount}
+                  projectId={clearCompletedProjectId}
                   send={send}
                 />
               </div>

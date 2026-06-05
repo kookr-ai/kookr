@@ -242,7 +242,10 @@ export class LifecycleHandler {
         return { duplicate: false };
 
       case 'clearCompleted': {
-        await this.commands.clearFinishedTasks({ includeTerminated: msg.includeTerminated === true });
+        await this.commands.clearFinishedTasks({
+          includeTerminated: msg.includeTerminated === true,
+          projectId: msg.projectId?.trim() || undefined,
+        });
         return { duplicate: false };
       }
 

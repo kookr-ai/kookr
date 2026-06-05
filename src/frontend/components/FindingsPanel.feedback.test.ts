@@ -44,8 +44,8 @@ function renderPanel(container: HTMLElement, lists: {
       completed: [],
       selectedAgentId: null,
       send,
-      globalFinishedCount: 0,
-      globalTerminatedCount: 0,
+      clearCompletedFinishedCount: 0,
+      clearCompletedTerminatedCount: 0,
     }));
   });
   return root;
