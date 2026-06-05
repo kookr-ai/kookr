@@ -42,9 +42,15 @@ import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
-import { createResourceStatusService } from './resource-status-service.js';
-import { readOperationalAlertConfigFromEnv } from './config.js';
+import {
+  createResourceStatusService,
+  type ResourceStatusSampler,
+} from './resource-status-service.js';
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
+import {
+  getOperationalAlertConfig,
+  resetOperationalAlertConfig,
+} from './operational-alert-config.js';
 import {
   FindingEvidenceReviewQueueStore,
   FindingEvidenceReviewSampler,
@@ -147,6 +153,10 @@ export interface KookrConfig {
   ossSourceWatcherDebounceMs?: number;
   /** Server-lifecycle abort signal — see `VoiceWarmupOpts.lifecycleSignal` and issue #188. */
   lifecycleSignal?: AbortSignal;
+  /** Test seam for deterministic resource-status samples. Production uses the host sampler. */
+  resourceStatusSampler?: ResourceStatusSampler;
+  /** Test seam for faster resource-status polling. Production uses RESOURCE_STATUS_INTERVAL_MS. */
+  resourceStatusIntervalMs?: number;
   /**
    * Resolved API-token auth posture (issue #708). When `required` is true (a
    * non-loopback bind), state-changing routes and the WebSocket upgrade require
@@ -210,6 +220,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend, sttUrl, ttsUrl, useFakeTerminalBridge, agentBin, codexBin, bypassAllPermissions,
     claudeDir, preflightOnFatal, preflightLogger,
     ossSourceWatcherFs, ossSourceWatcherDebounceMs,
+    resourceStatusSampler,
+    resourceStatusIntervalMs,
     lifecycleSignal,
   } = config;
 
@@ -972,8 +984,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     );
   };
 
-  const operationalAlertConfig = readOperationalAlertConfigFromEnv();
-  const operationalAlertEvaluator = createOperationalAlertEvaluator(operationalAlertConfig);
+  const operationalAlertConfig = resetOperationalAlertConfig();
+  const operationalAlertEvaluator = createOperationalAlertEvaluator(getOperationalAlertConfig);
   if (operationalAlertEvaluator.hasEnabledRules()) {
     const sustainSeconds = (operationalAlertConfig.sustainSamples * RESOURCE_STATUS_INTERVAL_MS) / 1000;
     console.log(
@@ -986,9 +998,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     console.log('[ops-alerts] Operational alerts disabled (set KOOKR_ALERT_* thresholds to enable)');
   }
   const resourceStatusService = createResourceStatusService({
-    sampler: createSystemResourceSampler(),
+    sampler: resourceStatusSampler ?? createSystemResourceSampler(),
     broadcastToAll,
     alertEvaluator: operationalAlertEvaluator,
+    intervalMs: resourceStatusIntervalMs,
   });
 
   // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---
