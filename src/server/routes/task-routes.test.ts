@@ -553,7 +553,7 @@ describe('POST /api/tasks/:id/complete (issue #691)', () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
-  test('409s rather than corrupting a task with an active Ralph loop', async () => {
+  test('uses the shared active-Ralph partial completion policy', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Ralph root', '/repo');
     addLiveSession(taskStore, task.id);
@@ -565,11 +565,14 @@ describe('POST /api/tasks/:id/complete (issue #691)', () => {
     const { deps, stop } = mkCompleteDeps(taskStore);
     const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
 
-    expect(res.status).toBe(409);
-    const body = await res.json() as { code: string };
-    expect(body.code).toBe('ralph_loop_active');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; partialRalphCompletion?: boolean; task: { status: string } };
+    expect(body.ok).toBe(true);
+    expect(body.partialRalphCompletion).toBe(true);
+    expect(body.task.status).toBe('inProgress');
     expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
-    expect(stop).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)!.sessions[0].lastStatus).toBe('completed');
+    expect(stop).toHaveBeenCalledWith('kookr-live');
   });
 
   test('403s for remote-owned SharedTask ids', async () => {
@@ -579,7 +582,7 @@ describe('POST /api/tasks/:id/complete (issue #691)', () => {
     expect(res.status).toBe(403);
   });
 
-  test('a task completed via this route does not surface as a done_not_cleared finding', async () => {
+  test('a task completed via this route without monitor events stays digestless', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Helper that finished', '/repo');
     addLiveSession(taskStore, task.id);
@@ -592,11 +595,49 @@ describe('POST /api/tasks/:id/complete (issue #691)', () => {
     const state = buildCoordinatorSnapshotState({ tasks: [completed] }, []);
     expect(state.outputs.some((o) => o.detectorId === 'done_not_cleared')).toBe(false);
 
-    // Control: the detector DOES fire on a completed task that carries a digest,
+    // Control: shared completion may set a digest when monitor events exist, and
+    // the detector DOES fire on a completed task that carries one.
     // proving the exclusion above is due to the absent digest, not a no-op setup.
     taskStore.setCompletionDigest(task.id, { bullets: ['did the thing'], filesChanged: [] });
     const withDigest = buildCoordinatorSnapshotState({ tasks: [taskStore.getTask(task.id)!] }, []);
     expect(withDigest.outputs.some((o) => o.detectorId === 'done_not_cleared')).toBe(true);
+  });
+
+  test('promotes a pending task after REST completion frees capacity', async () => {
+    const taskStore = new TaskStore();
+    const active = taskStore.createTask('Active work', '/repo');
+    addLiveSession(taskStore, active.id, 'kookr-active');
+    const pending = taskStore.createTask('Queued work', '/repo');
+    taskStore.pendTask(pending.id);
+    const { deps } = mkCompleteDeps(taskStore);
+    const launch = vi.fn(async (taskId: string, _prompt: string, cwd: string) => {
+      taskStore.addSession(taskId, {
+        tmuxSession: 'kookr-promoted',
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      return 'kookr-promoted';
+    });
+    deps.launchServiceDeps = {
+      taskStore,
+      adapterRegistry: { get: vi.fn(() => ({ launch, agentType: 'claude-code' })) },
+      lifecycleDeps: {
+        monitor: deps.monitor,
+        watchdog: { registerAgent: vi.fn() },
+        hookWatcher: { isWatching: vi.fn(() => false), watch: vi.fn() },
+        interactionLog: { append: vi.fn() },
+        githubScanner: { isActive: vi.fn(() => false), processTaskPrompt: vi.fn() },
+        autoNameTask: vi.fn(),
+      },
+      getMaxActiveTasks: () => 1,
+    } as never;
+
+    const res = await mkApp(deps).request(`/api/tasks/${active.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(launch).toHaveBeenCalledWith(pending.id, 'Queued work', '/repo');
+    expect(taskStore.getTask(pending.id)?.status).toBe('inProgress');
   });
 });
 
