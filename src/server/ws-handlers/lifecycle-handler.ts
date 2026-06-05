@@ -14,6 +14,7 @@ import {
   cleanupSessionResources as cleanupSessionResourcesImpl,
 } from '../agent-lifecycle.js';
 import { nowISO } from '../../core/interaction-log.js';
+import { redactSecrets as redactSecretsShared } from '../../core/redact-secrets.js';
 import { buildTaskCompletionMetadata } from '../completion-metadata.js';
 import { getSnapshotAgentsForClient } from '../use-cases/get-snapshot.js';
 import { deleteTask } from '../use-cases/delete-task.js';
@@ -74,6 +75,7 @@ type LifecycleMessage = Extract<ClientMessage, {
     | 'completeTask'
     | 'cancelTask'
     | 'reopenTask'
+    | 'dismissAgentSignal'
     | 'renameTask'
     | 'setTaskPriority'
     | 'deleteTask'
@@ -169,6 +171,7 @@ export class LifecycleHandler {
           const snapshot = getSnapshotAgentsForClient({
             monitor: this.deps.monitor,
             activityMetaProvider: this.deps.activityMetaProvider,
+            pendingSignalProvider: this.deps.taskStore,
           });
           const state = snapshot.find((s) => s.agentId === next.agentId);
           if (state) {
@@ -201,6 +204,11 @@ export class LifecycleHandler {
           }
           return { duplicate: false };
         }
+
+        // Clear any pending agent signal now the task is going terminal (RFC:
+        // rfc-agent-signal-surface). Placed AFTER the Ralph early-return above
+        // so an iteration-complete click never wipes a signal mid-loop.
+        this.deps.taskStore.clearPendingSignal(msg.taskId);
 
         // Capture events before lifecycle cleanup deletes them from the monitor
         const preEvents: AgentEvent[] = [];
@@ -277,6 +285,7 @@ export class LifecycleHandler {
         ) {
           this.deps.ralphLoopService.cancelLoop(cancellingTask);
         }
+        this.deps.taskStore.clearPendingSignal(msg.taskId);
         await cancelTaskImpl(msg.taskId, this.deps.getLifecycleDeps());
         await this.deps.scheduleService?.recordTaskTerminalOutcome(msg.taskId, 'cancelled');
         await this.deps.tryPromotePending();
@@ -286,6 +295,16 @@ export class LifecycleHandler {
       case 'reopenTask':
         this.deps.taskStore.reopenTask(msg.taskId);
         return { duplicate: false };
+
+      case 'dismissAgentSignal': {
+        // User dismissed the agent's pending signal (RFC:
+        // rfc-agent-signal-surface). Clear it and push an immediate update so
+        // the banner disappears without waiting for the next periodic snapshot.
+        if (this.deps.taskStore.clearPendingSignal(msg.taskId)) {
+          this.broadcastTaskUpdate(msg.taskId);
+        }
+        return { duplicate: false };
+      }
 
       case 'deleteTask':
         await deleteTask(this.deps.getLifecycleDeps(), msg.taskId);
@@ -478,6 +497,23 @@ export class LifecycleHandler {
     }
   }
 
+  /**
+   * Broadcast a fresh `update` for every live agent of a task. Used after a
+   * pending-signal change so clients reflect it immediately rather than waiting
+   * for the next periodic snapshot.
+   */
+  private broadcastTaskUpdate(taskId: string): void {
+    if (!this.deps.broadcastToAll) return;
+    const states = getSnapshotAgentsForClient({
+      monitor: this.deps.monitor,
+      activityMetaProvider: this.deps.activityMetaProvider,
+      pendingSignalProvider: this.deps.taskStore,
+    }).filter((agent) => agent.taskId === taskId);
+    for (const state of states) {
+      this.deps.broadcastToAll({ type: 'update', agentId: state.agentId, state });
+    }
+  }
+
   private finalizeCompletionMetadata(task: Task | undefined, preEvents: AgentEvent[]): void {
     if (!task || preEvents.length === 0) return;
 
@@ -502,6 +538,7 @@ export class LifecycleHandler {
       const state = getSnapshotAgentsForClient({
         monitor: this.deps.monitor,
         activityMetaProvider: this.deps.activityMetaProvider,
+        pendingSignalProvider: this.deps.taskStore,
       })
         .find((agent) => agent.taskId === task.id);
       if (state) {
@@ -535,25 +572,8 @@ function sanitizeFeedback(input: TaskCompletionFeedback): TaskCompletionFeedback
   return out;
 }
 
-const SECRET_PATTERNS: RegExp[] = [
-  /\bsk-[A-Za-z0-9_-]{16,}\b/g,
-  /\bAKIA[A-Z0-9]{16}\b/g,
-  /\bghp_[A-Za-z0-9]{16,}\b/g,
-  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, // JWT
-  /\bxoxb-[A-Za-z0-9-]{16,}\b/g,
-  /\bglpat-[A-Za-z0-9_-]{16,}\b/g,
-  /\bhf_[A-Za-z0-9]{16,}\b/g,
-  /\bnpm_[A-Za-z0-9]{16,}\b/g,
-  /\bpypi-[A-Za-z0-9_-]{16,}\b/g,
-  /\bdckr_pat_[A-Za-z0-9_-]{16,}\b/g,
-  /\bya29\.[A-Za-z0-9_-]+\b/g,
-  /-----BEGIN [A-Z ]+-----[\s\S]+?-----END [A-Z ]+-----/g,
-];
-
 function redactSecrets(s: string): string {
-  let out = s;
-  for (const re of SECRET_PATTERNS) out = out.replace(re, '[REDACTED]');
-  return out;
+  return redactSecretsShared(s);
 }
 
 /** Reflect tasks whose own status is non-terminal still need their bundle. */

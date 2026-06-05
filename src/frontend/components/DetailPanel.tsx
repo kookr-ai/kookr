@@ -643,6 +643,16 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   // finding card's "Turn Complete" presentation. See issue #358.
   const isCompletedTurn = agent.anomaly?.type === 'needs_input'
     && agent.turnState === 'completed_turn';
+
+  // Agent → user signal (RFC: rfc-agent-signal-surface). Show a non-modal
+  // banner while the task is active; only emphasise Complete (pulse) when the
+  // agent is actually idle (completed_turn) so a signal raised mid-work never
+  // invites premature completion.
+  const pendingSignal = agent.pendingSignal;
+  const showSignalBanner = !!pendingSignal
+    && agent.taskStatus !== 'pending'
+    && !isTerminalTaskStatus(agent.taskStatus);
+  const signalCompleteReady = showSignalBanner && isCompletedTurn;
   const badgeClass = agent.anomaly
     ? agent.anomaly.type === 'permission_blocked' ? 'permission'
       : agent.anomaly.type === 'repeated_error' ? 'error'
@@ -721,7 +731,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           />
           {agent.taskId && agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && (
             <>
-              <button data-testid="action-complete" className="action-btn action-btn--success" onClick={handleComplete}>Complete</button>
+              <button data-testid="action-complete" className={`action-btn action-btn--success${signalCompleteReady ? ' action-btn--signal-ready' : ''}`} onClick={handleComplete}>Complete</button>
               <button
                 data-testid="action-complete-reflect"
                 className="action-btn action-btn--reflect"
@@ -754,6 +764,28 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           )}
         </div>
       </div>
+      {showSignalBanner && agent.taskId && (
+        <div
+          className={`detail-signal-banner${signalCompleteReady ? ' detail-signal-banner--ready' : ''}`}
+          data-testid="agent-signal-banner"
+        >
+          <span className="detail-signal-banner__text">
+            <strong>Agent:</strong>{' '}
+            {signalCompleteReady
+              ? 'ready for review — complete this task?'
+              : 'flagged ready (still working — review when idle)'}
+            {pendingSignal?.note ? ` — ${pendingSignal.note}` : ''}
+          </span>
+          <button
+            type="button"
+            className="action-btn action-btn--neutral"
+            data-testid="agent-signal-dismiss"
+            onClick={() => send({ type: 'dismissAgentSignal', taskId: agent.taskId! })}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {agent.taskId && (
         <TaskShareModal
           taskId={agent.taskId}

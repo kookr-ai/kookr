@@ -1461,6 +1461,34 @@ kbd {
 .action-btn--danger { border-color: var(--red); color: var(--red); }
 .action-btn--danger:hover { background: rgba(248,113,113,0.12); }
 
+/* Agent → user signal (RFC: rfc-agent-signal-surface). Pulse the Complete
+   button only when the agent flagged ready AND its turn is idle. */
+.action-btn--signal-ready {
+  background: rgba(74,222,128,0.16);
+  animation: signal-ready-pulse 1.6s ease-in-out infinite;
+}
+@keyframes signal-ready-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(74,222,128,0.0); }
+  50% { box-shadow: 0 0 0 3px rgba(74,222,128,0.35); }
+}
+
+.detail-signal-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 6px 12px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-left: 3px solid var(--green);
+  border-radius: 6px;
+  background: rgba(74,222,128,0.06);
+  font-size: 13px;
+}
+.detail-signal-banner--ready { background: rgba(74,222,128,0.12); }
+.detail-signal-banner__text { color: var(--text, #ddd); overflow: hidden; text-overflow: ellipsis; }
+.detail-signal-banner__text strong { color: var(--green); }
+
 .task-dependencies {
   flex-shrink: 0;
   padding: 8px 16px;

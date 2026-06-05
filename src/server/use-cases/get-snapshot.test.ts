@@ -601,3 +601,47 @@ describe('snapshot use cases', () => {
     });
   });
 });
+
+describe('pending agent signal projection', () => {
+  it('joins the task pending signal onto the client-facing agent state', () => {
+    const monitor = {
+      getSnapshot: () => [
+        { agentId: 'a-1', taskId: 't-1', events: [], anomaly: null },
+        { agentId: 'a-2', taskId: 't-2', events: [], anomaly: null },
+      ] as any,
+    };
+    const signal = { kind: 'completion_ready' as const, raisedAt: '2026-06-05T12:00:00.000Z' };
+    const agents = getSnapshotAgentsForClient({
+      monitor,
+      pendingSignalProvider: {
+        getPendingSignal: (taskId: string) => (taskId === 't-1' ? signal : undefined),
+      },
+    });
+    expect(agents.find((a) => a.agentId === 'a-1')?.pendingSignal).toEqual(signal);
+    expect(agents.find((a) => a.agentId === 'a-2')?.pendingSignal).toBeUndefined();
+  });
+
+  it('omits pendingSignal when no provider is wired', () => {
+    const monitor = {
+      getSnapshot: () => [{ agentId: 'a-1', taskId: 't-1', events: [], anomaly: null }] as any,
+    };
+    const agents = getSnapshotAgentsForClient({ monitor });
+    expect(agents[0].pendingSignal).toBeUndefined();
+  });
+
+  it('createSnapshotMessage defaults the provider from relationTaskStore', () => {
+    const monitor = {
+      getSnapshot: () => [{ agentId: 'a-1', taskId: 't-1', events: [], anomaly: null }] as any,
+    };
+    const signal = { kind: 'completion_ready' as const, raisedAt: '2026-06-05T12:00:00.000Z' };
+    const msg = createSnapshotMessage({
+      monitor,
+      serverCwd: '/repo',
+      relationTaskStore: {
+        listRelations: () => [],
+        getPendingSignal: (taskId: string) => (taskId === 't-1' ? signal : undefined),
+      } as any,
+    });
+    expect(msg.agents.find((a) => a.agentId === 'a-1')?.pendingSignal).toEqual(signal);
+  });
+});

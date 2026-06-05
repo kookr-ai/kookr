@@ -389,6 +389,7 @@ export class MessageRouter {
       case 'completeTask':
       case 'cancelTask':
       case 'reopenTask':
+      case 'dismissAgentSignal':
       case 'deleteTask':
       case 'renameTask':
       case 'setTaskPriority':
@@ -453,6 +454,7 @@ export class MessageRouter {
     const snapshot = getSnapshotAgentsForClient({
       monitor: this.deps.monitor,
       activityMetaProvider: this.deps.activityMetaProvider,
+      pendingSignalProvider: this.deps.taskStore,
     });
     const state = snapshot.find((s) => s.agentId === agentId);
     if (state) {

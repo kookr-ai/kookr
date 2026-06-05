@@ -1,4 +1,5 @@
 import type { CompletionDigest } from './completion-digest.js';
+import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
 import type { AgentType } from './agent-types.js';
 import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
@@ -125,6 +126,12 @@ export interface Task {
   completionFeedback?: TaskCompletionFeedback;
   /** Marker present iff this task is itself a reflect spawn analyzing another task. */
   reflectMeta?: ReflectMeta;
+  /**
+   * Pending agent → user signal (RFC: rfc-agent-signal-surface). Raised via
+   * `POST /api/tasks/:id/signal`; cleared on dismiss, terminal status, or a new
+   * turn. Joined onto the client-facing AgentState at projection time.
+   */
+  pendingSignal?: PendingAgentSignal;
   createdAt: Date;
   updatedAt: Date;
   /** Set when the task transitions to 'terminated' via reconciliation. */

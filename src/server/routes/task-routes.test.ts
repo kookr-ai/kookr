@@ -599,3 +599,81 @@ describe('POST /api/tasks/:id/complete (issue #691)', () => {
     expect(withDigest.outputs.some((o) => o.detectorId === 'done_not_cleared')).toBe(true);
   });
 });
+
+describe('POST /api/tasks/:id/signal', () => {
+  test('raises a pending signal for an active task', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: 'tests green' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.signal.kind).toBe('completion_ready');
+    expect(body.signal.note).toBe('tests green');
+    expect(typeof body.signal.raisedAt).toBe('string');
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
+  test('redacts secrets and caps the note', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: 'token ghp_0123456789abcdefghij done' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.signal.note).toContain('[REDACTED]');
+    expect(body.signal.note).not.toContain('ghp_0123456789abcdefghij');
+  });
+
+  test('rejects an unknown kind with 400', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'bogus' }),
+    });
+    expect(res.status).toBe(400);
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+  });
+
+  test('returns 404 for an unknown task', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks/missing/signal', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test('rejects a terminal task with 409', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    taskStore.startTask(task.id);
+    taskStore.cancelTask(task.id);
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready' }),
+    });
+    expect(res.status).toBe(409);
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+  });
+});

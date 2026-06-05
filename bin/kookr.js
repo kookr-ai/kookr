@@ -10,6 +10,7 @@ const HELP_TEXT = `kookr - local AI agent supervisor.
 Usage:
   kookr                         Start the built Kookr server.
   kookr spawn [OPTIONS] [PROMPT...]    Create a task from the current shell.
+  kookr signal <kind> [OPTIONS] Raise an agent → user signal for the current task.
   kookr status                  Print a read-only server snapshot.
   kookr ralph <command> <taskId> Inspect or control a Ralph loop.
   kookr drain|resume [OPTIONS]  Control operator drain mode.
@@ -37,6 +38,11 @@ async function main({
   if (command === 'spawn') {
     const { main: runSpawnCli } = await import('./kookr-spawn.js');
     return runSpawnCli({ argv: rest, env, out, err, exit });
+  }
+
+  if (command === 'signal') {
+    const { main: runSignalCli } = await import('./kookr-signal.js');
+    return runSignalCli({ argv: rest, env, out, err, exit });
   }
 
   if (command === 'status') {

@@ -283,6 +283,7 @@ export type ClientMessage =
   | { type: 'relaunch'; taskId: string; prompt: string; agentType?: AgentSelection; dependencies?: LaunchDependency[] }
   | { type: 'cancelTask'; taskId: string }
   | { type: 'reopenTask'; taskId: string }
+  | { type: 'dismissAgentSignal'; taskId: string }
   | { type: 'deleteTask'; taskId: string }
   | { type: 'renameTask'; taskId: string; name: string }
   | { type: 'setTaskPriority'; taskId: string; priority: TaskPriorityUpdate }

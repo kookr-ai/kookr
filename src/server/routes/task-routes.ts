@@ -7,6 +7,13 @@ import { deleteTask } from '../use-cases/delete-task.js';
 import { completeTask } from '../agent-lifecycle.js';
 import { isTerminalStatus } from '../../core/task-status.js';
 import { InvalidTransitionError } from '../../core/tasks.js';
+import { redactSecrets } from '../../core/redact-secrets.js';
+import {
+  AGENT_SIGNAL_KINDS,
+  isAgentSignalKind,
+  MAX_AGENT_SIGNAL_NOTE_LENGTH,
+  type PendingAgentSignal,
+} from '../../shared/contracts/agent-signal.js';
 import { launchTask, DrainModeError, isEffortValidationError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import type { LaunchDependency } from '../../core/playbook.js';
@@ -310,6 +317,54 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
     }
+  });
+
+  // Agent → user signal (RFC: rfc-agent-signal-surface). A non-blocking,
+  // explicit signal an in-task agent raises (via `kookr signal <kind>`) to tell
+  // the user something — the motivating case being "this task is ready for
+  // completion". Kookr surfaces it (highlighted Complete button); the agent
+  // never completes the task itself. Idempotent per task; rejected for unknown
+  // or terminal tasks (the CLI maps that to a distinct exit code so a wrong
+  // KOOKR_TASK_ID is visible rather than silently swallowed).
+  app.post('/api/tasks/:id/signal', async (c) => {
+    const id = c.req.param('id');
+    if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    if (isTerminalStatus(task.status)) {
+      return c.json(
+        { error: `Cannot signal a task in status "${task.status}"`, code: 'task_terminal' },
+        409,
+      );
+    }
+
+    let body: { kind?: unknown; note?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (!isAgentSignalKind(body.kind)) {
+      return c.json({ error: `kind must be one of: ${AGENT_SIGNAL_KINDS.join(', ')}` }, 400);
+    }
+    let note: string | undefined;
+    if (body.note !== undefined) {
+      if (typeof body.note !== 'string') {
+        return c.json({ error: 'note must be a string when supplied' }, 400);
+      }
+      const trimmed = body.note.slice(0, MAX_AGENT_SIGNAL_NOTE_LENGTH);
+      const redacted = redactSecrets(trimmed).trim();
+      if (redacted) note = redacted;
+    }
+
+    const signal: PendingAgentSignal = {
+      kind: body.kind,
+      raisedAt: new Date().toISOString(),
+      ...(note ? { note } : {}),
+    };
+    taskStore.setPendingSignal(id, signal);
+    broadcastSnapshotWithCoordinator();
+    return c.json({ ok: true, signal });
   });
 
   app.get('/api/playbooks', async (c) => {
