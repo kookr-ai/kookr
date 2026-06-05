@@ -154,8 +154,10 @@ export class TaskLifecycleCommands {
   }
 
   async clearFinishedTasks(opts: { includeTerminated?: boolean; projectId?: string } = {}): Promise<TaskLifecycleCommandResult> {
+    const projectId = opts.projectId?.trim();
+    if (opts.projectId !== undefined && !projectId) return { outcome: 'cleared', deletedTaskIds: [] };
     const toClear = this.deps.taskStore.listTasks().filter((task) => {
-      if (opts.projectId && task.projectId !== opts.projectId) return false;
+      if (projectId && task.projectId !== projectId) return false;
       if (task.status === 'completed' || task.status === 'cancelled') return true;
       return opts.includeTerminated === true && task.status === 'terminated';
     });

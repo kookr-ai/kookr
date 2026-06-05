@@ -34,6 +34,13 @@ async function taskByPrompt(request: APIRequestContext, prompt: string): Promise
   return task;
 }
 
+async function openRelationshipsMenu(page: Page) {
+  await page.locator('.dependency-menu-trigger').click();
+  const menu = page.locator('#task-dependency-menu');
+  await expect(menu).toBeVisible();
+  return menu;
+}
+
 test.beforeEach(async ({ request, page }) => {
   await resetServer(request);
   await page.goto('/');
@@ -49,6 +56,7 @@ test('task detail dependency typeahead adds task and milestone edges', async ({ 
   await page.locator('.healthy-row', { hasText: 'Build target feature' }).click();
   await expect(page.locator('[data-testid="task-dependencies"]')).toBeVisible();
 
+  let menu = await openRelationshipsMenu(page);
   await page.locator('[data-testid="add-dependency-button"]').click();
   const modal = page.locator('[data-testid="dependency-modal"]');
   await expect(modal).toBeVisible();
@@ -58,35 +66,37 @@ test('task detail dependency typeahead adds task and milestone edges', async ({ 
   await expect(page.locator('[data-testid="dependency-results"] button', { hasText: unrelated.id.slice(0, 8) })).toHaveCount(0);
   await upstreamResult.click();
 
-  await expect(page.locator('.dependency-chip', { hasText: upstream.id.slice(0, 8) })).toBeVisible();
   await expect.poll(async () => (await taskByPrompt(request, 'Build target feature')).blocked_by ?? [])
     .toContain(`task:${upstream.id}`);
+  menu = await openRelationshipsMenu(page);
+  await expect(menu.locator('.dependency-chip', { hasText: upstream.id.slice(0, 8) })).toBeVisible();
 
-  await page.locator('[data-testid="add-dependency-button"]').click();
+  await menu.locator('[data-testid="add-dependency-button"]').click();
   await page.locator('[data-testid="dependency-search-input"]').fill('Vendor approval');
   await page.locator('[data-testid="dependency-free-text"]').click();
 
-  await expect(page.locator('.dependency-chip', { hasText: 'Vendor approval' })).toBeVisible();
   await expect.poll(async () => (await taskByPrompt(request, 'Build target feature')).blocked_by ?? [])
     .toContain('milestone:Vendor approval');
+  menu = await openRelationshipsMenu(page);
+  await expect(menu.locator('.dependency-chip', { hasText: 'Vendor approval' })).toBeVisible();
 
-  await page.locator('.dependency-chip', { hasText: 'Vendor approval' }).getByRole('button').click();
-  await expect(page.locator('.dependency-chip', { hasText: 'Vendor approval' })).toHaveCount(0);
+  await menu.locator('.dependency-chip', { hasText: 'Vendor approval' }).getByRole('button').click();
+  await expect(menu.locator('.dependency-chip', { hasText: 'Vendor approval' })).toHaveCount(0);
   await expect.poll(async () => (await taskByPrompt(request, 'Build target feature')).blocked_by ?? [])
     .not.toContain('milestone:Vendor approval');
 
-  await page.locator('[data-testid="add-dependency-button"]').click();
-  await page.getByRole('button', { name: 'Blocks' }).click();
+  await menu.getByRole('button', { name: 'Add downstream' }).click();
   await page.locator('[data-testid="dependency-search-input"]').fill('unrelated');
   const unrelatedResult = page.locator('[data-testid="dependency-results"] button', { hasText: unrelated.id.slice(0, 8) });
   await expect(unrelatedResult).toBeVisible();
   await unrelatedResult.click();
 
-  await expect(page.locator('.dependency-chip', { hasText: unrelated.id.slice(0, 8) })).toBeVisible();
   await expect.poll(async () => (await taskByPrompt(request, 'Build target feature')).blocks ?? [])
     .toContain(`task:${unrelated.id}`);
+  menu = await openRelationshipsMenu(page);
+  await expect(menu.locator('.dependency-chip', { hasText: unrelated.id.slice(0, 8) })).toBeVisible();
 
-  await page.locator('.dependency-chip', { hasText: unrelated.id.slice(0, 8) }).getByRole('button').click();
+  await menu.locator('.dependency-chip', { hasText: unrelated.id.slice(0, 8) }).getByRole('button').click();
   await expect.poll(async () => (await taskByPrompt(request, 'Build target feature')).blocks ?? [])
     .not.toContain(`task:${unrelated.id}`);
 });

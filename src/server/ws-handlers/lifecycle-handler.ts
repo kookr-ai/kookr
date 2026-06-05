@@ -251,9 +251,12 @@ export class LifecycleHandler {
         return { duplicate: false };
 
       case 'clearCompleted': {
+        const rawProjectId = msg.projectId;
+        const projectId = rawProjectId?.trim();
+        if (rawProjectId !== undefined && !projectId) return { duplicate: false };
         await this.commands.clearFinishedTasks({
           includeTerminated: msg.includeTerminated === true,
-          projectId: msg.projectId?.trim() || undefined,
+          projectId,
         });
         return { duplicate: false };
       }

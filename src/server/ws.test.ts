@@ -1571,6 +1571,21 @@ describe('WebSocket MessageRouter', () => {
     ].sort());
   });
 
+  test('clearCompleted with blank projectId is a no-op instead of global sweep', async () => {
+    const projectDone = taskStore.createTask({ prompt: 'Project done', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const unscopedDone = taskStore.createTask('Unscoped done', '/cwd/unscoped');
+
+    taskStore.startTask(projectDone.id);
+    taskStore.completeTask(projectDone.id);
+    taskStore.startTask(unscopedDone.id);
+    taskStore.completeTask(unscopedDone.id);
+
+    await router.handleMessage({ type: 'clearCompleted', projectId: '   ' });
+
+    const remaining = taskStore.listTasks().map((t) => t.id).sort();
+    expect(remaining).toEqual([projectDone.id, unscopedDone.id].sort());
+  });
+
   test('clearCompleted invokes takePredeleteSnapshot when sweeping any task', async () => {
     const t = taskStore.createTask('Done', '/cwd');
     taskStore.startTask(t.id);

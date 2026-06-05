@@ -176,7 +176,11 @@ const ClientMessageSchemaImpl = z.union([
     project: z.string(),
     config: projectConfigPartial,
   }),
-  z.object({ type: z.literal('clearCompleted'), includeTerminated: z.boolean().optional(), projectId: z.string().trim().min(1).optional() }),
+  z.object({
+    type: z.literal('clearCompleted'),
+    includeTerminated: z.boolean().optional(),
+    projectId: z.string().trim().min(1).optional(),
+  }),
   z.object({ type: z.literal('ackTerminatedTask'), taskId: z.string() }),
   z.object({ type: z.literal('achievement:reset') }),
   z.object({ type: z.literal('achievement:setEnabled'), enabled: z.boolean() }),

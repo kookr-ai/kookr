@@ -134,6 +134,7 @@ describe('ClientMessageSchema — happy path sanity', () => {
       type: 'clearCompleted',
       projectId: '   ',
     });
+
     expect(result.success).toBe(false);
   });
 
