@@ -69,9 +69,21 @@ const FIXTURE_OGG = Buffer.from('FAKE-OGG-PAYLOAD-1234567890');
 
 describe('transcribeVoice — wire shape', () => {
   let fake: FakeWhisper;
+  let originalWhisperModel: string | undefined;
 
-  beforeEach(async () => { fake = await startFakeWhisper(); });
-  afterEach(async () => { await fake.stop(); });
+  beforeEach(async () => {
+    originalWhisperModel = process.env.WHISPER_MODEL;
+    delete process.env.WHISPER_MODEL;
+    fake = await startFakeWhisper();
+  });
+  afterEach(async () => {
+    if (originalWhisperModel === undefined) {
+      delete process.env.WHISPER_MODEL;
+    } else {
+      process.env.WHISPER_MODEL = originalWhisperModel;
+    }
+    await fake.stop();
+  });
 
   it('POSTs to /v1/audio/transcriptions with multipart file + model fields', async () => {
     const text = await transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl });
@@ -87,8 +99,19 @@ describe('transcribeVoice — wire shape', () => {
     expect(body).toMatch(/\sname="file"/);
     expect(body).toMatch(/filename="voice\.oga"/);
     expect(body).toMatch(/Content-Type: audio\/ogg/i);
-    expect(body).toMatch(/\sname="model"\r?\n\r?\nwhisper-1\r?\n/);
+    expect(body).toMatch(/\sname="model"\r?\n\r?\nbase\r?\n/);
     expect(body).toContain('FAKE-OGG-PAYLOAD-1234567890');
+  });
+
+  it('uses an explicit faster-whisper model override', async () => {
+    await transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl, model: 'large-v3' });
+    expect(fake.captured[0].body.toString('binary')).toMatch(/\sname="model"\r?\n\r?\nlarge-v3\r?\n/);
+  });
+
+  it('uses WHISPER_MODEL when no explicit model is provided', async () => {
+    process.env.WHISPER_MODEL = 'small';
+    await transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl });
+    expect(fake.captured[0].body.toString('binary')).toMatch(/\sname="model"\r?\n\r?\nsmall\r?\n/);
   });
 
   it('respects a custom filename', async () => {
