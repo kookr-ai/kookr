@@ -155,11 +155,14 @@ export async function requestTaskReflect(
     return { spawned: false, reason: `launch_failed: ${(err as Error).message}` };
   }
 
-  // Mark the spawned task so cleanup can recognize it as a reflect task
+  // Mark the spawned task so cleanup can recognize it as a reflect task.
+  // Record the worktree path so the terminal-state cleanup can remove exactly
+  // this worktree (the startup sweep remains the crash backstop).
   deps.taskStore.setReflectMeta(result.task.id, {
     sourceTaskId: input.sourceTaskId,
     bundlePath: input.bundlePath,
     direction: input.direction,
+    worktreePath,
   });
 
   return { spawned: true, reflectTaskId: result.task.id };
@@ -341,4 +344,28 @@ export async function sweepReflectWorktrees(deps: {
     }
   }
   return { removed, kept };
+}
+
+/**
+ * Remove a single reflect worktree on demand — called when a reflect task
+ * reaches a terminal state so its worktree is reclaimed immediately rather than
+ * lingering until the next startup sweep.
+ *
+ * Self-guarding: removes `worktreePath` only when it still carries the
+ * `.kookr-reflect.json` identity marker, so a missing/corrupt path can never
+ * delete an unrelated directory. Best-effort and never throws — cleanup must
+ * not fail a task transition. Returns true when `worktreePath` was a marked
+ * reflect worktree we attempted to reclaim, false when skipped (absent path or
+ * missing identity marker).
+ */
+export async function removeReflectWorktree(worktreePath: string | undefined): Promise<boolean> {
+  if (!worktreePath) return false;
+  // Only touch a directory that is provably a reflect worktree.
+  if (!existsSync(join(worktreePath, REFLECT_IDENTITY_FILE))) return false;
+  try {
+    await execFile('git', ['worktree', 'remove', '--force', worktreePath]);
+  } catch {
+    await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+  }
+  return true;
 }
