@@ -9,6 +9,10 @@ import {
   recordSubagentOrphans,
   recordSubagentTtlEviction,
 } from './detection-stats.js';
+import {
+  eventSequence,
+  resetAnomalyDetectorBuilderIds,
+} from './__fixtures__/anomaly-detector-builders.js';
 
 let toolUseCounter = 0;
 function makeToolUse(sessionId: string, toolName: string, toolInput?: unknown, toolUseId?: string): AgentEvent {
@@ -40,16 +44,17 @@ describe('Anomaly Detector', () => {
 
   beforeEach(() => {
     resetDetectionStats();
+    resetAnomalyDetectorBuilderIds();
     toolUseCounter = 0;
   });
 
   describe('needs_input detection (F2.1)', () => {
     test('Stop event produces needs_input anomaly', () => {
-      const events: AgentEvent[] = [
-        makeToolUse('s1', 'Bash'),
-        makeToolResult('s1', 'Bash'),
-        makeStop('s1', 'I need your help to decide.'),
-      ];
+      const events = eventSequence()
+        .toolUse('Bash', undefined, 'toolu_1')
+        .toolResult('Bash', undefined, 'toolu_1')
+        .stop('I need your help to decide.')
+        .build();
 
       const anomaly = detectAnomalies(events, agentId);
       expect(anomaly).not.toBeNull();
@@ -122,11 +127,7 @@ describe('Anomaly Detector', () => {
 
   describe('repeated_error detection (F2.3)', () => {
     test('same error 3 times produces repeated_error', () => {
-      const events: AgentEvent[] = [
-        makeError('s1', 'TypeError: x is not a function'),
-        makeError('s1', 'TypeError: x is not a function'),
-        makeError('s1', 'TypeError: x is not a function'),
-      ];
+      const events = eventSequence().error('TypeError: x is not a function', 3).build();
 
       const anomaly = detectAnomalies(events, agentId, { repeatedErrorThreshold: 3 });
       expect(anomaly).not.toBeNull();
@@ -284,16 +285,11 @@ describe('Anomaly Detector', () => {
 
   describe('merge_conflict detection', () => {
     test('CONFLICT in Bash git tool_result triggers merge_conflict anomaly', () => {
-      const events: AgentEvent[] = [
-        makeToolUse('s1', 'Bash', { command: 'git merge feature' }, 'toolu_1'),
-        {
-          type: 'tool_result',
-          sessionId: 's1',
-          toolName: 'Bash',
-          toolUseId: 'toolu_1',
-          toolResponse: `Merging branch 'feature' into main\nCONFLICT (content): Merge conflict in src/index.ts\nAutomatic merge failed; fix conflicts and then commit the result.`,
-        },
-      ];
+      const events = eventSequence().bashResult(
+        'git merge feature',
+        `Merging branch 'feature' into main\nCONFLICT (content): Merge conflict in src/index.ts\nAutomatic merge failed; fix conflicts and then commit the result.`,
+        'toolu_1',
+      ).build();
 
       const anomaly = detectAnomalies(events, agentId);
       expect(anomaly).not.toBeNull();
