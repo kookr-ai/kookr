@@ -71,6 +71,15 @@ not user configuration knobs.
 | `KOOKR_CONTEXT_ADVISORY_ENABLED` | unset | `1` to enable | Enables context-window hook advisories. |
 | `KOOKR_CONTEXT_ADVISORY_DISABLED` | unset | `1` to disable | Kill switch for context-window hook advisories. Takes precedence over enablement. |
 
+## Agent Signal Nudge
+
+See `docs/rfc/rfc-agent-signal-surface.md`.
+
+| Variable | Default | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `KOOKR_NUDGE_DISABLED` | unset | `1`/`true` to disable | Kill switch for the Stop-hook completion nudge. Read by `bin/kookr-stop-nudge.js` at hook time and propagated into spawned-agent env so new tasks honor it. In-flight tasks can also be disabled by creating the runtime marker file `/dev/shm/.kookr-nudge-disabled`. |
+| `KOOKR_NUDGE_MIN_TASK_AGE_MS` | `45000` | Non-negative integer ms | Minimum task age before the Stop-hook nudge may fire, so a trivial first stop early in a task does not spend the once-per-task nudge. |
+
 ## LLM Provider
 
 These variables select and configure the LLM provider behind Kookr's AI

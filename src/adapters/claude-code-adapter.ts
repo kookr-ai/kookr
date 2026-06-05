@@ -41,7 +41,7 @@ import {
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
-import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
+import { buildHookCommand, buildStopNudgeCommand, resolveHookWriterPath, resolveStopNudgePath } from '../core/hook-writer-paths.js';
 import { withTimeout } from '../core/with-timeout.js';
 
 const textEncoder = new TextEncoder();
@@ -731,6 +731,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     });
 
     const cmd = { type: 'command', command: hookCommand };
+
+    // Stop-hook nudge (RFC: rfc-agent-signal-surface §7) — a SECOND Stop hook
+    // entry alongside the fire-and-forget writer. It reminds the agent (at most
+    // once per task, hard fail-open) that it can raise an explicit completion
+    // signal. Omitted entirely when the bundled script isn't on disk so we never
+    // wire a broken command. See delivery-pragmatist review: it ships only now
+    // that the `kookr signal` channel exists.
+    const nudgePath = resolveStopNudgePath();
+    const stopHooks = nudgePath
+      ? [cmd, { type: 'command', command: buildStopNudgeCommand({ nudgePath }) }]
+      : [cmd];
+
     return {
       hooks: {
         // Tool-name matchers — '*' matches all tool names
@@ -740,7 +752,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         PostToolUseFailure: [{ matcher: '*', hooks: [cmd] }],
         PermissionRequest: [{ matcher: '*', hooks: [cmd] }],
         // No-matcher hooks — '' fires unconditionally
-        Stop: [{ matcher: '', hooks: [cmd] }],
+        Stop: [{ matcher: '', hooks: stopHooks }],
         StopFailure: [{ matcher: '', hooks: [cmd] }],
         Notification: [{ matcher: '', hooks: [cmd] }],
         UserPromptSubmit: [{ matcher: '', hooks: [cmd] }],
