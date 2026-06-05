@@ -174,12 +174,17 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     const projectADone = taskStore.createTask({ prompt: 'A done', cwd: '/repo-a', projectId: 'github.com/org/a' });
     const projectBDone = taskStore.createTask({ prompt: 'B done', cwd: '/repo-b', projectId: 'github.com/org/b' });
     const projectATerminated = taskStore.createTask({ prompt: 'A terminated', cwd: '/repo-a', projectId: 'github.com/org/a' });
+    const unscopedDone = taskStore.createTask('Unscoped done', '/repo/none');
+    const projectAActive = taskStore.createTask({ prompt: 'A active', cwd: '/repo-a', projectId: 'github.com/org/a' });
     taskStore.startTask(projectADone.id);
     taskStore.completeTask(projectADone.id);
     taskStore.startTask(projectBDone.id);
     taskStore.completeTask(projectBDone.id);
     taskStore.startTask(projectATerminated.id);
     taskStore.terminateTask(projectATerminated.id);
+    taskStore.startTask(unscopedDone.id);
+    taskStore.completeTask(unscopedDone.id);
+    taskStore.startTask(projectAActive.id);
     const { deps } = makeDeps(taskStore, { takePredeleteSnapshot: vi.fn(async () => undefined) });
 
     const result = await new TaskLifecycleCommands(deps).clearFinishedTasks({
@@ -194,6 +199,8 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     expect(taskStore.getTask(projectADone.id)).toBeUndefined();
     expect(taskStore.getTask(projectATerminated.id)).toBeUndefined();
     expect(taskStore.getTask(projectBDone.id)?.status).toBe('completed');
+    expect(taskStore.getTask(unscopedDone.id)?.status).toBe('completed');
+    expect(taskStore.getTask(projectAActive.id)?.status).toBe('inProgress');
   });
 
   test('treats blank project scope as a no-op instead of a global clear', async () => {

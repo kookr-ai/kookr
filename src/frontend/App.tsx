@@ -310,6 +310,7 @@ export function App() {
     selectAgent,
     nextBottleneck,
     nextTask,
+    selectNextTaskAfterCompletion,
     advanceEmptyEnter,
     previousTask,
     relaunchTask,
@@ -1125,12 +1126,15 @@ export function App() {
           }
           onConfirm={() => {
             track({ type: 'task_completed', agentId: pendingComplete.agentId, method: pendingComplete.method });
-            send({
+            const completionSent = send({
               type: 'completeTask',
               taskId: pendingComplete.taskId,
               ...(completeFeedback ? { feedback: completeFeedback } : {}),
               ...(completeFeedback ? { requestReflect: completeRequestReflect } : {}),
             });
+            if (completionSent) {
+              selectNextTaskAfterCompletion(pendingComplete.agentId, pendingComplete.taskId);
+            }
             setConfirmAction(null);
             setPendingComplete(null);
             setCompleteFeedback(undefined);

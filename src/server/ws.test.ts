@@ -25,6 +25,15 @@ import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 
 const execFile = promisify(execFileCb);
 
+function cleanGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('GIT_')) delete env[key];
+  }
+  delete env.KOOKR_GIT_COMMON_DIR;
+  return env;
+}
+
 describe('WebSocket MessageRouter', () => {
   let taskStore: TaskStore;
   let queue: AttentionQueue;
@@ -940,10 +949,11 @@ describe('WebSocket MessageRouter', () => {
       queued: false,
     }));
     try {
+      const gitEnv = cleanGitEnv();
       await mkdir(sourceRepo, { recursive: true });
-      await execFile('git', ['-C', sourceRepo, 'init', '-b', 'main']);
+      await execFile('git', ['-C', sourceRepo, 'init', '-b', 'main'], { env: gitEnv });
       await writeFile(join(sourceRepo, 'README.md'), 'test repo\n', 'utf-8');
-      await execFile('git', ['-C', sourceRepo, 'add', 'README.md']);
+      await execFile('git', ['-C', sourceRepo, 'add', 'README.md'], { env: gitEnv });
       await execFile('git', [
         '-C',
         sourceRepo,
@@ -954,7 +964,7 @@ describe('WebSocket MessageRouter', () => {
         'commit',
         '-m',
         'init',
-      ]);
+      ], { env: gitEnv });
 
       const feedbackRouter = new MessageRouter({
         taskStore, queue, monitor, adapter,

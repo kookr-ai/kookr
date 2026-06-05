@@ -88,6 +88,18 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
     };
   }
 
+  function orderedRoutableAgents(exclude: (agent: AgentState) => boolean = () => false) {
+    const agents = get().agents;
+    const order = getPriorityOrderContext();
+    const findings = agents
+      .filter((agent) => !exclude(agent) && isActiveFinding(agent))
+      .sort((left, right) => compareRoutableAgents(left, right, order));
+    const healthy = agents
+      .filter((agent) => !exclude(agent) && isHealthyRunning(agent))
+      .sort((left, right) => compareRoutableAgents(left, right, { ...order, includeSeverity: false }));
+    return [...findings, ...healthy];
+  }
+
   return {
     selectedAgentId: null,
     alerts: [],
@@ -175,21 +187,42 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
     nextTask: () => {
       const { agents, selectedAgentId, visibleProjectSummaries } = get();
-      const order = getPriorityOrderContext();
       const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
-      const findings = agents
-        .filter(isActiveFinding)
-        .sort((left, right) => compareRoutableAgents(left, right, order));
-      const healthy = agents
-        .filter(isHealthyRunning)
-        .sort((left, right) => compareRoutableAgents(left, right, { ...order, includeSeverity: false }));
-      const all = [...findings, ...healthy];
+      const all = orderedRoutableAgents();
 
       if (all.length === 0) return;
 
       const currentIdx = all.findIndex((agent) => agent.agentId === selectedAgentId);
       const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % all.length : 0;
       set(activateNavigationSelection(agents, all[nextIdx].agentId, visibleProjectIds));
+    },
+
+    selectNextTaskAfterCompletion: (completedAgentId, completedTaskId) => {
+      const { agents, selectedAgentId, visibleProjectSummaries } = get();
+      // If the user changed focus while the dialog was open, keep their newer
+      // selection instead of advancing from the older completion target.
+      if (selectedAgentId !== completedAgentId) return;
+
+      const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
+      const all = orderedRoutableAgents((agent) => (
+        completedTaskId ? agent.taskId === completedTaskId : agent.agentId === completedAgentId
+      ));
+
+      if (all.length === 0) {
+        set({
+          selectedAgentId: null,
+          selectedAgentSource: 'manual',
+          respondAllAgentIds: null,
+          shortcutsArmed: false,
+        });
+        return;
+      }
+
+      set({
+        ...activateNavigationSelection(agents, all[0].agentId, visibleProjectIds),
+        respondAllAgentIds: null,
+        shortcutsArmed: false,
+      });
     },
 
     // Empty-Enter navigation is pure cursor movement — it never dismisses a
@@ -214,15 +247,8 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
     previousTask: () => {
       const { agents, selectedAgentId, visibleProjectSummaries } = get();
-      const order = getPriorityOrderContext();
       const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
-      const findings = agents
-        .filter(isActiveFinding)
-        .sort((left, right) => compareRoutableAgents(left, right, order));
-      const healthy = agents
-        .filter(isHealthyRunning)
-        .sort((left, right) => compareRoutableAgents(left, right, { ...order, includeSeverity: false }));
-      const all = [...findings, ...healthy];
+      const all = orderedRoutableAgents();
 
       if (all.length === 0) return;
 
