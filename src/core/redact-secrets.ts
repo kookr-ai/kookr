@@ -8,7 +8,7 @@
  * higher-risk input should prefer an enum/structured field over free text.
  */
 const SECRET_PATTERNS: RegExp[] = [
-  /\bsk-[A-Za-z0-9_-]{16,}\b/g, // Anthropic/OpenAI API key
+  /\bsk-[A-Za-z0-9_-]{16,}\b/g, // OpenAI-style API key (also matches sk-ant-)
   /\bAKIA[A-Z0-9]{16}\b/g, // AWS access key
   /\bghp_[A-Za-z0-9]{16,}\b/g, // GitHub PAT
   /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, // JWT

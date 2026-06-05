@@ -676,4 +676,81 @@ describe('POST /api/tasks/:id/signal', () => {
     expect(res.status).toBe(409);
     expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
   });
+
+  test('rejects a SharedTask id with 403', async () => {
+    const app = mkApp(mkLoopDeps());
+    const res = await app.request('/api/tasks/shared:abc/signal', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready' }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test('rejects malformed JSON with 400', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not json',
+    });
+    expect(res.status).toBe(400);
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+  });
+
+  test('rejects a non-string note with 400', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: 123 }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('omits a whitespace-only note', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: '   ' }),
+    });
+    expect(res.status).toBe(200);
+    expect(taskStore.getPendingSignal(task.id)?.note).toBeUndefined();
+  });
+
+  test('replaces a secret-only note with the redaction placeholder', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: 'ghp_0123456789abcdefghij' }),
+    });
+    expect(res.status).toBe(200);
+    const note = taskStore.getPendingSignal(task.id)?.note;
+    expect(note).toBe('[REDACTED]');
+    expect(note).not.toContain('ghp_');
+  });
+
+  test('broadcasts a snapshot on success', async () => {
+    const taskStore = new TaskStore();
+    const broadcastToAll = vi.fn();
+    const app = mkApp({ ...mkLoopDeps(taskStore), broadcastToAll });
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready' }),
+    });
+    expect(res.status).toBe(200);
+    expect(broadcastToAll).toHaveBeenCalled();
+  });
 });

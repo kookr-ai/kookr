@@ -236,6 +236,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           monitor,
           serverCwd,
           activityMetaProvider: deps.activityMetaProvider,
+          relationTaskStore: taskStore,
         }));
       }
     } catch (err) {
@@ -367,6 +368,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           monitor,
           serverCwd,
           activityMetaProvider: deps.activityMetaProvider,
+          relationTaskStore: taskStore,
         }));
       }
     } catch (err) {
@@ -381,6 +383,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           monitor,
           serverCwd,
           activityMetaProvider: deps.activityMetaProvider,
+          relationTaskStore: taskStore,
         }));
       }
     } catch (err) {

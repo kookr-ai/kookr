@@ -72,6 +72,26 @@ describe('kookr signal main', () => {
     expect(exit).toHaveBeenCalledWith(EXIT_USER_ERROR);
   });
 
+  it('prints help and exits 0', async () => {
+    const { out, logs } = mkConsole();
+    const exit = vi.fn();
+    await main({ argv: ['--help'], env: {}, out, err: { error: () => {} }, exit });
+    expect(exit).toHaveBeenCalledWith(EXIT_OK);
+    expect(logs.join('\n')).toContain('kookr signal');
+  });
+
+  it('exits 2 on an invalid KOOKR_PORT', async () => {
+    const exit = vi.fn();
+    await main({
+      argv: ['completion-ready'],
+      env: { KOOKR_TASK_ID: 't-1', KOOKR_PORT: 'nope' },
+      out: { log: () => {} },
+      err: { error: () => {} },
+      exit,
+    });
+    expect(exit).toHaveBeenCalledWith(EXIT_USER_ERROR);
+  });
+
   it('exits 0 and POSTs the signal on success', async () => {
     const { out } = mkConsole();
     const exit = vi.fn();

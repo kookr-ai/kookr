@@ -28,8 +28,9 @@ export const MAX_AGENT_SIGNAL_NOTE_LENGTH = 280;
 /**
  * The pending signal currently raised for a task. Stored on the task record
  * and joined onto the client-facing AgentState at projection time (it is never
- * set on the raw Monitor AgentState). Cleared on dismiss, terminal status, or
- * a new turn.
+ * set on the raw Monitor AgentState). Cleared on dismiss or terminal status;
+ * while the agent keeps working the surfacing self-gates (the Complete pulse
+ * shows only when turnState is `completed_turn`).
  */
 export interface PendingAgentSignal {
   kind: AgentSignalKind;

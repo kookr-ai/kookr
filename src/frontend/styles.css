@@ -1471,6 +1471,10 @@ kbd {
   0%, 100% { box-shadow: 0 0 0 0 rgba(74,222,128,0.0); }
   50% { box-shadow: 0 0 0 3px rgba(74,222,128,0.35); }
 }
+/* The static green tint above keeps the affordance perceivable without motion. */
+@media (prefers-reduced-motion: reduce) {
+  .action-btn--signal-ready { animation: none; }
+}
 
 .detail-signal-banner {
   display: flex;

@@ -767,6 +767,8 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       {showSignalBanner && agent.taskId && (
         <div
           className={`detail-signal-banner${signalCompleteReady ? ' detail-signal-banner--ready' : ''}`}
+          role="status"
+          aria-live="polite"
           data-testid="agent-signal-banner"
         >
           <span className="detail-signal-banner__text">

@@ -128,8 +128,8 @@ export interface Task {
   reflectMeta?: ReflectMeta;
   /**
    * Pending agent → user signal (RFC: rfc-agent-signal-surface). Raised via
-   * `POST /api/tasks/:id/signal`; cleared on dismiss, terminal status, or a new
-   * turn. Joined onto the client-facing AgentState at projection time.
+   * `POST /api/tasks/:id/signal`; cleared on dismiss or terminal status. Joined
+   * onto the client-facing AgentState at projection time.
    */
   pendingSignal?: PendingAgentSignal;
   createdAt: Date;

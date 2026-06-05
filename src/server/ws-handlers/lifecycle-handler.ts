@@ -14,7 +14,7 @@ import {
   cleanupSessionResources as cleanupSessionResourcesImpl,
 } from '../agent-lifecycle.js';
 import { nowISO } from '../../core/interaction-log.js';
-import { redactSecrets as redactSecretsShared } from '../../core/redact-secrets.js';
+import { redactSecrets } from '../../core/redact-secrets.js';
 import { buildTaskCompletionMetadata } from '../completion-metadata.js';
 import { getSnapshotAgentsForClient } from '../use-cases/get-snapshot.js';
 import { deleteTask } from '../use-cases/delete-task.js';
@@ -570,10 +570,6 @@ function sanitizeFeedback(input: TaskCompletionFeedback): TaskCompletionFeedback
     out.note = note;
   }
   return out;
-}
-
-function redactSecrets(s: string): string {
-  return redactSecretsShared(s);
 }
 
 /** Reflect tasks whose own status is non-terminal still need their bundle. */
