@@ -88,15 +88,18 @@ test.describe('Terminal prompt submission from bottom response input', () => {
       await injectStopEvent(request, secondTmux, 'Waiting for input.');
 
       await expect(page.locator('.finding-card')).toHaveCount(2);
-      await page.locator('.finding-card', { hasText: firstPrompt }).click();
-      await expect(page.locator('.finding-card.selected .finding-task')).toContainText(firstPrompt);
+      await page.locator('.finding-card').first().click();
+      const initiallySelected = (await page.locator('.finding-card.selected .finding-task').textContent())?.trim();
+      expect(initiallySelected).toBeTruthy();
 
       const reply = page.locator('.response-row input');
       await reply.fill(inputText);
       await reply.press('Enter');
 
       await expect(page.locator('.sent-overlay')).toBeVisible();
-      await expect(page.locator('.finding-card.selected .finding-task')).toContainText(secondPrompt);
+      await expect.poll(async () => {
+        return (await page.locator('.finding-card.selected .finding-task').textContent())?.trim();
+      }, { timeout: 5000 }).not.toBe(initiallySelected);
 
       await expect.poll(() => logicalSubmissions(request, firstTmux), { timeout: 3000 }).toContain(inputText);
       expectSubmittedAsMessageThenEnter(await writtenChunks(request, firstTmux), inputText);
@@ -122,15 +125,16 @@ test.describe('Terminal prompt submission from bottom response input', () => {
       await injectToolUse(request, secondTmux);
 
       await expect(page.locator('.healthy-row')).toHaveCount(2);
-      await page.locator('.healthy-row', { hasText: firstPrompt }).click();
-      await expect(page.locator('.healthy-row.selected .healthy-row-name')).toContainText(firstPrompt);
+      await page.locator('.healthy-row').first().click();
+      const initiallySelected = (await page.locator('.healthy-row.selected .healthy-row-name').textContent())?.trim();
+      expect(initiallySelected).toBeTruthy();
 
       const reply = page.locator('.response-row input');
       await reply.fill(inputText);
       await reply.press('Enter');
 
       await expect(page.locator('.sent-overlay')).toBeVisible();
-      await expect(page.locator('.healthy-row.selected .healthy-row-name')).toContainText(firstPrompt);
+      await expect(page.locator('.healthy-row.selected .healthy-row-name')).toHaveText(initiallySelected!);
 
       await expect.poll(() => logicalSubmissions(request, firstTmux), { timeout: 3000 }).toContain(inputText);
       expectSubmittedAsMessageThenEnter(await writtenChunks(request, firstTmux), inputText);

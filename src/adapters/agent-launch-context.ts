@@ -38,10 +38,10 @@ const PASTE_END = promptEncoder.encode(PASTE_END_TEXT);
 const BRACKETED_PASTE_MODE_ENABLE_TEXT = '\x1b[?2004h';
 
 /**
- * Default cushion (ms) between the bracketed prompt block and the
- * submitting Enter. Claude Code finalises bracketed paste asynchronously
- * under dtach; 150ms left the prompt visible but unsubmitted in live repro,
- * while 500ms reliably submitted.
+ * Default cushion (ms) between prompt text and the submitting Enter. Agent
+ * TUIs can finalise injected composer text asynchronously under dtach; 150ms
+ * left the prompt visible but unsubmitted in live repro, while 500ms reliably
+ * submitted.
  */
 export const DEFAULT_PROMPT_SUBMIT_DELAY_MS = 500;
 export const DEFAULT_PROMPT_READY_TIMEOUT_MS = 15_000;

@@ -623,6 +623,51 @@ describe('TerminalPanel', () => {
     expect(ws.send).toHaveBeenNthCalledWith(2, '\r');
   });
 
+  test('forwards Enter when the visible composer has an adapter-injected draft', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    setTerminalBufferLines(terminal, [
+      'IGNORED_EARLY_ENTER:browser-pre-fix-reply',
+      '❯ browser-pre-fix-reply',
+    ]);
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith('\r');
+  });
+
+  test('navigates when a historical composer draft is followed by the current empty prompt', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    setTerminalBufferLines(terminal, [
+      '❯ old submitted prompt',
+      'Working complete',
+      '❯ ',
+    ]);
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
   test('does not navigate when the visible buffer shows a Claude selection menu', () => {
     // Purely additive menu backstop: every non-menu case behaves exactly as the
     // draft-only path. When the rendered composer shows a marked numbered row +
