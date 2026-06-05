@@ -19,10 +19,17 @@ interface TerminalInputState {
   queue: Promise<unknown>;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class TerminalInputCoordinator implements TerminalInputWriterPort {
   private readonly states = new Map<SessionId, TerminalInputState>();
 
-  constructor(private readonly backend: Pick<TerminalBackend, 'write' | 'writeSequence' | 'isAlive'>) {}
+  constructor(
+    private readonly backend: Pick<TerminalBackend, 'write' | 'writeSequence' | 'isAlive'>,
+    private readonly sleepFn: (ms: number) => Promise<void> = sleep,
+  ) {}
 
   registerSession(sessionId: SessionId): void {
     if (this.states.has(sessionId)) return;
@@ -76,7 +83,7 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
   async writeInputSequence(
     sessionId: string,
     payloads: Uint8Array[],
-    _meta?: { reason?: string },
+    meta?: { reason?: string; interPayloadDelayMs?: number },
   ): Promise<TerminalInputWriteResult> {
     this.getOrRegisterState(sessionId);
     if (payloads.length === 0) {
@@ -86,7 +93,16 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
     return this.withSessionQueue(sessionId, async (state) => {
       const readinessVersion = this.acceptWrite(state);
       try {
-        await this.backend.writeSequence(sessionId, payloads);
+        const delayMs = meta?.interPayloadDelayMs ?? 0;
+        if (delayMs > 0 && payloads.length > 1) {
+          await this.backend.write(sessionId, payloads[0]!);
+          for (const payload of payloads.slice(1)) {
+            await this.sleepFn(delayMs);
+            await this.backend.write(sessionId, payload);
+          }
+        } else {
+          await this.backend.writeSequence(sessionId, payloads);
+        }
       } finally {
         state.pendingWrites -= 1;
       }

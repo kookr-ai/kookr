@@ -30,7 +30,7 @@ import {
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { inferGitInfoPathFromEvent } from './git-path-inference.js';
 import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
-import { buildAgentLaunchContext } from './agent-launch-context.js';
+import { buildAgentLaunchContext, DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
@@ -394,10 +394,12 @@ export class CodexCliAdapter implements AgentAdapter {
     // Codex TUI uses bracketed-paste heuristics to distinguish "pasted
     // multi-line text" from "typed + Enter submit." Collapsing text+Enter
     // into one write(bytes + '\r') risks Codex classifying the entire blob
-    // as paste and NOT submitting. `writeSequence` keeps the two-syscall
-    // split under one mutex acquisition, so concurrent writers can't
-    // interleave but Codex's heuristic still sees two distinct writes.
-    await this.inputWriter.writeInputSequence(tmuxName, [textEncoder.encode(text), ENTER_BYTES], { reason: 'adapter-send-input' });
+    // as paste and NOT submitting. The input coordinator keeps the two writes
+    // serialized while delaying Enter so the TUI can commit the text first.
+    await this.inputWriter.writeInputSequence(tmuxName, [textEncoder.encode(text), ENTER_BYTES], {
+      reason: 'adapter-send-input',
+      interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS,
+    });
   }
 
   async sendKeystroke(tmuxName: string, key: string): Promise<void> {

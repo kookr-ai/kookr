@@ -6,6 +6,7 @@
  */
 import { expect } from '@playwright/test';
 import type { Page, APIRequestContext } from '@playwright/test';
+import type { AgentType } from '../src/shared/protocol.js';
 
 // ---------------------------------------------------------------------------
 // Helpers (same conventions as kookr.spec.ts)
@@ -58,7 +59,8 @@ export async function getTasks(request: APIRequestContext) {
     cwd: string;
     criteria?: string;
     status: string;
-    sessions: Array<{ tmuxSession: string; lastStatus?: string }>;
+    agentType?: AgentType;
+    sessions: Array<{ tmuxSession: string; lastStatus?: string; agentType?: AgentType }>;
   }>;
 }
 

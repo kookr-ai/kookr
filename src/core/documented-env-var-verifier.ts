@@ -87,6 +87,7 @@ export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_SPEAK',
   'KOOKR_USER_PLAYBOOKS_DIR',
   'KOOKR_KB_CONTEXT_INJECT',
+  'KOOKR_CANARY_SUBMIT_READY_MS',
   'KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE',
   // Experimental peer-to-peer collaboration feature (not user-configurable yet).
   'KOOKR_COLLABORATION_CONTACT_SHARE_VIEW_ONLY',

@@ -34,6 +34,7 @@ import { inferGitInfoPathFromEvent } from './git-path-inference.js';
 import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
 import {
   buildAgentLaunchContext,
+  DEFAULT_PROMPT_SUBMIT_DELAY_MS,
   deliverInitialPromptToSession,
   type InitialPromptDeliveryResult,
   resolveBracketedPasteSubmit,
@@ -418,7 +419,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     await this.inputWriter.writeInputSequence(tmuxName, [
       textEncoder.encode(text),
       ENTER_BYTES,
-    ], { reason: 'adapter-send-input' });
+    ], { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS });
   }
 
   /** Send a single keystroke without trailing Enter (for permission prompts). */

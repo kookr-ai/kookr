@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import { ClaudeCodeAdapter, resolvePluginDir } from './claude-code-adapter.js';
+import { DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
+import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
 
 // Mock getGitInfo so we can control whether it returns data
 vi.mock('./git-info.js', async (importOriginal) => {
@@ -815,6 +817,22 @@ describe('ClaudeCodeAdapter', () => {
     // V8: sendInput calls backend.writeSequence([text_bytes, ENTER_BYTES]).
     // FakeTerminalBackend concatenates written payloads; decoded, that's text + '\r'.
     expect(backend.getWrittenText(sessionId).slice(before)).toBe('yes, continue\r');
+  });
+
+  test('sendInput requests a delayed submitting Enter', async () => {
+    const writer: TerminalInputWriterPort = {
+      writeInput: vi.fn().mockResolvedValue({ sessionId: 'session-1', readinessVersion: 1 }),
+      writeInputSequence: vi.fn().mockResolvedValue({ sessionId: 'session-1', readinessVersion: 1 }),
+    };
+    const delayedAdapter = new ClaudeCodeAdapter(backend, taskStore, { terminalInputWriter: writer });
+
+    await delayedAdapter.sendInput('session-1', 'yes, continue');
+
+    expect(writer.writeInputSequence).toHaveBeenCalledWith(
+      'session-1',
+      [new TextEncoder().encode('yes, continue'), Uint8Array.of(0x0d)],
+      { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS },
+    );
   });
 
   test('sendInput records the submitted text in keysReceived', async () => {

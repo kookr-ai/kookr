@@ -385,6 +385,25 @@ async function main() {
     return c.json({ tmuxName, writtenText: terminal.getWrittenText(tmuxName) });
   });
 
+  // Get the raw write-call payloads for a fake terminal session. This catches
+  // prompt-submit regressions that a concatenated string cannot: Codex and
+  // Claude must receive the message bytes and the submitting Enter as distinct
+  // ordered writes.
+  server.app.get('/api/test/written-chunks/:tmuxName', (c) => {
+    const tmuxName = c.req.param('tmuxName');
+    const session = terminal.sessions.get(tmuxName);
+    if (!session) {
+      return c.json({ error: `Session not found: ${tmuxName}` }, 404);
+    }
+    return c.json({
+      tmuxName,
+      chunks: terminal.getWrittenBytes(tmuxName).map((bytes) => ({
+        text: Buffer.from(bytes).toString('utf8'),
+        hex: Buffer.from(bytes).toString('hex'),
+      })),
+    });
+  });
+
   // Backdate an anomaly's detectedAt (for age badge tests)
   server.app.post('/api/test/backdate-anomaly', async (c) => {
     const { agentId, minutesAgo } = await c.req.json();

@@ -41,6 +41,8 @@ export interface FakeSession {
   dataSubscribers: Set<(data: Uint8Array) => void>;
   /** Raw byte record of every `write` call, in submission order. */
   written: Uint8Array[];
+  /** Draft text accumulated by separate write() calls until Enter submits it. */
+  inputDraft: string;
 }
 
 export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriterPort {
@@ -81,6 +83,7 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       pastedTexts: [],
       dataSubscribers: new Set(),
       written: [],
+      inputDraft: '',
     });
   }
 
@@ -108,7 +111,13 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       const text = decoder.decode(data);
       if (text.endsWith('\r') || text.endsWith('\n')) {
         const s = this.sessions.get(id);
-        if (s) s.keysReceived.push(text.replace(/[\r\n]+$/, ''));
+        if (s) {
+          s.keysReceived.push(s.inputDraft + text.replace(/[\r\n]+$/, ''));
+          s.inputDraft = '';
+        }
+      } else {
+        const s = this.sessions.get(id);
+        if (s) s.inputDraft += text;
       }
     });
   }
@@ -139,12 +148,19 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       const concatText = decoder.decode(concat);
       if (concatText.endsWith('\r') || concatText.endsWith('\n')) {
         const s = this.sessions.get(id);
-        if (s) s.keysReceived.push(concatText.replace(/[\r\n]+$/, ''));
+        if (s) {
+          s.keysReceived.push(concatText.replace(/[\r\n]+$/, ''));
+          s.inputDraft = '';
+        }
       }
     });
   }
 
-  async writeInputSequence(id: SessionId, payloads: Uint8Array[]): Promise<TerminalInputWriteResult> {
+  async writeInputSequence(
+    id: SessionId,
+    payloads: Uint8Array[],
+    _meta?: { reason?: string; interPayloadDelayMs?: number },
+  ): Promise<TerminalInputWriteResult> {
     await this.writeSequence(id, payloads);
     return { sessionId: id, readinessVersion: 0 };
   }
@@ -205,6 +221,7 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       if (!s || !s.alive) throw new SessionGoneError(id);
       s.pastedTexts.push(text);
       s.paneContent += text;
+      s.inputDraft += text;
       s.written.push(encoder.encode(text));
     });
   }
