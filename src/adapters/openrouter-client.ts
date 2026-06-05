@@ -16,7 +16,7 @@
  * `KOOKR_LLM_TIMEOUT_MS` env var (passed as `timeoutMs`) overrides it.
  */
 
-import type { LlmClient, LlmCompletionRequest } from './llm-types.js';
+import type { LlmClient, LlmCompletionRequest } from '../core/llm-types.js';
 
 const DEFAULT_MODEL = 'deepseek/deepseek-v4-flash';
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
@@ -46,6 +46,37 @@ export interface OpenRouterClientOptions {
    * fast free-tier providers cannot abort OpenRouter prematurely.
    */
   timeoutMs?: number;
+}
+
+type OpenRouterEnv = Record<string, string | undefined>;
+
+/**
+ * Build the OpenRouter adapter from environment configuration.
+ *
+ * This lives in adapters so core can stay behind the provider-neutral
+ * `LlmClient` contract and does not need to know OpenRouter transport details.
+ */
+export function createOpenRouterLlmClientFromEnv(env: OpenRouterEnv = process.env): LlmClient | null {
+  // Component-specific key wins so a separate OpenRouter credit limit can be
+  // scoped to Kookr; OPENROUTER_API_KEY remains a valid single-key fallback.
+  // Trim before falling through so a blank KOOKR_OPENROUTER_API_KEY (empty
+  // .env line, empty CI secret) does not shadow a working OPENROUTER_API_KEY.
+  const key = env.KOOKR_OPENROUTER_API_KEY?.trim() || env.OPENROUTER_API_KEY?.trim();
+  if (!key) return null;
+
+  // Optional timeout override; a non-numeric or non-positive value is ignored
+  // so the client falls back to its DEFAULT_TIMEOUT_MS floor.
+  const parsedTimeout = Number(env.KOOKR_LLM_TIMEOUT_MS?.trim());
+  const timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : undefined;
+
+  return new OpenRouterLlmClient({
+    apiKey: key,
+    model: env.KOOKR_LLM_MODEL?.trim() || undefined,
+    baseUrl: env.KOOKR_LLM_BASE_URL?.trim() || undefined,
+    httpReferer: env.KOOKR_LLM_HTTP_REFERER?.trim() || undefined,
+    appTitle: env.KOOKR_LLM_APP_TITLE?.trim() || undefined,
+    timeoutMs,
+  });
 }
 
 interface ChatCompletionResponse {

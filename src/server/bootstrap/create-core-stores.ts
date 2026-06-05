@@ -20,6 +20,7 @@ import { DeferredTelemetryLogWriter } from '../../core/telemetry.js';
 import { TokenTracker } from '../../core/token-tracker.js';
 import { Watchdog } from '../../core/watchdog.js';
 import { WorktreeRegistry } from '../../adapters/git-worktree-registry.js';
+import { createOpenRouterLlmClientFromEnv } from '../../adapters/openrouter-client.js';
 import { CombinedShadowStrategy } from '../../core/combined-shadow-strategy.js';
 import { HttpPushTracker } from '../../core/http-push-tracker.js';
 import { PaneSemanticsStrategy } from '../../core/pane-patterns.js';
@@ -158,7 +159,9 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
   shadowRegistry.register(new CombinedShadowStrategy());
   const httpPushTracker = new HttpPushTracker();
 
-  const rawLlmClient: LlmClient | null = await createLlmClient();
+  const rawLlmClient: LlmClient | null = await createLlmClient({
+    buildOpenRouter: createOpenRouterLlmClientFromEnv,
+  });
   const llmClient = rawLlmClient ? new CircuitBreakerLlmClient(rawLlmClient, llmBreaker) : null;
   if (rawLlmClient) {
     console.log(`[llm] Provider: ${rawLlmClient.provider} (${rawLlmClient.model})`);
