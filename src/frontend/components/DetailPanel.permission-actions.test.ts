@@ -150,7 +150,7 @@ describe('DetailPanel permission quick actions', () => {
     expect(sent).not.toContainEqual({ type: 'completeTask', taskId: 'task-1' });
   });
 
-  test('complete and reflect button completes immediately with reflection request', () => {
+  test('reflect button requests a snapshot reflection without completing', () => {
     const sent: ClientMessage[] = [];
     const onRequestComplete = vi.fn();
     root = renderDetailPanel(container, (msg) => {
@@ -158,11 +158,12 @@ describe('DetailPanel permission quick actions', () => {
       return true;
     }, onRequestComplete);
 
-    const button = container.querySelector<HTMLButtonElement>('[data-testid="action-complete-reflect"]');
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="action-reflect"]');
     expect(button).toBeInstanceOf(HTMLButtonElement);
     act(() => button!.click());
 
+    expect(sent).toContainEqual({ type: 'requestTaskSnapshotReflect', taskId: 'task-1' });
+    expect(sent).not.toContainEqual({ type: 'completeTask', taskId: 'task-1' });
     expect(onRequestComplete).not.toHaveBeenCalled();
-    expect(sent).toContainEqual({ type: 'completeTask', taskId: 'task-1', requestReflect: true });
   });
 });

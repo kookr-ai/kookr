@@ -22,6 +22,7 @@ import { buildTaskCompletionMetadata } from '../completion-metadata.js';
 import { getSnapshotAgentsForClient } from './get-snapshot.js';
 import { deleteTask, type DeleteTaskDeps } from './delete-task.js';
 import { writeFeedbackBundle } from './write-feedback-bundle.js';
+import { writeTaskSnapshotBundle } from './write-task-snapshot-bundle.js';
 import { requestTaskReflect } from './request-task-reflect.js';
 
 type RuntimeLifecycleDeps = LifecycleDeps & DeleteTaskDeps;
@@ -39,6 +40,7 @@ export interface TaskLifecycleCommandDeps {
   getLifecycleDeps: () => RuntimeLifecycleDeps;
   tryPromotePending?: () => Promise<void>;
   feedbackDir?: string;
+  taskSnapshotDir?: string;
   reflectWorktreesDir?: string;
   hooksDir?: string;
   readInteractionLogSnapshot?: () => Promise<import('../../core/interaction-log.js').InteractionEvent[]>;
@@ -224,6 +226,78 @@ export class TaskLifecycleCommands {
     return { outcome: 'completed', task };
   }
 
+  async requestTaskSnapshotReflect(taskId: string): Promise<TaskLifecycleCommandResult> {
+    if (
+      !this.deps.taskSnapshotDir ||
+      !this.deps.hooksDir ||
+      !this.deps.readInteractionLogSnapshot ||
+      !this.deps.reflectWorktreesDir ||
+      !this.deps.launchTask
+    ) {
+      console.warn('[requestTaskSnapshotReflect] missing deps; ignoring');
+      return { outcome: 'invalid', code: 'snapshot_reflect_unavailable', error: 'Task snapshot reflection is not configured' };
+    }
+
+    const task = this.deps.taskStore.getTask(taskId);
+    if (!task) return { outcome: 'not_found', error: `Task not found: ${taskId}` };
+
+    const sessionIds = new Set(task.sessions.map((session) => session.tmuxSession));
+    const agentStates = getSnapshotAgentsForClient({
+      monitor: this.deps.monitor,
+      activityMetaProvider: this.deps.activityMetaProvider,
+      pendingSignalProvider: this.deps.taskStore,
+    }).filter((agent) => sessionIds.has(agent.agentId));
+    const sessionEvents = Object.fromEntries(
+      task.sessions.map((session) => [
+        session.tmuxSession,
+        this.deps.monitor.getAgentEvents(session.tmuxSession),
+      ]),
+    );
+    const agentId = task.sessions[0]?.tmuxSession ?? '';
+
+    await this.deps.interactionLog?.append({
+      type: 'task_reflect_requested',
+      taskId,
+      agentId,
+      mode: 'snapshot',
+      timestamp: nowISO(),
+    });
+
+    let bundlePath: string;
+    try {
+      const result = await writeTaskSnapshotBundle(task, {
+        taskSnapshotDir: this.deps.taskSnapshotDir,
+        hooksDir: this.deps.hooksDir,
+        readInteractionLog: this.deps.readInteractionLogSnapshot,
+        agentStates,
+        sessionEvents,
+      });
+      bundlePath = result.bundlePath;
+    } catch (err) {
+      console.warn(`[requestTaskSnapshotReflect] bundle write failed for ${taskId}:`, err);
+      return {
+        outcome: 'snapshot_failed',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    const result = await requestTaskReflect(
+      { sourceTaskId: taskId, bundlePath, direction: 'review', kind: 'snapshot' },
+      {
+        taskStore: this.deps.taskStore,
+        reflectWorktreesDir: this.deps.reflectWorktreesDir,
+        launchTask: this.deps.launchTask,
+      },
+    );
+    if (result.spawned) {
+      console.log(`[requestTaskSnapshotReflect] spawned reflect ${result.reflectTaskId} for ${taskId}`);
+    } else {
+      console.warn(`[requestTaskSnapshotReflect] spawn declined for ${taskId}: ${result.reason}`);
+    }
+
+    return { outcome: 'completed', task };
+  }
+
   private async completeActiveRalphIteration(task: Task): Promise<void> {
     for (const session of task.sessions) {
       if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {
@@ -378,6 +452,12 @@ export class TaskLifecycleCommands {
     rm(bundleTaskDir, { recursive: true, force: true }).catch(() => {});
   }
 
+  private gcTaskSnapshotBundle(taskId: string): void {
+    if (!this.deps.taskSnapshotDir) return;
+    const bundleTaskDir = join(this.deps.taskSnapshotDir, taskId);
+    rm(bundleTaskDir, { recursive: true, force: true }).catch(() => {});
+  }
+
   private deleteFinishedTaskRecord(task: Task, opts: { gcFeedbackBundle: boolean }): void {
     // Clear-finished is a terminal record sweep, not an active task delete. Do
     // not call adapter.stop here; legacy terminal records can have stale
@@ -386,7 +466,10 @@ export class TaskLifecycleCommands {
       this.deps.monitor.unregisterAgent(session.tmuxSession);
     }
     this.deps.taskStore.deleteTask(task.id);
-    if (opts.gcFeedbackBundle) this.gcFeedbackBundle(task.id);
+    if (opts.gcFeedbackBundle) {
+      this.gcFeedbackBundle(task.id);
+      this.gcTaskSnapshotBundle(task.id);
+    }
   }
 }
 

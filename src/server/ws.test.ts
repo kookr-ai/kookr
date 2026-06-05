@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFile as execFileCb } from 'node:child_process';
@@ -751,6 +751,84 @@ describe('WebSocket MessageRouter', () => {
     expect(events.some((event) => event.type === 'reflect_triggered')).toBe(true);
 
     await rm(sessionsDir, { recursive: true, force: true });
+  });
+
+  test('client requests task snapshot reflect without completing the source task', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'kookr-task-snapshot-reflect-'));
+    const hooksDir = join(tempDir, 'hooks');
+    const sessionsDir = join(tempDir, 'sessions');
+    const taskSnapshotDir = join(tempDir, 'task-snapshots');
+    const reflectWorktreesDir = join(tempDir, 'reflect-worktrees');
+    await mkdir(hooksDir, { recursive: true });
+
+    const sourceCwd = process.cwd();
+    const task = taskStore.createTask('Fix bug', sourceCwd);
+    const tmuxName = await adapter.launch(task.id, 'Fix bug', sourceCwd);
+    monitor.registerAgent(tmuxName);
+    monitor.processEvents(tmuxName, [
+      { type: 'tool_use', sessionId: 'session-1', toolName: 'Bash' },
+    ]);
+    await writeFile(join(hooksDir, `${tmuxName}.jsonl`), '{"type":"PreToolUse"}\n', 'utf-8');
+
+    const interactionLog = new DeferredInteractionLogWriter(
+      sessionsDir,
+      async () => 'task-snapshot-session',
+    );
+    const launched: LaunchOpts[] = [];
+    const routerWithTaskReflect = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: sourceCwd,
+      interactionLog,
+      launchTask: async (opts: LaunchOpts): Promise<LaunchResult> => {
+        launched.push(opts);
+        const reflectTask = taskStore.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          criteria: opts.criteria,
+          name: opts.name,
+        });
+        return { task: reflectTask, queued: false };
+      },
+      ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
+      taskSnapshotDir,
+      reflectWorktreesDir,
+      hooksDir,
+    });
+
+    try {
+      await routerWithTaskReflect.handleMessage({ type: 'requestTaskSnapshotReflect', taskId: task.id });
+
+      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+      expect(launched).toHaveLength(1);
+      expect(launched[0].prompt).toContain('task-snapshot-reflect');
+      expect(launched[0].cwd).toContain(reflectWorktreesDir);
+
+      const reflectTask = taskStore.listTasks().find((candidate) => candidate.reflectMeta?.sourceTaskId === task.id);
+      expect(reflectTask?.reflectMeta).toMatchObject({
+        kind: 'snapshot',
+        sourceTaskId: task.id,
+        direction: 'review',
+      });
+      const bundlePath = reflectTask!.reflectMeta!.bundlePath;
+      const bundle = JSON.parse(await readFile(join(bundlePath, 'bundle.json'), 'utf-8')) as {
+        schemaVersion: string;
+        taskStatus: string;
+        sessions: Array<{ hookFile?: string; eventCount: number }>;
+        interactionFile: string;
+      };
+      expect(bundle.schemaVersion).toBe('task-snapshot-reflect.v1');
+      expect(bundle.taskStatus).toBe('inProgress');
+      expect(bundle.sessions[0]).toMatchObject({ hookFile: `hook-${tmuxName}.jsonl`, eventCount: 1 });
+      const interactionSlice = await readFile(join(bundlePath, bundle.interactionFile), 'utf-8');
+      expect(interactionSlice).toContain('task_reflect_requested');
+      expect(interactionSlice).toContain(task.id);
+    } finally {
+      if (launched[0]?.cwd) {
+        await execFile('git', ['-C', sourceCwd, 'worktree', 'remove', '--force', launched[0].cwd]).catch(() => {});
+      }
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   test('client sends respondAll - input delivered to all agents', async () => {
