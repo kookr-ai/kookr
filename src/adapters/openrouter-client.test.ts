@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { OpenRouterLlmClient } from './openrouter-client.js';
-import type { LlmCompletionRequest } from './llm-types.js';
+import { createOpenRouterLlmClientFromEnv, OpenRouterLlmClient } from './openrouter-client.js';
+import type { LlmCompletionRequest } from '../core/llm-types.js';
 
 const API_KEY = 'sk-or-test-secret-key';
 
@@ -313,6 +313,110 @@ describe('OpenRouterLlmClient', () => {
       const rejects = expect(pending).rejects.toThrow();
       await vi.advanceTimersByTimeAsync(15_000);
       await rejects;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('createOpenRouterLlmClientFromEnv', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test('returns null when neither OpenRouter API key is configured', () => {
+    expect(createOpenRouterLlmClientFromEnv({})).toBeNull();
+  });
+
+  test('prefers KOOKR_OPENROUTER_API_KEY over OPENROUTER_API_KEY', async () => {
+    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
+    const client = createOpenRouterLlmClientFromEnv({
+      KOOKR_OPENROUTER_API_KEY: ' component-key ',
+      OPENROUTER_API_KEY: 'shared-key',
+    });
+
+    expect(client).toBeInstanceOf(OpenRouterLlmClient);
+    expect(client?.provider).toBe('openrouter');
+    await client?.complete(baseReq);
+    expect(requestHeaders(fetchMock).Authorization).toBe('Bearer component-key');
+  });
+
+  test('falls back to OPENROUTER_API_KEY when the component key is blank', async () => {
+    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
+    const client = createOpenRouterLlmClientFromEnv({
+      KOOKR_OPENROUTER_API_KEY: '   ',
+      OPENROUTER_API_KEY: ' shared-key ',
+    });
+
+    expect(client).toBeInstanceOf(OpenRouterLlmClient);
+    await client?.complete(baseReq);
+    expect(requestHeaders(fetchMock).Authorization).toBe('Bearer shared-key');
+  });
+
+  test('applies model, base URL, and attribution overrides from env', async () => {
+    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
+    const client = createOpenRouterLlmClientFromEnv({
+      OPENROUTER_API_KEY: API_KEY,
+      KOOKR_LLM_MODEL: ' openai/gpt-5-mini ',
+      KOOKR_LLM_BASE_URL: ' https://proxy.internal/api/v1/ ',
+      KOOKR_LLM_HTTP_REFERER: ' https://kookr.example ',
+      KOOKR_LLM_APP_TITLE: ' Kookr Dev ',
+    });
+
+    expect(client?.model).toBe('openai/gpt-5-mini');
+    await client?.complete(baseReq);
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://proxy.internal/api/v1/chat/completions');
+    expect(requestHeaders(fetchMock)['HTTP-Referer']).toBe('https://kookr.example');
+    expect(requestHeaders(fetchMock)['X-Title']).toBe('Kookr Dev');
+  });
+
+  test('applies a valid timeout override from env', async () => {
+    vi.useFakeTimers();
+    try {
+      stubAbortAwareFetch();
+      const client = createOpenRouterLlmClientFromEnv({
+        OPENROUTER_API_KEY: API_KEY,
+        KOOKR_LLM_TIMEOUT_MS: ' 1000 ',
+      });
+
+      const pending = client!.complete({ ...baseReq, timeoutMs: 20_000 });
+      const settled = vi.fn();
+      void pending.then(settled, settled);
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(settled).not.toHaveBeenCalled();
+
+      const rejects = expect(pending).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(1);
+      await rejects;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('ignores non-numeric and non-positive timeout overrides', async () => {
+    vi.useFakeTimers();
+    try {
+      for (const bad of ['not-a-number', '0', '-500', '  ']) {
+        vi.unstubAllGlobals();
+        stubAbortAwareFetch();
+        const client = createOpenRouterLlmClientFromEnv({
+          OPENROUTER_API_KEY: API_KEY,
+          KOOKR_LLM_TIMEOUT_MS: bad,
+        });
+
+        const pending = client!.complete({ ...baseReq, timeoutMs: 1000 });
+        const settled = vi.fn();
+        void pending.then(settled, settled);
+
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(settled).not.toHaveBeenCalled();
+
+        const rejects = expect(pending).rejects.toThrow();
+        await vi.advanceTimersByTimeAsync(15_000);
+        await rejects;
+      }
     } finally {
       vi.useRealTimers();
     }
