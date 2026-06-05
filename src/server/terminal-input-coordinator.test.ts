@@ -121,4 +121,50 @@ describe('TerminalInputCoordinator', () => {
     await write;
     writeSpy.mockRestore();
   });
+
+  it('delays sequence payloads while keeping the session write in-flight', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 's1', command: 'agent', args: [] });
+    let releaseDelay!: () => void;
+    const sleepFn = vi.fn(() => new Promise<void>((resolve) => {
+      releaseDelay = resolve;
+    }));
+    const coordinator = new TerminalInputCoordinator(backend, sleepFn);
+    coordinator.registerSession('s1');
+
+    const writeSequenceSpy = vi.spyOn(backend, 'writeSequence');
+    const writePromise = coordinator.writeInputSequence(
+      's1',
+      [encoder.encode('reply'), Uint8Array.of(0x0d)],
+      { reason: 'test-submit', interPayloadDelayMs: 500 },
+    );
+
+    await vi.waitFor(() => {
+      expect(backend.getWrittenText('s1')).toBe('reply');
+      expect(sleepFn).toHaveBeenCalledWith(500);
+    });
+
+    const snapshot = coordinator.getSnapshot('s1')!;
+    const readyMark = coordinator.markPromptReady('s1', {
+      observedEpoch: snapshot.inputStateEpoch,
+      observedReadinessVersion: snapshot.readinessVersion,
+    });
+    let readyResolved = false;
+    readyMark.then(() => {
+      readyResolved = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(readyResolved).toBe(false);
+    expect(writeSequenceSpy).not.toHaveBeenCalled();
+
+    releaseDelay();
+    await writePromise;
+    await expect(readyMark).resolves.toBe(false);
+
+    expect(backend.getWrittenText('s1')).toBe('reply\r');
+    expect(backend.getWrittenBytes('s1').map((bytes) => Array.from(bytes))).toEqual([
+      Array.from(encoder.encode('reply')),
+      [0x0d],
+    ]);
+  });
 });

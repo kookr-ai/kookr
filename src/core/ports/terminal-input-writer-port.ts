@@ -13,8 +13,12 @@ export interface TerminalInputWriterPort {
   writeInputSequence(
     sessionId: string,
     payloads: Uint8Array[],
-    meta?: { reason?: string },
+    meta?: { reason?: string; interPayloadDelayMs?: number },
   ): Promise<TerminalInputWriteResult>;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function asTerminalInputWriterPort(value: unknown): TerminalInputWriterPort {
@@ -35,8 +39,17 @@ export function asTerminalInputWriterPort(value: unknown): TerminalInputWriterPo
         await legacy.write!(sessionId, bytes);
         return { sessionId, readinessVersion: 0 };
       },
-      async writeInputSequence(sessionId, payloads) {
-        await legacy.writeSequence!(sessionId, payloads);
+      async writeInputSequence(sessionId, payloads, meta) {
+        const delayMs = meta?.interPayloadDelayMs ?? 0;
+        if (delayMs <= 0 || payloads.length <= 1) {
+          await legacy.writeSequence!(sessionId, payloads);
+          return { sessionId, readinessVersion: 0 };
+        }
+        await legacy.write!(sessionId, payloads[0]!);
+        for (const payload of payloads.slice(1)) {
+          await sleep(delayMs);
+          await legacy.write!(sessionId, payload);
+        }
         return { sessionId, readinessVersion: 0 };
       },
     };
