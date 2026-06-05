@@ -1,4 +1,5 @@
 import type { ClientMessage } from '../shared/protocol.js';
+import { recordWebSocketDebugEvent } from './debug-timeline.js';
 
 export interface BugReportWireObservation {
   direction: 'inbound' | 'outbound';
@@ -33,6 +34,7 @@ let wireObservations: BugReportWireObservation[] = [];
 let recordedAlerts: BugReportRecordedAlert[] = [];
 
 export function recordInbound(raw: string, parsed: unknown | null): void {
+  recordWebSocketDebugEvent('inbound', raw, parsed);
   const receivedAt = new Date().toISOString();
   const parseOk = parsed !== null && typeof parsed === 'object';
   const type = messageType(parsed);
@@ -51,6 +53,7 @@ export function recordInbound(raw: string, parsed: unknown | null): void {
 }
 
 export function recordOutbound(message: ClientMessage): void {
+  recordWebSocketDebugEvent('outbound', message as Record<string, unknown>, message);
   const json = safeStringify(message);
   wireObservations.push({
     direction: 'outbound',

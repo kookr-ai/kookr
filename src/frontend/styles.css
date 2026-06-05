@@ -10641,3 +10641,129 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   border-color: var(--warning-fg, #b8860b);
   color: var(--warning-fg, #b8860b);
 }
+.debug-timeline-panel {
+  position: fixed;
+  right: 14px;
+  bottom: 46px;
+  z-index: 80;
+  width: min(520px, calc(100vw - 28px));
+  max-height: min(520px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0,0,0,0.48);
+  overflow: hidden;
+}
+
+.debug-timeline-header,
+.debug-timeline-actions,
+.debug-timeline-filters {
+  display: flex;
+  align-items: center;
+}
+
+.debug-timeline-header {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-dim);
+}
+
+.debug-timeline-header h2 {
+  margin: 0;
+  color: var(--text-bright);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.debug-timeline-header span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.debug-timeline-actions {
+  gap: 8px;
+}
+
+.debug-timeline-actions .btn-primary,
+.debug-timeline-actions .btn-secondary {
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.debug-timeline-filters {
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-dim);
+}
+
+.debug-timeline-filters select,
+.debug-timeline-filters input {
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.debug-timeline-filters select {
+  width: 150px;
+}
+
+.debug-timeline-filters input {
+  flex: 1;
+}
+
+.debug-timeline-list {
+  flex: 1;
+  min-height: 160px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.debug-timeline-entry {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(45,53,80,0.5);
+  color: var(--text-secondary);
+}
+
+.debug-timeline-entry time {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.debug-timeline-entry strong {
+  display: block;
+  color: var(--text-bright);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.debug-timeline-entry span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.debug-timeline-entry--websocket { border-left: 3px solid var(--blue); }
+.debug-timeline-entry--store { border-left: 3px solid var(--teal); }
+.debug-timeline-entry--finding-lifecycle { border-left: 3px solid var(--amber); }
+
+.debug-timeline-empty {
+  padding: 24px 12px;
+  color: var(--text-muted);
+  text-align: center;
+}

@@ -1,5 +1,6 @@
 import type { AgentState, BuildInfo } from '../shared/protocol.js';
 import type { BugReportRecordedAlert, BugReportWireObservation } from './bug-report-recorder.js';
+import type { DebugTimelineEntry } from './debug-timeline.js';
 
 export interface BugReportBundle {
   schemaVersion: 'kookr-bug-report.v1';
@@ -17,6 +18,7 @@ export interface BugReportBundle {
   fleetSummary: BugReportFleetSummary;
   alerts: BugReportAlert[];
   wireObservations: BugReportWireObservation[];
+  debugTimeline: DebugTimelineEntry[];
   captureDiagnostics: BugReportCaptureDiagnostics;
 }
 
@@ -85,6 +87,7 @@ export interface BuildBugReportInput {
   serverStartedAt: string | null;
   alerts: BugReportRecordedAlert[];
   wireObservations: BugReportWireObservation[];
+  debugTimeline?: DebugTimelineEntry[];
   note?: string;
   now?: Date;
   location?: Pick<Location, 'hostname' | 'protocol' | 'pathname'>;
@@ -107,6 +110,65 @@ const SECRET_VALUE_PATTERNS = [
 ];
 const HOME_PATH_RE = /\/(?:home|Users)\/[^\s"',)]+/g;
 const NON_HOME_ABSOLUTE_PATH_RE = /(?:^|[\s"'(])\/(?:tmp|var|opt|workspace|workspaces|srv|mnt|Volumes)\/[^\s"',)]+/g;
+const DEBUG_MESSAGE_TYPES = new Set([
+  'snapshot',
+  'update',
+  'alert',
+  'githubUpdate',
+  'playbooks',
+  'suggestion',
+  'projectSummaries',
+  'coordinator.snapshot',
+  'dashboardSelection',
+  'emptyEnterDecision',
+  'contributionWarning',
+  'achievement:unlocked',
+  'achievement:reset:ack',
+  'quotaStatus',
+  'resourceStatus',
+  'circuitBreakerStatus',
+  'diagnosticReport',
+  'schedules',
+  'scheduleFired',
+  'workspaceView',
+  'workspaceCleanupDetail',
+  'workspaceSweepComplete',
+  'workspaceSweepBusy',
+  'ossAttempts',
+  'respond',
+  'respondAll',
+  'directReply',
+  'navigate',
+  'getNext',
+  'selectionChanged',
+  'skip',
+  'skipAll',
+  'snooze',
+  'cancelSnooze',
+  'launch',
+  'completeTask',
+  'setTaskFeedback',
+  'requestTaskReflect',
+  'relaunch',
+  'cancelTask',
+  'reopenTask',
+  'deleteTask',
+  'renameTask',
+  'setTaskPriority',
+  'stop',
+  'reflect',
+  'listPlaybooks',
+  'telemetry',
+  'setProjectConfig',
+  'clearCompleted',
+  'ackTerminatedTask',
+  'achievement:reset',
+  'achievement:setEnabled',
+  'permissionChoice',
+  'rearmCircuitBreaker',
+  'findingFeedback',
+  'missedFinding',
+]);
 
 export function buildBugReportBundle(input: BuildBugReportInput): { bundle: BugReportBundle; serialized: string } {
   const warnings: string[] = [];
@@ -130,6 +192,7 @@ export function buildBugReportBundle(input: BuildBugReportInput): { bundle: BugR
         'path_redaction',
         'secret_redaction',
         'wire_payload_summarization',
+        'debug_trace_redaction',
       ],
     },
     selection: {
@@ -153,6 +216,9 @@ export function buildBugReportBundle(input: BuildBugReportInput): { bundle: BugR
         ...(event.shortPreview ? { shortPreview: summarizePreview(event.shortPreview) } : {}),
       }))
     )) ?? [],
+    debugTimeline: safeSection('debugTimeline', failures, omittedSections, () => (
+      (input.debugTimeline ?? []).slice(-50).map(toBugReportDebugTimelineEntry)
+    )) ?? [],
     captureDiagnostics: {
       warnings,
       omittedSections,
@@ -168,6 +234,7 @@ export function buildBugReportBundle(input: BuildBugReportInput): { bundle: BugR
   bundle.captureDiagnostics.bundleSizeBytes = size;
   if (size > HARD_SIZE_LIMIT_BYTES) {
     bundle.wireObservations = [];
+    bundle.debugTimeline = [];
     bundle.alerts = bundle.alerts.slice(-5);
     bundle.captureDiagnostics.truncationApplied = true;
     bundle.captureDiagnostics.warnings.push('Bundle exceeded hard size cap; wire observations and older alerts were truncated.');
@@ -303,6 +370,111 @@ function toBugReportAlert(alert: BugReportRecordedAlert): BugReportAlert {
     severity: alert.severity,
     summaryCategory: alert.summaryCategory,
     hasDetails: Boolean(alert.details),
+  };
+}
+
+function toBugReportDebugTimelineEntry(event: DebugTimelineEntry): DebugTimelineEntry {
+  const payload = safeDebugTimelinePayload(event.kind, event.payload);
+  return {
+    sequence: event.sequence,
+    t: event.t,
+    kind: event.kind,
+    summary: safeDebugTimelineSummary(event.kind, payload),
+    tags: safeDebugTimelineTags(event.kind, payload),
+    ...(payload !== undefined ? { payload } : {}),
+  };
+}
+
+function safeDebugTimelinePayload(kind: DebugTimelineEntry['kind'], payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const record = payload as Record<string, unknown>;
+  switch (kind) {
+    case 'websocket':
+      return {
+        ...(record.direction === 'inbound' || record.direction === 'outbound' ? { direction: record.direction } : {}),
+        type: safeDebugMessageType(record.type),
+        ...(typeof record.byteLength === 'number' ? { byteLength: record.byteLength } : {}),
+        ...(typeof record.parseOk === 'boolean' ? { parseOk: record.parseOk } : {}),
+        ...(Array.isArray(record.fieldNames) ? { fieldCount: record.fieldNames.length } : {}),
+        identifiers: safeDebugIdentifiers(record.identifiers),
+      };
+    case 'store':
+      return {
+        ...(Array.isArray(record.changedKeys) ? { changedKeyCount: record.changedKeys.length } : {}),
+        ...(typeof record.agentCountBefore === 'number' ? { agentCountBefore: record.agentCountBefore } : {}),
+        ...(typeof record.agentCountAfter === 'number' ? { agentCountAfter: record.agentCountAfter } : {}),
+        ...(typeof record.selectedAgentId === 'string' || record.selectedAgentId === null ? { selectedAgentId: record.selectedAgentId } : {}),
+      };
+    case 'finding-lifecycle':
+      return {
+        ...(typeof record.agentId === 'string' ? { agentId: record.agentId } : {}),
+        ...(typeof record.taskId === 'string' ? { taskId: record.taskId } : {}),
+        ...(typeof record.transition === 'string' ? { transition: record.transition } : {}),
+        before: safeFindingDebugSnapshot(record.before),
+        after: safeFindingDebugSnapshot(record.after),
+      };
+  }
+}
+
+function safeDebugTimelineSummary(kind: DebugTimelineEntry['kind'], payload: unknown): string {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return kind;
+  const record = payload as Record<string, unknown>;
+  switch (kind) {
+    case 'websocket': {
+      const direction = record.direction === 'inbound' || record.direction === 'outbound' ? record.direction : 'unknown';
+      const type = typeof record.type === 'string' ? record.type : 'unknown';
+      const byteLength = typeof record.byteLength === 'number' ? ` (${record.byteLength} bytes)` : '';
+      return `websocket ${direction} ${type}${byteLength}`;
+    }
+    case 'store': {
+      const count = typeof record.changedKeyCount === 'number' ? record.changedKeyCount : 0;
+      return `store mutation (${count} keys)`;
+    }
+    case 'finding-lifecycle': {
+      const transition = typeof record.transition === 'string' ? record.transition : 'transition';
+      const after = safeFindingDebugSnapshot(record.after);
+      const anomalyType = typeof after?.anomalyType === 'string' ? ` ${after.anomalyType}` : '';
+      return `finding ${transition}${anomalyType}`;
+    }
+  }
+}
+
+function safeDebugTimelineTags(kind: DebugTimelineEntry['kind'], payload: unknown): string[] {
+  const tags = ['debug', kind];
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return tags;
+  const record = payload as Record<string, unknown>;
+  if (kind === 'websocket' && typeof record.type === 'string') tags.push(record.type);
+  if (kind === 'finding-lifecycle' && typeof record.transition === 'string') tags.push(record.transition);
+  return tags;
+}
+
+function safeDebugMessageType(value: unknown): string {
+  if (typeof value !== 'string') return 'unknown';
+  return DEBUG_MESSAGE_TYPES.has(value) ? value : 'unknown';
+}
+
+function safeDebugIdentifiers(value: unknown): Record<string, string | null> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const record = value as Record<string, unknown>;
+  return {
+    ...(typeof record.agentId === 'string' ? { agentId: record.agentId } : {}),
+    ...(typeof record.taskId === 'string' ? { taskId: record.taskId } : {}),
+    ...(typeof record.selectedTaskId === 'string' || record.selectedTaskId === null ? { selectedTaskId: record.selectedTaskId } : {}),
+    ...(typeof record.selectedSessionId === 'string' || record.selectedSessionId === null ? { selectedSessionId: record.selectedSessionId } : {}),
+  };
+}
+
+function safeFindingDebugSnapshot(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  return {
+    ...(typeof record.agentId === 'string' ? { agentId: record.agentId } : {}),
+    ...(typeof record.taskId === 'string' ? { taskId: record.taskId } : {}),
+    ...(typeof record.anomalyType === 'string' || record.anomalyType === null ? { anomalyType: record.anomalyType } : {}),
+    ...(typeof record.anomalySeverity === 'string' || record.anomalySeverity === null ? { anomalySeverity: record.anomalySeverity } : {}),
+    ...(typeof record.snoozed === 'boolean' ? { snoozed: record.snoozed } : {}),
+    ...(typeof record.suppressed === 'boolean' ? { suppressed: record.suppressed } : {}),
+    ...(typeof record.taskStatus === 'string' ? { taskStatus: record.taskStatus } : {}),
   };
 }
 

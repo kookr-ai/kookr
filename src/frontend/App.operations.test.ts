@@ -6,7 +6,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { App } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
-import { recordReportableAlert, resetBugReportRecorderForTests } from './bug-report-recorder.js';
+import { recordOutbound, recordReportableAlert, resetBugReportRecorderForTests } from './bug-report-recorder.js';
+import { clearDebugTimeline, setDebugTimelineEnabledForTests } from './debug-timeline.js';
 
 const websocketMock = vi.hoisted(() => ({
   send: vi.fn(() => true),
@@ -78,6 +79,8 @@ describe('App operations modal shortcuts', () => {
     localStorage.setItem('kookr:onboarding:seen-v2', 'true');
     websocketMock.send.mockClear();
     resetBugReportRecorderForTests();
+    setDebugTimelineEnabledForTests(null);
+    clearDebugTimeline();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/anomaly-stats')) {
@@ -103,7 +106,10 @@ describe('App operations modal shortcuts', () => {
     });
     document.body.innerHTML = '';
     localStorage.clear();
+    setDebugTimelineEnabledForTests(null);
+    clearDebugTimeline();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   test('global help shortcut is suppressed while diagnostics is modal', async () => {
@@ -346,6 +352,39 @@ describe('App operations modal shortcuts', () => {
       'value',
       expect.stringContaining('user-added note'),
     );
+  });
+
+  test('debug timeline export downloads a redacted bundle', async () => {
+    setDebugTimelineEnabledForTests(true);
+    recordOutbound({ type: 'respond', agentId: 'agent-1', input: 'proprietary design notes' });
+    let downloadedBlob: Blob | null = null;
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    class TestURL extends URL {
+      static createObjectURL = vi.fn((blob: Blob) => {
+        downloadedBlob = blob;
+        return 'blob:debug-trace';
+      });
+      static revokeObjectURL = vi.fn();
+    }
+    vi.stubGlobal('URL', TestURL);
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const exportTrace = await waitForElement<HTMLButtonElement>(container, '.debug-timeline-actions .btn-primary');
+    await act(async () => {
+      exportTrace.click();
+    });
+
+    expect(clickSpy).toHaveBeenCalled();
+    expect(downloadedBlob).not.toBeNull();
+    const serialized = await downloadedBlob!.text();
+    expect(serialized).toContain('"debugTimeline"');
+    expect(serialized).toContain('"summary": "websocket outbound respond');
+    expect(serialized).toContain('"wireObservations": []');
+    expect(serialized).not.toContain('proprietary design notes');
+    expect(serialized).not.toContain('"input"');
   });
 
   test('global shortcuts are suppressed while bug report dialog is open', async () => {
