@@ -144,6 +144,14 @@ function isWatchdogOwnedType(type: string | undefined): boolean {
  */
 const SYSTEMIC_HOOK_STALL_MIN_AGENTS = 2;
 
+const FINDING_CAUSALITY_SEVERITY_ORDER: Record<Anomaly['severity'], number> = {
+  critical: 0,
+  warning: 1,
+  info: 2,
+};
+
+type SnapshotFindingState = AgentState & { anomaly: Anomaly; taskId: string };
+
 export class Monitor {
   private agentEvents = new Map<string, AgentEvent[]>();
   private stoppedAgents = new Set<string>();
@@ -914,7 +922,71 @@ export class Monitor {
       }
     }
 
+    this.annotateFindingCausality(states);
+
     return states;
+  }
+
+  private annotateFindingCausality(states: AgentState[]): void {
+    const byAgentId = new Map<string, AgentState>();
+    const parentByTaskId = new Map<string, string>();
+    const findingsByTaskId = new Map<string, SnapshotFindingState>();
+
+    for (const state of states) {
+      byAgentId.set(state.agentId, state);
+      if (state.taskId && state.parentTaskId) {
+        parentByTaskId.set(state.taskId, state.parentTaskId);
+      }
+      if (state.taskId && state.anomaly) {
+        findingsByTaskId.set(state.taskId, state as SnapshotFindingState);
+      }
+    }
+
+    const relatedByRoot = new Map<string, Set<string>>();
+    const rootBySymptom = new Map<string, string>();
+
+    for (const symptom of findingsByTaskId.values()) {
+      const ancestors: SnapshotFindingState[] = [];
+      let parentTaskId = parentByTaskId.get(symptom.taskId);
+
+      while (parentTaskId) {
+        const ancestor = findingsByTaskId.get(parentTaskId);
+        if (ancestor) ancestors.push(ancestor);
+        parentTaskId = parentByTaskId.get(parentTaskId);
+      }
+
+      if (ancestors.length === 0) continue;
+
+      ancestors.sort(compareLikelyRootFinding);
+      const root = ancestors[0];
+      if (root.agentId === symptom.agentId) continue;
+
+      const related = relatedByRoot.get(root.agentId) ?? new Set<string>();
+      related.add(symptom.agentId);
+      relatedByRoot.set(root.agentId, related);
+      rootBySymptom.set(symptom.agentId, root.agentId);
+    }
+
+    for (const [rootAgentId, relatedIds] of relatedByRoot) {
+      const root = byAgentId.get(rootAgentId);
+      if (!root?.anomaly) continue;
+      root.anomaly = withCausality(root.anomaly, {
+        likelyRootCause: true,
+        relatedFindingIds: Array.from(relatedIds).sort(),
+        causalityReason: `Linked by task ancestry: descendant tasks also have active findings under ${root.taskId ?? root.agentId}.`,
+      });
+    }
+
+    for (const [symptomAgentId, rootAgentId] of rootBySymptom) {
+      const symptom = byAgentId.get(symptomAgentId);
+      if (!symptom?.anomaly) continue;
+      symptom.anomaly = withCausality(symptom.anomaly, {
+        rootCauseFindingId: rootAgentId,
+        ...(symptom.anomaly.likelyRootCause ? {} : {
+          causalityReason: `Linked by task ancestry to likely root finding ${rootAgentId}.`,
+        }),
+      });
+    }
   }
 }
 
@@ -924,4 +996,30 @@ function truncatePrompt(prompt: string, maxLen: number): string {
   const truncated = prompt.slice(0, maxLen);
   const lastSpace = truncated.lastIndexOf(' ');
   return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated) + '...';
+}
+
+function compareLikelyRootFinding(a: SnapshotFindingState, b: SnapshotFindingState): number {
+  const severity = FINDING_CAUSALITY_SEVERITY_ORDER[a.anomaly.severity] - FINDING_CAUSALITY_SEVERITY_ORDER[b.anomaly.severity];
+  if (severity !== 0) return severity;
+  const detectedAt = a.anomaly.detectedAt.getTime() - b.anomaly.detectedAt.getTime();
+  if (detectedAt !== 0) return detectedAt;
+  return a.agentId.localeCompare(b.agentId);
+}
+
+function withCausality(
+  anomaly: Anomaly,
+  patch: Partial<Pick<Anomaly, 'causalityReason' | 'likelyRootCause' | 'relatedFindingIds' | 'rootCauseFindingId'>>,
+): Anomaly {
+  const relatedFindingIds = Array.from(new Set([
+    ...(anomaly.relatedFindingIds ?? []),
+    ...(patch.relatedFindingIds ?? []),
+  ])).sort();
+
+  return {
+    ...anomaly,
+    ...(relatedFindingIds.length > 0 ? { relatedFindingIds } : {}),
+    ...(patch.rootCauseFindingId ? { rootCauseFindingId: patch.rootCauseFindingId } : {}),
+    ...(patch.likelyRootCause ? { likelyRootCause: true } : {}),
+    ...(patch.causalityReason ? { causalityReason: patch.causalityReason } : {}),
+  };
 }

@@ -69,6 +69,14 @@ export interface Anomaly {
    * liveness verdicts). Kept in sync with `shared/contracts/anomalies.ts`.
    */
   eventId?: string;
+  /** Descendant active finding ids linked to this likely root; active finding ids are agent ids. */
+  relatedFindingIds?: string[];
+  /** Likely root finding id when this finding is a descendant symptom; active finding ids are agent ids. */
+  rootCauseFindingId?: string;
+  /** True when this finding is the highest-priority ancestor finding for related descendants. */
+  likelyRootCause?: boolean;
+  /** Human-readable basis for why the active findings were linked. */
+  causalityReason?: string;
 }
 
 /** Serialized anomaly for persistence - detectedAt is ISO string, not Date. */
