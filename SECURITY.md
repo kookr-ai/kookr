@@ -24,6 +24,19 @@ reporting link is unavailable, email the maintainer address listed on the
 repository owner's GitHub profile with a concise subject such as
 `Kookr security report`.
 
+## Dependency Vulnerability Gate
+
+Pull requests run GitHub's dependency review action against dependency diffs.
+The gate fails when a PR introduces a dependency with a known high or critical
+severity advisory in runtime, development, or unknown scope. The action reports
+lower-severity advisories without blocking the PR.
+
+The policy is configured in `.github/dependency-review-config.yml`. If a
+transitive advisory is not exploitable through Kookr and cannot be upgraded yet,
+document the reason in the PR and add the specific `GHSA-...` identifier to
+`allow-ghsas` in the same PR. Keep allowlist entries narrow and remove them once
+an upstream fix is available.
+
 Helpful reports include:
 
 - Affected Kookr version, commit, or branch.
