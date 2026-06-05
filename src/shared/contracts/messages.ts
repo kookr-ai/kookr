@@ -293,7 +293,7 @@ export type ClientMessage =
   | LaunchPlaybookClientMessage
   | { type: 'telemetry'; events: TelemetryEvent[] }
   | { type: 'setProjectConfig'; project: string; config: Partial<ProjectConfig> }
-  | { type: 'clearCompleted'; includeTerminated?: boolean }
+  | { type: 'clearCompleted'; includeTerminated?: boolean; projectId?: string }
   | { type: 'ackTerminatedTask'; taskId: string }
   | { type: 'achievement:reset' }
   | { type: 'achievement:setEnabled'; enabled: boolean }
