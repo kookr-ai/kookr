@@ -16,6 +16,7 @@ import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import { TaskDependencyEditor } from './TaskDependencyEditor.js';
 import { RelatedTasksSection } from './RelatedTasksSection.js';
 import { CoordinatorChainStripView } from './CoordinatorSurfaces.js';
+import { clearDetailReplyDraft, loadDetailReplyDraft, saveDetailReplyDraft } from '../store/detail-reply-draft.js';
 import {
   detectShortcutPlatform,
   getDefaultShortcutBindings,
@@ -255,6 +256,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   const inputRef = useRef<HTMLInputElement>(null);
   const { selectAgent, nextBottleneck, advanceEmptyEnter, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
+  const replyDraftScope = { taskId: agent?.taskId, agentId: agent?.agentId };
 
   // Right-pane mode for the Activity+Terminal|Diff split.
   const [rightPane, setRightPane] = useState<'terminal' | 'diff'>('terminal');
@@ -378,15 +380,9 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     }
   }, [agent?.agentId, agent?.anomaly?.type]);
 
-  // Clear input when selected agent changes — prevents stale text from being
-  // accidentally sent to the wrong agent after an agent switch.
-  const prevAgentIdRef = useRef(agent?.agentId);
   useEffect(() => {
-    if (agent?.agentId !== prevAgentIdRef.current) {
-      setInput('');
-      prevAgentIdRef.current = agent?.agentId;
-    }
-  }, [agent?.agentId]);
+    setInput(agent ? loadDetailReplyDraft(replyDraftScope) : '');
+  }, [agent?.taskId, agent?.agentId]);
 
   // Reset permission button disabled state when agent or suggestions change
   const suggestion = agent ? suggestions[agent.agentId] ?? null : null;
@@ -422,8 +418,13 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     );
   }
 
+  function setReplyInput(nextInput: string) {
+    setInput(nextInput);
+    saveDetailReplyDraft(replyDraftScope, nextInput);
+  }
+
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    setInput(e.target.value);
+    setReplyInput(e.target.value);
   }
 
   // Combine pattern-matched quick actions and AI suggestions into a unified button list
@@ -463,6 +464,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       return;
     }
     setInput('');
+    clearDetailReplyDraft(replyDraftScope);
     clearSuggestion(agent.agentId);
     showSentOverlay(agentName);
     if (!isDirectReply) {
@@ -519,6 +521,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       return;
     }
     setInput('');
+    clearDetailReplyDraft(replyDraftScope);
     clearSuggestion(agent.agentId);
     showSentOverlay(agentName);
     if (!isDirectReply) {
@@ -1020,7 +1023,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
             <Suspense fallback={null}>
               <VoiceInputButton
                 inputId="response-input"
-                onTranscript={(text) => setInput(text)}
+                onTranscript={setReplyInput}
                 disabled={!agent}
                 shortcutBinding={shortcutBindings.stt_toggle}
               />
