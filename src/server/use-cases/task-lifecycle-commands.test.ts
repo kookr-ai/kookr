@@ -1,0 +1,171 @@
+import { describe, expect, test, vi, beforeEach } from 'vitest';
+import { TaskStore } from '../../core/tasks.js';
+import { Monitor } from '../../core/monitor.js';
+import { AttentionQueue } from '../../core/attention-queue.js';
+import { TaskLifecycleCommands, type TaskLifecycleCommandDeps } from './task-lifecycle-commands.js';
+
+const mockBuildTaskCompletionMetadata = vi.fn();
+vi.mock('../completion-metadata.js', () => ({
+  buildTaskCompletionMetadata: (...args: unknown[]) => mockBuildTaskCompletionMetadata(...args),
+}));
+
+vi.mock('../../adapters/git-worktree.js', () => ({
+  cleanupTaskWorktrees: vi.fn(async () => undefined),
+}));
+
+function makeDeps(taskStore: TaskStore, overrides: Partial<TaskLifecycleCommandDeps> = {}) {
+  const queue = new AttentionQueue();
+  const monitor = new Monitor(taskStore, queue);
+  const stop = vi.fn(async () => undefined);
+  const interactionLog = { append: vi.fn(async () => undefined) } as never;
+  const deps: TaskLifecycleCommandDeps = {
+    taskStore,
+    monitor,
+    interactionLog,
+    scheduleService: { recordTaskTerminalOutcome: vi.fn(async () => undefined) },
+    ralphLoopService: { cancelLoop: vi.fn(() => ({ ok: true, value: 'cancelled', changed: true })) } as never,
+    broadcastToAll: vi.fn(),
+    getLifecycleDeps: () => ({
+      adapter: { stop },
+      monitor,
+      taskStore,
+      hookWatcher: { stop: vi.fn() },
+      watchdog: { unregisterAgent: vi.fn() },
+      interactionLog,
+    } as never),
+    tryPromotePending: vi.fn(async () => undefined),
+    ...overrides,
+  };
+  return { deps, monitor, stop };
+}
+
+function addSession(taskStore: TaskStore, taskId: string, tmuxSession = 'kookr-session'): void {
+  taskStore.addSession(taskId, {
+    tmuxSession,
+    agentType: 'claude-code',
+    cwd: '/repo-wt',
+    createdAt: new Date(),
+  });
+}
+
+describe('TaskLifecycleCommands.completeTask', () => {
+  beforeEach(() => {
+    mockBuildTaskCompletionMetadata.mockReset().mockResolvedValue({
+      digest: { bullets: ['shipped fix', 'updated tests'], filesChanged: [] },
+      taskTokenUsage: undefined,
+    });
+  });
+
+  test('treats active Ralph completion as partial session completion', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Run Ralph loop', '/repo');
+    addSession(taskStore, task.id);
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = { status: 'running', iteration: 2 } as never;
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-05T12:00:00.000Z' });
+    const { deps, stop } = makeDeps(taskStore);
+
+    const result = await new TaskLifecycleCommands(deps).completeTask(task.id);
+
+    expect(result.outcome).toBe('partial_ralph_completion');
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    expect(taskStore.getTask(task.id)?.sessions[0].lastStatus).toBe('completed');
+    expect(stop).toHaveBeenCalledWith('kookr-session');
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+    expect(deps.scheduleService?.recordTaskTerminalOutcome).not.toHaveBeenCalled();
+    expect(deps.tryPromotePending).not.toHaveBeenCalled();
+  });
+
+  test('finalizes completion digest from captured monitor events', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Implement lifecycle service', '/repo');
+    addSession(taskStore, task.id);
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-05T12:00:00.000Z' });
+    const { deps, monitor } = makeDeps(taskStore);
+    vi.spyOn(monitor, 'getAgentEvents').mockReturnValue([
+      { type: 'tool_use', sessionId: 'claude-session', toolName: 'Edit' },
+    ]);
+
+    const result = await new TaskLifecycleCommands(deps).completeTask(task.id);
+
+    expect(result.outcome).toBe('completed');
+    await vi.waitFor(() => {
+      expect(taskStore.getTask(task.id)?.completionDigest).toEqual({
+        bullets: ['shipped fix', 'updated tests'],
+        filesChanged: [],
+      });
+    });
+    expect(mockBuildTaskCompletionMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({ id: task.id }),
+      [expect.objectContaining({ type: 'tool_use' })],
+    );
+    expect(deps.scheduleService?.recordTaskTerminalOutcome).toHaveBeenCalledWith(task.id, 'completed');
+    expect(deps.tryPromotePending).toHaveBeenCalledOnce();
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+  });
+});
+
+describe('TaskLifecycleCommands.cancelTask', () => {
+  test('cancels Ralph loop before terminal lifecycle cancellation', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Cancel loop', '/repo');
+    addSession(taskStore, task.id);
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = { status: 'running', iteration: 1 } as never;
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-05T12:00:00.000Z' });
+    const order: string[] = [];
+    const { deps } = makeDeps(taskStore, {
+      ralphLoopService: {
+        cancelLoop: vi.fn((loopTask) => {
+          order.push('cancelLoop');
+          taskStore.getTaskForMutation(loopTask.id)!.ralphLoop!.status = 'cancelled';
+          return { ok: true, value: 'cancelled', changed: true };
+        }),
+      } as never,
+    });
+    const originalGetLifecycleDeps = deps.getLifecycleDeps;
+    deps.getLifecycleDeps = () => ({
+      ...originalGetLifecycleDeps(),
+      adapter: {
+        stop: vi.fn(async () => {
+          order.push('stop');
+          expect(taskStore.getTask(task.id)?.ralphLoop?.status).toBe('cancelled');
+        }),
+      },
+    } as never);
+
+    const result = await new TaskLifecycleCommands(deps).cancelTask(task.id);
+
+    expect(result.outcome).toBe('cancelled');
+    expect(order).toEqual(['cancelLoop', 'stop']);
+    expect(taskStore.getTask(task.id)?.status).toBe('cancelled');
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+    expect(deps.scheduleService?.recordTaskTerminalOutcome).toHaveBeenCalledWith(task.id, 'cancelled');
+  });
+});
+
+describe('TaskLifecycleCommands.clearFinishedTasks', () => {
+  test('takes one predelete snapshot and deletes finished tasks only', async () => {
+    const taskStore = new TaskStore();
+    const completed = taskStore.createTask('Done', '/repo');
+    addSession(taskStore, completed.id, 'kookr-done');
+    taskStore.completeTask(completed.id);
+    const cancelled = taskStore.createTask('Cancelled', '/repo');
+    addSession(taskStore, cancelled.id, 'kookr-cancelled');
+    taskStore.cancelTask(cancelled.id);
+    const active = taskStore.createTask('Still running', '/repo');
+    addSession(taskStore, active.id, 'kookr-active');
+    const takePredeleteSnapshot = vi.fn(async () => undefined);
+    const { deps, stop } = makeDeps(taskStore, { takePredeleteSnapshot });
+
+    const result = await new TaskLifecycleCommands(deps).clearFinishedTasks();
+
+    expect(result).toMatchObject({
+      outcome: 'cleared',
+      deletedTaskIds: expect.arrayContaining([completed.id, cancelled.id]),
+    });
+    expect(takePredeleteSnapshot).toHaveBeenCalledOnce();
+    expect(taskStore.getTask(completed.id)).toBeUndefined();
+    expect(taskStore.getTask(cancelled.id)).toBeUndefined();
+    expect(taskStore.getTask(active.id)?.status).toBe('inProgress');
+    expect(stop).not.toHaveBeenCalled();
+  });
+});
