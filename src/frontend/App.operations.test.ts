@@ -77,7 +77,8 @@ describe('App operations modal shortcuts', () => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.setItem('kookr:onboarding:seen-v2', 'true');
-    websocketMock.send.mockClear();
+    websocketMock.send.mockReset();
+    websocketMock.send.mockImplementation(() => true);
     resetBugReportRecorderForTests();
     setDebugTimelineEnabledForTests(null);
     clearDebugTimeline();
@@ -262,7 +263,61 @@ describe('App operations modal shortcuts', () => {
     });
   });
 
-  test('complete confirmation keeps the task selected when the dialog opened', async () => {
+  test('complete confirmation advances to the next available task', async () => {
+    useKookrStore.setState({
+      agents: [
+        {
+          agentId: 'agent-1',
+          taskId: 'task-1',
+          taskName: 'First task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:00:00.000Z',
+          taskStatus: 'inProgress',
+        },
+        {
+          agentId: 'agent-2',
+          taskId: 'task-2',
+          taskName: 'Second task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:01:00.000Z',
+          taskStatus: 'inProgress',
+        },
+        {
+          agentId: 'agent-3',
+          taskId: 'task-3',
+          taskName: 'Third task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:02:00.000Z',
+          taskStatus: 'inProgress',
+        },
+      ],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
+  });
+
+  test('complete confirmation does not steal focus after a manual selection change', async () => {
     useKookrStore.setState({
       agents: [
         {
@@ -298,7 +353,7 @@ describe('App operations modal shortcuts', () => {
       completeButton.click();
     });
     await act(async () => {
-      useKookrStore.getState().selectAgent('agent-2');
+      useKookrStore.getState().selectAgent('agent-3');
     });
     const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
     await act(async () => {
@@ -306,6 +361,52 @@ describe('App operations modal shortcuts', () => {
     });
 
     expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-3');
+  });
+
+  test('complete confirmation does not advance when completion send fails', async () => {
+    websocketMock.send.mockReturnValue(false);
+    useKookrStore.setState({
+      agents: [
+        {
+          agentId: 'agent-1',
+          taskId: 'task-1',
+          taskName: 'First task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:00:00.000Z',
+          taskStatus: 'inProgress',
+        },
+        {
+          agentId: 'agent-2',
+          taskId: 'task-2',
+          taskName: 'Second task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:01:00.000Z',
+          taskStatus: 'inProgress',
+        },
+      ],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-1');
   });
 
   test('top-bar bug report opens a live bundle preview with recorder state and note edits', async () => {

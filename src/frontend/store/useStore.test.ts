@@ -1314,6 +1314,50 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().selectedAgentId).toBe('finding-1');
   });
 
+  test('selectNextTaskAfterCompletion prefers active findings over healthy tasks', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'completed-session', taskId: 'task-done', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'healthy-1', taskId: 'task-healthy', events: [], anomaly: null, taskStatus: 'inProgress' },
+      {
+        agentId: 'finding-1',
+        taskId: 'task-finding',
+        events: [],
+        anomaly: { agentId: 'finding-1', type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+        taskStatus: 'inProgress',
+      },
+    ]);
+    store.getState().selectAgent('completed-session');
+
+    store.getState().selectNextTaskAfterCompletion('completed-session', 'task-done');
+
+    expect(store.getState().selectedAgentId).toBe('finding-1');
+  });
+
+  test('selectNextTaskAfterCompletion clears selection when no routable tasks remain', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'completed-session', taskId: 'task-done', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'pending-1', taskId: 'task-pending', events: [], anomaly: null, taskStatus: 'pending' },
+    ]);
+    store.getState().selectAgent('completed-session');
+
+    store.getState().selectNextTaskAfterCompletion('completed-session', 'task-done');
+
+    expect(store.getState().selectedAgentId).toBeNull();
+  });
+
+  test('selectNextTaskAfterCompletion skips sibling sessions for the completed task', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'completed-session-1', taskId: 'task-done', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'completed-session-2', taskId: 'task-done', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'healthy-1', taskId: 'task-next', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+    store.getState().selectAgent('completed-session-1');
+
+    store.getState().selectNextTaskAfterCompletion('completed-session-1', 'task-done');
+
+    expect(store.getState().selectedAgentId).toBe('healthy-1');
+  });
+
   test('previousTask skips tasks in terminal statuses', () => {
     store.getState().handleSnapshot([
       { agentId: 'completed-1', events: [], anomaly: null, taskStatus: 'completed' },
