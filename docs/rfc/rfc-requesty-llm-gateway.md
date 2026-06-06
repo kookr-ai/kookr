@@ -68,7 +68,6 @@ When `KOOKR_LLM_PROVIDER=requesty`, runtime provider construction routes through
 - remote-chat rephrase: the remote chat message and task context used by the existing rephrase path.
 - finding-evidence review diagnostics: finding evidence, task/session context, and sampled diagnostic text, only when the existing finding-review feature flags enable that path.
 - speech summary / agent speak helpers: task name, status, and selected activity context used by the existing summary prompt.
-- task-relation inference: bounded parent/child prompt heads when the relation inference caller provides an LLM client for ambiguous task relationships.
 
 This RFC does not add new LLM consumers. It only changes which configured provider can serve existing consumers. Any future high-volume, sensitive, or telemetry-like LLM consumer requires its own boundary decision before using the global provider factory.
 
@@ -237,7 +236,6 @@ Runtime failures keep current caller degradation:
 - response suggestions return `[]`
 - remote-chat rephrase uses its existing fallback behavior
 - finding-review and speech-summary callers keep their existing error handling
-- task-relation inference returns no LLM verdict for that ambiguous pair and preserves deterministic relation logic only
 
 The shared transport must not turn its internal timeout into a caller `AbortError` that prevents fallback. Caller-supplied aborts still propagate and stop fallback immediately.
 
@@ -368,4 +366,4 @@ Rejected for this issue. A generic provider name could be useful later, but it w
 - Round 1 design-minimalist review: Requesty is now explicit-only, `auto` is unchanged, Requesty base URL and metadata overrides are deferred, live tests are opt-in only, and integration/E2E test files were removed from the default file list.
 - Round 1 Socratic review: model/base-URL precedence was simplified instead of adding a truth table; explicit Requesty ignores OpenRouter keys, `readLlmProvider()` warning text must include `requesty`, and OpenRouter compatibility has measurable golden-test criteria.
 - Empirical checkpoint: official Requesty docs validated the base URL, Chat Completions endpoint, bearer auth, and provider-prefixed model ids; local code validation confirmed runtime provider construction flows through `createLlmClient()` while feature modules depend on `LlmClient`; existing mocked factory/fetch tests are the right verification shape for default tests.
-- Round 2 review: the RFC now requires updating the Requesty data-scope section if new runtime `createLlmClient()` callsites or data categories are added, states task-relation LLM failure behavior explicitly, makes error-sanitization fixtures concrete, and keeps import-boundary testing optional to avoid turning the provider addition into a lint project.
+- Round 2 review: the RFC now requires updating the Requesty data-scope section if new runtime `createLlmClient()` callsites or data categories are added, makes error-sanitization fixtures concrete, and keeps import-boundary testing optional to avoid turning the provider addition into a lint project.
