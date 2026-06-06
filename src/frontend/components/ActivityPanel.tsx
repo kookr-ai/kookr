@@ -152,16 +152,19 @@ function ActivityItemView({
       const preview = isLong ? `${item.text.slice(0, LONG_MESSAGE_LIMIT).trimEnd()}...` : item.text;
       return (
         <div className={`act-msg act-msg-user${isLong ? ' act-msg-collapsed' : ''}`}>
-          <div className="act-msg-header">
-            <span className="act-msg-label act-label-user">You</span>
+          <span className="act-msg-avatar act-avatar-user" aria-hidden="true">{'Y'}</span>
+          <div className="act-msg-body">
+            <div className="act-msg-header">
+              <span className="act-msg-label act-label-user">You</span>
+            </div>
+            <div className="act-msg-text">{renderMarkdown(preview)}</div>
+            {isLong && (
+              <details className="act-msg-full">
+                <summary>Show full prompt</summary>
+                <div className="act-msg-text act-msg-full-text">{renderMarkdown(item.text)}</div>
+              </details>
+            )}
           </div>
-          <div className="act-msg-text">{renderMarkdown(preview)}</div>
-          {isLong && (
-            <details className="act-msg-full">
-              <summary>Show full prompt</summary>
-              <div className="act-msg-text act-msg-full-text">{renderMarkdown(item.text)}</div>
-            </details>
-          )}
         </div>
       );
     }
@@ -169,10 +172,13 @@ function ActivityItemView({
     case 'agent_message':
       return (
         <div className="act-msg act-msg-agent">
-          <div className="act-msg-header">
-            <span className="act-msg-label act-label-agent">Agent</span>
+          <span className="act-msg-avatar act-avatar-agent" aria-hidden="true">{'A'}</span>
+          <div className="act-msg-body">
+            <div className="act-msg-header">
+              <span className="act-msg-label act-label-agent">Agent</span>
+            </div>
+            <div className="act-msg-text">{renderMarkdown(item.text)}</div>
           </div>
-          <div className="act-msg-text">{renderMarkdown(item.text)}</div>
         </div>
       );
 
@@ -182,17 +188,20 @@ function ActivityItemView({
       // so the panel does not look like dozens of interventions. See #357.
       return (
         <div className="act-msg act-msg-user act-msg-paste-burst">
-          <div className="act-msg-header">
-            <span className="act-msg-label act-label-user">You</span>
+          <span className="act-msg-avatar act-avatar-user" aria-hidden="true">{'Y'}</span>
+          <div className="act-msg-body">
+            <div className="act-msg-header">
+              <span className="act-msg-label act-label-user">You</span>
+            </div>
+            <details className="act-paste-burst">
+              <summary className="act-paste-burst-summary">
+                <span className="act-paste-burst-icon" aria-hidden="true">{'📋'}</span>
+                {pasteBurstLabel(item)}
+              </summary>
+              {/* tabIndex makes the overflowing scroll region keyboard-reachable. */}
+              <pre className="act-paste-burst-lines" tabIndex={0}>{item.lines.join('\n')}</pre>
+            </details>
           </div>
-          <details className="act-paste-burst">
-            <summary className="act-paste-burst-summary">
-              <span className="act-paste-burst-icon" aria-hidden="true">{'📋'}</span>
-              {pasteBurstLabel(item)}
-            </summary>
-            {/* tabIndex makes the overflowing scroll region keyboard-reachable. */}
-            <pre className="act-paste-burst-lines" tabIndex={0}>{item.lines.join('\n')}</pre>
-          </details>
         </div>
       );
 
