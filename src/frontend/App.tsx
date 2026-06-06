@@ -94,9 +94,9 @@ export function App() {
   useNotifications();
   // Audible alerts. Findings are unfocused (anomaly chimes regardless of
   // which task is focused — that's when the user most needs to switch).
-  // Completion is focus-gated (only the watched task chimes; non-focused
-  // completions are surfaced visually in the completed list). See
-  // docs/rfc/rfc-task-chime-browser.md §6.
+  // Completion-signal audio is also unfocused: it means an agent has said a
+  // task is ready for review, not that the user manually completed it.
+  // See docs/rfc/rfc-completion-signal-audio-cue.md.
   useAudibleAlert();
   useTaskCompletionChime();
   const [isMobileViewport, setIsMobileViewport] = useState(() =>

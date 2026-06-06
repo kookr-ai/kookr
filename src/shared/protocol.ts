@@ -43,6 +43,7 @@ export {
 export type { BuildInfo } from './contracts/build-info.js';
 export type { CircuitBreakerSnapshot } from './contracts/circuit-breaker.js';
 export type { CompletionDigest } from './contracts/completion-digest.js';
+export type { LatestCompletionSignal } from './contracts/completion-signal.js';
 export type { CoordinatorSnapshotState } from './contracts/coordinator.js';
 export type {
   GitHubCheck,

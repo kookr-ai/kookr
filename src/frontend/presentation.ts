@@ -117,8 +117,8 @@ export function healthyStatusLabel(events: AgentEvent[], startedAt?: string): st
 /**
  * Human-readable label for an agent's current turn state. Empty string when
  * the turn state is absent or indeterminate so callers can skip rendering.
- * See issue #358 — `completed_turn` must read as an idle, finished turn rather
- * than an actively-running or hung session.
+ * See issue #358 — `completed_turn` must read as an idle, review-ready turn
+ * rather than an actively-running or hung session.
  */
 export function turnStateLabel(turnState: TurnState | undefined): string {
   switch (turnState) {
@@ -127,7 +127,7 @@ export function turnStateLabel(turnState: TurnState | undefined): string {
     case 'waiting_for_input':
       return 'Waiting for your input';
     case 'completed_turn':
-      return 'Turn complete — waiting for follow-up';
+      return 'Signaled complete — waiting for review';
     case 'blocked':
       return 'Blocked';
     case 'unknown':

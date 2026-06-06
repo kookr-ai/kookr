@@ -7,8 +7,10 @@ const OUTCOME_LABEL: Record<AudioAlertOutcome, string> = {
   scheduled: 'Scheduled',
   suppressed_muted: 'Muted',
   suppressed_dnd: 'DND',
+  suppressed_debounced: 'Debounced',
   audio_context_unavailable: 'No AudioContext',
   audio_context_error: 'AudioContext Error',
+  audio_context_suspended: 'Suspended',
 };
 
 function isAudioAlertOutcome(outcome: string): outcome is AudioAlertOutcome {
@@ -45,6 +47,13 @@ function describeDecision(decision: LocalAudioAlertDecision): string {
   }
   if (decision.source === 'task_completion') {
     return `${decision.previousStatus ?? 'unknown'} -> ${decision.nextStatus ?? 'unknown'} on ${decision.taskName ?? decision.agentId ?? 'focused task'}`;
+  }
+  if (decision.source === 'completion_signal') {
+    const target = decision.taskName ?? decision.agentId ?? 'task';
+    const extra = decision.candidateCount && decision.candidateCount > 1
+      ? ` (+${decision.candidateCount - 1} more)`
+      : '';
+    return `Signaled complete on ${target}${extra}`;
   }
   return decision.reason;
 }

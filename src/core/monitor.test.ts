@@ -752,6 +752,7 @@ describe('Monitor', () => {
       const agent = monitor.getSnapshot().find((s) => s.agentId === 'kookr-1bb16ec4');
       expect(agent).toBeDefined();
       expect(agent!.turnState).toBe('completed_turn');
+      expect(agent!.latestCompletionSignal).toBeDefined();
       // Lifecycle is unchanged: the task remains open for follow-up.
       expect(agent!.taskStatus).toBe('inProgress');
       expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
@@ -766,10 +767,12 @@ describe('Monitor', () => {
 
       const agent = monitor.getSnapshot().find((s) => s.agentId === 'kookr-claude-1');
       expect(agent!.turnState).toBe('completed_turn');
+      expect(agent!.latestCompletionSignal).toBeDefined();
       expect(agent!.taskStatus).toBe('inProgress');
     });
 
     test('Stop while a background subagent is still running => turnState running, not completed_turn', () => {
+      linkInteractiveTask('codex-cli', 'agent-1');
       monitor.processEvents('agent-1', [
         makeSubagentStart('s1', 'bg-1'),
         makeStop('s1', 'parent turn ended while subagent runs'),
@@ -778,11 +781,66 @@ describe('Monitor', () => {
       // The parent emitted Stop but real work is ongoing — do not show it as a
       // finished turn. Mirrors the needs_input subagent suppression.
       expect(agent!.turnState).toBe('running');
+      expect(agent!.latestCompletionSignal).toBeUndefined();
 
       // Once the subagent finishes, the turn reads as completed.
       monitor.processEvents('agent-1', [makeSubagentStop('s1', 'bg-1')]);
       const after = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
       expect(after!.turnState).toBe('completed_turn');
+      expect(after!.latestCompletionSignal).toBeDefined();
+    });
+
+    test('TTL-evicted subagent suppresses stale parent Stop until a fresh Stop arrives', () => {
+      const dateSpy = vi.spyOn(Date, 'now');
+      try {
+        linkInteractiveTask('codex-cli', 'agent-1');
+        dateSpy.mockReturnValue(1_000_000);
+        monitor.processEvents('agent-1', [
+          makeSubagentStart('s1', 'bg-1'),
+          makeStop('s1', 'same final answer'),
+        ]);
+
+        const whileRunning = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+        expect(whileRunning!.turnState).toBe('running');
+        expect(whileRunning!.latestCompletionSignal).toBeUndefined();
+
+        dateSpy.mockReturnValue(1_000_000 + 31 * 60 * 1000);
+        const staleAfterTtl = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+        expect(staleAfterTtl!.turnState).toBe('running');
+        expect(staleAfterTtl!.latestCompletionSignal).toBeUndefined();
+        expect(staleAfterTtl!.anomaly).toBeNull();
+
+        monitor.processEvents('agent-1', [makeStop('s1', 'same final answer')]);
+        const freshStop = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+        expect(freshStop!.turnState).toBe('completed_turn');
+        expect(freshStop!.latestCompletionSignal).toBeDefined();
+      } finally {
+        dateSpy.mockRestore();
+      }
+    });
+
+    test('fresh Stop that triggers TTL eviction is not mistaken for the stale parent Stop', () => {
+      const dateSpy = vi.spyOn(Date, 'now');
+      try {
+        linkInteractiveTask('codex-cli', 'agent-1');
+        dateSpy.mockReturnValue(1_000_000);
+        monitor.processEvents('agent-1', [
+          makeSubagentStart('s1', 'bg-1'),
+          makeStop('s1', 'same final answer'),
+        ]);
+
+        const whileRunning = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+        expect(whileRunning!.turnState).toBe('running');
+        expect(whileRunning!.latestCompletionSignal).toBeUndefined();
+
+        dateSpy.mockReturnValue(1_000_000 + 31 * 60 * 1000);
+        monitor.processEvents('agent-1', [makeStop('s1', 'same final answer')]);
+        const freshStop = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+        expect(freshStop!.turnState).toBe('completed_turn');
+        expect(freshStop!.latestCompletionSignal).toBeDefined();
+      } finally {
+        dateSpy.mockRestore();
+      }
     });
   });
 

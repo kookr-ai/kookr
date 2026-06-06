@@ -12,6 +12,12 @@ function isTrailingStateOverlay(event: AgentEvent): boolean {
   return event.type === 'notification' || event.type === 'subagent_stop';
 }
 
+export interface DerivedTurnState {
+  turnState: TurnState;
+  effectiveEvent?: AgentEvent;
+  effectiveEventIndex: number;
+}
+
 /**
  * Derive the current turn state of an interactive agent from its event window.
  *
@@ -24,39 +30,47 @@ function isTrailingStateOverlay(event: AgentEvent): boolean {
  * This is a pure function over the (already-windowed) event list; subagent and
  * watchdog overrides are applied by the caller — see `Monitor.getSnapshot`.
  */
-export function deriveTurnState(events: AgentEvent[]): TurnState {
-  if (events.length === 0) return 'unknown';
+export function deriveTurnStateDetails(events: AgentEvent[]): DerivedTurnState {
+  if (events.length === 0) return { turnState: 'unknown', effectiveEventIndex: -1 };
 
   // Trim trailing bookkeeping overlays so a SubagentStop or idle notification
   // arriving after the parent's Stop does not mask the completed turn.
-  let window = events;
-  while (window.length > 0 && isTrailingStateOverlay(window[window.length - 1])) {
-    window = window.slice(0, -1);
+  let effectiveEventIndex = events.length - 1;
+  while (effectiveEventIndex >= 0 && isTrailingStateOverlay(events[effectiveEventIndex])) {
+    effectiveEventIndex -= 1;
   }
-  if (window.length === 0) return 'unknown';
+  if (effectiveEventIndex < 0) return { turnState: 'unknown', effectiveEventIndex: -1 };
 
-  const last = window[window.length - 1];
+  const last = events[effectiveEventIndex];
   switch (last.type) {
     case 'stop':
       // Normal end-of-turn: a final assistant message was emitted and the
       // agent is idle, waiting for an optional follow-up — NOT hung.
-      return 'completed_turn';
+      return { turnState: 'completed_turn', effectiveEvent: last, effectiveEventIndex };
     case 'stop_failure':
       // An API error killed the turn — the agent is hard-blocked.
-      return 'blocked';
+      return { turnState: 'blocked', effectiveEvent: last, effectiveEventIndex };
     case 'permission_request':
       // Blocked waiting for a permission decision.
-      return 'blocked';
+      return { turnState: 'blocked', effectiveEvent: last, effectiveEventIndex };
     case 'session_end':
       // The session is over; turn state is no longer meaningful.
-      return 'unknown';
+      return { turnState: 'unknown', effectiveEvent: last, effectiveEventIndex };
     case 'tool_use':
       // An unanswered AskUserQuestion is the agent explicitly waiting on the
       // user mid-turn — distinct from a normal completed turn.
-      return last.toolName === 'AskUserQuestion' ? 'waiting_for_input' : 'running';
+      return {
+        turnState: last.toolName === 'AskUserQuestion' ? 'waiting_for_input' : 'running',
+        effectiveEvent: last,
+        effectiveEventIndex,
+      };
     default:
       // tool_result, tool_error, user_prompt, session_start, subagent_start,
       // error, input_received — the agent is actively working the turn.
-      return 'running';
+      return { turnState: 'running', effectiveEvent: last, effectiveEventIndex };
   }
+}
+
+export function deriveTurnState(events: AgentEvent[]): TurnState {
+  return deriveTurnStateDetails(events).turnState;
 }
