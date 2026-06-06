@@ -104,10 +104,10 @@ describe('ActivityPanel live row', () => {
     document.body.innerHTML = '';
   });
 
-  function render(events: AgentEvent[], isActive: boolean): void {
+  function render(events: AgentEvent[], isActive: boolean, props: Partial<React.ComponentProps<typeof ActivityPanel>> = {}): void {
     root = createRoot(container);
     act(() => {
-      root!.render(React.createElement(ActivityPanel, { events, isActive }));
+      root!.render(React.createElement(ActivityPanel, { events, isActive, ...props }));
     });
   }
 
@@ -123,6 +123,26 @@ describe('ActivityPanel live row', () => {
     expect(row).not.toBeNull();
     expect(row!.textContent).toContain('npm test');
     // The open call must not appear a second time as a settled tool group.
+    expect(container.querySelector('.act-tool-group')).toBeNull();
+  });
+
+  test('keeps a windowed launch placeholder while showing the open tool only as live', () => {
+    render(
+      [
+        { type: 'tool_use', sessionId: sid, toolName: 'Bash', toolInput: { command: 'npm test' }, toolUseId: 'b1', eventSeq: 51 },
+      ],
+      true,
+      {
+        agentId: 'kookr-test',
+        description: 'Launch prompt',
+        cwd: '/repo',
+      },
+    );
+
+    const messages = [...container.querySelectorAll('.act-msg-user')].map((el) => el.textContent ?? '');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('Launch prompt');
+    expect(container.querySelector('[data-testid="act-live-row"]')!.textContent).toContain('npm test');
     expect(container.querySelector('.act-tool-group')).toBeNull();
   });
 

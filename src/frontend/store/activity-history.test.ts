@@ -17,16 +17,10 @@ function tool(seq: number): AgentEvent {
 }
 
 describe('activity history merging', () => {
-  test('restores the persisted launch prompt when a windowed snapshot no longer contains it', () => {
+  test('does not synthesize launch prompt into stored raw activity', () => {
     const merged = mergeActivityAgent(undefined, agent([tool(51), tool(52)]));
 
-    expect(merged.events[0]).toMatchObject({
-      type: 'user_prompt',
-      prompt: 'Launch prompt',
-      sessionId: 'kookr-test',
-      cwd: '/repo',
-    });
-    expect(merged.events.slice(1)).toEqual([tool(51), tool(52)]);
+    expect(merged.events).toEqual([tool(51), tool(52)]);
   });
 
   test('preserves older browser history while appending the non-overlapping tail', () => {
@@ -51,6 +45,33 @@ describe('activity history merging', () => {
     const merged = mergeActivityAgent(previous, incoming);
 
     expect(merged.events.filter((event) => event.type === 'tool_use')).toHaveLength(4);
+  });
+
+  test('incoming eventSeq superset replaces stale browser history', () => {
+    const previous = agent([tool(3), tool(4)]);
+    const incoming = agent([
+      { type: 'session_start', sessionId: 's1', eventSeq: 1 },
+      { type: 'user_prompt', sessionId: 's1', prompt: 'Launch prompt', eventSeq: 2 },
+      tool(3),
+      tool(4),
+      tool(5),
+    ]);
+
+    const merged = mergeActivityAgent(previous, incoming);
+
+    expect(merged.events.map((event) => event.eventSeq)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  test('JSON subsequence fallback handles legacy events without eventSeq', () => {
+    const a: AgentEvent = { type: 'tool_use', sessionId: 's1', toolName: 'Read', toolInput: { file_path: '/a' } };
+    const b: AgentEvent = { type: 'tool_use', sessionId: 's1', toolName: 'Read', toolInput: { file_path: '/b' } };
+    const c: AgentEvent = { type: 'tool_use', sessionId: 's1', toolName: 'Read', toolInput: { file_path: '/c' } };
+    const previous = agent([a, b]);
+    const incoming = agent([{ type: 'session_start', sessionId: 's1' }, a, b, c]);
+
+    const merged = mergeActivityAgent(previous, incoming);
+
+    expect(merged.events).toEqual([{ type: 'session_start', sessionId: 's1' }, a, b, c]);
   });
 
   test('preserves activityMeta when a snapshot omits it', () => {

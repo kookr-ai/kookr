@@ -887,6 +887,20 @@ describe('event-pipeline: parentage gating (rfc-activity-log-reliability)', () =
     }, { parentage: 'child' });
 
     expect(deps.monitor.processEvents).not.toHaveBeenCalled();
+    expect(deps.watchdog.recordEvents).not.toHaveBeenCalled();
+  });
+
+  test('child user_prompt does not call monitor.processEvents', () => {
+    const { deps, fireEvent } = createMockDeps();
+    wireEventPipeline(deps);
+
+    fireEvent('kookr-parent', {
+      type: 'user_prompt',
+      sessionId: 'codex-child-1',
+      prompt: 'same launch prompt',
+    }, { parentage: 'child' });
+
+    expect(deps.monitor.processEvents).not.toHaveBeenCalled();
   });
 
   test('parent Stop still drives monitor.processEvents and watchdog', () => {
