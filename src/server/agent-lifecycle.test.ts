@@ -34,6 +34,12 @@ vi.mock('../adapters/git-worktree.js', () => ({
   cleanupTaskWorktrees: (...args: unknown[]) => mockCleanupTaskWorktrees(...args),
 }));
 
+// Mock removeReflectWorktree (fire-and-forget reflect-worktree reclaim on terminal transitions)
+const mockRemoveReflectWorktree = vi.fn().mockResolvedValue(true);
+vi.mock('./use-cases/request-task-reflect.js', () => ({
+  removeReflectWorktree: (...args: unknown[]) => mockRemoveReflectWorktree(...args),
+}));
+
 // Mock nowISO for deterministic timestamps in interaction log assertions
 vi.mock('../core/interaction-log.js', () => ({
   nowISO: () => '2026-03-31T00:00:00.000Z',
@@ -1057,5 +1063,75 @@ describe('promotePendingTasks (integration)', () => {
     expect(promoted).toBe(0);
     expect(adapter.launch).not.toHaveBeenCalled();
     expect(taskStore.getTask(t3.id)!.status).toBe('pending');
+  });
+});
+
+describe('reflect worktree cleanup on terminal transition', () => {
+  const WT = '/tmp/reflect-worktrees/wt-1';
+
+  beforeEach(() => {
+    mockRemoveReflectWorktree.mockClear().mockResolvedValue(true);
+    mockCleanupTaskWorktrees.mockReset().mockResolvedValue(undefined);
+  });
+
+  function depsFor(task: Task): LifecycleDeps {
+    const deps = makeLifecycleDeps();
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+    return deps;
+  }
+
+  function reflectTask(id: string): Task {
+    return makeTask({
+      id,
+      status: 'inProgress',
+      sessions: [{ tmuxSession: `kookr-${id}`, lastStatus: 'inProgress' }] as any,
+      reflectMeta: {
+        sourceTaskId: '11111111-2222-3333-4444-555555555555',
+        bundlePath: '/tmp/bundle',
+        direction: 'down',
+        worktreePath: WT,
+      },
+    });
+  }
+
+  test('completeTask reclaims the reflect worktree', async () => {
+    await completeTask('rt-c', depsFor(reflectTask('rt-c')));
+    expect(mockRemoveReflectWorktree).toHaveBeenCalledWith(WT);
+  });
+
+  test('cancelTask reclaims the reflect worktree', async () => {
+    await cancelTask('rt-x', depsFor(reflectTask('rt-x')));
+    expect(mockRemoveReflectWorktree).toHaveBeenCalledWith(WT);
+  });
+
+  test('terminateTask reclaims the reflect worktree', async () => {
+    await terminateTask('rt-t', depsFor(reflectTask('rt-t')));
+    expect(mockRemoveReflectWorktree).toHaveBeenCalledWith(WT);
+  });
+
+  test('non-reflect task does not trigger reflect-worktree removal', async () => {
+    const task = makeTask({
+      id: 'plain',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'kookr-plain', lastStatus: 'inProgress' }] as any,
+    });
+    await completeTask('plain', depsFor(task));
+    expect(mockRemoveReflectWorktree).not.toHaveBeenCalled();
+  });
+
+  test('legacy reflect task without a stored worktreePath is not removed (falls back to sweep)', async () => {
+    const task = makeTask({
+      id: 'legacy',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'kookr-legacy', lastStatus: 'inProgress' }] as any,
+      reflectMeta: {
+        sourceTaskId: '11111111-2222-3333-4444-555555555555',
+        bundlePath: '/tmp/bundle',
+        direction: 'up',
+        // worktreePath intentionally absent — persisted before the field existed.
+      },
+    });
+    await completeTask('legacy', depsFor(task));
+    expect(mockRemoveReflectWorktree).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,10 @@ export type {
   AgentSelection,
   AvailableAgentType,
   AvailableAgentSelection,
+  ClaudeCodeEffort,
+  CodexCliEffort,
+  EffortLevel,
+  AgentEffortMap,
 } from '../shared/contracts/agent-types.js';
 
 export {
@@ -14,4 +18,9 @@ export {
   normalizeAgentSelection,
   resolveRoundRobinAgent,
   buildAgentSelectionOptions,
+  CLAUDE_CODE_EFFORT_LEVELS,
+  CODEX_CLI_EFFORT_LEVELS,
+  ALL_EFFORT_LEVELS,
+  effortLevelsForAgent,
+  isValidEffortForAgent,
 } from '../shared/contracts/agent-types.js';

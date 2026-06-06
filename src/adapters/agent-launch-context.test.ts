@@ -10,7 +10,6 @@ import {
   resolveBracketedPasteSubmit,
   isBracketedPasteModeEnabled,
   isClaudeBusyOrResponding,
-  isClaudeComposerReady,
   PROMPT_BRACKETED_PASTE_ENV,
   DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
@@ -93,57 +92,6 @@ describe('agent-launch-context', () => {
 
     expect(context.env.KOOKR_GIT_COMMON_DIR).toBe(mainGitDir);
     expect(context.permissionAllowlist).toContain(`Write(//${mainGitDir.slice(1)}/**)`);
-  });
-
-  test('injects checkpoint dir env var and allowlist entries when provided', async () => {
-    const taskStore = new TaskStore();
-    const task = taskStore.createTask('Long task', '/repo');
-    const repoDir = makeTempDir();
-    mkdirSync(join(repoDir, '.git'));
-    const checkpointDir = join(makeTempDir(), 'checkpoints', 'a-1234abcd', 'feat-x');
-    mkdirSync(checkpointDir, { recursive: true });
-
-    const context = await buildAgentLaunchContext({
-      taskStore,
-      taskId: task.id,
-      cwd: repoDir,
-      checkpointDir,
-    });
-
-    expect(context.env).toEqual({
-      KOOKR_TASK_ID: task.id,
-      KOOKR_GIT_COMMON_DIR: join(repoDir, '.git'),
-      TASK_CHECKPOINT_DIR: checkpointDir,
-    });
-    expect(context.permissionAllowlist).toEqual([
-      'Bash(git *)',
-      `Read(//${join(repoDir, '.git').slice(1)}/**)`,
-      `Write(//${join(repoDir, '.git').slice(1)}/**)`,
-      `Read(//${checkpointDir.slice(1)}/**)`,
-      `Write(//${checkpointDir.slice(1)}/**)`,
-      `Bash(${checkpointDir}/repro.sh*)`,
-    ]);
-  });
-
-  test('omits checkpoint env when checkpointDir is not provided', async () => {
-    const taskStore = new TaskStore();
-    const task = taskStore.createTask('Plain task', '/repo');
-    const repoDir = makeTempDir();
-    mkdirSync(join(repoDir, '.git'));
-
-    const context = await buildAgentLaunchContext({
-      taskStore,
-      taskId: task.id,
-      cwd: repoDir,
-    });
-
-    expect(context.env.TASK_CHECKPOINT_DIR).toBeUndefined();
-    // Guard against regression: also confirm the legacy var name is not set.
-    expect(Object.keys(context.env)).not.toContain('KOOKR_CHECKPOINT_DIR');
-    const checkpointAllowlistEntries = context.permissionAllowlist.filter((e) =>
-      e.includes('checkpoint') || e.includes('repro.sh'),
-    );
-    expect(checkpointAllowlistEntries).toHaveLength(0);
   });
 
   function makeTempDir(): string {
@@ -266,7 +214,7 @@ describe('deliverInitialPromptToSession', () => {
     expect(backend.getWrittenText('s5')).toBe('\x1b[200~hi\x1b[201~\r');
   });
 
-  test('bracketed-paste mode can wait for Claude Code composer readiness before writing', async () => {
+  test('bracketed-paste mode waits for paste-mode enable, not just the painted composer', async () => {
     const backend = new FakeTerminalBackend();
     await backend.createSession('s6', 'claude');
     const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
@@ -275,7 +223,11 @@ describe('deliverInitialPromptToSession', () => {
     const sleep = vi.fn(async (_ms: number) => {
       sleepCalls += 1;
       if (sleepCalls === 1) {
+        // The composer can paint before Claude Code enables bracketed-paste
+        // handling; this must not release the paste block.
         backend.emit('s6', '\x1b]0;Claude Code\x07ClaudeCode\n❯ ');
+      } else if (sleepCalls === 2) {
+        backend.emit('s6', '\x1b[?2004h');
       }
     });
 
@@ -288,13 +240,36 @@ describe('deliverInitialPromptToSession', () => {
       sleep,
     });
 
+    expect(sleep.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(sleep).toHaveBeenCalledWith(10);
     expect(writeSeqSpy).toHaveBeenCalledTimes(1);
     expect(writeSpy).toHaveBeenCalledTimes(1);
     expect(writeSeqSpy.mock.invocationCallOrder[0]).toBeGreaterThan(
-      sleep.mock.invocationCallOrder[0],
+      sleep.mock.invocationCallOrder[1],
     );
     expect(backend.getWrittenText('s6')).toBe('\x1b[200~ready submit\x1b[201~\r');
+  });
+
+  test('bracketed-paste ready wait proceeds after timeout if paste-mode enable never appears', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-timeout', 'claude');
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const sleep = vi.fn(async (_ms: number) => {
+      backend.emit('s-timeout', '\x1b]0;Claude Code\x07ClaudeCode\n❯ ');
+    });
+
+    await deliverInitialPromptToSession(backend, 's-timeout', 'timeout submit', {
+      bracketedPaste: true,
+      waitForReady: true,
+      readyTimeoutMs: 25,
+      readyPollMs: 10,
+      submitDelayMs: 0,
+      sleep,
+    });
+
+    expect(sleep).toHaveBeenCalled();
+    expect(writeSeqSpy).toHaveBeenCalledTimes(1);
+    expect(backend.getWrittenText('s-timeout')).toBe('\x1b[200~timeout submit\x1b[201~\r');
   });
 });
 
@@ -323,14 +298,6 @@ describe('resolveBracketedPasteSubmit', () => {
     // An unrecognised env value falls through to the default rather than
     // silently disabling the fix.
     expect(resolveBracketedPasteSubmit(undefined, { [PROMPT_BRACKETED_PASTE_ENV]: 'garbage' })).toBe(true);
-  });
-});
-
-describe('isClaudeComposerReady', () => {
-  test('recognises Claude Code composer output with terminal controls stripped', () => {
-    expect(isClaudeComposerReady('\x1b]0;Claude Code\x07\x1b[7mClaudeCode\x1b[0m\n❯ ')).toBe(true);
-    expect(isClaudeComposerReady('Claude Code\n❯ ')).toBe(true);
-    expect(isClaudeComposerReady('ClaudeCode without composer')).toBe(false);
   });
 });
 

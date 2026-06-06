@@ -1,5 +1,6 @@
 import type { AgentEvent, EventMeta, InjectHookEventResult } from '../core/types.js';
 import type { AgentType } from '../core/agent-types.js';
+import type { AgentInteractionPort } from '../core/ports/agent-interaction-port.js';
 
 /**
  * Handler signature for adapter hook events. The optional third argument is
@@ -63,6 +64,22 @@ export interface AdapterLaunchOptions {
    * concerns into the adapter interface. See rfc-ralph-loop-stall-handling.md §8.
    */
   extraEnv?: Record<string, string>;
+  /**
+   * Per-task reasoning-effort override (#681). When set, the adapter translates
+   * it to the agent CLI's effort lever (claude-code: `--effort <level>`;
+   * codex-cli: `-c model_reasoning_effort="<level>"`). When undefined, the
+   * adapter falls back to its constructor-time per-agent-type default; when
+   * *that* is also undefined no effort flag is passed at all — byte-identical
+   * to pre-#681 launch argv.
+   *
+   * Carries only the resolved per-task override. The per-agent-type default is
+   * resolved *inside* the adapter (see each adapter's `resolveDefaultEffort`)
+   * so it applies uniformly across every launch path — fresh launch, queued
+   * promotion, crash-recovery resume, and Ralph relaunch — without each call
+   * site having to thread it. Resolution order is therefore: this override →
+   * adapter's per-agent default → unset.
+   */
+  effort?: string;
 }
 
 /**
@@ -76,7 +93,7 @@ export type PreflightResult =
   | { kind: 'ok'; resolvedPath: string; version: string }
   | { kind: 'absent'; reason: string; configuredVia: 'env' | 'default'; envVarName: string };
 
-export interface AgentAdapter {
+export interface AgentAdapter extends AgentInteractionPort {
   /** Unique identifier for this agent type (e.g., 'claude-code', 'codex-cli'). */
   readonly agentType: AgentType;
 
@@ -105,12 +122,6 @@ export interface AgentAdapter {
    * fakes) omit this method. {@link runAdapterPreflights} skips them.
    */
   preflight?(): Promise<PreflightResult>;
-
-  /** Send developer input to an agent's terminal session. */
-  sendInput(tmuxName: string, text: string): Promise<void>;
-
-  /** Send a single keystroke without trailing Enter (for permission prompts). */
-  sendKeystroke(tmuxName: string, key: string): Promise<void>;
 
   /** Stop an agent by killing its terminal session. */
   stop(tmuxName: string): Promise<void>;

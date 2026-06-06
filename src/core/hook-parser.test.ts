@@ -98,6 +98,54 @@ describe('Hook Event Parser', () => {
     });
   });
 
+  test('parses Stop hook background-work counts when Claude reports them', () => {
+    const event = parseHookEvent(JSON.stringify({
+      session_id: 's1',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/workspace/kookr',
+      hook_event_name: 'Stop',
+      last_assistant_message: 'Done.',
+      background_tasks: [
+        { id: 'running-task', status: 'running' },
+        { id: 'completed-task', status: 'completed' },
+      ],
+      session_crons: [],
+    }));
+
+    expect(event).toEqual({
+      type: 'stop',
+      sessionId: 's1',
+      lastMessage: 'Done.',
+      cwd: '/workspace/kookr',
+      activeBackgroundTaskCount: 1,
+      activeSessionCronCount: 0,
+    });
+  });
+
+  test('parses active session crons in Stop hook background-work counts', () => {
+    const event = parseHookEvent(JSON.stringify({
+      session_id: 's1',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/workspace/kookr',
+      hook_event_name: 'Stop',
+      last_assistant_message: 'Waiting on scheduled work.',
+      background_tasks: [],
+      session_crons: [
+        { id: 'running-cron', status: 'running' },
+        { id: 'stopped-cron', status: 'stopped' },
+      ],
+    }));
+
+    expect(event).toEqual({
+      type: 'stop',
+      sessionId: 's1',
+      lastMessage: 'Waiting on scheduled work.',
+      cwd: '/workspace/kookr',
+      activeBackgroundTaskCount: 0,
+      activeSessionCronCount: 1,
+    });
+  });
+
   test('parses PermissionRequest hook', () => {
     const raw = loadFixture('hook-permission-request.json');
     const event = parseHookEvent(raw);

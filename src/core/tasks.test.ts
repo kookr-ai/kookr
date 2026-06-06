@@ -1335,3 +1335,47 @@ describe('status classification helpers', () => {
     expect(isTerminalStatus(s)).toBe(false);
   });
 });
+
+describe('TaskStore pending agent signal', () => {
+  test('set/get/clear round-trips a pending signal', () => {
+    const store = new TaskStore();
+    const task = store.createTask('Ship it', '/repo');
+    expect(store.getPendingSignal(task.id)).toBeUndefined();
+
+    const ok = store.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: '2026-06-05T12:00:00.000Z',
+      note: 'tests green',
+    });
+    expect(ok).toBe(true);
+    expect(store.getPendingSignal(task.id)).toEqual({
+      kind: 'completion_ready',
+      raisedAt: '2026-06-05T12:00:00.000Z',
+      note: 'tests green',
+    });
+
+    expect(store.clearPendingSignal(task.id)).toBe(true);
+    expect(store.getPendingSignal(task.id)).toBeUndefined();
+    // Second clear is a no-op.
+    expect(store.clearPendingSignal(task.id)).toBe(false);
+  });
+
+  test('setPendingSignal replaces in place (idempotent per task)', () => {
+    const store = new TaskStore();
+    const task = store.createTask('Ship it', '/repo');
+    store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-05T12:00:00.000Z' });
+    store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-05T13:00:00.000Z', note: 'now with PR' });
+    expect(store.getPendingSignal(task.id)).toEqual({
+      kind: 'completion_ready',
+      raisedAt: '2026-06-05T13:00:00.000Z',
+      note: 'now with PR',
+    });
+  });
+
+  test('set/clear are no-ops for unknown tasks', () => {
+    const store = new TaskStore();
+    expect(store.setPendingSignal('missing', { kind: 'completion_ready', raisedAt: 'x' })).toBe(false);
+    expect(store.clearPendingSignal('missing')).toBe(false);
+    expect(store.getPendingSignal('missing')).toBeUndefined();
+  });
+});

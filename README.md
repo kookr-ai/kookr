@@ -65,10 +65,10 @@ In the dashboard, click **Launch**, choose a working directory, and enter a task
 Terminal users can launch a task from any project:
 
 ```bash
-kookr-spawn "review the diff since origin/main and summarize risks"
+kookr spawn "review the diff since origin/main and summarize risks"
 ```
 
-See [CLI Reference](docs/reference/cli.md) for `kookr-spawn`, `kookr-status`, and related commands.
+See [CLI Reference](docs/reference/cli.md) for `kookr spawn`, `kookr status`, and related commands.
 
 ## Where To Go Next
 

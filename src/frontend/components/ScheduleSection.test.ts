@@ -103,4 +103,20 @@ describe('ScheduleSection collapsed-state persistence', () => {
     expect(localStorage.getItem(SCHEDULE_SECTION_COLLAPSED_KEY)).toBe('1');
     expect(container.querySelectorAll('.schedule-row').length).toBe(0);
   });
+
+  test('renders missed startup runs with readable copy', () => {
+    localStorage.setItem(SCHEDULE_SECTION_COLLAPSED_KEY, '0');
+    root = render(container, [makeSchedule({
+      latestExecution: {
+        executionToken: 'token',
+        evaluatedAt: new Date().toISOString(),
+        trigger: 'cron',
+        outcome: 'skipped_manual',
+        reasonCode: 'manual_catch_up_required',
+      },
+    })]);
+
+    expect(container.querySelector('.schedule-last-run')?.textContent).toContain('manual run available');
+    expect(container.querySelector('.schedule-last-run')?.textContent).not.toContain('skipped_manual');
+  });
 });

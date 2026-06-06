@@ -3,7 +3,9 @@ import type { TaskCompletionFeedback } from '../../shared/contracts/messages.js'
 
 interface Props {
   feedback: TaskCompletionFeedback | undefined;
+  requestReflect: boolean;
   onChange: (feedback: TaskCompletionFeedback | undefined) => void;
+  onRequestReflectChange: (requestReflect: boolean) => void;
 }
 
 /**
@@ -16,13 +18,19 @@ interface Props {
  * controlled view that emits the new feedback shape on every change. Skipping
  * a rating is the default; passing `undefined` to onChange clears the rating.
  */
-export function CompleteDialogFooter({ feedback, onChange }: Props): JSX.Element {
+export function CompleteDialogFooter({
+  feedback,
+  requestReflect,
+  onChange,
+  onRequestReflectChange,
+}: Props): JSX.Element {
   const [showNoteInput, setShowNoteInput] = useState(feedback !== undefined);
 
   function setRating(rating: 'up' | 'down') {
     if (feedback?.rating === rating) {
       // Click the active thumb again → unset
       onChange(undefined);
+      onRequestReflectChange(false);
       setShowNoteInput(false);
       return;
     }
@@ -33,6 +41,7 @@ export function CompleteDialogFooter({ feedback, onChange }: Props): JSX.Element
       ...(feedback?.note !== undefined ? { note: feedback.note } : {}),
       ...(rating === 'down' && feedback?.downReason ? { downReason: feedback.downReason } : {}),
     });
+    onRequestReflectChange(rating === 'down');
   }
 
   function setNote(note: string) {
@@ -100,6 +109,14 @@ export function CompleteDialogFooter({ feedback, onChange }: Props): JSX.Element
               <span>My prompt was unclear (skips structural-fix proposals)</span>
             </label>
           )}
+          <label className="complete-feedback-checkbox">
+            <input
+              type="checkbox"
+              checked={requestReflect}
+              onChange={(e) => onRequestReflectChange(e.target.checked)}
+            />
+            <span>Create reflection task after completion</span>
+          </label>
         </>
       )}
     </div>

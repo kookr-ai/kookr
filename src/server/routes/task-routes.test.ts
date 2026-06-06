@@ -26,9 +26,10 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, DrainModeError } from '../launch-service.js';
+import { launchTask, DrainModeError, EffortValidationError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
+import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
 
 function mkApp(deps: Partial<TaskRouteDeps>): Hono {
   const app = new Hono();
@@ -352,6 +353,45 @@ describe('POST /api/tasks error paths', () => {
     const body = await res.json();
     expect(body.error).toBe('adapter blew up');
   });
+
+  test('returns 400 when effort is not a string (#681)', async () => {
+    for (const bad of [3, null, ['high'], { level: 'high' }]) {
+      vi.mocked(launchTask).mockClear();
+      const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'p', cwd: '/cwd', effort: bad }),
+      });
+      expect(res.status, `effort=${JSON.stringify(bad)}`).toBe(400);
+      expect((await res.json()).error).toMatch(/effort must be a string/);
+      // Shape check rejects before launch is attempted.
+      expect(launchTask).not.toHaveBeenCalled();
+    }
+  });
+
+  test('maps EffortValidationError to 400 with code invalid_effort (#681)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(new EffortValidationError('Invalid effort "max" for agent codex-cli'));
+    const taskStore = new TaskStore();
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', agentType: 'codex-cli', effort: 'max' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'invalid_effort' });
+  });
+
+  test('forwards a valid string effort to launchTask (#681)', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', effort: 'max' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ effort: 'max' }));
+  });
 });
 
 describe('DELETE /api/tasks/:id error paths', () => {
@@ -389,5 +429,369 @@ describe('DELETE /api/tasks/:id error paths', () => {
     }).request('/api/tasks/does-not-exist', { method: 'DELETE' });
     expect(res.status).toBe(404);
     expect(vi.mocked(deleteTask)).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/tasks/:id/complete (issue #691)', () => {
+  function mkCompleteDeps(taskStore: TaskStore): { deps: TaskRouteDeps; stop: ReturnType<typeof vi.fn> } {
+    const queue = new AttentionQueue();
+    const monitor = new Monitor(taskStore, queue);
+    const stop = vi.fn(async () => {});
+    const deps = {
+      taskStore,
+      monitor,
+      queue,
+      adapter: { stop } as never,
+      hookWatcher: { stop: vi.fn(), isWatching: () => false, watch: vi.fn() } as never,
+      watchdog: { unregisterAgent: vi.fn() } as never,
+      broadcastToAll: vi.fn(),
+      serverCwd: '/server',
+    } as unknown as TaskRouteDeps;
+    return { deps, stop };
+  }
+
+  function addLiveSession(taskStore: TaskStore, taskId: string, tmuxSession = 'kookr-live'): void {
+    taskStore.addSession(taskId, {
+      tmuxSession,
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+    });
+  }
+
+  test('marks an in-progress task completed and tears down its live session', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Shipped the PR', '/repo');
+    addLiveSession(taskStore, task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+
+    const { deps, stop } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; task: { status: string } };
+    expect(body.ok).toBe(true);
+    expect(body.task.status).toBe('completed');
+    expect(taskStore.getTask(task.id)!.status).toBe('completed');
+    // The idle dtach session is torn down through the lifecycle handler.
+    expect(stop).toHaveBeenCalledWith('kookr-live');
+    // No completion digest is set, so the task never trips done_not_cleared.
+    expect(taskStore.getTask(task.id)!.completionDigest).toBeUndefined();
+  });
+
+  test('is idempotent: completing an already-terminal task is a no-op 200', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Already done', '/repo');
+    addLiveSession(taskStore, task.id);
+    taskStore.completeTask(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('completed');
+
+    const { deps, stop } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; alreadyTerminal?: boolean };
+    expect(body.ok).toBe(true);
+    expect(body.alreadyTerminal).toBe(true);
+    // No teardown work on a task that was already terminal.
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  test('acknowledges a terminated task by completing it (terminated → completed)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Sessions died mid-run', '/repo');
+    addLiveSession(taskStore, task.id);
+    // terminateTask stops the live session (lastStatus: completed) and moves the
+    // task to the terminal `terminated` state — the dead-session-awaiting-ack case.
+    taskStore.terminateTask(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('terminated');
+
+    const { deps } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; alreadyTerminal?: boolean; task: { status: string } };
+    expect(body.ok).toBe(true);
+    expect(body.alreadyTerminal).toBeUndefined();
+    expect(body.task.status).toBe('completed');
+    expect(taskStore.getTask(task.id)!.status).toBe('completed');
+  });
+
+  test('a cancelled task is an idempotent no-op (cannot transition to completed)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Deliberately killed', '/repo');
+    addLiveSession(taskStore, task.id);
+    taskStore.cancelTask(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('cancelled');
+
+    const { deps } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; alreadyTerminal?: boolean; task: { status: string } };
+    expect(body.alreadyTerminal).toBe(true);
+    expect(taskStore.getTask(task.id)!.status).toBe('cancelled');
+  });
+
+  test('404s for an unknown task id', async () => {
+    const taskStore = new TaskStore();
+    const { deps } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request('/api/tasks/does-not-exist/complete', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  test('409s for a task that never started (cannot skip inProgress)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Queued helper', '/repo'); // status: open
+    const { deps, stop } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(409);
+    const body = await res.json() as { code: string };
+    expect(body.code).toBe('not_in_progress');
+    expect(taskStore.getTask(task.id)!.status).toBe('open');
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  test('uses the shared active-Ralph partial completion policy', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Ralph root', '/repo');
+    addLiveSession(taskStore, task.id);
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = {
+      status: 'running',
+      iteration: 1,
+    } as never;
+
+    const { deps, stop } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; partialRalphCompletion?: boolean; task: { status: string } };
+    expect(body.ok).toBe(true);
+    expect(body.partialRalphCompletion).toBe(true);
+    expect(body.task.status).toBe('inProgress');
+    expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+    expect(taskStore.getTask(task.id)!.sessions[0].lastStatus).toBe('completed');
+    expect(stop).toHaveBeenCalledWith('kookr-live');
+  });
+
+  test('403s for remote-owned SharedTask ids', async () => {
+    const taskStore = new TaskStore();
+    const { deps } = mkCompleteDeps(taskStore);
+    const res = await mkApp(deps).request('/api/tasks/shared:abc123/complete', { method: 'POST' });
+    expect(res.status).toBe(403);
+  });
+
+  test('a task completed via this route without monitor events stays digestless', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Helper that finished', '/repo');
+    addLiveSession(taskStore, task.id);
+
+    const { deps } = mkCompleteDeps(taskStore);
+    await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    const completed = taskStore.getTask(task.id)!;
+    expect(completed.status).toBe('completed');
+    const state = buildCoordinatorSnapshotState({ tasks: [completed] }, []);
+    expect(state.outputs.some((o) => o.detectorId === 'done_not_cleared')).toBe(false);
+
+    // Control: shared completion may set a digest when monitor events exist, and
+    // the detector DOES fire on a completed task that carries one.
+    // proving the exclusion above is due to the absent digest, not a no-op setup.
+    taskStore.setCompletionDigest(task.id, { bullets: ['did the thing'], filesChanged: [] });
+    const withDigest = buildCoordinatorSnapshotState({ tasks: [taskStore.getTask(task.id)!] }, []);
+    expect(withDigest.outputs.some((o) => o.detectorId === 'done_not_cleared')).toBe(true);
+  });
+
+  test('promotes a pending task after REST completion frees capacity', async () => {
+    const taskStore = new TaskStore();
+    const active = taskStore.createTask('Active work', '/repo');
+    addLiveSession(taskStore, active.id, 'kookr-active');
+    const pending = taskStore.createTask('Queued work', '/repo');
+    taskStore.pendTask(pending.id);
+    const { deps } = mkCompleteDeps(taskStore);
+    const launch = vi.fn(async (taskId: string, _prompt: string, cwd: string) => {
+      taskStore.addSession(taskId, {
+        tmuxSession: 'kookr-promoted',
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      return 'kookr-promoted';
+    });
+    deps.launchServiceDeps = {
+      taskStore,
+      adapterRegistry: { get: vi.fn(() => ({ launch, agentType: 'claude-code' })) },
+      lifecycleDeps: {
+        monitor: deps.monitor,
+        watchdog: { registerAgent: vi.fn() },
+        hookWatcher: { isWatching: vi.fn(() => false), watch: vi.fn() },
+        interactionLog: { append: vi.fn() },
+        githubScanner: { isActive: vi.fn(() => false), processTaskPrompt: vi.fn() },
+        autoNameTask: vi.fn(),
+      },
+      getMaxActiveTasks: () => 1,
+    } as never;
+
+    const res = await mkApp(deps).request(`/api/tasks/${active.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(launch).toHaveBeenCalledWith(pending.id, 'Queued work', '/repo');
+    expect(taskStore.getTask(pending.id)?.status).toBe('inProgress');
+  });
+});
+
+describe('POST /api/tasks/:id/signal', () => {
+  test('raises a pending signal for an active task', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: 'tests green' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.signal.kind).toBe('completion_ready');
+    expect(body.signal.note).toBe('tests green');
+    expect(typeof body.signal.raisedAt).toBe('string');
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
+  test('redacts secrets and caps the note', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: 'token ghp_0123456789abcdefghij done' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.signal.note).toContain('[REDACTED]');
+    expect(body.signal.note).not.toContain('ghp_0123456789abcdefghij');
+  });
+
+  test('rejects an unknown kind with 400', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'bogus' }),
+    });
+    expect(res.status).toBe(400);
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+  });
+
+  test('returns 404 for an unknown task', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks/missing/signal', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test('rejects a terminal task with 409', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    taskStore.startTask(task.id);
+    taskStore.cancelTask(task.id);
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready' }),
+    });
+    expect(res.status).toBe(409);
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+  });
+
+  test('rejects a SharedTask id with 403', async () => {
+    const app = mkApp(mkLoopDeps());
+    const res = await app.request('/api/tasks/shared:abc/signal', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready' }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test('rejects malformed JSON with 400', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not json',
+    });
+    expect(res.status).toBe(400);
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+  });
+
+  test('rejects a non-string note with 400', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: 123 }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('omits a whitespace-only note', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: '   ' }),
+    });
+    expect(res.status).toBe(200);
+    expect(taskStore.getPendingSignal(task.id)?.note).toBeUndefined();
+  });
+
+  test('replaces a secret-only note with the redaction placeholder', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: 'ghp_0123456789abcdefghij' }),
+    });
+    expect(res.status).toBe(200);
+    const note = taskStore.getPendingSignal(task.id)?.note;
+    expect(note).toBe('[REDACTED]');
+    expect(note).not.toContain('ghp_');
+  });
+
+  test('broadcasts a snapshot on success', async () => {
+    const taskStore = new TaskStore();
+    const broadcastToAll = vi.fn();
+    const app = mkApp({ ...mkLoopDeps(taskStore), broadcastToAll });
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready' }),
+    });
+    expect(res.status).toBe(200);
+    expect(broadcastToAll).toHaveBeenCalled();
   });
 });

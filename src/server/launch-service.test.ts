@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, DrainModeError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, DrainModeError, EffortValidationError, type LaunchServiceDeps } from './launch-service.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 
 // Minimal stubs for adapter and lifecycle deps
@@ -232,6 +232,60 @@ describe('launchTask', () => {
     expect(result.duplicate).toBeUndefined();
     expect(result.task.prompt).toBe('hello');
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  describe('per-task effort override (#681)', () => {
+    /** The AdapterLaunchOptions (5th) arg of the first adapter.launch call. */
+    function launchOptsFor(deps: LaunchServiceDeps, agent: 'claude-code' | 'codex-cli') {
+      const launch = vi.mocked(deps.adapterRegistry.get(agent).launch);
+      return launch.mock.calls[0]?.[4];
+    }
+
+    it('with no effort, passes no effort opt — byte-identical launch call', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
+      // 5th arg is undefined (no ralph env, no effort) — exactly as pre-#681.
+      expect(launchOptsFor(deps, 'claude-code')).toBeUndefined();
+    });
+
+    it('threads a valid override to the adapter as opts.effort', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', effort: 'max' });
+      expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ effort: 'max' });
+    });
+
+    it('threads the reflect sandbox profile to the adapter', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', sandboxProfile: 'reflect' });
+      expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ sandboxProfile: 'reflect' });
+    });
+
+    it('validates against the RESOLVED agent: max is rejected for codex-cli', async () => {
+      await expect(
+        launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', effort: 'max' }),
+      ).rejects.toBeInstanceOf(EffortValidationError);
+      // Fail-fast: no task record, no adapter launch.
+      expect(store.listTasks()).toHaveLength(0);
+      expect(deps.adapterRegistry.get('codex-cli').launch).not.toHaveBeenCalled();
+    });
+
+    it('accepts a codex-only level for codex-cli (minimal)', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', effort: 'minimal' });
+      expect(launchOptsFor(deps, 'codex-cli')).toMatchObject({ effort: 'minimal' });
+    });
+
+    it('rejects an entirely unknown effort token', async () => {
+      await expect(
+        launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code', effort: 'ultra' }),
+      ).rejects.toBeInstanceOf(EffortValidationError);
+    });
+
+    it('rejects an empty-string effort (guards the !== undefined check, not truthiness)', async () => {
+      // If the guard regressed to `if (opts.effort && ...)`, an empty string
+      // would silently bypass validation and reach the adapter. The `!== undefined`
+      // check must reject it.
+      await expect(
+        launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code', effort: '' }),
+      ).rejects.toBeInstanceOf(EffortValidationError);
+      expect(store.listTasks()).toHaveLength(0);
+    });
   });
 
   describe('operator drain gate (issue #659)', () => {

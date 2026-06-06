@@ -1,5 +1,7 @@
 import type { Task } from './tasks.js';
 import type { InteractionEvent } from './interaction-log.js';
+import type { AgentEvent } from './types.js';
+import type { AgentState } from '../shared/contracts/agent-state.js';
 
 /**
  * Pure interaction-log slice join: collect all events that touch a given task.
@@ -50,3 +52,35 @@ export interface FeedbackBundle {
   /** Filenames (relative to the bundle dir) of hook JSONL slices, one per source-task session. */
   hookFiles: string[];
 }
+
+export interface TaskSnapshotBundleSession {
+  sessionId: string;
+  agentType: string;
+  cwd: string;
+  createdAt: string;
+  lastStatus?: string;
+  hookFile?: string;
+  eventFile: string;
+  eventCount: number;
+}
+
+export interface TaskSnapshotBundle {
+  schemaVersion: 'task-snapshot-reflect.v1';
+  taskId: string;
+  capturedAt: string;
+  trigger: 'manual';
+  agentType: string;
+  taskStatus: string;
+  taskName?: string;
+  taskPrompt: string;
+  cwd: string;
+  criteria?: string;
+  completionDigest?: { bullets: string[] };
+  sessions: TaskSnapshotBundleSession[];
+  /** Current read-model states for this task's sessions, as seen by the dashboard. */
+  agentStates: AgentState[];
+  /** Filename (relative to the bundle dir) containing task-related dashboard interactions. */
+  interactionFile: string;
+}
+
+export type TaskSnapshotSessionEvents = Record<string, AgentEvent[]>;

@@ -21,12 +21,13 @@ function withService(testFn: (service: ScheduleService, store: ScheduleStore, di
 describe('ScheduleService status', () => {
   it('reports healthy after runner start before the first completed tick', () => {
     withService((service) => {
-      service.recordRunnerStarted(true);
+      service.recordRunnerStarted('auto');
 
       const snapshot = service.getStatusSnapshot();
       expect(snapshot).toEqual(expect.objectContaining({
         runnerStartedAt: expect.any(String),
         schedulerHealthy: true,
+        catchUpMode: 'auto',
         catchUpEnabled: true,
       }));
       expect(snapshot).not.toHaveProperty('lastTickCompletedAt');
@@ -53,7 +54,7 @@ describe('ScheduleService status', () => {
 
   it('reports unhealthy while a runner error is present and clears it on a successful tick', () => {
     withService((service) => {
-      service.recordRunnerStarted(true);
+      service.recordRunnerStarted('auto');
       service.recordRunnerError('[schedule] Tick error: boom');
 
       expect(service.getStatusSnapshot()).toEqual(expect.objectContaining({
@@ -93,6 +94,37 @@ describe('ScheduleService status', () => {
           completedAt: expect.any(String),
         }),
       ]);
+    });
+  });
+
+  it('records deferred catch-up without leaving the stale due slot replayable', async () => {
+    await withService(async (service, store) => {
+      const schedule = store.create({
+        name: 'Deferred',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const dueAt = new Date(Date.now() - 2 * 60_000).toISOString();
+
+      await service.recordCatchUpDeferred(schedule.id, dueAt, 'Run manually');
+
+      const updated = store.getWithComputed(schedule.id)!;
+      expect(updated.latestExecution).toEqual(expect.objectContaining({
+        scheduledFor: dueAt,
+        outcome: 'skipped_manual',
+        reasonCode: 'manual_catch_up_required',
+      }));
+      expect(updated.executionLedger).toEqual([
+        expect.objectContaining({
+          decision: 'manual_catch_up',
+          outcome: 'skipped_manual',
+          reasonCode: 'manual_catch_up_required',
+          scheduledFor: dueAt,
+        }),
+      ]);
+      expect(new Date(updated.lastScheduledFor!).getTime()).toBeGreaterThan(new Date(dueAt).getTime());
+      expect(new Date(updated.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
     });
   });
 

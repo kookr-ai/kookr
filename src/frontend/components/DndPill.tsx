@@ -55,12 +55,15 @@ export function DndPill() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, [menuOpen]);
 
+  const auto = dnd.source === 'quiet-hours';
   const pending = dnd.enabled ? pendingDuringDnd(agents, dnd.startedAt) : 0;
   const remainingMs = dnd.enabled && dnd.expiresAt !== null ? dnd.expiresAt - Date.now() : null;
   const remainingLabel = remainingMs !== null ? formatRemaining(remainingMs) : null;
 
   function togglePill() {
-    if (dnd.enabled) {
+    // Base the toggle on the manual layer: a click during scheduled quiet hours
+    // pins manual DND on (so it persists past the window) rather than no-opping.
+    if (dnd.source === 'manual') {
       dnd.disable();
     } else {
       dnd.enable(null);
@@ -72,12 +75,18 @@ export function DndPill() {
     setMenuOpen(false);
   }
 
-  const stateClass = dnd.enabled ? (pending > 0 ? 'dnd-pill-pending' : 'dnd-pill-on') : 'dnd-pill-off';
-  const title = dnd.enabled
-    ? pending > 0
-      ? `Do Not Disturb on${remainingLabel ? ` · ${remainingLabel}` : ''} · ${pending} new finding${pending !== 1 ? 's' : ''} arrived. Click to turn off.`
-      : `Do Not Disturb on${remainingLabel ? ` · ${remainingLabel}` : ''}. Click to turn off.`
-    : 'Do Not Disturb is off. Click to silence findings while you step away.';
+  const stateClass = auto
+    ? 'dnd-pill-auto'
+    : dnd.enabled
+      ? pending > 0 ? 'dnd-pill-pending' : 'dnd-pill-on'
+      : 'dnd-pill-off';
+  const title = auto
+    ? 'Do Not Disturb on automatically — a scheduled quiet-hours window is active. Click to keep it on after the window ends.'
+    : dnd.enabled
+      ? pending > 0
+        ? `Do Not Disturb on${remainingLabel ? ` · ${remainingLabel}` : ''} · ${pending} new finding${pending !== 1 ? 's' : ''} arrived. Click to turn off.`
+        : `Do Not Disturb on${remainingLabel ? ` · ${remainingLabel}` : ''}. Click to turn off.`
+      : 'Do Not Disturb is off. Click to silence findings while you step away.';
 
   return (
     <div className="dnd-pill-wrapper" ref={wrapperRef}>
@@ -92,10 +101,11 @@ export function DndPill() {
           {dnd.enabled ? '●' : '○'}
         </span>
         <span className="dnd-pill-label">DND</span>
-        {dnd.enabled && pending > 0 && (
+        {auto && <span className="dnd-pill-auto-badge" aria-hidden="true">Auto</span>}
+        {dnd.enabled && !auto && pending > 0 && (
           <span className="dnd-pill-count" aria-label={`${pending} new`}>{pending}</span>
         )}
-        {dnd.enabled && remainingLabel && pending === 0 && (
+        {dnd.enabled && !auto && remainingLabel && pending === 0 && (
           <span className="dnd-pill-remaining">{remainingLabel}</span>
         )}
       </button>
@@ -112,6 +122,11 @@ export function DndPill() {
       {menuOpen && (
         <div className="dnd-pill-menu" role="menu" ref={popoverRef}>
           <div className="dnd-pill-menu-header">Silence findings for…</div>
+          {auto && (
+            <div className="dnd-pill-menu-note">
+              Quiet hours are silencing alerts on a schedule. Edit windows in Settings → Notifications.
+            </div>
+          )}
           {DND_DURATIONS.map((preset) => (
             <button
               key={preset.label}
@@ -122,7 +137,7 @@ export function DndPill() {
               {preset.label}
             </button>
           ))}
-          {dnd.enabled && (
+          {dnd.source === 'manual' && (
             <button
               role="menuitem"
               className="dnd-pill-menu-item dnd-pill-menu-disable"

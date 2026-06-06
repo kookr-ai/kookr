@@ -28,7 +28,24 @@ interface InteractionEvent {
   method?: string;
   reason?: string;
   durationMs?: number;
+  relaunched?: number;
+  skipped?: number;
+  failed?: number;
+  details?: {
+    relaunched?: Array<{ mode?: string; fallbackReason?: string }>;
+    skipped?: unknown[];
+    failed?: unknown[];
+  };
   timestamp: string;
+}
+
+interface CrashRecoverySummary {
+  events: number;
+  relaunched: number;
+  resumed: number;
+  fresh: number;
+  skipped: number;
+  failed: number;
 }
 
 interface SessionSummary {
@@ -48,6 +65,8 @@ interface SessionSummary {
   findingsSnoozed: number;
   findingsSkipped: number;
   findingsByType: Record<string, { input: number; snooze: number; skip: number }>;
+  crashRecovery: CrashRecoverySummary;
+  sessionKind: "normal" | "crash_recovery" | "mixed";
   isEmpty: boolean;
 }
 
@@ -75,6 +94,10 @@ interface AggregateStats {
   avgInputResolutionMs: number;
   emptySessions: number;
   snoozeStorms: AgentSnoozeProfile[];  // agents with 5+ snoozes
+  crashRecoverySessions: number;
+  crashRecoveryRelaunches: number;
+  crashRecoveryResumed: number;
+  crashRecoveryFresh: number;
 }
 
 interface StateFile {
@@ -173,6 +196,14 @@ function analyzeSession(sessionDir: string): SessionSummary {
   const launchedPrompts: { agentId: string; prompt: string }[] = [];
   const inputDetails: { agentId: string; content: string; classification: string }[] = [];
   const findingsByType: Record<string, { input: number; snooze: number; skip: number }> = {};
+  const crashRecovery: CrashRecoverySummary = {
+    events: 0,
+    relaunched: 0,
+    resumed: 0,
+    fresh: 0,
+    skipped: 0,
+    failed: 0,
+  };
 
   let launched = 0, completed = 0, cancelled = 0;
   let inputs = 0, resolved = 0, snoozed = 0, skipped = 0;
@@ -229,6 +260,20 @@ function analyzeSession(sessionDir: string): SessionSummary {
       case "finding_skipped":
         skipped++;
         break;
+
+      case "crash_recovery":
+        crashRecovery.events++;
+        crashRecovery.relaunched += ev.relaunched || ev.details?.relaunched?.length || 0;
+        crashRecovery.skipped += ev.skipped || ev.details?.skipped?.length || 0;
+        crashRecovery.failed += ev.failed || ev.details?.failed?.length || 0;
+        for (const relaunch of ev.details?.relaunched ?? []) {
+          if (relaunch.mode === "resumed") {
+            crashRecovery.resumed++;
+          } else if (relaunch.mode === "fresh") {
+            crashRecovery.fresh++;
+          }
+        }
+        break;
     }
   }
 
@@ -256,6 +301,10 @@ function analyzeSession(sessionDir: string): SessionSummary {
     findingsSnoozed: snoozed,
     findingsSkipped: skipped,
     findingsByType,
+    crashRecovery,
+    sessionKind: crashRecovery.events > 0
+      ? (events.some((ev) => ev.type !== "agent_launched" && ev.type !== "crash_recovery") ? "mixed" : "crash_recovery")
+      : "normal",
     isEmpty: events.length <= 2 && launched === 0,
   };
 }
@@ -342,6 +391,10 @@ function aggregate(sessions: SessionSummary[]): AggregateStats {
     avgInputResolutionMs: inputResCount > 0 ? Math.round(totalInputResMs / inputResCount) : 0,
     emptySessions: sessions.filter((s) => s.isEmpty).length,
     snoozeStorms: detectSnoozeStorms(sessions),
+    crashRecoverySessions: sessions.filter((s) => s.crashRecovery.events > 0).length,
+    crashRecoveryRelaunches: sessions.reduce((sum, s) => sum + s.crashRecovery.relaunched, 0),
+    crashRecoveryResumed: sessions.reduce((sum, s) => sum + s.crashRecovery.resumed, 0),
+    crashRecoveryFresh: sessions.reduce((sum, s) => sum + s.crashRecovery.fresh, 0),
   };
 }
 
@@ -406,6 +459,10 @@ function main() {
   console.log(`Findings snoozed:        ${stats.findingsSnoozed}`);
   console.log(`Findings skipped:        ${stats.findingsSkipped}`);
   console.log(`Avg input resolution:    ${Math.round(stats.avgInputResolutionMs / 1000)}s`);
+  if (stats.crashRecoverySessions > 0) {
+    console.log(`Crash recovery sessions: ${stats.crashRecoverySessions}`);
+    console.log(`Recovery relaunches:     ${stats.crashRecoveryRelaunches} (${stats.crashRecoveryResumed} resumed, ${stats.crashRecoveryFresh} fresh)`);
+  }
 
   console.log(`\n## Findings by Anomaly Type\n`);
   console.log(`${"Type".padEnd(20)} ${"Input".padStart(6)} ${"Snooze".padStart(7)} ${"Skip".padStart(6)} ${"Total".padStart(6)}`);
@@ -432,9 +489,13 @@ function main() {
   console.log(`\n## Per-Session Breakdown\n`);
   for (const s of sessions) {
     const tag = s.isEmpty ? " [EMPTY]" : "";
-    console.log(`### ${s.sessionDir}${tag}`);
+    const kindTag = s.sessionKind !== "normal" ? ` [${s.sessionKind}]` : "";
+    console.log(`### ${s.sessionDir}${tag}${kindTag}`);
     console.log(`  Duration: ${s.startTime.slice(11, 19)} → ${s.endTime.slice(11, 19)} (${s.durationMinutes}m)`);
     console.log(`  Events: ${s.eventCount} | Launched: ${s.agentsLaunched} | Completed: ${s.tasksCompleted} | Inputs: ${s.userInputs} | Resolved: ${s.findingsResolved} | Snoozed: ${s.findingsSnoozed}`);
+    if (s.crashRecovery.events > 0) {
+      console.log(`  Crash recovery: ${s.crashRecovery.relaunched} relaunched (${s.crashRecovery.resumed} resumed, ${s.crashRecovery.fresh} fresh), ${s.crashRecovery.skipped} skipped, ${s.crashRecovery.failed} failed`);
+    }
     if (s.launchedPrompts.length > 0) {
       console.log(`  Launched:`);
       for (const p of s.launchedPrompts) {

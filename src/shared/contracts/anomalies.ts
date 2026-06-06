@@ -25,6 +25,24 @@ export interface Anomaly {
   count?: number;
   subType?: 'stop' | 'ask_user_question';
   confidence?: AnomalyConfidence;
+  /**
+   * End-to-end correlation id (#705). Minted when the triggering hook event is
+   * ingested ({@link mintEventId} in `hook-ingestion.ts`) and threaded unchanged
+   * into the finding so operators have a single lineage id tying a hook event →
+   * the detector that fired → this finding → the emitted alert. Stable across
+   * durable replay and WebSocket reconnect — it is never regenerated downstream.
+   * Absent on findings not derived from a hook event (e.g. watchdog-only
+   * liveness verdicts).
+   */
+  eventId?: string;
+  /** Descendant active finding ids linked to this likely root; active finding ids are agent ids. */
+  relatedFindingIds?: string[];
+  /** Likely root finding id when this finding is a descendant symptom; active finding ids are agent ids. */
+  rootCauseFindingId?: string;
+  /** True when this finding is the highest-priority ancestor finding for related descendants. */
+  likelyRootCause?: boolean;
+  /** Human-readable basis for why the active findings were linked. */
+  causalityReason?: string;
 }
 
 export type FindingEvidenceObservationSource = 'event' | 'watchdog_tick';

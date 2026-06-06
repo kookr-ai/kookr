@@ -8,7 +8,7 @@ Document the major stateful entities in Kookr V1 and their legal state transitio
 
 Core attention-loop stateful entities: **Task**, **Agent Session**, **Attention Event**, and **Snooze Timer**.
 
-> Updated 2026-05-09: The original catalog covered the V1 attention loop. The implemented codebase now also contains operational state machines for checkpoint cycling, Ralph loops, schedules, workspace attempts, quota polling, and watchdog verdicts. Those are summarized in the "Additional Operational State Machines" section below.
+> Updated 2026-05-09: The original catalog covered the V1 attention loop. The implemented codebase now also contains operational state machines for Ralph loops, schedules, workspace attempts, quota polling, and watchdog verdicts. Those are summarized in the "Additional Operational State Machines" section below.
 
 **Key distinction:** A Task is the *goal* ("fix the auth bug"). An Agent Session is one *attempt* at that goal. A task may go through multiple agent sessions — an agent can error out, get stuck, or only partially complete the work, and the developer relaunches with a new or modified prompt. This is analogous to GitHub/GitLab issues: the issue exists independently of any branch or PR attempt.
 
@@ -216,7 +216,6 @@ stateDiagram-v2
 
 | Entity | States | Owner | Notes |
 |---|---|---|---|
-| Checkpoint cycle | `idle`, `prompting`, `compacting` plus session-scoped `gaveUp` | `src/core/checkpoint-cycler.ts` | Sends the checkpoint prompt when transcript context crosses the trigger ratio, then sends `/compact` after a Stop event. Repeated no-progress compact attempts set `gaveUp` for that session |
 | Ralph loop | `running`, `paused`, `completed`, `failed`, `cancelled` | `src/core/ralph-cycler.ts`, `src/server/ralph-loop-service.ts` | Terminal states prevent further iteration injection. `paused` preserves the loop but does not launch a fresh runtime until explicitly resumed |
 | Schedule execution receipt | `reserved`, `accepted`, `terminal`, `unknown_after_restart` | `src/core/schedule.ts`, `src/server/schedule-runner.ts` | Latest execution outcomes further classify running/completed/cancelled/deduplicated/dispatch-failed/skipped-active/skipped-capacity/unknown-after-restart states for the UI |
 | Workspace attempt | `running`, `passed`, `blocked`, `timed_out`, `cancelled`, `superseded`, `completed` | `src/core/workspace-attempt-repository.ts` | Durable cleanup/preflight/diagnostic attempt records, separate from task lifecycle |

@@ -149,4 +149,21 @@ describe('DetailPanel permission quick actions', () => {
     expect(onRequestComplete).toHaveBeenCalledTimes(1);
     expect(sent).not.toContainEqual({ type: 'completeTask', taskId: 'task-1' });
   });
+
+  test('reflect button requests a snapshot reflection without completing', () => {
+    const sent: ClientMessage[] = [];
+    const onRequestComplete = vi.fn();
+    root = renderDetailPanel(container, (msg) => {
+      sent.push(msg);
+      return true;
+    }, onRequestComplete);
+
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="action-reflect"]');
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    act(() => button!.click());
+
+    expect(sent).toContainEqual({ type: 'requestTaskSnapshotReflect', taskId: 'task-1' });
+    expect(sent).not.toContainEqual({ type: 'completeTask', taskId: 'task-1' });
+    expect(onRequestComplete).not.toHaveBeenCalled();
+  });
 });

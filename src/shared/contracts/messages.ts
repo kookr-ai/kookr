@@ -277,12 +277,14 @@ export type ClientMessage =
   | { type: 'snooze'; agentId: string; taskId?: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }
   | { type: 'cancelSnooze'; agentId: string; taskId?: string }
   | { type: 'launch'; prompt: string; cwd: string; criteria?: string; agentType?: AgentSelection; dependencies?: LaunchDependency[] }
-  | { type: 'completeTask'; taskId: string; feedback?: TaskCompletionFeedback }
+  | { type: 'completeTask'; taskId: string; feedback?: TaskCompletionFeedback; requestReflect?: boolean }
   | { type: 'setTaskFeedback'; taskId: string; feedback: TaskCompletionFeedback }
   | { type: 'requestTaskReflect'; taskId: string; direction: 'up' | 'down' }
+  | { type: 'requestTaskSnapshotReflect'; taskId: string }
   | { type: 'relaunch'; taskId: string; prompt: string; agentType?: AgentSelection; dependencies?: LaunchDependency[] }
   | { type: 'cancelTask'; taskId: string }
   | { type: 'reopenTask'; taskId: string }
+  | { type: 'dismissAgentSignal'; taskId: string }
   | { type: 'deleteTask'; taskId: string }
   | { type: 'renameTask'; taskId: string; name: string }
   | { type: 'setTaskPriority'; taskId: string; priority: TaskPriorityUpdate }
@@ -292,7 +294,7 @@ export type ClientMessage =
   | LaunchPlaybookClientMessage
   | { type: 'telemetry'; events: TelemetryEvent[] }
   | { type: 'setProjectConfig'; project: string; config: Partial<ProjectConfig> }
-  | { type: 'clearCompleted'; includeTerminated?: boolean }
+  | { type: 'clearCompleted'; includeTerminated?: boolean; projectId?: string }
   | { type: 'ackTerminatedTask'; taskId: string }
   | { type: 'achievement:reset' }
   | { type: 'achievement:setEnabled'; enabled: boolean }

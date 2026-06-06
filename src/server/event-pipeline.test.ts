@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { wireEventPipeline, type EventPipelineDeps } from './event-pipeline.js';
+import { HookIngestion, mintEventId } from './hook-ingestion.js';
 import type { AgentEvent, EventMeta } from '../core/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
 import { TaskStore } from '../core/tasks.js';
@@ -25,6 +26,7 @@ import { TokenTracker } from '../core/token-tracker.js';
 import { Watchdog } from '../core/watchdog.js';
 import { GitHubScannerService } from '../core/github-scanner-service.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
+import { CircuitBreaker } from '../core/circuit-breaker.js';
 import {
   _resetLifecycles,
   getActiveSuggestionId,
@@ -118,6 +120,14 @@ function createMockDeps(): {
 
 function suggestionBroadcasts(broadcasts: ServerMessage[]): ServerMessage[] {
   return broadcasts.filter((m) => m.type === 'suggestion');
+}
+
+function snapshotBroadcasts(
+  broadcasts: ServerMessage[],
+): Extract<ServerMessage, { type: 'snapshot' }>[] {
+  return broadcasts.filter(
+    (m): m is Extract<ServerMessage, { type: 'snapshot' }> => m.type === 'snapshot',
+  );
 }
 
 describe('event-pipeline: anomaly-diff clearing (mock-based)', () => {
@@ -345,11 +355,11 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     broadcastMessages = [];
   });
 
-  function setup() {
+  function setup(overrides: Partial<Pick<EventPipelineDeps, 'llmClient'>> = {}) {
     const broadcastToAll = (msg: ServerMessage) => { broadcastMessages.push(msg); };
     return wireEventPipeline({
       adapter, monitor, taskStore, tokenTracker, watchdog,
-      githubScanner, llmClient: null, serverCwd: '/test',
+      githubScanner, llmClient: overrides.llmClient ?? null, serverCwd: '/test',
       broadcastToAll,
       ralphLoopService: new RalphLoopService({
         taskStore,
@@ -366,9 +376,9 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     });
   }
 
-  async function launchAgent() {
-    const task = createTaskForMutation(taskStore, 'Test', '/cwd');
-    const tmuxName = await adapter.launch(task.id, 'Test', '/cwd');
+  async function launchAgent(prompt = 'Test', cwd = '/cwd') {
+    const task = createTaskForMutation(taskStore, prompt, cwd);
+    const tmuxName = await adapter.launch(task.id, prompt, cwd);
     monitor.registerAgent(tmuxName);
     return tmuxName;
   }
@@ -404,6 +414,27 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     })]);
   });
 
+  test('response assist receives projected task metadata from raw monitor snapshot', async () => {
+    const complete = vi.fn().mockResolvedValue(JSON.stringify({ responses: ['yes, continue'] }));
+    setup({
+      llmClient: {
+        provider: 'test',
+        model: 'test-model',
+        complete,
+      },
+    });
+    const tmuxName = await launchAgent('Projected pipeline task', '/project');
+
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+
+    await vi.waitFor(() => {
+      expect(complete).toHaveBeenCalled();
+    });
+    const request = complete.mock.calls[0][0];
+    expect(request.userMessage).toContain('Task: Projected pipeline task');
+    expect(request.userMessage).toContain('Working directory: /project');
+  });
+
   test('user_prompt also clears via anomaly-diff', async () => {
     setup();
     const tmuxName = await launchAgent();
@@ -428,6 +459,25 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
       suggestions: [],
       quickActions: [],
     })]);
+  });
+
+  test('persists completed_turn on the session at a clean Stop, and updates it on the next turn (#693)', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+
+    // A normal Stop is the durable "graceful finish" signal reconciliation uses
+    // to auto-complete a spawned task whose session later dies. deriveTurnState
+    // maps any `stop` to `completed_turn` regardless of the assistant message,
+    // so makeStopHook()'s "I need your input" body does not change the turn state.
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+    expect(taskStore.findTaskBySession(tmuxName)!.sessions.find(s => s.tmuxSession === tmuxName)!.lastTurnState)
+      .toBe('completed_turn');
+
+    // A follow-up turn resets it so a later crash mid-turn is not mistaken for a
+    // clean finish.
+    adapter.injectHookEvent(tmuxName, makeToolUseHook());
+    expect(taskStore.findTaskBySession(tmuxName)!.sessions.find(s => s.tmuxSession === tmuxName)!.lastTurnState)
+      .toBe('running');
   });
 
   test('events that do not change anomaly state do not trigger clearing', async () => {
@@ -575,6 +625,38 @@ describe('event-pipeline: R16 onPermissionBlocked transition guard', () => {
     // any downstream work.
     try { fireEvent('sess-1', permEvent); } catch { /* downstream noise */ }
     expect(onPermissionBlocked).toHaveBeenCalled();
+  });
+
+  test('uses injected breaker to suppress repeated callback failures', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const permissionAlertBreaker = new CircuitBreaker({
+      name: 'permission-alert-test',
+      failureThreshold: 2,
+      failureWindowMs: 60_000,
+      resetTimeoutMs: 60_000,
+    });
+    deps.permissionAlertBreaker = permissionAlertBreaker;
+    onPermissionBlocked.mockImplementation(() => { throw new Error('integration is broken'); });
+    wireEventPipeline(deps);
+
+    const fireBlockedTransition = () => {
+      const { permEvent } = setupTransition(null, 'blocked');
+      expect(() => fireEvent('sess-1', permEvent)).not.toThrow();
+    };
+
+    fireBlockedTransition();
+    expect(permissionAlertBreaker.getState()).toBe('closed');
+    fireBlockedTransition();
+    expect(permissionAlertBreaker.getState()).toBe('open');
+    fireBlockedTransition();
+
+    expect(onPermissionBlocked).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(
+      '[permission-block-alert-processor] permission-alert breaker open; skipped onPermissionBlocked',
+    );
+
+    permissionAlertBreaker.dispose();
+    warn.mockRestore();
   });
 });
 
@@ -840,5 +922,305 @@ describe('event-pipeline: parentage gating (rfc-activity-log-reliability)', () =
     expect(deps.tokenTracker.register).toHaveBeenCalledWith('/t/child.jsonl', 'parent-task-1');
     // But the child must NOT drive parent anomaly detection.
     expect(deps.monitor.processEvents).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #704: snapshot broadcast coalescing on the event hot path.
+//
+// Every processed hook event requests a full-snapshot rebuild + WebSocket
+// fan-out. These tests lock in that a burst collapses to a single rebuild +
+// fan-out (reflecting final state), that the disabled path (window 0) still
+// fans out per event, and that attention transitions bypass coalescing.
+// ---------------------------------------------------------------------------
+
+describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
+  const toolUse = (id: string): AgentEvent =>
+    ({ type: 'tool_use', toolName: 'Read', toolUseId: id } as AgentEvent);
+
+  beforeEach(() => {
+    _resetLifecycles();
+  });
+
+  test('collapses a burst of events into a single rebuild + fan-out reflecting final state', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      // Snapshot evolves over the burst; the coalesced flush must reflect the
+      // LATEST state, not the state at the first event.
+      let current: any[] = [{ agentId: 'agent-1', anomaly: null, events: [] }];
+      (deps.monitor.getSnapshot as any).mockImplementation(() => current);
+      wireEventPipeline(deps); // default 16ms window
+
+      for (let i = 0; i < 5; i++) {
+        current = [{ agentId: 'agent-1', anomaly: null, events: [], seq: i } as any];
+        fireEvent('agent-1', toolUse(`tu-${i}`));
+      }
+
+      // Trailing-edge: nothing has fanned out yet during the burst.
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+
+      vi.advanceTimersByTime(16);
+
+      // Exactly one snapshot rebuild + fan-out for the whole burst …
+      const snaps = snapshotBroadcasts(broadcasts);
+      expect(snaps).toHaveLength(1);
+      // … and it reflects the final state (seq from the 5th event).
+      expect((snaps[0].agents[0] as any).seq).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('window 0 disables coalescing — one fan-out per event (redundant baseline)', () => {
+    const { deps, fireEvent, broadcasts } = createMockDeps();
+    deps.snapshotCoalesceWindowMs = 0;
+    (deps.monitor.getSnapshot as any).mockReturnValue([
+      { agentId: 'agent-1', anomaly: null, events: [] },
+    ]);
+    wireEventPipeline(deps);
+
+    for (let i = 0; i < 3; i++) fireEvent('agent-1', toolUse(`tu-${i}`));
+
+    // Coalescing off: each event fans out synchronously. This is the N-rebuild
+    // baseline the default 16ms window collapses to 1.
+    expect(snapshotBroadcasts(broadcasts)).toHaveLength(3);
+  });
+
+  test('attention transition flushes immediately, bypassing the coalescing window', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      // State machine: pre = healthy, post = needs_input (warning). processEvents
+      // is the transition trigger (same pattern as the R16 guard tests).
+      let phase: 'pre' | 'post' = 'pre';
+      (deps.monitor.getSnapshot as any).mockImplementation(() =>
+        phase === 'pre'
+          ? [{ agentId: 'agent-1', anomaly: null, events: [] }]
+          : [{ agentId: 'agent-1', anomaly: { type: 'needs_input', severity: 'warning' }, events: [] }],
+      );
+      (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
+      wireEventPipeline(deps); // default 16ms window
+
+      fireEvent('agent-1', { type: 'stop', sessionId: 's1', lastMessage: 'need input' } as AgentEvent);
+
+      // Flushed synchronously — no timer advance needed.
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+      const blocked = snapshotBroadcasts(broadcasts)[0].agents[0] as any;
+      expect(blocked.anomaly?.type).toBe('needs_input');
+
+      // And the immediate flush consumed the pending window — no duplicate later.
+      vi.advanceTimersByTime(16);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('info-severity anomaly does NOT bypass coalescing (stays on the windowed path)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      let phase: 'pre' | 'post' = 'pre';
+      (deps.monitor.getSnapshot as any).mockImplementation(() =>
+        phase === 'pre'
+          ? [{ agentId: 'agent-1', anomaly: null, events: [] }]
+          : [{ agentId: 'agent-1', anomaly: { type: 'stale_agent', severity: 'info' }, events: [] }],
+      );
+      (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
+      wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-info'));
+
+      // info severity is not attention-worthy → no immediate flush yet.
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+      vi.advanceTimersByTime(16);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a second burst re-arms the window and fans out again (timer/dirty reset)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      wireEventPipeline(deps);
+
+      for (let i = 0; i < 3; i++) fireEvent('agent-1', toolUse(`a-${i}`));
+      vi.advanceTimersByTime(16);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+
+      // A regression that left snapshotDirty=true or failed to re-arm the timer
+      // would either double-fire here or never fire the second burst.
+      for (let i = 0; i < 3; i++) fireEvent('agent-1', toolUse(`b-${i}`));
+      vi.advanceTimersByTime(16);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a coalesced event after an immediate attention flush still fans out once', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      let phase: 'pre' | 'post' = 'pre';
+      // First event drives the attention transition (immediate flush); after
+      // that the snapshot reports a steady healthy state for the routine event.
+      (deps.monitor.getSnapshot as any).mockImplementation(() =>
+        phase === 'pre'
+          ? [{ agentId: 'agent-1', anomaly: null, events: [] }]
+          : [{ agentId: 'agent-1', anomaly: { type: 'needs_input', severity: 'warning' }, events: [] }],
+      );
+      (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
+      wireEventPipeline(deps);
+
+      fireEvent('agent-1', { type: 'stop', sessionId: 's1', lastMessage: 'need input' } as AgentEvent);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1); // immediate flush
+
+      // Steady state now — a routine event must still arm a fresh coalescing
+      // window and fan out once (immediate flush must not corrupt coalescer state).
+      const routine = [{ agentId: 'agent-1', anomaly: { type: 'needs_input', severity: 'warning' }, events: [] }];
+      (deps.monitor.getSnapshot as any).mockReturnValue(routine);
+      fireEvent('agent-1', toolUse('routine-1'));
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1); // still coalesced
+      vi.advanceTimersByTime(16);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('flushSnapshotNow() forces a pending coalesced broadcast out (immediate-flush escape)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { flushSnapshotNow } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+
+      flushSnapshotNow();
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+
+      // Idempotent when nothing is dirty.
+      flushSnapshotNow();
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #705: end-to-end correlation id. The id minted when a hook event is ingested
+// must appear UNCHANGED on the finding derived from that event, so operators
+// have a single lineage id (hook event -> detector -> finding -> alert).
+// ---------------------------------------------------------------------------
+
+describe('event-pipeline: end-to-end correlation id (#705)', () => {
+  let taskStore: TaskStore;
+  let queue: AttentionQueue;
+  let monitor: Monitor;
+  let terminal: FakeTerminalBackend;
+  let adapter: ClaudeCodeAdapter;
+  let tokenTracker: TokenTracker;
+  let watchdog: Watchdog;
+  let githubScanner: GitHubScannerService;
+
+  beforeEach(() => {
+    _resetLifecycles();
+    taskStore = new TaskStore();
+    queue = new AttentionQueue();
+    monitor = new Monitor(taskStore, queue);
+    terminal = new FakeTerminalBackend();
+    adapter = new ClaudeCodeAdapter(terminal, taskStore);
+    tokenTracker = new TokenTracker();
+    watchdog = new Watchdog();
+    const githubStateStore = new GitHubStateStore();
+    githubScanner = new GitHubScannerService({
+      taskStore, stateStore: githubStateStore,
+      fetcher: { fetchPR: async () => null, fetchIssue: async () => null } as any,
+      config: { enabled: false, scanIntervalMs: 60000, fetchIntervalMs: 60000 },
+      onChanges: () => {},
+    });
+  });
+
+  function setup() {
+    const broadcastToAll = () => {};
+    wireEventPipeline({
+      adapter, monitor, taskStore, tokenTracker, watchdog,
+      githubScanner, llmClient: null, serverCwd: '/test',
+      broadcastToAll,
+      ralphLoopService: new RalphLoopService({
+        taskStore, monitor, serverCwd: '/test', broadcastToAll,
+        interactionLog: undefined, ralphCycler: undefined,
+        terminalBackend: terminal, tokenTracker,
+        launchFreshTaskSession: vi.fn(async () => 'unused-session'),
+        completeTask: vi.fn(async () => undefined),
+      }),
+    });
+  }
+
+  async function launchAgent() {
+    const task = createTaskForMutation(taskStore, 'Test', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Test', '/cwd');
+    monitor.registerAgent(tmuxName);
+    return tmuxName;
+  }
+
+  test('the ingested event and the emitted finding carry the SAME correlation id', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+
+    // Ingest a Stop hook through HookIngestion (wrapping the SAME adapter the
+    // pipeline is wired to). The adapter fires onEvent synchronously, so by the
+    // time ingest returns the monitor has produced the needs_input finding.
+    const ingestion = new HookIngestion({ adapter });
+    const result = ingestion.ingestFromHttp(tmuxName, makeStopHook());
+
+    expect(result.dispatched).toBe(true);
+    expect(result.eventId).toMatch(/^evt_[0-9a-f]{12}_\d+$/);
+
+    const state = monitor.getSnapshot().find((s) => s.agentId === tmuxName);
+    expect(state?.anomaly?.type).toBe('needs_input');
+    // The finding carries the id minted at ingestion — threaded unchanged.
+    expect(state?.anomaly?.eventId).toBe(result.eventId);
+    // And it equals the pure recomputation from (session, sequence).
+    expect(result.eventId).toBe(mintEventId(tmuxName, result.injectResult.sequence!));
+  });
+
+  test('a same-fingerprint re-derivation keeps the FIRST event correlation id (replay/reconnect-safe)', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+
+    const ingestion = new HookIngestion({ adapter });
+    const first = ingestion.ingestFromHttp(tmuxName, makeStopHook());
+    expect(monitor.getSnapshot().find((s) => s.agentId === tmuxName)?.anomaly?.eventId)
+      .toBe(first.eventId);
+
+    // A SECOND Stop with identical content re-derives the same needs_input
+    // finding (same fingerprint) but advances the sequence — a naive impl would
+    // re-mint a fresh id. Inject straight through the adapter to bypass
+    // HookIngestion dedup so the pipeline actually re-runs detection on the new
+    // sequence. The freshly-minted id (sequence 2) must differ from the first.
+    const naiveSecondId = mintEventId(tmuxName, 2);
+    expect(naiveSecondId).not.toBe(first.eventId);
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+
+    const state = monitor.getSnapshot().find((s) => s.agentId === tmuxName);
+    expect(state?.anomaly?.type).toBe('needs_input');
+    // First-seen-wins: the persisting finding keeps the id of the event that
+    // originally raised it, so the lineage id is stable across re-derivation
+    // (and a later snapshot rebuild on reconnect returns that same id).
+    expect(state?.anomaly?.eventId).toBe(first.eventId);
+    expect(state?.anomaly?.eventId).not.toBe(naiveSecondId);
   });
 });

@@ -1,10 +1,23 @@
 import { readFile, writeFile, rename } from 'node:fs/promises';
-import { DEFAULT_AGENT_TYPE, normalizeAgentSelection, type AgentSelection } from './agent-types.js';
+import {
+  DEFAULT_AGENT_TYPE,
+  normalizeAgentSelection,
+  isValidEffortForAgent,
+  effortLevelsForAgent,
+  AVAILABLE_AGENT_TYPES,
+  type AgentSelection,
+  type AgentType,
+  type AgentEffortMap,
+} from './agent-types.js';
 import {
   validateShortcutBindingOverrides,
   type PlatformShortcutBindingOverrides,
 } from '../shared/contracts/shortcut-bindings.js';
+import { validateQuietHours, type QuietHoursWindow } from '../shared/contracts/quiet-hours.js';
 import type { VerbosityScale } from '../shared/contracts/speech.js';
+
+export type { QuietHoursWindow } from '../shared/contracts/quiet-hours.js';
+export { isWithinQuietHours } from '../shared/contracts/quiet-hours.js';
 
 const VERBOSITY_VALUES: readonly VerbosityScale[] = ['terse', 'brief', 'medium', 'detailed'];
 const DEFAULT_VERBOSITY: VerbosityScale = 'medium';
@@ -39,6 +52,22 @@ export interface KookrSettings {
    * summarizer (see docs/rfc/rfc-speak-agent-summary-v2.md).
    */
   speakVerbosity: VerbosityScale;
+  /**
+   * Per-agent-type reasoning-effort default (#681). Maps an agent type to the
+   * effort level its spawned sessions launch at (claude-code → `--effort`;
+   * codex-cli → `-c model_reasoning_effort`). Sparse and empty by default: an
+   * agent absent from the map launches at the agent CLI's own default effort
+   * with no flag passed — byte-identical to pre-#681. A per-task `effort`
+   * override (POST /api/tasks / `kookr-spawn --effort`) wins over this default.
+   * Invalid (agent, level) pairs are dropped with a warning during validation.
+   */
+  agentEffort: AgentEffortMap;
+  /**
+   * Recurring quiet-hours windows. While local time falls inside any window the
+   * frontend auto-suppresses chimes and desktop notifications (reusing the DND
+   * path) and resumes automatically afterward. Empty = no scheduled silencing.
+   */
+  quietHours: QuietHoursWindow[];
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -52,6 +81,8 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   roundRobinIndex: 0,
   shortcutBindings: {},
   speakVerbosity: DEFAULT_VERBOSITY,
+  agentEffort: {},
+  quietHours: [],
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -113,6 +144,8 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
 
   const shortcutValidation = validateShortcutBindingOverrides(raw.shortcutBindings);
 
+  const quietHoursValidation = validateQuietHours(raw.quietHours);
+
   const verbosityWarnings: string[] = [];
   let speakVerbosity: VerbosityScale = DEFAULT_VERBOSITY;
   if (raw.speakVerbosity !== undefined) {
@@ -128,8 +161,10 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     }
   }
 
+  const { agentEffort, warnings: agentEffortWarnings } = validateAgentEffort(raw.agentEffort);
+
   return {
-    warnings: [...shortcutValidation.warnings, ...verbosityWarnings],
+    warnings: [...shortcutValidation.warnings, ...verbosityWarnings, ...agentEffortWarnings, ...quietHoursValidation.warnings],
     settings: {
       githubPollingEnabled: enabled,
       githubPollingIntervalSec: interval,
@@ -141,8 +176,48 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       roundRobinIndex,
       shortcutBindings: shortcutValidation.overrides,
       speakVerbosity,
+      agentEffort,
+      quietHours: quietHoursValidation.windows,
     },
   };
+}
+
+/** Known concrete agent types — the only valid keys in an `agentEffort` map. */
+const KNOWN_AGENT_TYPES: readonly AgentType[] = AVAILABLE_AGENT_TYPES.map((entry) => entry.type);
+
+/**
+ * Validate the raw `agentEffort` map (#681). Drops anything that wouldn't
+ * launch cleanly — unknown agent keys, non-string values, and effort levels
+ * outside the agent's CLI-accepted set — emitting a warning for each so the
+ * operator sees why their input was ignored. Returns a sparse, fully-valid
+ * map; an absent or malformed input collapses to `{}` (no configured effort,
+ * byte-identical to pre-#681).
+ */
+function validateAgentEffort(raw: unknown): { agentEffort: AgentEffortMap; warnings: string[] } {
+  const warnings: string[] = [];
+  if (raw === undefined) return { agentEffort: {}, warnings };
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    warnings.push(`Invalid agentEffort (expected an object); ignored`);
+    return { agentEffort: {}, warnings };
+  }
+
+  const agentEffort: AgentEffortMap = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!KNOWN_AGENT_TYPES.includes(key as AgentType)) {
+      warnings.push(`Unknown agentEffort agent ${JSON.stringify(key)}; ignored`);
+      continue;
+    }
+    const agent = key as AgentType;
+    if (typeof value !== 'string' || !isValidEffortForAgent(agent, value)) {
+      warnings.push(
+        `Invalid agentEffort for ${agent}: ${JSON.stringify(value)}; ` +
+        `valid: ${effortLevelsForAgent(agent).join(', ')}; ignored`,
+      );
+      continue;
+    }
+    agentEffort[agent] = value as AgentEffortMap[AgentType];
+  }
+  return { agentEffort, warnings };
 }
 
 export interface SettingsLoadResult {

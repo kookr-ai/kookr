@@ -1,0 +1,279 @@
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtemp, rm, mkdir, writeFile, stat, utimes } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { planAndPruneMaintenance, PRESERVED_STORES } from './maintenance-prune.js';
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+// Fixed "now" so age math is deterministic regardless of wall clock.
+const NOW = Date.parse('2026-06-01T00:00:00.000Z');
+const now = () => NOW;
+const daysAgo = (n: number) => new Date(NOW - n * MS_PER_DAY).toISOString();
+
+interface SeedSession {
+  tmuxSession: string;
+  lastEventAt?: number;
+}
+interface SeedTask {
+  id: string;
+  status: string;
+  updatedAt?: string;
+  terminatedAt?: string;
+  createdAt?: string;
+  sessions: SeedSession[];
+}
+
+describe('planAndPruneMaintenance', () => {
+  let dataDir: string;
+  let hooksDir: string;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'kookr-maint-'));
+    hooksDir = join(dataDir, 'hooks');
+    await mkdir(hooksDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  async function writeTasks(tasks: SeedTask[]): Promise<void> {
+    await writeFile(
+      join(dataDir, 'tasks.json'),
+      JSON.stringify({ version: 2, lifetimeSpendUsd: 0, tasks }),
+      'utf8',
+    );
+  }
+
+  async function writeHook(tmuxSession: string, mtimeDaysAgo?: number): Promise<string> {
+    const path = join(hooksDir, `${tmuxSession}.jsonl`);
+    await writeFile(path, `{"event":"Stop","session":"${tmuxSession}"}\n`, 'utf8');
+    if (mtimeDaysAgo !== undefined) {
+      const when = new Date(NOW - mtimeDaysAgo * MS_PER_DAY);
+      await utimes(path, when, when);
+    }
+    return path;
+  }
+
+  const exists = async (path: string): Promise<boolean> =>
+    stat(path).then(() => true).catch(() => false);
+
+  test('removes hook logs for aged completed-task artifacts', async () => {
+    await writeTasks([
+      { id: 't-aged', status: 'completed', updatedAt: daysAgo(45), sessions: [{ tmuxSession: 'kookr-aged' }] },
+    ]);
+    const hookPath = await writeHook('kookr-aged');
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned).toHaveLength(1);
+    expect(result.planned[0]).toMatchObject({
+      kind: 'hook-log',
+      reason: 'completed-task-aged',
+      taskId: 't-aged',
+      tmuxSession: 'kookr-aged',
+    });
+    expect(result.removed).toHaveLength(1);
+    expect(result.reclaimedBytes).toBeGreaterThan(0);
+    expect(await exists(hookPath)).toBe(false);
+  });
+
+  test('preserves artifacts for active and recent tasks', async () => {
+    await writeTasks([
+      // active task — never eligible regardless of age
+      { id: 't-active', status: 'inProgress', updatedAt: daysAgo(90), sessions: [{ tmuxSession: 'kookr-active' }] },
+      // completed but recent — under the threshold
+      { id: 't-recent', status: 'completed', updatedAt: daysAgo(5), sessions: [{ tmuxSession: 'kookr-recent' }] },
+    ]);
+    const activePath = await writeHook('kookr-active');
+    const recentPath = await writeHook('kookr-recent');
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned).toHaveLength(0);
+    expect(result.removed).toHaveLength(0);
+    expect(await exists(activePath)).toBe(true);
+    expect(await exists(recentPath)).toBe(true);
+  });
+
+  test('dry-run reports planned removals without mutating', async () => {
+    await writeTasks([
+      { id: 't-aged', status: 'terminated', terminatedAt: daysAgo(60), sessions: [{ tmuxSession: 'kookr-aged' }] },
+    ]);
+    const hookPath = await writeHook('kookr-aged');
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, dryRun: true, now });
+
+    expect(result.dryRun).toBe(true);
+    expect(result.planned).toHaveLength(1);
+    expect(result.removed).toHaveLength(0);
+    expect(result.reclaimedBytes).toBeGreaterThan(0); // reclaimable
+    expect(await exists(hookPath)).toBe(true); // untouched
+  });
+
+  test('clean state is a silent no-op', async () => {
+    await writeTasks([]);
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+    expect(result.planned).toHaveLength(0);
+    expect(result.removed).toHaveLength(0);
+    expect(result.reclaimedBytes).toBe(0);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  test('missing hooks directory is a no-op (no tasks dir either)', async () => {
+    await rm(hooksDir, { recursive: true, force: true });
+    await writeTasks([]);
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+    expect(result.planned).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  test('is idempotent — a second run finds nothing left to prune', async () => {
+    await writeTasks([
+      { id: 't-aged', status: 'completed', updatedAt: daysAgo(45), sessions: [{ tmuxSession: 'kookr-aged' }] },
+    ]);
+    await writeHook('kookr-aged');
+
+    const first = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+    expect(first.removed).toHaveLength(1);
+
+    const second = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+    expect(second.planned).toHaveLength(0);
+    expect(second.removed).toHaveLength(0);
+  });
+
+  test('prunes aged orphan hook logs but preserves recent orphans', async () => {
+    await writeTasks([]); // no task references either file
+    const agedOrphan = await writeHook('kookr-orphan-old', 60);
+    const freshOrphan = await writeHook('kookr-orphan-new', 2);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned).toHaveLength(1);
+    expect(result.planned[0]).toMatchObject({ reason: 'orphan-aged', tmuxSession: 'kookr-orphan-old' });
+    expect(result.planned[0].taskId).toBeUndefined();
+    expect(await exists(agedOrphan)).toBe(false);
+    expect(await exists(freshOrphan)).toBe(true);
+  });
+
+  test('a session shared with an active task is never pruned', async () => {
+    // Same tmuxSession name appears on both an aged-terminal task and an active task.
+    await writeTasks([
+      { id: 't-done', status: 'completed', updatedAt: daysAgo(90), sessions: [{ tmuxSession: 'kookr-shared' }] },
+      { id: 't-live', status: 'inProgress', updatedAt: daysAgo(90), sessions: [{ tmuxSession: 'kookr-shared' }] },
+    ]);
+    const path = await writeHook('kookr-shared');
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned).toHaveLength(0);
+    expect(await exists(path)).toBe(true);
+  });
+
+  test('uses the latest session lastEventAt when it is more recent than updatedAt', async () => {
+    // updatedAt is old, but a session event is recent → task is NOT aged out.
+    await writeTasks([
+      {
+        id: 't-touch',
+        status: 'completed',
+        updatedAt: daysAgo(90),
+        sessions: [{ tmuxSession: 'kookr-touch', lastEventAt: NOW - 3 * MS_PER_DAY }],
+      },
+    ]);
+    const path = await writeHook('kookr-touch');
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned).toHaveLength(0);
+    expect(await exists(path)).toBe(true);
+  });
+
+  test('unreadable tasks.json prunes nothing and warns', async () => {
+    await writeFile(join(dataDir, 'tasks.json'), '{ this is not json', 'utf8');
+    const orphan = await writeHook('kookr-orphan-old', 90);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned).toHaveLength(0);
+    expect(result.removed).toHaveLength(0);
+    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(await exists(orphan)).toBe(true); // safety: nothing deleted when state is unknown
+  });
+
+  test('leaves non-hook stores intact and documents them as preserved', async () => {
+    await writeTasks([
+      { id: 't-aged', status: 'completed', updatedAt: daysAgo(45), sessions: [{ tmuxSession: 'kookr-aged' }] },
+    ]);
+    await writeHook('kookr-aged');
+    // Seed sibling stores the sweep must never touch.
+    await writeFile(join(dataDir, 'detection-stats.json'), '{"schemaVersion":"detection-stats.v1"}', 'utf8');
+    await writeFile(join(dataDir, 'oss-attempts.json'), '{"attempts":[]}', 'utf8');
+    await mkdir(join(dataDir, 'activity'), { recursive: true });
+    await writeFile(join(dataDir, 'activity', 'sess.jsonl'), '{}\n', 'utf8');
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.removed).toHaveLength(1); // only the aged hook log
+    expect(await exists(join(dataDir, 'detection-stats.json'))).toBe(true);
+    expect(await exists(join(dataDir, 'oss-attempts.json'))).toBe(true);
+    expect(await exists(join(dataDir, 'activity', 'sess.jsonl'))).toBe(true);
+    expect(await exists(join(dataDir, 'tasks.json'))).toBe(true);
+    expect(result.preserved).toEqual([...PRESERVED_STORES]);
+    expect(result.preserved.length).toBeGreaterThan(0);
+  });
+
+  test('absent tasks.json still prunes aged orphans (ENOENT != malformed)', async () => {
+    // No tasks.json at all → readTasks returns [] (not undefined), so orphan
+    // pruning proceeds and no "unreadable" warning is emitted.
+    const orphan = await writeHook('kookr-orphan-old', 60);
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+    expect(result.warnings).toHaveLength(0);
+    expect(result.removed).toHaveLength(1);
+    expect(result.removed[0].reason).toBe('orphan-aged');
+    expect(await exists(orphan)).toBe(false);
+  });
+
+  test('skips a non-regular-file entry that looks like a hook log', async () => {
+    await writeTasks([
+      { id: 't-aged', status: 'completed', updatedAt: daysAgo(45), sessions: [{ tmuxSession: 'kookr-dir' }] },
+    ]);
+    // A directory named like a hook file must never be treated as removable.
+    await mkdir(join(hooksDir, 'kookr-dir.jsonl'), { recursive: true });
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+    expect(result.planned).toHaveLength(0);
+    expect(await exists(join(hooksDir, 'kookr-dir.jsonl'))).toBe(true);
+  });
+
+  test('accepts ISO-string session lastEventAt', async () => {
+    await writeTasks([
+      {
+        id: 't-touch',
+        status: 'completed',
+        updatedAt: daysAgo(90),
+        // lastEventAt as an ISO string (not ms) — recent, so the task is not aged.
+        sessions: [{ tmuxSession: 'kookr-touch', lastEventAt: daysAgo(3) as unknown as number }],
+      },
+    ]);
+    await writeHook('kookr-touch');
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+    expect(result.planned).toHaveLength(0);
+  });
+
+  test('rejects a non-positive maxAgeDays', async () => {
+    await writeTasks([]);
+    await expect(planAndPruneMaintenance({ dataDir, maxAgeDays: 0, now })).rejects.toThrow(/positive/);
+  });
+
+  test('tolerates a bare task array (legacy shape)', async () => {
+    await writeFile(
+      join(dataDir, 'tasks.json'),
+      JSON.stringify([{ id: 't-aged', status: 'completed', updatedAt: daysAgo(45), sessions: [{ tmuxSession: 'kookr-aged' }] }]),
+      'utf8',
+    );
+    await writeHook('kookr-aged');
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+    expect(result.removed).toHaveLength(1);
+  });
+});

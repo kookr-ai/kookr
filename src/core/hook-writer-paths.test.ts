@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildHookCommand, resolveHookWriterPath } from './hook-writer-paths.js';
+import { buildHookCommand, buildStopNudgeCommand, resolveHookWriterPath, resolveStopNudgePath } from './hook-writer-paths.js';
 
 describe('resolveHookWriterPath', () => {
   it('returns the writer path when the bin file exists relative to baseDir', () => {
@@ -82,5 +82,38 @@ describe('buildHookCommand', () => {
   it('falls back to file-only awk when writer and serverPort are both missing', () => {
     const cmd = buildHookCommand({ tmuxName: 'kookr-deadbeef', hookFile: '/h.jsonl' });
     expect(cmd).toBe("awk -v file='/h.jsonl' '{ print >> file }'");
+  });
+});
+
+describe('resolveStopNudgePath', () => {
+  it('finds the nudge script relative to a baseDir two levels under repo root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-nudge-resolve-'));
+    try {
+      mkdirSync(join(root, 'bin'), { recursive: true });
+      writeFileSync(join(root, 'bin', 'kookr-stop-nudge.js'), '// stub');
+      const baseDir = join(root, 'dist', 'core');
+      mkdirSync(baseDir, { recursive: true });
+      expect(resolveStopNudgePath(baseDir)).toBe(join(root, 'bin', 'kookr-stop-nudge.js'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns undefined when the nudge script is absent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-nudge-missing-'));
+    try {
+      const baseDir = join(root, 'dist', 'core');
+      mkdirSync(baseDir, { recursive: true });
+      expect(resolveStopNudgePath(baseDir)).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('buildStopNudgeCommand', () => {
+  it('builds a quoted `node <nudge>` command', () => {
+    expect(buildStopNudgeCommand({ nudgePath: '/x/bin/kookr-stop-nudge.js', nodePath: '/usr/bin/node' }))
+      .toBe("'/usr/bin/node' '/x/bin/kookr-stop-nudge.js'");
   });
 });

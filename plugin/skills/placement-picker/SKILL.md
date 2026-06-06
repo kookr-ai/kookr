@@ -104,7 +104,7 @@ why, not instructions about how to work.
 
 - Saving a behavioral rule as memory because it is quick.
 - Duplicating the same picker body in CLAUDE.md and multiple skills.
-- Putting Kookr-internal instructions in a published plugin skill.
+- Putting Kookr repo-local instructions in a distributed plugin skill.
 - Putting general-purpose toolkit guidance under `.claude/skills/kookr-*`.
 - Adding semantic body-text heuristics to hooks when a path-only check would be
   deterministic.

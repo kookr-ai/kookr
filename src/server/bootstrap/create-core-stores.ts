@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { BudgetChecker, readBudgetThresholdFromEnv } from '../../core/budget-checker.js';
 import { loadBuildInfo, type BuildInfo } from '../../core/build-info.js';
-import { CheckpointCycler, readMaxCancelledAttemptsFromEnv, readTriggerRatioFromEnv } from '../../core/checkpoint-cycler.js';
 import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
 import { CircuitBreakerLlmClient } from '../../core/circuit-breaker-llm-client.js';
 import { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
@@ -21,6 +20,7 @@ import { DeferredTelemetryLogWriter } from '../../core/telemetry.js';
 import { TokenTracker } from '../../core/token-tracker.js';
 import { Watchdog } from '../../core/watchdog.js';
 import { WorktreeRegistry } from '../../adapters/git-worktree-registry.js';
+import { createOpenRouterLlmClientFromEnv } from '../../adapters/openrouter-client.js';
 import { CombinedShadowStrategy } from '../../core/combined-shadow-strategy.js';
 import { HttpPushTracker } from '../../core/http-push-tracker.js';
 import { PaneSemanticsStrategy } from '../../core/pane-patterns.js';
@@ -29,6 +29,7 @@ import {
   JsonlProgressBudgetBurnDiagnosticSink,
   ProgressBudgetBurnDiagnostics,
 } from '../../core/progress-budget-burn-diagnostics.js';
+import { createPermissionAlertBreaker } from '../permission-alert-breaker.js';
 
 export interface CoreStoresDeps {
   kookrDir: string;
@@ -51,13 +52,13 @@ export interface CoreStores {
   llmBreaker: CircuitBreaker;
   githubBreaker: CircuitBreaker;
   hookWatcherBreaker: CircuitBreaker;
+  permissionAlertBreaker: CircuitBreaker;
   taskStore: TaskStore;
   worktreeRegistry: WorktreeRegistry;
   queue: AttentionQueue;
   suppressionTracker: SnoozeSuppressionTracker;
   monitor: Monitor;
   watchdog: Watchdog;
-  checkpointCycler: CheckpointCycler;
   ralphCycler: RalphCycler;
   tokenTracker: TokenTracker;
   budgetChecker: BudgetChecker;
@@ -112,9 +113,11 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
   const llmBreaker = new CircuitBreaker({ name: 'llm', failureThreshold: 5, failureWindowMs: 60_000, resetTimeoutMs: 30_000 });
   const githubBreaker = new CircuitBreaker({ name: 'github', failureThreshold: 5, failureWindowMs: 60_000, resetTimeoutMs: 60_000 });
   const hookWatcherBreaker = new CircuitBreaker({ name: 'hook-watcher', failureThreshold: 10, failureWindowMs: 60_000, resetTimeoutMs: 30_000 });
+  const permissionAlertBreaker = createPermissionAlertBreaker();
   circuitBreakerRegistry.register(llmBreaker);
   circuitBreakerRegistry.register(githubBreaker);
   circuitBreakerRegistry.register(hookWatcherBreaker);
+  circuitBreakerRegistry.register(permissionAlertBreaker);
 
   const taskStore = new TaskStore();
   const worktreeRegistry = new WorktreeRegistry();
@@ -128,10 +131,6 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
   const watchdog = new Watchdog({
     staleThresholdMs: currentSettings.watchdogStaleThresholdSec * 1000,
     unconditionalStaleThresholdMs: currentSettings.watchdogStaleThresholdSec * 2 * 1000,
-  });
-  const checkpointCycler = new CheckpointCycler({
-    triggerRatio: readTriggerRatioFromEnv(),
-    maxCancelledAttempts: readMaxCancelledAttemptsFromEnv(),
   });
   const ralphCycler = new RalphCycler();
   const tokenTracker = new TokenTracker();
@@ -160,7 +159,9 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
   shadowRegistry.register(new CombinedShadowStrategy());
   const httpPushTracker = new HttpPushTracker();
 
-  const rawLlmClient: LlmClient | null = await createLlmClient();
+  const rawLlmClient: LlmClient | null = await createLlmClient({
+    buildOpenRouter: createOpenRouterLlmClientFromEnv,
+  });
   const llmClient = rawLlmClient ? new CircuitBreakerLlmClient(rawLlmClient, llmBreaker) : null;
   if (rawLlmClient) {
     console.log(`[llm] Provider: ${rawLlmClient.provider} (${rawLlmClient.model})`);
@@ -184,13 +185,13 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
     llmBreaker,
     githubBreaker,
     hookWatcherBreaker,
+    permissionAlertBreaker,
     taskStore,
     worktreeRegistry,
     queue,
     suppressionTracker,
     monitor,
     watchdog,
-    checkpointCycler,
     ralphCycler,
     tokenTracker,
     budgetChecker,

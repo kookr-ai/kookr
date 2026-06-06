@@ -115,8 +115,10 @@ kbd {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  line-height: inherit;
 }
-.version-badge:hover { border-color: var(--border); color: var(--text); }
+.version-badge:hover,
+.version-badge:focus-visible { border-color: var(--border); color: var(--text); }
 .version-badge.dev { color: var(--amber); border-color: rgba(251,191,36,0.3); }
 .version-built { color: var(--text-muted); }
 
@@ -222,6 +224,7 @@ kbd {
   cursor: pointer;
 }
 .btn-deploy:hover { filter: brightness(1.1); }
+.btn-deploy:disabled { opacity: 0.65; cursor: default; filter: none; }
 .deploy-refresh {
   display: block;
   width: 100%;
@@ -236,6 +239,18 @@ kbd {
 }
 .deploy-refresh:hover { color: var(--text); border-color: var(--border); }
 .deploy-refresh:disabled { opacity: 0.5; cursor: default; }
+.deploy-help {
+  margin-top: 5px;
+  color: var(--text-muted);
+}
+.deploy-help summary {
+  cursor: pointer;
+  font-size: 10.5px;
+}
+.deploy-help .version-row {
+  white-space: normal;
+  line-height: 1.45;
+}
 @keyframes spin { to { transform: rotate(360deg); } }
 .deploy-spinner {
   display: inline-block;
@@ -378,14 +393,60 @@ kbd {
 
 /* --- Findings Panel (left) --- */
 .findings-panel {
-  flex: 0 0 clamp(340px, 28vw, 420px);
-  width: clamp(340px, 28vw, 420px);
-  min-width: 340px;
+  /* Width defaults to the responsive clamp (floor 340px); once the user drags
+     the divider, App.tsx sets --findings-panel-width on .main and that override
+     wins. min-width is the lower 280px (MIN_FINDINGS_WIDTH) so a deliberate drag
+     can go narrower than the untouched default. */
+  flex: 0 0 var(--findings-panel-width, clamp(340px, 28vw, 420px));
+  width: var(--findings-panel-width, clamp(340px, 28vw, 420px));
+  min-width: 280px;
   min-height: 0;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+}
+
+/* --- Findings / terminal resizable divider --- */
+.findings-resizer {
+  flex: 0 0 6px;
+  align-self: stretch;
+  margin: 0 -3px;
+  z-index: 2;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  touch-action: none;
+}
+.findings-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.findings-resizer:hover::after,
+.findings-resizer:focus-visible::after,
+.main-resizing .findings-resizer::after {
+  background: var(--teal);
+}
+.findings-resizer:focus-visible {
+  outline: none;
+}
+.findings-resizer:focus-visible::after {
+  width: 2px;
+}
+/* While dragging, suppress text selection and force the resize cursor. */
+.main-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .findings-resizer::after { transition: none; }
 }
 
 .findings-header {
@@ -481,6 +542,54 @@ kbd {
 .finding-card.input { border-left-color: var(--blue); }
 /* A completed turn is idle, not hung — calmer green accent vs an alert color. */
 .finding-card.turn-complete { border-left-color: var(--green); }
+.root-cause-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(45, 212, 191, 0.12);
+  border: 1px solid rgba(45, 212, 191, 0.24);
+  color: var(--teal);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.root-cause-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.root-cause-root {
+  position: relative;
+}
+.root-cause-root > .finding-card {
+  padding-right: 36px;
+}
+.root-cause-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.root-cause-toggle:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+.root-cause-related {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 14px;
+  border-left: 1px solid rgba(45, 212, 191, 0.24);
+}
 
 /* --- Finding Groups (duplicate anomaly grouping) --- */
 .finding-group {
@@ -1347,8 +1456,42 @@ kbd {
 .action-btn--neutral:hover { background: var(--bg-card); color: var(--text); }
 .action-btn--success { border-color: var(--green); color: var(--green); }
 .action-btn--success:hover { background: rgba(74,222,128,0.12); }
+.action-btn--reflect { border-color: var(--blue); color: var(--blue); }
+.action-btn--reflect:hover { background: rgba(96,165,250,0.12); }
 .action-btn--danger { border-color: var(--red); color: var(--red); }
 .action-btn--danger:hover { background: rgba(248,113,113,0.12); }
+
+/* Agent → user signal (RFC: rfc-agent-signal-surface). Pulse the Complete
+   button only when the agent flagged ready AND its turn is idle. */
+.action-btn--signal-ready {
+  background: rgba(74,222,128,0.16);
+  animation: signal-ready-pulse 1.6s ease-in-out infinite;
+}
+@keyframes signal-ready-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(74,222,128,0.0); }
+  50% { box-shadow: 0 0 0 3px rgba(74,222,128,0.35); }
+}
+/* The static green tint above keeps the affordance perceivable without motion. */
+@media (prefers-reduced-motion: reduce) {
+  .action-btn--signal-ready { animation: none; }
+}
+
+.detail-signal-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 6px 12px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-left: 3px solid var(--green);
+  border-radius: 6px;
+  background: rgba(74,222,128,0.06);
+  font-size: 13px;
+}
+.detail-signal-banner--ready { background: rgba(74,222,128,0.12); }
+.detail-signal-banner__text { color: var(--text, #ddd); overflow: hidden; text-overflow: ellipsis; }
+.detail-signal-banner__text strong { color: var(--green); }
 
 .task-dependencies {
   flex-shrink: 0;
@@ -1356,19 +1499,145 @@ kbd {
   border-bottom: 1px solid var(--border-dim);
   background: var(--bg-panel);
 }
-.task-dependencies-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 6px;
-}
 .task-dependencies-title {
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.task-dependencies--compact {
+  position: relative;
+  padding: 0;
+  background: rgba(15,17,23,0.52);
+}
+.task-dependencies-summary {
+  min-height: 36px;
+  padding: 6px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.task-dependencies--blocking {
+  border-bottom-color: color-mix(in srgb, var(--amber) 32%, var(--border-dim));
+  background: color-mix(in srgb, var(--amber) 7%, var(--bg-panel));
+}
+.task-dependencies--empty {
+  background: var(--bg-panel);
+}
+.dependency-blocking-copy,
+.dependency-muted-copy {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.dependency-blocking-copy strong,
+.dependency-muted-copy strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-bright);
+}
+.dependency-blocking-copy strong {
+  color: var(--amber);
+}
+.dependency-blocking-copy span,
+.dependency-muted-copy span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.dependency-summary-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.dependency-open-related {
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.dependency-open-related:hover {
+  color: var(--text-bright);
+}
+.dependency-menu-trigger {
+  min-width: 28px;
+  height: 26px;
+  padding: 0 8px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+}
+.dependency-menu-trigger:hover,
+.dependency-menu-trigger[aria-expanded="true"] {
+  background: var(--bg-card);
+  color: var(--text-bright);
+}
+.dependency-menu-trigger span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+.dependency-menu {
+  position: absolute;
+  top: calc(100% - 1px);
+  right: 12px;
+  z-index: 35;
+  width: min(440px, calc(100vw - 32px));
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  box-shadow: 0 14px 32px rgba(0,0,0,0.45);
+}
+.dependency-menu-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.dependency-menu-close {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.dependency-menu-close:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-bright);
+}
+.dependency-menu .dependency-edge-row {
+  grid-template-columns: 76px minmax(0, 1fr);
+}
+.dependency-menu .dependency-edge-row + .dependency-edge-row {
+  margin-top: 7px;
+}
+.dependency-menu-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-dim);
 }
 .dependency-edge-row {
   display: grid;
@@ -1433,6 +1702,9 @@ kbd {
 }
 .dependency-chip button:focus-visible,
 .dependency-modal-close:focus-visible,
+.dependency-menu-close:focus-visible,
+.dependency-menu-trigger:focus-visible,
+.dependency-open-related:focus-visible,
 .dependency-field-toggle button:focus-visible,
 .dependency-result:focus-visible,
 .dependency-free-text:focus-visible {
@@ -3496,6 +3768,23 @@ textarea::-webkit-resizer { background: transparent; }
 }
 .toast-dismiss:hover { color: var(--text); }
 
+/* Persistent (one-time-dismissible) install nudge — top-center so it reads as a
+   page-level prompt, distinct from the transient top-right toast stack. */
+.plugin-install-banner {
+  position: fixed;
+  top: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  width: calc(100% - 32px);
+  max-width: 560px;
+}
+.plugin-install-banner code {
+  background: rgba(0,0,0,0.3);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(20px); }
   to { opacity: 1; transform: translateX(0); }
@@ -4891,6 +5180,12 @@ textarea::-webkit-resizer { background: transparent; }
   word-break: break-word;
   max-width: 72ch;
 }
+/* When the terminal/diff pane is hidden the activity pane fills the width;
+   relax the prose cap so text uses more of the space and needs less vertical
+   scrolling, while keeping a generous bound for readability on wide screens. */
+.detail-split-left-only .act-msg-text {
+  max-width: 110ch;
+}
 .act-msg-collapsed .act-msg-text {
   max-height: 16.5rem;
   overflow: hidden;
@@ -5067,6 +5362,69 @@ textarea::-webkit-resizer { background: transparent; }
 }
 .act-notice-text {
   font-style: italic;
+}
+
+/* Live "agent is working" row — pinned to the foot of the stream while the
+   turn is running. Surfaces the in-flight tool call (spinner + icon + label)
+   or a generic working state between calls. See ActivityPanel LiveToolRow. */
+.act-live-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  padding: 4px 0 4px 10px;
+  margin-left: 8px;
+  border-left: 2px solid var(--green);
+}
+.act-live-spinner {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.6px solid rgba(52, 211, 153, 0.25);
+  border-top-color: var(--green);
+  animation: act-live-spin 0.8s linear infinite;
+}
+@keyframes act-live-spin {
+  to { transform: rotate(360deg); }
+}
+.act-live-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Shimmer sweep marks the label as live, not static history. */
+  background: linear-gradient(90deg, var(--text-muted) 25%, var(--text-bright) 50%, var(--text-muted) 75%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: act-live-shimmer 1.6s linear infinite;
+}
+@keyframes act-live-shimmer {
+  to { background-position: -200% 0; }
+}
+.act-live-elapsed {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+@media (prefers-reduced-motion: reduce) {
+  .act-live-spinner {
+    animation: none;
+    /* Keep a static ring so the indicator is still legible without motion. */
+    border-top-color: var(--green);
+    border-right-color: var(--green);
+  }
+  .act-live-label {
+    animation: none;
+    -webkit-text-fill-color: var(--text-secondary);
+    color: var(--text-secondary);
+  }
 }
 
 /* --- Pending Section --- */
@@ -8558,13 +8916,6 @@ a.project-drawer-stat-row-link:focus-visible {
   .detail-header-right {
     width: 100%;
   }
-  .task-dependencies-header {
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .task-dependencies-header .action-btn {
-    justify-content: center;
-  }
   .dependency-edge-row {
     grid-template-columns: 1fr;
     gap: 2px;
@@ -9335,6 +9686,107 @@ button.act-tool-entry:focus-visible {
   border-top: 1px solid var(--border-dim);
   border-radius: 0 0 4px 4px;
   color: var(--red);
+}
+
+/* Scheduled "auto" DND state — a quiet-hours window is currently active. */
+.dnd-pill-auto {
+  color: var(--text-bright);
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.08);
+}
+.dnd-pill-auto .dnd-pill-icon { color: var(--blue); }
+.dnd-pill-auto + .dnd-pill-caret {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.04);
+}
+.dnd-pill-auto-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 15px;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: rgba(96, 165, 250, 0.16);
+  color: var(--blue);
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.dnd-pill-menu-note {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+/* Quiet-hours editor in the Settings dialog. */
+.settings-quiet-hours {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.settings-quiet-hours-window {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: var(--bg-card);
+}
+.settings-quiet-hours-times {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.settings-quiet-hours-time {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.settings-quiet-hours-time input {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-input, var(--bg-panel));
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+.settings-quiet-hours-days {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.settings-quiet-hours-day {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.settings-quiet-hours-day:hover {
+  color: var(--text-bright);
+  border-color: var(--border);
+}
+.settings-quiet-hours-day.active {
+  color: var(--blue);
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.1);
+}
+.settings-quiet-hours-day:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
 }
 
 /* "Arrived during DND" badge on FindingCard */
@@ -10390,4 +10842,130 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .child-rollup-pill--warning {
   border-color: var(--warning-fg, #b8860b);
   color: var(--warning-fg, #b8860b);
+}
+.debug-timeline-panel {
+  position: fixed;
+  right: 14px;
+  bottom: 46px;
+  z-index: 80;
+  width: min(520px, calc(100vw - 28px));
+  max-height: min(520px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0,0,0,0.48);
+  overflow: hidden;
+}
+
+.debug-timeline-header,
+.debug-timeline-actions,
+.debug-timeline-filters {
+  display: flex;
+  align-items: center;
+}
+
+.debug-timeline-header {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-dim);
+}
+
+.debug-timeline-header h2 {
+  margin: 0;
+  color: var(--text-bright);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.debug-timeline-header span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.debug-timeline-actions {
+  gap: 8px;
+}
+
+.debug-timeline-actions .btn-primary,
+.debug-timeline-actions .btn-secondary {
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.debug-timeline-filters {
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-dim);
+}
+
+.debug-timeline-filters select,
+.debug-timeline-filters input {
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.debug-timeline-filters select {
+  width: 150px;
+}
+
+.debug-timeline-filters input {
+  flex: 1;
+}
+
+.debug-timeline-list {
+  flex: 1;
+  min-height: 160px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.debug-timeline-entry {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(45,53,80,0.5);
+  color: var(--text-secondary);
+}
+
+.debug-timeline-entry time {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.debug-timeline-entry strong {
+  display: block;
+  color: var(--text-bright);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.debug-timeline-entry span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.debug-timeline-entry--websocket { border-left: 3px solid var(--blue); }
+.debug-timeline-entry--store { border-left: 3px solid var(--teal); }
+.debug-timeline-entry--finding-lifecycle { border-left: 3px solid var(--amber); }
+
+.debug-timeline-empty {
+  padding: 24px 12px;
+  color: var(--text-muted);
+  text-align: center;
 }

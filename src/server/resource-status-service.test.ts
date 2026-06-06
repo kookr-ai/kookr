@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { ResourceStatusService } from './resource-status-service.js';
-import type { SystemResourceStatus } from '../shared/contracts/messages.js';
+import type { ServerMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
 
 function status(sampledAt = '2026-05-13T00:00:00.000Z'): SystemResourceStatus {
   return {
@@ -89,6 +89,79 @@ describe('ResourceStatusService', () => {
 
       vi.advanceTimersByTime(2_000);
       expect(logger.warn).toHaveBeenCalledTimes(1);
+      service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('broadcasts evaluator alerts after the resourceStatus message on each tick', () => {
+    vi.useFakeTimers();
+    try {
+      const broadcasts: ServerMessage[] = [];
+      const alert: ServerMessage = {
+        type: 'alert',
+        agentId: 'system',
+        summary: 'High host CPU usage',
+        details: 'sustained',
+        severity: 'warning',
+      };
+      // Fire an alert only on the second sample to prove ordering and per-tick eval.
+      let calls = 0;
+      const service = new ResourceStatusService({
+        sampler: { start: vi.fn(), stop: vi.fn(), sample: vi.fn(() => status()) },
+        broadcastToAll: (msg) => broadcasts.push(msg),
+        alertEvaluator: {
+          evaluate: () => (++calls === 2 ? [alert] : []),
+        },
+        nowMs: () => 1_000,
+        intervalMs: 2_000,
+      });
+
+      service.start();
+      expect(broadcasts).toEqual([{ type: 'resourceStatus', status: status() }]);
+
+      vi.advanceTimersByTime(2_000);
+      expect(broadcasts).toEqual([
+        { type: 'resourceStatus', status: status() },
+        { type: 'resourceStatus', status: status() },
+        alert,
+      ]);
+
+      service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('fails open and logs once when the alert evaluator throws', () => {
+    vi.useFakeTimers();
+    try {
+      const broadcasts: ServerMessage[] = [];
+      const logger = { warn: vi.fn() };
+      const service = new ResourceStatusService({
+        sampler: { start: vi.fn(), stop: vi.fn(), sample: vi.fn(() => status()) },
+        broadcastToAll: (msg) => broadcasts.push(msg),
+        alertEvaluator: {
+          evaluate: () => {
+            throw new Error('evaluator boom');
+          },
+        },
+        nowMs: () => 1_000,
+        intervalMs: 2_000,
+        logger,
+      });
+
+      service.start();
+      // resourceStatus still broadcast despite evaluator failure.
+      expect(broadcasts).toEqual([{ type: 'resourceStatus', status: status() }]);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(2_000);
+      // Second failure does not re-log.
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(broadcasts).toHaveLength(2);
+
       service.stop();
     } finally {
       vi.useRealTimers();

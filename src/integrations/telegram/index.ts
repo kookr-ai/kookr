@@ -9,11 +9,13 @@
 import { createHash } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from '../../core/agent-types.js';
 import type { LlmClient } from '../../core/llm-client.js';
-import type { LaunchOpts, LaunchResult } from '../../server/launch-service.js';
+import type { LaunchOpts, LaunchResult } from '../../shared/contracts/launch.js';
+import type { TelegramHandle } from '../../shared/contracts/telegram.js';
 import { TelegramApiClient, TelegramApiError, type TelegramUpdate, type TelegramMessage } from './api-client.js';
+import { audioDropDecision, extractAudioAttachment, filenameFromFilePath } from './audio.js';
 import { parseTaskCommand } from './parse-task.js';
 import { rephrase } from './rephrase.js';
-import { transcribeVoice as defaultTranscribeVoice, TranscriptionError } from './transcribe.js';
+import { classifyVoiceError, redactCredentials, transcribeVoice as defaultTranscribeVoice } from './transcribe.js';
 import { TaskSpecBypassSchema, type ProjectInfo, type ValidatedTaskSpec } from './types.js';
 import {
   acquireLockOrFail,
@@ -27,33 +29,7 @@ import {
   type RateLimiter,
 } from './safety.js';
 import { createAuditWriter, type AuditWriter } from './audit.js';
-import type { AuditEvent } from './audit.js';
 import { startVoiceWarmup } from './warmup.js';
-
-/**
- * Cap for Telegram audio we will transcribe. Telegram's default in-app voice
- * recording cap is 60 s, but uploaded audio/video files can be much longer.
- * We refuse anything past 5 minutes — large-v3 on GPU does ~10x realtime, so
- * a 5 min clip is still ~30 s of work.
- */
-const MAX_AUDIO_SECONDS = 300;
-
-/**
- * Hard upper bound on audio payload size. Telegram caps voice files at 20 MB
- * and faster-whisper-server defaults its upload limit to 25 MB; uploaded
- * audio/document files can be much larger, so we fail closed at 25 MiB before
- * download whenever Telegram exposes file_size. The Buffer is held in memory
- * only — never persisted — and freed once the multipart POST returns.
- */
-const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
-
-/**
- * Telegram documents do not include a duration field. For audio documents, use
- * a conservative size heuristic before download/transcription; a 5-minute
- * 256 kbps audio file is roughly 10 MiB, so 12 MiB leaves room for container
- * overhead without letting obviously long compressed uploads through.
- */
-const MAX_AUDIO_DOCUMENT_BYTES_WITHOUT_DURATION = 12 * 1024 * 1024;
 
 /**
  * Total wall-clock budget for the (download + transcribe) round-trip. The
@@ -62,22 +38,6 @@ const MAX_AUDIO_DOCUMENT_BYTES_WITHOUT_DURATION = 12 * 1024 * 1024;
  * full 30 s to each leg independently would allow ~60 s worst-case.
  */
 const TRANSCRIBE_TIMEOUT_MS = 30_000;
-
-type AudioSource = 'voice' | 'audio' | 'video_note' | 'document';
-
-interface TelegramAudioAttachment {
-  source: AudioSource;
-  fileId: string;
-  durationSec?: number;
-  fileSize?: number;
-  mimeType?: string;
-  fallbackFilename: string;
-}
-
-interface AudioDropDecision {
-  event: AuditEvent;
-  reply: string;
-}
 
 export interface StartTelegramTriggerDeps {
   /** Bot API token (from BotFather). */
@@ -115,18 +75,6 @@ export interface StartTelegramTriggerDeps {
   transcribeVoice?: typeof defaultTranscribeVoice;
   /** Server-lifecycle abort signal — see `VoiceWarmupOpts.lifecycleSignal` and issue #188. */
   lifecycleSignal?: AbortSignal;
-}
-
-export interface TelegramHandle {
-  stop(): Promise<void>;
-  /**
-   * Callback wired into wireEventPipeline (R16 block-alerts). The pipeline
-   * catches throws so this implementation is allowed to be sloppy if it must,
-   * but in practice every send is fire-and-forget and the only path that
-   * could throw is synchronous (a missing chatId for a non-remote task,
-   * which we silently skip). See event-pipeline.ts try/catch around the call.
-   */
-  onPermissionBlocked: (taskId: string, promptText: string) => void;
 }
 
 /**
@@ -191,87 +139,6 @@ function helpText(allowedProjects: ProjectInfo[]): string {
   ].join('\n');
 }
 
-/**
- * Conservative credential-shape detector for block-alert texts before they
- * leave Kookr for Telegram (round-3 V13). If any pattern matches, the entire
- * body is replaced with a sentinel; the user views the full prompt in the
- * dashboard. False positives are acceptable; false negatives are not.
- *
- * Patterns: BEGIN ... PRIVATE KEY (PEM), the usual word-shaped markers
- * (password / secret / token / api_key), AWS access keys (AKIA...), GitHub
- * tokens (ghp_/gho_/ghs_/ghu_/ghr_), and Bearer-style auth headers.
- *
- * Exported for direct unit testing (rfc round-3 V13 follow-up).
- */
-export function redactCredentials(text: string): string {
-  const patterns = /(BEGIN [A-Z ]*PRIVATE KEY|password|token|secret|api[_-]?key|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+\S+)/i;
-  if (!patterns.test(text)) return text;
-  return '<prompt redacted; view in dashboard>';
-}
-
-/**
- * 4xx statuses that genuinely mean "this specific recording was rejected" — the
- * issue's spec wording for the payload-rejected bucket. Other 4xx (429 rate
- * limit, 408 timeout, 401/403 auth, 407 proxy auth) are infrastructure
- * problems where the OGG itself is fine; routing those to "re-record" gives
- * users wrong advice. They get the server-error reply ("try again") instead.
- */
-const PAYLOAD_REJECTED_STATUSES = new Set([
-  400, // Bad Request — whisper rejected the body shape
-  413, // Payload Too Large
-  415, // Unsupported Media Type
-  422, // Unprocessable Entity
-]);
-
-/**
- * Classify an audio-pipeline error into one of four user-facing replies. The
- * audit log keeps the raw `err` either way (see issue #577) — this is purely
- * about telling the user whether to retry now, re-record, or give up.
- *
- * The catch in the audio branch covers THREE legs: api.getFile, api.downloadFile,
- * and transcribeVoice. So the input here can be a TranscriptionError (whisper),
- * a TelegramApiError (Telegram CDN/API), or a bare Error. Status is checked
- * before any message-pattern match so an HTTP 5xx whose body happens to mention
- * "ECONNREFUSED" can't flip to the unreachable branch (acceptance criterion:
- * "no false positives").
- */
-export function classifyVoiceError(err: unknown): string {
-  // TranscriptionError.status can be null (transport failure) — skip the
-  // range checks in that case so the message regex below has a chance.
-  // TelegramApiError.status is always a number, so a non-2xx Telegram CDN
-  // response gets classified the same way as a whisper non-2xx response.
-  const status =
-    err instanceof TranscriptionError ? err.status :
-    err instanceof TelegramApiError ? err.status :
-    null;
-  if (status !== null) {
-    if (PAYLOAD_REJECTED_STATUSES.has(status)) {
-      return 'Could not transcribe that recording. Please re-record or type.';
-    }
-    // Everything else 4xx (429 rate limit, 408 timeout, 401/403 auth, etc.)
-    // and all 5xx — the recording is fine, the user should retry.
-    if (status >= 400 && status < 600) {
-      return 'Transcription failed (server error). Please type or try again.';
-    }
-  }
-  const msg = err instanceof Error ? err.message : String(err);
-  // 2xx whisper responses with a malformed body — TranscriptionError carries
-  // the original 2xx status, so the range checks above miss it; the message
-  // is the only signal. Strings here mirror transcribe.ts exactly.
-  if (/non-JSON|missing "text" field/.test(msg)) {
-    return 'Transcription failed (server error). Please type or try again.';
-  }
-  // Transport-layer failures from any leg. The undici fetch backend can stringify
-  // failures in several shapes — best-effort coverage of the common ones. The
-  // AbortError name check catches both transcribeVoice's bespoke "aborted after
-  // Nms" and downloadFile's raw AbortError that doesn't get wrapped.
-  const TRANSPORT_FAIL =
-    /ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|UND_ERR_(SOCKET|CONNECT_TIMEOUT|HEADERS_TIMEOUT)|getaddrinfo|aborted after \d+ms/i;
-  if (TRANSPORT_FAIL.test(msg) || (err instanceof Error && err.name === 'AbortError')) {
-    return 'Transcription server unreachable. Please type — audio will retry on the next message.';
-  }
-  return 'Transcription failed. Please type.';
-}
 
 /**
  * Outcome of probing the local faster-whisper-server's `/v1/models` endpoint.
@@ -344,87 +211,6 @@ function specHash(spec: ValidatedTaskSpec, chatId: number): string {
 
 function dashboardUrl(base: string, taskId: string): string {
   return `${base.replace(/\/$/, '')}/?task=${encodeURIComponent(taskId)}`;
-}
-
-function extractAudioAttachment(m: TelegramMessage): TelegramAudioAttachment | null {
-  if (m.voice) {
-    return {
-      source: 'voice',
-      fileId: m.voice.file_id,
-      durationSec: m.voice.duration,
-      fileSize: m.voice.file_size,
-      mimeType: m.voice.mime_type ?? 'audio/ogg',
-      fallbackFilename: 'voice.oga',
-    };
-  }
-  if (m.audio) {
-    return {
-      source: 'audio',
-      fileId: m.audio.file_id,
-      durationSec: m.audio.duration,
-      fileSize: m.audio.file_size,
-      mimeType: m.audio.mime_type,
-      fallbackFilename: m.audio.file_name ?? 'audio',
-    };
-  }
-  if (m.video_note) {
-    return {
-      source: 'video_note',
-      fileId: m.video_note.file_id,
-      durationSec: m.video_note.duration,
-      fileSize: m.video_note.file_size,
-      mimeType: 'video/mp4',
-      fallbackFilename: 'video-note.mp4',
-    };
-  }
-  if (m.document?.mime_type?.startsWith('audio/')) {
-    return {
-      source: 'document',
-      fileId: m.document.file_id,
-      fileSize: m.document.file_size,
-      mimeType: m.document.mime_type,
-      fallbackFilename: m.document.file_name ?? 'document-audio',
-    };
-  }
-  return null;
-}
-
-function filenameFromFilePath(filePath: string, fallback: string): string {
-  return filePath.split('/').pop() || fallback;
-}
-
-function audioDropDecision(audio: TelegramAudioAttachment, bytes?: number): AudioDropDecision | null {
-  if (typeof audio.durationSec === 'number' && audio.durationSec > MAX_AUDIO_SECONDS) {
-    return {
-      event: { kind: 'dropped_audio_too_long', source: audio.source, durationSec: audio.durationSec },
-      reply: `Audio too long (${audio.durationSec}s). Cap is ${MAX_AUDIO_SECONDS}s — please type.`,
-    };
-  }
-  if (typeof bytes !== 'number') {
-    return null;
-  }
-  if (bytes > MAX_AUDIO_BYTES) {
-    return {
-      event: { kind: 'dropped_audio_too_large', source: audio.source, bytes, durationSec: audio.durationSec },
-      reply: `Audio payload too large (${bytes} bytes). Cap is ${MAX_AUDIO_BYTES} bytes — please type.`,
-    };
-  }
-  if (
-    audio.source === 'document' &&
-    audio.durationSec === undefined &&
-    bytes > MAX_AUDIO_DOCUMENT_BYTES_WITHOUT_DURATION
-  ) {
-    return {
-      event: {
-        kind: 'dropped_audio_too_long',
-        source: audio.source,
-        bytes,
-        estimatedFromBytes: true,
-      },
-      reply: `Audio document may be too long (${bytes} bytes). Cap is ${MAX_AUDIO_SECONDS}s — please type.`,
-    };
-  }
-  return null;
 }
 
 /**

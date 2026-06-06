@@ -1,14 +1,12 @@
+import type { NodeId, PolicyVersion, Seq, SessionEpoch, SessionId } from '../shared/contracts/ids.js';
+export type { NodeId, PolicyVersion, Seq, SessionEpoch, SessionId } from '../shared/contracts/ids.js';
+
 declare const brand: unique symbol;
 
 type BrandedString<Name extends string> = string & { readonly [brand]: Name };
 
-export type NodeId = BrandedString<'NodeId'>;
 export type NodeEpoch = BrandedString<'NodeEpoch'>;
-export type SessionId = BrandedString<'SessionId'>;
-export type SessionEpoch = BrandedString<'SessionEpoch'>;
 export type ServerRevision = number & { readonly [brand]: 'ServerRevision' };
-export type Seq = number & { readonly [brand]: 'Seq' };
-export type PolicyVersion = number & { readonly [brand]: 'PolicyVersion' };
 export type GrantId = BrandedString<'GrantId'>;
 export type CommandId = BrandedString<'CommandId'>;
 export type IdempotencyKey = BrandedString<'IdempotencyKey'>;

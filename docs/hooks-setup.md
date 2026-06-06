@@ -9,7 +9,7 @@ This document walks both newcomers through the setup, from the "I just want to c
 
 ## OSS extension hooks (bundled with the repo)
 
-> **Status:** The OSS-extension skills now ship with the `kookr-toolkit` marketplace plugin (`plugin/skills/pr-contribution-excellence/`, `plugin/reviewer-specialists/`, `plugin/skills/pre-pr-review/`). The PreToolUse / PostToolUse **hooks** stay in this repo at `hooks/` and `scripts/` (not under `plugin/`) because they integrate with Kookr's HTTP API, `~/.kookr/` config, and `KOOKR_*` env vars — the `plugin/` tree intentionally stays Kookr-agnostic so the marketplace install remains portable for non-Kookr users. `scripts/install-hooks.sh` installs:
+> **Status:** The OSS-extension skills now ship with the `kookr-toolkit` marketplace plugin (`plugin/skills/pr-contribution-excellence/`, `plugin/reviewer-specialists/`, `plugin/skills/pre-pr-review/`). The PreToolUse / PostToolUse **hooks** stay in this repo at `hooks/` and `scripts/` (not under `plugin/`) because they require explicit user-global hook installation and support runtimes where plugin hooks are not injected. `scripts/install-hooks.sh` installs:
 >
 > - `hooks/oss-stale-scout-gate.sh` → `~/.claude/hooks/oss-stale-scout-gate.sh`
 > - `hooks/pr-workflow-gate.sh` → `~/.claude/hooks/pr-workflow-gate.sh`
@@ -34,8 +34,7 @@ relevance-gated `kb search` and injects the post-gate knowledge-base context
 into the turn:
 
 - Calls `kb search "<prompt>" --gate --task-context-file=<f> --format=json`.
-- Assembles `task_context` from `$TASK_CHECKPOINT_DIR/CHECKPOINT.json`
-  (`task_id` + `next_actions`) or the prompt, stamped with a monotonic
+- Assembles `task_context` from the prompt, stamped with a monotonic
   per-session turn id (the freshness contract).
 - Validates the response's `gate_verdict` against the vendored
   relevance-gate schema (`src/core/relevance-gate-schema.ts`).
@@ -94,21 +93,21 @@ If you use Claude Code (or Codex CLI) to work on this repo, there is a larger ho
 | `oss-gate` (CLI) | N/A (invoked manually) | Status / reset / log / health commands for the rate-limit gate | User-global helper |
 | `oss-registry-check` (CLI) | N/A (invoked manually) | Resolves a repo against the `~/.kookr/oss-repos.json` registry to check eligibility | User-global helper |
 
-**The four OSS-extension PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) have canonical source in this repo under `hooks/` and `scripts/`, alongside the `pre-pr-review` and `pr-contribution-excellence` skills at `plugin/skills/`, and the reviewer specialists at `plugin/reviewer-specialists/`. The hooks are not under `plugin/` because they integrate with Kookr's HTTP API, `~/.kookr/` config, and `KOOKR_*` env vars — keeping `plugin/` Kookr-agnostic preserves marketplace portability.** Remaining items — `claim-gate.sh`, `ai-coauthor-push-guard.sh`, `kookr-prod-readonly-guard.sh`, `fix-bare-after-worktree.sh`, plus the `oss-gate` and `oss-registry-check` CLIs — still live as standalone files in `~/.claude/hooks/` and `~/.local/bin/`. Bundling those is tracked in the "Future work" section at the bottom.
+**The four OSS-extension PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) have canonical source in this repo under `hooks/` and `scripts/`, alongside the `pre-pr-review` and `pr-contribution-excellence` skills at `plugin/skills/`, and the reviewer specialists at `plugin/reviewer-specialists/`. The hooks are not under `plugin/` because they require explicit user-global hook installation and support runtimes where plugin hooks are not injected.** Remaining items — `claim-gate.sh`, `ai-coauthor-push-guard.sh`, `kookr-prod-readonly-guard.sh`, `fix-bare-after-worktree.sh`, plus the `oss-gate` and `oss-registry-check` CLIs — still live as standalone files in `~/.claude/hooks/` and `~/.local/bin/`. Bundling those is tracked in the "Future work" section at the bottom.
 
-### Interaction with `kookr-spawn`
+### Interaction with `kookr spawn`
 
-`kookr-spawn` (see `README.md` Terminal Usage section) is a CLI that POSTs prompts to `POST /api/tasks`. Hooks like `pr-workflow-gate.sh` and `oss-stale-scout-gate.sh` inspect `tool_input.command` — the entire bash command text, including argv.
+`kookr spawn` (see `README.md` Terminal Usage section) is a CLI that POSTs prompts to `POST /api/tasks`. Hooks like `pr-workflow-gate.sh` and `oss-stale-scout-gate.sh` inspect `tool_input.command` — the entire bash command text, including argv.
 
 **Hook-safe — prompt NOT on the bash command line:**
-- `kookr-spawn --prompt-file /tmp/prompt.md` — hook sees only the flag and the path.
-- `cat /tmp/prompt.md | kookr-spawn` — hook sees only the pipe, not the file contents.
+- `kookr spawn --prompt-file /tmp/prompt.md` — hook sees only the flag and the path.
+- `cat /tmp/prompt.md | kookr spawn` — hook sees only the pipe, not the file contents.
 
 **Not hook-safe — prompt IS on the bash command line:**
-- `kookr-spawn "please gh pr create for the release branch"` — positional argv.
-- `kookr-spawn --criteria "ensure gh pr create succeeds"` — flag values are argv too.
+- `kookr spawn "please gh pr create for the release branch"` — positional argv.
+- `kookr spawn --criteria "ensure gh pr create succeeds"` — flag values are argv too.
 
-If your prompt or criteria contain strings that PreToolUse hooks match on (`gh pr create`, `git push --force`, `rm -rf`, closing-issue keywords on upstream issues), use `--prompt-file` or piped stdin. The CLI does not try to auto-detect Claude Code sessions or inject workaround magic — see the `kookr-spawn --help` text for the human-facing rule.
+If your prompt or criteria contain strings that PreToolUse hooks match on (`gh pr create`, `git push --force`, `rm -rf`, closing-issue keywords on upstream issues), use `--prompt-file` or piped stdin. The CLI does not try to auto-detect Claude Code sessions or inject workaround magic — see the `kookr spawn --help` text for the human-facing rule.
 
 ### Minimum install for running Claude Code agents in this repo
 

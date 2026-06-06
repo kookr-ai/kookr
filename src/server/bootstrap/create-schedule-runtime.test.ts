@@ -29,13 +29,14 @@ describe('createScheduleRuntime', () => {
     });
 
     expect(runtime.scheduleStore.list()).toEqual([]);
-    runtime.scheduleService.recordRunnerStarted(true);
+    runtime.scheduleService.recordRunnerStarted('auto');
 
     expect(messages).toHaveLength(1);
     expect(messages[0]).toEqual(expect.objectContaining({
       type: 'schedules',
       schedules: [],
       status: expect.objectContaining({
+        catchUpMode: 'auto',
         catchUpEnabled: true,
         schedulerHealthy: true,
         runnerStartedAt: expect.any(String),

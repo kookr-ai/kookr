@@ -24,6 +24,8 @@ Use the dashboard **Launch** button for an interactive start:
 
 Kookr starts the agent in a persistent dtach session. If the server restarts, the dtach master keeps the child process alive and Kookr reconciles state on startup.
 
+For Ralph loops that look stopped after a crash or show a **Replace with new** recovery dialog, see [Ralph Loop Stopped Or Shows "Replace With New"](troubleshooting.md#ralph-loop-stopped-or-shows-replace-with-new).
+
 ## Responding To Findings
 
 When a finding appears:
@@ -81,6 +83,8 @@ Kookr prioritizes findings by urgency. Common V1 cases include:
 - Idle or stopped agents that likely need input
 - GitHub PR or CI events tied to an agent-created branch
 - Budget or cost warnings
+
+For the full catalog — every anomaly type, what triggers it, the recommended response, and how to suppress or tune it — see the [Findings Reference](reference/findings.md).
 
 LLM-powered trajectory analysis is a later direction. The current system favors reliable signals before speculative interpretation.
 

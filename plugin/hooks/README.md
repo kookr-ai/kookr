@@ -17,12 +17,12 @@ It performs deterministic path checks only:
 
 - In the Kookr repo, new `.claude/skills/<name>/` files warn unless `<name>`
   starts with `kookr-`.
-- New `plugin/skills/kookr-*/` files warn because published plugin skills must
-  not use the Kookr-internal prefix.
+- New `plugin/skills/kookr-*/` files are allowed for Kookr-runtime skills that
+  agents need outside the Kookr repo.
 - New `.claude/skills/<name>/` files warn when `plugin/skills/<name>/` already
   exists.
-- New `plugin/agents/kookr-*.md` files warn because published plugin agents must
-  not use the Kookr-internal prefix.
+- New `plugin/agents/kookr-*.md` files are allowed for distributed Kookr-domain
+  agents.
 - In the Kookr repo, new `.claude/agents/<name>.md` files warn unless `<name>`
   starts with `kookr-`.
 

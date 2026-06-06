@@ -4,10 +4,9 @@
 # Checks (per docs/rfc/rfc-skill-agent-distribution.md):
 #   1. Every dir in <repo>/.claude/skills/ must start with "kookr-".
 #   2. Every file in <repo>/.claude/agents/ must start with "kookr-" (kookr-
-#      internal agents only — general agents go in plugin/agents/).
+#      repo-local agents only — distributed agents go in plugin/agents/).
 #   3. No name collision between <repo>/.claude/skills/ and <repo>/plugin/skills/.
-#   4. No dir in <repo>/plugin/skills/ may start with "kookr-".
-#   5. No unqualified subagent_type references inside .claude/skills/ or
+#   4. No unqualified subagent_type references inside .claude/skills/ or
 #      plugin/skills/ — must use the kookr-toolkit:<name> form.
 #
 # Exits non-zero on any violation. Prints reasons to stderr.
@@ -62,15 +61,7 @@ if [ -d .claude/skills ] && [ -d plugin/skills ]; then
   fi
 fi
 
-# --- Check 4: no kookr-* dirs in plugin/skills/ -------------------------------
-if [ -d plugin/skills ]; then
-  for d in plugin/skills/kookr-*/; do
-    [ -d "$d" ] || continue
-    BAD+="${BAD:+$'\n'}  $d ('kookr-' prefix not allowed in plugin/skills/)"
-  done
-fi
-
-# --- Check 5: no unqualified subagent_type references inside skill bodies ----
+# --- Check 4: no unqualified subagent_type references inside skill bodies ----
 # Pattern matches a quote directly preceded by `subagent_type` context, then the
 # bare agent name. The qualified form has `kookr-toolkit:` between the quote
 # and the agent name, so the bracketing `["']<name>` only matches unqualified.

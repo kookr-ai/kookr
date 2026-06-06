@@ -111,8 +111,8 @@ function renderPanelWithLists(
       snoozed: lists.snoozed ?? [],
       selectedAgentId,
       send,
-      globalFinishedCount: 0,
-      globalTerminatedCount: 0,
+      clearCompletedFinishedCount: 0,
+      clearCompletedTerminatedCount: 0,
     }));
   });
   return root;

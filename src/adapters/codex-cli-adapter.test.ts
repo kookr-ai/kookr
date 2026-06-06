@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import { CodexCliAdapter } from './codex-cli-adapter.js';
+import { DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { TaskStore } from '../core/tasks.js';
-import { resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import type { AgentEvent } from '../core/types.js';
+import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
 
 const CODEX_SUPPORTED_HOOK_TYPES = [
   'SessionStart',
@@ -179,47 +180,6 @@ describe('CodexCliAdapter', () => {
     const session = updatedTask.sessions.find(s => s.tmuxSession === sessionId);
     expect(session).toBeDefined();
     expect(session!.agentType).toBe('codex-cli');
-  });
-
-  test('launch prefixes the prompt with semantic checkpoint fallback instructions when JSON is absent', async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), 'codex-checkpoint-prefix-'));
-    try {
-      const cwd = join(tempDir, 'repo');
-      const gitDir = join(cwd, '.git');
-      const kookrDataDir = join(tempDir, '.kookr');
-      await mkdir(gitDir, { recursive: true });
-      await mkdir(kookrDataDir, { recursive: true });
-      await writeFile(join(gitDir, 'HEAD'), 'ref: refs/heads/feat-checkpoint-md\n');
-      const checkpointDir = await resolveAndPrepareCheckpointDir({ cwd, kookrDataDir });
-      expect(checkpointDir).not.toBeNull();
-      await writeFile(join(checkpointDir!, 'CHECKPOINT.md'), '# Markdown checkpoint\n');
-
-      const checkpointAdapter = new CodexCliAdapter(backend, taskStore, {
-        trustWorkspace: false,
-        kookrDataDir,
-        probeExec: forkProbeExec,
-        writeFile: async (path, content) => {
-          writtenFiles.set(path, content);
-        },
-      });
-      const task = taskStore.createTask('Fix bug', cwd);
-      const sessionId = await checkpointAdapter.launch(task.id, 'original prompt', cwd);
-
-      const spec = backend.sessions.get(sessionId)!.spec;
-      const prompt = deliveredPrompt(spec);
-      expect(spec.args).not.toContain('original prompt');
-      expect(prompt).toContain('CHECKPOINT.json is not present');
-      expect(prompt).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.md as your very first action');
-      expect(prompt).toContain('original prompt');
-      // Guard the integration seam: confirm the env var actually reaches the
-      // spawned codex process. A regression that dropped `launchContext.env`
-      // would leave the prompt-text assertion green while the agent runs
-      // without checkpoint state.
-      expect(spec.env?.TASK_CHECKPOINT_DIR).toBe(checkpointDir);
-      expect(spec.env?.KOOKR_CHECKPOINT_DIR).toBeUndefined();
-    } finally {
-      await rm(tempDir, { recursive: true, force: true });
-    }
   });
 
   test('launch generates the widened Codex-compatible hook subscription set', async () => {
@@ -669,6 +629,25 @@ describe('CodexCliAdapter', () => {
     expect(written[1]).toEqual(Uint8Array.of(0x0d));
   });
 
+  test('sendInput requests a delayed submitting Enter', async () => {
+    const writer: TerminalInputWriterPort = {
+      writeInput: vi.fn().mockResolvedValue({ sessionId: 'session-1', readinessVersion: 1 }),
+      writeInputSequence: vi.fn().mockResolvedValue({ sessionId: 'session-1', readinessVersion: 1 }),
+    };
+    const delayedAdapter = new CodexCliAdapter(backend, taskStore, {
+      trustWorkspace: false,
+      terminalInputWriter: writer,
+    });
+
+    await delayedAdapter.sendInput('session-1', 'yes, continue');
+
+    expect(writer.writeInputSequence).toHaveBeenCalledWith(
+      'session-1',
+      [new TextEncoder().encode('yes, continue'), Uint8Array.of(0x0d)],
+      { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS },
+    );
+  });
+
   test('unknown hook events are silently skipped', () => {
     const events: AgentEvent[] = [];
     adapter.onEvent((_, event) => events.push(event));
@@ -1002,6 +981,83 @@ describe('CodexCliAdapter', () => {
       // second launch re-spawns nothing.
       expect(afterFirstLaunch).toBe(2);
       expect(helpCalls).toBe(afterFirstLaunch);
+    });
+  });
+
+  describe('reasoning effort (#681)', () => {
+    /** Index of the `model_reasoning_effort=...` value in argv, or -1. */
+    function effortValueIndex(args: string[]): number {
+      return args.findIndex((a) => a.startsWith('model_reasoning_effort='));
+    }
+
+    test('no configured default and no override → argv is byte-identical (no effort override)', async () => {
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(effortValueIndex(spec.args)).toBe(-1);
+      // The pre-#681 base config flag is untouched.
+      expect(spec.args).toEqual(expect.arrayContaining(['-c', 'features.codex_hooks=true']));
+    });
+
+    test('per-agent-type default getter → pushes -c model_reasoning_effort="<level>"', async () => {
+      const effortAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: forkProbeExec,
+        writeFile: async () => {},
+        resolveDefaultEffort: () => 'high',
+      });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await effortAdapter.launch(task.id, 'Fix bug', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const idx = effortValueIndex(spec.args);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Codex's lever is a `-c key=value` TOML override, not a dedicated flag.
+      expect(spec.args[idx - 1]).toBe('-c');
+      expect(spec.args[idx]).toBe('model_reasoning_effort="high"');
+    });
+
+    test('per-task override (opts.effort) wins over the configured default', async () => {
+      const effortAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: forkProbeExec,
+        writeFile: async () => {},
+        resolveDefaultEffort: () => 'high',
+      });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await effortAdapter.launch(task.id, 'Fix bug', '/cwd', undefined, { effort: 'minimal' });
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const overrides = spec.args.filter((a) => a.startsWith('model_reasoning_effort='));
+      expect(overrides).toEqual(['model_reasoning_effort="minimal"']);
+    });
+
+    test('an effort invalid for codex-cli is skipped (defensive guard), not passed', async () => {
+      // `max` is claude-only; it must never reach codex argv.
+      const effortAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: forkProbeExec,
+        writeFile: async () => {},
+        resolveDefaultEffort: () => 'max',
+      });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await effortAdapter.launch(task.id, 'Fix bug', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(effortValueIndex(spec.args)).toBe(-1);
+    });
+
+    test('the prompt positional stays last even with an effort override (stock codex)', async () => {
+      const stockAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: stockProbeExec,
+        writeFile: async () => {},
+        resolveDefaultEffort: () => 'high',
+      });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      const sessionId = await stockAdapter.launch(task.id, 'Fix bug', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      // Effort override is present...
+      expect(effortValueIndex(spec.args)).toBeGreaterThanOrEqual(0);
+      // ...and the trailing positional prompt is still the very last entry.
+      expect(spec.args[spec.args.length - 1]).toBe('Fix bug');
     });
   });
 });

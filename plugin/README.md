@@ -1,6 +1,6 @@
 # Kookr Toolkit — Claude Code Plugin
 
-Skills and review subagents extracted from [Kookr](https://github.com/kookr-ai/kookr) for use with Claude Code in any project.
+Skills and review subagents shipped with [Kookr](https://github.com/kookr-ai/kookr) for use with Claude Code in any project.
 
 ## Install
 
@@ -22,13 +22,19 @@ After installation, the toolkit is available in every Claude Code session on you
 
 **Code patterns:** `typescript-type-safety`, `error-handling-patterns`, `async-flow-control`, `dependency-injection-patterns`, `domain-driven-design`, `monorepo-architecture`, `requirements-engineering`, `state-machine-workflow-patterns`, `process-lifecycle-patterns`, `realtime-state-sync`, `event-driven-messaging-patterns`, `logging-design-patterns`, `shell-subprocess-safety`, `safe-refactoring`, `testing-patterns`, `playwright-e2e-patterns`, `websocket-dashboard`.
 
-**Workflow:** `git-commit-discipline`, `tdd-workflow`, `token-efficiency`, `claude-code-metrics-analysis`, `hook-driven-workflow-enforcement`, `e2e-agent-testing`, `github-issue-workflow`, `github-trending-repos`.
+**Workflow:** `git-commit-discipline`, `tdd-workflow`, `token-efficiency`, `claude-code-metrics-analysis`, `hook-driven-workflow-enforcement`, `e2e-agent-testing`, `github-issue-workflow`, `github-trending-repos`, `ui-mockup-variants` (offer design mockup variants before implementing any UI change).
+
+**Kookr operations:** Kookr-specific skills that are useful from any working
+directory, such as task spawning, task supervision, and CLI/API workflows. These
+belong in the plugin because it is the distributed toolkit surface: Kookr
+injects it into spawned agents regardless of cwd, and regular Claude Code
+sessions can also see it when the plugin is installed or synced locally.
 
 **OSS contribution:** `oss-fork-manager`, `oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `pr-contribution-excellence` (bundled with per-repo distilled patterns under `repo/`), `find-best-reviewers`, `rust-lang-rust-{tests,pre-push}`.
 
 **Reviewer specialists (`plugin/reviewer-specialists/`):** narrow prompt templates (`conventions-specialist`, `correctness-specialist`, `deadcode-specialist`, `test-specialist`, `a11y-specialist`) consumed by the bundled `pre-pr-review` skill.
 
-**OSS contribution hooks (not in the marketplace plugin):** the PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) live in the Kookr repo's `hooks/` and `scripts/` dirs, not under `plugin/`, because they integrate with Kookr-specific runtime APIs and config — keeping `plugin/` Kookr-agnostic preserves portability for non-Kookr users of the marketplace plugin. Clone the Kookr repo and run the install scripts (see next section) to wire them.
+**OSS contribution hooks (not in the marketplace plugin):** the PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) live in the Kookr repo's `hooks/` and `scripts/` dirs, not under `plugin/`, because they require explicit user-global hook installation and support runtimes where plugin hooks are not injected. Clone the Kookr repo and run the install scripts (see next section) to wire them.
 
 **Reviewer distillation experiment:** `reviewer-distillation-{judge,mutate,predict,prepare,select,meta}`.
 
@@ -62,9 +68,19 @@ claude --plugin-dir ~/git/kookr/plugin
 > /reload-plugins   # picks up edits without restart
 ```
 
-Kookr's `ClaudeCodeAdapter` already injects `--plugin-dir` automatically for every spawned Claude Code agent, so any Kookr-spawned task sees the toolkit regardless of the consumer's plugin install state.
+Kookr's `ClaudeCodeAdapter` already injects `--plugin-dir` automatically for every spawned Claude Code agent, so any Kookr-spawned task sees the toolkit regardless of the consumer's plugin install state. Non-spawned Claude Code sessions can also use the same skills when the plugin is installed from the marketplace or synced into the user's Claude Code skill/plugin directories.
 
-Content under `plugin/` must stay portable for developers who install the toolkit outside the Kookr repo. Do not add Kookr runtime variables, local Kookr state paths, or Kookr development commands here, even behind fallback guards. Kookr-aware personal playbooks belong in the user playbook tier; Kookr project-only skills, agents, and playbooks belong in the repo's project-scope directories.
+Content under `plugin/` is the canonical distributed toolkit content. It may
+reach agents through Kookr's `--plugin-dir` injection, Claude Code plugin
+installation, or local sync/symlink setup. It may contain both general-purpose
+engineering guidance and Kookr-specific operational guidance when that guidance
+is useful outside the Kookr source repository.
+
+The project-scope `.claude/skills/` and `.claude/agents/` directories are for
+skills and agents whose natural cwd is the Kookr repository itself, such as
+editing Kookr source, tests, hooks, release scripts, or repo-local architecture
+docs. Do not keep Kookr runtime-operation skills there if agents need them while
+working in other repositories.
 
 ## Versioning
 

@@ -248,25 +248,24 @@ describe('TerminalPanel', () => {
     expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1);
   });
 
-  test('does not register global terminal send while hidden', () => {
+  test('does not open terminal websocket while hidden, then subscribes when visible', () => {
     act(() => {
       root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: false }));
     });
 
-    const ws = mocks.webSocketInstances[0];
     const registerMock = vi.mocked(registerTerminalSend);
-    ws.send.mockClear();
-    act(() => {
-      ws.onopen?.();
-    });
-
+    expect(mocks.webSocketInstances).toHaveLength(0);
     expect(registerMock).toHaveBeenLastCalledWith(null);
-    expect(ws.send).not.toHaveBeenCalled();
-    const sender = registerMock.mock.calls.find(([candidate]) => typeof candidate === 'function')?.[0];
-    expect(sender).toBeUndefined();
 
     act(() => {
       root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+    expect(mocks.webSocketInstances).toHaveLength(1);
+
+    const ws = mocks.webSocketInstances[0];
+    ws.send.mockClear();
+    act(() => {
+      ws.onopen?.();
     });
 
     const visibleSender = [...registerMock.mock.calls].reverse().find(([candidate]) => typeof candidate === 'function')?.[0];
@@ -277,7 +276,7 @@ describe('TerminalPanel', () => {
 
   test('hidden terminals do not forward input or resize frames', () => {
     act(() => {
-      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: false }));
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
     });
 
     const terminal = mocks.terminalInstances[0];
@@ -288,11 +287,63 @@ describe('TerminalPanel', () => {
     ws.send.mockClear();
 
     act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: false }));
+    });
+    expect(ws.close).toHaveBeenCalled();
+
+    act(() => {
       terminal.dataHandler?.('hello');
       terminal.resizeHandler?.({ cols: 80, rows: 24 });
     });
 
     expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  test('preserves draft tracking while hidden so Enter still submits typed input', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, {
+        tmuxName: 'kookr-test',
+        visible: true,
+        onEmptySubmit,
+      }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const firstWs = mocks.webSocketInstances[0];
+    act(() => {
+      firstWs.onopen?.();
+      terminal.dataHandler?.('hello');
+    });
+
+    act(() => {
+      root.render(React.createElement(TerminalPanel, {
+        tmuxName: 'kookr-test',
+        visible: false,
+        onEmptySubmit,
+      }));
+    });
+    expect(firstWs.close).toHaveBeenCalled();
+
+    act(() => {
+      root.render(React.createElement(TerminalPanel, {
+        tmuxName: 'kookr-test',
+        visible: true,
+        onEmptySubmit,
+      }));
+    });
+    const secondWs = mocks.webSocketInstances[1];
+    secondWs.send.mockClear();
+    act(() => {
+      secondWs.onopen?.();
+    });
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(secondWs.send).toHaveBeenCalledWith('\r');
   });
 
   test('hiding a terminal clears interactive state and blocks search shortcuts', () => {
@@ -570,6 +621,51 @@ describe('TerminalPanel', () => {
     expect(onEmptySubmit).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenNthCalledWith(1, 'hello');
     expect(ws.send).toHaveBeenNthCalledWith(2, '\r');
+  });
+
+  test('forwards Enter when the visible composer has an adapter-injected draft', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    setTerminalBufferLines(terminal, [
+      'IGNORED_EARLY_ENTER:browser-pre-fix-reply',
+      '❯ browser-pre-fix-reply',
+    ]);
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith('\r');
+  });
+
+  test('navigates when a historical composer draft is followed by the current empty prompt', () => {
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    setTerminalBufferLines(terminal, [
+      '❯ old submitted prompt',
+      'Working complete',
+      '❯ ',
+    ]);
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
   });
 
   test('does not navigate when the visible buffer shows a Claude selection menu', () => {

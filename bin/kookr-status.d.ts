@@ -52,6 +52,7 @@ export type PortResolution =
   | { kind: 'none' };
 
 export interface MainDeps {
+  argv?: string[];
   env?: Record<string, string | undefined>;
   out?: { log: (msg: string) => void; error: (msg: string) => void };
   exit?: (code: number) => never | void;
@@ -67,3 +68,5 @@ export function parsePortEnv(
 ): { kind: 'unset' } | { kind: 'valid'; port: number } | { kind: 'invalid'; raw: string };
 export function resolvePort(env?: Record<string, string | undefined>): Promise<PortResolution>;
 export function main(deps?: MainDeps): Promise<void>;
+export function apiAuthHeaders(env?: Record<string, string | undefined>): Record<string, string>;
+export const HELP_TEXT: string;

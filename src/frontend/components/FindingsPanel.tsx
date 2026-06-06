@@ -37,12 +37,13 @@ interface Props {
   selectedAgentId: string | null;
   send: (msg: ClientMessage) => void;
   /**
-   * Unfiltered counts used by the "Clear completed" confirm dialog. The server
-   * sweeps across all projects — the dialog copy must match that scope, not
-   * the currently-filtered view. See App.tsx for derivation.
+   * Counts used by the "Clear completed" confirm dialog. They must match the
+   * server-side clear scope: all projects from the all-projects view, or the
+   * selected project from a project panel.
    */
-  globalFinishedCount: number;
-  globalTerminatedCount: number;
+  clearCompletedFinishedCount: number;
+  clearCompletedTerminatedCount: number;
+  clearCompletedProjectId?: string;
 }
 
 function agentProjectLabel(agent: AgentState): string {
@@ -344,6 +345,76 @@ function SpeakTaskSummaryControl({ agent, selected }: { agent: AgentState; selec
   );
 }
 
+function LikelyRootCauseBadge({ agent }: { agent: AgentState }): React.ReactElement | null {
+  if (!agent.anomaly?.likelyRootCause) return null;
+  const relatedCount = agent.anomaly.relatedFindingIds?.length ?? 0;
+  const relatedLabel = relatedCount === 1 ? '1 related finding' : `${relatedCount} related findings`;
+  return (
+    <span className="root-cause-badge" title={agent.anomaly.causalityReason ?? 'Likely root cause for related findings'}>
+      Likely root cause - {relatedLabel}
+    </span>
+  );
+}
+
+type FindingDisplayItem =
+  | { kind: 'single'; agent: AgentState }
+  | { kind: 'rootCauseGroup'; root: AgentState; related: AgentState[] }
+  | { kind: 'duplicateGroup'; type: string; agents: AgentState[] };
+
+function buildFindingDisplayItems(findings: AgentState[]): FindingDisplayItem[] {
+  const byAgentId = new Map(findings.map((agent) => [agent.agentId, agent]));
+  const causalityIds = new Set<string>();
+  const rootRelatedByAgentId = new Map<string, AgentState[]>();
+
+  for (const root of findings) {
+    if (!root.anomaly?.likelyRootCause) continue;
+    const related = (root.anomaly.relatedFindingIds ?? [])
+      .map((id) => byAgentId.get(id))
+      .filter((agent): agent is AgentState => Boolean(agent) && agent.agentId !== root.agentId);
+    if (related.length === 0) continue;
+
+    rootRelatedByAgentId.set(root.agentId, related);
+    causalityIds.add(root.agentId);
+    for (const agent of related) causalityIds.add(agent.agentId);
+  }
+
+  const { groups: duplicateGroups } = groupFindings(findings.filter((agent) => !causalityIds.has(agent.agentId)));
+  const duplicateGroupByAgentId = new Map<string, { type: string; agents: AgentState[] }>();
+  for (const [type, agents] of duplicateGroups) {
+    for (const agent of agents) duplicateGroupByAgentId.set(agent.agentId, { type, agents });
+  }
+
+  const items: FindingDisplayItem[] = [];
+  const consumed = new Set<string>();
+  const emittedDuplicateTypes = new Set<string>();
+
+  for (const agent of findings) {
+    if (consumed.has(agent.agentId)) continue;
+
+    const related = (rootRelatedByAgentId.get(agent.agentId) ?? [])
+      .filter((candidate) => !consumed.has(candidate.agentId));
+    if (related.length > 0) {
+      items.push({ kind: 'rootCauseGroup', root: agent, related });
+      consumed.add(agent.agentId);
+      for (const relatedAgent of related) consumed.add(relatedAgent.agentId);
+      continue;
+    }
+
+    const duplicateGroup = duplicateGroupByAgentId.get(agent.agentId);
+    if (duplicateGroup && !emittedDuplicateTypes.has(duplicateGroup.type)) {
+      items.push({ kind: 'duplicateGroup', type: duplicateGroup.type, agents: duplicateGroup.agents });
+      emittedDuplicateTypes.add(duplicateGroup.type);
+      for (const groupedAgent of duplicateGroup.agents) consumed.add(groupedAgent.agentId);
+      continue;
+    }
+
+    items.push({ kind: 'single', agent });
+    consumed.add(agent.agentId);
+  }
+
+  return items;
+}
+
 function FindingCard({ agent, selected, send }: {
   agent: AgentState;
   selected: boolean;
@@ -436,6 +507,7 @@ function FindingCard({ agent, selected, send }: {
                 while away
               </span>
             )}
+            <LikelyRootCauseBadge agent={agent} />
           </span>
           <span className="finding-meta">
             <SpeakTaskSummaryControl agent={agent} selected={selected} />
@@ -533,6 +605,52 @@ function FindingCard({ agent, selected, send }: {
         )}
       </div>
     </Tooltip>
+  );
+}
+
+function RootCauseFindingGroup({ root, related, selectedAgentId, send }: {
+  root: AgentState;
+  related: AgentState[];
+  selectedAgentId: string | null;
+  send: (msg: ClientMessage) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+
+  return (
+    <div className="root-cause-group">
+      <div className="root-cause-root">
+        <FindingCard
+          agent={root}
+          selected={root.agentId === selectedAgentId}
+          send={send}
+        />
+        <button
+          type="button"
+          className="root-cause-toggle"
+          aria-label={expanded ? 'Hide related findings' : 'Show related findings'}
+          title={expanded ? 'Hide related findings' : 'Show related findings'}
+          aria-expanded={expanded}
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded((value) => !value);
+          }}
+        >
+          {expanded ? '▾' : '▸'}
+        </button>
+      </div>
+      {expanded && (
+        <div className="root-cause-related">
+          {related.map((agent) => (
+            <FindingCard
+              key={agent.agentId}
+              agent={agent}
+              selected={agent.agentId === selectedAgentId}
+              send={send}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -912,12 +1030,10 @@ function SnoozedRow({ agent, selected, send }: {
 // cancelled); terminated is opt-in via the checkbox inside the dialog. See
 // rfc-task-loss-prevention.md D2.
 //
-// Counts are GLOBAL (unfiltered by the current project selection) because
-// the server's clearCompleted has no project scope — it sweeps across all
-// projects. The dialog copy must match that scope, not the visible subset.
-function ClearCompletedButton({ finishedCount, terminatedCount, send }: {
+function ClearCompletedButton({ finishedCount, terminatedCount, projectId, send }: {
   finishedCount: number;
   terminatedCount: number;
+  projectId?: string;
   send: (msg: ClientMessage) => void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -936,7 +1052,7 @@ function ClearCompletedButton({ finishedCount, terminatedCount, send }: {
   };
   const cancelConfirm = () => setConfirmOpen(false);
   const confirmClear = () => {
-    send({ type: 'clearCompleted', includeTerminated });
+    send({ type: 'clearCompleted', includeTerminated, ...(projectId ? { projectId } : {}) });
     setConfirmOpen(false);
   };
 
@@ -1074,7 +1190,18 @@ function groupHealthyAgents(agents: AgentState[]): { standalone: AgentState[]; g
   return { standalone, groups: realGroups };
 }
 
-export function FindingsPanel({ findings, healthy, pending, completed, snoozed, selectedAgentId, send, globalFinishedCount, globalTerminatedCount }: Props) {
+export function FindingsPanel({
+  findings,
+  healthy,
+  pending,
+  completed,
+  snoozed,
+  selectedAgentId,
+  send,
+  clearCompletedFinishedCount,
+  clearCompletedTerminatedCount,
+  clearCompletedProjectId,
+}: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const totalAgents = findings.length + healthy.length + pending.length + completed.length + snoozed.length;
   const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -1108,9 +1235,8 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
     }
   }, [findings, isInitialLoad]);
 
-  // Group findings by anomaly type when ≥3 share the same type
-  const { ungrouped: ungroupedFindings, groups: findingGroups } = useMemo(
-    () => groupFindings(findings),
+  const findingDisplayItems = useMemo(
+    () => buildFindingDisplayItems(findings),
     [findings],
   );
 
@@ -1137,23 +1263,38 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
             No agents running yet — launch one to begin.
           </div>
         )}
-        {Array.from(findingGroups.entries()).map(([type, agents]) => (
-          <FindingGroup
-            key={`group-${type}`}
-            type={type}
-            agents={agents}
-            selectedAgentId={selectedAgentId}
-            send={send}
-          />
-        ))}
-        {ungroupedFindings.map((agent) => (
-          <FindingCard
-            key={agent.agentId}
-            agent={agent}
-            selected={agent.agentId === selectedAgentId}
-            send={send}
-          />
-        ))}
+        {findingDisplayItems.map((item) => {
+          if (item.kind === 'rootCauseGroup') {
+            return (
+              <RootCauseFindingGroup
+                key={`root-cause-${item.root.agentId}`}
+                root={item.root}
+                related={item.related}
+                selectedAgentId={selectedAgentId}
+                send={send}
+              />
+            );
+          }
+          if (item.kind === 'duplicateGroup') {
+            return (
+              <FindingGroup
+                key={`group-${item.type}`}
+                type={item.type}
+                agents={item.agents}
+                selectedAgentId={selectedAgentId}
+                send={send}
+              />
+            );
+          }
+          return (
+            <FindingCard
+              key={item.agent.agentId}
+              agent={item.agent}
+              selected={item.agent.agentId === selectedAgentId}
+              send={send}
+            />
+          );
+        })}
       </div>
       <div
         className={`bottom-sections${hasBottomSections ? '' : ' bottom-sections-reserved'}`}
@@ -1228,8 +1369,9 @@ export function FindingsPanel({ findings, healthy, pending, completed, snoozed, 
                 <span className="section-chevron">{completedCollapsed ? '▸' : '▾'}</span>
                 <span className="completed-label">Completed ({completed.length})</span>
                 <ClearCompletedButton
-                  finishedCount={globalFinishedCount}
-                  terminatedCount={globalTerminatedCount}
+                  finishedCount={clearCompletedFinishedCount}
+                  terminatedCount={clearCompletedTerminatedCount}
+                  projectId={clearCompletedProjectId}
                   send={send}
                 />
               </div>

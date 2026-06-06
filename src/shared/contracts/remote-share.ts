@@ -11,7 +11,7 @@
  * RFC: `docs/rfc/rfc-easy-connection-sharing.md` — Phases A0-E.
  */
 
-import type { NodeId, PolicyVersion, SessionEpoch, SessionId } from '../../remote/ids.js';
+import type { NodeId, PolicyVersion, SessionEpoch, SessionId } from './ids.js';
 import type { OwnerTerminalSharingStatus } from './session-sharing-owner.js';
 import type { PermissionRequestBinding } from './permission-request-binding.js';
 

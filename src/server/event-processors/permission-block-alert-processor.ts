@@ -1,6 +1,8 @@
+import { CircuitBreaker } from '../../core/circuit-breaker.js';
 import type { Task } from '../../core/tasks.js';
 import { isPermissionRequestEvent } from '../../core/types.js';
 import type { AgentState } from '../../shared/contracts/agent-state.js';
+import { createPermissionAlertBreaker } from '../permission-alert-breaker.js';
 
 type PermissionAlertTask = Pick<Task, 'id'>;
 
@@ -11,6 +13,7 @@ interface PermissionAlertTaskLookup {
 export interface PermissionBlockAlertProcessorDeps {
   taskLookup: PermissionAlertTaskLookup;
   onPermissionBlocked?: (taskId: string, promptText: string) => void;
+  permissionAlertBreaker?: CircuitBreaker;
 }
 
 export interface PermissionBlockAlertInput {
@@ -46,6 +49,7 @@ export interface PermissionBlockAlertProcessor {
 export function createPermissionBlockAlertProcessor({
   taskLookup,
   onPermissionBlocked,
+  permissionAlertBreaker = createPermissionAlertBreaker(),
 }: PermissionBlockAlertProcessorDeps): PermissionBlockAlertProcessor {
   return {
     process({ tmuxName, preState, postState }) {
@@ -64,9 +68,16 @@ export function createPermissionBlockAlertProcessor({
       const promptText = permEvent
         ? `${permEvent.toolName}(${formatToolInput(permEvent.toolInput)})`
         : 'permission required';
+      if (permissionAlertBreaker.getState() === 'open') {
+        console.warn('[permission-block-alert-processor] permission-alert breaker open; skipped onPermissionBlocked');
+        return;
+      }
+
       try {
         onPermissionBlocked(ownerTaskForAlert.id, promptText);
+        permissionAlertBreaker.recordSuccess();
       } catch (err) {
+        permissionAlertBreaker.recordFailure();
         // Never let a faulty integration callback escape the pipeline.
         console.warn('[permission-block-alert-processor] onPermissionBlocked threw:', err);
       }

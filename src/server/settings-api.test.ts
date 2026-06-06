@@ -63,6 +63,8 @@ describe('Settings API', () => {
       roundRobinIndex: 0,
       shortcutBindings: {},
       speakVerbosity: 'medium',
+      agentEffort: {},
+      quietHours: [],
       loadedFromDefaults: true,
       warnings: [],
     });

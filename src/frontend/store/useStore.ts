@@ -19,8 +19,10 @@ import type {
   RelaunchTask,
   ResponseSuggestion,
   SentOverlay,
+  StoreSet,
   TaskGitHub,
 } from './store-types.js';
+import { isDebugTimelineEnabled, recordStoreMutationDebugEvent } from '../debug-timeline.js';
 
 export type {
   AchievementToast,
@@ -40,15 +42,38 @@ function createKookrStoreState(
   set: (fn: Partial<KookrStore> | ((s: KookrStore) => Partial<KookrStore>)) => void,
   get: () => KookrStore,
 ): KookrStore {
+  const tracedSet: StoreSet = (partial) => {
+    if (!isDebugTimelineEnabled()) {
+      set(partial);
+      return;
+    }
+
+    const before = get();
+    let resolved: Partial<KookrStore> | undefined;
+    if (typeof partial === 'function') {
+      set((state) => {
+        resolved = partial(state);
+        return resolved;
+      });
+    } else {
+      resolved = partial;
+      set(partial);
+    }
+
+    const changedKeys = Object.keys(resolved ?? {});
+    if (changedKeys.length === 0) return;
+    recordStoreMutationDebugEvent(before.agents, get().agents, changedKeys, resolved as Record<string, unknown>);
+  };
+
   return {
-    ...createTransportSessionSlice(set),
-    ...createTriageNavigationSlice(set, get),
-    ...createProjectSidebarSlice(set, get),
-    ...createAchievementsSystemSlice(set, get),
-    ...createWorkspaceSlice(set, get),
-    ...createOssAttemptsSlice(set, get),
-    ...createSystemStatusSlice(set),
-    ...createAutoAdvanceSlice(set, get),
+    ...createTransportSessionSlice(tracedSet),
+    ...createTriageNavigationSlice(tracedSet, get),
+    ...createProjectSidebarSlice(tracedSet, get),
+    ...createAchievementsSystemSlice(tracedSet, get),
+    ...createWorkspaceSlice(tracedSet, get),
+    ...createOssAttemptsSlice(tracedSet, get),
+    ...createSystemStatusSlice(tracedSet),
+    ...createAutoAdvanceSlice(tracedSet, get),
   };
 }
 

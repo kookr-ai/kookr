@@ -133,6 +133,7 @@ const ClientMessageSchemaImpl = z.union([
       note: z.string().optional(),
       downReason: z.enum(['agent_behavior', 'my_prompt']).optional(),
     }).optional(),
+    requestReflect: z.boolean().optional(),
   }),
   z.object({
     type: z.literal('setTaskFeedback'),
@@ -149,6 +150,10 @@ const ClientMessageSchemaImpl = z.union([
     direction: z.enum(['up', 'down']),
   }),
   z.object({
+    type: z.literal('requestTaskSnapshotReflect'),
+    taskId: z.string(),
+  }),
+  z.object({
     type: z.literal('relaunch'),
     taskId: z.string(),
     prompt: z.string(),
@@ -157,6 +162,7 @@ const ClientMessageSchemaImpl = z.union([
   }),
   z.object({ type: z.literal('cancelTask'), taskId: z.string() }),
   z.object({ type: z.literal('reopenTask'), taskId: z.string() }),
+  z.object({ type: z.literal('dismissAgentSignal'), taskId: z.string() }),
   z.object({ type: z.literal('deleteTask'), taskId: z.string() }),
   z.object({ type: z.literal('renameTask'), taskId: z.string(), name: z.string() }),
   z.object({ type: z.literal('setTaskPriority'), taskId: z.string(), priority: taskPriorityUpdate }),
@@ -170,7 +176,11 @@ const ClientMessageSchemaImpl = z.union([
     project: z.string(),
     config: projectConfigPartial,
   }),
-  z.object({ type: z.literal('clearCompleted'), includeTerminated: z.boolean().optional() }),
+  z.object({
+    type: z.literal('clearCompleted'),
+    includeTerminated: z.boolean().optional(),
+    projectId: z.string().trim().min(1).optional(),
+  }),
   z.object({ type: z.literal('ackTerminatedTask'), taskId: z.string() }),
   z.object({ type: z.literal('achievement:reset') }),
   z.object({ type: z.literal('achievement:setEnabled'), enabled: z.boolean() }),

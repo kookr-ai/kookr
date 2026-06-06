@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { AgentEvent, Anomaly } from './types.js';
 import { stableAnomalyExplanation } from './anomaly-fingerprint.js';
+import type { SuppressionReason } from './detection-stats.js';
 import type {
   FindingEvidenceAuditRecord,
   FindingEvidenceObservation,
@@ -20,7 +21,7 @@ export type {
  * the attention queue. M3/M4 review pipelines distinguish these from natural
  * "finding resolved" transitions when measuring detector quality.
  */
-export type FindingSuppressionReason = 'subagent_running' | 'systemic_hook_stall';
+export type FindingSuppressionReason = Extract<SuppressionReason, 'subagent_running' | 'systemic_hook_stall'>;
 
 export interface FindingEvidenceAuditOptions {
   maxRecords?: number;

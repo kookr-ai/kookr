@@ -28,6 +28,8 @@ interface RawHookPayload {
   // Stop fields
   stop_hook_active?: boolean;
   last_assistant_message?: string;
+  background_tasks?: unknown;
+  session_crons?: unknown;
   // PermissionRequest fields
   permission_suggestions?: unknown[];
   permission_mode?: string;
@@ -66,6 +68,15 @@ const KNOWN_HOOK_EVENTS: Set<string> = new Set([
   'SubagentStop',
   'SessionEnd',
 ]);
+
+function activeCollectionCount(value: unknown): number | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item) => {
+    if (!item || typeof item !== 'object') return true;
+    const status = (item as { status?: unknown }).status;
+    return status !== 'completed' && status !== 'stopped';
+  }).length;
+}
 
 /**
  * Header-only inspector for activity-ledger envelopes. Pulls `session_id`,
@@ -158,13 +169,18 @@ export function parseHookEvent(raw: string): AgentEvent | null {
         cwd: parsed.cwd,
       };
 
-    case 'Stop':
+    case 'Stop': {
+      const activeBackgroundTaskCount = activeCollectionCount(parsed.background_tasks);
+      const activeSessionCronCount = activeCollectionCount(parsed.session_crons);
       return {
         type: 'stop',
         sessionId,
         lastMessage: parsed.last_assistant_message ?? '',
         cwd: parsed.cwd,
+        ...(activeBackgroundTaskCount !== undefined ? { activeBackgroundTaskCount } : {}),
+        ...(activeSessionCronCount !== undefined ? { activeSessionCronCount } : {}),
       };
+    }
 
     case 'StopFailure':
       return {

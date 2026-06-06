@@ -94,6 +94,50 @@ describe('bug report bundle', () => {
         shortPreview: 'customer-secret ghp_123456789012345678901234',
         truncated: false,
       }],
+      debugTimeline: [{
+        sequence: 7,
+        t: '2026-05-24T10:00:00.000Z',
+        kind: 'websocket',
+        summary: 'received secret token ghp_123456789012345678901234 in /home/alice/customer-secret',
+        tags: ['websocket', 'agent-1', 'prompt'],
+        payload: {
+          authorization: 'Bearer abcdefghijklmnop',
+          input: 'proprietary design notes',
+          prompt: 'launch proprietary repo analysis',
+          state: { taskName: 'secret task name' },
+          identifiers: { agentId: 'agent-1' },
+          fieldNames: ['type', 'input', 'prompt', 'state'],
+          byteLength: 123,
+          parseOk: true,
+          type: 'respond',
+          direction: 'outbound',
+          nested: { path: '/home/alice/customer-secret/repo-name' },
+        },
+      }, {
+        sequence: 8,
+        t: '2026-05-24T10:00:01.000Z',
+        kind: 'websocket',
+        summary: 'untrusted inbound prompt',
+        tags: ['prompt'],
+        payload: {
+          type: 'prompt',
+          fieldNames: ['type', 'prompt'],
+          byteLength: 12,
+          parseOk: true,
+          direction: 'inbound',
+        },
+      }, {
+        sequence: 9,
+        t: '2026-05-24T10:00:02.000Z',
+        kind: 'store',
+        summary: 'store mutation: input, prompt, taskName',
+        tags: ['store', 'input', 'prompt', 'taskName'],
+        payload: {
+          changedKeys: ['input', 'prompt', 'taskName'],
+          agentCountBefore: 1,
+          agentCountAfter: 1,
+        },
+      }],
       now: new Date('2026-05-24T10:00:00.000Z'),
       location: { hostname: 'localhost', protocol: 'http:', pathname: '/tenant/acme/private-repo' },
       navigatorInfo: { userAgent: 'Mozilla/5.0 Chrome/123', platform: 'MacIntel', language: 'en-US' },
@@ -114,6 +158,18 @@ describe('bug report bundle', () => {
     expect(serialized).not.toContain('Rejected value');
     expect(serialized).not.toContain('ghp_123456789012345678901234');
     expect(serialized).not.toContain('Bearer abcdefghijklmnop');
+    expect(serialized).not.toContain('proprietary design notes');
+    expect(serialized).not.toContain('launch proprietary repo analysis');
+    expect(serialized).not.toContain('secret task name');
+    expect(serialized).not.toContain('"input"');
+    expect(serialized).not.toContain('"prompt"');
+    expect(serialized).not.toContain('"state"');
+    expect(serialized).toContain('"fieldCount": 4');
+    expect(serialized).toContain('"fieldCount": 2');
+    expect(serialized).toContain('"changedKeyCount": 3');
+    expect(serialized).toContain('"type": "unknown"');
+    expect(serialized).toContain('"agentId": "agent-1"');
+    expect(bundle.debugTimeline).toHaveLength(3);
     expect(bundle.source.versionUnavailableReason).toBeUndefined();
   });
 

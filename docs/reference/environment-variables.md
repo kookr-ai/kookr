@@ -9,7 +9,9 @@ uncomment only the values you need.
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_PORT` | `4800` | Integer port, 1-65535 | HTTP and WebSocket port. Also selects the data directory: `~/.kookr` on port 4800, `~/.kookr-<port>` on other ports. |
-| `KOOKR_HOST` | `127.0.0.1` | Hostname or IP address | Bind address for the HTTP/WebSocket server. |
+| `KOOKR_HOST` | `127.0.0.1` | Hostname or IP address | Bind address for the HTTP/WebSocket server. Binding to a non-loopback host (a LAN IP or `0.0.0.0`) activates the API-token gate below. |
+| `KOOKR_API_TOKEN` | unset | Secret string | Bearer token required on state-changing API requests and WebSocket upgrades **when `KOOKR_HOST` is non-loopback**. Loopback binds (`127.0.0.1`/`::1`/`localhost`) ignore it and stay token-free. Send it as `Authorization: Bearer <token>` (HTTP and non-browser WS) or as a `?token=<token>` query parameter (browser WebSocket). The `kookr spawn` / `kookr status` CLIs read it from the process environment (so it must be **exported** in the shell — they do not load `.env`). If a non-loopback bind has no token and `KOOKR_ALLOW_NON_LOOPBACK=true`, one is auto-generated and printed at startup. The first-party browser dashboard does not yet attach the token to its own WebSocket/mutations, so the web UI is not usable over a non-loopback bind today (use the CLIs); see issue #708 for the follow-up. |
+| `KOOKR_ALLOW_NON_LOOPBACK` | unset | `true` to enable | Explicit opt-out of the non-loopback fail-closed guard. When `KOOKR_HOST` is non-loopback and `KOOKR_API_TOKEN` is unset: `true` auto-generates an API token (printed at startup) and enforces it; unset/other refuses to start. Has no effect on a loopback bind. |
 | `KOOKR_DEV_HOST` | unset (Vite dev server binds dual-stack) | Hostname or IP address | Bind address for the Vite frontend dev server (`pnpm dev`, `pnpm dev:frontend`). Default leaves Vite reachable on both `127.0.0.1:5173` and `[::1]:5173`. Set to `0.0.0.0` for LAN access, or to a specific IP to restrict the bind. |
 | `KOOKR_HEALTH_URL` | `http://127.0.0.1:${KOOKR_PORT}/api/health` | HTTP URL | Health endpoint used by `scripts/prod-restart.sh` while waiting for startup. |
 | `KOOKR_STARTUP_TIMEOUT_SECONDS` | `720` | Positive integer seconds | Maximum wait for production restart health checks. |
@@ -37,16 +39,15 @@ not user configuration knobs.
 | `KOOKR_PARENT_TASK_ID` | Injected only for child tasks | Task id string | Identifies the parent task for nested agent work. |
 | `KOOKR_API_BASE_URL` | `http://127.0.0.1:<server port>` when known | HTTP URL | Lets agents and CLIs call back to the active Kookr instance. |
 | `KOOKR_GIT_COMMON_DIR` | Injected when cwd is a Git worktree | Absolute path | Points at the shared Git common directory for worktree-aware workflows. |
-| `TASK_CHECKPOINT_DIR` | Injected when checkpoint support resolves | Absolute path | Per-task checkpoint directory. Agents read and write `CHECKPOINT.md`, `CHECKPOINT.json`, and optional review-only `memory_write_candidates.json` there during long-running work. |
 
 ## CLI Tools
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
-| `KOOKR_API_BASE_URL` | Auto-detect 4800/4801 when unset | HTTP URL | `kookr-spawn` and `kookr ralph` use this URL directly and skip port probing. |
-| `KOOKR_PORT` | Auto-detect 4800/4801 for CLI tools | Integer port, 1-65535 | Forces `kookr-status`, `kookr-spawn`, or `kookr ralph` to talk to one local instance. |
-| `KOOKR_SPAWN_MAX_PROMPT_BYTES` | `1048576` | Positive integer bytes | Maximum prompt size accepted from `kookr-spawn` stdin or `--prompt-file`. |
-| `KOOKR_SPAWN_CONNECT_RETRIES` | `3` | Integer `1` through `10` | Number of `kookr-spawn` connectivity sweeps before reporting no server. |
+| `KOOKR_API_BASE_URL` | Auto-detect 4800/4801 when unset | HTTP URL | `kookr spawn` and `kookr ralph` use this URL directly and skip port probing. |
+| `KOOKR_PORT` | Auto-detect 4800/4801 for CLI tools | Integer port, 1-65535 | Forces `kookr status`, `kookr spawn`, or `kookr ralph` to talk to one local instance. |
+| `KOOKR_SPAWN_MAX_PROMPT_BYTES` | `1048576` | Positive integer bytes | Maximum prompt size accepted from `kookr spawn` stdin or `--prompt-file`. |
+| `KOOKR_SPAWN_CONNECT_RETRIES` | `3` | Integer `1` through `10` | Number of `kookr spawn` connectivity sweeps before reporting no server. |
 
 ## Terminal Backend
 
@@ -60,17 +61,24 @@ not user configuration knobs.
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_AUTO_RELAUNCH` | enabled | `false` to disable | Disables startup crash recovery and automatic relaunch/resume of tasks marked completed by reconciliation. |
-| `KOOKR_NO_CATCHUP` | unset | Any non-empty value | Disables schedule catch-up work on scheduler startup. Future cron ticks still run. |
+| `KOOKR_AUTO_CATCHUP` | unset | Any non-empty value | Opts in to automatic schedule catch-up on scheduler startup. By default, missed startup runs are recorded in the execution ledger and can be launched manually with Run Now. |
+| `KOOKR_NO_CATCHUP` | unset | Any non-empty value | Legacy kill switch for startup catch-up. Takes precedence over `KOOKR_AUTO_CATCHUP`; future cron ticks still run. |
 
-## Context And Checkpointing
+## Context Window
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
-| `KOOKR_CHECKPOINT_TRIGGER_RATIO` | `0.75` | Float greater than `0` and less than `1` | Context-fill ratio that triggers proactive checkpoint cycling. Invalid values fall back to default. |
-| `KOOKR_CHECKPOINT_MAX_CANCELLED_ATTEMPTS` | `3` | Positive integer | Consecutive cancelled/no-progress `/compact` attempts before the cycler gives up for that session. |
-| `KOOKR_CHECKPOINT_CYCLE_DISABLED` | unset | `1` or `true` | Disables proactive checkpoint cycling. Checkpoint directory injection and storage are unaffected. |
 | `KOOKR_CONTEXT_ADVISORY_ENABLED` | unset | `1` to enable | Enables context-window hook advisories. |
 | `KOOKR_CONTEXT_ADVISORY_DISABLED` | unset | `1` to disable | Kill switch for context-window hook advisories. Takes precedence over enablement. |
+
+## Agent Signal Nudge
+
+See `docs/rfc/rfc-agent-signal-surface.md`.
+
+| Variable | Default | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `KOOKR_NUDGE_DISABLED` | unset | `1`/`true` to disable | Kill switch for the Stop-hook completion nudge. Read by `bin/kookr-stop-nudge.js` at hook time and propagated into spawned-agent env so new tasks honor it. In-flight tasks can also be disabled by creating the runtime marker file `/dev/shm/.kookr-nudge-disabled`. |
+| `KOOKR_NUDGE_MIN_TASK_AGE_MS` | `45000` | Non-negative integer ms | Minimum task age before the Stop-hook nudge may fire, so a trivial first stop early in a task does not spend the once-per-task nudge. |
 
 ## LLM Provider
 
@@ -181,6 +189,10 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_BUDGET_WARN_USD` | `25` | Number in USD, `0` disables | Per-task reactive token-cost warning threshold. Critical alerts fire at twice this value. Invalid or blank values use the default. |
+| `KOOKR_ALERT_CPU_PERCENT` | `0` (disabled) | Non-negative number (percent), `0` disables | Host CPU usage threshold for operational alerts on the already-sampled resource feed. Fires one `warning` alert when CPU stays at or above this for `KOOKR_ALERT_SUSTAIN_SAMPLES` consecutive samples, and one `info` alert on recovery. Negative or invalid values are treated as `0`. |
+| `KOOKR_ALERT_MEMORY_PERCENT` | `0` (disabled) | Non-negative number (percent), `0` disables | Host memory-used threshold for operational alerts, evaluated like `KOOKR_ALERT_CPU_PERCENT`. |
+| `KOOKR_ALERT_EVENT_LOOP_DELAY_MS` | `0` (disabled) | Non-negative number (milliseconds), `0` disables | Server event-loop delay (p95) threshold for operational alerts, evaluated like `KOOKR_ALERT_CPU_PERCENT`. |
+| `KOOKR_ALERT_SUSTAIN_SAMPLES` | `3` | Integer `>= 1` | Consecutive breaching resource samples required before any operational alert fires (edge-triggered; clears on the first sample back below threshold). Samples are taken roughly every 2 seconds. Invalid or blank values use the default. |
 | `KOOKR_AUTO_REFLECT_DISABLE` | unset | `1` to disable | Kill switch for task-feedback reflection spawning. |
 | `KOOKR_FINDING_REVIEW_ENABLED` | unset | `true` to enable | Enables local/admin finding-evidence review diagnostics. Required before manual model review or the background sampler can call the LLM. |
 | `KOOKR_FINDING_REVIEW_DAILY_COST_CENTS` | `0` | Non-negative integer cents | Daily cost budget for finding-evidence model reviews. `0` keeps model calls disabled. |
@@ -219,6 +231,5 @@ Use them only for controlled local sessions.
 | `KOOKR_BYPASS_ALL_PERMISSIONS=true` | Removes agent permission prompts. Claude Code gets `--dangerously-skip-permissions`; Codex CLI gets `--dangerously-bypass-approvals-and-sandbox`. |
 | `KOOKR_BACKEND` set to anything except `dtach` | Prevents startup. Remove stale `KOOKR_BACKEND=tmux` entries instead of expecting rollback behavior. |
 | `KOOKR_AUTO_RELAUNCH=false` | Disables crash recovery, so tasks that died while the server was down will not be resumed automatically. |
-| `KOOKR_CHECKPOINT_CYCLE_DISABLED=1` | Disables proactive checkpoint/compact cycling, increasing risk of context-loss on long tasks. |
 | `KOOKR_CONTEXT_ADVISORY_DISABLED=1` | Suppresses context-window advisories even if the feature is enabled. |
 | `KOOKR_AUTO_REFLECT_DISABLE=1` | Suppresses feedback-reflection tasks that would otherwise analyze completed work. |

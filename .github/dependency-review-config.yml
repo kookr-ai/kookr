@@ -1,0 +1,9 @@
+# Fail PRs that introduce high or critical vulnerabilities in dependency diffs.
+fail-on-severity: high
+vulnerability-check: true
+license-check: true
+fail-on-scopes:
+  - runtime
+  - development
+  - unknown
+show-patched-versions: true

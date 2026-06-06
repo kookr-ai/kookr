@@ -1,4 +1,4 @@
-import type { NodeId, Seq, SessionEpoch, SessionId } from '../../remote/ids.js';
+import type { NodeId, Seq, SessionEpoch, SessionId } from './ids.js';
 import type { TaskShareGrant, TaskShareGrantRequest } from './remote-share.js';
 
 export type MemberBlockedReason =

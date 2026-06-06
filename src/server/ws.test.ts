@@ -1,7 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { Anomaly } from '../core/types.js';
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
@@ -14,11 +16,23 @@ import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
 import type { GitHubReference, GitHubPRState, GitHubIssueState } from '../core/github-types.js';
 import { MessageRouter } from './ws.js';
+import { getSnapshotAgentsRaw } from './use-cases/get-snapshot.js';
 import type { ServerMessage, ClientMessage } from '../shared/protocol.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+
+const execFile = promisify(execFileCb);
+
+function cleanGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('GIT_')) delete env[key];
+  }
+  delete env.KOOKR_GIT_COMMON_DIR;
+  return env;
+}
 
 describe('WebSocket MessageRouter', () => {
   let taskStore: TaskStore;
@@ -105,6 +119,28 @@ describe('WebSocket MessageRouter', () => {
     expect(msg.type).toBe('snapshot');
     if (msg.type === 'snapshot') {
       expect(msg.serverCwd).toBe('/test/cwd');
+    }
+  });
+
+  test('broadcastAlert surfaces the anomaly correlation id in the alert (#705)', () => {
+    const anomaly: Anomaly = {
+      agentId: 's1',
+      type: 'needs_input',
+      severity: 'warning',
+      explanation: 'Agent is waiting for input',
+      detectedAt: new Date(),
+      eventId: 'evt_abc123def456_42',
+    };
+
+    router.broadcastAlert('s1', anomaly);
+
+    const alert = sentMessages.find((m) => m.type === 'alert');
+    expect(alert).toBeDefined();
+    if (alert?.type === 'alert') {
+      expect(alert.agentId).toBe('s1');
+      // The end-to-end correlation id is surfaced so operators can trace the
+      // alert back to the originating hook event.
+      expect(alert.details).toContain('evt_abc123def456_42');
     }
   });
 
@@ -726,6 +762,84 @@ describe('WebSocket MessageRouter', () => {
     await rm(sessionsDir, { recursive: true, force: true });
   });
 
+  test('client requests task snapshot reflect without completing the source task', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'kookr-task-snapshot-reflect-'));
+    const hooksDir = join(tempDir, 'hooks');
+    const sessionsDir = join(tempDir, 'sessions');
+    const taskSnapshotDir = join(tempDir, 'task-snapshots');
+    const reflectWorktreesDir = join(tempDir, 'reflect-worktrees');
+    await mkdir(hooksDir, { recursive: true });
+
+    const sourceCwd = process.cwd();
+    const task = taskStore.createTask('Fix bug', sourceCwd);
+    const tmuxName = await adapter.launch(task.id, 'Fix bug', sourceCwd);
+    monitor.registerAgent(tmuxName);
+    monitor.processEvents(tmuxName, [
+      { type: 'tool_use', sessionId: 'session-1', toolName: 'Bash' },
+    ]);
+    await writeFile(join(hooksDir, `${tmuxName}.jsonl`), '{"type":"PreToolUse"}\n', 'utf-8');
+
+    const interactionLog = new DeferredInteractionLogWriter(
+      sessionsDir,
+      async () => 'task-snapshot-session',
+    );
+    const launched: LaunchOpts[] = [];
+    const routerWithTaskReflect = new MessageRouter({
+      taskStore, queue, monitor, adapter,
+      send: (msg) => { sentMessages.push(msg); },
+      serverCwd: sourceCwd,
+      interactionLog,
+      launchTask: async (opts: LaunchOpts): Promise<LaunchResult> => {
+        launched.push(opts);
+        const reflectTask = taskStore.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          criteria: opts.criteria,
+          name: opts.name,
+        });
+        return { task: reflectTask, queued: false };
+      },
+      ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
+      taskSnapshotDir,
+      reflectWorktreesDir,
+      hooksDir,
+    });
+
+    try {
+      await routerWithTaskReflect.handleMessage({ type: 'requestTaskSnapshotReflect', taskId: task.id });
+
+      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+      expect(launched).toHaveLength(1);
+      expect(launched[0].prompt).toContain('task-snapshot-reflect');
+      expect(launched[0].cwd).toContain(reflectWorktreesDir);
+
+      const reflectTask = taskStore.listTasks().find((candidate) => candidate.reflectMeta?.sourceTaskId === task.id);
+      expect(reflectTask?.reflectMeta).toMatchObject({
+        kind: 'snapshot',
+        sourceTaskId: task.id,
+        direction: 'review',
+      });
+      const bundlePath = reflectTask!.reflectMeta!.bundlePath;
+      const bundle = JSON.parse(await readFile(join(bundlePath, 'bundle.json'), 'utf-8')) as {
+        schemaVersion: string;
+        taskStatus: string;
+        sessions: Array<{ hookFile?: string; eventCount: number }>;
+        interactionFile: string;
+      };
+      expect(bundle.schemaVersion).toBe('task-snapshot-reflect.v1');
+      expect(bundle.taskStatus).toBe('inProgress');
+      expect(bundle.sessions[0]).toMatchObject({ hookFile: `hook-${tmuxName}.jsonl`, eventCount: 1 });
+      const interactionSlice = await readFile(join(bundlePath, bundle.interactionFile), 'utf-8');
+      expect(interactionSlice).toContain('task_reflect_requested');
+      expect(interactionSlice).toContain(task.id);
+    } finally {
+      if (launched[0]?.cwd) {
+        await execFile('git', ['-C', sourceCwd, 'worktree', 'remove', '--force', launched[0].cwd]).catch(() => {});
+      }
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test('client sends respondAll - input delivered to all agents', async () => {
     const task1 = taskStore.createTask('Fix bug 1', '/cwd');
     const tmux1 = await adapter.launch(task1.id, 'Fix bug 1', '/cwd');
@@ -864,6 +978,110 @@ describe('WebSocket MessageRouter', () => {
     expect(await terminal.isAlive(tmuxName)).toBe(false);
   });
 
+  test('completeTask honors explicit requestReflect=false for thumbs-down feedback', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'feedback-reflect-'));
+    const launchTask = vi.fn(async (opts: LaunchOpts): Promise<LaunchResult> => ({
+      task: taskStore.createTask({ prompt: opts.prompt, cwd: opts.cwd, agentType: 'claude-code' }),
+      queued: false,
+    }));
+    try {
+      const feedbackRouter = new MessageRouter({
+        taskStore, queue, monitor, adapter,
+        send: (msg) => { sentMessages.push(msg); },
+        serverCwd: '/test/cwd',
+        launchTask,
+        feedbackDir: join(tempRoot, 'feedback'),
+        hooksDir: join(tempRoot, 'hooks'),
+        reflectWorktreesDir: join(tempRoot, 'reflect-worktrees'),
+        lifecycleExtras: {
+          watchdog: {
+            unregisterAgent: vi.fn(),
+            recordInputReceived: watchdogRecordInputReceived,
+          },
+        },
+        ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
+      });
+      await mkdir(join(tempRoot, 'hooks'), { recursive: true });
+      const task = taskStore.createTask('Fix bug', '/cwd');
+      taskStore.startTask(task.id);
+
+      await feedbackRouter.handleMessage({
+        type: 'completeTask',
+        taskId: task.id,
+        feedback: { rating: 'down' },
+        requestReflect: false,
+      });
+
+      expect(taskStore.getTask(task.id)?.completionFeedback).toEqual({ rating: 'down' });
+      expect(launchTask).not.toHaveBeenCalled();
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('completeTask can request reflection without explicit thumbs feedback', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'feedback-reflect-'));
+    const sourceRepo = join(tempRoot, 'source-repo');
+    const launchTask = vi.fn(async (opts: LaunchOpts): Promise<LaunchResult> => ({
+      task: taskStore.createTask({ prompt: opts.prompt, cwd: opts.cwd, agentType: 'claude-code' }),
+      queued: false,
+    }));
+    try {
+      const gitEnv = cleanGitEnv();
+      await mkdir(sourceRepo, { recursive: true });
+      await execFile('git', ['-C', sourceRepo, 'init', '-b', 'main'], { env: gitEnv });
+      await writeFile(join(sourceRepo, 'README.md'), 'test repo\n', 'utf-8');
+      await execFile('git', ['-C', sourceRepo, 'add', 'README.md'], { env: gitEnv });
+      await execFile('git', [
+        '-C',
+        sourceRepo,
+        '-c',
+        'user.name=Kookr Test',
+        '-c',
+        'user.email=kookr@example.test',
+        'commit',
+        '-m',
+        'init',
+      ], { env: gitEnv });
+
+      const feedbackRouter = new MessageRouter({
+        taskStore, queue, monitor, adapter,
+        send: (msg) => { sentMessages.push(msg); },
+        serverCwd: '/test/cwd',
+        launchTask,
+        feedbackDir: join(tempRoot, 'feedback'),
+        hooksDir: join(tempRoot, 'hooks'),
+        reflectWorktreesDir: join(tempRoot, 'reflect-worktrees'),
+        lifecycleExtras: {
+          watchdog: {
+            unregisterAgent: vi.fn(),
+            recordInputReceived: watchdogRecordInputReceived,
+          },
+        },
+        ralphLoopService: { cancelLoop } as unknown as RalphLoopService,
+      });
+      await mkdir(join(tempRoot, 'hooks'), { recursive: true });
+      const task = taskStore.createTask('Fix bug', sourceRepo);
+      taskStore.startTask(task.id);
+
+      await feedbackRouter.handleMessage({
+        type: 'completeTask',
+        taskId: task.id,
+        requestReflect: true,
+      });
+
+      expect(taskStore.getTask(task.id)?.completionFeedback).toBeUndefined();
+      expect(launchTask).toHaveBeenCalledOnce();
+      expect(launchTask.mock.calls[0]?.[0].prompt).toContain('task-feedback-reflect');
+      const reflectTask = taskStore.listTasks().find((candidate) => candidate.reflectMeta?.sourceTaskId === task.id);
+      expect(reflectTask?.reflectMeta?.direction).toBe('up');
+      const bundle = JSON.parse(await readFile(join(reflectTask!.reflectMeta!.bundlePath, 'bundle.json'), 'utf-8')) as { rating: string };
+      expect(bundle.rating).toBe('up');
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test.each([['running' as const], ['paused' as const]])(
     'completeTask on a Ralph child (loop=%s) is iteration-done, not task-done',
     async (loopStatus) => {
@@ -940,12 +1158,12 @@ describe('WebSocket MessageRouter', () => {
 
     // Agent events should be cleared (unregistered from monitor),
     // but completed tasks still appear as synthetic entries with empty events
-    const after = monitor.getSnapshot().find(a => a.agentId === tmuxName);
+    const after = getSnapshotAgentsRaw({ monitor }).find(a => a.agentId === tmuxName);
     expect(after).toBeDefined();
     expect(after!.events).toEqual([]);
     expect(after!.taskStatus).toBe('completed');
     await vi.waitFor(() => {
-      const withDigest = monitor.getSnapshot().find(a => a.agentId === tmuxName);
+      const withDigest = getSnapshotAgentsRaw({ monitor }).find(a => a.agentId === tmuxName);
       expect(withDigest!.completionDigest).toBeDefined();
       expect(withDigest!.completionDigest!.bullets.length).toBeGreaterThan(0);
     });
@@ -1082,7 +1300,7 @@ describe('WebSocket MessageRouter', () => {
     await router.handleMessage({ type: 'cancelTask', taskId: task.id });
 
     // Agent events cleared (unregistered), but cancelled tasks still appear as synthetic entries
-    const after = monitor.getSnapshot().find(a => a.agentId === tmuxName);
+    const after = getSnapshotAgentsRaw({ monitor }).find(a => a.agentId === tmuxName);
     expect(after).toBeDefined();
     expect(after!.events).toEqual([]);
     expect(after!.taskStatus).toBe('cancelled');
@@ -1322,6 +1540,52 @@ describe('WebSocket MessageRouter', () => {
     expect(remaining).toEqual([t3.id, t4.id].sort());
   });
 
+  test('clearCompleted with projectId only sweeps completed + cancelled tasks in that project', async () => {
+    const projectADone = taskStore.createTask({ prompt: 'A done', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const projectACancelled = taskStore.createTask({ prompt: 'A cancelled', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const projectAActive = taskStore.createTask({ prompt: 'A active', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const projectATerminated = taskStore.createTask({ prompt: 'A terminated', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const projectBDone = taskStore.createTask({ prompt: 'B done', cwd: '/cwd/b', projectId: 'github.com/org/b' });
+    const unscopedDone = taskStore.createTask('Unscoped done', '/cwd/unscoped');
+
+    taskStore.startTask(projectADone.id);
+    taskStore.completeTask(projectADone.id);
+    taskStore.startTask(projectACancelled.id);
+    taskStore.cancelTask(projectACancelled.id);
+    taskStore.startTask(projectAActive.id);
+    taskStore.startTask(projectATerminated.id);
+    taskStore.terminateTask(projectATerminated.id);
+    taskStore.startTask(projectBDone.id);
+    taskStore.completeTask(projectBDone.id);
+    taskStore.startTask(unscopedDone.id);
+    taskStore.completeTask(unscopedDone.id);
+
+    await router.handleMessage({ type: 'clearCompleted', projectId: 'github.com/org/a' });
+
+    const remaining = taskStore.listTasks().map((t) => t.id).sort();
+    expect(remaining).toEqual([
+      projectAActive.id,
+      projectATerminated.id,
+      projectBDone.id,
+      unscopedDone.id,
+    ].sort());
+  });
+
+  test('clearCompleted with blank projectId is a no-op instead of global sweep', async () => {
+    const projectDone = taskStore.createTask({ prompt: 'Project done', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const unscopedDone = taskStore.createTask('Unscoped done', '/cwd/unscoped');
+
+    taskStore.startTask(projectDone.id);
+    taskStore.completeTask(projectDone.id);
+    taskStore.startTask(unscopedDone.id);
+    taskStore.completeTask(unscopedDone.id);
+
+    await router.handleMessage({ type: 'clearCompleted', projectId: '   ' });
+
+    const remaining = taskStore.listTasks().map((t) => t.id).sort();
+    expect(remaining).toEqual([projectDone.id, unscopedDone.id].sort());
+  });
+
   test('clearCompleted invokes takePredeleteSnapshot when sweeping any task', async () => {
     const t = taskStore.createTask('Done', '/cwd');
     taskStore.startTask(t.id);
@@ -1399,6 +1663,30 @@ describe('WebSocket MessageRouter', () => {
     expect(remaining[0].id).toBe(t4.id);
   });
 
+  test('clearCompleted with projectId and includeTerminated only sweeps terminal tasks in that project', async () => {
+    const projectATerminated = taskStore.createTask({ prompt: 'A terminated', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+    const projectBDone = taskStore.createTask({ prompt: 'B done', cwd: '/cwd/b', projectId: 'github.com/org/b' });
+    const projectBTerminated = taskStore.createTask({ prompt: 'B terminated', cwd: '/cwd/b', projectId: 'github.com/org/b' });
+    const projectBActive = taskStore.createTask({ prompt: 'B active', cwd: '/cwd/b', projectId: 'github.com/org/b' });
+
+    taskStore.startTask(projectATerminated.id);
+    taskStore.terminateTask(projectATerminated.id);
+    taskStore.startTask(projectBDone.id);
+    taskStore.completeTask(projectBDone.id);
+    taskStore.startTask(projectBTerminated.id);
+    taskStore.terminateTask(projectBTerminated.id);
+    taskStore.startTask(projectBActive.id);
+
+    await router.handleMessage({
+      type: 'clearCompleted',
+      projectId: 'github.com/org/b',
+      includeTerminated: true,
+    });
+
+    const remaining = taskStore.listTasks().map((t) => t.id).sort();
+    expect(remaining).toEqual([projectATerminated.id, projectBActive.id].sort());
+  });
+
   test('clearCompleted is a no-op when no completed or cancelled tasks exist', async () => {
     const t1 = taskStore.createTask('Task 1', '/cwd');
     taskStore.startTask(t1.id);
@@ -1474,7 +1762,7 @@ describe('WebSocket MessageRouter', () => {
     taskStore.cancelTask(t2.id);
     taskStore.pendTask(t3.id);
 
-    const snapshotBefore = monitor.getSnapshot();
+    const snapshotBefore = getSnapshotAgentsRaw({ monitor });
     expect(snapshotBefore.some(s => s.taskId === t1.id && s.taskStatus === 'completed')).toBe(true);
     expect(snapshotBefore.some(s => s.taskId === t2.id && s.taskStatus === 'cancelled')).toBe(true);
     expect(snapshotBefore.some(s => s.taskId === t3.id && s.taskStatus === 'pending')).toBe(true);
@@ -1483,7 +1771,7 @@ describe('WebSocket MessageRouter', () => {
 
     // D2 revised: both user-initiated terminal states are swept. The pending
     // task stays; cancellation audit still lives in the interaction log.
-    const snapshotAfter = monitor.getSnapshot();
+    const snapshotAfter = getSnapshotAgentsRaw({ monitor });
     expect(snapshotAfter.some(s => s.taskId === t1.id)).toBe(false);
     expect(snapshotAfter.some(s => s.taskId === t2.id)).toBe(false);
     expect(snapshotAfter.some(s => s.taskId === t3.id)).toBe(true);

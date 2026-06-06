@@ -16,6 +16,7 @@ import { isMissingWorktreeHealth } from '../core/worktree-health.js';
 import { displayPromptForTask } from '../core/prompt-display.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
+import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 
 // ---------------------------------------------------------------------------
@@ -180,8 +181,6 @@ export interface LifecycleDeps {
   suppressionTracker?: { reset(agentId: string): void };
   /** Optional queue — used to clear task-keyed snoozes on terminal transitions. */
   queue?: Pick<AttentionQueue, 'purgeTask'>;
-  /** v5 checkpoint cycler — forget per-session state on cleanup to avoid leaks. */
-  checkpointCycler?: { forget(tmuxName: string): void };
   terminalInputCoordinator?: Pick<TerminalInputCoordinator, 'cleanupSession'>;
   /** Workspace lease service — releases leases on task completion (Phase 1b). */
   leaseService?: { release(worktreePath: string, ownerId: string): boolean };
@@ -206,7 +205,6 @@ function forgetSessionBookkeeping(tmuxName: string, deps: LifecycleDeps): void {
   deps.watchdog?.unregisterAgent(tmuxName);
   deps.shadowRegistry?.unregisterAgent(tmuxName);
   deps.suppressionTracker?.reset(tmuxName);
-  deps.checkpointCycler?.forget(tmuxName);
   deps.terminalInputCoordinator?.cleanupSession(tmuxName);
 }
 
@@ -258,6 +256,26 @@ function completeLiveSessionsInBackground(task: Task, deps: LifecycleDeps): void
   }
 }
 
+/**
+ * Reclaim a reflect task's ephemeral worktree on terminal transition, so it is
+ * removed immediately instead of lingering until the next startup sweep. No-op
+ * for non-reflect tasks. Fire-and-forget: never blocks or fails the transition;
+ * `sweepReflectWorktrees` remains the crash backstop.
+ *
+ * This is needed even though `cleanupTaskWorktrees` runs on the same task: that
+ * path *preserves* a worktree it finds dirty (a reflect agent that edited /
+ * committed for the gated-PR flow leaves it dirty), whereas a reflect worktree
+ * is disposable once the task ends — its branch, if any, was already pushed.
+ * `removeReflectWorktree` force-removes it (and self-guards on the identity
+ * marker, so the overlap with `cleanupTaskWorktrees` is a harmless no-op when
+ * that path already removed a clean worktree).
+ */
+function cleanupReflectWorktree(task: Task): void {
+  const worktreePath = task.reflectMeta?.worktreePath;
+  if (!worktreePath) return;
+  void removeReflectWorktree(worktreePath).catch(() => {});
+}
+
 function markCompletedMissingWorktreesCleanedUp(task: Task, deps: LifecycleDeps): void {
   for (const session of task.sessions) {
     if (isMissingWorktreeHealth(session.worktreeHealth)) {
@@ -296,6 +314,7 @@ export async function completeTask(
 
   // Fire-and-forget worktree cleanup — does not block the caller
   cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
+  cleanupReflectWorktree(task);
 }
 
 /**
@@ -331,6 +350,7 @@ export async function terminateTask(
 
   // Fire-and-forget worktree cleanup — does not block the caller
   cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
+  cleanupReflectWorktree(task);
 }
 
 /**
@@ -363,6 +383,7 @@ export async function cancelTask(
 
   // Fire-and-forget worktree cleanup — does not block the caller
   cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
+  cleanupReflectWorktree(task);
 }
 
 // ---------------------------------------------------------------------------

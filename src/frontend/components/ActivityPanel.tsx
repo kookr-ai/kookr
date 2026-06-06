@@ -1,13 +1,14 @@
-import React, { useMemo, useRef, useLayoutEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   AgentActivityMeta,
   AgentEvent,
   ActivityDisclosure,
   ActivityItem,
+  ToolCategory,
   ToolGroup,
   ToolGroupEntry,
 } from '../../shared/protocol.js';
-import { buildActivityDisclosure, summarizeActivity, compactToolSummary, pasteBurstLabel } from '../../shared/protocol.js';
+import { buildActivityDisclosure, categorizeTool, summarizeActivity, compactToolSummary, pasteBurstLabel, toolLabel } from '../../shared/protocol.js';
 import { renderMarkdown } from '../markdown.js';
 
 /**
@@ -33,20 +34,27 @@ interface Props {
   /** Task id used to deep-link the disclosure banner to its
    *  /api/tasks/:taskId/activity-diagnostics view. */
   taskId?: string;
+  /** Whether the agent's current turn is still running. When true the panel
+   *  shows a live row at the foot of the stream surfacing the in-flight tool
+   *  call (or a generic working state between calls), so activity is visible
+   *  here and not only via the left-rail spinner. */
+  isActive?: boolean;
 }
 
-function ToolIcon({ entry }: { entry: ToolGroupEntry }) {
-  const iconMap: Record<string, { letter: string; cls: string }> = {
-    read: { letter: 'R', cls: 'act-icon-read' },
-    edit: { letter: 'E', cls: 'act-icon-edit' },
-    bash: { letter: '$', cls: 'act-icon-bash' },
-    git: { letter: 'G', cls: 'act-icon-git' },
-    agent: { letter: 'A', cls: 'act-icon-agent' },
-    search: { letter: 'S', cls: 'act-icon-search' },
-    other: { letter: '?', cls: 'act-icon-other' },
-  };
-  const { letter, cls } = iconMap[entry.category] ?? iconMap.other;
-  return <span className={`act-tool-icon ${cls}`}>{letter}</span>;
+/** Single-letter glyph per tool category, shared by the completed-group icon
+ *  and the live-row icon so both read identically. */
+const CATEGORY_LETTER: Record<ToolCategory, string> = {
+  read: 'R',
+  edit: 'E',
+  bash: '$',
+  git: 'G',
+  agent: 'A',
+  search: 'S',
+  other: '?',
+};
+
+function ToolIcon({ category }: { category: ToolCategory }) {
+  return <span className={`act-tool-icon act-icon-${category}`}>{CATEGORY_LETTER[category]}</span>;
 }
 
 /**
@@ -93,7 +101,7 @@ function ToolGroupItem({
             const className = `act-tool-entry${entry.errors > 0 ? ' has-error' : ''}${isClickable ? ' is-clickable' : ''}`;
             const content = (
               <>
-                <ToolIcon entry={entry} />
+                <ToolIcon category={entry.category} />
                 <span className="act-tool-label">
                   {entry.detail ?? entry.toolName}
                 </span>
@@ -269,8 +277,105 @@ function ActivityDisclosureBanner({
   );
 }
 
-export function ActivityPanel({ events, anomalyExplanation, onOpenDiff, activityMeta, taskId }: Props) {
-  const items = useMemo(() => summarizeActivity(events), [events]);
+/**
+ * The tool call the agent is currently running: the most recent `tool_use`
+ * event that has no matching `tool_result`/`tool_error` after it. Pairs by
+ * `toolUseId` when present and falls back to `toolName` for older Codex
+ * sessions that omit the id (see `resolveClickTarget`). Returns null when the
+ * latest tool call has already completed, so the live row only appears for a
+ * genuinely open call.
+ */
+export interface InFlightTool {
+  /** Index in `events`. Events before it are settled and summarized normally;
+   *  this one is rendered as the live row instead, so it is not shown twice. */
+  index: number;
+  category: ToolCategory;
+  label: string;
+  /** Stable identity for the elapsed clock — resets the timer only when the
+   *  agent advances to a different call, not on every snapshot re-render. */
+  key: string;
+}
+
+export function findInFlightTool(events: AgentEvent[]): InFlightTool | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev.type !== 'tool_use') continue;
+    // The most recent tool_use. Open unless a later result/error closes it.
+    const closed = events.slice(i + 1).some(
+      (later) =>
+        (later.type === 'tool_result' || later.type === 'tool_error') &&
+        (ev.toolUseId ? later.toolUseId === ev.toolUseId : later.toolName === ev.toolName),
+    );
+    if (closed) return null;
+    return {
+      index: i,
+      category: categorizeTool(ev.toolName, ev.toolInput),
+      label: toolLabel(ev.toolName, ev.toolInput),
+      key: ev.toolUseId ?? `${ev.toolName}:${i}`,
+    };
+  }
+  return null;
+}
+
+export function formatElapsed(totalSeconds: number): string {
+  const safe = Math.max(0, totalSeconds);
+  const m = Math.floor(safe / 60);
+  const s = safe % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Foot-of-stream indicator shown while the agent's turn is running. Surfaces
+ * the in-flight tool call (icon + label) or a generic "Working…" state between
+ * calls. Events carry no wall-clock timestamp, so the elapsed timer is anchored
+ * client-side from when this row first observes a given call `key` and resets
+ * only when the agent moves to a different call.
+ */
+function LiveToolRow({ inFlight }: { inFlight: InFlightTool | null }) {
+  const key = inFlight?.key ?? '__working__';
+  const startRef = useRef(Date.now());
+  const keyRef = useRef(key);
+  if (keyRef.current !== key) {
+    keyRef.current = key;
+    startRef.current = Date.now();
+  }
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
+    const id = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [key]);
+
+  return (
+    <div
+      className="act-live-row"
+      data-testid="act-live-row"
+      aria-label={inFlight ? `Agent working: ${inFlight.label}` : 'Agent working'}
+    >
+      <span className="act-live-spinner" aria-hidden="true" />
+      {inFlight && <ToolIcon category={inFlight.category} />}
+      <span className="act-live-label">{inFlight ? inFlight.label : 'Working…'}</span>
+      <span className="act-live-elapsed" aria-hidden="true">{formatElapsed(elapsed)}</span>
+    </div>
+  );
+}
+
+export function ActivityPanel({ events, anomalyExplanation, onOpenDiff, activityMeta, taskId, isActive }: Props) {
+  const inFlight = useMemo(
+    () => (isActive ? findInFlightTool(events) : null),
+    [events, isActive],
+  );
+  // Drop the in-flight tool_use from the summarized history — it is rendered as
+  // the live row below, and summarizeActivity would otherwise fold it into the
+  // last completed tool group, showing the same call twice. Remove only that one
+  // event (not the tail) so a trailing result/error for an earlier parallel call
+  // is still summarized and keeps its error indicator.
+  const items = useMemo(
+    () => summarizeActivity(inFlight ? events.filter((_, i) => i !== inFlight.index) : events),
+    [events, inFlight],
+  );
   const disclosure = useMemo(
     () => buildActivityDisclosure(events.length, activityMeta),
     [events.length, activityMeta],
@@ -289,7 +394,7 @@ export function ActivityPanel({ events, anomalyExplanation, onOpenDiff, activity
     }
     const distance = el.scrollHeight - (el.scrollTop + el.clientHeight);
     setHasUnreadBelow(distance > 8);
-  }, [items, anomalyExplanation]);
+  }, [items, anomalyExplanation, inFlight, isActive]);
 
   function handleScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
@@ -307,7 +412,9 @@ export function ActivityPanel({ events, anomalyExplanation, onOpenDiff, activity
     setHasUnreadBelow(false);
   }
 
-  if (items.length === 0) {
+  // Keep the empty state only when nothing is happening. If the turn is running
+  // we fall through to render the live row even before any item has landed.
+  if (items.length === 0 && !isActive) {
     return (
       <div className="activity-panel">
         {disclosure && <ActivityDisclosureBanner disclosure={disclosure} taskId={taskId} />}
@@ -332,6 +439,7 @@ export function ActivityPanel({ events, anomalyExplanation, onOpenDiff, activity
         {items.map((item, i) => (
           <ActivityItemView key={i} item={item} onOpenDiff={onOpenDiff} />
         ))}
+        {isActive && <LiveToolRow inFlight={inFlight} />}
       </div>
       {hasUnreadBelow && (
         <button

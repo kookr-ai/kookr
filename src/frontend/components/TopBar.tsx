@@ -3,6 +3,14 @@ import { useKookrStore } from '../store/useStore.js';
 import { DndPill } from './DndPill.js';
 import { FollowPill } from './FollowPill.js';
 import { formatCost } from '../presentation.js';
+import {
+  TOOLKIT_MARKETPLACE_SLUG,
+  marketplaceNameFromPluginId,
+  pluginUpdateCommands,
+  type PluginUpdateError,
+  type PluginUpdateResult,
+  type PluginVersionStatus,
+} from '../../shared/contracts/plugin-version.js';
 
 interface Props {
   findings: number;
@@ -35,6 +43,7 @@ interface DeployStatus {
   deploying?: boolean;
   toolkit?: ToolkitStatus;
   toolkitError?: string;
+  plugin?: PluginVersionStatus;
   currentShort?: string;
   latestShort?: string;
   behindCount?: number;
@@ -74,6 +83,9 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
   const [deployLoading, setDeployLoading] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [toolkitRefreshing, setToolkitRefreshing] = useState(false);
+  const [pluginUpdating, setPluginUpdating] = useState(false);
+  const [pluginUpdateMessage, setPluginUpdateMessage] = useState<string | null>(null);
+  const [pluginUpdateError, setPluginUpdateError] = useState<string | null>(null);
   const preDeployCommitRef = useRef<string | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
@@ -173,6 +185,27 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
     }
   }
 
+  async function updateToolkitPlugin() {
+    setPluginUpdating(true);
+    setPluginUpdateMessage(null);
+    setPluginUpdateError(null);
+    try {
+      const res = await fetch('/api/deploy/plugin-update', { method: 'POST' });
+      const data = (await res.json()) as PluginUpdateResult | PluginUpdateError;
+      if (res.ok) {
+        setDeployStatus((prev) => prev ? { ...prev, plugin: data.plugin } : prev);
+        setPluginUpdateMessage('Toolkit plugin updated. Restart Claude Code sessions to load it.');
+      } else {
+        if (data.plugin) setDeployStatus((prev) => prev ? { ...prev, plugin: data.plugin } : prev);
+        setPluginUpdateError(data.error ?? 'Plugin update failed');
+      }
+    } catch {
+      setPluginUpdateError('Plugin update failed');
+    } finally {
+      setPluginUpdating(false);
+    }
+  }
+
   const isDev = !buildInfo || buildInfo.commitShort === 'dev';
   const versionLabel = isDev
     ? 'DEV'
@@ -191,7 +224,23 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
 
   const toolkitStale = Boolean(deployStatus?.toolkit?.stale);
   const showToolkitSection = Boolean(toolkitStale || toolkitRefreshing || deployStatus?.toolkitError);
-  const hasUpdates = (!onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying) || toolkitStale;
+  const pluginStale = Boolean(deployStatus?.plugin?.stale);
+  const pluginNotInstalled = Boolean(
+    deployStatus?.plugin &&
+      deployStatus.plugin.installedVersion === null &&
+      deployStatus.plugin.availableVersion !== null,
+  );
+  // The marketplace name is the part after `@` in the plugin id
+  // ("kookr-toolkit@kookr" → "kookr"); used in the `/plugin marketplace update`
+  // hint. Falls back to the default marketplace name if the id is malformed.
+  const pluginId = deployStatus?.plugin?.pluginId ?? 'kookr-toolkit@kookr';
+  const pluginMarketplace = marketplaceNameFromPluginId(pluginId);
+  const pluginManualCommands = pluginUpdateCommands(pluginId, pluginMarketplace);
+  const hasUpdates =
+    (!onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying) ||
+    toolkitStale ||
+    pluginStale ||
+    pluginNotInstalled;
   const operationsNeedsAttention =
     circuitBreakers.some((breaker) => breaker.state !== 'closed') ||
     Boolean(diagnosticReport?.findings.length);
@@ -215,19 +264,22 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
           <img src="/kookr-mark-32.png" alt="" aria-hidden="true" width={18} height={18} className="logo-mark" />
           KOOKR
         </span>
-        <span
+        <button
+          type="button"
           className={`version-badge ${isDev ? 'dev' : ''} ${hasUpdates ? 'has-updates' : ''}`}
           onClick={() => setShowPopover((v) => !v)}
-          title="Build info"
+          aria-label="Build info"
+          aria-expanded={showPopover}
+          aria-controls="version-popover"
         >
           <span className={`health-dot ${connected ? 'health-dot-connected' : 'health-dot-disconnected'}`} />
           {deploying && <span className="deploy-spinner" />}
           {versionLabel}
           {!compact && !isDev && builtAgo && <span className="version-built"> · {builtAgo}</span>}
           {hasUpdates && <span className="update-dot" />}
-        </span>
+        </button>
         {showPopover && (
-          <div className="version-popover" ref={popoverRef}>
+          <div className="version-popover" id="version-popover" ref={popoverRef}>
             {isDev ? (
               <div className="version-row">Running in dev mode (no build info)</div>
             ) : (
@@ -322,6 +374,67 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
                 >
                   {toolkitRefreshing ? 'Refreshing...' : 'Refresh toolkit links'}
                 </button>
+              </>
+            )}
+
+            {deployStatus?.plugin && (pluginNotInstalled || pluginStale || pluginUpdating || pluginUpdateMessage || pluginUpdateError) && (
+              <>
+                <div className="deploy-divider" />
+                {pluginNotInstalled ? (
+                  <>
+                    <div className="toolkit-stale">
+                      Toolkit plugin not installed
+                      {deployStatus.plugin.availableVersion && (
+                        <span className="deploy-range">v{deployStatus.plugin.availableVersion} available</span>
+                      )}
+                    </div>
+                    <div className="version-row deploy-checking">
+                      Install in Claude Code: <code>/plugin marketplace add {TOOLKIT_MARKETPLACE_SLUG}</code> then{' '}
+                      <code>/plugin install {deployStatus.plugin.pluginId}</code>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="toolkit-stale">
+                      {pluginStale ? 'Toolkit plugin update available' : 'Toolkit plugin'}
+                      {deployStatus.plugin.installedVersion && deployStatus.plugin.availableVersion && (
+                        <span className="deploy-range">
+                          {pluginStale
+                            ? `${deployStatus.plugin.installedVersion} -> ${deployStatus.plugin.availableVersion}`
+                            : `v${deployStatus.plugin.installedVersion} installed`}
+                        </span>
+                      )}
+                    </div>
+                    {pluginUpdateMessage && (
+                      <div className="deploy-status-row" role="status" aria-live="polite">
+                        {pluginUpdateMessage}
+                      </div>
+                    )}
+                    {pluginUpdateError && (
+                      <div className="version-row deploy-error" role="alert">{pluginUpdateError}</div>
+                    )}
+                    {pluginStale && (
+                      <button
+                        className="btn-deploy"
+                        onClick={updateToolkitPlugin}
+                        disabled={pluginUpdating}
+                      >
+                        {pluginUpdating ? 'Updating plugin...' : 'Update plugin'}
+                      </button>
+                    )}
+                    <details className="deploy-help" open={Boolean(pluginUpdateError)}>
+                      <summary>Manual commands</summary>
+                      <div className="version-row">
+                        In Claude Code: <code>{pluginManualCommands.slash[0]}</code> then{' '}
+                        <code>{pluginManualCommands.slash[1]}</code>
+                      </div>
+                      <div className="version-row">
+                        Terminal: <code>{pluginManualCommands.cli[0]}</code> then{' '}
+                        <code>{pluginManualCommands.cli[1]}</code>
+                      </div>
+                    </details>
+                  </>
+                )}
               </>
             )}
           </div>
