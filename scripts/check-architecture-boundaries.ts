@@ -30,22 +30,33 @@ export function checkCoreOpenRouterBoundary(file: string): Violation[] {
   const source = readFileSync(file, 'utf8');
   const fileName = basename(file).toLowerCase();
   const violations: Violation[] = [];
+  const allowedProtocolTransport = fileName === 'openai-compatible-client.ts';
 
   if (fileName.includes('openrouter')) {
     violations.push({ file, reason: 'OpenRouter implementation file is under src/core' });
   }
 
-  const forbiddenTransportMarkers = [
+  const forbiddenProviderMarkers = [
     'OpenRouterLlmClient',
+    'RequestyLlmClient',
     'openrouter.ai',
-    'chat/completions',
+    'router.requesty.ai',
     'KOOKR_OPENROUTER_API_KEY',
     'OPENROUTER_API_KEY',
-    'fetch(',
+    'KOOKR_REQUESTY_API_KEY',
+    'REQUESTY_API_KEY',
   ];
-  for (const marker of forbiddenTransportMarkers) {
+  for (const marker of forbiddenProviderMarkers) {
     if (source.includes(marker)) {
       violations.push({ file, reason: `OpenRouter/provider transport marker "${marker}" appears in src/core` });
+    }
+  }
+
+  if (!allowedProtocolTransport) {
+    for (const marker of ['chat/completions', 'fetch(']) {
+      if (source.includes(marker)) {
+        violations.push({ file, reason: `OpenAI-compatible transport marker "${marker}" appears outside the shared transport` });
+      }
     }
   }
 

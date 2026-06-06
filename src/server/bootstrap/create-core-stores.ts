@@ -21,6 +21,7 @@ import { TokenTracker } from '../../core/token-tracker.js';
 import { Watchdog } from '../../core/watchdog.js';
 import { WorktreeRegistry } from '../../adapters/git-worktree-registry.js';
 import { createOpenRouterLlmClientFromEnv } from '../../adapters/openrouter-client.js';
+import { createRequestyLlmClientFromEnv } from '../../adapters/requesty-client.js';
 import { CombinedShadowStrategy } from '../../core/combined-shadow-strategy.js';
 import { HttpPushTracker } from '../../core/http-push-tracker.js';
 import { PaneSemanticsStrategy } from '../../core/pane-patterns.js';
@@ -161,13 +162,14 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
 
   const rawLlmClient: LlmClient | null = await createLlmClient({
     buildOpenRouter: createOpenRouterLlmClientFromEnv,
+    buildRequesty: createRequestyLlmClientFromEnv,
   });
   const llmClient = rawLlmClient ? new CircuitBreakerLlmClient(rawLlmClient, llmBreaker) : null;
   if (rawLlmClient) {
     console.log(`[llm] Provider: ${rawLlmClient.provider} (${rawLlmClient.model})`);
   } else {
     console.log(
-      '[llm] AI features disabled (set GROQ_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, or KOOKR_OPENROUTER_API_KEY)',
+      '[llm] AI features disabled (set GROQ_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, KOOKR_OPENROUTER_API_KEY, OPENROUTER_API_KEY, KOOKR_REQUESTY_API_KEY, or REQUESTY_API_KEY)',
     );
   }
 
