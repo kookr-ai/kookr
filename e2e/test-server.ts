@@ -321,17 +321,12 @@ async function main() {
     // Also append to the ledger (append-only JSONL) and reload it so the
     // in-memory `ledgerEntries` array picks up the new pr_created record.
     try {
-      const { appendFileSync } = await import('node:fs');
-      const ledgerPath = server.ossAttemptStore.getLedgerPath();
-      appendFileSync(
-        ledgerPath,
-        JSON.stringify({
-          timestamp: record.createdAt,
-          repo,
-          action: 'pr_created',
-          prUrl: record.prUrl,
-        }) + '\n',
-      );
+      await server.ossAttemptStore.appendLedgerEntry({
+        timestamp: record.createdAt,
+        repo,
+        action: 'pr_created',
+        prUrl: record.prUrl,
+      });
       await server.ossAttemptStore.loadFromLedger();
     } catch (e) {
       console.warn('[test-server] ledger append failed:', e);
@@ -388,6 +383,25 @@ async function main() {
       return c.json({ error: `Session not found: ${tmuxName}` }, 404);
     }
     return c.json({ tmuxName, writtenText: terminal.getWrittenText(tmuxName) });
+  });
+
+  // Get the raw write-call payloads for a fake terminal session. This catches
+  // prompt-submit regressions that a concatenated string cannot: Codex and
+  // Claude must receive the message bytes and the submitting Enter as distinct
+  // ordered writes.
+  server.app.get('/api/test/written-chunks/:tmuxName', (c) => {
+    const tmuxName = c.req.param('tmuxName');
+    const session = terminal.sessions.get(tmuxName);
+    if (!session) {
+      return c.json({ error: `Session not found: ${tmuxName}` }, 404);
+    }
+    return c.json({
+      tmuxName,
+      chunks: terminal.getWrittenBytes(tmuxName).map((bytes) => ({
+        text: Buffer.from(bytes).toString('utf8'),
+        hex: Buffer.from(bytes).toString('hex'),
+      })),
+    });
   });
 
   // Backdate an anomaly's detectedAt (for age badge tests)

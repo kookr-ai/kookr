@@ -3,8 +3,16 @@ import { discoverPlaybooks } from '../../core/playbook-discovery.js';
 import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
 import { normalizeAgentSelection } from '../../core/agent-types.js';
 import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
-import { deleteTask } from '../use-cases/delete-task.js';
-import { launchTask, DrainModeError } from '../launch-service.js';
+import { isTerminalStatus } from '../../core/task-status.js';
+import { redactSecrets } from '../../core/redact-secrets.js';
+import {
+  AGENT_SIGNAL_KINDS,
+  isAgentSignalKind,
+  MAX_AGENT_SIGNAL_NOTE_LENGTH,
+  type PendingAgentSignal,
+} from '../../shared/contracts/agent-signal.js';
+import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
+import { launchTask, DrainModeError, isEffortValidationError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import type { LaunchDependency } from '../../core/playbook.js';
 import type { Task } from '../../core/tasks.js';
@@ -12,6 +20,7 @@ import type { TaskDependencyEdge, TaskMetadataIntent } from '../../shared/contra
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 import { CoordinatorSuppressionStore } from '../coordinator/suppression-store.js';
+import { promotePendingTasks } from '../agent-lifecycle.js';
 import type { TaskRouteDeps } from './shared.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
@@ -20,6 +29,40 @@ const MAX_TASK_EDGE_LENGTH = 240;
 export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   const { taskStore, monitor, adapter, hookWatcher, watchdog, broadcastToAll, serverCwd, hookIngestion } = deps;
   const coordinatorSuppressions = deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? serverCwd);
+  const lifecycleCommands = new TaskLifecycleCommands({
+    taskStore,
+    monitor,
+    interactionLog: deps.interactionLog,
+    scheduleService: deps.scheduleService,
+    broadcastToAll,
+    activityMetaProvider: hookIngestion,
+    getLifecycleDeps: () => ({
+      adapter,
+      monitor,
+      taskStore,
+      hookWatcher,
+      watchdog,
+      shadowRegistry: deps.shadowRegistry,
+      suppressionTracker: deps.suppressionTracker,
+      tokenTracker: deps.tokenTracker,
+      queue: deps.queue,
+      interactionLog: deps.interactionLog,
+      activityLedger: deps.activityLedger,
+      hookIngestion: deps.hookIngestion,
+    }),
+    tryPromotePending: async () => {
+      const launchDeps = deps.launchServiceDeps;
+      if (!launchDeps?.adapterRegistry || !launchDeps.lifecycleDeps) return;
+      await promotePendingTasks({
+        taskStore,
+        adapterRegistry: launchDeps.adapterRegistry,
+        lifecycleDeps: launchDeps.lifecycleDeps,
+        broadcastToAll,
+        serverCwd,
+        getMaxActiveTasks: launchDeps.getMaxActiveTasks,
+      });
+    },
+  });
 
   function broadcastSnapshotWithCoordinator(): void {
     broadcastToAll(createSnapshotMessage({
@@ -113,6 +156,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         criteria?: string;
         parentTaskId?: string;
         agentType?: string;
+        effort?: unknown;
         disableDedup?: unknown;
         metadata?: unknown;
         dependencies?: unknown;
@@ -145,6 +189,12 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (metadataIntent === 'keep_as_duplicate' && body.disableDedup !== true) {
         return c.json({ error: 'metadata.intent "keep_as_duplicate" requires disableDedup true' }, 400);
       }
+      // #681: shape check only. The agent-specific allowed-set check runs in
+      // launchTask after round-robin resolution and surfaces as a 400 via
+      // EffortValidationError (mapped below).
+      if (body.effort !== undefined && typeof body.effort !== 'string') {
+        return c.json({ error: 'effort must be a string' }, 400);
+      }
 
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
@@ -155,6 +205,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         criteria: body.criteria,
         parentTaskId: body.parentTaskId,
         agentType: body.agentType ? normalizeAgentSelection(body.agentType) : undefined,
+        effort: typeof body.effort === 'string' ? body.effort : undefined,
         disableDedup: body.disableDedup === true,
         metadataIntent,
         dependencies: parseLaunchDependencies(body.dependencies),
@@ -170,6 +221,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     } catch (err) {
       if (isLaunchDependencyValidationError(err)) {
         return c.json({ error: err.message }, 400);
+      }
+      if (isEffortValidationError(err)) {
+        return c.json({ error: err.message, code: err.code }, 400);
       }
       if (err instanceof LaunchPreflightError) {
         return c.json({ error: err.message, code: 'launch_preflight_failed', findings: err.findings }, 409);
@@ -189,24 +243,97 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (!task) return c.json({ error: 'Task not found' }, 404);
 
     try {
-      await deleteTask({
-        adapter,
-        monitor,
-        taskStore,
-        hookWatcher,
-        watchdog,
-        shadowRegistry: deps.shadowRegistry,
-        suppressionTracker: deps.suppressionTracker,
-        queue: deps.queue,
-        activityLedger: deps.activityLedger,
-        hookIngestion: deps.hookIngestion,
-      }, id);
+      await lifecycleCommands.deleteTask(id);
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({ ok: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
     }
+  });
+
+  // Non-destructive terminal transition (issue #691). Marks a finished task
+  // `completed` and tears down its idle dtach session via the same lifecycle
+  // handler the WS `completeTask` message uses — so projections, the schedule
+  // service, and the coordinator all observe the terminal state. Unlike DELETE
+  // this preserves the task's history; unlike cancel it carries no kill/abort
+  // semantics. It is the documented, safe way for an operator or orchestrating
+  // agent to clear its own finished helper tasks.
+  //
+  // This route shares the WS completion command. When monitor events are
+  // available it may finalize a completion digest; helper tasks with no captured
+  // events remain digestless.
+  app.post('/api/tasks/:id/complete', async (c) => {
+    const id = c.req.param('id');
+    if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
+
+    try {
+      const result = await lifecycleCommands.completeTask(id);
+      if (result.outcome === 'not_found') {
+        return c.json({ error: 'Task not found' }, 404);
+      }
+      if (result.outcome === 'invalid') {
+        return c.json({ error: result.error, code: result.code }, 409);
+      }
+      broadcastSnapshotWithCoordinator();
+      return c.json({
+        ok: true,
+        task: 'task' in result ? result.task : taskStore.getTask(id),
+        ...(result.outcome === 'already_terminal' ? { alreadyTerminal: true } : {}),
+        ...(result.outcome === 'partial_ralph_completion' ? { partialRalphCompletion: true } : {}),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  // Agent → user signal (RFC: rfc-agent-signal-surface). A non-blocking,
+  // explicit signal an in-task agent raises (via `kookr signal <kind>`) to tell
+  // the user something — the motivating case being "this task is ready for
+  // completion". Kookr surfaces it (highlighted Complete button); the agent
+  // never completes the task itself. Idempotent per task; rejected for unknown
+  // or terminal tasks (the CLI maps that to a distinct exit code so a wrong
+  // KOOKR_TASK_ID is visible rather than silently swallowed).
+  app.post('/api/tasks/:id/signal', async (c) => {
+    const id = c.req.param('id');
+    if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    if (isTerminalStatus(task.status)) {
+      return c.json(
+        { error: `Cannot signal a task in status "${task.status}"`, code: 'task_terminal' },
+        409,
+      );
+    }
+
+    let body: { kind?: unknown; note?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (!isAgentSignalKind(body.kind)) {
+      return c.json({ error: `kind must be one of: ${AGENT_SIGNAL_KINDS.join(', ')}` }, 400);
+    }
+    let note: string | undefined;
+    if (body.note !== undefined) {
+      if (typeof body.note !== 'string') {
+        return c.json({ error: 'note must be a string when supplied' }, 400);
+      }
+      const trimmed = body.note.slice(0, MAX_AGENT_SIGNAL_NOTE_LENGTH);
+      const redacted = redactSecrets(trimmed).trim();
+      if (redacted) note = redacted;
+    }
+
+    const signal: PendingAgentSignal = {
+      kind: body.kind,
+      raisedAt: new Date().toISOString(),
+      ...(note ? { note } : {}),
+    };
+    taskStore.setPendingSignal(id, signal);
+    broadcastSnapshotWithCoordinator();
+    return c.json({ ok: true, signal });
   });
 
   app.get('/api/playbooks', async (c) => {

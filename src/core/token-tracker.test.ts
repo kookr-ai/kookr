@@ -3,7 +3,7 @@ import { writeFileSync, mkdirSync, rmSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { TokenTracker, computeContextFillFromTranscript, estimateCost, getContextLimit, getPricing } from './token-tracker.js';
+import { TokenTracker, estimateCost, getPricing } from './token-tracker.js';
 
 function makeTempDir(): string {
   const dir = join(tmpdir(), `token-tracker-test-${randomUUID()}`);
@@ -227,6 +227,68 @@ describe('TokenTracker', () => {
       expect(usage!.inputTokens).toBe(13000);
       expect(usage!.outputTokens).toBe(3000);
     });
+
+    test('getUsage reads only transcripts indexed to the requested task', async () => {
+      const path1 = join(dir, 'task1-session1.jsonl');
+      const path2 = join(dir, 'task1-session2.jsonl');
+      const unrelatedPath = join(dir, 'task2-session1.jsonl');
+      writeJsonl(path1, [
+        { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 1000, output_tokens: 100 } } },
+      ]);
+      writeJsonl(path2, [
+        { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 2000, output_tokens: 200 } } },
+      ]);
+      writeJsonl(unrelatedPath, [
+        { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 9000, output_tokens: 900 } } },
+      ]);
+
+      tracker.register(path1, 'task-1');
+      tracker.register(path2, 'task-1');
+      tracker.register(unrelatedPath, 'task-2');
+      await tracker.scanAll();
+
+      const internals = tracker as unknown as { transcripts: Map<string, unknown> };
+      const getSpy = vi.spyOn(internals.transcripts, 'get');
+      const valuesSpy = vi.spyOn(internals.transcripts, 'values');
+
+      const usage = tracker.getUsage('task-1');
+
+      expect(usage!.inputTokens).toBe(3000);
+      expect(usage!.outputTokens).toBe(300);
+      expect(getSpy).toHaveBeenCalledTimes(2);
+      expect(getSpy).toHaveBeenNthCalledWith(1, path1);
+      expect(getSpy).toHaveBeenNthCalledWith(2, path2);
+      expect(valuesSpy).not.toHaveBeenCalled();
+    });
+
+    test('getModel reads only transcripts indexed to the requested task', async () => {
+      const path1 = join(dir, 'task1-session1.jsonl');
+      const path2 = join(dir, 'task1-session2.jsonl');
+      const unrelatedPath = join(dir, 'task2-session1.jsonl');
+      writeJsonl(path1, [
+        { type: 'assistant', message: { model: 'claude-opus-4-6', usage: { input_tokens: 1000, output_tokens: 100 } } },
+      ]);
+      writeJsonl(path2, [
+        { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 2000, output_tokens: 200 } } },
+      ]);
+      writeJsonl(unrelatedPath, [
+        { type: 'assistant', message: { model: 'claude-haiku-4-6', usage: { input_tokens: 9000, output_tokens: 900 } } },
+      ]);
+
+      tracker.register(path1, 'task-1');
+      tracker.register(path2, 'task-1');
+      tracker.register(unrelatedPath, 'task-2');
+      await tracker.scanAll();
+
+      const internals = tracker as unknown as { transcripts: Map<string, unknown> };
+      const getSpy = vi.spyOn(internals.transcripts, 'get');
+      const valuesSpy = vi.spyOn(internals.transcripts, 'values');
+
+      expect(tracker.getModel('task-1')).toBe('claude-opus-4-6');
+      expect(getSpy).toHaveBeenCalledTimes(1);
+      expect(getSpy).toHaveBeenCalledWith(path1);
+      expect(valuesSpy).not.toHaveBeenCalled();
+    });
   });
 
   describe('error handling', () => {
@@ -310,8 +372,16 @@ describe('TokenTracker', () => {
       tracker.register(path1, 'task-1');
       tracker.register(path2, 'task-2');
 
+      const internals = tracker as unknown as { transcripts: Map<string, unknown> };
+      const getSpy = vi.spyOn(internals.transcripts, 'get');
+      const valuesSpy = vi.spyOn(internals.transcripts, 'values');
+
       const changed = await tracker.scanTask('task-1');
       expect(changed).toBe(true);
+      expect(getSpy).toHaveBeenCalledTimes(1);
+      expect(getSpy).toHaveBeenCalledWith(path1);
+      expect(valuesSpy).not.toHaveBeenCalled();
+
       expect(tracker.getUsage('task-1')!.inputTokens).toBe(1000);
       // task-2 should not have been scanned
       expect(tracker.getUsage('task-2')!.inputTokens).toBe(0);
@@ -617,6 +687,30 @@ describe('TokenTracker', () => {
     tracker.unregister(path);
     expect(tracker.getUsage('task-1')).toBeUndefined();
   });
+
+  test('unregister keeps task index in sync across multiple transcripts', async () => {
+    const path1 = join(dir, 'session1.jsonl');
+    const path2 = join(dir, 'session2.jsonl');
+    writeJsonl(path1, [
+      { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 1000, output_tokens: 100 } } },
+    ]);
+    writeJsonl(path2, [
+      { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 2000, output_tokens: 200 } } },
+    ]);
+
+    tracker.register(path1, 'task-1');
+    tracker.register(path2, 'task-1');
+    await tracker.scanAll();
+    expect(tracker.getTrackedTaskIds()).toEqual(['task-1']);
+
+    tracker.unregister(path1);
+    expect(tracker.getUsage('task-1')!.inputTokens).toBe(2000);
+    expect(tracker.getTrackedTaskIds()).toEqual(['task-1']);
+
+    tracker.unregister(path2);
+    expect(tracker.getUsage('task-1')).toBeUndefined();
+    expect(tracker.getTrackedTaskIds()).toEqual([]);
+  });
 });
 
 describe('estimateCost', () => {
@@ -661,48 +755,5 @@ describe('estimateCost', () => {
     expect(getPricing('unknown-model-twice')).toBe(getPricing('unknown-model-twice'));
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith('[pricing-tables] Unknown pricing model "unknown-model-twice"; using default Sonnet pricing');
-  });
-});
-
-describe('context fill model resolution', () => {
-  test('uses the 1M denominator for claude-opus-4-7 transcripts', async () => {
-    const tempDir = makeTempDir();
-    try {
-      const path = join(tempDir, 'opus-4-7-transcript.jsonl');
-      writeJsonl(path, [
-        {
-          type: 'assistant',
-          message: {
-            role: 'assistant',
-            model: 'claude-opus-4-7',
-            usage: {
-              input_tokens: 180_000,
-              cache_creation_input_tokens: 30_000,
-              cache_read_input_tokens: 20_000,
-              output_tokens: 2_000,
-            },
-          },
-        },
-      ]);
-
-      const result = await computeContextFillFromTranscript(path);
-      expect(result).not.toBeNull();
-      expect(result!.totalTokens).toBe(230_000);
-      expect(result!.modelLimit).toBe(1_000_000);
-      expect(result!.ratio).toBeCloseTo(0.23, 4);
-      expect(result!.ratio).toBeLessThan(0.30);
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  test('falls back to 200K and warns once per unknown context model id', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(getContextLimit('claude-future-9-0')).toBe(200_000);
-    expect(getContextLimit('claude-future-9-0')).toBe(200_000);
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith('[token-tracker] Unknown context limit for model "claude-future-9-0"; using default 200000');
   });
 });

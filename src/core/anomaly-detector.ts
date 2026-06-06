@@ -181,6 +181,12 @@ function detectPermissionBlocked(events: AgentEvent[], agentId: string): Anomaly
 
   const last = events[events.length - 1];
   if (last.type !== 'permission_request') return null;
+  // A PermissionRequest for AskUserQuestion is the question's own approval
+  // prompt, not a tool-permission block. Returning null lets evaluateAnomalies
+  // fall through to detectAskUserQuestion, which classifies the unresolved
+  // question as `needs_input / ask_user_question`. See deriveTurnState's
+  // matching permission_request branch in turn-state.ts.
+  if (last.toolName === 'AskUserQuestion') return null;
 
   return {
     agentId,

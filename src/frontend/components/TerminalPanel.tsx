@@ -120,9 +120,22 @@ const MENU_SELECTION_ROW_RE = /^\s*[❯›▶▸]\s*[0-9a-z][.)]\s*\S/i;
 // prose containing that phrase, the only effect is forwarding Enter to the
 // agent instead of navigating, which is a safe degrade (no menu choice lost).
 const MENU_FOOTER_RE = /\benter to (?:select|continue|confirm|submit|choose)\b|\bpress enter\b/i;
+const COMPOSER_ROW_RE = /^\s*[❯›](?:\s+(.*?))?\s*$/;
+const COMPOSER_PLACEHOLDER_RE = /^Try\s+["“]|^[─━╌\-—]+$/i;
 
 function looksLikeInteractiveMenu(tail: string): boolean {
   return tail.split('\n').some((line) => MENU_SELECTION_ROW_RE.test(line) || MENU_FOOTER_RE.test(line));
+}
+
+function looksLikeVisibleComposerDraft(tail: string): boolean {
+  const lines = tail.split('\n');
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const match = COMPOSER_ROW_RE.exec(lines[i] ?? '');
+    if (!match) continue;
+    const draft = match[1]?.trim() ?? '';
+    return draft.length > 0 && !COMPOSER_PLACEHOLDER_RE.test(draft);
+  }
+  return false;
 }
 
 function shouldHandleEmptyTerminalEnter(
@@ -133,13 +146,18 @@ function shouldHandleEmptyTerminalEnter(
   // Emptiness stays byte-tracked (reliable across streaming/session switches) —
   // this preserves the prior draft-only navigation behavior exactly.
   if (draft.length !== 0 || !onEmptySubmit) return false;
-  // The ONLY added consideration: if the agent is showing a selection menu
+  // Rendered-buffer backstops catch agent UI states that xterm's local draft
+  // tracker cannot observe. If the agent is showing a selection menu
   // (Claude/Codex render these inline, so there is no terminal-mode signal —
   // only the marked numbered row and the "enter to select"/"press enter"
   // footer distinguish it), forward Enter so the highlighted choice is
-  // confirmed instead of being swallowed as task navigation. Every non-menu
-  // state behaves identically to before.
-  if (looksLikeInteractiveMenu(getVisibleTerminalTail(terminal))) return false;
+  // confirmed instead of being swallowed as task navigation.
+  const tail = getVisibleTerminalTail(terminal);
+  if (looksLikeInteractiveMenu(tail)) return false;
+  // Adapter-injected prompt text is not visible to xterm's local onData draft
+  // tracker. If the composer visibly contains a user draft, forward Enter to
+  // the agent instead of consuming it as empty-task navigation.
+  if (looksLikeVisibleComposerDraft(tail)) return false;
   return true;
 }
 
@@ -522,7 +540,9 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     void pasteFromClipboard(sendRawPaste);
   }
 
-  // Connect/reconnect WebSocket when tmuxName changes
+  // Connect/reconnect the byte stream only while the terminal is visible.
+  // Keeping hidden panes unsubscribed avoids replay capture and live PTY byte
+  // fan-out for tasks the user is not currently inspecting.
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) return;
@@ -533,13 +553,22 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       wsRef.current = null;
     }
 
-    searchOpenRef.current = false;
-    terminalInputDraftRef.current = '';
-    setSearchOpen(false);
-    setSearchTerm('');
-    setSearchFound(null);
-    setSearchResult(null);
-    searchAddonRef.current?.clearDecorations();
+    const sessionChanged = tmuxName !== currentTmuxRef.current;
+
+    if (sessionChanged) {
+      searchOpenRef.current = false;
+      terminalInputDraftRef.current = '';
+      setSearchOpen(false);
+      setSearchTerm('');
+      setSearchFound(null);
+      setSearchResult(null);
+      searchAddonRef.current?.clearDecorations();
+    }
+
+    if (!visible) {
+      registerTerminalSend(null);
+      return;
+    }
 
     if (!tmuxName) {
       terminal.clear();
@@ -646,7 +675,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       ws.close();
       wsRef.current = null;
     };
-  }, [tmuxName]);
+  }, [tmuxName, visible]);
 
   // Refit + repaint when the parent explicitly reveals the terminal. Driving
   // this from the real pane/tab state is more reliable than observing

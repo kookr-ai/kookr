@@ -26,12 +26,21 @@ import { AgentSpeakCache } from './agent-speak-cache.js';
 import { DEFAULT_TTS_VOICE } from './tts-manager.js';
 import { TaskSpeechSummaryCache } from './task-speech-summary-cache.js';
 import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
+import { createApiAuthMiddleware } from './auth.js';
 import type { RouteDeps } from './routes/shared.js';
 
 export type { RouteDeps } from './routes/shared.js';
 
 export function createRoutes(deps: RouteDeps): Hono {
   const app = new Hono();
+
+  // Issue #708: when the server bound to a non-loopback host, enforce a bearer
+  // token on state-changing requests. Registered first so it runs ahead of every
+  // route handler. On a loopback bind `apiAuth.required` is false and this is a
+  // no-op pass-through, keeping the default localhost flow token-free.
+  if (deps.apiAuth?.required) {
+    app.use('*', createApiAuthMiddleware(deps.apiAuth));
+  }
 
   // Hoist the coordinator-suppression-store fallback so task-routes (PATCH /edges
   // snapshot broadcast) and coordinator-routes (3 mutation handlers) share one

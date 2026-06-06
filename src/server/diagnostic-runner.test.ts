@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, describe, test, expect, vi } from 'vitest';
 import { DiagnosticRunner, type DiagnosticRunnerDeps } from './diagnostic-runner.js';
 import type { AnomalyType } from '../core/types.js';
 import type { DetectionStats } from '../core/detection-stats.js';
@@ -24,16 +24,11 @@ function createMockDeps(overrides?: Partial<DiagnosticRunnerDeps>): DiagnosticRu
     getWsBroadcastCount: () => 0,
     getEventCounts: () => ({}),
     measureSnapshotSizeBytes: () => 10_000,
-    onReport: vi.fn(),
     ...overrides,
   };
 }
 
 describe('DiagnosticRunner', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -44,13 +39,6 @@ describe('DiagnosticRunner', () => {
     expect(report).toBeDefined();
     expect(report.timestamp).toBeGreaterThan(0);
     expect(report.findings).toEqual([]);
-  });
-
-  test('runNow does NOT call onReport', () => {
-    const onReport = vi.fn();
-    const runner = new DiagnosticRunner(createMockDeps({ onReport }));
-    runner.runNow();
-    expect(onReport).not.toHaveBeenCalled();
   });
 
   test('getStatus returns null report before first run', () => {
@@ -68,63 +56,13 @@ describe('DiagnosticRunner', () => {
     expect(status.report!.findings).toEqual([]);
   });
 
-  test('periodic timer calls onReport when findings exist', () => {
-    const onReport = vi.fn();
-    const stats = zeroStats();
-    stats.fires.needs_input = 80_000;
-
-    const runner = new DiagnosticRunner(createMockDeps({
-      onReport,
-      getDetectionStats: () => stats,
-    }));
-    runner.start(1000); // 1s interval for test
-
-    // First tick
-    vi.advanceTimersByTime(1000);
-    expect(onReport).toHaveBeenCalledTimes(1);
-    const report = onReport.mock.calls[0][0];
-    expect(report.findings.length).toBeGreaterThan(0);
-    expect(report.findings[0].checkId).toBe('detection-fire-rate');
-
-    runner.dispose();
-  });
-
-  test('periodic timer does NOT call onReport when no findings', () => {
-    const onReport = vi.fn();
-    const runner = new DiagnosticRunner(createMockDeps({ onReport }));
-    runner.start(1000);
-    vi.advanceTimersByTime(1000);
-    expect(onReport).not.toHaveBeenCalled();
-    runner.dispose();
-  });
-
-  test('dispose stops the timer', () => {
-    const onReport = vi.fn();
-    const stats = zeroStats();
-    stats.fires.needs_input = 80_000;
-
-    const runner = new DiagnosticRunner(createMockDeps({
-      onReport,
-      getDetectionStats: () => stats,
-    }));
-    runner.start(1000);
-    runner.dispose();
-    vi.advanceTimersByTime(5000);
-    expect(onReport).not.toHaveBeenCalled();
-  });
-
-  test('sets lastError when dep getter throws', () => {
+  test('runNow records lastError when a dependency throws', () => {
     const runner = new DiagnosticRunner(createMockDeps({
       getDetectionStats: () => { throw new Error('stats unavailable'); },
     }));
-    runner.start(1000);
-
-    // Suppress console.error for this test
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.advanceTimersByTime(1000);
-    consoleSpy.mockRestore();
-
+    expect(() => runner.runNow()).toThrow('stats unavailable');
     const status = runner.getStatus();
+    expect(status.report).toBeNull();
     expect(status.lastError).toBe('stats unavailable');
   });
 
@@ -136,66 +74,42 @@ describe('DiagnosticRunner', () => {
         return zeroStats();
       },
     }));
-    runner.start(1000);
-
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.advanceTimersByTime(1000);
-    consoleSpy.mockRestore();
+    expect(() => runner.runNow()).toThrow('temporary failure');
     expect(runner.getStatus().lastError).toBe('temporary failure');
 
-    // Fix the dep and let next tick succeed
     shouldThrow = false;
-    vi.advanceTimersByTime(1000);
+    runner.runNow();
     expect(runner.getStatus().lastError).toBeNull();
   });
 
   test('window-delta computation uses previous snapshot', () => {
-    const onReport = vi.fn();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+
     let fireCount = 0;
-    // Use 2-minute interval to exceed the 60s minimum in runDiagnostic
-    const intervalMs = 2 * 60 * 1000;
+    let uptimeMs = 0;
 
     const runner = new DiagnosticRunner(createMockDeps({
-      onReport,
+      getUptimeMs: () => uptimeMs,
       getDetectionStats: () => {
         const s = zeroStats();
         s.fires.needs_input = fireCount;
         return s;
       },
     }));
-    runner.start(intervalMs);
 
-    // First tick: fireCount=0, delta=0, no findings
-    vi.advanceTimersByTime(intervalMs);
-    expect(onReport).not.toHaveBeenCalled();
+    const firstReport = runner.runNow();
+    expect(firstReport.findings).toEqual([]);
 
-    // Set high fire count for the second tick
+    vi.setSystemTime(new Date('2026-01-01T00:02:00.000Z'));
+    uptimeMs = 10 * 60 * 1000;
     fireCount = 80_000;
-    vi.advanceTimersByTime(intervalMs);
-    expect(onReport).toHaveBeenCalledTimes(1);
-    const finding = onReport.mock.calls[0][0].findings[0];
+    const secondReport = runner.runNow();
+    const finding = secondReport.findings[0];
     expect(finding.checkId).toBe('detection-fire-rate');
     expect(finding.scope).toBe('needs_input');
-    // Delta = 80,000 over 2-minute interval = 2,400,000/hr
+    // Delta = 80,000 over 2 minutes = 2,400,000/hr
     // This proves window-delta is used (cumulative over 1hr uptime would be 80,000/hr)
     expect(finding.observed).toBeGreaterThan(80_000);
-
-    runner.dispose();
-  });
-
-  test('start is idempotent', () => {
-    const onReport = vi.fn();
-    const stats = zeroStats();
-    stats.fires.needs_input = 80_000;
-
-    const runner = new DiagnosticRunner(createMockDeps({
-      onReport,
-      getDetectionStats: () => stats,
-    }));
-    runner.start(1000);
-    runner.start(1000); // second call should be no-op
-    vi.advanceTimersByTime(1000);
-    expect(onReport).toHaveBeenCalledTimes(1); // not 2
-    runner.dispose();
   });
 });

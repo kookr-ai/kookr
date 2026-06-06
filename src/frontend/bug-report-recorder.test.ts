@@ -7,10 +7,17 @@ import {
   recordReportableAlert,
   resetBugReportRecorderForTests,
 } from './bug-report-recorder.js';
+import {
+  clearDebugTimeline,
+  getDebugTimelineEntries,
+  setDebugTimelineEnabledForTests,
+} from './debug-timeline.js';
 
 describe('bug report recorder', () => {
   beforeEach(() => {
     resetBugReportRecorderForTests();
+    setDebugTimelineEnabledForTests(null);
+    clearDebugTimeline();
   });
 
   test('records malformed inbound messages before dispatch can drop them', () => {
@@ -34,6 +41,22 @@ describe('bug report recorder', () => {
       fieldNames: ['agentId', 'input', 'type'],
     });
     expect(JSON.stringify(observations)).not.toContain('secret customer prompt');
+  });
+
+  test('debug timeline records websocket metadata without prompt payloads', () => {
+    setDebugTimelineEnabledForTests(true);
+
+    recordOutbound({ type: 'respond', agentId: 'agent-1', input: 'proprietary design notes' });
+    recordInbound(
+      JSON.stringify({ type: 'update', agentId: 'agent-1', state: { taskName: 'secret task' } }),
+      { type: 'update', agentId: 'agent-1', state: { taskName: 'secret task' } },
+    );
+
+    const serialized = JSON.stringify(getDebugTimelineEntries());
+    expect(serialized).toContain('"type":"respond"');
+    expect(serialized).toContain('"agentId":"agent-1"');
+    expect(serialized).not.toContain('proprietary design notes');
+    expect(serialized).not.toContain('secret task');
   });
 
   test('evicts old wire observations by count', () => {

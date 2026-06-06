@@ -702,7 +702,7 @@ The system SHOULD reduce repeated metadata and long prompt noise when a develope
 - The selected task header keeps title, status, critical worktree health, age, and primary actions visible while moving provider, hooks, project, branch, cost, and token details into a details affordance
 - When a project and task are both selected on a wide viewport, the project drawer switches to a compact summary instead of showing full contribution history, settings, and recent tasks
 - Oversized launch prompts in the Activity pane render as a bounded preview with an explicit full-prompt expander
-- Task display text and hover text prioritize the user-authored prompt over Kookr-injected launch guidance so repeated worktree/checkpoint preambles do not look like duplicate user prompts
+- Task display text and hover text prioritize the user-authored prompt over Kookr-injected launch guidance so repeated worktree preambles do not look like duplicate user prompts
 - Tooltip portals do not retain hidden long prompt text after dismissal
 - Healthy task rows avoid repeated project metadata when the user is already scoped to that project
 - The global top bar avoids duplicating finding/healthy counts already shown in the findings and status areas
@@ -827,33 +827,6 @@ The system SHALL handle SIGINT/SIGTERM gracefully.
 - Agent dtach sessions are NOT killed (they survive independently)
 
 **Evidence:** `src/server/index.ts` (signal handlers, cleanup logic).
-
-### R6.8: Semantic Checkpoint Compatibility — SHALL — `done`
-
-The system SHALL preserve Markdown checkpoints while supporting `semantic-checkpoint.v1` JSON checkpoints for durable agent handoff and resume.
-
-**Acceptance criteria:**
-- Checkpoint cycling prompts agents to update both `CHECKPOINT.md` and `CHECKPOINT.json`
-- `CHECKPOINT.json` follows the documented `semantic-checkpoint.v1` contract
-- Launch/resume instructions prefer valid `CHECKPOINT.json` when present
-- Launch/resume instructions fall back to `CHECKPOINT.md` when JSON is absent or invalid
-- Invalid semantic checkpoint JSON is surfaced as a warning and does not block launch
-
-**Evidence:** `docs/schemas/semantic-checkpoint.v1.json`, `src/core/checkpoint-path.ts`, `src/core/checkpoint-cycler.ts`, `src/core/checkpoint-path.test.ts`, `src/core/checkpoint-cycler.test.ts`, `src/adapters/claude-code-adapter.test.ts`, `src/adapters/codex-cli-adapter.test.ts`.
-
-### R6.9: Checkpoint Memory Write Candidates — SHALL — `done`
-
-The system SHALL preserve review-only memory write candidates in checkpoint state without promoting them automatically.
-
-**Acceptance criteria:**
-- High-risk tasks can emit `memory_write_candidates.json` in `$TASK_CHECKPOINT_DIR`
-- Candidate files follow the documented `memory-write-candidates.v1` contract
-- Candidates include target, evidence, verifier status, approval status, lifecycle fields, and promotion metadata
-- Launch/resume instructions preserve valid candidate files across checkpoint/resume
-- Malformed candidate files are surfaced as warnings and do not block launch
-- Kookr does not automatically promote candidates into KB, wisdom, or skills
-
-**Evidence:** `docs/schemas/memory-write-candidates.v1.json`, `src/core/checkpoint-path.ts`, `src/core/checkpoint-path.test.ts`.
 
 ---
 
@@ -984,7 +957,8 @@ The system SHALL persist a per-schedule execution ledger for cron, manual, skipp
 
 **Acceptance criteria:**
 - Ledger entries include schedule id, due timestamp when applicable, evaluated time, trigger, decision, outcome, reason code, and related task/blocking task ids when available
-- Skips caused by active previous runs, capacity pressure, and stale catch-up windows are durable across restarts
+- Skips caused by active previous runs, capacity pressure, missed startup runs awaiting manual recovery, and stale catch-up windows are durable across restarts
+- Missed startup runs SHALL NOT auto-launch unless automatic catch-up is explicitly enabled; the scheduler SHALL advance its cron watermark so the same missed due slot does not replay on the next tick
 - The schedule API exposes the ledger with each schedule response
 - The schedules UI surfaces recent ledger entries without replacing the latest execution summary
 
@@ -1076,8 +1050,6 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R6.5 | arch | SHALL | done | server/index |
 | R6.6 | features | SHALL | partial | tested on Linux only |
 | R6.7 | arch | SHALL | done | server/index |
-| R6.8 | — | SHALL | done | semantic-checkpoint schema, checkpoint-path, checkpoint-cycler |
-| R6.9 | — | SHALL | done | memory-write-candidates schema, checkpoint-path |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |

@@ -4,9 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import { ClaudeCodeAdapter, resolvePluginDir } from './claude-code-adapter.js';
+import { DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { TaskStore } from '../core/tasks.js';
-import { resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import type { AgentEvent } from '../core/types.js';
+import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
 
 // Mock getGitInfo so we can control whether it returns data
 vi.mock('./git-info.js', async (importOriginal) => {
@@ -81,7 +82,7 @@ describe('ClaudeCodeAdapter', () => {
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const pendingSessionId = [...backend.sessions.keys()][0]!;
     expect(backend.getWrittenText(pendingSessionId)).toBe('');
-    backend.emit(pendingSessionId, 'ClaudeCode\n❯ ');
+    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
     await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
     bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
       session_id: 'shape-test-session',
@@ -120,7 +121,7 @@ describe('ClaudeCodeAdapter', () => {
       await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
       const pendingSessionId = [...backend.sessions.keys()][0]!;
       expect(backend.getWrittenText(pendingSessionId)).toBe('');
-      backend.emit(pendingSessionId, 'ClaudeCode\n❯ ');
+      backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
       await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
       defaultAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
         session_id: 'default-test-session',
@@ -234,6 +235,93 @@ describe('ClaudeCodeAdapter', () => {
     await launchPromise;
     // No third Enter — the hook fired before submitConfirmTimeoutMs elapsed.
     expect(writeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('bracketed-paste launch falls back to plain delivery when bracketed paste never confirms', async () => {
+    // Claude Code v2.1.156 can enable bracketed-paste mode but still drop the
+    // wrapped startup prompt. The adapter should then try the plain write path
+    // before failing closed, and the same UserPromptSubmit waiter should
+    // confirm that fallback submission.
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 500,
+      promptSubmitRetries: 0,
+    });
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+
+    // First writeSequence is bracketed paste; after its single confirm
+    // timeout, fallback sends a second writeSequence with plain text+Enter.
+    await vi.waitFor(
+      () => expect(writeSeqSpy).toHaveBeenCalledTimes(2),
+      { timeout: 2_000 },
+    );
+
+    const rawSessionId = '00000000-0000-0000-0000-dddddddddddd';
+    const transcriptPath = '/tmp/claude/transcripts/fallback-parent.jsonl';
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: transcriptPath,
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    }));
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: rawSessionId,
+      transcript_path: transcriptPath,
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Submit me',
+    }));
+
+    await launchPromise;
+    expect(writeSeqSpy).toHaveBeenCalledTimes(2);
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(backend.getWrittenText(pendingSessionId)).toBe('\x1b[200~Submit me\x1b[201~\rSubmit me\r');
+  });
+
+  test('bracketed-paste launch can timeout waiting for paste mode before fallback confirmation', async () => {
+    // Adapter-level coverage for the fail-open readiness timeout: if Claude
+    // paints the composer but never emits ESC[?2004h, launch should not hang.
+    // It proceeds to bracketed delivery, then falls back to plain delivery
+    // when no UserPromptSubmit confirms the bracketed attempt.
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 20,
+      promptReadyPollMs: 5,
+      promptSubmitConfirmTimeoutMs: 500,
+      promptSubmitRetries: 0,
+    });
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, 'ClaudeCode\n❯ ');
+
+    await vi.waitFor(
+      () => expect(writeSeqSpy).toHaveBeenCalledTimes(2),
+      { timeout: 2_000 },
+    );
+
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-eeeeeeeeeeee',
+      transcript_path: '/tmp/claude/transcripts/timeout-fallback-parent.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Submit me',
+    }));
+
+    await launchPromise;
+    expect(writeSeqSpy).toHaveBeenCalledTimes(2);
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(backend.getWrittenText(pendingSessionId)).toBe('\x1b[200~Submit me\x1b[201~\rSubmit me\r');
   });
 
   test('bracketed-paste launch fires the resolver on a UserPromptSubmit that arrives before any SessionStart', async () => {
@@ -357,6 +445,7 @@ describe('ClaudeCodeAdapter', () => {
       promptSubmitConfirmTimeoutMs: 5,
       promptSubmitRetries: 2,
     });
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
     const writeSpy = vi.spyOn(backend, 'write');
     const killSpy = vi.spyOn(backend, 'killSession');
     const task = taskStore.createTask('Fix bug', '/cwd');
@@ -366,8 +455,11 @@ describe('ClaudeCodeAdapter', () => {
     backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
 
     await expect(launchPromise).rejects.toThrow(/Initial prompt submission was not confirmed/);
-    // Initial Enter + promptSubmitRetries (2) resends = 3 Enter writes total.
-    expect(writeSpy).toHaveBeenCalledTimes(3);
+    // Bracketed attempt: initial Enter + 2 retries. Plain fallback:
+    // prompt+Enter in writeSequence + 2 retry Enters. writeSpy sees only
+    // the standalone Enter writes, so 3 + 2 = 5.
+    expect(writeSeqSpy).toHaveBeenCalledTimes(2);
+    expect(writeSpy).toHaveBeenCalledTimes(5);
     for (const call of writeSpy.mock.calls) {
       expect(Array.from(call[1])).toEqual([0x0d]);
     }
@@ -428,57 +520,6 @@ describe('ClaudeCodeAdapter', () => {
     expect(sourcesIdx).toBeGreaterThan(bypassIdx);
     expect(resumeIdx).toBeGreaterThan(sourcesIdx);
     expect(spec.args[sourcesIdx + 1]).toBe('');
-  });
-
-  test('resume launch appends the current semantic checkpoint reader when CHECKPOINT.json is valid', async () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), 'claude-checkpoint-resume-'));
-    try {
-      const cwd = join(tempRoot, 'repo');
-      const gitDir = join(cwd, '.git');
-      const kookrDataDir = join(tempRoot, '.kookr');
-      mkdirSync(gitDir, { recursive: true });
-      mkdirSync(kookrDataDir, { recursive: true });
-      writeFileSync(join(gitDir, 'HEAD'), 'ref: refs/heads/feat-checkpoint-json\n');
-      const checkpointDir = await resolveAndPrepareCheckpointDir({ cwd, kookrDataDir });
-      expect(checkpointDir).not.toBeNull();
-      writeFileSync(join(checkpointDir!, 'CHECKPOINT.json'), JSON.stringify({
-        schema_version: 'semantic-checkpoint.v1',
-        task_id: 'task-1',
-        repo: 'kookr-ai/kookr',
-        worktree: cwd,
-        branch: 'feat-checkpoint-json',
-        verdict: 'in_progress',
-        decisions: [],
-        evidence: [],
-        files_changed: [],
-        tests_run: [],
-        open_risks: [],
-        next_actions: [],
-        memory_write_candidates: [],
-      }));
-
-      const checkpointAdapter = new ClaudeCodeAdapter(backend, taskStore, { kookrDataDir });
-      const task = taskStore.createTask('Fix bug', cwd);
-      const sessionId = await checkpointAdapter.launch(task.id, 'original prompt', cwd, {
-        sessionId: '00000000-0000-0000-0000-000000000003',
-      });
-
-      const spec = backend.sessions.get(sessionId)!.spec;
-      const promptIdx = spec.args.indexOf('--append-system-prompt');
-      const resumeIdx = spec.args.indexOf('--resume');
-      expect(promptIdx).toBeGreaterThanOrEqual(0);
-      expect(resumeIdx).toBeGreaterThan(promptIdx);
-      expect(spec.args[promptIdx + 1]).toContain('Read $TASK_CHECKPOINT_DIR/CHECKPOINT.json as your very first action');
-      expect(spec.args).not.toContain('original prompt');
-      // Guard the integration seam: confirm the env var actually reaches the
-      // spawned process (not just the prompt instruction). A regression that
-      // dropped `launchContext.env` from the spec would leave the prompt
-      // assertion green while the agent silently runs without checkpoint state.
-      expect(spec.env?.TASK_CHECKPOINT_DIR).toBe(checkpointDir);
-      expect(spec.env?.KOOKR_CHECKPOINT_DIR).toBeUndefined();
-    } finally {
-      rmSync(tempRoot, { recursive: true, force: true });
-    }
   });
 
   test('launch injects --agents <json> when bypassAllPermissions is true and file-based agents exist', async () => {
@@ -776,6 +817,22 @@ describe('ClaudeCodeAdapter', () => {
     // V8: sendInput calls backend.writeSequence([text_bytes, ENTER_BYTES]).
     // FakeTerminalBackend concatenates written payloads; decoded, that's text + '\r'.
     expect(backend.getWrittenText(sessionId).slice(before)).toBe('yes, continue\r');
+  });
+
+  test('sendInput requests a delayed submitting Enter', async () => {
+    const writer: TerminalInputWriterPort = {
+      writeInput: vi.fn().mockResolvedValue({ sessionId: 'session-1', readinessVersion: 1 }),
+      writeInputSequence: vi.fn().mockResolvedValue({ sessionId: 'session-1', readinessVersion: 1 }),
+    };
+    const delayedAdapter = new ClaudeCodeAdapter(backend, taskStore, { terminalInputWriter: writer });
+
+    await delayedAdapter.sendInput('session-1', 'yes, continue');
+
+    expect(writer.writeInputSequence).toHaveBeenCalledWith(
+      'session-1',
+      [new TextEncoder().encode('yes, continue'), Uint8Array.of(0x0d)],
+      { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS },
+    );
   });
 
   test('sendInput records the submitted text in keysReceived', async () => {
@@ -1309,5 +1366,71 @@ describe('ClaudeCodeAdapter', () => {
       const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === sessionId)!;
       expect(session.cwd).toBe('/cwd');
     });
+  });
+});
+
+describe('ClaudeCodeAdapter reasoning effort (#681)', () => {
+  let backend: FakeTerminalBackend;
+  let taskStore: TaskStore;
+
+  beforeEach(() => {
+    backend = new FakeTerminalBackend();
+    taskStore = new TaskStore();
+    mockGetGitInfo.mockReset().mockResolvedValue(null);
+  });
+
+  test('no configured default and no override → argv is byte-identical (no --effort)', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore);
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).not.toContain('--effort');
+  });
+
+  test('per-agent-type default getter → pushes --effort <level>', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore, {
+      resolveDefaultEffort: () => 'high',
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    const idx = spec.args.indexOf('--effort');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(spec.args[idx + 1]).toBe('high');
+  });
+
+  test('per-task override (opts.effort) wins over the configured default', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore, {
+      resolveDefaultEffort: () => 'high',
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd', undefined, { effort: 'max' });
+    const spec = backend.sessions.get(sessionId)!.spec;
+    const idx = spec.args.indexOf('--effort');
+    expect(spec.args[idx + 1]).toBe('max');
+    // The default must not also be present.
+    expect(spec.args.filter((a) => a === '--effort')).toHaveLength(1);
+  });
+
+  test('a default getter returning undefined passes no --effort', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore, {
+      resolveDefaultEffort: () => undefined,
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).not.toContain('--effort');
+  });
+
+  test('an effort invalid for claude-code is skipped (defensive guard), not passed', async () => {
+    // `minimal`/`none` are codex-only; `max` is the claude-only top. A value
+    // outside claude's set must never reach the argv (it would break launch).
+    const adapter = new ClaudeCodeAdapter(backend, taskStore, {
+      resolveDefaultEffort: () => 'minimal',
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).not.toContain('--effort');
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,7 +9,6 @@ import {
   formatInjectedContext,
   nextTurnId,
   parseKbSearchResponse,
-  readCheckpointTaskContext,
   runKbContextInjection,
   type KbSearchExec,
   type TurnIdFsDeps,
@@ -52,53 +51,14 @@ function execReturning(stdout: string, exitCode = 0): (args: string[]) => Promis
 
 describe('assembleTaskContext', () => {
   it('stamps the turn id and includes the prompt', () => {
-    const ctx = assembleTaskContext({ prompt: 'how does X work', turnId: 7, checkpoint: null });
+    const ctx = assembleTaskContext({ prompt: 'how does X work', turnId: 7 });
     expect(ctx).toContain('[kookr-turn 7]');
     expect(ctx).toContain('Current request: how does X work');
   });
 
-  it('folds in CHECKPOINT.json task_id and next_actions', () => {
-    const ctx = assembleTaskContext({
-      prompt: 'continue',
-      turnId: 2,
-      checkpoint: { taskId: 'rfc-018-m2', nextActions: ['wire the hook', 'add tests'] },
-    });
-    expect(ctx).toContain('Active task: rfc-018-m2');
-    expect(ctx).toContain('- wire the hook');
-  });
-
   it('hard-truncates to 2000 chars (RFC §1)', () => {
-    const ctx = assembleTaskContext({ prompt: 'x'.repeat(5000), turnId: 1, checkpoint: null });
+    const ctx = assembleTaskContext({ prompt: 'x'.repeat(5000), turnId: 1 });
     expect(ctx.length).toBe(2000);
-  });
-});
-
-// --- readCheckpointTaskContext ----------------------------------------------
-
-describe('readCheckpointTaskContext', () => {
-  const validCheckpoint = JSON.stringify({
-    schema_version: 'semantic-checkpoint.v1',
-    task_id: 'rfc-018-m2',
-    next_actions: ['ship the hook', 42, 'add tests'],
-  });
-
-  it('returns null when no checkpoint dir is set', async () => {
-    expect(await readCheckpointTaskContext(undefined)).toBeNull();
-  });
-
-  it('extracts task_id and string next_actions', async () => {
-    const result = await readCheckpointTaskContext('/cp', async () => validCheckpoint);
-    expect(result).toEqual({ taskId: 'rfc-018-m2', nextActions: ['ship the hook', 'add tests'] });
-  });
-
-  it('fail-softs to null on a wrong schema_version', async () => {
-    const bad = JSON.stringify({ schema_version: 'other.v9', task_id: 'x' });
-    expect(await readCheckpointTaskContext('/cp', async () => bad)).toBeNull();
-  });
-
-  it('fail-softs to null on malformed JSON or a read error', async () => {
-    expect(await readCheckpointTaskContext('/cp', async () => 'not json')).toBeNull();
-    expect(await readCheckpointTaskContext('/cp', async () => { throw new Error('ENOENT'); })).toBeNull();
   });
 });
 
@@ -354,36 +314,6 @@ describe('runKbContextInjection', () => {
       { env: {}, stateDir: await tmpStateDir(), execKbSearch: execReturning(searchPayload({}, [])) },
     );
     expect(result.stdout).toBe('');
-  });
-
-  it('folds CHECKPOINT.json into the task_context passed to kb search', async () => {
-    const cpDir = await mkdtemp(join(tmpdir(), 'kookr-cp-'));
-    await writeFile(join(cpDir, 'CHECKPOINT.json'), JSON.stringify({
-      schema_version: 'semantic-checkpoint.v1',
-      task_id: 'rfc-018-m2',
-      next_actions: ['wire the hook'],
-    }), 'utf-8');
-    let taskContext = '';
-    await runKbContextInjection(
-      { prompt: 'continue the work', sessionId: 'cp1' },
-      {
-        env: { TASK_CHECKPOINT_DIR: cpDir },
-        stateDir: await tmpStateDir(),
-        execKbSearch: async (args) => {
-          const tcArg = args.find((a) => a.startsWith('--task-context-file='));
-          if (tcArg !== undefined) {
-            taskContext = await readFile(tcArg.slice('--task-context-file='.length), 'utf-8');
-          }
-          return {
-            stdout: searchPayload({ state: 'injected' }, [{ source: 'kb/a.md', content: 'x' }]),
-            stderr: '',
-            exitCode: 0,
-          };
-        },
-      },
-    );
-    expect(taskContext).toContain('Active task: rfc-018-m2');
-    expect(taskContext).toContain('wire the hook');
   });
 });
 

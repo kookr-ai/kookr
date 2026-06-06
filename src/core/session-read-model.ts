@@ -1,6 +1,6 @@
 import type { AgentType } from './agent-types.js';
 import type { CodexHookCapabilities } from './hook-events.js';
-import type { AgentStatus } from './task-status.js';
+import type { AgentStatus, TurnState } from './task-status.js';
 
 // Git repository metadata (moved from adapters/git-info.ts to fix core->adapters dependency)
 export interface GitInfo {
@@ -51,6 +51,15 @@ export interface SessionInfo {
   childSessionIds?: Record<string, ChildSessionInfo>;
   codexHookCapabilities?: CodexHookCapabilities;
   lastStatus?: AgentStatus | 'completed' | 'aborted';
+  /**
+   * The agent's most recently observed {@link TurnState} for this session
+   * (turn-state concept: #358), persisted from the event pipeline so it survives
+   * monitor cleanup and server restarts. Never set to `'unknown'` (so a trailing
+   * `session_end`, which derives `unknown`, cannot erase a prior `completed_turn`).
+   * Reconciliation reads it to tell a graceful finish from a mid-turn crash when
+   * the session dies — see `endedOnCleanTurn` in reconciliation.ts (#693).
+   */
+  lastTurnState?: TurnState;
   /** Last hook event timestamp (ms since epoch). Persisted for watchdog restart recovery. */
   lastEventAt?: number;
   gitBranch?: string;

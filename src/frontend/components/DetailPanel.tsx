@@ -14,8 +14,9 @@ import { TaskShareModal } from './TaskShareModal.js';
 import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../shared/contracts/remote-share.js';
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import { TaskDependencyEditor } from './TaskDependencyEditor.js';
-import { RelatedTasksSection } from './RelatedTasksSection.js';
+import { TaskDependencyRail } from './TaskDependencyRail.js';
 import { CoordinatorChainStripView } from './CoordinatorSurfaces.js';
+import { clearDetailReplyDraft, loadDetailReplyDraft, saveDetailReplyDraft } from '../store/detail-reply-draft.js';
 import {
   detectShortcutPlatform,
   getDefaultShortcutBindings,
@@ -255,6 +256,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   const inputRef = useRef<HTMLInputElement>(null);
   const { selectAgent, nextBottleneck, advanceEmptyEnter, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
+  const replyDraftScope = { taskId: agent?.taskId, agentId: agent?.agentId };
 
   // Right-pane mode for the Activity+Terminal|Diff split.
   const [rightPane, setRightPane] = useState<'terminal' | 'diff'>('terminal');
@@ -378,15 +380,9 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     }
   }, [agent?.agentId, agent?.anomaly?.type]);
 
-  // Clear input when selected agent changes — prevents stale text from being
-  // accidentally sent to the wrong agent after an agent switch.
-  const prevAgentIdRef = useRef(agent?.agentId);
   useEffect(() => {
-    if (agent?.agentId !== prevAgentIdRef.current) {
-      setInput('');
-      prevAgentIdRef.current = agent?.agentId;
-    }
-  }, [agent?.agentId]);
+    setInput(agent ? loadDetailReplyDraft(replyDraftScope) : '');
+  }, [agent?.taskId, agent?.agentId]);
 
   // Reset permission button disabled state when agent or suggestions change
   const suggestion = agent ? suggestions[agent.agentId] ?? null : null;
@@ -422,8 +418,13 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     );
   }
 
+  function setReplyInput(nextInput: string) {
+    setInput(nextInput);
+    saveDetailReplyDraft(replyDraftScope, nextInput);
+  }
+
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    setInput(e.target.value);
+    setReplyInput(e.target.value);
   }
 
   // Combine pattern-matched quick actions and AI suggestions into a unified button list
@@ -463,6 +464,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       return;
     }
     setInput('');
+    clearDetailReplyDraft(replyDraftScope);
     clearSuggestion(agent.agentId);
     showSentOverlay(agentName);
     if (!isDirectReply) {
@@ -519,6 +521,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       return;
     }
     setInput('');
+    clearDetailReplyDraft(replyDraftScope);
     clearSuggestion(agent.agentId);
     showSentOverlay(agentName);
     if (!isDirectReply) {
@@ -578,6 +581,12 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     onRequestComplete();
   }
 
+  function handleReflect() {
+    if (!agent?.taskId) return;
+    trackClick('task_snapshot_reflect');
+    send({ type: 'requestTaskSnapshotReflect', taskId: agent.taskId });
+  }
+
   function handleCancel() {
     if (!agent?.taskId) return;
     if (!confirm(`Cancel task "${agent.taskName ?? agent.agentId}"? The agent session will be terminated.`)) return;
@@ -633,6 +642,16 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   // finding card's "Signaled Complete" presentation. See issue #358.
   const isCompletedTurn = agent.anomaly?.type === 'needs_input'
     && agent.turnState === 'completed_turn';
+
+  // Agent → user signal (RFC: rfc-agent-signal-surface). Show a non-modal
+  // banner while the task is active; only emphasise Complete (pulse) when the
+  // agent is actually idle (completed_turn) so a signal raised mid-work never
+  // invites premature completion.
+  const pendingSignal = agent.pendingSignal;
+  const showSignalBanner = !!pendingSignal
+    && agent.taskStatus !== 'pending'
+    && !isTerminalTaskStatus(agent.taskStatus);
+  const signalCompleteReady = showSignalBanner && isCompletedTurn;
   const badgeClass = agent.anomaly
     ? agent.anomaly.type === 'permission_blocked' ? 'permission'
       : agent.anomaly.type === 'repeated_error' ? 'error'
@@ -711,7 +730,15 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           />
           {agent.taskId && agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && (
             <>
-              <button data-testid="action-complete" className="action-btn action-btn--success" onClick={handleComplete}>Complete</button>
+              <button data-testid="action-complete" className={`action-btn action-btn--success${signalCompleteReady ? ' action-btn--signal-ready' : ''}`} onClick={handleComplete}>Complete</button>
+              <button
+                data-testid="action-reflect"
+                className="action-btn action-btn--reflect"
+                title="Analyze this task without changing its status"
+                onClick={handleReflect}
+              >
+                Reflect
+              </button>
               <button data-testid="action-cancel" className="action-btn action-btn--danger" onClick={handleCancel}>Cancel</button>
             </>
           )}
@@ -730,12 +757,44 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           )}
           {agent.taskId && isTerminalTaskStatus(agent.taskStatus) && (
             <>
+              <button
+                data-testid="action-reflect"
+                className="action-btn action-btn--reflect"
+                title="Analyze this task without changing its status"
+                onClick={handleReflect}
+              >
+                Reflect
+              </button>
               <button className="action-btn action-btn--neutral" onClick={() => send({ type: 'reopenTask', taskId: agent.taskId! })}>Reopen</button>
               <button className="action-btn action-btn--neutral" onClick={handleRelaunch}>Relaunch</button>
             </>
           )}
         </div>
       </div>
+      {showSignalBanner && agent.taskId && (
+        <div
+          className={`detail-signal-banner${signalCompleteReady ? ' detail-signal-banner--ready' : ''}`}
+          role="status"
+          aria-live="polite"
+          data-testid="agent-signal-banner"
+        >
+          <span className="detail-signal-banner__text">
+            <strong>Agent:</strong>{' '}
+            {signalCompleteReady
+              ? 'ready for review — complete this task?'
+              : 'flagged ready (still working — review when idle)'}
+            {pendingSignal?.note ? ` — ${pendingSignal.note}` : ''}
+          </span>
+          <button
+            type="button"
+            className="action-btn action-btn--neutral"
+            data-testid="agent-signal-dismiss"
+            onClick={() => send({ type: 'dismissAgentSignal', taskId: agent.taskId! })}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {agent.taskId && (
         <TaskShareModal
           taskId={agent.taskId}
@@ -747,7 +806,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       )}
       {!rightOnlyMode && agent.taskId && <CoordinatorChainStripView agent={agent} />}
       {!rightOnlyMode && agent.taskId && <TaskDependencyEditor agent={agent} />}
-      {!rightOnlyMode && agent.taskId && <RelatedTasksSection agent={agent} />}
+      {!rightOnlyMode && agent.taskId && <TaskDependencyRail agent={agent} />}
 
       {/* Side-by-side split (wide) + tab fallback (narrow) */}
       {(() => {
@@ -851,18 +910,22 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                 ) : (
                   <Suspense fallback={null}>
                     <ActivityPanel
+                      agentId={agent.agentId}
                       events={agent.events}
+                      description={agent.description}
+                      cwd={agent.cwd}
                       anomalyExplanation={agent.anomaly?.explanation}
                       onOpenDiff={handleOpenDiff}
                       activityMeta={agent.activityMeta}
                       taskId={agent.taskId}
+                      isActive={agent.turnState === 'running'}
                     />
                   </Suspense>
                 )}
               </div>}
 
-              {/* Right pane: Terminal or Diff (terminal is always mounted so
-                  xterm state and WebSocket connection survive mode toggles) */}
+              {/* Right pane: Terminal or Diff (terminal stays mounted for UI
+                  state, but byte-stream subscription follows visibility) */}
               <div className={`detail-split-right${!rightOnlyMode && narrowTab !== 'terminal' ? ' pane-hidden-narrow' : ''}${!showRightPane ? ' pane-hidden-wide' : ''}`}>
                 <div className="detail-pane-header">
                   <button
@@ -1004,7 +1067,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
             <Suspense fallback={null}>
               <VoiceInputButton
                 inputId="response-input"
-                onTranscript={(text) => setInput(text)}
+                onTranscript={setReplyInput}
                 disabled={!agent}
                 shortcutBinding={shortcutBindings.stt_toggle}
               />

@@ -18,6 +18,7 @@ export interface ParsedArgs {
   positional: string[];
   cwd: string | null;
   agent: 'claude-code' | 'codex-cli' | null;
+  effort: string | null;
   criteria: string | null;
   dedupe: 'warn' | 'block' | 'skip';
   promptFile: string | null;
@@ -59,6 +60,7 @@ export interface PostTaskArgs {
   prompt: string;
   cwd: string;
   agent: 'claude-code' | 'codex-cli' | null;
+  effort?: string | null;
   criteria: string | null;
   disableDedup?: boolean;
   metadataIntent?: 'keep_as_duplicate' | null;
@@ -100,6 +102,7 @@ export interface MainDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
+export function apiAuthHeaders(env?: Record<string, string | undefined>): Record<string, string>;
 export function parseArgs(argv: string[]): ParsedArgs;
 export function parseMaxBytes(raw: string | undefined): number;
 export function parsePortEnv(raw: string | undefined): PortEnvParse;

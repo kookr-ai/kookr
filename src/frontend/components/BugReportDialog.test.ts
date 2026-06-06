@@ -34,6 +34,7 @@ function bundle(): BugReportBundle {
     fleetSummary: { totalAgents: 0, byTaskStatus: {}, byAnomalySeverity: {} },
     alerts: [],
     wireObservations: [],
+    debugTimeline: [],
     captureDiagnostics: {
       warnings: [],
       omittedSections: [],

@@ -1,4 +1,5 @@
 import type { CompletionDigest } from './completion-digest.js';
+import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
 import type { AgentType } from './agent-types.js';
 import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
@@ -28,17 +29,26 @@ export interface TaskCompletionFeedback {
 }
 
 /**
- * Marker for a reflect task spawned to analyze a completed source task.
+ * Marker for a reflect task spawned to analyze a source task.
  * Persisted on the spawned task itself so cleanup logic can identify reflect tasks
  * by their relationship to a source task.
  */
 export interface ReflectMeta {
+  /** Feedback reflect is completion-feedback driven; snapshot reflect is anytime/manual. */
+  kind?: 'feedback' | 'snapshot';
   /** Source task this reflect is analyzing. */
   sourceTaskId: string;
-  /** Path to the immutable feedback bundle dir the reflect was launched against. */
+  /** Path to the immutable bundle dir the reflect was launched against. */
   bundlePath: string;
-  /** 'up' triggers reinforcement branch in the skill; 'down' triggers fix-proposal branch. */
-  direction: 'up' | 'down';
+  /** Feedback reflect uses rating direction; snapshot reflect starts in review mode. */
+  direction: 'up' | 'down' | 'review';
+  /**
+   * Absolute path of the ephemeral worktree allocated for this reflect task.
+   * Set at spawn so the terminal-state cleanup can remove exactly this worktree
+   * without scanning. Optional for backward-compat with reflect tasks persisted
+   * before this field existed — those fall back to the startup sweep.
+   */
+  worktreePath?: string;
 }
 
 export interface CreateTaskOptions {
@@ -118,6 +128,12 @@ export interface Task {
   completionFeedback?: TaskCompletionFeedback;
   /** Marker present iff this task is itself a reflect spawn analyzing another task. */
   reflectMeta?: ReflectMeta;
+  /**
+   * Pending agent → user signal (RFC: rfc-agent-signal-surface). Raised via
+   * `POST /api/tasks/:id/signal`; cleared on dismiss or terminal status. Joined
+   * onto the client-facing AgentState at projection time.
+   */
+  pendingSignal?: PendingAgentSignal;
   createdAt: Date;
   updatedAt: Date;
   /** Set when the task transitions to 'terminated' via reconciliation. */

@@ -9,8 +9,22 @@ import {
   renderReport,
   parsePortEnv,
   resolvePort,
+  apiAuthHeaders,
   main,
 } from '../../bin/kookr-status.js';
+
+describe('kookr-status apiAuthHeaders (issue #708)', () => {
+  it('returns a Bearer header when KOOKR_API_TOKEN is set', () => {
+    expect(apiAuthHeaders({ KOOKR_API_TOKEN: '  lan-secret  ' })).toEqual({
+      Authorization: 'Bearer lan-secret',
+    });
+  });
+
+  it('returns no header when KOOKR_API_TOKEN is unset or blank', () => {
+    expect(apiAuthHeaders({})).toEqual({});
+    expect(apiAuthHeaders({ KOOKR_API_TOKEN: '   ' })).toEqual({});
+  });
+});
 
 describe('kookr-status formatUptime', () => {
   it('renders seconds-only durations', () => {
@@ -391,6 +405,22 @@ describe('kookr-status main (integration-style)', () => {
     await main(deps);
     expect(deps.exits).toEqual([1]);
     expect(deps.errors.join('\n')).toContain('KOOKR_PORT must be an integer');
+    expect(deps.logs).toEqual([]);
+  });
+
+  it('prints help and exits 0', async () => {
+    const deps = makeDeps({});
+    await main({ ...deps, argv: ['--help'] });
+    expect(deps.exits).toEqual([0]);
+    expect(deps.logs.join('\n')).toContain('kookr status');
+    expect(deps.errors).toEqual([]);
+  });
+
+  it('rejects unexpected arguments', async () => {
+    const deps = makeDeps({});
+    await main({ ...deps, argv: ['extra'] });
+    expect(deps.exits).toEqual([2]);
+    expect(deps.errors.join('\n')).toContain('Unexpected argument: extra');
     expect(deps.logs).toEqual([]);
   });
 

@@ -6,7 +6,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { App } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
-import { recordReportableAlert, resetBugReportRecorderForTests } from './bug-report-recorder.js';
+import { recordOutbound, recordReportableAlert, resetBugReportRecorderForTests } from './bug-report-recorder.js';
+import { clearDebugTimeline, setDebugTimelineEnabledForTests } from './debug-timeline.js';
+import type { AgentState } from '../shared/protocol.js';
 
 const websocketMock = vi.hoisted(() => ({
   send: vi.fn(() => true),
@@ -68,6 +70,20 @@ async function waitForElement<T extends Element>(container: Element, selector: s
   throw new Error(`Timed out waiting for ${selector}`);
 }
 
+function makeAgent(overrides: Partial<AgentState>): AgentState {
+  return {
+    agentId: overrides.agentId ?? 'agent-1',
+    taskId: overrides.taskId ?? 'task-1',
+    taskName: overrides.taskName ?? 'Example task',
+    events: [],
+    anomaly: null,
+    cwd: overrides.cwd ?? '/tmp/kookr',
+    startedAt: '2026-05-24T00:00:00.000Z',
+    taskStatus: overrides.taskStatus ?? 'inProgress',
+    ...overrides,
+  } as AgentState;
+}
+
 describe('App operations modal shortcuts', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -76,8 +92,11 @@ describe('App operations modal shortcuts', () => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.setItem('kookr:onboarding:seen-v2', 'true');
-    websocketMock.send.mockClear();
+    websocketMock.send.mockReset();
+    websocketMock.send.mockImplementation(() => true);
     resetBugReportRecorderForTests();
+    setDebugTimelineEnabledForTests(null);
+    clearDebugTimeline();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/anomaly-stats')) {
@@ -103,7 +122,10 @@ describe('App operations modal shortcuts', () => {
     });
     document.body.innerHTML = '';
     localStorage.clear();
+    setDebugTimelineEnabledForTests(null);
+    clearDebugTimeline();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   test('global help shortcut is suppressed while diagnostics is modal', async () => {
@@ -159,7 +181,203 @@ describe('App operations modal shortcuts', () => {
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Thumbs down"]')).toBeInstanceOf(HTMLButtonElement);
   });
 
-  test('complete confirmation keeps the task selected when the dialog opened', async () => {
+  test('clear completed from a selected project panel sends project scope', async () => {
+    useKookrStore.setState({
+      agents: [
+        makeAgent({
+          agentId: 'project-a-done',
+          taskId: 'task-a',
+          taskName: 'Project A done',
+          projectId: 'github.com/acme/a',
+          taskStatus: 'completed',
+        }),
+        makeAgent({
+          agentId: 'project-b-done',
+          taskId: 'task-b',
+          taskName: 'Project B done',
+          projectId: 'github.com/acme/b',
+          taskStatus: 'completed',
+        }),
+      ],
+      selectedProject: 'github.com/acme/a',
+      selectedAgentId: null,
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const clearButton = await waitForElement<HTMLButtonElement>(container, 'button.btn-clear-completed');
+    await act(async () => {
+      clearButton.click();
+    });
+
+    expect(container.querySelector('.confirm-dialog-message')?.textContent).toContain('Delete 1 finished task?');
+
+    const deleteButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-danger');
+    await act(async () => {
+      deleteButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({
+      type: 'clearCompleted',
+      includeTerminated: false,
+      projectId: 'github.com/acme/a',
+    });
+  });
+
+  test('complete dialog can request reflection after thumbs-up feedback', async () => {
+    useKookrStore.setState({
+      agents: [{
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        taskName: 'Reflection task',
+        events: [],
+        anomaly: null,
+        cwd: '/tmp/kookr',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskStatus: 'inProgress',
+      }],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+
+    const thumbsUp = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Thumbs up"]');
+    await act(async () => {
+      thumbsUp.click();
+    });
+
+    const reflectCheckbox = await waitForElement<HTMLInputElement>(
+      container,
+      '.complete-feedback-checkbox input[type="checkbox"]',
+    );
+    expect(reflectCheckbox.checked).toBe(false);
+    await act(async () => {
+      reflectCheckbox.click();
+    });
+
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({
+      type: 'completeTask',
+      taskId: 'task-1',
+      feedback: { rating: 'up' },
+      requestReflect: true,
+    });
+  });
+
+  test('complete dialog proposes reflection by default for thumbs-down feedback', async () => {
+    useKookrStore.setState({
+      agents: [{
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        taskName: 'Broken task',
+        events: [],
+        anomaly: null,
+        cwd: '/tmp/kookr',
+        startedAt: '2026-05-24T00:00:00.000Z',
+        taskStatus: 'inProgress',
+      }],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+
+    const thumbsDown = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Thumbs down"]');
+    await act(async () => {
+      thumbsDown.click();
+    });
+
+    const checkboxes = Array.from(container.querySelectorAll<HTMLInputElement>('.complete-feedback-checkbox input[type="checkbox"]'));
+    expect(checkboxes).toHaveLength(2);
+    expect(checkboxes[1]!.checked).toBe(true);
+
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({
+      type: 'completeTask',
+      taskId: 'task-1',
+      feedback: { rating: 'down' },
+      requestReflect: true,
+    });
+  });
+
+  test('complete confirmation advances to the next available task', async () => {
+    useKookrStore.setState({
+      agents: [
+        {
+          agentId: 'agent-1',
+          taskId: 'task-1',
+          taskName: 'First task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:00:00.000Z',
+          taskStatus: 'inProgress',
+        },
+        {
+          agentId: 'agent-2',
+          taskId: 'task-2',
+          taskName: 'Second task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:01:00.000Z',
+          taskStatus: 'inProgress',
+        },
+        {
+          agentId: 'agent-3',
+          taskId: 'task-3',
+          taskName: 'Third task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:02:00.000Z',
+          taskStatus: 'inProgress',
+        },
+      ],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
+  });
+
+  test('complete confirmation does not steal focus after a manual selection change', async () => {
     useKookrStore.setState({
       agents: [
         {
@@ -195,7 +413,7 @@ describe('App operations modal shortcuts', () => {
       completeButton.click();
     });
     await act(async () => {
-      useKookrStore.getState().selectAgent('agent-2');
+      useKookrStore.getState().selectAgent('agent-3');
     });
     const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
     await act(async () => {
@@ -203,6 +421,52 @@ describe('App operations modal shortcuts', () => {
     });
 
     expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-3');
+  });
+
+  test('complete confirmation does not advance when completion send fails', async () => {
+    websocketMock.send.mockReturnValue(false);
+    useKookrStore.setState({
+      agents: [
+        {
+          agentId: 'agent-1',
+          taskId: 'task-1',
+          taskName: 'First task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:00:00.000Z',
+          taskStatus: 'inProgress',
+        },
+        {
+          agentId: 'agent-2',
+          taskId: 'task-2',
+          taskName: 'Second task',
+          events: [],
+          anomaly: null,
+          cwd: '/tmp/kookr',
+          startedAt: '2026-05-24T00:01:00.000Z',
+          taskStatus: 'inProgress',
+        },
+      ],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-1');
   });
 
   test('top-bar bug report opens a live bundle preview with recorder state and note edits', async () => {
@@ -229,7 +493,13 @@ describe('App operations modal shortcuts', () => {
       root.render(React.createElement(App));
     });
 
-    const bugReport = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Bug report"]');
+    // Bug report now lives in the command palette (top-bar declutter): open the
+    // palette, then run the "Bug report" action.
+    const paletteTrigger = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-trigger"]');
+    await act(async () => {
+      paletteTrigger.click();
+    });
+    const bugReport = await waitForElement<HTMLButtonElement>(container, '[data-action-id="bug-report"]');
     await act(async () => {
       bugReport.click();
     });
@@ -249,6 +519,39 @@ describe('App operations modal shortcuts', () => {
       'value',
       expect.stringContaining('user-added note'),
     );
+  });
+
+  test('debug timeline export downloads a redacted bundle', async () => {
+    setDebugTimelineEnabledForTests(true);
+    recordOutbound({ type: 'respond', agentId: 'agent-1', input: 'proprietary design notes' });
+    let downloadedBlob: Blob | null = null;
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    class TestURL extends URL {
+      static createObjectURL = vi.fn((blob: Blob) => {
+        downloadedBlob = blob;
+        return 'blob:debug-trace';
+      });
+      static revokeObjectURL = vi.fn();
+    }
+    vi.stubGlobal('URL', TestURL);
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const exportTrace = await waitForElement<HTMLButtonElement>(container, '.debug-timeline-actions .btn-primary');
+    await act(async () => {
+      exportTrace.click();
+    });
+
+    expect(clickSpy).toHaveBeenCalled();
+    expect(downloadedBlob).not.toBeNull();
+    const serialized = await downloadedBlob!.text();
+    expect(serialized).toContain('"debugTimeline"');
+    expect(serialized).toContain('"summary": "websocket outbound respond');
+    expect(serialized).toContain('"wireObservations": []');
+    expect(serialized).not.toContain('proprietary design notes');
+    expect(serialized).not.toContain('"input"');
   });
 
   test('global shortcuts are suppressed while bug report dialog is open', async () => {
@@ -282,7 +585,13 @@ describe('App operations modal shortcuts', () => {
       root.render(React.createElement(App));
     });
 
-    const bugReport = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Bug report"]');
+    // Bug report now lives in the command palette (top-bar declutter): open the
+    // palette, then run the "Bug report" action.
+    const paletteTrigger = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-trigger"]');
+    await act(async () => {
+      paletteTrigger.click();
+    });
+    const bugReport = await waitForElement<HTMLButtonElement>(container, '[data-action-id="bug-report"]');
     await act(async () => {
       bugReport.click();
     });

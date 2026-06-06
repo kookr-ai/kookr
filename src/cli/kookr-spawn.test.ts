@@ -109,6 +109,19 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--agent', 'gpt-4'])).toThrow(UsageError);
   });
 
+  it('parses --effort and --effort=<level>, defaulting to null (#681)', () => {
+    expect(parseArgs([]).effort).toBeNull();
+    expect(parseArgs(['--effort', 'high']).effort).toBe('high');
+    expect(parseArgs(['--effort=max']).effort).toBe('max');
+    // codex-only levels parse fine at the CLI (server does agent-specific check).
+    expect(parseArgs(['--effort', 'minimal']).effort).toBe('minimal');
+  });
+
+  it('rejects an --effort value outside the cross-agent union (#681)', () => {
+    expect(() => parseArgs(['--effort', 'ultra'])).toThrow(UsageError);
+    expect(() => parseArgs(['--effort', ''])).toThrow(UsageError);
+  });
+
   it('rejects invalid --dedupe value', () => {
     expect(() => parseArgs(['--dedupe', 'maybe'])).toThrow(UsageError);
   });
@@ -445,6 +458,41 @@ describe('postTask', () => {
     }
   });
 
+  it('sends Authorization: Bearer when KOOKR_API_TOKEN is set (issue #708)', async () => {
+    let authSeen: string | undefined;
+    const { server, baseUrl } = await startFakeApi((req) => {
+      authSeen = req.headers['authorization'] as string | undefined;
+      return { status: 201, body: JSON.stringify({ id: 'task-1' }) };
+    });
+    const prev = process.env.KOOKR_API_TOKEN;
+    process.env.KOOKR_API_TOKEN = 'lan-secret';
+    try {
+      await postTask({ baseUrl, prompt: 'hi', cwd: '/tmp/x', agent: null, criteria: null });
+      expect(authSeen).toBe('Bearer lan-secret');
+    } finally {
+      if (prev === undefined) delete process.env.KOOKR_API_TOKEN;
+      else process.env.KOOKR_API_TOKEN = prev;
+      await closeServer(server);
+    }
+  });
+
+  it('omits Authorization when KOOKR_API_TOKEN is unset (loopback flow)', async () => {
+    let authSeen: string | undefined = 'unset-sentinel';
+    const { server, baseUrl } = await startFakeApi((req) => {
+      authSeen = req.headers['authorization'] as string | undefined;
+      return { status: 201, body: JSON.stringify({ id: 'task-1' }) };
+    });
+    const prev = process.env.KOOKR_API_TOKEN;
+    delete process.env.KOOKR_API_TOKEN;
+    try {
+      await postTask({ baseUrl, prompt: 'hi', cwd: '/tmp/x', agent: null, criteria: null });
+      expect(authSeen).toBeUndefined();
+    } finally {
+      if (prev !== undefined) process.env.KOOKR_API_TOKEN = prev;
+      await closeServer(server);
+    }
+  });
+
   it('returns kind=duplicate when server signals dedup', async () => {
     const { server, baseUrl } = await startFakeApi(() => ({
       status: 200,
@@ -506,6 +554,22 @@ describe('postTask', () => {
       });
       expect(bodySeen.agentType).toBe('codex-cli');
       expect(bodySeen.criteria).toBe('pass');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('includes effort when provided and omits it otherwise (#681)', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodies.push(JSON.parse(bodyText));
+      return { status: 201, body: JSON.stringify({ id: 't' }) };
+    });
+    try {
+      await postTask({ baseUrl, prompt: 'hi', cwd: '/tmp', agent: null, effort: 'max', criteria: null });
+      await postTask({ baseUrl, prompt: 'hi2', cwd: '/tmp', agent: null, criteria: null });
+      expect(bodies[0].effort).toBe('max');
+      expect(bodies[1]).not.toHaveProperty('effort');
     } finally {
       await closeServer(server);
     }

@@ -34,5 +34,5 @@ MBSE-lite: C4-inspired structural views + Mermaid behavioral views (sequences, s
 ## Confidence And Limitations
 
 - **High confidence:** System context, container boundaries, task lifecycle, terminal backend model — backed by ADRs and current TypeScript implementation.
-- **Medium confidence:** Long-running operational workflows such as Ralph loops, checkpoint cycling, and workspace cleanup — implemented but evolving quickly.
+- **Medium confidence:** Long-running operational workflows such as Ralph loops and workspace cleanup — implemented but evolving quickly.
 - **Limitation:** The models summarize current behavior and do not enumerate every frontend component or test helper. Use the source tree as the authoritative exhaustive file list.

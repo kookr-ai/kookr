@@ -2,6 +2,7 @@ import type { AgentType } from './agent-types.js';
 import type { AgentEvent } from './agent-events.js';
 import type { AgentActivityMeta } from './hook-events.js';
 import type { Anomaly, AnomalySeverity, FindingEvidenceAuditRecord } from './anomalies.js';
+import type { PendingAgentSignal } from './agent-signal.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { LatestCompletionSignal } from './completion-signal.js';
 import type { RalphLoopState, TaskCompletionFeedback, TaskDependencyEdge, TaskLaunchHealthSummary, TaskPriority } from './task.js';
@@ -81,4 +82,11 @@ export interface AgentState {
    * finding to bump from.
    */
   effectiveAttentionSeverity?: AnomalySeverity;
+  /**
+   * Pending agent → user signal (RFC: rfc-agent-signal-surface), joined from
+   * the task record onto the client-facing state at projection time. Like
+   * {@link childRollup}, this is populated only by the snapshot builder — the
+   * raw Monitor AgentState never carries it. Absent when no signal is raised.
+   */
+  pendingSignal?: PendingAgentSignal;
 }

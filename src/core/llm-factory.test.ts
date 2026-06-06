@@ -1,18 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createLlmClient, FallbackLlmClient, readLlmProvider } from './llm-factory.js';
+import type { LlmClient } from './llm-types.js';
 
 const created = vi.hoisted(() => ({
   groq: [] as string[],
   google: [] as string[],
   anthropic: [] as string[],
-  openrouter: [] as Array<{
-    apiKey: string;
-    model?: string;
-    baseUrl?: string;
-    httpReferer?: string;
-    appTitle?: string;
-    timeoutMs?: number;
-  }>,
+  openrouter: [] as string[],
+  requesty: [] as string[],
 }));
 
 vi.mock('./groq-client.js', () => ({
@@ -60,35 +55,15 @@ vi.mock('./anthropic-client.js', () => ({
   },
 }));
 
-vi.mock('./openrouter-client.js', () => ({
-  OpenRouterLlmClient: class {
-    readonly provider = 'openrouter';
-    readonly model: string;
-
-    constructor(options: {
-      apiKey: string;
-      model?: string;
-      baseUrl?: string;
-      httpReferer?: string;
-      appTitle?: string;
-      timeoutMs?: number;
-    }) {
-      created.openrouter.push(options);
-      this.model = options.model ?? 'openrouter-model';
-    }
-
-    async complete(): Promise<string | null> {
-      return null;
-    }
-  },
-}));
-
 const ENV_KEYS = [
   'GROQ_API_KEY',
   'GEMINI_API_KEY',
   'ANTHROPIC_API_KEY',
   'KOOKR_OPENROUTER_API_KEY',
   'OPENROUTER_API_KEY',
+  'KOOKR_REQUESTY_API_KEY',
+  'REQUESTY_API_KEY',
+  'KOOKR_REQUESTY_MODEL',
   'KOOKR_LLM_PROVIDER',
   'KOOKR_LLM_MODEL',
   'KOOKR_LLM_BASE_URL',
@@ -103,6 +78,32 @@ function clearEnv(): void {
   for (const key of ENV_KEYS) delete process.env[key];
 }
 
+function buildOpenRouter(model = 'openrouter-model'): () => LlmClient {
+  return () => {
+    created.openrouter.push(model);
+    return {
+      provider: 'openrouter',
+      model,
+      async complete(): Promise<string | null> {
+        return null;
+      },
+    };
+  };
+}
+
+function buildRequesty(model = 'requesty-model'): () => LlmClient {
+  return () => {
+    created.requesty.push(model);
+    return {
+      provider: 'requesty',
+      model,
+      async complete(): Promise<string | null> {
+        return null;
+      },
+    };
+  };
+}
+
 describe('createLlmClient', () => {
   beforeEach(() => {
     clearEnv();
@@ -110,6 +111,7 @@ describe('createLlmClient', () => {
     created.google = [];
     created.anthropic = [];
     created.openrouter = [];
+    created.requesty = [];
   });
 
   afterEach(() => {
@@ -166,111 +168,38 @@ describe('createLlmClient', () => {
     process.env.ANTHROPIC_API_KEY = 'anthropic-key';
     process.env.OPENROUTER_API_KEY = 'openrouter-key';
 
-    const client = await createLlmClient();
+    const client = await createLlmClient({ buildOpenRouter: buildOpenRouter(), buildRequesty: buildRequesty() });
 
     expect(client).toBeInstanceOf(FallbackLlmClient);
     expect(client?.provider).toBe('groq > google > anthropic > openrouter');
-    expect(created.openrouter).toEqual([{ apiKey: 'openrouter-key' }]);
+    expect(created.openrouter).toEqual(['openrouter-model']);
   });
 
-  test('uses OpenRouter alone when it is the only configured provider', async () => {
-    process.env.KOOKR_OPENROUTER_API_KEY = 'or-key';
+  test('does not include Requesty in the auto fallback chain', async () => {
+    process.env.REQUESTY_API_KEY = 'requesty-key';
+    process.env.OPENROUTER_API_KEY = 'openrouter-key';
 
-    const client = await createLlmClient();
+    const client = await createLlmClient({ buildOpenRouter: buildOpenRouter(), buildRequesty: buildRequesty() });
+
+    expect(client?.provider).toBe('openrouter');
+    expect(created.requesty).toEqual([]);
+    expect(created.openrouter).toEqual(['openrouter-model']);
+  });
+
+  test('uses OpenRouter alone when it is the only configured provider builder', async () => {
+    const client = await createLlmClient({ buildOpenRouter: buildOpenRouter(), buildRequesty: buildRequesty() });
 
     expect(client?.provider).toBe('openrouter');
     expect(client).not.toBeInstanceOf(FallbackLlmClient);
   });
 
-  test('prefers KOOKR_OPENROUTER_API_KEY over OPENROUTER_API_KEY', async () => {
-    process.env.KOOKR_OPENROUTER_API_KEY = 'component-key';
+  test('does not construct OpenRouter unless the adapter builder is provided', async () => {
     process.env.OPENROUTER_API_KEY = 'shared-key';
-
-    await createLlmClient();
-
-    expect(created.openrouter).toEqual([{ apiKey: 'component-key' }]);
-  });
-
-  test('falls back to OPENROUTER_API_KEY when the component key is unset', async () => {
-    process.env.OPENROUTER_API_KEY = 'shared-key';
-
-    await createLlmClient();
-
-    expect(created.openrouter).toEqual([{ apiKey: 'shared-key' }]);
-  });
-
-  test('falls back to OPENROUTER_API_KEY when the component key is blank', async () => {
-    process.env.KOOKR_OPENROUTER_API_KEY = '   ';
-    process.env.OPENROUTER_API_KEY = 'shared-key';
-
-    await createLlmClient();
-
-    expect(created.openrouter).toEqual([{ apiKey: 'shared-key' }]);
-  });
-
-  test('passes OpenRouter model and base URL overrides through', async () => {
-    process.env.OPENROUTER_API_KEY = 'or-key';
-    process.env.KOOKR_LLM_MODEL = 'deepseek/deepseek-v4-flash';
-    process.env.KOOKR_LLM_BASE_URL = 'https://openrouter.ai/api/v1';
 
     const client = await createLlmClient();
 
-    expect(created.openrouter[0]).toMatchObject({
-      apiKey: 'or-key',
-      model: 'deepseek/deepseek-v4-flash',
-      baseUrl: 'https://openrouter.ai/api/v1',
-    });
-    expect(client?.model).toBe('deepseek/deepseek-v4-flash');
-  });
-
-  test('forwards OpenRouter attribution headers from env', async () => {
-    process.env.OPENROUTER_API_KEY = 'or-key';
-    process.env.KOOKR_LLM_HTTP_REFERER = 'https://kookr.example';
-    process.env.KOOKR_LLM_APP_TITLE = 'Kookr Prod';
-
-    await createLlmClient();
-
-    expect(created.openrouter[0]).toMatchObject({
-      httpReferer: 'https://kookr.example',
-      appTitle: 'Kookr Prod',
-    });
-  });
-
-  test('forwards a valid KOOKR_LLM_TIMEOUT_MS to the OpenRouter client', async () => {
-    process.env.OPENROUTER_API_KEY = 'or-key';
-    process.env.KOOKR_LLM_TIMEOUT_MS = '30000';
-
-    await createLlmClient();
-
-    expect(created.openrouter[0]).toMatchObject({ timeoutMs: 30_000 });
-  });
-
-  test('trims surrounding whitespace from KOOKR_LLM_TIMEOUT_MS', async () => {
-    process.env.OPENROUTER_API_KEY = 'or-key';
-    process.env.KOOKR_LLM_TIMEOUT_MS = '  30000  ';
-
-    await createLlmClient();
-
-    expect(created.openrouter[0]).toMatchObject({ timeoutMs: 30_000 });
-  });
-
-  test('leaves timeoutMs unset when KOOKR_LLM_TIMEOUT_MS is not configured', async () => {
-    process.env.OPENROUTER_API_KEY = 'or-key';
-
-    await createLlmClient();
-
-    expect(created.openrouter[0].timeoutMs).toBeUndefined();
-  });
-
-  test('ignores a non-numeric or non-positive KOOKR_LLM_TIMEOUT_MS', async () => {
-    process.env.OPENROUTER_API_KEY = 'or-key';
-
-    for (const bad of ['not-a-number', '0', '-500', '  ']) {
-      created.openrouter = [];
-      process.env.KOOKR_LLM_TIMEOUT_MS = bad;
-      await createLlmClient();
-      expect(created.openrouter[0].timeoutMs).toBeUndefined();
-    }
+    expect(client).toBeNull();
+    expect(created.openrouter).toEqual([]);
   });
 
   test('explicit KOOKR_LLM_PROVIDER=openrouter ignores other configured providers', async () => {
@@ -278,7 +207,7 @@ describe('createLlmClient', () => {
     process.env.GROQ_API_KEY = 'groq-key';
     process.env.OPENROUTER_API_KEY = 'or-key';
 
-    const client = await createLlmClient();
+    const client = await createLlmClient({ buildOpenRouter: buildOpenRouter(), buildRequesty: buildRequesty() });
 
     expect(client?.provider).toBe('openrouter');
     expect(client).not.toBeInstanceOf(FallbackLlmClient);
@@ -296,12 +225,51 @@ describe('createLlmClient', () => {
     expect(created.openrouter).toEqual([]);
   });
 
+  test('explicit KOOKR_LLM_PROVIDER=requesty uses Requesty only', async () => {
+    process.env.KOOKR_LLM_PROVIDER = 'requesty';
+    process.env.GROQ_API_KEY = 'groq-key';
+    process.env.KOOKR_REQUESTY_API_KEY = ' requesty-key ';
+    process.env.KOOKR_REQUESTY_MODEL = ' openai/gpt-4o ';
+    process.env.OPENROUTER_API_KEY = 'or-key';
+
+    const client = await createLlmClient({ buildOpenRouter: buildOpenRouter(), buildRequesty: buildRequesty() });
+
+    expect(client?.provider).toBe('requesty');
+    expect(client?.model).toBe('requesty-model');
+    expect(created.requesty).toEqual(['requesty-model']);
+    expect(created.groq).toEqual([]);
+    expect(created.openrouter).toEqual([]);
+  });
+
+  test('explicit Requesty provider ignores OpenRouter key variables', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.KOOKR_LLM_PROVIDER = 'requesty';
+    process.env.KOOKR_OPENROUTER_API_KEY = 'or-key';
+    process.env.OPENROUTER_API_KEY = 'shared-or-key';
+
+    await expect(createLlmClient({ buildOpenRouter: buildOpenRouter(), buildRequesty: () => null })).resolves.toBeNull();
+    expect(created.requesty).toEqual([]);
+    expect(created.openrouter).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no API key is configured'));
+    warn.mockRestore();
+  });
+
   test('explicit provider with no API key returns null and warns', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     process.env.KOOKR_LLM_PROVIDER = 'openrouter';
 
-    await expect(createLlmClient()).resolves.toBeNull();
+    await expect(createLlmClient({ buildOpenRouter: () => null })).resolves.toBeNull();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('no API key is configured'));
+    warn.mockRestore();
+  });
+
+  test('explicit OpenRouter provider without an adapter builder warns clearly', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.KOOKR_LLM_PROVIDER = 'openrouter';
+    process.env.OPENROUTER_API_KEY = 'or-key';
+
+    await expect(createLlmClient()).resolves.toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('provider adapter is not configured'));
     warn.mockRestore();
   });
 
@@ -309,9 +277,19 @@ describe('createLlmClient', () => {
     process.env.KOOKR_LLM_PROVIDER = 'OpenRouter';
     process.env.OPENROUTER_API_KEY = 'or-key';
 
-    const client = await createLlmClient();
+    const client = await createLlmClient({ buildOpenRouter: buildOpenRouter() });
 
     expect(client?.provider).toBe('openrouter');
+  });
+
+  test('explicit Requesty selection is case-insensitive', async () => {
+    process.env.KOOKR_LLM_PROVIDER = ' Requesty ';
+    process.env.REQUESTY_API_KEY = 'requesty-key';
+
+    const client = await createLlmClient({ buildRequesty: buildRequesty() });
+
+    expect(client?.provider).toBe('requesty');
+    expect(created.requesty).toEqual(['requesty-model']);
   });
 
   test('an unknown KOOKR_LLM_PROVIDER falls back to auto selection', async () => {
@@ -323,6 +301,7 @@ describe('createLlmClient', () => {
 
     expect(client?.provider).toBe('groq');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Unknown KOOKR_LLM_PROVIDER'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('requesty'));
     warn.mockRestore();
   });
 });
@@ -369,6 +348,14 @@ describe('FallbackLlmClient.complete abort propagation', () => {
     await expect(fb.complete({ maxTokens: 10, userMessage: 'hi' })).resolves.toBe('final answer');
     expect(b.complete).toHaveBeenCalledOnce();
   });
+
+  test('provider timeout errors still advance to the next provider', async () => {
+    const a = client('a', async () => { throw new Error('Requesty request timed out after 1000ms'); });
+    const b = client('b', async () => 'fallback after timeout');
+    const fb = new FallbackLlmClient([a, b]);
+    await expect(fb.complete({ maxTokens: 10, userMessage: 'hi' })).resolves.toBe('fallback after timeout');
+    expect(b.complete).toHaveBeenCalledOnce();
+  });
 });
 
 describe('readLlmProvider', () => {
@@ -386,6 +373,11 @@ describe('readLlmProvider', () => {
   test('normalizes a recognized provider', () => {
     process.env.KOOKR_LLM_PROVIDER = '  ANTHROPIC ';
     expect(readLlmProvider()).toBe('anthropic');
+  });
+
+  test('normalizes requesty provider', () => {
+    process.env.KOOKR_LLM_PROVIDER = '  REQUESTY ';
+    expect(readLlmProvider()).toBe('requesty');
   });
 
   test('returns auto for an unrecognized value', () => {

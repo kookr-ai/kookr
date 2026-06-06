@@ -31,18 +31,18 @@ import {
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { inferGitInfoPathFromEvent } from './git-path-inference.js';
+import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
 import {
   buildAgentLaunchContext,
+  DEFAULT_PROMPT_SUBMIT_DELAY_MS,
   deliverInitialPromptToSession,
   type InitialPromptDeliveryResult,
   resolveBracketedPasteSubmit,
 } from './agent-launch-context.js';
-import { buildCheckpointLoadInstruction } from '../core/checkpoint-load-instruction.js';
-import { resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
-import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
+import { buildHookCommand, buildStopNudgeCommand, resolveHookWriterPath, resolveStopNudgePath } from '../core/hook-writer-paths.js';
 import { withTimeout } from '../core/with-timeout.js';
 
 const textEncoder = new TextEncoder();
@@ -71,14 +71,6 @@ export interface ClaudeCodeAdapterOptions {
    */
   bypassAllPermissions?: boolean;
   /**
-   * Kookr data directory (`~/.kookr` or `~/.kookr-<port>`). When provided,
-   * each launched task gets a per-(repo, branch) checkpoint directory under
-   * `<kookrDataDir>/checkpoints/...` and `TASK_CHECKPOINT_DIR` is injected
-   * into the spawned agent's environment. Without this, checkpointing is
-   * silently disabled (fail-open).
-   */
-  kookrDataDir?: string;
-  /**
    * Absolute path to the kookr-toolkit plugin tree (containing
    * `.claude-plugin/plugin.json`). When set and the path is valid, the
    * adapter passes `--plugin-dir <path>` to every spawned `claude` so
@@ -104,12 +96,10 @@ export interface ClaudeCodeAdapterOptions {
   /**
    * Whether to submit the initial prompt via bracketed paste — the prompt
    * body wrapped in ANSI bracketed-paste markers, followed by a separate
-   * Enter. Claude Code's UI otherwise coalesces a fast prompt+Enter burst
-   * into one paste and treats the trailing carriage return as a literal
-   * newline, leaving the task prompt unsubmitted in the input box.
-   * Resolution: this option > `KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE` env >
-   * `true`. Tests set the env var falsey for the legacy delivery path. See
-   * `resolveBracketedPasteSubmit`.
+   * Enter. Resolution: this option >
+   * `KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE` env > `true`. If bracketed paste
+   * is not confirmed, launch falls back to the plain write+Enter path before
+   * failing closed. See `resolveBracketedPasteSubmit`.
    */
   promptBracketedPaste?: boolean;
   /**
@@ -127,6 +117,24 @@ export interface ClaudeCodeAdapterOptions {
    * use `0` to assert the open-loop path with no resends.
    */
   promptSubmitRetries?: number;
+  /**
+   * Test seam for the bracketed-paste readiness wait. Production callers use
+   * the helper defaults; tests may shorten this to exercise timeout fallback
+   * without waiting for the full startup deadline.
+   */
+  promptReadyTimeoutMs?: number;
+  promptReadyPollMs?: number;
+  /**
+   * Live getter for the configured per-agent-type effort default for
+   * claude-code (#681). Called on every launch; returning a value pushes
+   * `--effort <level>` into the argv (unless a per-task override is supplied
+   * via {@link AdapterLaunchOptions.effort}, which wins). Returning `undefined`
+   * — the default when no effort is configured — passes no effort flag, leaving
+   * the launch argv byte-identical to pre-#681. Wired to live server settings
+   * so an operator's settings change takes effect on the next launch without a
+   * restart. Invalid values are ignored (skip + warn) as a final guard.
+   */
+  resolveDefaultEffort?: () => string | undefined;
 }
 
 /** Env var that overrides the default Claude Code binary path. */
@@ -178,13 +186,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private agentBin: string;
   private agentBinConfiguredVia: 'env' | 'default';
   private bypassAllPermissions: boolean;
-  private kookrDataDir?: string;
   private pluginDir?: string;
   private probeExec?: ProbeExecRunner;
   private loadAgents: (cwd: string) => Record<string, InlineAgentDef>;
   private promptBracketedPaste: boolean;
   private promptSubmitConfirmTimeoutMs?: number;
   private promptSubmitRetries?: number;
+  private promptReadyTimeoutMs?: number;
+  private promptReadyPollMs?: number;
+  private resolveDefaultEffort?: () => string | undefined;
   private inputWriter: TerminalInputWriterPort;
 
   constructor(
@@ -200,13 +210,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     this.agentBin = options?.agentBin ?? 'claude';
     this.agentBinConfiguredVia = options?.agentBin ? 'env' : 'default';
     this.bypassAllPermissions = options?.bypassAllPermissions ?? false;
-    this.kookrDataDir = options?.kookrDataDir;
     this.pluginDir = resolvePluginDir(options?.pluginDir);
     this.probeExec = options?.probeExec;
     this.loadAgents = options?.loadFileBasedAgents ?? ((cwd) => loadFileBasedAgents(cwd));
     this.promptBracketedPaste = resolveBracketedPasteSubmit(options?.promptBracketedPaste);
     this.promptSubmitConfirmTimeoutMs = options?.promptSubmitConfirmTimeoutMs;
     this.promptSubmitRetries = options?.promptSubmitRetries;
+    this.promptReadyTimeoutMs = options?.promptReadyTimeoutMs;
+    this.promptReadyPollMs = options?.promptReadyPollMs;
+    this.resolveDefaultEffort = options?.resolveDefaultEffort;
   }
 
   async preflight(): Promise<PreflightResult> {
@@ -228,22 +240,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const tmuxName = opts?.tmuxName ?? `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
-    // Resolve per-(repo, branch) checkpoint dir if data dir is configured.
-    // Returns null on any failure — fail-open so checkpoint problems never
-    // break task launch. See docs/poc/005-checkpoint-cycle-mechanics.md.
-    const checkpointDir = this.kookrDataDir
-      ? (await resolveAndPrepareCheckpointDir({ cwd, kookrDataDir: this.kookrDataDir })) ?? undefined
-      : undefined;
-    const checkpointInstruction = checkpointDir
-      ? await buildCheckpointLoadInstruction(checkpointDir)
-      : undefined;
-
     const launchContext = await buildAgentLaunchContext({
       taskStore: this.taskStore,
       taskId,
       cwd,
       serverPort: this.serverPort,
-      checkpointDir,
     });
 
     // Generate hook settings
@@ -268,8 +269,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // is delivered through the terminal after spawn so large prompts cannot
     // hit ARG_MAX or leak into parent-session hook command scanners.
     // --dangerously-skip-permissions is conditional on opt-in via
-    // KOOKR_BYPASS_ALL_PERMISSIONS=true. --append-system-prompt is conditional
-    // on checkpointing being wired (see docs/poc/005-checkpoint-cycle-mechanics.md).
+    // KOOKR_BYPASS_ALL_PERMISSIONS=true.
     const args: string[] = [];
     if (this.bypassAllPermissions) {
       // --dangerously-skip-permissions + --setting-sources '' are both required:
@@ -287,17 +287,32 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       }
     }
     if (this.pluginDir) args.push('--plugin-dir', this.pluginDir);
+    // Reasoning-effort flag (#681). Resolution order: per-task override
+    // (opts.effort) → configured per-agent-type default (resolveDefaultEffort)
+    // → unset. When both are absent, no `--effort` is pushed and the argv is
+    // byte-identical to pre-#681. The agent-specific validity guard is a
+    // last line of defense — the route + settings validation already reject
+    // invalid values upstream — so a stray bad value is skipped (+ warn)
+    // rather than passed through to break the launch.
+    const effort = opts?.effort ?? this.resolveDefaultEffort?.();
+    if (effort) {
+      if (isValidEffortForAgent(this.agentType, effort)) {
+        args.push('--effort', effort);
+      } else {
+        console.warn(
+          `[claude-code-adapter] ignoring invalid effort "${effort}" for ${this.agentType}; ` +
+          `valid: low, medium, high, xhigh, max`,
+        );
+      }
+    }
     if (useResume) {
       // --fork-session creates a new sessionId for the resumed branch so the
       // user's pre-crash transcript is preserved as a read-only snapshot.
       // No prompt arg: the resumed conversation already contains the original
-      // prompt. We still append the current checkpoint protocol so older
-      // sessions learn the semantic CHECKPOINT.json reader contract.
-      if (checkpointInstruction) args.push('--append-system-prompt', checkpointInstruction);
+      // prompt.
       args.push('--resume', resume!.sessionId, '--fork-session');
       args.push('--settings', settingsPath);
     } else {
-      if (checkpointInstruction) args.push('--append-system-prompt', checkpointInstruction);
       args.push('--settings', settingsPath);
     }
 
@@ -322,16 +337,31 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         // Submit the prompt via bracketed paste so Claude Code's UI parses the
         // trailing Enter as a keystroke, not paste content. See
         // deliverInitialPromptToSession.
-        const deliveryResult = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+        const awaitSubmit = (timeoutMs: number) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false);
+        let deliveryResult = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
           inputWriter: this.inputWriter,
           bracketedPaste: this.promptBracketedPaste,
           waitForReady: this.promptBracketedPaste,
-          awaitSubmit: this.promptBracketedPaste
-            ? (timeoutMs) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false)
-            : undefined,
+          awaitSubmit: this.promptBracketedPaste ? awaitSubmit : undefined,
           submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
           submitRetries: this.promptSubmitRetries,
+          readyTimeoutMs: this.promptReadyTimeoutMs,
+          readyPollMs: this.promptReadyPollMs,
         });
+        if (deliveryResult.status === 'unconfirmed' && this.promptBracketedPaste) {
+          // Claude Code v2.1.156 can advertise bracketed-paste mode but still
+          // drop the wrapped prompt during startup. Fall back to the legacy
+          // plain write+Enter path, but keep the same UserPromptSubmit-backed
+          // confirmation loop so the fallback cannot silently strand text in
+          // the composer.
+          deliveryResult = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+            inputWriter: this.inputWriter,
+            bracketedPaste: false,
+            awaitSubmit,
+            submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
+            submitRetries: this.promptSubmitRetries,
+          });
+        }
         if (deliveryResult.status === 'unconfirmed') {
           throw new InitialPromptSubmissionNotConfirmedError(tmuxName, deliveryResult);
         }
@@ -389,7 +419,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     await this.inputWriter.writeInputSequence(tmuxName, [
       textEncoder.encode(text),
       ENTER_BYTES,
-    ], { reason: 'adapter-send-input' });
+    ], { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS });
   }
 
   /** Send a single keystroke without trailing Enter (for permission prompts). */
@@ -702,6 +732,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     });
 
     const cmd = { type: 'command', command: hookCommand };
+
+    // Stop-hook nudge (RFC: rfc-agent-signal-surface §7) — a SECOND Stop hook
+    // entry alongside the fire-and-forget writer. It reminds the agent (at most
+    // once per task, hard fail-open) that it can raise an explicit completion
+    // signal. Omitted entirely when the bundled script isn't on disk so we never
+    // wire a broken command. See delivery-pragmatist review: it ships only now
+    // that the `kookr signal` channel exists.
+    const nudgePath = resolveStopNudgePath();
+    const stopHooks = nudgePath
+      ? [cmd, { type: 'command', command: buildStopNudgeCommand({ nudgePath }) }]
+      : [cmd];
+
     return {
       hooks: {
         // Tool-name matchers — '*' matches all tool names
@@ -711,7 +753,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         PostToolUseFailure: [{ matcher: '*', hooks: [cmd] }],
         PermissionRequest: [{ matcher: '*', hooks: [cmd] }],
         // No-matcher hooks — '' fires unconditionally
-        Stop: [{ matcher: '', hooks: [cmd] }],
+        Stop: [{ matcher: '', hooks: stopHooks }],
         StopFailure: [{ matcher: '', hooks: [cmd] }],
         Notification: [{ matcher: '', hooks: [cmd] }],
         UserPromptSubmit: [{ matcher: '', hooks: [cmd] }],

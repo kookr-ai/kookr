@@ -13,7 +13,7 @@ export interface TerminalInputWriterPort {
   writeInputSequence(
     sessionId: string,
     payloads: Uint8Array[],
-    meta?: { reason?: string },
+    meta?: { reason?: string; interPayloadDelayMs?: number },
   ): Promise<TerminalInputWriteResult>;
 }
 
@@ -36,6 +36,9 @@ export function asTerminalInputWriterPort(value: unknown): TerminalInputWriterPo
         return { sessionId, readinessVersion: 0 };
       },
       async writeInputSequence(sessionId, payloads) {
+        // Legacy backends can preserve sequence atomicity via writeSequence,
+        // but cannot hold that mutex while inserting a delay. Production
+        // delayed submits use TerminalInputCoordinator instead.
         await legacy.writeSequence!(sessionId, payloads);
         return { sessionId, readinessVersion: 0 };
       },

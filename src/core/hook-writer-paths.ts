@@ -19,6 +19,43 @@ export function resolveHookWriterPath(baseDir: string = moduleDir): string | und
 }
 
 /**
+ * Resolve the on-disk path of the bundled Stop-hook nudge
+ * (`bin/kookr-stop-nudge.js`, RFC: rfc-agent-signal-surface §7). Returns
+ * `undefined` when absent so adapters simply omit the nudge hook entry rather
+ * than wiring a broken command.
+ */
+export function resolveStopNudgePath(baseDir: string = moduleDir): string | undefined {
+  const candidate = resolve(baseDir, '..', '..', 'bin', 'kookr-stop-nudge.js');
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+/**
+ * Resolve the `bin/` directory to prepend to a spawned agent's `PATH` so a bare
+ * `kookr` command resolves (issue #786). Agents are told to run `kookr signal
+ * completion-ready`, but the inherited PATH has no extensionless `kookr` — only
+ * the `bin/kookr*.js` Node entry points. The `bin/kookr` POSIX shim bridges that
+ * gap; this returns its directory only when the shim is actually present, so a
+ * checkout missing it (e.g. a stripped install) prepends nothing rather than a
+ * broken dir. Same `../../bin` anchoring as the sibling resolvers above, so it
+ * lands correctly from both `src/core/*` (vitest) and `dist/core/*` (compiled).
+ */
+export function resolveAgentLauncherBinDir(baseDir: string = moduleDir): string | undefined {
+  const binDir = resolve(baseDir, '..', '..', 'bin');
+  const launcher = resolve(binDir, 'kookr');
+  return existsSync(launcher) ? binDir : undefined;
+}
+
+/**
+ * Build the Stop-hook nudge command: `node <nudge>`. The script reads the raw
+ * Stop payload from stdin and resolves task identity/API from the agent env
+ * (KOOKR_TASK_ID / KOOKR_API_BASE_URL). It is hard fail-open (always exits 0).
+ */
+export function buildStopNudgeCommand(opts: { nudgePath: string; nodePath?: string }): string {
+  const { nudgePath, nodePath = process.execPath } = opts;
+  return `${shellQuote(nodePath)} ${shellQuote(nudgePath)}`;
+}
+
+/**
  * Build the shell hook command Kookr writes into Claude Code / Codex CLI
  * settings. When the bundled writer is available, the command pipes stdin
  * into `node <writer> --session ... --file ... [--url ...]` so concurrent

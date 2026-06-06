@@ -39,6 +39,18 @@ function makeSchedule(): ScheduleResponse {
     },
     executionLedger: [
       {
+        id: 'sched-1:cron:2026-01-01T02:00:00.000Z',
+        scheduleId: 'sched-1',
+        trigger: 'cron',
+        decision: 'manual_catch_up',
+        scheduledFor: '2026-01-01T02:00:00.000Z',
+        evaluatedAt: '2026-01-02T03:00:00.000Z',
+        completedAt: '2026-01-02T03:00:00.000Z',
+        outcome: 'skipped_manual',
+        reasonCode: 'manual_catch_up_required',
+        message: 'Run manually',
+      },
+      {
         id: 'sched-1:cron:2026-01-01T03:00:00.000Z',
         scheduleId: 'sched-1',
         trigger: 'cron',
@@ -88,6 +100,7 @@ describe('SchedulesDialog execution ledger', () => {
         schedules: [schedule],
         status: {
           timezone: 'UTC',
+          catchUpMode: 'auto',
           catchUpEnabled: true,
           schedulerHealthy: true,
         },
@@ -98,6 +111,7 @@ describe('SchedulesDialog execution ledger', () => {
       scheduleRevision: 1,
       scheduleStatus: {
         timezone: 'UTC',
+        catchUpMode: 'auto',
         catchUpEnabled: true,
         schedulerHealthy: true,
       },
@@ -112,7 +126,86 @@ describe('SchedulesDialog execution ledger', () => {
     expect(container.querySelector('.schedule-ledger')?.textContent).toContain('Stale catch-up');
     expect(container.querySelector('.schedule-ledger')?.textContent).toContain('skipped: stale');
     expect(container.querySelector('.schedule-ledger')?.textContent).toContain('stale catch-up');
+    expect(container.querySelector('.schedule-ledger')?.textContent).toContain('Missed run');
+    expect(container.querySelector('.schedule-ledger')?.textContent).toContain('manual run available');
+    expect(container.querySelector('.schedule-ledger')?.textContent).toContain('Run Now to recover');
     expect(container.querySelector('.schedule-ledger')?.textContent).not.toContain('skipped_stale');
     expect(container.querySelector('.schedule-ledger')?.textContent).not.toContain('stale_catch_up');
+    expect(container.querySelector('.schedule-ledger')?.textContent).not.toContain('skipped_manual');
+    expect(container.querySelector('.schedule-ledger')?.textContent).not.toContain('manual_catch_up_required');
+    expect(container.querySelector('.schedule-manager-meta')?.textContent).toContain('Last: skipped: stale');
+    expect(container.querySelector('.schedule-manager-meta')?.textContent).not.toContain('skipped_stale');
+    expect(container.textContent).not.toContain('Automatic catch-up is off. Missed runs are recorded');
+    expect(container.textContent).not.toContain('Startup catch-up is disabled for this session.');
+  });
+
+  test('uses distinct copy when startup catch-up is fully disabled', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        revision: 1,
+        schedules: [],
+        status: {
+          timezone: 'UTC',
+          catchUpMode: 'off',
+          catchUpEnabled: false,
+          schedulerHealthy: true,
+        },
+      }),
+    })));
+    useKookrStore.setState({
+      schedules: [],
+      scheduleRevision: 1,
+      scheduleStatus: {
+        timezone: 'UTC',
+        catchUpMode: 'off',
+        catchUpEnabled: false,
+        schedulerHealthy: true,
+      },
+      serverCwd: '/repo',
+    });
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(React.createElement(SchedulesDialog, { onClose: () => {} }));
+    });
+
+    expect(container.textContent).toContain('Startup catch-up is disabled for this session.');
+    expect(container.textContent).not.toContain('Missed runs are recorded');
+  });
+
+  test('uses manual recovery copy when automatic catch-up is off by default', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        revision: 1,
+        schedules: [],
+        status: {
+          timezone: 'UTC',
+          catchUpMode: 'manual',
+          catchUpEnabled: false,
+          schedulerHealthy: true,
+        },
+      }),
+    })));
+    useKookrStore.setState({
+      schedules: [],
+      scheduleRevision: 1,
+      scheduleStatus: {
+        timezone: 'UTC',
+        catchUpMode: 'manual',
+        catchUpEnabled: false,
+        schedulerHealthy: true,
+      },
+      serverCwd: '/repo',
+    });
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(React.createElement(SchedulesDialog, { onClose: () => {} }));
+    });
+
+    expect(container.textContent).toContain('Automatic catch-up is off. Missed runs are recorded and can be started with Run Now.');
+    expect(container.textContent).not.toContain('Startup catch-up is disabled for this session.');
   });
 });

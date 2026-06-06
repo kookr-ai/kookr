@@ -3,11 +3,6 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
 import { loadTasks, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
-import { GitHubStateStore } from '../core/github-state-store.js';
-import { GitHubScannerService } from '../core/github-scanner-service.js';
-import { DEFAULT_GITHUB_SCANNER_CONFIG } from '../core/github-types.js';
-import { ghCliFetcher, fetchBatchRepoHealth, getGhUserLogin } from '../adapters/github-fetcher.js';
-import { CircuitBreakerGitHubFetcher } from '../adapters/circuit-breaker-github-fetcher.js';
 import { reconcile } from './reconciliation.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
@@ -17,7 +12,6 @@ import { HookIngestion } from './hook-ingestion.js';
 import { ActivityLedger } from '../core/activity-ledger.js';
 import { generateTaskName } from '../core/task-naming.js';
 import type { BackendError, TerminalBackend } from '../adapters/terminal-backend.js';
-import { formatGitHubAlert } from '../core/github-alerts.js';
 import { wireEventPipeline } from './event-pipeline.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
@@ -38,10 +32,19 @@ import {
 } from './startup-recovery.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
+import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
 import { RalphLoopService } from './ralph-loop-service.js';
-import { createSystemResourceSampler } from './system-resource-sampler.js';
-import { createResourceStatusService } from './resource-status-service.js';
+import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
+import {
+  createResourceStatusService,
+  type ResourceStatusSampler,
+} from './resource-status-service.js';
+import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
+import {
+  getOperationalAlertConfig,
+  resetOperationalAlertConfig,
+} from './operational-alert-config.js';
 import {
   FindingEvidenceReviewQueueStore,
   FindingEvidenceReviewSampler,
@@ -58,6 +61,7 @@ import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
 import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
 import { createAgentRuntime } from './bootstrap/create-agent-runtime.js';
 import { createCoreStores } from './bootstrap/create-core-stores.js';
+import { createGitHubRuntime } from './bootstrap/create-github-runtime.js';
 import { createOssServices, createOssSourceWatchers } from './bootstrap/create-oss-services.js';
 import { createRealtimeServices } from './bootstrap/create-realtime-services.js';
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
@@ -81,6 +85,7 @@ import { RuntimeAttentionMissSampler } from './attention-miss-runtime-sampler.js
 import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
 import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
+import type { ApiAuthConfig } from './auth.js';
 
 // --- Exported types ---
 
@@ -143,6 +148,17 @@ export interface KookrConfig {
   ossSourceWatcherDebounceMs?: number;
   /** Server-lifecycle abort signal — see `VoiceWarmupOpts.lifecycleSignal` and issue #188. */
   lifecycleSignal?: AbortSignal;
+  /** Test seam for deterministic resource-status samples. Production uses the host sampler. */
+  resourceStatusSampler?: ResourceStatusSampler;
+  /** Test seam for faster resource-status polling. Production uses RESOURCE_STATUS_INTERVAL_MS. */
+  resourceStatusIntervalMs?: number;
+  /**
+   * Resolved API-token auth posture (issue #708). When `required` is true (a
+   * non-loopback bind), state-changing routes and the WebSocket upgrade require
+   * a bearer token. Absent defaults to no auth (loopback flow). Resolved in
+   * `src/server/start.ts` via `resolveApiAuth`.
+   */
+  apiAuth?: ApiAuthConfig;
 }
 
 function getOrCreatePrivateNetworkNodeId(kookrDir: string): NodeId {
@@ -199,6 +215,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend, sttUrl, ttsUrl, useFakeTerminalBridge, agentBin, codexBin, bypassAllPermissions,
     claudeDir, preflightOnFatal, preflightLogger,
     ossSourceWatcherFs, ossSourceWatcherDebounceMs,
+    resourceStatusSampler,
+    resourceStatusIntervalMs,
     lifecycleSignal,
   } = config;
 
@@ -215,13 +233,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     settingsFile,
     circuitBreakerRegistry,
     githubBreaker,
+    permissionAlertBreaker,
     taskStore,
     worktreeRegistry,
     queue,
     suppressionTracker,
     monitor,
     watchdog,
-    checkpointCycler,
     ralphCycler,
     tokenTracker,
     budgetChecker,
@@ -233,6 +251,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     llmClient,
   } = coreStores;
   const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
+  // #681: live getter for the per-agent-type effort defaults. Reads the live
+  // `currentSettings` binding so an operator's settings PUT takes effect on the
+  // next launch without a restart (the PUT path reassigns `currentSettings`).
+  const getAgentEffort = () => currentSettings.agentEffort;
   const terminalInputCoordinator = new TerminalInputCoordinator(terminalBackend);
 
   const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
@@ -245,9 +267,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     agentBin,
     codexBin,
     bypassAllPermissions,
-    kookrDir,
     preflightOnFatal,
     preflightLogger,
+    getAgentEffort,
   });
 
   const ossServices = await createOssServices({ kookrDir, claudeDir });
@@ -337,64 +359,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getAgents: () => getSnapshotAgentsForClient({ monitor }),
   });
 
-  // Create GitHub scanner with user-configured intervals
-  const githubStateStore = new GitHubStateStore();
-  const githubScannerConfig = {
-    ...DEFAULT_GITHUB_SCANNER_CONFIG,
-    stateFetchIntervalMs: currentSettings.githubPollingIntervalSec * 1000,
-    referenceExtractionIntervalMs: currentSettings.githubPollingIntervalSec * 1000,
-  };
   // Forward-declared so onRepoHealthChanged can call back into the broadcast
   // function which references githubScanner.getRepoHealthSnapshot().
   let broadcastProjectSummariesRef: (() => void) | null = null;
-  const githubScanner = new GitHubScannerService({
+  const { githubStateStore, githubScanner } = createGitHubRuntime({
     taskStore,
-    stateStore: githubStateStore,
-    fetcher: new CircuitBreakerGitHubFetcher(ghCliFetcher, githubBreaker),
-    config: githubScannerConfig,
-    repoHealthFetcher: fetchBatchRepoHealth,
-    ghUserLoginResolver: getGhUserLogin,
+    githubBreaker,
+    githubPollingIntervalSec: currentSettings.githubPollingIntervalSec,
+    broadcastToAll,
     onRepoHealthChanged: () => {
       broadcastProjectSummariesRef?.();
-    },
-    onStateUpdate: (taskId) => {
-      // Broadcast initial state when first fetched (no changes yet)
-      const state = githubStateStore.getTaskState(taskId);
-      broadcastToAll({
-        type: 'githubUpdate',
-        taskId,
-        prs: state.prs,
-        issues: state.issues,
-        changes: [],
-      });
-    },
-    onChanges: (taskId, changes) => {
-      // Broadcast GitHub state update to all clients
-      const state = githubStateStore.getTaskState(taskId);
-      broadcastToAll({
-        type: 'githubUpdate',
-        taskId,
-        prs: state.prs,
-        issues: state.issues,
-        changes,
-      });
-
-      // Raise alerts for actionable changes
-      for (const change of changes) {
-        const ref = change.ref;
-        const label = `${ref.owner}/${ref.repo}#${ref.number}`;
-        const alert = formatGitHubAlert(change, label);
-
-        if (alert) {
-          broadcastToAll({
-            type: 'alert',
-            agentId: ref.detectedFrom,
-            summary: alert.summary,
-            details: '',
-            severity: alert.severity,
-          });
-        }
-      }
     },
   });
   realtime.setProjectSummaryGitHubDeps({
@@ -638,7 +612,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       shadowRegistry,
       tokenTracker,
       suppressionTracker,
-      checkpointCycler,
       terminalInputCoordinator,
     }),
   });
@@ -651,7 +624,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     adapter, monitor, taskStore, tokenTracker, watchdog,
     githubScanner, llmClient, serverCwd, broadcastToAll,
     telemetryLog,
-    checkpointCycler,
     ralphCycler,
     ralphLoopService,
     hookIngestion,
@@ -663,12 +635,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       onPermissionBlockedHolder?.(taskId, promptText);
       remoteRelayRuntime?.publishPermissionBlocked(taskId);
     },
+    permissionAlertBreaker,
   });
 
   // Terminal input deps — used by terminal bridge handlers
   const terminalDeps: TerminalInputDeps = {
     monitor, watchdog, abortPendingSuggestion, broadcastToAll, serverCwd, taskStore,
   };
+
+  // Ephemeral worktrees for per-task self-reflect. Shared between the startup
+  // sweep (below) and the WsConnection deps that spawn reflect tasks.
+  const reflectWorktreesDir = join(kookrDir, 'reflect-worktrees');
 
   const startupRecoverySummary = await runStartupRecoveryPhase({
     taskStore,
@@ -695,6 +672,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcastToAll,
     serverCwd,
   });
+
+  // Reclaim reflect worktrees orphaned by a crash between `git worktree add`
+  // and reflect-task completion (plus a 7-day TTL backstop). Best-effort —
+  // a sweep failure must never block startup.
+  try {
+    const { removed, kept } = await sweepReflectWorktrees({ reflectWorktreesDir, taskStore });
+    if (removed > 0) {
+      console.log(`[reflect-sweep] removed ${removed} orphaned reflect worktree(s), kept ${kept}`);
+    }
+  } catch (err) {
+    console.warn('[reflect-sweep] startup sweep failed:', err instanceof Error ? err.message : err);
+  }
 
   const { scheduleStore, scheduleService, scheduleRunner } = await createScheduleRuntime({
     kookrDir,
@@ -726,18 +715,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       });
       return JSON.stringify(msg).length;
     },
-    onReport: (report) => {
-      for (const f of report.findings) {
-        if (f.severity === 'critical') {
-          console.error(`[self-diagnostic] ${f.checkId}: ${f.description}`);
-        } else {
-          console.warn(`[self-diagnostic] ${f.checkId}: ${f.description}`);
-        }
-      }
-      broadcastToAll({ type: 'diagnosticReport', report });
-    },
   });
-  diagnosticRunner.start();
+  // Diagnostics are on-demand by default; /api/diagnostic/run triggers runNow().
 
   remoteRelayRuntime = await createRemoteRelayRuntime({
     kookrDir,
@@ -766,7 +745,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         shadowRegistry,
         tokenTracker,
         suppressionTracker,
-        checkpointCycler,
         terminalInputCoordinator,
         queue,
       });
@@ -821,7 +799,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
     interactionLog,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
-    serverCwd, serverPort: port, kookrDir, frontendDir, broadcastToAll,
+    serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,
     llmClient,
     ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
     findingEvidenceReviewSampler,
@@ -864,6 +842,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     coordinatorSuppressions,
     drainController,
+    apiAuth: config.apiAuth,
     startupRecoverySummary,
     ralphCycler,
     tokenTracker,
@@ -952,9 +931,24 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     );
   };
 
+  const operationalAlertConfig = resetOperationalAlertConfig();
+  const operationalAlertEvaluator = createOperationalAlertEvaluator(getOperationalAlertConfig);
+  if (operationalAlertEvaluator.hasEnabledRules()) {
+    const sustainSeconds = (operationalAlertConfig.sustainSamples * RESOURCE_STATUS_INTERVAL_MS) / 1000;
+    console.log(
+      `[ops-alerts] thresholds: cpu=${operationalAlertConfig.cpuPercent || 'off'}% ` +
+        `mem=${operationalAlertConfig.memoryPercent || 'off'}% ` +
+        `eventLoopDelay=${operationalAlertConfig.eventLoopDelayMs || 'off'}ms ` +
+        `(fires after ${operationalAlertConfig.sustainSamples} samples ≈ ${sustainSeconds}s sustained)`,
+    );
+  } else {
+    console.log('[ops-alerts] Operational alerts disabled (set KOOKR_ALERT_* thresholds to enable)');
+  }
   const resourceStatusService = createResourceStatusService({
-    sampler: createSystemResourceSampler(),
+    sampler: resourceStatusSampler ?? createSystemResourceSampler(),
     broadcastToAll,
+    alertEvaluator: operationalAlertEvaluator,
+    intervalMs: resourceStatusIntervalMs,
   });
 
   // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---
@@ -991,6 +985,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverProjectId,
     takePredeleteSnapshot,
     supervisorFeedbackCaseStore,
+    feedbackDir: join(kookrDir, 'feedback'),
+    taskSnapshotDir: join(kookrDir, 'task-snapshots'),
+    reflectWorktreesDir,
+    hooksDir,
     selectionController,
     terminalInputCoordinator,
   };
@@ -1013,7 +1011,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       saveIntervalMs, livenessIntervalMs, broadcastToAll,
       shadowRegistry, agentLifecycleDeps: lifecycleDeps,
       quotaAdapter, getMaxActiveTasks, suppressionTracker,
-      checkpointCycler, budgetChecker, progressBudgetBurnDiagnostics,
+      budgetChecker, progressBudgetBurnDiagnostics,
       detectionStatsStore,
       worktreeRegistry,
       worktreeRegistryRepoPath: serverCwd,
@@ -1031,6 +1029,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalInputWriter: terminalInputCoordinator,
     terminalDeps,
     useFakeTerminalBridge,
+    apiAuth: config.apiAuth,
     onLocalTerminalActivity: (sessionId) => remoteRelayRuntime?.recordLocalTerminalActivity(sessionId),
     onDashboardConnection: (ws) => handleWsConnection(ws, clients, wsConnectionDeps),
   });
@@ -1115,8 +1114,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Drain any pending suggestion lifecycles before shutdown
     drainLifecycles(telemetryLog);
 
-    // Stop diagnostic runner
-    diagnosticRunner.dispose();
     await remoteRelayRuntime?.stop();
 
     // Stop hook watchers and trackers

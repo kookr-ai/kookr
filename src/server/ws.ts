@@ -4,7 +4,7 @@ import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Monitor } from '../core/monitor.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
+import { readInteractionLog, type DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import type { DeferredTelemetryLogWriter } from '../core/telemetry.js';
 import type { BuildInfo } from '../core/build-info.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
@@ -95,6 +95,14 @@ export interface MessageRouterDeps {
    * log and stats counters but no rich case snapshot is persisted for offline review.
    */
   supervisorFeedbackCaseStore?: import('./supervisor-feedback-case-store.js').SupervisorFeedbackCaseStore;
+  /** Where completed-feedback reflection bundles are written. */
+  feedbackDir?: string;
+  /** Where anytime task snapshot reflection bundles are written. */
+  taskSnapshotDir?: string;
+  /** Where ephemeral reflect worktrees are created. */
+  reflectWorktreesDir?: string;
+  /** Where hook JSONL files live. */
+  hooksDir?: string;
   connectionId?: string;
   selectionController?: DashboardSelectionController;
   terminalInputCoordinator?: TerminalInputCoordinator;
@@ -164,6 +172,14 @@ export class MessageRouter {
       broadcastToAll: this.deps.broadcastToAll,
       activityMetaProvider: this.deps.activityMetaProvider,
       takePredeleteSnapshot: this.deps.takePredeleteSnapshot,
+      feedbackDir: this.deps.feedbackDir,
+      taskSnapshotDir: this.deps.taskSnapshotDir,
+      reflectWorktreesDir: this.deps.reflectWorktreesDir,
+      hooksDir: this.deps.hooksDir,
+      readInteractionLogSnapshot: async () => {
+        const logPath = this.deps.interactionLog?.getFilePath() ?? null;
+        return logPath ? readInteractionLog(logPath) : [];
+      },
       getLifecycleDeps: () => this.lifecycleDeps,
       tryPromotePending: () => this.tryPromotePending(),
     });
@@ -374,14 +390,18 @@ export class MessageRouter {
         return;
       }
       case 'completeTask':
+      case 'setTaskFeedback':
+      case 'requestTaskReflect':
       case 'cancelTask':
       case 'reopenTask':
+      case 'dismissAgentSignal':
       case 'deleteTask':
       case 'renameTask':
       case 'setTaskPriority':
       case 'stop':
       case 'clearCompleted':
       case 'ackTerminatedTask':
+      case 'requestTaskSnapshotReflect':
         await this.lifecycleHandler.handle(msg);
         return;
 
@@ -440,6 +460,7 @@ export class MessageRouter {
     const snapshot = getSnapshotAgentsForClient({
       monitor: this.deps.monitor,
       activityMetaProvider: this.deps.activityMetaProvider,
+      pendingSignalProvider: this.deps.taskStore,
     });
     const state = snapshot.find((s) => s.agentId === agentId);
     if (state) {
@@ -447,13 +468,29 @@ export class MessageRouter {
     }
   }
 
-  /** Broadcast an alert for an anomaly. */
+  /**
+   * Broadcast an alert for an anomaly.
+   *
+   * The anomaly's end-to-end correlation id (#705) is surfaced in the alert
+   * `details` so operators can trace the alert back to the originating hook
+   * event, and emitted as a structured log field. `broadcastUpdate` carries the
+   * same id structurally via `state.anomaly.eventId`.
+   */
   broadcastAlert(agentId: string, anomaly: Anomaly): void {
+    const lineage = anomaly.eventId ? `, Event: ${anomaly.eventId}` : '';
+    if (anomaly.eventId) {
+      console.debug('[ws] alert', {
+        eventId: anomaly.eventId,
+        agentId,
+        anomalyType: anomaly.type,
+        severity: anomaly.severity,
+      });
+    }
     this.deps.send({
       type: 'alert',
       agentId,
       summary: anomaly.explanation,
-      details: `Type: ${anomaly.type}, Count: ${anomaly.count ?? 'N/A'}`,
+      details: `Type: ${anomaly.type}, Count: ${anomaly.count ?? 'N/A'}${lineage}`,
       severity: anomaly.severity,
     });
   }

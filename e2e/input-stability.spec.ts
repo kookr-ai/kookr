@@ -123,6 +123,9 @@ test.describe('Input stability — no auto-send on state changes', () => {
     await injectStopEvent(request, tmux, 'Should I continue with the next step?');
     await page.locator('.finding-card').click();
 
+    await broadcastSuggestion(request, tmux, ['Continue with the next step'], [
+      { label: 'Continue', value: 'Continue with the next step' },
+    ]);
     await expect(page.locator('.btn-quick-action').first()).toBeVisible({ timeout: 3000 });
 
     const userText = 'Half-finished thought';

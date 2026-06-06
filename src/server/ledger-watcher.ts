@@ -1,4 +1,4 @@
-import { watch, type FSWatcher } from 'node:fs';
+import type { FSWatcher } from 'node:fs';
 
 import type { OssAttemptStore } from '../core/oss-attempt-store.js';
 import type { LedgerAnalytics } from '../core/ledger-analytics.js';
@@ -32,8 +32,7 @@ export function startLedgerWatcher({
   let ledgerReloadTimer: ReturnType<typeof setTimeout> | null = null;
 
   try {
-    const ledgerPath = ossAttemptStore.getLedgerPath();
-    ledgerWatcher = watch(ledgerPath, () => {
+    ledgerWatcher = ossAttemptStore.watchLedger(() => {
       if (ledgerReloadTimer) clearTimeout(ledgerReloadTimer);
       ledgerReloadTimer = setTimeout(async () => {
         try {

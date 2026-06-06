@@ -12,8 +12,7 @@ import {
 /**
  * Build a clean env that ignores the user's global / system git config and
  * any inherited GIT_* vars. Necessary so commits don't fail under signing
- * configs, custom templates, or global commit hooks. Mirrors the pattern in
- * checkpoint-path.test.ts.
+ * configs, custom templates, or global commit hooks.
  */
 function cleanGitEnv(): NodeJS.ProcessEnv {
   const cleaned: NodeJS.ProcessEnv = {};

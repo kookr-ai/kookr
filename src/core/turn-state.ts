@@ -51,8 +51,17 @@ export function deriveTurnStateDetails(events: AgentEvent[]): DerivedTurnState {
       // An API error killed the turn — the agent is hard-blocked.
       return { turnState: 'blocked', effectiveEvent: last, effectiveEventIndex };
     case 'permission_request':
-      // Blocked waiting for a permission decision.
-      return { turnState: 'blocked', effectiveEvent: last, effectiveEventIndex };
+      // Claude Code fires a PermissionRequest(AskUserQuestion) — plus a trailing
+      // Notification(permission_prompt) that we trim above — right after the
+      // PreToolUse(AskUserQuestion) while the user is still at the choice menu.
+      // That is the agent waiting on the user mid-turn, NOT a tool-permission
+      // block; surface it as `waiting_for_input` so the dashboard reads "Waiting
+      // for your input" rather than "Blocked"/"working".
+      return {
+        turnState: last.toolName === 'AskUserQuestion' ? 'waiting_for_input' : 'blocked',
+        effectiveEvent: last,
+        effectiveEventIndex,
+      };
     case 'session_end':
       // The session is over; turn state is no longer meaningful.
       return { turnState: 'unknown', effectiveEvent: last, effectiveEventIndex };

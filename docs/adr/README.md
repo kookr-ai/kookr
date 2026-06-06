@@ -16,4 +16,3 @@
 | [012](012-github-pr-awareness.md) | GitHub PR/Issue Awareness | **Accepted** — regex extraction + `gh` CLI polling for PR/issue state tracking |
 | [013](013-stuck-detection-promotion-criteria.md) | Stuck-Loop Detection Promotion Criteria | **Accepted** — precision ≥90%, coverage ≥50%, platform parity, env-var opt-in for shadow→active promotion |
 | [014](014-local-dtach-backend.md) | Local dtach Backend | **Accepted** — replace tmux with dtach as the terminal persistence layer. Default flipped 2026-04-22 (Main B.b). Escape hatch removed in V8 (2026-04-24); `src/server/start.ts` hard-rejects `KOOKR_BACKEND=tmux` |
-| [015](015-compact-cancel-backoff.md) | No-progress back-off when `/compact` keeps being cancelled | **Accepted** — checkpoint cycler gives up after 3 consecutive no-progress cycles (issue #412) |

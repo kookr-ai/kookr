@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { buildAgentSelectionOptions, type AgentSelection } from '../../shared/protocol.js';
+import {
+  buildAgentSelectionOptions,
+  AVAILABLE_AGENT_TYPES,
+  effortLevelsForAgent,
+  type AgentSelection,
+  type AgentType,
+  type AgentEffortMap,
+} from '../../shared/protocol.js';
 import {
   SHORTCUT_ACTIONS,
   detectShortcutPlatform,
@@ -11,7 +18,9 @@ import {
   type ShortcutActionId,
 } from '../../shared/contracts/shortcut-bindings.js';
 import type { VerbosityScale } from '../../shared/contracts/speech.js';
+import type { QuietHoursWindow } from '../../shared/contracts/quiet-hours.js';
 import { useSoundPreference } from '../audio/sound.js';
+import { setQuietHoursWindows } from '../hooks/useDnd.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useKookrStore } from '../store/useStore.js';
@@ -34,11 +43,18 @@ interface ServerSettings {
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
   defaultAgentType: AgentSelection;
+  agentEffort?: AgentEffortMap;
   shortcutBindings: PlatformShortcutBindingOverrides;
   speakVerbosity?: VerbosityScale;
+  quietHours?: QuietHoursWindow[];
   loadedFromDefaults?: boolean;
   warnings?: string[];
 }
+
+/** Sunday-first weekday labels for the quiet-hours day toggles (index = getDay()). */
+const WEEKDAY_LABELS: readonly string[] = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const DEFAULT_QUIET_HOURS_WINDOW: QuietHoursWindow = { start: '22:00', end: '08:00' };
 
 interface VerbosityChoice {
   value: VerbosityScale;
@@ -562,6 +578,9 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
       .then((data: ServerSettings) => {
         setSettings(data);
         setWarnings(data.warnings ?? []);
+        // Mirror the saved schedule into the live DND gate so quiet hours take
+        // effect immediately, even before the operator edits anything.
+        setQuietHoursWindows(data.quietHours ?? []);
         setLoading(false);
       })
       .catch((err) => {
@@ -608,6 +627,9 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
         if (saveId !== latestSaveIdRef.current) return;
         setWarnings(saved.warnings ?? []);
         setSettings(saved);
+        // Re-mirror the server-normalized windows (invalid ones dropped) so the
+        // live gate matches exactly what was persisted.
+        setQuietHoursWindows(saved.quietHours ?? []);
         onSettingsSaved?.(saved);
       } catch (err) {
         if (saveId === latestSaveIdRef.current) {
@@ -649,11 +671,77 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     void saveSettings(updated);
   }
 
+  // #681: set or clear a per-agent-type reasoning-effort default. An empty
+  // value removes the entry, restoring the agent CLI's own default (no flag
+  // passed at launch). Invalid (agent, level) pairs are dropped server-side.
+  function handleAgentEffortChange(agent: AgentType, level: string) {
+    if (!settings) return;
+    const nextEffort: AgentEffortMap = { ...(settings.agentEffort ?? {}) };
+    if (level === '') {
+      delete nextEffort[agent];
+    } else {
+      nextEffort[agent] = level as AgentEffortMap[AgentType];
+    }
+    const updated = { ...settings, agentEffort: nextEffort };
+    setSettings(updated);
+    void saveSettings(updated);
+  }
+
   function handleSpeakVerbosityChange(value: VerbosityScale) {
     if (!settings) return;
     const updated = { ...settings, speakVerbosity: value };
     setSettings(updated);
     void saveSettings(updated);
+  }
+
+  function commitQuietHours(windows: QuietHoursWindow[]) {
+    if (!settings) return;
+    const updated = { ...settings, quietHours: windows };
+    setSettings(updated);
+    // Optimistically mirror to the live gate; saveSettings re-mirrors the
+    // server-normalized result once the PUT resolves.
+    setQuietHoursWindows(windows);
+    void saveSettings(updated);
+  }
+
+  function addQuietHoursWindow() {
+    if (!settings) return;
+    commitQuietHours([...(settings.quietHours ?? []), { ...DEFAULT_QUIET_HOURS_WINDOW }]);
+  }
+
+  function removeQuietHoursWindow(index: number) {
+    if (!settings) return;
+    commitQuietHours((settings.quietHours ?? []).filter((_, i) => i !== index));
+  }
+
+  function updateQuietHoursTime(index: number, field: 'start' | 'end', value: string) {
+    if (!settings || !value) return;
+    const windows = (settings.quietHours ?? []).map((window, i) =>
+      i === index ? { ...window, [field]: value } : window,
+    );
+    commitQuietHours(windows);
+  }
+
+  function toggleQuietHoursDay(index: number, day: number) {
+    if (!settings) return;
+    const windows = (settings.quietHours ?? []).map((window, i) => {
+      if (i !== index) return window;
+      // Undefined days means "every day" — expand to all 7 so a toggle removes
+      // exactly the clicked day rather than collapsing the selection.
+      const current = window.days ?? [0, 1, 2, 3, 4, 5, 6];
+      const nextDays = current.includes(day)
+        ? current.filter((d) => d !== day)
+        : [...current, day].sort((a, b) => a - b);
+      // Keep at least one day — a window with no days would silence nothing.
+      if (nextDays.length === 0) return window;
+      // All seven selected is the canonical "every day" — drop the key.
+      if (nextDays.length === 7) {
+        const { days: _omit, ...rest } = window;
+        return rest;
+      }
+      return { ...window, days: nextDays };
+    });
+    commitQuietHours(windows);
   }
 
   function handleSoundToggle() {
@@ -832,6 +920,77 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                         ))}
                       </fieldset>
                     </div>
+                    <div className="settings-row settings-row-fieldset">
+                      <div className="settings-quiet-hours">
+                        <span className="settings-label">Quiet hours</span>
+                        <span className="settings-desc">
+                          Automatically silence chimes and desktop notifications during these
+                          recurring time-of-day windows, then resume afterward. Findings still
+                          accumulate in the dashboard — only the alerts are muted. Times are local;
+                          an end before the start wraps past midnight.
+                        </span>
+                        {(settings.quietHours ?? []).length === 0 && (
+                          <span className="settings-hint">No quiet hours scheduled.</span>
+                        )}
+                        {(settings.quietHours ?? []).map((window, index) => (
+                          <div className="settings-quiet-hours-window" key={index}>
+                            <div className="settings-quiet-hours-times">
+                              <label className="settings-quiet-hours-time">
+                                <span>From</span>
+                                <input
+                                  type="time"
+                                  aria-label={`Quiet hours window ${index + 1} start`}
+                                  value={window.start}
+                                  onChange={(e) => updateQuietHoursTime(index, 'start', e.target.value)}
+                                />
+                              </label>
+                              <label className="settings-quiet-hours-time">
+                                <span>To</span>
+                                <input
+                                  type="time"
+                                  aria-label={`Quiet hours window ${index + 1} end`}
+                                  value={window.end}
+                                  onChange={(e) => updateQuietHoursTime(index, 'end', e.target.value)}
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                className="settings-button secondary"
+                                aria-label={`Remove quiet hours window ${index + 1}`}
+                                onClick={() => removeQuietHoursWindow(index)}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                            <div className="settings-quiet-hours-days" role="group" aria-label={`Quiet hours window ${index + 1} days`}>
+                              {WEEKDAY_LABELS.map((label, day) => {
+                                const active = window.days === undefined || window.days.includes(day);
+                                return (
+                                  <button
+                                    type="button"
+                                    key={day}
+                                    className={`settings-quiet-hours-day ${active ? 'active' : ''}`}
+                                    aria-pressed={active}
+                                    aria-label={label}
+                                    title={window.days === undefined ? `${label} (every day)` : label}
+                                    onClick={() => toggleQuietHoursDay(index, day)}
+                                  >
+                                    {label[0]}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          className="settings-button"
+                          onClick={addQuietHoursWindow}
+                        >
+                          Add quiet hours
+                        </button>
+                      </div>
+                    </div>
                   </div>
 
                   {/* Detection Sensitivity */}
@@ -935,6 +1094,34 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                         />
                       </div>
                     </div>
+                    {/* #681: per-agent-type reasoning-effort default. One row per
+                        concrete agent. "Default" clears the setting, so the agent
+                        CLI's own default applies and no effort flag is passed. */}
+                    {AVAILABLE_AGENT_TYPES.map(({ type, label }) => (
+                      <div className="settings-row" key={`effort-${type}`}>
+                        <div className="settings-row-info">
+                          <span className="settings-label">{label} effort</span>
+                          <span className="settings-desc">
+                            Reasoning-effort level new {label} tasks launch at. "Default" uses the
+                            agent CLI's own default (no flag passed). A per-task override (via the
+                            task API or <code>kookr-spawn --effort</code>) wins over this default.
+                          </span>
+                        </div>
+                        <div className="settings-agent-select">
+                          <select
+                            aria-label={`${label} reasoning effort`}
+                            className="settings-select"
+                            value={settings.agentEffort?.[type] ?? ''}
+                            onChange={(e) => handleAgentEffortChange(type, e.target.value)}
+                          >
+                            <option value="">Default</option>
+                            {effortLevelsForAgent(type).map((level) => (
+                              <option key={level} value={level}>{level}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
                   {/* Keyboard Shortcuts */}

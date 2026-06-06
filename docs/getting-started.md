@@ -108,5 +108,5 @@ Copy `.env.example` to `.env` and uncomment only what you need. See [Configurati
 ## Next Steps
 
 - [User Guide](user-guide.md) explains the dashboard workflow.
-- [CLI Reference](reference/cli.md) covers `kookr-spawn` and `kookr-status`.
+- [CLI Reference](reference/cli.md) covers `kookr spawn` and `kookr status`.
 - [Troubleshooting](troubleshooting.md) covers common install and runtime problems.

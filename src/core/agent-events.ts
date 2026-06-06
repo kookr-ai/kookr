@@ -62,6 +62,10 @@ export type AgentEvent = (
       turnId?: string;
       /** Sequential line number within the hook file. Used to distinguish multiple Stops in one long turn. */
       hookLineId?: string;
+      /** Active Claude Code background tasks reported by the Stop hook, when available. */
+      activeBackgroundTaskCount?: number;
+      /** Active Claude Code session crons reported by the Stop hook, when available. */
+      activeSessionCronCount?: number;
     }
   | {
       type: 'permission_request';

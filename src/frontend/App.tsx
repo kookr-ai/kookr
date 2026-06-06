@@ -13,10 +13,13 @@ import { buildAgentBuckets } from './agent-buckets.js';
 import { computeChainMembership, computeDescendants } from './components/related-tasks-model.js';
 import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';
+import { CommandPalette } from './components/CommandPalette.js';
+import type { CommandAction, CommandTaskItem } from './components/command-palette-model.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
 import { DetailPanel } from './components/DetailPanel.js';
 import { StatusBar } from './components/StatusBar.js';
 import { Toasts } from './components/Toasts.js';
+import { PluginInstallBanner } from './components/PluginInstallBanner.js';
 import { BugReportDialog } from './components/BugReportDialog.js';
 import { AchievementToasts } from './components/AchievementToast.js';
 import { SentOverlay } from './components/SentOverlay.js';
@@ -27,10 +30,16 @@ import type { TaskCompletionFeedback } from '../shared/contracts/messages.js';
 import { ProjectSidebar } from './components/ProjectSidebar.js';
 import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
 import type { SettingsFocusField } from './components/SettingsDialog.js';
-import { SweepButton } from './components/SweepButton.js';
 import { OnboardingTour } from './components/OnboardingTour.js';
 import { CoordinatorFindingsPane } from './components/CoordinatorSurfaces.js';
 import { maybeOpenForFirstRun } from './store/onboarding-store.js';
+import {
+  clampFindingsWidth,
+  loadFindingsWidth,
+  saveFindingsWidth,
+  MIN_FINDINGS_WIDTH,
+  MAX_FINDINGS_WIDTH,
+} from './store/dashboard-layout-prefs.js';
 import {
   detectShortcutPlatform,
   formatShortcutBinding,
@@ -43,6 +52,7 @@ import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { buildBugReportBundle } from './bug-report-bundle.js';
 import { getBugReportAlerts, getBugReportWireObservations } from './bug-report-recorder.js';
+import { getDebugTimelineEntries, isDebugTimelineEnabled } from './debug-timeline.js';
 import './critical.css';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -63,6 +73,11 @@ const ContributionWorkspace = lazy(() => import('./components/ContributionWorksp
 const OssProductivityView = lazy(() => import('./components/OssProductivityView.js').then((m) => ({ default: pickLazyExport<typeof m.OssProductivityView>(m, 'OssProductivityView') })));
 const CostComparisonPanel = lazy(() => import('./components/CostComparisonPanel.js').then((m) => ({ default: pickLazyExport<typeof m.CostComparisonPanel>(m, 'CostComparisonPanel') })));
 const OperationsPanel = lazy(() => import('./components/OperationsPanel.js').then((m) => ({ default: pickLazyExport<typeof m.OperationsPanel>(m, 'OperationsPanel') })));
+const DebugTimelinePanel = lazy(() => (
+  (import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV === true
+    ? import('./components/DebugTimelinePanel.js').then((m) => ({ default: pickLazyExport<typeof m.DebugTimelinePanel>(m, 'DebugTimelinePanel') }))
+    : Promise.resolve({ default: (() => null) as React.ComponentType<{ onExport: () => void }> })
+));
 
 interface ReflectionSuggestion {
   sessionId: string;
@@ -84,9 +99,149 @@ interface PendingCompleteConfirmation {
 
 const MOBILE_BREAKPOINT_PX = 768;
 const WIDE_DETAIL_BREAKPOINT_PX = 1200;
+// Horizontal space (project sidebar + divider + minimum terminal viewport)
+// reserved when the findings panel is resized, so the terminal can never be
+// squeezed to an unusable width on narrow desktops.
+const MIN_TERMINAL_RESERVE_PX = 480;
 
 function reflectionDismissKey(sessionId: string): string {
   return `kookr-reflection-dismissed-${sessionId}`;
+}
+
+/**
+ * Largest findings width the layout can currently show. Derived from the live
+ * container width (which is laid out immediately) rather than the sibling pane
+ * widths (the terminal pane mounts lazily and reports 0 during that window,
+ * which would wrongly collapse the bound). Clamped into the absolute range.
+ */
+function maxFindingsWidthFor(container: HTMLElement | null): number {
+  if (!container) return MAX_FINDINGS_WIDTH;
+  return Math.max(
+    MIN_FINDINGS_WIDTH,
+    Math.min(MAX_FINDINGS_WIDTH, container.clientWidth - MIN_TERMINAL_RESERVE_PX),
+  );
+}
+
+/**
+ * Draggable, keyboard-accessible divider between the findings panel and the
+ * terminal/detail viewport (issue #707). It reports the desired findings-panel
+ * width back to the parent (which owns persistence and applies it as a CSS
+ * variable). The panel's actual rendered width is measured from the divider's
+ * previous sibling so both drag deltas and the exposed ARIA value stay accurate
+ * whether the width is the CSS default or a persisted override.
+ *
+ * Defined inline rather than under components/ to keep the issue #707 write
+ * scope narrow; it is self-contained and could be extracted later.
+ */
+function FindingsResizer({
+  containerRef,
+  onResizeStateChange,
+  onResize,
+  onCommit,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  onResizeStateChange: (active: boolean) => void;
+  onResize: (width: number) => void;
+  onCommit: (width: number) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [valueNow, setValueNow] = useState<number>(MIN_FINDINGS_WIDTH);
+  const [valueMax, setValueMax] = useState<number>(MAX_FINDINGS_WIDTH);
+  // Teardown for an in-flight pointer drag, so listeners are removed even if the
+  // component unmounts mid-drag (e.g. the selected agent is cleared by a
+  // WebSocket update while the user is dragging).
+  const dragCleanup = useRef<(() => void) | null>(null);
+
+  const panelWidth = useCallback((): number => {
+    const panel = ref.current?.previousElementSibling as HTMLElement | null;
+    return panel ? panel.getBoundingClientRect().width : valueNow;
+  }, [valueNow]);
+
+  // Observe the container so window resizes (which shrink the panes) re-evaluate
+  // both the exposed ARIA bounds and the live width, and re-clamp a previously
+  // committed width that no longer fits — keeping the terminal usable.
+  useEffect(() => {
+    const main = containerRef.current;
+    if (!main || typeof ResizeObserver === 'undefined') return;
+    const update = () => {
+      const max = maxFindingsWidthFor(main);
+      setValueMax(max);
+      const width = panelWidth();
+      setValueNow(Math.round(width));
+      if (width > max + 0.5) onResize(max);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(main);
+    return () => observer.disconnect();
+    // panelWidth/onResize are stable across renders for our usage; observe once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [containerRef]);
+
+  // Tear down any in-flight drag on unmount.
+  useEffect(() => () => dragCleanup.current?.(), []);
+
+  const beginDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = panelWidth();
+    onResizeStateChange(true);
+
+    const computeNext = (clientX: number) =>
+      clampFindingsWidth(startWidth + (clientX - startX), maxFindingsWidthFor(containerRef.current));
+
+    const handleMove = (moveEvent: PointerEvent) => onResize(computeNext(moveEvent.clientX));
+    const teardown = () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+      onResizeStateChange(false);
+      dragCleanup.current = null;
+    };
+    function handleUp(upEvent: PointerEvent) {
+      const next = computeNext(upEvent.clientX);
+      teardown();
+      onCommit(next);
+    }
+    dragCleanup.current = teardown;
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 48 : 16;
+    const current = panelWidth();
+    const max = maxFindingsWidthFor(containerRef.current);
+    let next: number;
+    switch (event.key) {
+      case 'ArrowLeft': next = current - step; break;
+      case 'ArrowRight': next = current + step; break;
+      case 'Home': next = MIN_FINDINGS_WIDTH; break;
+      case 'End': next = max; break;
+      default: return;
+    }
+    event.preventDefault();
+    const clamped = clampFindingsWidth(next, max);
+    onResize(clamped);
+    onCommit(clamped);
+  };
+
+  return (
+    <div
+      ref={ref}
+      className="findings-resizer"
+      data-testid="findings-resizer"
+      role="separator"
+      tabIndex={0}
+      aria-orientation="vertical"
+      aria-label="Resize findings panel"
+      aria-valuenow={valueNow}
+      aria-valuemin={MIN_FINDINGS_WIDTH}
+      aria-valuemax={valueMax}
+      onPointerDown={beginDrag}
+      onKeyDown={handleKeyDown}
+    />
+  );
 }
 
 export function App() {
@@ -106,6 +261,16 @@ export function App() {
     typeof window !== 'undefined' ? window.innerWidth > WIDE_DETAIL_BREAKPOINT_PX : false,
   );
   const [mobileTab, setMobileTab] = useState<MobileDashboardTab>('findings');
+  // Persisted desktop split between the findings panel and the terminal
+  // viewport. `null` means "use the CSS default width". Live drag updates state
+  // for instant feedback; the value is persisted on drag-end / keyboard commit.
+  const mainRef = useRef<HTMLDivElement>(null);
+  const [findingsWidth, setFindingsWidth] = useState<number | null>(() => loadFindingsWidth());
+  const [isResizingSplit, setIsResizingSplit] = useState(false);
+  const commitFindingsWidth = useCallback((width: number) => {
+    setFindingsWidth(width);
+    saveFindingsWidth(width);
+  }, []);
   const [showLaunch, setShowLaunch] = useState(false);
   const [showQuickLaunch, setShowQuickLaunch] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -113,6 +278,7 @@ export function App() {
   const [confirmAction, setConfirmAction] = useState<'cancel' | 'complete' | null>(null);
   const [pendingComplete, setPendingComplete] = useState<PendingCompleteConfirmation | null>(null);
   const [completeFeedback, setCompleteFeedback] = useState<TaskCompletionFeedback | undefined>(undefined);
+  const [completeRequestReflect, setCompleteRequestReflect] = useState(false);
   const [showProjectSidebarManager, setShowProjectSidebarManager] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsFocus, setSettingsFocus] = useState<SettingsFocusField | undefined>(undefined);
@@ -122,6 +288,9 @@ export function App() {
   const [showOperations, setShowOperations] = useState(false);
   const [showCoordinatorFindings, setShowCoordinatorFindings] = useState(false);
   const [showBugReport, setShowBugReport] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showSweepConfirm, setShowSweepConfirm] = useState(false);
+  const [debugTimelineEnabled] = useState(() => isDebugTimelineEnabled());
   const [bugReportNote, setBugReportNote] = useState('');
   const [shortcutOverrides, setShortcutOverrides] = useState<PlatformShortcutBindingOverrides>({});
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
@@ -144,6 +313,7 @@ export function App() {
     selectAgent,
     nextBottleneck,
     nextTask,
+    selectNextTaskAfterCompletion,
     advanceEmptyEnter,
     previousTask,
     relaunchTask,
@@ -260,9 +430,33 @@ export function App() {
       serverStartedAt,
       alerts: getBugReportAlerts(),
       wireObservations: getBugReportWireObservations(),
+      debugTimeline: getDebugTimelineEntries(),
       note: bugReportNote,
     });
   }, [agents, bugReportNote, buildInfo, selectedAgentId, selectedProject, serverStartedAt, showBugReport]);
+
+  const exportDebugTrace = useCallback(() => {
+    const { bundle, serialized } = buildBugReportBundle({
+      agents,
+      selectedAgentId,
+      selectedProject,
+      buildInfo,
+      serverStartedAt,
+      alerts: getBugReportAlerts(),
+      wireObservations: [],
+      debugTimeline: getDebugTimelineEntries(),
+      note: 'Debug timeline export',
+    });
+    const blob = new Blob([serialized], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `kookr-debug-trace-${bundle.generatedAt.replace(/[:.]/g, '-')}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, [agents, buildInfo, selectedAgentId, selectedProject, serverStartedAt]);
 
   useEffect(() => {
     if (wideDetailActive) return;
@@ -312,6 +506,13 @@ export function App() {
   // Keyboard shortcuts
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      // ⌘K / Ctrl+K toggles the command palette from anywhere — including while
+      // typing in a field — so it must run before the dialog/composition guards.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        setShowCommandPalette((value) => !value);
+        return;
+      }
       if ((showOperations || showBugReport) && e.key !== 'Escape') {
         return;
       }
@@ -644,14 +845,14 @@ export function App() {
     setReflectionSuggestion(null);
   }
 
-  // Clear-completed counts are derived from UNFILTERED agents so the confirm
-  // dialog never promises a narrower sweep than the server performs. The server
-  // has no project scope in clearCompleted — it operates globally — so the
-  // counts shown to the user must also be global. Per review, showing filtered
-  // counts here would produce "Delete 2 finished tasks?" while silently
-  // sweeping 12 across other projects.
-  const globalFinishedCount = agents.filter((a) => a.taskStatus === 'completed' || a.taskStatus === 'cancelled').length;
-  const globalTerminatedCount = agents.filter((a) => a.taskStatus === 'terminated').length;
+  // Clear-completed counts must match the server-side sweep scope. The
+  // all-projects panel omits projectId and sweeps globally; project panels pass
+  // projectId and sweep only tasks in that project.
+  const clearCompletedScopeAgents = selectedProject
+    ? agents.filter((a) => a.projectId === selectedProject)
+    : agents;
+  const clearCompletedFinishedCount = clearCompletedScopeAgents.filter((a) => a.taskStatus === 'completed' || a.taskStatus === 'cancelled').length;
+  const clearCompletedTerminatedCount = clearCompletedScopeAgents.filter((a) => a.taskStatus === 'terminated').length;
 
   const findingsPanel = (
     <FindingsPanel
@@ -662,8 +863,9 @@ export function App() {
       snoozed={snoozed}
       selectedAgentId={selectedAgentId}
       send={send}
-      globalFinishedCount={globalFinishedCount}
-      globalTerminatedCount={globalTerminatedCount}
+      clearCompletedFinishedCount={clearCompletedFinishedCount}
+      clearCompletedTerminatedCount={clearCompletedTerminatedCount}
+      clearCompletedProjectId={selectedProject ?? undefined}
     />
   );
 
@@ -716,6 +918,50 @@ export function App() {
     />
   );
 
+  // Command-palette action registry — the single home for the actions that used
+  // to be their own top-bar icons. Diagnostics + Coordinator findings stay as
+  // quick icons too (they carry glanceable alert/badge state), so the palette is
+  // a superset, not a replacement.
+  const commandActions: CommandAction[] = [
+    { id: 'diagnostics', label: 'Diagnostics', section: 'view', keywords: ['operations', 'health', 'circuit breaker'], run: () => setShowOperations((value) => !value) },
+    { id: 'coordinator-findings', label: 'Coordinator findings', section: 'view', keywords: ['chain', 'blocked', 'prior'], run: () => setShowCoordinatorFindings((value) => !value) },
+    { id: 'oss', label: 'OSS contribution productivity', section: 'view', keywords: ['open source', 'contributions'], run: toggleOssView },
+    ...(wideDetailActive
+      ? [{
+          id: 'terminal-focus',
+          label: 'Terminal focus',
+          section: 'tools' as const,
+          shortcut: formatShortcutBinding(shortcutBindings.toggle_terminal_focus),
+          keywords: ['terminal', 'focus', 'fullscreen'],
+          run: () => {
+            track({ type: 'shortcut_used', key: 'CommandPalette Terminal Focus', action: 'toggle_terminal_focus', context: 'click' });
+            toggleTerminalFocusMode();
+          },
+        }]
+      : []),
+    { id: 'schedules', label: 'Schedules', section: 'tools', keywords: ['cron', 'routine', 'recurring'], run: () => setShowSchedules(true) },
+    ...(workspaceEnabled && projectSummaries.length > 0
+      ? [{ id: 'sweep', label: 'Sweep merged worktrees', section: 'tools' as const, keywords: ['worktree', 'cleanup', 'git', 'squash'], run: () => setShowSweepConfirm(true) }]
+      : []),
+    { id: 'cost', label: 'Cost comparison', section: 'tools', keywords: ['claude', 'codex', 'price', 'spend'], run: () => setShowCostComparison(true) },
+    { id: 'bug-report', label: 'Bug report', section: 'session', keywords: ['feedback', 'issue', 'report'], run: () => setShowBugReport(true) },
+    { id: 'settings', label: 'Settings', section: 'session', keywords: ['preferences', 'config', 'options'], run: () => { setSettingsFocus(undefined); setShowSettings(true); } },
+    { id: 'shortcuts', label: 'Help & shortcuts', section: 'session', shortcut: formatShortcutBinding(shortcutBindings.toggle_shortcuts_help), keywords: ['help', 'keys', 'keyboard'], run: () => setShowShortcuts(true) },
+  ];
+  const commandTasks: CommandTaskItem[] = [];
+  const seenCommandTaskIds = new Set<string>();
+  for (const a of agents) {
+    if (!a.taskId || seenCommandTaskIds.has(a.taskId)) continue;
+    seenCommandTaskIds.add(a.taskId);
+    commandTasks.push({
+      taskId: a.taskId,
+      agentId: a.agentId,
+      label: a.taskName ?? a.agentId,
+      status: a.taskStatus,
+      projectLabel: a.projectId,
+    });
+  }
+
   return (
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}`}>
       <TopBar
@@ -726,12 +972,8 @@ export function App() {
         totalFindings={findings.length}
         compact={isMobileViewport}
         onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'button' }); setShowLaunch(true); }}
-        onSchedules={() => setShowSchedules(true)}
-        onSettings={() => { setSettingsFocus(undefined); setShowSettings(true); }}
-        onShowShortcuts={() => setShowShortcuts(true)}
-        onOssView={toggleOssView}
+        onCommandPalette={() => setShowCommandPalette(true)}
         onOperations={() => setShowOperations((value) => !value)}
-        onBugReport={() => setShowBugReport(true)}
         operationsOpen={showOperations}
         onCoordinatorFindings={() => setShowCoordinatorFindings((value) => !value)}
         coordinatorFindingsOpen={showCoordinatorFindings}
@@ -742,8 +984,6 @@ export function App() {
           track({ type: 'shortcut_used', key: 'TopBar Terminal Focus', action: 'toggle_terminal_focus', context: 'click' });
           toggleTerminalFocusMode();
         }}
-        onCostComparison={() => setShowCostComparison(true)}
-        sweepSlot={workspaceEnabled ? <SweepButton send={send} projectCount={projectSummaries.length} /> : undefined}
       />
       {showOperations && (
         <div className="operations-popover-shell" ref={operationsPopoverRef}>
@@ -834,11 +1074,25 @@ export function App() {
           </div>
         </>
       ) : (
-        <div className="main">
+        <div
+          ref={mainRef}
+          className={`main${isResizingSplit ? ' main-resizing' : ''}`}
+          style={findingsWidth != null
+            ? ({ '--findings-panel-width': `${findingsWidth}px` } as React.CSSProperties)
+            : undefined}
+        >
           {projectSidebar}
           {projectDetailDrawer}
           {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
           {findingsPanel}
+          {!terminalFocusActive && selectedAgentShowsSplit && (
+            <FindingsResizer
+              containerRef={mainRef}
+              onResizeStateChange={setIsResizingSplit}
+              onResize={setFindingsWidth}
+              onCommit={commitFindingsWidth}
+            />
+          )}
           {detailPanel}
         </div>
       )}
@@ -853,8 +1107,35 @@ export function App() {
         shortcutBindings={shortcutBindings}
       />
       <Toasts />
+      {debugTimelineEnabled && (
+        <Suspense fallback={null}>
+          <DebugTimelinePanel onExport={exportDebugTrace} />
+        </Suspense>
+      )}
+      <PluginInstallBanner />
       <AchievementToasts />
       <SentOverlay />
+      {showCommandPalette && (
+        <CommandPalette
+          actions={commandActions}
+          tasks={commandTasks}
+          onSelectTask={(agentId) => selectAgent(agentId)}
+          onClose={() => setShowCommandPalette(false)}
+        />
+      )}
+      {showSweepConfirm && (
+        <ConfirmDialog
+          title="Sweep merged worktrees"
+          message={`Sweep merged and squash-merged worktrees across ${projectSummaries.length} project${projectSummaries.length !== 1 ? 's' : ''}?`}
+          confirmLabel="Sweep"
+          onConfirm={() => {
+            useKookrStore.getState().setSweepRunning(true);
+            send({ type: 'workspace:sweep' });
+            setShowSweepConfirm(false);
+          }}
+          onClose={() => setShowSweepConfirm(false)}
+        />
+      )}
       {showShortcuts && (
         <Suspense fallback={null}>
           <ShortcutsHelp
@@ -907,24 +1188,32 @@ export function App() {
           footer={
             <CompleteDialogFooter
               feedback={completeFeedback}
+              requestReflect={completeRequestReflect}
               onChange={setCompleteFeedback}
+              onRequestReflectChange={setCompleteRequestReflect}
             />
           }
           onConfirm={() => {
             track({ type: 'task_completed', agentId: pendingComplete.agentId, method: pendingComplete.method });
-            send({
+            const completionSent = send({
               type: 'completeTask',
               taskId: pendingComplete.taskId,
               ...(completeFeedback ? { feedback: completeFeedback } : {}),
+              ...(completeFeedback ? { requestReflect: completeRequestReflect } : {}),
             });
+            if (completionSent) {
+              selectNextTaskAfterCompletion(pendingComplete.agentId, pendingComplete.taskId);
+            }
             setConfirmAction(null);
             setPendingComplete(null);
             setCompleteFeedback(undefined);
+            setCompleteRequestReflect(false);
           }}
           onClose={() => {
             setConfirmAction(null);
             setPendingComplete(null);
             setCompleteFeedback(undefined);
+            setCompleteRequestReflect(false);
           }}
         />
       )}

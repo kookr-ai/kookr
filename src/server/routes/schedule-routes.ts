@@ -18,7 +18,8 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
         schedules: [],
         status: {
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-          catchUpEnabled: true,
+          catchUpMode: "off",
+          catchUpEnabled: false,
           schedulerHealthy: false,
         },
       });

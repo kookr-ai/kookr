@@ -10,7 +10,7 @@ keywords: >
   self continuation, continuation task, sequential task chain, spawn next task,
   issue batch, queue drain, Ralph-like, Kookr task chain, parent task, child task,
   baton pass, autonomous sequence, one issue at a time
-related: github-issue-workflow, task-checkpointing, pr-review-triage
+related: github-issue-workflow, pr-review-triage
 ---
 
 # Self-Continuation Task
@@ -34,8 +34,8 @@ fresh task prompt, not from the agent remembering prior conversation.
 
 - A list of issues, PR comments, repos, files, or migration steps can be worked
   one at a time.
-- Each unit can be selected from durable state such as GitHub, a JSON file, a
-  database row, or a checkpoint directory.
+- Each unit can be selected from durable state such as GitHub, a JSON file, or a
+  database row.
 - A new task can decide the next unit without needing hidden context from the
   previous task.
 - Sequential execution is safer than parallel execution because branches,
@@ -69,7 +69,6 @@ Choose one source of truth and keep it simple:
 
 - GitHub issues/PRs: open/closed state, labels, linked PRs, comments.
 - Local queue file: `queue.json`, `state.json`, or append-only `attempts.log`.
-- Checkpoint directory: `CHECKPOINT.json` for long-running branch state.
 - External API: status rows, job records, or explicit claims.
 
 Prefer positive completion evidence over attempt counters. For example, "open

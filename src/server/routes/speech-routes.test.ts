@@ -7,6 +7,7 @@ import type { RouteDeps } from './shared.js';
 import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { Anomaly } from '../../shared/contracts/anomalies.js';
 import type { AgentSpeakContext } from '../../shared/contracts/speech.js';
+import { TaskStore } from '../../core/tasks.js';
 
 function fakeAnomaly(overrides: Partial<Anomaly> = {}): Anomaly {
   return {
@@ -41,6 +42,8 @@ const baseContext: AgentSpeakContext = {
 
 function mkApp(opts: {
   agents?: AgentState[];
+  monitor?: unknown;
+  taskStore?: unknown;
   task?: unknown;
   enabled?: boolean;
   cache?: AgentSpeakCache | null;
@@ -52,8 +55,8 @@ function mkApp(opts: {
 }): Hono {
   const app = new Hono();
   const deps = {
-    monitor: { getSnapshot: () => opts.agents ?? [] },
-    taskStore: { getTask: () => opts.task },
+    monitor: opts.monitor ?? { getSnapshot: () => opts.agents ?? [] },
+    taskStore: opts.taskStore ?? { getTask: () => opts.task },
   } as unknown as RouteDeps;
   registerSpeechRoutes(app, deps, {
     enabled: opts.enabled ?? true,
@@ -178,6 +181,50 @@ describe('POST /api/agents/:agentId/speak', () => {
     expect(body.effectiveVerbosity).toBe('medium');
     expect(body.cached).toBe(false);
     expect(body.usedFallback).toBe(false);
+  });
+
+  test('uses projected task metadata for raw monitor-backed agent speak context', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Projected speech task', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: '/project',
+      createdAt: new Date('2026-05-24T10:00:00.000Z'),
+    });
+    const monitor = {
+      getSnapshot: () => [{
+        agentId: 'agent-1',
+        events: [],
+        anomaly: fakeAnomaly(),
+        lastEventSeq: 7,
+      }],
+      getTaskSnapshot: () => taskStore.getAllTasks(),
+    };
+    const cache = fakeCache({
+      result: {
+        text: 'Projected speech task. needs approval.',
+        audioBase64: 'AUDIO',
+        mimeType: 'audio/wav',
+        durationMs: 1000,
+        usedFallback: false,
+        fallbackReason: null,
+        llmMs: 50,
+        ttsMs: 200,
+      },
+    });
+
+    const app = mkApp({ monitor, taskStore, cache, ttsUrl: 'http://tts' });
+    const res = await app.request('/api/agents/agent-1/speak', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const context = (cache.get as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(context).toMatchObject({
+      taskName: 'Projected speech task',
+      agentType: 'claude-code',
+      cwd: '/project',
+      descriptionExcerpt: 'Projected speech task',
+    });
   });
 
   test('resolved mode falls back to activity for anomaly-free agent', async () => {
@@ -420,5 +467,49 @@ describe('POST /api/tasks/:taskId/speak-summary (unchanged from PR1)', () => {
     const res = await app.request('/api/tasks/missing/speak-summary', { method: 'POST' });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'task-not-found' });
+  });
+
+  test('uses projected agent finding for raw monitor-backed task summaries', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Summarize active task', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: '/project',
+      createdAt: new Date('2026-05-24T10:00:00.000Z'),
+    });
+    const monitor = {
+      getSnapshot: () => [{
+        agentId: 'agent-1',
+        events: [],
+        anomaly: fakeAnomaly({ explanation: 'approval needed for edit' }),
+        lastEventSeq: 4,
+      }],
+      getTaskSnapshot: () => taskStore.getAllTasks(),
+    };
+    const taskCache = fakeTaskCache({
+      text: 'summary',
+      audioBase64: 'AUDIO',
+      mimeType: 'audio/wav',
+      durationMs: 1,
+      usedFallback: false,
+      llmMs: 1,
+      ttsMs: 1,
+      cached: false,
+    });
+
+    const app = mkApp({ monitor, taskStore, taskCache, ttsUrl: 'http://tts' });
+    const res = await app.request(`/api/tasks/${task.id}/speak-summary`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect((taskCache.get as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({
+      taskName: 'Summarize active task',
+      taskStatus: 'inProgress',
+      activeFinding: {
+        type: 'permission_blocked',
+        severity: 'warning',
+        explanation: 'approval needed for edit',
+      },
+    });
   });
 });

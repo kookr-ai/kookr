@@ -106,6 +106,22 @@ export async function recoverCrashedSessions(
       continue;
     }
 
+    // Guard: a spawned task whose agent finished its turn cleanly is done, not
+    // crashed. Such a task ended on `completed_turn` (a normal Stop, nothing
+    // pending) and reconcile auto-completed it (#693); relaunching here would
+    // re-run finished work and re-spawn its successor — exactly the
+    // self-continuation churn this fix retires. Scoped to spawned tasks
+    // (`parentTaskId` set): human-launched interactive tasks have no parent and
+    // are untouched, so idle-interactive crash recovery is unaffected.
+    if (task.parentTaskId !== undefined && session.lastTurnState === 'completed_turn') {
+      result.skipped.push({
+        taskId: task.id,
+        sessionId: tmuxName,
+        reason: 'spawned task finished its turn cleanly; nothing to recover',
+      });
+      continue;
+    }
+
     // Guard: task already relaunched in this recovery pass
     if (relaunchedTaskIds.has(task.id)) {
       result.skipped.push({

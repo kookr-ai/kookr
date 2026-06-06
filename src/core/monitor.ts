@@ -1,7 +1,7 @@
 import type { AgentActivityMeta, AgentEvent, Anomaly, AnomalyType, TokenUsage, TurnState, WorktreeHealth } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { TaskDependencyEdge } from '../shared/contracts/task.js';
-import { isTerminalStatus, type TaskLaunchHealthSummary, type TaskStore } from './tasks.js';
+import type { Task, TaskLaunchHealthSummary, TaskStore } from './tasks.js';
 import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
@@ -9,9 +9,6 @@ import { anomalyFingerprint } from './anomaly-fingerprint.js';
 import { detectAnomalies, evaluateAnomalies } from './anomaly-detector.js';
 import { deriveTurnState } from './turn-state.js';
 import { deriveLatestCompletionSignal } from './completion-signal.js';
-import { projectDisplayLabel } from './project-identity.js';
-import { normalizeTerminalWorktreeHealth } from './worktree-health.js';
-import { displayPromptForTask } from './prompt-display.js';
 import type { LatestCompletionSignal } from '../shared/contracts/completion-signal.js';
 import {
   recordDetectionCheck,
@@ -79,29 +76,6 @@ export interface AgentState {
    * fresh activity arrived between cache hit and TTS playback.
    */
   lastEventSeq?: number;
-}
-
-interface SessionSnapshotMeta {
-  taskId: string;
-  name?: string;
-  displayPrompt: string;
-  cwd: string;
-  agentType: import('./agent-types.js').AgentType;
-  createdAt: Date;
-  taskStatus: import('./types.js').TaskStatus;
-  sessionStatus?: import('./types.js').AgentStatus | 'completed' | 'aborted';
-  playbookId?: string;
-  playbookParameterValues?: Record<string, string>;
-  launchHealthSummary?: TaskLaunchHealthSummary;
-  projectId?: string;
-  projectDisplayLabel: string;
-  priority?: import('../shared/contracts/task.js').TaskPriority;
-  gitBranch?: string;
-  gitCommit?: string;
-  gitIsWorktree?: boolean;
-  worktreeHealth?: WorktreeHealth;
-  worktreeHealthObservedAt?: string;
-  worktreeRegistryStale?: boolean;
 }
 
 const DEFAULT_WINDOW_SIZE = 50;
@@ -191,7 +165,7 @@ export class Monitor {
    * Appends to the existing event window (capped at windowSize) and runs anomaly detection.
    * Silently drops events for explicitly stopped agents to prevent resurrection.
    */
-  processEvents(agentId: string, events: AgentEvent[]): void {
+  processEvents(agentId: string, events: AgentEvent[], opts?: { eventId?: string }): void {
     // Guard: reject events for explicitly stopped agents (prevents hook watcher race)
     if (this.stoppedAgents.has(agentId)) return;
 
@@ -225,12 +199,14 @@ export class Monitor {
     // the counter once per snapshot tick instead of once per suppressed Stop.
     const evaluation = evaluateAnomalies(capped, agentId, this.anomalyConfig);
     const rawAnomaly = evaluation.anomaly;
-    const anomaly = this.stabilizeEventAnomaly(agentId, this.suppressIfSubagentsRunning(rawAnomaly, agentId, {
-      markSnapshotTtlEviction: false,
-    }));
+    const anomaly = this.stabilizeEventAnomaly(
+      agentId,
+      this.suppressIfSubagentsRunning(rawAnomaly, agentId, { markSnapshotTtlEviction: false }),
+      opts?.eventId,
+    );
     this.recordDetectionTelemetry(agentId, evaluation.checkedTypes, anomaly);
     if (rawAnomaly?.type === 'needs_input' && anomaly === null) {
-      recordSuppression('needs_input');
+      recordSuppression('needs_input', 'subagent_running');
     }
 
     if (anomaly) {
@@ -318,7 +294,7 @@ export class Monitor {
         // swallowed, mirroring the non-actionable purge guard below: only
         // purge watchdog-owned types, and only when no event-derived anomaly
         // is currently shadowing the queue.
-        recordSuppression(rawAnomaly.type);
+        recordSuppression(rawAnomaly.type, 'subagent_running');
         const queued = this.attentionQueue.peek(agentId);
         if (queued && isWatchdogOwnedType(queued.type) && !this.getEventAnomaly(agentId)) {
           this.attentionQueue.purge(agentId);
@@ -353,6 +329,7 @@ export class Monitor {
       // Suppression tracker opts the agent out of queue entry but the UI still
       // needs to reflect the suppressed state, so report "changed" either way.
       if (this.suppressionTracker?.shouldSuppress(agentId, anomaly.type)) {
+        recordSuppression(anomaly.type, 'snooze_false_positive');
         return true;
       }
       // Systemic hook-stall guard: when multiple agents go hook-silent at once
@@ -363,7 +340,7 @@ export class Monitor {
         anomaly.type === 'hook_disconnected'
         && this.countActiveHookDisconnected(agentId) >= SYSTEMIC_HOOK_STALL_MIN_AGENTS
       ) {
-        recordSuppression('hook_disconnected');
+        recordSuppression('hook_disconnected', 'systemic_hook_stall');
         const events = this.agentEvents.get(agentId) ?? [];
         this.findingEvidenceAuditor.observe(agentId, anomaly, events, {
           source: 'watchdog_tick',
@@ -497,6 +474,14 @@ export class Monitor {
   }
 
   /**
+   * Expose raw task records for server-side snapshot projection.
+   * Monitor deliberately does not turn these into dashboard AgentState entries.
+   */
+  getTaskSnapshot(): Task[] {
+    return this.taskStore.getAllTasks();
+  }
+
+  /**
    * Re-evaluate the Ralph zero-diff signal after the Ralph cycler has updated
    * loop state. Returns true when the queue was mutated (signal inserted or
    * cleared) so callers can decide whether to broadcast a new snapshot.
@@ -523,12 +508,21 @@ export class Monitor {
     this.stoppedAgents.add(agentId);
   }
 
-  private stabilizeEventAnomaly(agentId: string, anomaly: Anomaly | null): Anomaly | null {
+  private stabilizeEventAnomaly(
+    agentId: string,
+    anomaly: Anomaly | null,
+    eventId?: string,
+  ): Anomaly | null {
     if (!anomaly) {
       this.lastEventAnomaly.delete(agentId);
       return null;
     }
-    const stable = this.withStableEventDetectedAt(agentId, anomaly);
+    // Stamp the triggering event's correlation id (#705) before stabilizing.
+    // withStableEventDetectedAt keeps the FIRST occurrence's id for a persisting
+    // finding (same fingerprint), so the lineage id points at the event that
+    // originally raised the finding and is stable across replay/reconnect.
+    const stamped = eventId !== undefined ? { ...anomaly, eventId } : anomaly;
+    const stable = this.withStableEventDetectedAt(agentId, stamped);
     this.lastEventAnomaly.set(agentId, stable);
     return stable;
   }
@@ -536,7 +530,14 @@ export class Monitor {
   private withStableEventDetectedAt(agentId: string, anomaly: Anomaly): Anomaly {
     const previous = this.lastEventAnomaly.get(agentId);
     if (!previous || anomalyFingerprint(previous) !== anomalyFingerprint(anomaly)) return anomaly;
-    return { ...anomaly, detectedAt: previous.detectedAt };
+    // Preserve both the first-seen detectedAt and the first-seen correlation id
+    // (#705) so a finding that persists across snapshot/read ticks keeps a
+    // stable lineage id even though those read paths don't carry a fresh one.
+    return {
+      ...anomaly,
+      detectedAt: previous.detectedAt,
+      ...(previous.eventId !== undefined ? { eventId: previous.eventId } : {}),
+    };
   }
 
   private recordDetectionTelemetry(
@@ -563,7 +564,10 @@ export class Monitor {
   /**
    * Update outstanding-subagent tracking for one event. SubagentStart adds the
    * subagentId with a Date.now() timestamp; SubagentStop removes it; session_end
-   * flushes the map for the agent and emits the orphan metric if non-empty.
+   * flushes the map for the agent and emits the orphan metric if non-empty. A
+   * Stop hook with explicit zero active background tasks/crons is authoritative
+   * provider evidence that no subordinate work remains, so it clears stale
+   * entries without counting them as orphans.
    */
   private updateSubagentTracking(agentId: string, event: AgentEvent): void {
     if (event.type === 'subagent_start' && event.agentId) {
@@ -575,6 +579,12 @@ export class Monitor {
       map.set(event.agentId, Date.now());
     } else if (event.type === 'subagent_stop' && event.agentId) {
       this.outstandingSubagents.get(agentId)?.delete(event.agentId);
+    } else if (
+      event.type === 'stop'
+      && event.activeBackgroundTaskCount === 0
+      && event.activeSessionCronCount === 0
+    ) {
+      this.outstandingSubagents.delete(agentId);
     } else if (event.type === 'session_end') {
       this.flushAndDeleteSubagents(agentId);
     }
@@ -771,57 +781,15 @@ export class Monitor {
   }
 
   /**
-   * Get current state snapshot for all known agents.
-   * Enriches each agent with task metadata when a linked task exists.
+   * Get raw live monitor state for all known agents.
    *
-   * @internal Prefer `getSnapshotAgentsForClient` (WebSocket / UI) or
-   * `getSnapshotAgentsRaw` (debug endpoints, server-internal use) from
-   * `src/server/use-cases/get-snapshot.ts`. Direct callers must be listed
-   * in the approved-callers CI guard — see
-   * `docs/rfc/rfc-snapshot-payload-slimming.md`.
+   * This is intentionally limited to event/anomaly/queue-derived state. The
+   * server snapshot use case owns task metadata enrichment and synthetic
+   * pending/terminal entries.
    */
   getSnapshot(): AgentState[] {
-    // Build a lookup: tmuxSession → { task, session } for O(1) enrichment
-    const sessionIndex = new Map<string, SessionSnapshotMeta>();
-    for (const task of this.taskStore.getAllTasks()) {
-      for (const session of task.sessions) {
-        sessionIndex.set(session.tmuxSession, {
-          taskId: task.id,
-          name: task.name,
-          displayPrompt: displayPromptForTask(task),
-          cwd: session.cwd,
-          agentType: session.agentType,
-          createdAt: session.createdAt,
-          taskStatus: task.status,
-          sessionStatus: session.lastStatus,
-          playbookId: task.playbookId,
-          playbookParameterValues: task.playbookParameterValues,
-          launchHealthSummary: task.launchHealthSummary,
-          projectId: task.projectId,
-          projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: session.cwd }),
-          priority: task.priority,
-          gitBranch: session.gitBranch,
-          gitCommit: session.gitCommit,
-          gitIsWorktree: session.gitIsWorktree,
-          worktreeHealth: session.worktreeHealth,
-          worktreeHealthObservedAt: session.worktreeHealthObservedAt,
-          worktreeRegistryStale: session.worktreeRegistryStale,
-        });
-      }
-    }
-
     const states: AgentState[] = [];
     for (const [agentId, events] of this.agentEvents) {
-      const meta = sessionIndex.get(agentId);
-      if (
-        meta
-        && (isTerminalStatus(meta.taskStatus)
-          || meta.sessionStatus === 'completed'
-          || meta.sessionStatus === 'aborted')
-      ) {
-        continue;
-      }
-
       const turnState = this.deriveTurnStateForSnapshot(agentId, events);
       const currentAnomaly = this.getCurrentAnomaly(agentId);
       const anomaly = this.shouldSuppressSnapshotNeedsInput(agentId, events, currentAnomaly)
@@ -853,137 +821,8 @@ export class Monitor {
         }
       }
 
-      if (meta) {
-        state.taskId = meta.taskId;
-        state.taskName = meta.name ?? truncatePrompt(meta.displayPrompt, 60);
-        state.description = meta.displayPrompt;
-        state.cwd = meta.cwd;
-        state.agentType = meta.agentType;
-        state.startedAt = meta.createdAt.toISOString();
-        state.playbookId = meta.playbookId;
-        state.playbookParameterValues = meta.playbookParameterValues;
-        state.launchHealthSummary = meta.launchHealthSummary;
-        state.gitBranch = meta.gitBranch;
-        state.gitCommit = meta.gitCommit;
-        state.gitIsWorktree = meta.gitIsWorktree;
-        state.worktreeHealth = meta.worktreeHealth;
-        state.worktreeHealthObservedAt = meta.worktreeHealthObservedAt;
-        state.worktreeRegistryStale = meta.worktreeRegistryStale;
-        state.projectId = meta.projectId;
-        state.projectDisplayLabel = meta.projectDisplayLabel;
-        state.priority = meta.priority;
-        // Enrich with token usage, task status, and ralph loop state from the task
-        const task = this.taskStore.getTask(meta.taskId);
-        if (task) {
-          state.taskStatus = task.status;
-          state.parentTaskId = task.parentTaskId;
-          state.childTaskIds = task.childTaskIds;
-          state.blocks = task.blocks;
-          state.blocked_by = task.blocked_by;
-          state.ralphLoop = task.ralphLoop;
-          if (task.tokenUsage) {
-            state.tokenUsage = task.tokenUsage;
-          }
-        }
-        const latestCompletionSignal = deriveLatestCompletionSignal({
-          taskId: meta.taskId,
-          agentId,
-          taskStatus: state.taskStatus,
-          events,
-        });
-        if (
-          state.turnState === 'completed_turn'
-          && latestCompletionSignal
-          && !this.isSuppressedCompletionSignal(agentId, latestCompletionSignal.id)
-        ) {
-          state.latestCompletionSignal = latestCompletionSignal;
-        }
-      }
-
       states.push(state);
     }
-
-    // Include pending and completed/cancelled tasks as synthetic entries
-    for (const task of this.taskStore.getAllTasks()) {
-      if (task.status === 'pending') {
-        states.push({
-          agentId: `pending-${task.id}`,
-          events: [],
-          anomaly: null,
-          lastEventSeq: 0,
-          taskId: task.id,
-          taskName: task.name ?? truncatePrompt(displayPromptForTask(task), 60),
-          taskStatus: 'pending',
-          parentTaskId: task.parentTaskId,
-          childTaskIds: task.childTaskIds,
-          blocks: task.blocks,
-          blocked_by: task.blocked_by,
-          description: displayPromptForTask(task),
-          cwd: task.cwd,
-          agentType: task.agentType,
-          startedAt: task.createdAt.toISOString(),
-          playbookId: task.playbookId,
-          playbookParameterValues: task.playbookParameterValues,
-          launchHealthSummary: task.launchHealthSummary,
-          projectId: task.projectId,
-          projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: task.cwd }),
-          priority: task.priority,
-          ralphLoop: task.ralphLoop,
-        });
-      } else if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'terminated') {
-        // Terminal-state tasks included as synthetic entries so they surface
-        // in the dashboard's Completed pane. Without this, 'terminated' tasks
-        // would be invisible — and a user couldn't acknowledge them, defeating
-        // rfc-task-loss-prevention D1.
-        //
-        // Only include if not already represented (agent may have been unregistered)
-        if (!states.some((s) => s.taskId === task.id)) {
-          const lastSession = task.sessions[task.sessions.length - 1];
-          states.push({
-            agentId: lastSession?.tmuxSession ?? `done-${task.id}`,
-            events: [],
-            anomaly: null,
-            lastEventSeq: 0,
-            taskId: task.id,
-            taskName: task.name ?? truncatePrompt(displayPromptForTask(task), 60),
-            taskStatus: task.status,
-            parentTaskId: task.parentTaskId,
-            childTaskIds: task.childTaskIds,
-            blocks: task.blocks,
-            blocked_by: task.blocked_by,
-            description: displayPromptForTask(task),
-            cwd: lastSession?.cwd ?? task.cwd,
-            agentType: lastSession?.agentType ?? task.agentType,
-            startedAt: task.createdAt.toISOString(),
-            playbookId: task.playbookId,
-            playbookParameterValues: task.playbookParameterValues,
-            launchHealthSummary: task.launchHealthSummary,
-            projectId: task.projectId,
-            projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: lastSession?.cwd ?? task.cwd }),
-            priority: task.priority,
-            tokenUsage: task.tokenUsage,
-            gitBranch: lastSession?.gitBranch,
-            gitCommit: lastSession?.gitCommit,
-            gitIsWorktree: lastSession?.gitIsWorktree,
-            worktreeHealth: normalizeTerminalWorktreeHealth(task.status, lastSession?.worktreeHealth),
-            worktreeHealthObservedAt: lastSession?.worktreeHealthObservedAt,
-            worktreeRegistryStale: lastSession?.worktreeRegistryStale,
-            completionDigest: task.completionDigest,
-            completionFeedback: task.completionFeedback,
-            ralphLoop: task.ralphLoop,
-          });
-        }
-      }
-    }
-
     return states;
   }
-}
-
-/** Truncate a prompt to maxLen chars at a word boundary, adding "..." if truncated. */
-function truncatePrompt(prompt: string, maxLen: number): string {
-  if (prompt.length <= maxLen) return prompt;
-  const truncated = prompt.slice(0, maxLen);
-  const lastSpace = truncated.lastIndexOf(' ');
-  return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated) + '...';
 }

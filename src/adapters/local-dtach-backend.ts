@@ -27,7 +27,7 @@
  * See: docs/rfc/rfc-v8-tmux-removal.md
  * See: docs/adr/014-local-dtach-backend.md
  */
-import { execFileSync, spawn as spawnChild } from 'node:child_process';
+import { spawn as spawnChild } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -61,6 +61,7 @@ import {
   RING_BUFFER_BYTES,
   createDtachRingState,
 } from './dtach-ring-store.js';
+import { killProcessTree } from './process-tree.js';
 
 const PENDING_TTL_MS = 10_000;
 /**
@@ -308,26 +309,22 @@ export class LocalDtachBackend implements TerminalBackend {
 
     if (!entry) return;
 
-    if (entry.pid > 0) {
-      try {
-        process.kill(entry.pid, 'SIGTERM');
-      } catch {
-        // already gone
-      }
-      const deadline = Date.now() + KILL_WAIT_SECONDS * 1000;
-      while (Date.now() < deadline) {
-        try {
-          process.kill(entry.pid, 0);
-          await sleep(250);
-        } catch {
-          break;
-        }
-      }
-      try {
-        process.kill(entry.pid, 'SIGKILL');
-      } catch {
-        // fine
-      }
+    // Resolve the dtach master pid. Recovered/rebuilt entries can carry pid -1
+    // (the cmdline scan failed at create/recovery time); fall back to a live
+    // scan keyed on the socket path so we still have a tree root to reap.
+    let masterPid = entry.pid;
+    if (masterPid <= 0) {
+      masterPid = this.findDtachMasterPidSync(entry.sock);
+    }
+
+    // Reap the master AND its descendant tree. dtach forks the agent
+    // (`claude`/`codex`) into its own session, so the agent is NOT in the
+    // master's process group — signalling the master alone leaks the agent,
+    // which ignores the pty's SIGHUP and survives reparented to init
+    // (kookr-ai/kookr#784). killProcessTree snapshots the descendants from
+    // /proc first, then SIGTERM → grace → SIGKILL.
+    if (masterPid > 0) {
+      await killProcessTree(masterPid, { graceMs: KILL_WAIT_SECONDS * 1000 });
     }
 
     if (existsSync(entry.sock)) {
@@ -853,21 +850,44 @@ export class LocalDtachBackend implements TerminalBackend {
     }
   }
 
+  /**
+   * Resolve the dtach master pid for `sock` via a pure-Node `/proc` scan.
+   *
+   * The previous implementation shelled out to a per-pid bash loop over
+   * `/proc/<pid>/cmdline` that piped `tr` into `grep`, spawning two
+   * processes per pid. On a loaded host (hundreds of processes) that loop blew
+   * past its 2 s timeout and returned -1, so the manifest pid was never
+   * resolved — which made `killSession` a no-op and left the dtach master AND
+   * its agent child resident. That unresolved-pid path was a primary driver of
+   * the leak in kookr-ai/kookr#784. Reading the cmdline files directly is
+   * allocation-light and spawns nothing, so it stays correct under load.
+   *
+   * Both the master (`dtach -n <sock> …`) and the read-side attach
+   * (`dtach -a <sock> …`) carry the socket in their cmdline, so the master is
+   * disambiguated by its `-n` flag; a sock-only match is used as a fallback.
+   */
   private findDtachMasterPidSync(sock: string): number {
+    let names: string[];
     try {
-      const out = execFileSync(
-        'bash',
-        [
-          '-c',
-          `for p in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < "$p" 2>/dev/null | grep -l -- "${sock}" > /dev/null 2>&1 && { basename $(dirname "$p"); break; }; done`,
-        ],
-        { stdio: 'pipe', timeout: 2000, encoding: 'utf-8' },
-      );
-      const pid = parseInt(out.trim(), 10);
-      return Number.isFinite(pid) ? pid : -1;
+      names = readdirSync('/proc');
     } catch {
-      return -1;
+      return -1; // no /proc (non-Linux) — caller falls back to -1.
     }
+    let fallback = -1;
+    for (const name of names) {
+      if (!/^\d+$/.test(name)) continue;
+      let cmdline: string;
+      try {
+        cmdline = readFileSync(`/proc/${name}/cmdline`, 'utf-8');
+      } catch {
+        continue; // process exited between readdir and read, or unreadable
+      }
+      if (!cmdline.includes(sock)) continue;
+      const tokens = cmdline.split('\0');
+      if (tokens.includes('-n')) return Number(name);
+      if (fallback < 0) fallback = Number(name);
+    }
+    return fallback;
   }
 
   private async readEntry(id: SessionId): Promise<DtachManifestEntry | null> {

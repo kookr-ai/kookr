@@ -38,17 +38,17 @@ This is Kookr's core differentiator. It's not a hardcoded scoring function — i
 
 ### What it does
 
-The supervisor agent continuously reads structured events from all managed coding agents (via transcript JSONL files and hooks) and:
+The supervisor agent continuously reads structured events from all managed coding agents (primarily via hook JSONL files) and:
 
 1. **Detects anomalies** — patterns that indicate a coding agent needs human help:
-   - Agent is looping (same tool call or test run repeated N times without change)
+   - Agent is repeatedly hitting the same error without changing approach
    - Agent is asking the user a question (via `AskUserQuestion` tool call)
-   - Agent cost is climbing with no progress (budget burn)
-   - Agent drifted off the original task
-   - Agent is stuck on an error it can't resolve
+   - Agent crosses a configured budget threshold
+   - Agent is blocked on a permission prompt
+   - Agent stops and needs user input
 
 2. **Explains the situation** — generates a human-readable summary:
-   - *"Agent #3 has run `npm test` 12 times. Same assertion error each time: `TypeError: token.verify is not a function`. It keeps editing `auth.ts` but hasn't tried changing the import. Likely needs a hint about the correct module."*
+   - *"Agent #3 has repeatedly hit `TypeError: token.verify is not a function` while editing `auth.ts`. It likely needs a hint about the correct module."*
 
 3. **Prioritizes** — which agent needs the developer most urgently, and why
 
@@ -76,15 +76,15 @@ Agents flagged as needing attention are surfaced to the developer in priority or
 
 **GitHub PR/issue awareness:** In addition to agent event monitoring, a periodic scanner detects GitHub references in agent `tool_result` events (e.g., `gh pr create` output containing a PR URL). Extracted references are tracked per task, and the scanner periodically polls GitHub via `gh` CLI for state changes (new review comments, CI failures, review decisions). State changes are diffed against previous snapshots; actionable changes trigger attention alerts through the same attention queue used by agent anomalies. The association between a PR and a task is established at extraction time — the agent's session id maps to its owning task, so all subsequent GitHub events for that PR are routed back to the originating task. See [ADR-012](adr/012-github-pr-awareness.md) and F7 in [features.md](features.md).
 
-> **V2 enhancement:** Transcript JSONL tailing (`transcript-parser.ts` exists but is not yet wired) will provide richer event data including full assistant messages and cost tracking. V1 relies solely on hooks for event delivery.
+> **V2 enhancement:** Transcript-derived anomaly events (`transcript-parser.ts` exists but is not wired into the monitor event stream) will provide richer event data including full assistant messages. Current anomaly event delivery relies on hooks; transcript parsing is used by token/cost and freshness tracking.
 
 ### How it works
 
 The supervisor agent can be implemented in two tiers:
 
-**Tier 1 (V1 — rule-based with templates):** Heuristic anomaly detection using patterns defined in skill files. No LLM calls for detection — just pattern matching on structured agent events (repeated tool calls, error frequency, idle time). PoC validation ([PoC 001](poc/001-hook-mechanism-validation.md)) confirmed that Claude Code in interactive mode (running in a managed dtach session) provides structured data via two channels: **transcript JSONL files** (`~/.claude/projects/<project>/<session_id>.jsonl`, same format as headless output, file-watchable) and **hooks** (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop` — real-time structured JSON events with session_id, tool_name, tool_input, tool_response). The `Stop` hook signals "agent waiting for input"; the `PermissionRequest` hook signals "agent blocked on permission." No ANSI terminal parsing is needed. The "explanation" is a template filled with context.
+**Tier 1 (V1 — rule-based with templates):** Heuristic anomaly detection using hardcoded patterns co-located with tests. No LLM calls for detection — just pattern matching on structured hook events (permission requests, stops, repeated tool errors, hook health, budget thresholds). PoC validation ([PoC 001](poc/001-hook-mechanism-validation.md)) confirmed that Claude Code in interactive mode (running in a managed dtach session) provides structured data through **hooks** (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop` — real-time structured JSON events with session_id, tool_name, tool_input, tool_response). Transcript JSONL files (`~/.claude/projects/<project>/<session_id>.jsonl`) are available for session history and are used by token/cost tracking, but they are not the current monitor event source. The `Stop` hook signals "agent waiting for input"; the `PermissionRequest` hook signals "agent blocked on permission." No ANSI terminal parsing is needed. The "explanation" is a template filled with context.
 
-**Tier 2 (V2 — LLM-powered):** Feed recent parsed agent output to an LLM (e.g., Claude Haiku for cost efficiency) and ask: "Is this agent behaving normally? If not, explain what's wrong and what the developer should do." This enables nuanced detection that rules can't catch (trajectory drift, subtle errors, strategic dead ends).
+**Tier 2 (V2 — LLM-powered):** Feed recent parsed agent output to a configured lightweight LLM provider and ask: "Is this agent behaving normally? If not, explain what's wrong and what the developer should do." This enables nuanced detection that rules can't catch (trajectory drift, subtle errors, strategic dead ends).
 
 ### Anomaly detection patterns
 
@@ -131,7 +131,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 
 **What it does:**
 - Manages coding agents in terminal sessions (see [ADR-007](adr/007-managed-terminal-sessions.md))
-- Reads structured events from transcript JSONL files and hooks for each agent
+- Reads structured hook events for each agent; transcript JSONL is parsed separately for token/cost and freshness tracking
 - Feeds normalized events to the supervisor agent
 - Receives anomaly detections + explanations from the supervisor
 - **Stores task metadata** locally: task description (the launch prompt), optional completion criteria, agent ID, timestamps. Stored in a JSON file on disk (`~/.kookr/tasks.json`) — lightweight, no database needed for V1. Data directory is `~/.kookr/` for the default port (4800) or `~/.kookr-{port}/` for non-default ports, enabling isolated dev/production instances
@@ -156,7 +156,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 **What it does:**
 - Wraps each agent type (Claude Code, Codex CLI) behind a common `AgentAdapter` interface. `RoutingAgentAdapter` dispatches to the concrete adapter by `agentType` (`claude-code-adapter.ts` or `codex-cli-adapter.ts`)
 - Spawns and controls agent sessions through `LocalDtachBackend` — creation, byte-level write for input delivery, termination. The backend owns one persistent attach per session, a 64 KB ring buffer, a per-session write mutex, and lazy re-attach with a 3-per-60-s cap. Transport-level failures surface as structured `BackendError` events wired into the anomaly queue and `/api/health`
-- Tails the agent's **transcript JSONL file** for structured events — same AgentEvent normalization for both agents, sourced from structured data rather than parsed terminal text
+- Registers the agent's **transcript JSONL path** for token/cost and freshness tracking; transcript-derived `AgentEvent` ingestion remains a V2 enhancement
 - Receives **hook events** via per-session JSONL files in `~/.kookr/hooks/`. Full event set is `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `PermissionRequest`, `Notification`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` — see `HookEventName` in `src/core/hook-events.ts`. Codex CLI advertises its supported subset via `codexHookCapabilities` on `session_start`. Hooks are configured per agent via a Kookr-generated settings file (Claude Code `--settings`, Codex CLI config file); they are additive to the user's own hooks. See [PoC 001](poc/001-hook-mechanism-validation.md)
 - Uses **`backend.captureBytes`** for clean terminal display snapshots (shown in the GUI, not used for anomaly detection)
 - Delivers developer input as byte-level writes to the managed dtach session via `backend.write` / `backend.writeSequence`
@@ -165,7 +165,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 
 | Channel | Purpose | Mechanism |
 |---------|---------|-----------|
-| Transcript JSONL | Structured session history, anomaly detection | File tail (watch for new entries) |
+| Transcript JSONL | Structured session history, token/cost and freshness tracking; future anomaly-event enrichment | Incremental file reads from the agent transcript path |
 | Hooks | Real-time event notifications (session start, tool use, permission requests, stop) | Claude Code hook scripts invoked per event, configured via `--settings` flag |
 | `backend.captureBytes` | Terminal display for GUI | Lock-free snapshot of the 64 KB ring buffer |
 | GitHub state | PR/issue status, review comments, CI checks | Periodic polling via `gh` CLI ([ADR-012](adr/012-github-pr-awareness.md)) |
@@ -179,7 +179,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 
 ## Agent Session Lifecycle
 
-> **Constraint: one task = one session.** Each task has exactly one agent session. There are no multi-session tasks. Completing or cancelling a task kills its session. Relaunching creates a new task (with a new session), preserving the original for history.
+> **Model: task = goal, session = attempt.** A task usually has one live managed session, but its persisted `sessions[]` history may contain multiple attempts from crash recovery or looped-playbook recovery. User-initiated relaunches create successor tasks for history. Completing or cancelling a task terminates live sessions.
 
 ```mermaid
 stateDiagram-v2
@@ -237,11 +237,11 @@ The `alert` message carries the supervisor's **explanation** of what's wrong wit
 
 ### Backend ↔ Coding Agents: Managed Terminal Sessions + Structured Data
 
-Agents run in managed dtach sessions (see [ADR-014](adr/014-local-dtach-backend.md)). The adapter layer reads structured data through three channels: **transcript JSONL** (file tail for session history), **hooks** (real-time event callbacks), and **`backend.captureBytes`** (ring-buffer snapshot for the GUI). Input is delivered as byte-level writes to the session via `backend.write` / `backend.writeSequence`.
+Agents run in managed dtach sessions (see [ADR-014](adr/014-local-dtach-backend.md)). The adapter layer reads structured data through three channels: **hooks** (real-time event callbacks for anomaly detection), **transcript JSONL** (session history plus token/cost and freshness tracking), and **`backend.captureBytes`** (ring-buffer snapshot for the GUI). Input is delivered as byte-level writes to the session via `backend.write` / `backend.writeSequence`.
 
 > **Canonical source: `src/core/types.ts`.** The `AgentEvent` union has grown and is no longer mirrored inline here. The current variants are: `session_start`, `tool_use`, `tool_result`, `tool_error`, `subagent_start`, `subagent_stop`, `stop`, `stop_failure`, `permission_request`, `notification`, `user_prompt`, `session_end`, `error`, `input_received`. The `session_start` variant carries optional `codexHookCapabilities` so the monitor can adapt hook-missing detection to the Codex CLI subset.
 >
-> Events are derived from structured sources: transcript JSONL files (same format as headless output) and per-session hook JSONL files (`~/.kookr/hooks/<session>.jsonl`). No terminal output parsing is needed.
+> Monitor events are derived from per-session hook JSONL files (`~/.kookr/hooks/<session>.jsonl`). Transcript JSONL files use the same structured history format as headless output and feed cost/freshness paths today, with broader event ingestion deferred. No terminal output parsing is needed.
 >
 > **Event routing:** the active adapter emits `(sessionId, event)` — the server routes by `sessionId` (stable across restarts, the same value used as the dtach socket filename and as the `tmuxSession` field retained for legacy-schema reasons), not by agent-supplied session IDs (which require `SessionStart` to be processed first). The monitor owns anomaly detection and attention queue. Session metadata (task ID, agent type, paths, last status) is persisted inline in `tasks.json` alongside task data. Attention events remain in-memory and are rebuilt on startup from reconciled session states via hook replay; snoozes are serialized in the task-file envelope and re-imported into the queue.
 >
@@ -342,7 +342,7 @@ kookr/
 │   │   │   ├── sweep-handler.ts           #   cross-project workspace cleanup sweep
 │   │   │   └── workspace-handler.ts       #   workspace cleanup messages
 │   │   ├── event-processors/              # Per-event side effects:
-│   │   │                                  #   checkpoint-stop, GitHub events,
+│   │   │                                  #   GitHub events,
 │   │   │                                  #   permission quick actions/alerts,
 │   │   │                                  #   response assist, session activity,
 │   │   │                                  #   stop-token scanning, token accounting
@@ -384,7 +384,7 @@ kookr/
 │   │   ├── stt-manager.ts                 # Docker lifecycle for bundled STT
 │   │   └── tts-manager.ts                 # Docker lifecycle for bundled TTS
 │   │
-│   ├── core/                              # Pure logic — no I/O
+│   ├── core/                              # Domain logic, contracts, and lightweight local persistence/helpers
 │   │   # Types + contracts
 │   │   ├── types.ts                       # AgentEvent, AgentStatus, TaskStatus, Anomaly, HookEventName
 │   │   ├── agent-types.ts                 # AgentType + AVAILABLE_AGENT_TYPES
@@ -399,8 +399,6 @@ kookr/
 │   │   ├── session-read-model.ts          # Session DTOs
 │   │   ├── task-naming.ts                 # AI task naming via LLM (F4.8)
 │   │   ├── token-tracker.ts               # Token/cost tracking per session (F4.9)
-│   │   ├── checkpoint-cycler.ts           # /compact checkpoint cycle + cancel-backoff controller (ADR-015)
-│   │   ├── checkpoint-path.ts             # Checkpoint file path resolver
 │   │   # Supervisor: detection + queue
 │   │   ├── monitor.ts                     # Event-driven supervisor orchestrator
 │   │   ├── anomaly-detector.ts            # Pure detection patterns
@@ -411,7 +409,7 @@ kookr/
 │   │   ├── watchdog.ts                    # Heartbeat watchdog for stale agents
 │   │   ├── process-liveness.ts            # Process liveness / crash detection
 │   │   ├── hook-parser.ts                 # Parse hook JSON → AgentEvent
-│   │   ├── transcript-parser.ts           # Transcript JSONL → AgentEvent[] (exists, not yet wired)
+│   │   ├── transcript-parser.ts           # Transcript JSONL → AgentEvent[] (not wired into monitor event stream)
 │   │   ├── pane-patterns.ts               # Terminal pane semantic cross-validation
 │   │   ├── permission-actions.ts          # Permission-prompt quick-action extraction
 │   │   ├── http-push-tracker.ts           # HTTP push latency tracker for shadow detection
@@ -638,13 +636,13 @@ The dashboard also surfaces an amber warning banner whenever the last refresh ha
 | Element | Why deferred | When to add |
 |---------|-------------|-------------|
 | Agent discovery via session files | Managed terminal sessions are Kookr-created; discovering externally-started agents is a separate problem | When "take over" makes discovered agents actionable |
-| ~~Monitoring mechanism decision~~ | **Validated by PoC:** hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) + transcript JSONL file tailing provide structured data — no terminal parsing needed. Hook configuration: Kookr generates a per-agent settings JSON file passed via `--settings` flag. Hooks are additive to user settings. See [PoC 001](poc/001-hook-mechanism-validation.md) | ~~Phase 1 PoC~~ Done |
+| ~~Monitoring mechanism decision~~ | **Validated by PoC:** hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) provide real-time structured anomaly events — no terminal parsing needed. Transcript JSONL remains a structured history source and is used for token/cost and freshness tracking, with broader monitor ingestion deferred. Hook configuration: Kookr generates per-agent settings passed via `--settings` or Codex config. Hooks are additive to user settings. See [PoC 001](poc/001-hook-mechanism-validation.md) | ~~Phase 1 PoC~~ Done |
 | ~~Terminal multiplexer choice~~ | **Validated and migrated:** dtach replaced tmux ([ADR-014](adr/014-local-dtach-backend.md)). Agents run under dtach-backed sessions; `backend.captureBytes` provides display snapshots from the ring buffer | Done |
 | LLM-powered supervisor (Tier 2) | Start with rule-based detection; add LLM when rules aren't enough | When rule-based detection misses real anomalies |
-| Plugin system | No users, no plugins needed | When community requests extensions |
-| Session history / analytics DB | Inline session metadata in tasks.json provides the foundation; full history and analytics still need a database | When users want cross-session history or usage analytics |
+| Third-party extension marketplace | Bundled Kookr Toolkit plugin and plugin-tier playbooks cover current distribution needs; arbitrary third-party extensions need a separate product surface | When community requests extensions |
+| Full session history / analytics DB | Local JSON/JSONL/SQLite stores cover current runtime features; full cross-session analytics still need a dedicated database | When users want cross-session history or usage analytics |
 | Monorepo structure | One package is simpler | When we have 3+ distinct packages |
-| Cloud deployment | Local-first solves the VPN problem | When there's demand |
+| Cloud-hosted Kookr runtime | Local-first solves the VPN problem. The hosted relay is only an optional sharing transport, not a cloud supervisor | When there's demand |
 | Gemini CLI adapter | Focus on Claude Code first | After V1 stabilizes |
 | Windows support | Linux + macOS first | When there's demand |
 
@@ -654,7 +652,7 @@ The dashboard also surfaces an amber warning banner whenever the last refresh ha
 
 | Component | Source | How we reuse it |
 |-----------|--------|----------------|
-| Stuck detector (baseline) | aegiscore `stuck-detector.ts` | Fork as starting point for supervisor's rule-based tier. Detection concepts apply directly — input is structured events from transcript JSONL and hooks, same paradigm as aegiscore's JSONL-based approach |
+| Stuck detector (baseline) | aegiscore `stuck-detector.ts` | Use as background for future semantic detection. V1 removed deterministic `stuck_loop`; current rule-based input is primarily hook events, with transcript history available for V2 enrichment |
 | Agent output patterns | aegiscore `claude-code-runner.ts`, `codex-cli-driver.ts` | Study output format knowledge to inform transcript JSONL parsing and hook event handling |
 | Process spawning patterns | aegiscore drivers | Adapt spawn + clean env + signal handling for dtach session creation via node-pty |
 | WebSocket frame pattern | openclaw gateway protocol | Simplified version (no RPC, just events) |

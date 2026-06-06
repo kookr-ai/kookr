@@ -97,6 +97,8 @@ interface TranscriptState {
 export class TokenTracker {
   /** transcript path → incremental state */
   private transcripts = new Map<string, TranscriptState>();
+  /** task id → transcript paths */
+  private taskToTranscripts = new Map<string, Set<string>>();
 
   /** Register a transcript file for a task. */
   register(transcriptPath: string, taskId: string): void {
@@ -121,11 +123,26 @@ export class TokenTracker {
       perMsgUsage: new Map(),
       lastLegacySignature: null,
     });
+    let paths = this.taskToTranscripts.get(taskId);
+    if (!paths) {
+      paths = new Set<string>();
+      this.taskToTranscripts.set(taskId, paths);
+    }
+    paths.add(transcriptPath);
   }
 
   /** Unregister a transcript (e.g. session stopped). */
   unregister(transcriptPath: string): void {
+    const state = this.transcripts.get(transcriptPath);
+    if (!state) return;
+
     this.transcripts.delete(transcriptPath);
+    const paths = this.taskToTranscripts.get(state.taskId);
+    if (!paths) return;
+    paths.delete(transcriptPath);
+    if (paths.size === 0) {
+      this.taskToTranscripts.delete(state.taskId);
+    }
   }
 
   /** Scan all registered transcripts for new cost data. */
@@ -160,8 +177,9 @@ export class TokenTracker {
   /** Scan only transcripts belonging to a specific task. Returns true if usage changed. */
   async scanTask(taskId: string): Promise<boolean> {
     let changed = false;
-    for (const [path, state] of this.transcripts) {
-      if (state.taskId !== taskId) continue;
+    for (const path of this.taskToTranscripts.get(taskId) ?? []) {
+      const state = this.transcripts.get(path);
+      if (!state) continue;
       const beforeInput = state.inputTokens;
       const beforeOutput = state.outputTokens;
       await this.scanOne(path, state);
@@ -181,8 +199,9 @@ export class TokenTracker {
     let cacheWriteTokens = 0;
     let costUsd = 0;
 
-    for (const state of this.transcripts.values()) {
-      if (state.taskId !== taskId) continue;
+    for (const path of this.taskToTranscripts.get(taskId) ?? []) {
+      const state = this.transcripts.get(path);
+      if (!state) continue;
       found = true;
       inputTokens += state.inputTokens;
       outputTokens += state.outputTokens;
@@ -209,11 +228,7 @@ export class TokenTracker {
 
   /** Get all task IDs that have registered transcripts. */
   getTrackedTaskIds(): string[] {
-    const ids = new Set<string>();
-    for (const state of this.transcripts.values()) {
-      ids.add(state.taskId);
-    }
-    return Array.from(ids);
+    return Array.from(this.taskToTranscripts.keys());
   }
 
   /**
@@ -224,8 +239,9 @@ export class TokenTracker {
    * cleanly across the panel's exact-match pricing path).
    */
   getModel(taskId: string): string | null {
-    for (const state of this.transcripts.values()) {
-      if (state.taskId !== taskId) continue;
+    for (const path of this.taskToTranscripts.get(taskId) ?? []) {
+      const state = this.transcripts.get(path);
+      if (!state) continue;
       if (state.model) return state.model;
     }
     return null;
@@ -334,110 +350,6 @@ export class TokenTracker {
       }
     }
   }
-}
-
-// --- Context-fill computation (for v5 checkpoint cycler) ----------------------
-
-/**
- * Per-model context-window size in tokens. Used by computeContextFillFromTranscript
- * to convert the raw per-turn token count into a 0..1 fill ratio.
- *
- * Anthropic's published context windows. The Opus 4.6 1M variant ships a
- * separate model id (`claude-opus-4-6[1m]`) that prefix-matches before the
- * default Opus entry, so we list it first.
- */
-const MODEL_CONTEXT_LIMITS: Record<string, number> = {
-  'claude-opus-4-6[1m]': 1_000_000,
-  'claude-opus-4-7':       1_000_000,
-  'claude-opus-4-6':       200_000,
-  'claude-sonnet-4-6':     200_000,
-  'claude-haiku-4-5':      200_000,
-};
-
-const DEFAULT_CONTEXT_LIMIT = 200_000;
-const warnedUnknownContextModels = new Set<string>();
-
-/** Resolve the context-window size for a model id, with prefix-fallback for dated ids. */
-export function getContextLimit(model: string): number {
-  if (MODEL_CONTEXT_LIMITS[model]) return MODEL_CONTEXT_LIMITS[model];
-  for (const [prefix, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
-    if (model.startsWith(prefix)) return limit;
-  }
-  if (!warnedUnknownContextModels.has(model)) {
-    warnedUnknownContextModels.add(model);
-    console.warn(`[token-tracker] Unknown context limit for model ${JSON.stringify(model)}; using default ${DEFAULT_CONTEXT_LIMIT}`);
-  }
-  return DEFAULT_CONTEXT_LIMIT;
-}
-
-export interface ContextFillSample {
-  /** Tokens in the most recent assistant turn's effective context window. */
-  totalTokens: number;
-  /** Per-model context-window size used as the denominator. */
-  modelLimit: number;
-  /** Resolved model id from the transcript. */
-  model: string;
-  /** 0..1 fill ratio. */
-  ratio: number;
-}
-
-/**
- * Read the most recent assistant entry from a transcript JSONL and compute the
- * context-window fill ratio.
- *
- * The "context fill" of an in-flight session is approximated as the sum of
- * `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` from
- * the most recent assistant message. This matches Claude Code's own `/context`
- * indicator within rounding (verified empirically — see
- * `docs/poc/005-checkpoint-cycle-mechanics.md`).
- *
- * Returns null when:
- *   - The file does not exist or is unreadable
- *   - No assistant turn with usage data has been written yet
- *
- * Reads the WHOLE file then iterates lines from the end. For long-running
- * sessions the file can grow into the megabyte range; if perf becomes a
- * concern, switch to tail-only reading via incremental offsets.
- */
-export async function computeContextFillFromTranscript(
-  transcriptPath: string,
-): Promise<ContextFillSample | null> {
-  let content: string;
-  try {
-    content = await readFile(transcriptPath, 'utf-8');
-  } catch {
-    return null;
-  }
-
-  const lines = content.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const trimmed = lines[i].trim();
-    if (!trimmed) continue;
-
-    let entry: TranscriptCostEntry;
-    try {
-      entry = JSON.parse(trimmed) as TranscriptCostEntry;
-    } catch {
-      continue;
-    }
-
-    if ((entry.type ?? entry.role) !== 'assistant') continue;
-
-    const usage = entry.message?.usage ?? entry.usage;
-    if (!usage) continue;
-
-    const model = entry.message?.model ?? '';
-    const total =
-      (usage.input_tokens ?? 0)
-      + (usage.cache_creation_input_tokens ?? 0)
-      + (usage.cache_read_input_tokens ?? 0);
-    const modelLimit = getContextLimit(model);
-    const ratio = modelLimit > 0 ? total / modelLimit : 0;
-
-    return { totalTokens: total, modelLimit, model, ratio };
-  }
-
-  return null;
 }
 
 // Re-export pricing helpers for backward compat — callers historically imported these from

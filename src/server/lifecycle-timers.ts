@@ -20,8 +20,6 @@ import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
 import { saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
 import { cleanupSessionResources, promotePendingTasks, type LifecycleDeps, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
-import type { CheckpointCycler } from '../core/checkpoint-cycler.js';
-import { getCyclableSessions, isCycleDisabled } from '../core/checkpoint-cycler.js';
 import { getDetectionStats, type DetectionStats } from '../core/detection-stats.js';
 
 export interface TimerDeps {
@@ -52,8 +50,6 @@ export interface TimerDeps {
   suppressionTracker?: SnoozeSuppressionTracker;
   /** Optional durable store for cumulative detector telemetry (persisted on the save tick). */
   detectionStatsStore?: { save(stats: DetectionStats): Promise<void> };
-  /** Optional v5 checkpoint cycler — ticked from the existing token scan interval. */
-  checkpointCycler?: CheckpointCycler;
   /**
    * Optional budget threshold checker (issue #98). When provided and configured with a
    * positive threshold, the token scan tick fires a `budget_exceeded` anomaly the first
@@ -240,33 +236,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           monitor,
           serverCwd,
           activityMetaProvider: deps.activityMetaProvider,
+          relationTaskStore: taskStore,
         }));
-      }
-
-      // v5 checkpoint cycle: each tick, ask the cycler whether any session
-      // should be prompted to write CHECKPOINT.md. The cycler reads its own
-      // context-fill metric from the transcript and returns one action per
-      // session that crosses the threshold. Actions are dispatched via
-      // `adapter.sendInput` (NOT `terminal.sendKeys`) so that adapter-specific
-      // input semantics — Codex CLI's bracketed-paste handling, etc. — are
-      // honoured. Fail-open everywhere — a cycler error never breaks the
-      // token scan.
-      if (deps.checkpointCycler && !isCycleDisabled()) {
-        try {
-          const sessions = getCyclableSessions(taskStore);
-          const actions = await deps.checkpointCycler.tick(sessions);
-          for (const action of actions) {
-            if (action.kind === 'send_user_message' || action.kind === 'send_input') {
-              try {
-                await adapter.sendInput(action.tmuxName, action.text);
-              } catch (sendErr) {
-                console.error('[checkpoint-cycler] sendInput failed:', sendErr);
-              }
-            }
-          }
-        } catch (cyclerErr) {
-          console.error('[checkpoint-cycler] tick failed:', cyclerErr);
-        }
       }
     } catch (err) {
       console.error('Error scanning token usage:', err);
@@ -356,7 +327,6 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     adapter, monitor, taskStore, hookWatcher, watchdog, shadowRegistry, tokenTracker,
     queue,
     suppressionTracker: deps.suppressionTracker,
-    checkpointCycler: deps.checkpointCycler,
   };
 
   const livenessInterval = setInterval(async () => {
@@ -398,6 +368,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           monitor,
           serverCwd,
           activityMetaProvider: deps.activityMetaProvider,
+          relationTaskStore: taskStore,
         }));
       }
     } catch (err) {
@@ -412,6 +383,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           monitor,
           serverCwd,
           activityMetaProvider: deps.activityMetaProvider,
+          relationTaskStore: taskStore,
         }));
       }
     } catch (err) {

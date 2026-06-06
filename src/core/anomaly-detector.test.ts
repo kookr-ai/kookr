@@ -9,6 +9,10 @@ import {
   recordSubagentOrphans,
   recordSubagentTtlEviction,
 } from './detection-stats.js';
+import {
+  eventSequence,
+  resetAnomalyDetectorBuilderIds,
+} from './__fixtures__/anomaly-detector-builders.js';
 
 let toolUseCounter = 0;
 function makeToolUse(sessionId: string, toolName: string, toolInput?: unknown, toolUseId?: string): AgentEvent {
@@ -40,16 +44,17 @@ describe('Anomaly Detector', () => {
 
   beforeEach(() => {
     resetDetectionStats();
+    resetAnomalyDetectorBuilderIds();
     toolUseCounter = 0;
   });
 
   describe('needs_input detection (F2.1)', () => {
     test('Stop event produces needs_input anomaly', () => {
-      const events: AgentEvent[] = [
-        makeToolUse('s1', 'Bash'),
-        makeToolResult('s1', 'Bash'),
-        makeStop('s1', 'I need your help to decide.'),
-      ];
+      const events = eventSequence()
+        .toolUse('Bash', undefined, 'toolu_1')
+        .toolResult('Bash', undefined, 'toolu_1')
+        .stop('I need your help to decide.')
+        .build();
 
       const anomaly = detectAnomalies(events, agentId);
       expect(anomaly).not.toBeNull();
@@ -122,11 +127,7 @@ describe('Anomaly Detector', () => {
 
   describe('repeated_error detection (F2.3)', () => {
     test('same error 3 times produces repeated_error', () => {
-      const events: AgentEvent[] = [
-        makeError('s1', 'TypeError: x is not a function'),
-        makeError('s1', 'TypeError: x is not a function'),
-        makeError('s1', 'TypeError: x is not a function'),
-      ];
+      const events = eventSequence().error('TypeError: x is not a function', 3).build();
 
       const anomaly = detectAnomalies(events, agentId, { repeatedErrorThreshold: 3 });
       expect(anomaly).not.toBeNull();
@@ -159,6 +160,39 @@ describe('Anomaly Detector', () => {
       expect(anomaly!.type).toBe('needs_input');
       expect(anomaly!.severity).toBe('warning');
       expect(anomaly!.explanation).toContain('AskUserQuestion');
+    });
+
+    test('pending AskUserQuestion with trailing PermissionRequest + Notification is needs_input, not permission_blocked', () => {
+      // Real Claude Code hook ordering while the user is still at the choice
+      // menu: PreToolUse(AskUserQuestion) → PermissionRequest(AskUserQuestion) →
+      // Notification(permission_prompt). Without the AskUserQuestion guard in
+      // detectPermissionBlocked, this short-circuited to `permission_blocked`
+      // ("blocked on permission for tool: AskUserQuestion") and the agent showed
+      // as "working" instead of "Needs Input". See incident task 64f2e614.
+      const events: AgentEvent[] = [
+        makeToolUse('s1', 'Bash'),
+        makeToolResult('s1', 'Bash'),
+        makeToolUse('s1', 'AskUserQuestion'),
+        makePermissionRequest('s1', 'AskUserQuestion'),
+        { type: 'notification', sessionId: 's1', notificationType: 'permission_prompt', message: '' },
+      ];
+
+      const anomaly = detectAnomalies(events, agentId);
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.type).toBe('needs_input');
+      expect(anomaly!.severity).toBe('warning');
+      expect(anomaly!.explanation).toContain('AskUserQuestion');
+    });
+
+    test('a genuine tool-permission block (non-AskUserQuestion) still reads as permission_blocked', () => {
+      const events: AgentEvent[] = [
+        makeToolUse('s1', 'Bash'),
+        makePermissionRequest('s1', 'Bash'),
+      ];
+
+      const anomaly = detectAnomalies(events, agentId);
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.type).toBe('permission_blocked');
     });
 
     test('AskUserQuestion followed by tool_result clears anomaly', () => {
@@ -251,16 +285,11 @@ describe('Anomaly Detector', () => {
 
   describe('merge_conflict detection', () => {
     test('CONFLICT in Bash git tool_result triggers merge_conflict anomaly', () => {
-      const events: AgentEvent[] = [
-        makeToolUse('s1', 'Bash', { command: 'git merge feature' }, 'toolu_1'),
-        {
-          type: 'tool_result',
-          sessionId: 's1',
-          toolName: 'Bash',
-          toolUseId: 'toolu_1',
-          toolResponse: `Merging branch 'feature' into main\nCONFLICT (content): Merge conflict in src/index.ts\nAutomatic merge failed; fix conflicts and then commit the result.`,
-        },
-      ];
+      const events = eventSequence().bashResult(
+        'git merge feature',
+        `Merging branch 'feature' into main\nCONFLICT (content): Merge conflict in src/index.ts\nAutomatic merge failed; fix conflicts and then commit the result.`,
+        'toolu_1',
+      ).build();
 
       const anomaly = detectAnomalies(events, agentId);
       expect(anomaly).not.toBeNull();
@@ -561,14 +590,17 @@ describe('Anomaly Detector', () => {
   });
 
   describe('subagent suppression telemetry (rfc-subagent-aware-needs-input)', () => {
-    test('recordSuppression increments per-type counter', () => {
-      recordSuppression('needs_input');
-      recordSuppression('needs_input');
-      recordSuppression('permission_blocked');
+    test('recordSuppression increments per-type and per-reason counters', () => {
+      recordSuppression('needs_input', 'subagent_running');
+      recordSuppression('needs_input', 'subagent_running');
+      recordSuppression('permission_blocked', 'snooze_false_positive');
       const stats = getDetectionStats();
       expect(stats.suppressed.needs_input).toBe(2);
       expect(stats.suppressed.permission_blocked).toBe(1);
       expect(stats.suppressed.repeated_error).toBe(0);
+      expect(stats.suppressionReasons.needs_input.subagent_running).toBe(2);
+      expect(stats.suppressionReasons.needs_input.snooze_false_positive).toBe(0);
+      expect(stats.suppressionReasons.permission_blocked.snooze_false_positive).toBe(1);
     });
 
     test('recordSubagentOrphans accumulates orphan and session counts independently', () => {
@@ -586,24 +618,26 @@ describe('Anomaly Detector', () => {
     });
 
     test('resetDetectionStats clears all new counters', () => {
-      recordSuppression('needs_input');
+      recordSuppression('needs_input', 'subagent_running');
       recordSubagentOrphans(2, 1);
       recordSubagentTtlEviction(1);
       resetDetectionStats();
       const stats = getDetectionStats();
       expect(stats.suppressed.needs_input).toBe(0);
+      expect(stats.suppressionReasons.needs_input.subagent_running).toBe(0);
       expect(stats.subagentOrphans).toBe(0);
       expect(stats.subagentSessionsWithOrphans).toBe(0);
       expect(stats.subagentTtlEvictions).toBe(0);
     });
 
-    test('all four new fields are observable through the recording functions', () => {
+    test('all suppression telemetry fields are observable through the recording functions', () => {
       // Live-counter assertion: deleting any record function breaks this test
-      recordSuppression('needs_input');
+      recordSuppression('needs_input', 'subagent_running');
       recordSubagentOrphans(2, 1);
       recordSubagentTtlEviction(3);
       const stats = getDetectionStats();
       expect(stats.suppressed.needs_input).toBe(1);
+      expect(stats.suppressionReasons.needs_input.subagent_running).toBe(1);
       expect(stats.subagentOrphans).toBe(2);
       expect(stats.subagentSessionsWithOrphans).toBe(1);
       expect(stats.subagentTtlEvictions).toBe(3);

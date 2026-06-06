@@ -29,11 +29,10 @@ import {
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { inferGitInfoPathFromEvent } from './git-path-inference.js';
-import { buildAgentLaunchContext } from './agent-launch-context.js';
+import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
+import { buildAgentLaunchContext, DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
-import { buildCheckpointLoadInstruction } from '../core/checkpoint-load-instruction.js';
-import { resolveAndPrepareCheckpointDir } from '../core/checkpoint-path.js';
 import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
@@ -80,13 +79,6 @@ export interface CodexCliAdapterOptions {
    */
   bypassAllPermissions?: boolean;
   /**
-   * Kookr data directory (`~/.kookr` or `~/.kookr-<port>`). When provided,
-   * each launched task gets a per-(repo, branch) checkpoint directory under
-   * `<kookrDataDir>/checkpoints/...`. Without this, checkpointing is silently
-   * disabled (fail-open).
-   */
-  kookrDataDir?: string;
-  /**
    * Absolute path to the kookr-toolkit plugin tree (containing
    * `.claude-plugin/plugin.json`). When the configured codex binary
    * advertises `--plugin-dir` in its `--help` output, the adapter passes
@@ -112,6 +104,16 @@ export interface CodexCliAdapterOptions {
    * Production callers should leave this unset.
    */
   probeExec?: ProbeExecRunner;
+  /**
+   * Live getter for the configured per-agent-type effort default for
+   * codex-cli (#681). Called on every launch; returning a value pushes
+   * `-c model_reasoning_effort="<level>"` into the argv (unless a per-task
+   * override is supplied via {@link AdapterLaunchOptions.effort}, which wins).
+   * Returning `undefined` — the default when no effort is configured — passes
+   * no effort override, leaving the launch argv byte-identical to pre-#681.
+   * Invalid values are ignored (skip + warn) as a final guard.
+   */
+  resolveDefaultEffort?: () => string | undefined;
 }
 
 /** Env var that overrides the default Codex CLI binary path. */
@@ -154,13 +156,13 @@ export class CodexCliAdapter implements AgentAdapter {
   private codexConfigPath?: string;
   private trustWorkspace: boolean;
   private bypassAllPermissions: boolean;
-  private kookrDataDir?: string;
   private pluginDir?: string;
   private pluginDirSupportProbe?: Promise<boolean>;
   private warnedAboutMissingPluginDirSupport = false;
   private promptFileSupportProbe?: Promise<boolean>;
   private warnedAboutMissingPromptFileSupport = false;
   private probeExec?: ProbeExecRunner;
+  private resolveDefaultEffort?: () => string | undefined;
   private inputWriter: TerminalInputWriterPort;
 
   constructor(
@@ -178,7 +180,6 @@ export class CodexCliAdapter implements AgentAdapter {
     this.codexConfigPath = options?.codexConfigPath;
     this.trustWorkspace = options?.trustWorkspace ?? true;
     this.bypassAllPermissions = options?.bypassAllPermissions ?? false;
-    this.kookrDataDir = options?.kookrDataDir;
     // Mirror ClaudeCodeAdapter: auto-discover the kookr-toolkit plugin tree
     // from the compiled module location. The runtime --plugin-dir capability
     // probe (run lazily at first launch) gates whether we actually inject,
@@ -186,6 +187,7 @@ export class CodexCliAdapter implements AgentAdapter {
     // codex-fork supporting --plugin-dir lands. See `probePluginDirSupport`.
     this.pluginDir = resolvePluginDir(options?.pluginDir);
     this.probeExec = options?.probeExec;
+    this.resolveDefaultEffort = options?.resolveDefaultEffort;
   }
 
   async preflight(): Promise<PreflightResult> {
@@ -250,21 +252,11 @@ export class CodexCliAdapter implements AgentAdapter {
     const tmuxName = `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
-    // Resolve per-(repo, branch) checkpoint dir if configured. Fail-open.
-    // See docs/poc/005-checkpoint-cycle-mechanics.md.
-    const checkpointDir = this.kookrDataDir
-      ? (await resolveAndPrepareCheckpointDir({ cwd, kookrDataDir: this.kookrDataDir })) ?? undefined
-      : undefined;
-    const checkpointInstruction = checkpointDir
-      ? await buildCheckpointLoadInstruction(checkpointDir)
-      : undefined;
-
     const launchContext = await buildAgentLaunchContext({
       taskStore: this.taskStore,
       taskId,
       cwd,
       serverPort: this.serverPort,
-      checkpointDir,
     });
 
     // Generate hook settings (same format as Claude Code --settings)
@@ -282,16 +274,6 @@ export class CodexCliAdapter implements AgentAdapter {
     }
 
     // Build the Codex CLI command.
-    //
-    // Codex CLI does not (yet) expose `--append-system-prompt`. To inject the
-    // v5 checkpoint-load instruction we prepend it to the user prompt when
-    // checkpointing is wired. Note: this is lossier than the Claude Code path
-    // because the prefix lives in the conversation history (which can be
-    // summarized away by /compact). Inter-session resume still works (each
-    // new task gets the prefix again on launch). Intra-session post-compact
-    // resume on Codex CLI is a known v1 gap — fix in a fork patch later.
-    const checkpointPrefix = checkpointInstruction ? `${checkpointInstruction}\n\n` : '';
-    const promptWithCheckpoint = `${checkpointPrefix}${prompt}`;
     const permissionFlagStr = this.bypassAllPermissions
       ? '--dangerously-bypass-approvals-and-sandbox'
       : '--full-auto';
@@ -311,7 +293,7 @@ export class CodexCliAdapter implements AgentAdapter {
     const promptPath = `${this.settingsDir}/${tmuxName}.prompt.txt`;
     if (promptFileSupported) {
       if (this.writeFile) {
-        await this.writeFile(promptPath, promptWithCheckpoint);
+        await this.writeFile(promptPath, prompt);
       }
     } else if (!this.warnedAboutMissingPromptFileSupport) {
       this.warnedAboutMissingPromptFileSupport = true;
@@ -329,6 +311,26 @@ export class CodexCliAdapter implements AgentAdapter {
       permissionFlagStr,
       '--settings', settingsPath,
     ];
+    // Reasoning-effort override (#681). Codex has no dedicated `--effort` flag;
+    // its lever is the `model_reasoning_effort` config key, overridable from
+    // the CLI via `-c key=value` (value parsed as TOML). Resolution order:
+    // per-task override (opts.effort) → configured per-agent-type default
+    // (resolveDefaultEffort) → unset. When both are absent, nothing is pushed
+    // and the argv is byte-identical to pre-#681. The agent-specific validity
+    // guard is a last line of defense (route + settings validation reject
+    // invalid values upstream). The prompt positional is appended later, so
+    // this flag pair never lands in trailing-positional position.
+    const effort = opts?.effort ?? this.resolveDefaultEffort?.();
+    if (effort) {
+      if (isValidEffortForAgent(this.agentType, effort)) {
+        args.push('-c', `model_reasoning_effort="${effort}"`);
+      } else {
+        console.warn(
+          `[codex-cli-adapter] ignoring invalid effort "${effort}" for ${this.agentType}; ` +
+          `valid: none, minimal, low, medium, high, xhigh`,
+        );
+      }
+    }
     if (promptFileSupported) {
       args.push('--prompt-file', promptPath);
     }
@@ -355,7 +357,7 @@ export class CodexCliAdapter implements AgentAdapter {
     if (!promptFileSupported) {
       // Positional argv fallback for binaries without --prompt-file. Must be
       // the last argv entry (codex treats a trailing bare arg as the prompt).
-      args.push(promptWithCheckpoint);
+      args.push(prompt);
     }
     await this.backend.createSession({
       id: tmuxName,
@@ -392,10 +394,12 @@ export class CodexCliAdapter implements AgentAdapter {
     // Codex TUI uses bracketed-paste heuristics to distinguish "pasted
     // multi-line text" from "typed + Enter submit." Collapsing text+Enter
     // into one write(bytes + '\r') risks Codex classifying the entire blob
-    // as paste and NOT submitting. `writeSequence` keeps the two-syscall
-    // split under one mutex acquisition, so concurrent writers can't
-    // interleave but Codex's heuristic still sees two distinct writes.
-    await this.inputWriter.writeInputSequence(tmuxName, [textEncoder.encode(text), ENTER_BYTES], { reason: 'adapter-send-input' });
+    // as paste and NOT submitting. The input coordinator keeps the two writes
+    // serialized while delaying Enter so the TUI can commit the text first.
+    await this.inputWriter.writeInputSequence(tmuxName, [textEncoder.encode(text), ENTER_BYTES], {
+      reason: 'adapter-send-input',
+      interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS,
+    });
   }
 
   async sendKeystroke(tmuxName: string, key: string): Promise<void> {

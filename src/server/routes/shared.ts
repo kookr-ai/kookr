@@ -41,6 +41,7 @@ import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sa
 import type { CollaborationDiagnostics } from '../../shared/contracts/collaboration-profile.js';
 import type { CoordinatorSuppressionRegistry } from '../coordinator/suppression-store.js';
 import type { DrainController } from '../drain-state.js';
+import type { ApiAuthConfig } from '../auth.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -66,6 +67,14 @@ export interface TaskRouteDeps {
   tasksFile?: string;
   kookrDir?: string;
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
+  /**
+   * Optional lifecycle collaborators consumed by `POST /api/tasks/:id/complete`
+   * (issue #691). They flow through from the full RouteDeps at runtime; the
+   * lifecycle `completeTask` tolerates their absence, so tests may omit them.
+   */
+  interactionLog?: DeferredInteractionLogWriter;
+  scheduleService?: ScheduleService;
+  tokenTracker?: TokenTracker;
 }
 
 /** Narrower deps for coordinator suppression / acknowledgement / mark-prior-done routes. */
@@ -137,6 +146,8 @@ export interface RouteDeps {
   serverCwd: string;
   /** Port this server bound to. Surfaced via `/api/deploy/status` so the dashboard can detect dev (non-prod) instances and avoid silently triggering prod deploys. */
   serverPort: number;
+  /** Claude Code binary used for marketplace plugin maintenance. Defaults to KOOKR_AGENT_BIN or `claude`. */
+  pluginUpdateBin?: string;
   /** Stable Kookr state directory, normally `~/.kookr`. */
   kookrDir: string;
   frontendDir: string;
@@ -243,4 +254,11 @@ export interface RouteDeps {
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /** Operator drain / resume state (issue #659). Absent disables the admin drain routes. */
   drainController?: DrainController;
+  /**
+   * Resolved API-token auth posture (issue #708). When `required` is true (the
+   * server bound to a non-loopback host), a global middleware enforces a bearer
+   * token on state-changing requests. Absent or `required: false` leaves the
+   * loopback flow completely token-free.
+   */
+  apiAuth?: ApiAuthConfig;
 }

@@ -16,8 +16,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LlmClient } from '../../core/llm-client.js';
-import type { LaunchOpts, LaunchResult } from '../../server/launch-service.js';
-import { startTelegramTrigger, type StartTelegramTriggerDeps, type TelegramHandle } from './index.js';
+import type { LaunchOpts, LaunchResult } from '../../shared/contracts/launch.js';
+import type { TelegramHandle } from '../../shared/contracts/telegram.js';
+import { startTelegramTrigger, type StartTelegramTriggerDeps } from './index.js';
 import { startFakeTelegram, type FakeTelegramServer } from './fake-telegram-server.js';
 import type { TelegramUpdate } from './api-client.js';
 import { TranscriptionError, type TranscribeOpts } from './transcribe.js';

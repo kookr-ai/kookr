@@ -13,6 +13,7 @@ import {
   recordDetectionCheck,
   recordDetectionFire,
   recordFalsePositive,
+  recordSuppression,
   recordSubagentOrphans,
   resetDetectionStats,
   type DetectionStats,
@@ -36,6 +37,7 @@ describe('DetectionStatsStore', () => {
     recordDetectionCheck('hook_disconnected');
     recordDetectionFire('hook_disconnected');
     recordFalsePositive('hook_disconnected');
+    recordSuppression('hook_disconnected', 'snooze_false_positive');
     recordSubagentOrphans(2, 1);
     const snapshot = getDetectionStats();
 
@@ -44,6 +46,7 @@ describe('DetectionStatsStore', () => {
 
     expect(loaded).toEqual(snapshot);
     expect(loaded?.falsePositives.hook_disconnected).toBe(1);
+    expect(loaded?.suppressionReasons.hook_disconnected.snooze_false_positive).toBe(1);
     expect(loaded?.subagentOrphans).toBe(2);
     expect(loaded?.subagentSessionsWithOrphans).toBe(1);
   });
@@ -125,6 +128,8 @@ describe('hydrateDetectionStats', () => {
     snapshot.checks.stale_agent = 7;
     snapshot.fires.stale_agent = 4;
     snapshot.falsePositives.stale_agent = 1;
+    snapshot.suppressed.stale_agent = 2;
+    snapshot.suppressionReasons.stale_agent.subagent_running = 2;
     snapshot.subagentOrphans = 3;
     snapshot.subagentTtlEvictions = 2;
 
@@ -134,6 +139,8 @@ describe('hydrateDetectionStats', () => {
     expect(live.checks.stale_agent).toBe(7);
     expect(live.fires.stale_agent).toBe(4);
     expect(live.falsePositives.stale_agent).toBe(1);
+    expect(live.suppressed.stale_agent).toBe(2);
+    expect(live.suppressionReasons.stale_agent.subagent_running).toBe(2);
     expect(live.subagentOrphans).toBe(3);
     expect(live.subagentTtlEvictions).toBe(2);
   });
@@ -144,6 +151,32 @@ describe('hydrateDetectionStats', () => {
     expect(live.checks.hook_disconnected).toBe(5);
     expect(live.checks.needs_input).toBe(0);
     expect(live.fires.hook_disconnected).toBe(0);
+    expect(live.suppressionReasons.hook_disconnected.subagent_running).toBe(0);
+  });
+
+  test('treats missing persisted suppressionReasons as an empty breakdown', () => {
+    hydrateDetectionStats({
+      suppressed: { hook_disconnected: 4 } as DetectionStats['suppressed'],
+    });
+    const live = getDetectionStats();
+    expect(live.suppressed.hook_disconnected).toBe(4);
+    expect(live.suppressionReasons.hook_disconnected.subagent_running).toBe(0);
+  });
+
+  test('hydrates known suppression reason keys and ignores stale reason keys', () => {
+    hydrateDetectionStats({
+      suppressionReasons: {
+        hook_disconnected: {
+          subagent_running: 2,
+          systemic_hook_stall: 1,
+          future_reason: 9,
+        },
+      } as unknown as DetectionStats['suppressionReasons'],
+    });
+    const live = getDetectionStats();
+    expect(live.suppressionReasons.hook_disconnected.subagent_running).toBe(2);
+    expect(live.suppressionReasons.hook_disconnected.systemic_hook_stall).toBe(1);
+    expect((live.suppressionReasons.hook_disconnected as Record<string, number>).future_reason).toBeUndefined();
   });
 
   test('ignores negative, non-finite, and non-numeric values', () => {

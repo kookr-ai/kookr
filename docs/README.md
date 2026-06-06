@@ -38,7 +38,7 @@ We publish drafts intentionally — the design history is part of the engineerin
 
 ## Proofs of concept
 
-[`poc/`](poc/) — short, focused experiments validating a specific mechanism (hook detection, checkpoint cycling, permission overrides, etc.) before committing to a design. Each POC documents what was tried, what worked, and what the result implied for the design. Companion `*-artifacts/` directories hold the raw outputs.
+[`poc/`](poc/) — short, focused experiments validating a specific mechanism (hook detection, permission overrides, etc.) before committing to a design. Each POC documents what was tried, what worked, and what the result implied for the design. Companion `*-artifacts/` directories hold the raw outputs.
 
 ## Spikes
 
@@ -50,7 +50,7 @@ We publish drafts intentionally — the design history is part of the engineerin
 
 ## Schemas
 
-[`schemas/`](schemas/) — versioned JSON contracts for durable Kookr artifacts such as structured checkpoints.
+[`schemas/`](schemas/) — versioned JSON contracts for durable Kookr artifacts such as critic traces.
 
 ## Reference
 

@@ -1,15 +1,17 @@
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
+import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
 import {
   type AgentType,
   type AgentSelection,
   DEFAULT_AGENT_TYPE,
   ROUND_ROBIN_AGENT_TYPE,
   resolveRoundRobinAgent,
+  isValidEffortForAgent,
+  effortLevelsForAgent,
 } from '../core/agent-types.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { LaunchDependency } from '../core/playbook.js';
-import type { TaskMetadataIntent } from '../shared/contracts/task.js';
 import {
   redactDiagnosticText,
   type DependencyPreflightRunner,
@@ -25,6 +27,9 @@ import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { canonicalizeCwd } from './cwd.js';
 import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails } from './worktree-guardrails.js';
+
+export type { LaunchOpts } from '../shared/contracts/launch.js';
+export type LaunchResult = SharedLaunchResult<Task>;
 
 export interface LaunchServiceDeps {
   taskStore: TaskStore;
@@ -72,68 +77,24 @@ export class DrainModeError extends Error {
   }
 }
 
-export interface LaunchOpts {
-  prompt: string;
-  cwd: string;
-  criteria?: string;
-  parentTaskId?: string;
-  /** Pre-set task name (e.g. from playbooks). Skips AI naming when set. */
-  name?: string;
-  /** Playbook identifier for traceability. */
-  playbookId?: string;
-  /** Original playbook parameter values, for relaunch pre-fill. */
-  playbookParameterValues?: Record<string, string>;
-  /**
-   * Agent to launch. Defaults to the configured default agent. May be the
-   * `round-robin` sentinel, which is resolved to a concrete agent here; the
-   * created task record always stores a concrete {@link AgentType}.
-   */
-  agentType?: AgentSelection;
-  /** When true, always create a new task instead of returning an existing active duplicate. */
-  disableDedup?: boolean;
-  /** Explicit operator intent for duplicate-preserving launches. */
-  metadataIntent?: TaskMetadataIntent;
-  /** Explicit project ID (e.g., github.com/owner/repo) — skips CWD-based inference. */
-  projectId?: string;
-  /** Where the launch came from — for server-side log provenance. Default: 'api'. */
-  launchSource?: 'cli' | 'ui' | 'api' | 'remote-chat-telegram' | 'remote-relay';
-  /** External services the launch should check and surface as launch health. */
-  dependencies?: LaunchDependency[];
-  /**
-   * When true, inject `RALPH_VERDICT_FILE` and `RALPH_ITERATION` env into
-   * the spawned agent so iteration 0 of a Ralph loop can write a verdict
-   * (subsequent iterations get this via `launchFreshRuntime`'s extraEnv
-   * injection). Path is computed as `defaultVerdictPath(opts.cwd, task.id)`
-   * after the task record exists.
-   *
-   * Coverage and known gaps:
-   * - **Fresh, non-queued launches** (POST /api/tasks/ralph-loop,
-   *   POST /api/playbooks/ralph-loop): covered by PR4. Set this flag to
-   *   true on the launch.
-   * - **Queued ralph launches**: not covered. Promotion via
-   *   `promotePendingTasks` re-launches with bare 3-arg adapter.launch.
-   *   Mitigation: ralph route handlers reject `result.queued: true` with
-   *   a 503 — no half-attached ralph loops.
-   * - **Attach-existing-task** (POST /api/tasks/:id/ralph-loop): NOT
-   *   covered. The existing session predates the loop attach and cannot
-   *   receive new env vars retroactively. Iteration 0 silently misses the
-   *   verdict channel; iteration 1+ get it via `launchFreshRuntime`.
-   *   Documented as a known limitation; relaunch via fresh /api/tasks/ralph-loop
-   *   for full iteration-0 coverage.
-   * - **Crash-recovery resumes**: also not covered (separate path through
-   *   `crash-recovery.ts`); tracked as a follow-up.
-   *
-   * See `docs/rfc/rfc-ralph-loop-stall-handling.md` §8 and PR4 (the
-   * bug-fix companion to PR2 #165).
-   */
-  ralphVerdictEnv?: boolean;
+/**
+ * Thrown by {@link launchTask} when a per-task `effort` override is not valid
+ * for the resolved agent type (#681). Validation happens here — not at the
+ * route — because a `round-robin` selection only resolves to a concrete agent
+ * inside this service, and `max` (claude-only) vs `minimal`/`none` (codex-only)
+ * are agent-specific. The API maps this to HTTP 400.
+ */
+export class EffortValidationError extends Error {
+  readonly code = 'invalid_effort';
+  constructor(message: string) {
+    super(message);
+    this.name = 'EffortValidationError';
+  }
 }
 
-export interface LaunchResult {
-  task: Task;
-  queued: boolean;
-  /** True when an active task with the same prompt already exists. */
-  duplicate?: boolean;
+/** Type guard for {@link EffortValidationError}, for callers mapping to 400. */
+export function isEffortValidationError(err: unknown): err is EffortValidationError {
+  return err instanceof EffortValidationError;
 }
 
 /** Active statuses — tasks in these states block duplicate submissions. */
@@ -269,6 +230,19 @@ export async function launchTask(
       )
     : requestedAgent;
 
+  // Validate a per-task effort override against the *resolved* agent's allowed
+  // set (#681), before any side effect or task record. Done here — not at the
+  // route — because round-robin only resolves to a concrete agent now, and the
+  // allowed set is agent-specific (`max` is claude-only; `minimal`/`none` are
+  // codex-only). The per-agent-type *default* is applied inside the adapter and
+  // validated when settings are saved, so it is not re-checked here.
+  if (opts.effort !== undefined && !isValidEffortForAgent(agentType, opts.effort)) {
+    throw new EffortValidationError(
+      `Invalid effort "${opts.effort}" for agent ${agentType}; ` +
+      `valid levels: ${effortLevelsForAgent(agentType).join(', ')}`,
+    );
+  }
+
   // R19 trust-boundary check (rfc-remote-chat-trigger §4): Telegram-spawned
   // Codex is opt-in because its permission model is more permissive than
   // Claude Code's supervised path. The integration checks this before
@@ -347,14 +321,25 @@ export async function launchTask(
   // PR4: ralph-loop launches need verdict env injected so iteration 0 can
   // write a verdict. Subsequent iterations get this via `launchFreshRuntime`;
   // this fills the gap on the first launch.
-  const adapterOpts = opts.ralphVerdictEnv
-    ? {
-        extraEnv: {
-          RALPH_VERDICT_FILE: defaultVerdictPath(opts.cwd, task.id),
-          RALPH_ITERATION: '0',
-        },
-      }
-    : undefined;
+  // #681: thread the per-task effort override through to the adapter. The
+  // per-agent-type default is resolved inside the adapter, so this only carries
+  // an explicit override. When neither effort nor ralph verdict env is set,
+  // adapterOpts stays `undefined` — byte-identical to the pre-#681 launch call.
+  const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions | undefined =
+    (opts.ralphVerdictEnv || opts.effort || opts.sandboxProfile)
+      ? {
+          ...(opts.ralphVerdictEnv
+            ? {
+                extraEnv: {
+                  RALPH_VERDICT_FILE: defaultVerdictPath(opts.cwd, task.id),
+                  RALPH_ITERATION: '0',
+                },
+              }
+            : {}),
+          ...(opts.effort ? { effort: opts.effort } : {}),
+          ...(opts.sandboxProfile ? { sandboxProfile: opts.sandboxProfile } : {}),
+        }
+      : undefined;
 
   try {
     await adapterRegistry.get(agentType).launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts);

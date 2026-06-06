@@ -1,4 +1,4 @@
-import type { TaskStore } from '../core/tasks.js';
+import type { Task, TaskStore } from '../core/tasks.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { getGitInfo } from '../adapters/git-info.js';
 import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
@@ -9,13 +9,19 @@ export interface ReconciliationResult {
   /** Sessions that were dead and marked completed */
   markedCompleted: string[];
   /**
-   * Tasks auto-transitioned to completed because all sessions finished.
+   * Tasks auto-transitioned to `completed` because all sessions finished.
    *
-   * Kept for backward-compat with callers like `lifecycle-timers.ts` that
-   * branch on `tasksCompleted.length > 0`. After rfc-task-loss-prevention
-   * this array is populated only by crash-recovery / backfill paths that
-   * accept the completed interpretation; reconcile-driven dead-session
-   * transitions now go to `tasksTerminated`. See D1.
+   * After rfc-task-loss-prevention (D1), a dead-session task is auto-completed
+   * here ONLY when there is positive evidence the agent finished gracefully —
+   * its most recent session's last turn state was `completed_turn` (a normal
+   * Stop with nothing pending). This closes the self-continuation gap (#693): a
+   * task whose final act is to spawn a successor and end its turn reaches a
+   * terminal status without manual cleanup. Dead-session tasks WITHOUT that
+   * clean-finish signal (a crash mid-turn) still go to `tasksTerminated` so the
+   * user must acknowledge — preserving D1.
+   *
+   * `lifecycle-timers.ts` branches on `tasksCompleted.length > 0` to promote
+   * pending tasks and broadcast, same as for `tasksTerminated`.
    */
   tasksCompleted: string[];
   /**
@@ -40,7 +46,9 @@ export interface ReconciliationResult {
  * - If task has session and backend confirms it alive: resume monitoring
  * - If task has session and backend says dead: mark session completed
  * - If all sessions for an inProgress/open task are done: transition the task
- *   to 'terminated' (user must acknowledge → completed, or reopen)
+ *   to 'completed' when its most recent session ended on a clean `completed_turn`
+ *   (a graceful finish — see #693), otherwise to 'terminated' (a likely crash;
+ *   user must acknowledge → completed, or reopen)
  * - If backend session exists but not in tasks: report orphan
  *
  * V8 (rfc-v8-tmux-removal.md) replaced the `TerminalManager` parameter with
@@ -48,8 +56,10 @@ export interface ReconciliationResult {
  * (dtach has no equivalent concept), and simplified to one live-session
  * source of truth — `backend.listSessions()`.
  *
- * See rfc-task-loss-prevention.md D1 for why reconcile no longer
- * auto-completes tasks.
+ * See rfc-task-loss-prevention.md D1 for why a crashed (mid-turn) dead-session
+ * task goes to `terminated` rather than `completed`. Issue #693 narrows that: a
+ * dead-session task whose agent finished a clean turn (`completed_turn`) is a
+ * graceful completion, not a crash, so it is auto-completed directly.
  */
 export async function reconcile(
   taskStore: TaskStore,
@@ -149,8 +159,15 @@ export async function reconcile(
       if (latestTask.status === 'open') {
         taskStore.startTask(latestTask.id);
       }
-      taskStore.terminateTask(latestTask.id);
-      result.tasksTerminated.push(latestTask.id);
+      // Clean finish → complete directly; likely crash → terminate for ack.
+      // See `endedOnCleanTurn` for the distinction (#693).
+      if (endedOnCleanTurn(latestTask)) {
+        taskStore.completeTask(latestTask.id);
+        result.tasksCompleted.push(latestTask.id);
+      } else {
+        taskStore.terminateTask(latestTask.id);
+        result.tasksTerminated.push(latestTask.id);
+      }
     }
   }
 
@@ -161,4 +178,24 @@ export async function reconcile(
   }
 
   return result;
+}
+
+/**
+ * A dead-session task ended on a clean turn boundary when its most recent
+ * session reported `completed_turn` as its last turn state — the agent emitted
+ * a normal Stop and was idle with nothing pending before the session went away.
+ *
+ * This is the positive "graceful finish" signal reconcile lacked when
+ * rfc-task-loss-prevention D1 forced every dead-session task to `terminated`.
+ * With it, a spawned task that finishes its turn — even one whose final act is
+ * to hand off to a successor — is auto-completed safely, while a session that
+ * died mid-turn (no `completed_turn` recorded) is still treated as a crash and
+ * routed to `terminated` for user acknowledgement. The most recent session is
+ * authoritative so a crash-recovery relaunch chain is judged by its newest leg.
+ * See #693.
+ */
+function endedOnCleanTurn(task: Task): boolean {
+  const sessions = task.sessions;
+  if (sessions.length === 0) return false;
+  return sessions[sessions.length - 1].lastTurnState === 'completed_turn';
 }

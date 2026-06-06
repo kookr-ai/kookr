@@ -6,7 +6,7 @@
  * the load-bearing concern (round-3 V13).
  */
 import { describe, it, expect } from 'vitest';
-import { redactCredentials } from './index.js';
+import { redactCredentials } from './transcribe.js';
 
 describe('redactCredentials', () => {
   it('passes through plain bash commands unchanged', () => {

@@ -16,10 +16,65 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | --- | --- |
 | `GET /api/tasks` | All tasks with sessions |
 | `POST /api/tasks` | Create and launch a new task |
+| `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive) and tear down its idle session |
 | `DELETE /api/tasks/:id` | Stop and remove a task |
 | `POST /api/agents/:id/message` | Send a message or hint to a running agent |
 | `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
 | `GET /api/sessions/:sessionId/effective-hook-settings` | Resolved per-session hook settings |
+
+### `POST /api/tasks` body fields
+
+`prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
+`agentType`, `effort`, `disableDedup`, `metadata`, and `dependencies`.
+
+`effort` (optional, string) sets the reasoning-effort level for *this one task*,
+overriding the per-agent-type default (see [Reasoning effort](#reasoning-effort)).
+It is validated against the **resolved** agent's allowed set — `round-robin`
+resolves to a concrete agent first — and an invalid level returns
+`400 {"error", "code": "invalid_effort"}`. Allowed levels:
+
+- `claude-code`: `low`, `medium`, `high`, `xhigh`, `max`
+- `codex-cli`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+Omitting `effort` falls back to the per-agent-type setting, then to the agent
+CLI's own default (no effort flag passed — unchanged from before this field
+existed). The `kookr-spawn --effort <level>` flag maps to this field.
+
+### `POST /api/tasks/:id/complete`
+
+Non-destructive way to mark a finished task terminal, distinct from
+`DELETE` (which removes the task) and from cancel/kill (which carries
+abort semantics). Transitions an `inProgress` task to `completed` and
+tears down its idle agent session through the same lifecycle handler the
+dashboard's complete action uses, so projections, the schedule service,
+and the coordinator all observe the terminal state. History is preserved.
+
+This is the safe path for an operator — or an orchestrating agent cleaning
+up its own finished helper tasks — to clear a task that has delivered its
+work but whose session is still alive (issue #691). A task completed this
+way carries no completion digest, so it never surfaces as an actionable
+`done_not_cleared` finding, yet it is terminal and leaves the default
+actionable list like any other completed task.
+
+Success returns `200 {"ok": true, "task": {...}}` with the task now
+`completed`.
+
+- `inProgress` → `completed`, and a `terminated` task (dead sessions
+  awaiting acknowledgement) is also acked to `completed`.
+- Idempotent: an already-`completed` or deliberately `cancelled` task
+  returns `200 {"ok": true, "alreadyTerminal": true}`; a concurrent
+  double-complete resolves to the same no-op rather than an error.
+- Unknown id returns `404`.
+- A task that never started (`open`/`pending`) returns
+  `409 {"code": "not_in_progress"}` — delete or cancel it instead.
+- A task with an active Ralph loop returns
+  `409 {"code": "ralph_loop_active"}` — cancel it to stop the loop.
+- Remote-owned `shared:` ids return `403`.
+
+Worktree-lease release and pending-task promotion run on the periodic
+reconcile/liveness pass rather than inline (the lease service and adapter
+registry are not wired into the route layer — same as `DELETE`); the
+dashboard's WebSocket complete action does both inline.
 
 ## Supervisor Surface
 
@@ -79,6 +134,26 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | --- | --- |
 | `GET /api/settings` | Get user and project settings |
 | `PUT /api/settings` | Update settings |
+
+### Reasoning effort
+
+`agentEffort` is a per-agent-type map in settings (`~/.kookr/settings.json`,
+editable in the dashboard's Settings → Task Management) that sets the default
+reasoning-effort level spawned agents launch at:
+
+```json
+{ "agentEffort": { "claude-code": "high", "codex-cli": "medium" } }
+```
+
+When set, the adapter launches `claude-code` with `--effort <level>` and
+`codex-cli` with `-c model_reasoning_effort="<level>"`. Allowed levels are
+agent-specific (`claude-code`: `low|medium|high|xhigh|max`; `codex-cli`:
+`none|minimal|low|medium|high|xhigh`); invalid `(agent, level)` pairs are
+dropped on save with a warning. The map is **empty by default** — an unset
+agent launches at the agent CLI's own default with no effort flag passed
+(identical to behavior before this setting existed). A per-task `effort` on
+`POST /api/tasks` (or `kookr-spawn --effort`) overrides this default for one
+launch. Resolution order: per-task override → per-agent-type setting → unset.
 | `GET /api/circuit-breakers` | Snapshots of wrapped-dependency breakers |
 | `GET /api/diagnostic` | Latest self-diagnostic report and last error |
 | `POST /api/diagnostic/run` | Trigger a self-diagnostic run |

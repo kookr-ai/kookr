@@ -10,10 +10,13 @@ import { resolvePluginDir } from '../../adapters/claude-code-adapter.js';
 const execFile = promisify(execFileCb);
 
 /**
- * Expected `skillSchemaVersion` in the task-feedback-reflect skill frontmatter.
+ * Expected `skillSchemaVersion` values in reflect skill frontmatter.
  * Bumped when the skill's contract with the spawn use-case changes.
  */
-const EXPECTED_SKILL_SCHEMA_VERSION = 1;
+const REFLECT_SKILLS = {
+  feedback: { name: 'task-feedback-reflect', schemaVersion: 1 },
+  snapshot: { name: 'task-snapshot-reflect', schemaVersion: 1 },
+} as const;
 
 /** Identity file marking a reflect worktree. Cleanup keys off file presence. */
 export const REFLECT_IDENTITY_FILE = '.kookr-reflect.json';
@@ -36,10 +39,12 @@ export interface RequestTaskReflectDeps {
 
 export interface RequestTaskReflectInput {
   sourceTaskId: string;
-  /** Path to the immutable feedback bundle dir (from write-feedback-bundle). */
+  /** Path to the immutable bundle dir. */
   bundlePath: string;
-  /** 'down' triggers fix-proposal branch in the skill; 'up' triggers reinforcement. */
-  direction: 'up' | 'down';
+  /** Completed-feedback reflect is rating-directed; snapshot reflect starts in review mode. */
+  direction: 'up' | 'down' | 'review';
+  /** Defaults to `feedback` for backwards compatibility. */
+  kind?: keyof typeof REFLECT_SKILLS;
 }
 
 export interface RequestTaskReflectResult {
@@ -49,26 +54,29 @@ export interface RequestTaskReflectResult {
 }
 
 /**
- * Spawn a sandboxed reflect task to analyze a single completed source task.
+ * Spawn a sandboxed reflect task to analyze a single source task snapshot.
  *
  * Preconditions checked in order — all must pass or the spawn aborts:
  *   1. Kill switch (`KOOKR_AUTO_REFLECT_DISABLE=1`) is not set.
  *   2. Source task exists in the store.
  *   3. Bundle dir exists at the supplied path.
- *   4. Plugin dir resolves and contains the task-feedback-reflect skill at the
+ *   4. Plugin dir resolves and contains the requested reflect skill at the
  *      expected schema version.
  *
  * Each abort logs a clear reason; the caller can surface it to the user.
  *
- * On success: allocates an ephemeral worktree from `main`, builds a 5-line
+ * On success: allocates an ephemeral worktree from `main`, builds a concise
  * spawn prompt that points at the bundle and tells the agent to load the skill,
- * launches via `launchTask` with `sandboxProfile: 'reflect'`. Persists
+ * launches via `launchTask`. Persists
  * `reflectMeta` on the spawned task so cleanup logic can identify it.
  */
 export async function requestTaskReflect(
   input: RequestTaskReflectInput,
   deps: RequestTaskReflectDeps,
 ): Promise<RequestTaskReflectResult> {
+  const reflectKind = input.kind ?? 'feedback';
+  const skill = REFLECT_SKILLS[reflectKind];
+
   // 1. Kill switch — read inline at call time (no caching) so the operator
   //    can flip it without restarting the server.
   if (process.env.KOOKR_AUTO_REFLECT_DISABLE === '1') {
@@ -93,8 +101,8 @@ export async function requestTaskReflect(
   if (!pluginDir) {
     return { spawned: false, reason: 'plugin_dir_unresolved' };
   }
-  const skillPath = join(pluginDir, 'skills', 'task-feedback-reflect', 'SKILL.md');
-  const skillCheck = await verifySkill(skillPath);
+  const skillPath = join(pluginDir, 'skills', skill.name, 'SKILL.md');
+  const skillCheck = await verifySkill(skillPath, skill.name, skill.schemaVersion);
   if (!skillCheck.ok) {
     return { spawned: false, reason: `skill_verification_failed: ${skillCheck.reason}` };
   }
@@ -118,6 +126,7 @@ export async function requestTaskReflect(
     const identity = {
       schema: REFLECT_IDENTITY_SCHEMA,
       sourceTaskId: input.sourceTaskId,
+      kind: reflectKind,
       createdAt: new Date().toISOString(),
     };
     await writeFile(join(worktreePath, REFLECT_IDENTITY_FILE), JSON.stringify(identity, null, 2));
@@ -127,37 +136,44 @@ export async function requestTaskReflect(
     return { spawned: false, reason: `identity_write_failed: ${(err as Error).message}` };
   }
 
-  // 5-line spawn prompt — the skill owns all the workflow logic.
   const prompt = [
-    `You are running a per-task self-reflect.`,
+    reflectKind === 'snapshot'
+      ? `You are running an anytime task snapshot reflection.`
+      : `You are running a per-task feedback self-reflect.`,
     ``,
     `Bundle: ${join(input.bundlePath, 'bundle.json')}`,
     `Source agent type: ${sourceTask.agentType}`,
     `Source task project root: ${sourceRepoRoot}`,
     ``,
-    `Load the \`task-feedback-reflect\` skill and follow it.`,
+    `Load the \`${skill.name}\` skill and follow it.`,
   ].join('\n');
 
   let result: { task: Task; queued: boolean };
   try {
     result = await deps.launchTask({
       prompt,
-      cwd: sourceRepoRoot,
+      cwd: worktreePath,
       agentType: 'claude-code',
       disableDedup: true,
       launchSource: 'api',
+      sandboxProfile: 'reflect',
     });
   } catch (err) {
     // Clean up worktree on launch failure
+    await execFile('git', ['worktree', 'remove', '--force', worktreePath]).catch(() => {});
     await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
     return { spawned: false, reason: `launch_failed: ${(err as Error).message}` };
   }
 
-  // Mark the spawned task so cleanup can recognize it as a reflect task
+  // Mark the spawned task so cleanup can recognize it as a reflect task.
+  // Record the worktree path so the terminal-state cleanup can remove exactly
+  // this worktree (the startup sweep remains the crash backstop).
   deps.taskStore.setReflectMeta(result.task.id, {
     sourceTaskId: input.sourceTaskId,
     bundlePath: input.bundlePath,
     direction: input.direction,
+    worktreePath,
+    ...(reflectKind !== 'feedback' ? { kind: reflectKind } : {}),
   });
 
   return { spawned: true, reflectTaskId: result.task.id };
@@ -169,10 +185,10 @@ interface SkillCheck {
 }
 
 /**
- * Verify the task-feedback-reflect skill is present, non-empty, and at the
+ * Verify the reflect skill is present, non-empty, and at the
  * expected schema version. Strict — any missing field fails closed.
  */
-async function verifySkill(skillPath: string): Promise<SkillCheck> {
+async function verifySkill(skillPath: string, expectedName: string, expectedVersion: number): Promise<SkillCheck> {
   if (!existsSync(skillPath)) return { ok: false, reason: 'file_missing' };
   let content: string;
   try {
@@ -201,12 +217,12 @@ async function verifySkill(skillPath: string): Promise<SkillCheck> {
   if (!versionLine) return { ok: false, reason: 'skillSchemaVersion_missing' };
 
   const name = nameLine.replace(/^name\s*:\s*/, '').trim();
-  if (name !== 'task-feedback-reflect') return { ok: false, reason: `name_mismatch:${name}` };
+  if (name !== expectedName) return { ok: false, reason: `name_mismatch:${name}` };
 
   const versionStr = versionLine.replace(/^skillSchemaVersion\s*:\s*/, '').trim();
   const version = Number(versionStr);
-  if (version !== EXPECTED_SKILL_SCHEMA_VERSION) {
-    return { ok: false, reason: `version_mismatch:${versionStr}!=${EXPECTED_SKILL_SCHEMA_VERSION}` };
+  if (version !== expectedVersion) {
+    return { ok: false, reason: `version_mismatch:${versionStr}!=${expectedVersion}` };
   }
   return { ok: true };
 }
@@ -339,4 +355,28 @@ export async function sweepReflectWorktrees(deps: {
     }
   }
   return { removed, kept };
+}
+
+/**
+ * Remove a single reflect worktree on demand — called when a reflect task
+ * reaches a terminal state so its worktree is reclaimed immediately rather than
+ * lingering until the next startup sweep.
+ *
+ * Self-guarding: removes `worktreePath` only when it still carries the
+ * `.kookr-reflect.json` identity marker, so a missing/corrupt path can never
+ * delete an unrelated directory. Best-effort and never throws — cleanup must
+ * not fail a task transition. Returns true when `worktreePath` was a marked
+ * reflect worktree we attempted to reclaim, false when skipped (absent path or
+ * missing identity marker).
+ */
+export async function removeReflectWorktree(worktreePath: string | undefined): Promise<boolean> {
+  if (!worktreePath) return false;
+  // Only touch a directory that is provably a reflect worktree.
+  if (!existsSync(join(worktreePath, REFLECT_IDENTITY_FILE))) return false;
+  try {
+    await execFile('git', ['worktree', 'remove', '--force', worktreePath]);
+  } catch {
+    await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+  }
+  return true;
 }

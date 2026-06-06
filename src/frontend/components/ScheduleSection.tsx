@@ -30,7 +30,36 @@ function latestExecutionLabel(schedule: ScheduleResponse): string {
   if (!latest) return 'never';
   const when = latest.triggeredAt ?? latest.evaluatedAt;
   const suffix = latest.message ? ` \u00B7 ${latest.message}` : '';
-  return `${latest.outcome} ${formatRelativeTime(when)}${suffix}`;
+  return `${latestExecutionOutcomeLabel(latest.outcome)} ${formatRelativeTime(when)}${suffix}`;
+}
+
+function latestExecutionOutcomeLabel(outcome: NonNullable<ScheduleResponse['latestExecution']>['outcome']): string {
+  switch (outcome) {
+    case 'queued':
+      return 'queued';
+    case 'running':
+      return 'running';
+    case 'completed':
+      return 'completed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'deduplicated':
+      return 'deduplicated';
+    case 'dispatch_failed':
+      return 'dispatch failed';
+    case 'skipped_active':
+      return 'skipped: active run';
+    case 'skipped_capacity':
+      return 'skipped: capacity';
+    case 'skipped_draining':
+      return 'skipped: draining';
+    case 'skipped_manual':
+      return 'manual run available';
+    case 'skipped_stale':
+      return 'skipped: stale';
+    case 'unknown_after_restart':
+      return 'unknown after restart';
+  }
 }
 
 function nextRunLabel(schedule: ScheduleResponse): string {
@@ -54,6 +83,7 @@ function statusClass(schedule: ScheduleResponse): string {
     case 'skipped_active':
     case 'skipped_capacity':
     case 'skipped_draining':
+    case 'skipped_manual':
     case 'skipped_stale':
     case 'unknown_after_restart':
       return 'schedule-status-fail';

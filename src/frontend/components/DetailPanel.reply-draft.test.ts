@@ -1,0 +1,164 @@
+// @vitest-environment jsdom
+
+import React, { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import type { AgentState, ClientMessage } from '../../shared/protocol.js';
+import { detailReplyDraftKey } from '../store/detail-reply-draft.js';
+import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import { DetailPanel } from './DetailPanel.js';
+
+vi.mock('../telemetry.js', () => ({ track: vi.fn(), trackClick: vi.fn() }));
+vi.mock('./ActivityPanel.js', () => ({ ActivityPanel: () => React.createElement('div', { 'data-testid': 'activity-panel' }) }));
+vi.mock('./GitHubPanel.js', () => ({ GitHubPanel: () => React.createElement('div', { 'data-testid': 'github-panel' }) }));
+vi.mock('./TerminalPanel.js', () => ({ TerminalPanel: () => React.createElement('div', { 'data-testid': 'terminal-panel' }) }));
+vi.mock('./VoiceInputButton.js', () => ({
+  VoiceInputButton: ({ onTranscript }: { onTranscript: (text: string) => void }) => React.createElement(
+    'button',
+    {
+      'data-testid': 'voice-input',
+      onClick: () => onTranscript('voice reply'),
+    },
+    'voice',
+  ),
+}));
+vi.mock('./DiffPane.js', () => ({ DiffPane: () => React.createElement('div', { 'data-testid': 'diff-pane' }) }));
+vi.mock('./SnoozeDialog.js', () => ({ SnoozeDialog: () => null }));
+vi.mock('./EffectiveHookSettingsModal.js', () => ({ EffectiveHookSettingsModal: () => null }));
+vi.mock('./TaskShareModal.js', () => ({ TaskShareModal: () => null }));
+
+function syncGlobalStore() {
+  const freshState = createKookrStore().getState();
+  const nextData = Object.fromEntries(
+    Object.entries(freshState).filter(([, value]) => typeof value !== 'function'),
+  );
+  useKookrStore.setState(nextData);
+}
+
+function makeAgent(agentId: string): AgentState {
+  return {
+    agentId,
+    taskId: `task-${agentId}`,
+    taskName: `Task ${agentId}`,
+    events: [],
+    anomaly: null,
+    cwd: '/tmp/kookr',
+    startedAt: '2026-06-05T10:00:00.000Z',
+    taskStatus: 'inProgress',
+  };
+}
+
+function renderDetailPanel(root: Root, agent: AgentState, send: (msg: ClientMessage) => boolean = () => true): void {
+  act(() => {
+    root.render(React.createElement(DetailPanel, {
+      agent,
+      send,
+      onLaunch: vi.fn(),
+      onRequestComplete: vi.fn(),
+    }));
+  });
+}
+
+function responseInput(container: HTMLElement): HTMLInputElement {
+  const input = container.querySelector<HTMLInputElement>('.response-row input');
+  expect(input).toBeInstanceOf(HTMLInputElement);
+  return input!;
+}
+
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+describe('DetailPanel reply draft persistence', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    localStorage.clear();
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    syncGlobalStore();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    document.body.innerHTML = '';
+    localStorage.clear();
+  });
+
+  test('restores each task draft when switching away and back', () => {
+    const first = makeAgent('agent-1');
+    const second = makeAgent('agent-2');
+
+    renderDetailPanel(root, first);
+    act(() => setInputValue(responseInput(container), 'check logs before replying'));
+    expect(localStorage.getItem(detailReplyDraftKey({ taskId: first.taskId, agentId: first.agentId })!)).toBe(
+      JSON.stringify({ input: 'check logs before replying' }),
+    );
+
+    renderDetailPanel(root, second);
+    expect(responseInput(container).value).toBe('');
+    act(() => setInputValue(responseInput(container), 'second task reply'));
+
+    renderDetailPanel(root, first);
+    expect(responseInput(container).value).toBe('check logs before replying');
+
+    renderDetailPanel(root, second);
+    expect(responseInput(container).value).toBe('second task reply');
+  });
+
+  test('clears the scoped draft after a successful send', () => {
+    const agent = makeAgent('agent-1');
+    const sent: ClientMessage[] = [];
+    renderDetailPanel(root, agent, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+
+    act(() => setInputValue(responseInput(container), 'ship it'));
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[data-testid="send-button"]')!.click();
+    });
+
+    expect(sent).toEqual([{ type: 'directReply', agentId: agent.agentId, input: 'ship it' }]);
+    expect(responseInput(container).value).toBe('');
+    expect(localStorage.getItem(detailReplyDraftKey({ taskId: agent.taskId, agentId: agent.agentId })!)).toBeNull();
+  });
+
+  test('preserves the draft when send fails', () => {
+    const agent = makeAgent('agent-1');
+    renderDetailPanel(root, agent, () => false);
+
+    act(() => setInputValue(responseInput(container), 'retry after reconnect'));
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[data-testid="send-button"]')!.click();
+    });
+
+    expect(responseInput(container).value).toBe('retry after reconnect');
+    expect(localStorage.getItem(detailReplyDraftKey({ taskId: agent.taskId, agentId: agent.agentId })!)).toBe(
+      JSON.stringify({ input: 'retry after reconnect' }),
+    );
+  });
+
+  test('persists voice transcript drafts', async () => {
+    const agent = makeAgent('agent-1');
+    useKookrStore.setState({ sttUrl: 'http://127.0.0.1:8010' });
+    renderDetailPanel(root, agent);
+    await act(async () => {});
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[data-testid="voice-input"]')!.click();
+    });
+
+    expect(responseInput(container).value).toBe('voice reply');
+    expect(localStorage.getItem(detailReplyDraftKey({ taskId: agent.taskId, agentId: agent.agentId })!)).toBe(
+      JSON.stringify({ input: 'voice reply' }),
+    );
+  });
+});

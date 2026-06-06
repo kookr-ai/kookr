@@ -101,6 +101,21 @@ describe('deriveTurnState', () => {
       ];
       expect(deriveTurnState(events)).toBe('running');
     });
+
+    test('a pending AskUserQuestion with its trailing PermissionRequest + Notification is waiting_for_input', () => {
+      // Real Claude Code hook ordering for a multiple-choice question that the
+      // user has NOT answered yet (the PostToolUse only fires once they pick an
+      // option). Without the AskUserQuestion guard this read as `blocked` and the
+      // dashboard showed the agent as "working". See incident task 64f2e614.
+      const events: AgentEvent[] = [
+        toolUse('s1', 'Bash'),
+        toolResult('s1', 'Bash'),
+        toolUse('s1', 'AskUserQuestion', { question: 'Local Qwen or OpenRouter?' }),
+        { type: 'permission_request', sessionId: 's1', toolName: 'AskUserQuestion' },
+        { type: 'notification', sessionId: 's1', notificationType: 'permission_prompt', message: '' },
+      ];
+      expect(deriveTurnState(events)).toBe('waiting_for_input');
+    });
   });
 
   describe('blocked', () => {

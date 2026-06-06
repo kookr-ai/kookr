@@ -3,6 +3,14 @@ import { useKookrStore } from '../store/useStore.js';
 import { DndPill } from './DndPill.js';
 import { FollowPill } from './FollowPill.js';
 import { formatCost } from '../presentation.js';
+import {
+  TOOLKIT_MARKETPLACE_SLUG,
+  marketplaceNameFromPluginId,
+  pluginUpdateCommands,
+  type PluginUpdateError,
+  type PluginUpdateResult,
+  type PluginVersionStatus,
+} from '../../shared/contracts/plugin-version.js';
 
 interface Props {
   findings: number;
@@ -10,23 +18,20 @@ interface Props {
   totalFindings: number;
   compact?: boolean;
   onLaunch: () => void;
-  onSchedules: () => void;
-  onSettings: () => void;
-  onShowShortcuts: () => void;
-  onOssView: () => void;
+  /** Open the command palette — the single entry point for the actions that
+   *  previously lived as their own top-bar icons (Schedules, Settings, Help,
+   *  OSS, Bug report, Terminal focus, Cost comparison, …). */
+  onCommandPalette: () => void;
   onOperations: () => void;
-  onBugReport: () => void;
   operationsOpen?: boolean;
   onCoordinatorFindings: () => void;
   coordinatorFindingsOpen?: boolean;
+  /** Terminal-focus stays a quick icon: in focus mode the chrome is hidden, so
+   *  this toggle is the visible exit affordance and the stable focus target. */
   terminalFocusMode?: boolean;
   terminalFocusAvailable?: boolean;
   terminalFocusTriggerRef?: React.RefObject<HTMLButtonElement | null>;
   onTerminalFocusToggle: () => void;
-  /** Open the Cost Comparison panel. Optional — the icon is hidden when undefined. */
-  onCostComparison?: () => void;
-  /** Optional slot rendered in the right-side action cluster, hidden in compact mode. */
-  sweepSlot?: React.ReactNode;
 }
 
 interface DeployStatus {
@@ -35,6 +40,7 @@ interface DeployStatus {
   deploying?: boolean;
   toolkit?: ToolkitStatus;
   toolkitError?: string;
+  plugin?: PluginVersionStatus;
   currentShort?: string;
   latestShort?: string;
   behindCount?: number;
@@ -67,13 +73,16 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, onBugReport, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusAvailable = true, terminalFocusTriggerRef, onTerminalFocusToggle, onCostComparison, sweepSlot }: Props) {
+export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onCommandPalette, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusAvailable = true, terminalFocusTriggerRef, onTerminalFocusToggle }: Props) {
   const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [toolkitRefreshing, setToolkitRefreshing] = useState(false);
+  const [pluginUpdating, setPluginUpdating] = useState(false);
+  const [pluginUpdateMessage, setPluginUpdateMessage] = useState<string | null>(null);
+  const [pluginUpdateError, setPluginUpdateError] = useState<string | null>(null);
   const preDeployCommitRef = useRef<string | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
@@ -173,6 +182,27 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
     }
   }
 
+  async function updateToolkitPlugin() {
+    setPluginUpdating(true);
+    setPluginUpdateMessage(null);
+    setPluginUpdateError(null);
+    try {
+      const res = await fetch('/api/deploy/plugin-update', { method: 'POST' });
+      const data = (await res.json()) as PluginUpdateResult | PluginUpdateError;
+      if (res.ok) {
+        setDeployStatus((prev) => prev ? { ...prev, plugin: data.plugin } : prev);
+        setPluginUpdateMessage('Toolkit plugin updated. Restart Claude Code sessions to load it.');
+      } else {
+        if (data.plugin) setDeployStatus((prev) => prev ? { ...prev, plugin: data.plugin } : prev);
+        setPluginUpdateError(data.error ?? 'Plugin update failed');
+      }
+    } catch {
+      setPluginUpdateError('Plugin update failed');
+    } finally {
+      setPluginUpdating(false);
+    }
+  }
+
   const isDev = !buildInfo || buildInfo.commitShort === 'dev';
   const versionLabel = isDev
     ? 'DEV'
@@ -191,7 +221,23 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
 
   const toolkitStale = Boolean(deployStatus?.toolkit?.stale);
   const showToolkitSection = Boolean(toolkitStale || toolkitRefreshing || deployStatus?.toolkitError);
-  const hasUpdates = (!onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying) || toolkitStale;
+  const pluginStale = Boolean(deployStatus?.plugin?.stale);
+  const pluginNotInstalled = Boolean(
+    deployStatus?.plugin &&
+      deployStatus.plugin.installedVersion === null &&
+      deployStatus.plugin.availableVersion !== null,
+  );
+  // The marketplace name is the part after `@` in the plugin id
+  // ("kookr-toolkit@kookr" → "kookr"); used in the `/plugin marketplace update`
+  // hint. Falls back to the default marketplace name if the id is malformed.
+  const pluginId = deployStatus?.plugin?.pluginId ?? 'kookr-toolkit@kookr';
+  const pluginMarketplace = marketplaceNameFromPluginId(pluginId);
+  const pluginManualCommands = pluginUpdateCommands(pluginId, pluginMarketplace);
+  const hasUpdates =
+    (!onNonProdPort && deployStatus?.configured && deployStatus.available && !deploying) ||
+    toolkitStale ||
+    pluginStale ||
+    pluginNotInstalled;
   const operationsNeedsAttention =
     circuitBreakers.some((breaker) => breaker.state !== 'closed') ||
     Boolean(diagnosticReport?.findings.length);
@@ -215,19 +261,22 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
           <img src="/kookr-mark-32.png" alt="" aria-hidden="true" width={18} height={18} className="logo-mark" />
           KOOKR
         </span>
-        <span
+        <button
+          type="button"
           className={`version-badge ${isDev ? 'dev' : ''} ${hasUpdates ? 'has-updates' : ''}`}
           onClick={() => setShowPopover((v) => !v)}
-          title="Build info"
+          aria-label="Build info"
+          aria-expanded={showPopover}
+          aria-controls="version-popover"
         >
           <span className={`health-dot ${connected ? 'health-dot-connected' : 'health-dot-disconnected'}`} />
           {deploying && <span className="deploy-spinner" />}
           {versionLabel}
           {!compact && !isDev && builtAgo && <span className="version-built"> · {builtAgo}</span>}
           {hasUpdates && <span className="update-dot" />}
-        </span>
+        </button>
         {showPopover && (
-          <div className="version-popover" ref={popoverRef}>
+          <div className="version-popover" id="version-popover" ref={popoverRef}>
             {isDev ? (
               <div className="version-row">Running in dev mode (no build info)</div>
             ) : (
@@ -324,6 +373,67 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
                 </button>
               </>
             )}
+
+            {deployStatus?.plugin && (pluginNotInstalled || pluginStale || pluginUpdating || pluginUpdateMessage || pluginUpdateError) && (
+              <>
+                <div className="deploy-divider" />
+                {pluginNotInstalled ? (
+                  <>
+                    <div className="toolkit-stale">
+                      Toolkit plugin not installed
+                      {deployStatus.plugin.availableVersion && (
+                        <span className="deploy-range">v{deployStatus.plugin.availableVersion} available</span>
+                      )}
+                    </div>
+                    <div className="version-row deploy-checking">
+                      Install in Claude Code: <code>/plugin marketplace add {TOOLKIT_MARKETPLACE_SLUG}</code> then{' '}
+                      <code>/plugin install {deployStatus.plugin.pluginId}</code>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="toolkit-stale">
+                      {pluginStale ? 'Toolkit plugin update available' : 'Toolkit plugin'}
+                      {deployStatus.plugin.installedVersion && deployStatus.plugin.availableVersion && (
+                        <span className="deploy-range">
+                          {pluginStale
+                            ? `${deployStatus.plugin.installedVersion} -> ${deployStatus.plugin.availableVersion}`
+                            : `v${deployStatus.plugin.installedVersion} installed`}
+                        </span>
+                      )}
+                    </div>
+                    {pluginUpdateMessage && (
+                      <div className="deploy-status-row" role="status" aria-live="polite">
+                        {pluginUpdateMessage}
+                      </div>
+                    )}
+                    {pluginUpdateError && (
+                      <div className="version-row deploy-error" role="alert">{pluginUpdateError}</div>
+                    )}
+                    {pluginStale && (
+                      <button
+                        className="btn-deploy"
+                        onClick={updateToolkitPlugin}
+                        disabled={pluginUpdating}
+                      >
+                        {pluginUpdating ? 'Updating plugin...' : 'Update plugin'}
+                      </button>
+                    )}
+                    <details className="deploy-help" open={Boolean(pluginUpdateError)}>
+                      <summary>Manual commands</summary>
+                      <div className="version-row">
+                        In Claude Code: <code>{pluginManualCommands.slash[0]}</code> then{' '}
+                        <code>{pluginManualCommands.slash[1]}</code>
+                      </div>
+                      <div className="version-row">
+                        Terminal: <code>{pluginManualCommands.cli[0]}</code> then{' '}
+                        <code>{pluginManualCommands.cli[1]}</code>
+                      </div>
+                    </details>
+                  </>
+                )}
+              </>
+            )}
           </div>
         )}
         <div
@@ -366,6 +476,19 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
           <FollowPill />
           <DndPill />
           <button
+            type="button"
+            className={`command-trigger${compact ? ' command-trigger--compact' : ''}`}
+            onClick={onCommandPalette}
+            title="Search actions & tasks (⌘K)"
+            aria-label="Search actions and tasks"
+            aria-keyshortcuts="Meta+K Control+K"
+            data-testid="command-trigger"
+          >
+            <span className="command-trigger-mag" aria-hidden="true">🔍</span>
+            {!compact && <span className="command-trigger-label">Search actions &amp; tasks</span>}
+            <kbd className="command-trigger-kbd" aria-hidden="true">⌘K</kbd>
+          </button>
+          <button
             className={`btn-icon operations-trigger${operationsOpen ? ' active' : ''}`}
             onClick={onOperations}
             title="Diagnostics"
@@ -376,14 +499,6 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
               <path d="M3 12h4l3-8 4 16 3-8h4" />
             </svg>
             {operationsNeedsAttention && <span className="operations-alert-dot" />}
-          </button>
-          <button className="btn-icon" onClick={onBugReport} title="Bug report" aria-label="Bug report">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M8 2h8l4 4v16H4V2h4z" />
-              <path d="M16 2v5h5" />
-              <path d="M12 10v5" />
-              <path d="M12 18h.01" />
-            </svg>
           </button>
           {!compact && terminalFocusAvailable && (
             <button
@@ -409,42 +524,6 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
               {coordinatorFindingCount > 0 && <span className="coordinator-nav-badge">{coordinatorFindingCount}</span>}
             </button>
           )}
-          {!compact && (
-            <button className="btn-icon" onClick={onShowShortcuts} title="Help" aria-label="Help">
-              ?
-            </button>
-          )}
-          {!compact && (
-            <button className="btn-icon" onClick={onOssView} title="OSS contribution productivity" aria-label="OSS contribution productivity">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="6" cy="4" r="2" />
-                <circle cx="6" cy="20" r="2" />
-                <circle cx="18" cy="12" r="2" />
-                <path d="M6 6v12" />
-                <path d="M8 12h8" />
-              </svg>
-            </button>
-          )}
-          {!compact && sweepSlot}
-          {!compact && (
-            <button className="btn-icon" onClick={onSchedules} title="Schedules" aria-label="Schedules">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="9" />
-                <polyline points="12 7 12 12 15 14" />
-              </svg>
-            </button>
-          )}
-          {!compact && onCostComparison && (
-            <button className="btn-icon" onClick={onCostComparison} title="Cost comparison (Claude vs Codex)" aria-label="Cost comparison">
-              $
-            </button>
-          )}
-          <button className="btn-icon" onClick={onSettings} title="Settings" aria-label="Settings">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-          </button>
           <button className="btn-launch kookr-tour-target-launch" onClick={onLaunch}>+ Launch</button>
         </div>
       </div>

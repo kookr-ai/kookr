@@ -1,8 +1,8 @@
-import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { AgentEvent } from '../core/agent-events.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import type { Monitor } from '../core/monitor.js';
+import type { AgentInteractionPort } from '../core/ports/agent-interaction-port.js';
 import type { Watchdog } from '../core/watchdog.js';
 import {
   validatePermissionApprovalBinding,
@@ -11,7 +11,7 @@ import {
 } from '../shared/contracts/permission-request-binding.js';
 
 export interface RemotePermissionBrokerDeps {
-  adapter: Pick<AgentAdapter, 'sendKeystroke'>;
+  adapter: Pick<AgentInteractionPort, 'sendKeystroke'>;
   monitor: Pick<Monitor, 'isPermissionBlocked' | 'markInputReceived'> & {
     getAgentEvents: (agentId: string) => AgentEvent[];
   };

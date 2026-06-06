@@ -13,15 +13,17 @@ import { projectEventForClient } from '../event-projection.js';
 import type { AgentActivityMeta } from '../../core/types.js';
 import { buildGithubTaskOverlay } from './github-task-overlay.js';
 import type { FindingEvidenceAuditRecord } from '../../shared/contracts/anomalies.js';
+import type { PendingAgentSignal } from '../../shared/contracts/agent-signal.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider, type CoordinatorTask } from '../coordinator/detectors.js';
 import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
 import { buildRelationProjection, deriveEffectiveAttentionSeverity } from './build-relation-projection.js';
 import type { TaskRelation } from '../../shared/contracts/task-relations.js';
 import type { PromptStatus } from '../../shared/terminal-input-contract.js';
+import { buildSnapshotProjection } from './snapshot-projection.js';
 
 export interface SnapshotQueryDeps {
-  monitor: Pick<Monitor, 'getSnapshot'>;
+  monitor: Pick<Monitor, 'getSnapshot'> & Partial<Pick<Monitor, 'getTaskSnapshot'>>;
   /** Optional provider of per-Kookr-session activity counters. Wires
    *  {@link AgentState.activityMeta} on each snapshot so the activity panel
    *  can disclose partial-window state and child / malformed counts. */
@@ -34,6 +36,15 @@ export interface SnapshotQueryDeps {
       prompt: PromptStatus;
     } | null;
   };
+  /**
+   * Optional accessor for a task's pending agent → user signal (RFC:
+   * rfc-agent-signal-surface). When wired, {@link getSnapshotAgentsForClient}
+   * joins the signal onto each agent's client-facing state as `pendingSignal`.
+   * Bound to {@link TaskStore.getPendingSignal}. {@link createSnapshotMessage}
+   * defaults it from `relationTaskStore` so the common snapshot path carries
+   * signals without per-call-site wiring.
+   */
+  pendingSignalProvider?: { getPendingSignal(taskId: string): PendingAgentSignal | undefined };
 }
 
 export interface SnapshotMessageDeps extends SnapshotQueryDeps {
@@ -74,7 +85,7 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
    * without relation data — existing consumers continue working unchanged
    * because the new fields are all optional.
    */
-  relationTaskStore?: Pick<TaskStore, 'listRelations'>;
+  relationTaskStore?: Pick<TaskStore, 'listRelations' | 'getPendingSignal'>;
 }
 
 const LOCAL_NODE_DEVICE_ID = 'local-node';
@@ -158,11 +169,14 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
  * See docs/rfc/rfc-snapshot-payload-slimming.md.
  */
 export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[] {
-  return deps.monitor.getSnapshot().map((agent) => {
+  return getProjectedSnapshotAgents(deps).map((agent) => {
     const activityMeta = deps.activityMetaProvider?.getActivityMeta(agent.agentId);
     const terminalSnapshot = agent.taskId
       ? deps.terminalInputSnapshots?.getSnapshot(agent.agentId)
       : null;
+    const pendingSignal = agent.taskId && typeof deps.pendingSignalProvider?.getPendingSignal === 'function'
+      ? deps.pendingSignalProvider.getPendingSignal(agent.taskId)
+      : undefined;
     return {
       ...agent,
       events: agent.events.map(projectEventForClient),
@@ -170,6 +184,7 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
         ? { findingEvidenceAudit: projectFindingEvidenceAuditForClient(agent.findingEvidenceAudit) }
         : {}),
       ...(activityMeta ? { activityMeta } : {}),
+      ...(pendingSignal ? { pendingSignal } : {}),
       ...(terminalSnapshot ? {
         terminalInputSnapshot: {
           sessionId: agent.agentId,
@@ -208,7 +223,7 @@ function projectFindingEvidenceAuditForClient(record: FindingEvidenceAuditRecord
  * server-internal caller that needs the raw toolResponse / toolInput / lastMessage.
  */
 export function getSnapshotAgentsRaw(deps: SnapshotQueryDeps): AgentState[] {
-  const raw = deps.monitor.getSnapshot();
+  const raw = getProjectedSnapshotAgents(deps);
   // Preserve identity when no provider is wired — callers (and tests) that
   // assert reference equality on the bare monitor snapshot stay green.
   if (!deps.activityMetaProvider) return raw;
@@ -218,13 +233,34 @@ export function getSnapshotAgentsRaw(deps: SnapshotQueryDeps): AgentState[] {
   });
 }
 
+function getProjectedSnapshotAgents(deps: SnapshotQueryDeps): AgentState[] {
+  const rawMonitorStates = deps.monitor.getSnapshot();
+  const taskSnapshot = deps.monitor.getTaskSnapshot?.();
+  // Lightweight tests and legacy mocks may provide only raw monitor state.
+  // The real server Monitor implements getTaskSnapshot, so production
+  // dashboard paths receive task/session projection from this use-case.
+  if (!taskSnapshot) return rawMonitorStates;
+  return buildSnapshotProjection({
+    monitorStates: rawMonitorStates,
+    tasks: taskSnapshot,
+  });
+}
+
 export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessage {
   const speechCapabilities = deps.speechCapabilities ?? buildLocalSpeechCapabilities({
     sttUrl: deps.sttUrl,
     ttsUrl: deps.ttsUrl,
     now: deps.now,
   });
-  const baseAgents = getSnapshotAgentsForClient(deps);
+  // Default the pending-signal provider from relationTaskStore so the common
+  // snapshot path (every caller that already passes relationTaskStore: taskStore)
+  // carries agent signals without per-call-site wiring. Explicit
+  // pendingSignalProvider still wins for callers that set it.
+  const baseAgents = getSnapshotAgentsForClient({
+    ...deps,
+    pendingSignalProvider: deps.pendingSignalProvider
+      ?? (typeof deps.relationTaskStore?.getPendingSignal === 'function' ? deps.relationTaskStore : undefined),
+  });
 
   let taskRelations: TaskRelation[] | undefined;
   let agents = baseAgents;
