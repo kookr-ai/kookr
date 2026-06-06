@@ -14,7 +14,7 @@ import { TaskShareModal } from './TaskShareModal.js';
 import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../shared/contracts/remote-share.js';
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import { TaskDependencyEditor } from './TaskDependencyEditor.js';
-import { RelatedTasksSection } from './RelatedTasksSection.js';
+import { TaskDependencyRail } from './TaskDependencyRail.js';
 import { CoordinatorChainStripView } from './CoordinatorSurfaces.js';
 import { clearDetailReplyDraft, loadDetailReplyDraft, saveDetailReplyDraft } from '../store/detail-reply-draft.js';
 import {
@@ -806,7 +806,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       )}
       {!rightOnlyMode && agent.taskId && <CoordinatorChainStripView agent={agent} />}
       {!rightOnlyMode && agent.taskId && <TaskDependencyEditor agent={agent} />}
-      {!rightOnlyMode && agent.taskId && <RelatedTasksSection agent={agent} />}
+      {!rightOnlyMode && agent.taskId && <TaskDependencyRail agent={agent} />}
 
       {/* Side-by-side split (wide) + tab fallback (narrow) */}
       {(() => {

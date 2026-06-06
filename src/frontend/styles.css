@@ -10969,3 +10969,225 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   color: var(--text-muted);
   text-align: center;
 }
+
+/* ============================================================
+   Command palette + top-bar search trigger (top-bar redesign)
+   ============================================================ */
+
+/* The top-bar "Search actions & tasks ⌘K" field that opens the palette. */
+.command-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 9px 0 11px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-dim);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  min-width: 200px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.command-trigger:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+.command-trigger:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+.command-trigger--compact {
+  min-width: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+}
+.command-trigger-mag { font-size: 12px; line-height: 1; }
+.command-trigger-label { white-space: nowrap; }
+.command-trigger-kbd {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-dim);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+.command-trigger--compact .command-trigger-kbd { display: none; }
+
+/* The palette itself — reuses .dialog-overlay but anchors near the top. */
+.command-palette {
+  align-self: flex-start;
+  margin-top: 11vh;
+  width: min(560px, 92vw);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+}
+.cmd-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 15px;
+  border-bottom: 1px solid var(--border-dim);
+}
+.cmd-input-mag { color: var(--text-muted); font-size: 14px; line-height: 1; }
+.cmd-input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-bright);
+  font-size: 14px;
+  font-family: inherit;
+}
+.cmd-input::placeholder { color: var(--text-muted); }
+.cmd-body {
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1;
+}
+.cmd-section {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  font-weight: 700;
+  padding: 8px 10px 4px;
+}
+.cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: none;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+.cmd-row:hover { background: var(--bg-card-hover); color: var(--text-bright); }
+.cmd-row.sel {
+  background: rgba(45, 212, 191, 0.12);
+  color: var(--text-bright);
+  box-shadow: inset 2px 0 0 var(--teal);
+}
+.cmd-row-label { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; }
+.cmd-row-sub { color: var(--text-muted); font-size: 11px; }
+.cmd-row-meta { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.cmd-row-status { color: var(--text-muted); font-size: 11px; text-transform: capitalize; }
+.cmd-row-kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-dim);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.cmd-row-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.cmd-row-badge--attention { background: rgba(251, 191, 36, 0.16); color: var(--amber); }
+.cmd-row-badge--teal { background: rgba(45, 212, 191, 0.16); color: var(--teal); }
+.cmd-empty { padding: 18px 12px; color: var(--text-muted); text-align: center; font-size: 12.5px; }
+.cmd-foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border-dim);
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+.cmd-foot kbd {
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-dim);
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-right: 4px;
+}
+
+/* ============================================================
+   Task dependency rail (replaces the tall "Related tasks" block)
+   ============================================================ */
+.task-dependency-rail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.dep-rail-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.dep-rail-track {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: 1px;
+}
+.dep-rail-current {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--teal);
+  border: 1px solid var(--teal);
+  background: rgba(45, 212, 191, 0.10);
+  border-radius: 999px;
+  padding: 3px 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dep-rail-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.15s, border-color 0.15s;
+}
+.dep-rail-node:hover { color: var(--text-bright); border-color: var(--border); background: var(--bg-card-hover); }
+.dep-rail-node--inferred { border-style: dashed; opacity: 0.9; }
+.dep-rail-node-label { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.dep-rail-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.dep-rail-dot.done { background: var(--green); }
+.dep-rail-dot.run { background: var(--teal); }
+.dep-rail-dot.wait { background: var(--text-muted); }
+.dep-rail-arrow { color: var(--text-muted); flex-shrink: 0; font-size: 12px; }

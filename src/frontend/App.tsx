@@ -13,6 +13,8 @@ import { buildAgentBuckets } from './agent-buckets.js';
 import { computeChainMembership, computeDescendants } from './components/related-tasks-model.js';
 import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';
+import { CommandPalette } from './components/CommandPalette.js';
+import type { CommandAction, CommandTaskItem } from './components/command-palette-model.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
 import { DetailPanel } from './components/DetailPanel.js';
 import { StatusBar } from './components/StatusBar.js';
@@ -28,7 +30,6 @@ import type { TaskCompletionFeedback } from '../shared/contracts/messages.js';
 import { ProjectSidebar } from './components/ProjectSidebar.js';
 import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
 import type { SettingsFocusField } from './components/SettingsDialog.js';
-import { SweepButton } from './components/SweepButton.js';
 import { OnboardingTour } from './components/OnboardingTour.js';
 import { CoordinatorFindingsPane } from './components/CoordinatorSurfaces.js';
 import { maybeOpenForFirstRun } from './store/onboarding-store.js';
@@ -287,6 +288,8 @@ export function App() {
   const [showOperations, setShowOperations] = useState(false);
   const [showCoordinatorFindings, setShowCoordinatorFindings] = useState(false);
   const [showBugReport, setShowBugReport] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showSweepConfirm, setShowSweepConfirm] = useState(false);
   const [debugTimelineEnabled] = useState(() => isDebugTimelineEnabled());
   const [bugReportNote, setBugReportNote] = useState('');
   const [shortcutOverrides, setShortcutOverrides] = useState<PlatformShortcutBindingOverrides>({});
@@ -503,6 +506,13 @@ export function App() {
   // Keyboard shortcuts
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      // ⌘K / Ctrl+K toggles the command palette from anywhere — including while
+      // typing in a field — so it must run before the dialog/composition guards.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        setShowCommandPalette((value) => !value);
+        return;
+      }
       if ((showOperations || showBugReport) && e.key !== 'Escape') {
         return;
       }
@@ -908,6 +918,50 @@ export function App() {
     />
   );
 
+  // Command-palette action registry — the single home for the actions that used
+  // to be their own top-bar icons. Diagnostics + Coordinator findings stay as
+  // quick icons too (they carry glanceable alert/badge state), so the palette is
+  // a superset, not a replacement.
+  const commandActions: CommandAction[] = [
+    { id: 'diagnostics', label: 'Diagnostics', section: 'view', keywords: ['operations', 'health', 'circuit breaker'], run: () => setShowOperations((value) => !value) },
+    { id: 'coordinator-findings', label: 'Coordinator findings', section: 'view', keywords: ['chain', 'blocked', 'prior'], run: () => setShowCoordinatorFindings((value) => !value) },
+    { id: 'oss', label: 'OSS contribution productivity', section: 'view', keywords: ['open source', 'contributions'], run: toggleOssView },
+    ...(wideDetailActive
+      ? [{
+          id: 'terminal-focus',
+          label: 'Terminal focus',
+          section: 'tools' as const,
+          shortcut: formatShortcutBinding(shortcutBindings.toggle_terminal_focus),
+          keywords: ['terminal', 'focus', 'fullscreen'],
+          run: () => {
+            track({ type: 'shortcut_used', key: 'CommandPalette Terminal Focus', action: 'toggle_terminal_focus', context: 'click' });
+            toggleTerminalFocusMode();
+          },
+        }]
+      : []),
+    { id: 'schedules', label: 'Schedules', section: 'tools', keywords: ['cron', 'routine', 'recurring'], run: () => setShowSchedules(true) },
+    ...(workspaceEnabled && projectSummaries.length > 0
+      ? [{ id: 'sweep', label: 'Sweep merged worktrees', section: 'tools' as const, keywords: ['worktree', 'cleanup', 'git', 'squash'], run: () => setShowSweepConfirm(true) }]
+      : []),
+    { id: 'cost', label: 'Cost comparison', section: 'tools', keywords: ['claude', 'codex', 'price', 'spend'], run: () => setShowCostComparison(true) },
+    { id: 'bug-report', label: 'Bug report', section: 'session', keywords: ['feedback', 'issue', 'report'], run: () => setShowBugReport(true) },
+    { id: 'settings', label: 'Settings', section: 'session', keywords: ['preferences', 'config', 'options'], run: () => { setSettingsFocus(undefined); setShowSettings(true); } },
+    { id: 'shortcuts', label: 'Help & shortcuts', section: 'session', shortcut: formatShortcutBinding(shortcutBindings.toggle_shortcuts_help), keywords: ['help', 'keys', 'keyboard'], run: () => setShowShortcuts(true) },
+  ];
+  const commandTasks: CommandTaskItem[] = [];
+  const seenCommandTaskIds = new Set<string>();
+  for (const a of agents) {
+    if (!a.taskId || seenCommandTaskIds.has(a.taskId)) continue;
+    seenCommandTaskIds.add(a.taskId);
+    commandTasks.push({
+      taskId: a.taskId,
+      agentId: a.agentId,
+      label: a.taskName ?? a.agentId,
+      status: a.taskStatus,
+      projectLabel: a.projectId,
+    });
+  }
+
   return (
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}`}>
       <TopBar
@@ -918,12 +972,8 @@ export function App() {
         totalFindings={findings.length}
         compact={isMobileViewport}
         onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'button' }); setShowLaunch(true); }}
-        onSchedules={() => setShowSchedules(true)}
-        onSettings={() => { setSettingsFocus(undefined); setShowSettings(true); }}
-        onShowShortcuts={() => setShowShortcuts(true)}
-        onOssView={toggleOssView}
+        onCommandPalette={() => setShowCommandPalette(true)}
         onOperations={() => setShowOperations((value) => !value)}
-        onBugReport={() => setShowBugReport(true)}
         operationsOpen={showOperations}
         onCoordinatorFindings={() => setShowCoordinatorFindings((value) => !value)}
         coordinatorFindingsOpen={showCoordinatorFindings}
@@ -934,8 +984,6 @@ export function App() {
           track({ type: 'shortcut_used', key: 'TopBar Terminal Focus', action: 'toggle_terminal_focus', context: 'click' });
           toggleTerminalFocusMode();
         }}
-        onCostComparison={() => setShowCostComparison(true)}
-        sweepSlot={workspaceEnabled ? <SweepButton send={send} projectCount={projectSummaries.length} /> : undefined}
       />
       {showOperations && (
         <div className="operations-popover-shell" ref={operationsPopoverRef}>
@@ -1067,6 +1115,27 @@ export function App() {
       <PluginInstallBanner />
       <AchievementToasts />
       <SentOverlay />
+      {showCommandPalette && (
+        <CommandPalette
+          actions={commandActions}
+          tasks={commandTasks}
+          onSelectTask={(agentId) => selectAgent(agentId)}
+          onClose={() => setShowCommandPalette(false)}
+        />
+      )}
+      {showSweepConfirm && (
+        <ConfirmDialog
+          title="Sweep merged worktrees"
+          message={`Sweep merged and squash-merged worktrees across ${projectSummaries.length} project${projectSummaries.length !== 1 ? 's' : ''}?`}
+          confirmLabel="Sweep"
+          onConfirm={() => {
+            useKookrStore.getState().setSweepRunning(true);
+            send({ type: 'workspace:sweep' });
+            setShowSweepConfirm(false);
+          }}
+          onClose={() => setShowSweepConfirm(false)}
+        />
+      )}
       {showShortcuts && (
         <Suspense fallback={null}>
           <ShortcutsHelp
