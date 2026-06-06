@@ -26,6 +26,17 @@ async function getLatestTmuxName(request: APIRequestContext): Promise<string> {
   throw new Error('Timed out waiting for an inProgress task with sessions');
 }
 
+async function expectKeysReceived(request: APIRequestContext, tmuxName: string, expected: string) {
+  await expect
+    .poll(async () => {
+      const res = await request.get(`/api/test/keys-received/${encodeURIComponent(tmuxName)}`);
+      if (res.status() !== 200) return [];
+      const data = (await res.json()) as { keysReceived: string[] };
+      return data.keysReceived;
+    })
+    .toContain(expected);
+}
+
 /** Inject a raw hook event for a tmux session. */
 async function injectEvent(
   request: APIRequestContext,
@@ -172,7 +183,7 @@ test.describe('Kookr E2E — nominal paths', () => {
 
     await expect(page.locator('.finding-card')).toBeVisible();
     // A normal Stop is a completed turn awaiting follow-up, not a hung agent.
-    await expect(page.locator('.finding-severity')).toContainText('Turn Complete');
+    await expect(page.locator('.finding-severity')).toContainText('Signaled Complete');
     await expect(page.locator('.statusbar')).toContainText('1 finding');
   });
 
@@ -212,7 +223,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await page.locator('.finding-card').click();
 
     await expect(page.locator('.detail-header')).toBeVisible();
-    await expect(page.locator('.detail-badge')).toContainText('TURN COMPLETE');
+    await expect(page.locator('.detail-badge')).toContainText('SIGNALED COMPLETE');
     await expect(page.locator('.response-row input')).toBeVisible();
   });
 
@@ -555,10 +566,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.sent-overlay')).toBeVisible();
 
     // Verify the message was delivered to the agent's terminal session
-    const keysRes = await request.get(`/api/test/keys-received/${encodeURIComponent(tmuxName)}`);
-    expect(keysRes.status()).toBe(200);
-    const keysData = await keysRes.json();
-    expect(keysData.keysReceived).toContain('Please also add dark mode support');
+    await expectKeysReceived(request, tmuxName, 'Please also add dark mode support');
   });
 
   test('direct reply via Enter key on healthy agent', async ({ page, request }) => {
@@ -579,10 +587,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.sent-overlay')).toBeVisible();
 
     // Verify message delivered
-    const keysRes = await request.get(`/api/test/keys-received/${encodeURIComponent(tmuxName)}`);
-    expect(keysRes.status()).toBe(200);
-    const keysData = await keysRes.json();
-    expect(keysData.keysReceived).toContain('Use Elasticsearch instead of SQL');
+    await expectKeysReceived(request, tmuxName, 'Use Elasticsearch instead of SQL');
   });
 
   test('direct reply via REST API endpoint', async ({ page, request }) => {

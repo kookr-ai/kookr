@@ -266,11 +266,11 @@ test.describe('Multi-Project Tracking', () => {
     await expect(page.locator('[data-testid="project-sidebar"]')).toBeVisible({ timeout: 5000 });
 
     // Alt+P should hide sidebar
-    await page.keyboard.press('Alt+p');
+    await page.keyboard.press('Alt+P');
     await expect(page.locator('[data-testid="project-sidebar"]')).not.toBeVisible();
 
     // Alt+P again should show it
-    await page.keyboard.press('Alt+p');
+    await page.keyboard.press('Alt+P');
     await expect(page.locator('[data-testid="project-sidebar"]')).toBeVisible();
   });
 
@@ -335,9 +335,7 @@ test.describe('Multi-Project Tracking', () => {
     await broadcastProjectSummaries(request);
     await expect(page.locator('[data-testid="project-sidebar"]')).toBeVisible({ timeout: 5000 });
 
-    // Select project A with the current project-sidebar shortcut range.
-    // Alt+1..3 are reserved for terminal send-and-next actions.
-    await page.keyboard.press('Alt+4');
+    await page.locator('[data-testid="project-icon-github.com/org/repo"]').click();
     await expect(page.locator('.finding-card')).toHaveCount(1, { timeout: 3000 });
 
     // Alt+0 goes back to All Projects

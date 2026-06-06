@@ -4,7 +4,7 @@
  * Coverage matches the v5 RFC's test plan:
  *  - Fresh storage shows tour on load
  *  - Skip dismisses and reload doesn't re-show
- *  - "?" → "Take the product tour" re-shows from HelpDialog
+ *  - Command palette Help action → "Take the product tour" re-shows from HelpDialog
  *  - Esc closes
  *  - Focus is inside the modal at open
  *  - Backdrop click on Card 3 closes without spawning LaunchDialog
@@ -69,7 +69,9 @@ test.describe('Onboarding tour', () => {
     await seedSeen(page);
     await expect(page.locator('.onboarding-tour')).not.toBeVisible();
 
-    await page.locator('button[aria-label="Help"]').click();
+    await page.getByTestId('command-trigger').click();
+    await page.getByTestId('command-palette-input').fill('help');
+    await page.locator('[data-testid="command-palette-action"][data-action-id="shortcuts"]').click();
     await expect(page.locator('.shortcuts-help')).toBeVisible();
     await expect(page.locator('.shortcuts-header h3')).toHaveText('Help & Shortcuts');
 

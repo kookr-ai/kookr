@@ -86,6 +86,36 @@ async function currentTaskCount(page: Page): Promise<number> {
   return match ? Number(match[1]) : 0;
 }
 
+async function waitForReflectionReport(request: APIRequestContext, minimumInterventions: number) {
+  let latest: unknown;
+  await expect.poll(async () => {
+    const res = await request.get('/api/reflect');
+    latest = await res.json();
+    return typeof latest === 'object' && latest !== null && 'totalInterventions' in latest
+      ? Number((latest as { totalInterventions: unknown }).totalInterventions)
+      : 0;
+  }, { timeout: 20_000 }).toBeGreaterThanOrEqual(minimumInterventions);
+  return latest as {
+    sessionStart: string;
+    sessionEnd: string;
+    totalInterventions: number;
+    findings: Array<{ name: string }>;
+  };
+}
+
+async function waitForReflectionFinding(
+  request: APIRequestContext,
+  name: string,
+  minimumInterventions: number,
+) {
+  let latest: Awaited<ReturnType<typeof waitForReflectionReport>> | undefined;
+  await expect.poll(async () => {
+    latest = await waitForReflectionReport(request, minimumInterventions);
+    return latest.findings.filter((finding) => finding.name === name).length;
+  }, { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
+  return latest!;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -136,9 +166,7 @@ test.describe('Session Reflection — API', () => {
     // Wait for the response to be processed
     await expect(page.locator('.sent-overlay')).toBeVisible();
 
-    // Now check the reflect API
-    const res = await request.get('/api/reflect');
-    const report = await res.json();
+    const report = await waitForReflectionReport(request, 1);
 
     expect(report.totalInterventions).toBeGreaterThanOrEqual(1);
     // The report should have session timing
@@ -166,23 +194,15 @@ test.describe('Session Reflection — API', () => {
     await page.locator('.response-row input').fill('run tests');
     await page.locator('.btn-primary:has-text("Send & Next")').click();
 
-    // Wait briefly for first response to process
-    await page.waitForTimeout(300);
+    await waitForReflectionReport(request, 1);
 
     // Second finding card is now selected after advance; respond again
     await page.locator('.response-row input').fill('run tests');
     await page.locator('.btn-primary:has-text("Send & Next")').click();
 
-    // Check reflection
-    const res = await request.get('/api/reflect');
-    const report = await res.json();
+    const report = await waitForReflectionFinding(request, 'Repeated input', 2);
 
     expect(report.totalInterventions).toBeGreaterThanOrEqual(2);
-    // Should detect "Repeated input" pattern
-    const repeatedFindings = report.findings.filter(
-      (f: { name: string }) => f.name === 'Repeated input',
-    );
-    expect(repeatedFindings.length).toBeGreaterThanOrEqual(1);
   });
 
   test('reflect API detects skipped findings', async ({ page, request }) => {
