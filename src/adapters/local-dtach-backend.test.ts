@@ -7,12 +7,42 @@
  * `scripts/build-dtach.sh` first.
  */
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { LocalDtachBackend } from './local-dtach-backend.js';
+import { killProcessTree } from './process-tree.js';
 import { SessionGoneError } from './terminal-backend.js';
+
+/**
+ * Reap any dtach masters (and the agent/shell children they host) whose
+ * command line references `dir`. dtach masters are spawned via `setsid` and
+ * survive the test process, so without this the suite leaks one resident
+ * dtach holder per created session (kookr-ai/kookr#784). Linux-only; degrades
+ * to a no-op where `/proc` is unavailable.
+ */
+async function reapDtachReferencing(dir: string): Promise<void> {
+  let names: string[];
+  try {
+    names = readdirSync('/proc');
+  } catch {
+    return;
+  }
+  const targets: number[] = [];
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const cmdline = readFileSync(`/proc/${name}/cmdline`, 'utf-8').replace(/\0/g, ' ');
+      if (cmdline.includes('dtach') && cmdline.includes(dir)) targets.push(Number(name));
+    } catch {
+      // process exited between readdir and read — skip
+    }
+  }
+  for (const pid of targets) {
+    await killProcessTree(pid, { graceMs: 2_000 });
+  }
+}
 
 function resolveDtachBinary(): string | null {
   // Prefer the vendored copy if present, otherwise fall back to PATH.
@@ -26,8 +56,48 @@ function resolveDtachBinary(): string | null {
   }
 }
 
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Poll a pid file written by a spawned agent until it holds a valid pid. */
+async function waitForPidFile(pidFile: string, timeoutMs = 3_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(pidFile)) {
+      const parsed = Number.parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
+      if (Number.isInteger(parsed) && parsed > 0) return parsed;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return -1;
+}
+
+/** All processes whose cmdline references `sock`, with their argv tokens. */
+function procsReferencingSock(sock: string): Array<{ pid: number; tokens: string[] }> {
+  const out: Array<{ pid: number; tokens: string[] }> = [];
+  for (const name of readdirSync('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const cmdline = readFileSync(`/proc/${name}/cmdline`, 'utf-8');
+      if (cmdline.includes(sock)) out.push({ pid: Number(name), tokens: cmdline.split('\0') });
+    } catch {
+      // process exited between readdir and read — skip
+    }
+  }
+  return out;
+}
+
 const DTACH = resolveDtachBinary();
 const skipIfNoDtach = DTACH ? it : it.skip;
+const HAS_PROC = existsSync('/proc/self');
+// Tests that exercise the /proc-based pid resolution need both dtach and /proc.
+const skipIfNoProc = DTACH && HAS_PROC ? it : it.skip;
 
 describe('LocalDtachBackend', () => {
   let tmpDir: string;
@@ -42,10 +112,17 @@ describe('LocalDtachBackend', () => {
   });
 
   afterEach(async () => {
-    // Best-effort cleanup: dtach masters spawned via setsid survive
-    // process exit unless killed. Any leaked masters are visible in
-    // `ps -ef | grep dtach` — developers can remove the test tmpDir after
-    // killing any leaked dtach master that still references it.
+    // dtach masters spawned via setsid survive the test process, so reap any
+    // that still reference this test's tmpDir (and the agent/shell children
+    // they host) BEFORE removing the directory — otherwise each created
+    // session leaks a resident dtach holder (kookr-ai/kookr#784).
+    if (tmpDir) {
+      try {
+        await reapDtachReferencing(tmpDir);
+      } catch {
+        // best-effort
+      }
+    }
     try {
       if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -170,6 +247,137 @@ describe('LocalDtachBackend', () => {
 
     await expect(backend.killSession('does-not-exist')).resolves.not.toThrow();
   });
+
+  skipIfNoDtach(
+    'killSession reaps the agent child, not just the dtach master (kookr#784)',
+    async () => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+      backend = new LocalDtachBackend({
+        socketDir: tmpDir,
+        instanceId: 'test',
+        dtachBinary: DTACH!,
+      });
+
+      const id = 'reap-agent-child';
+      const pidFile = join(tmpDir, 'child.pid');
+      // The hosted "agent" ignores SIGHUP, exactly like claude/codex/node do —
+      // so the old master-only kill (which only closes the pty and delivers
+      // SIGHUP) would leave it orphaned. dtach forks it into its own session,
+      // so it is not in the master's process group either. It records its pid
+      // and exits on SIGTERM, which is what the new tree-reap delivers directly.
+      await backend.createSession({
+        id,
+        command: '/bin/bash',
+        args: ['-c', `trap "" HUP; trap 'exit 0' TERM; echo $$ > ${pidFile}; sleep 600 & wait`],
+      });
+
+      // Wait for the agent to publish its pid, then confirm it is alive.
+      let childPid = -1;
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline) {
+        if (existsSync(pidFile)) {
+          const raw = readFileSync(pidFile, 'utf-8').trim();
+          const parsed = Number.parseInt(raw, 10);
+          if (Number.isInteger(parsed) && parsed > 0) {
+            childPid = parsed;
+            break;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(childPid).toBeGreaterThan(0);
+      const alive = (pid: number): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      expect(alive(childPid)).toBe(true);
+
+      await backend.killSession(id);
+
+      // The agent child must be gone — reaped via the SIGKILL escalation, not
+      // left orphaned and reparented to init.
+      expect(alive(childPid)).toBe(false);
+    },
+  );
+
+  skipIfNoProc(
+    'resolves the dtach -n master, not the -a attach child, when both reference the socket',
+    async () => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+      backend = new LocalDtachBackend({
+        socketDir: tmpDir,
+        instanceId: 'test',
+        dtachBinary: DTACH!,
+      });
+
+      const id = 'disambig-master';
+      // createSession opens the persistent internal attach (`dtach -a <sock>`)
+      // as its last step, so after it returns BOTH the master (`dtach -n`) and
+      // the attach (`dtach -a`) carry the socket in their cmdline — exactly the
+      // ambiguity findDtachMasterPidSync must resolve to the master.
+      await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'cat'] });
+      const sock = join(tmpDir, 'test', `${id}.sock`);
+
+      // Confirm the ambiguity is real: a live `-n` master AND a live `-a` attach.
+      const refs = procsReferencingSock(sock);
+      const masters = refs.filter((p) => p.tokens.includes('-n'));
+      const attaches = refs.filter((p) => p.tokens.includes('-a'));
+      expect(masters.length).toBe(1);
+      expect(attaches.length).toBeGreaterThanOrEqual(1);
+
+      const resolver = backend as unknown as { findDtachMasterPidSync(s: string): number };
+      const resolved = resolver.findDtachMasterPidSync(sock);
+      expect(resolved).toBe(masters[0]!.pid);
+      // And it must match the pid the manifest recorded at create time.
+      const manifest = JSON.parse(
+        readFileSync(join(tmpDir, 'test', 'manifest.json'), 'utf-8'),
+      ) as { entries: Array<{ pid: number }> };
+      expect(resolved).toBe(manifest.entries[0]!.pid);
+
+      await backend.killSession(id);
+    },
+  );
+
+  skipIfNoProc(
+    'killSession reaps via socket scan when the manifest pid is unresolved (-1)',
+    async () => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+      backend = new LocalDtachBackend({
+        socketDir: tmpDir,
+        instanceId: 'test',
+        dtachBinary: DTACH!,
+      });
+
+      const id = 'fallback-pid';
+      const pidFile = join(tmpDir, 'child.pid');
+      await backend.createSession({
+        id,
+        command: '/bin/bash',
+        args: ['-c', `trap "" HUP; trap 'exit 0' TERM; echo $$ > ${pidFile}; sleep 600 & wait`],
+      });
+      const childPid = await waitForPidFile(pidFile);
+      expect(childPid).toBeGreaterThan(0);
+      expect(isPidAlive(childPid)).toBe(true);
+
+      // Simulate a recovered/rebuilt entry whose master pid never resolved
+      // (the historical timeout path that made killSession a no-op). killSession
+      // must fall back to a live socket scan and still reap the whole tree.
+      const manifestPath = join(tmpDir, 'test', 'manifest.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+        entries: Array<{ pid: number }>;
+      };
+      manifest.entries[0]!.pid = -1;
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+
+      await backend.killSession(id);
+
+      expect(isPidAlive(childPid)).toBe(false);
+    },
+  );
 
   skipIfNoDtach('replays prior output to a second attach after the first detaches', async () => {
     // End-to-end regression for the "blank terminal on reconnect" bug. Uses
