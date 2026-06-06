@@ -172,6 +172,8 @@ function activityLine(item: ActivityItem): string {
   switch (item.type) {
     case 'user_message':
       return `User: ${sanitizeText(item.text, MAX_ACTIVITY_LINE_CHARS)}`;
+    case 'user_input_delivery':
+      return `User: ${sanitizeText(item.delivery.text, MAX_ACTIVITY_LINE_CHARS)}`;
     case 'agent_message':
       return `Agent: ${sanitizeText(item.text, MAX_ACTIVITY_LINE_CHARS)}`;
     case 'user_paste_burst': {

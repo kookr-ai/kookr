@@ -11,6 +11,7 @@ import type { TaskRelationRollup } from './task-relations.js';
 import type { TokenUsage } from './usage.js';
 import type { WorktreeHealth } from './session.js';
 import type { TerminalInputSnapshot } from '../terminal-input-contract.js';
+import type { UserInputDeliverySnapshot } from './user-input-delivery.js';
 
 export interface AgentState {
   agentId: string;
@@ -54,6 +55,7 @@ export interface AgentState {
   completionFeedback?: TaskCompletionFeedback;
   ralphLoop?: RalphLoopState;
   activityMeta?: AgentActivityMeta;
+  userInputDeliveries?: UserInputDeliverySnapshot[];
   findingEvidenceAudit?: FindingEvidenceAuditRecord;
   terminalInputSnapshot?: TerminalInputSnapshot;
   /**

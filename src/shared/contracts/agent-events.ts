@@ -80,6 +80,7 @@ export type AgentEvent = (
       sessionId: string;
       prompt: string;
       cwd?: string;
+      hookLineId?: string;
     }
   | {
       type: 'stop_failure';

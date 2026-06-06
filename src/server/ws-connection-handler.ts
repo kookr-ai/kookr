@@ -33,6 +33,7 @@ import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
 import { createSnapshotMessage, getProjectSummaries } from './use-cases/get-snapshot.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 
 export interface WsConnectionDeps {
   taskStore: TaskStore;
@@ -103,6 +104,7 @@ export interface WsConnectionDeps {
   reflectWorktreesDir?: string;
   /** Where hook JSONLs live. */
   hooksDir?: string;
+  userInputDeliveries?: UserInputDeliveryService;
 }
 
 /**
@@ -167,6 +169,7 @@ export function handleWsConnection(
     connectionId,
     selectionController: deps.selectionController,
     terminalInputCoordinator: deps.terminalInputCoordinator,
+    userInputDeliveries: deps.userInputDeliveries,
   });
 
   // Send initial snapshot
@@ -291,6 +294,7 @@ export function handleWsConnection(
             getMaxActiveTasks: deps.getMaxActiveTasks,
             relationTaskStore: taskStore,
             terminalInputSnapshots: deps.terminalInputCoordinator,
+            userInputDeliveryProvider: deps.userInputDeliveries,
           }));
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
@@ -372,6 +376,7 @@ export function handleWsConnection(
         getMaxActiveTasks: deps.getMaxActiveTasks,
         relationTaskStore: taskStore,
         terminalInputSnapshots: deps.terminalInputCoordinator,
+        userInputDeliveryProvider: deps.userInputDeliveries,
       }));
       broadcastProjectSummaries();
     } catch (err) {

@@ -919,6 +919,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                       activityMeta={agent.activityMeta}
                       taskId={agent.taskId}
                       isActive={agent.turnState === 'running'}
+                      userInputDeliveries={agent.userInputDeliveries}
                     />
                   </Suspense>
                 )}

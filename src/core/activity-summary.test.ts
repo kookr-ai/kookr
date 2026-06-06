@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import {
+  buildActivityItems,
   buildActivityDisclosure,
   summarizeActivity,
   compactToolSummary,
@@ -13,6 +14,7 @@ import {
   type UserPasteBurst,
 } from './activity-summary.js';
 import type { AgentActivityMeta, AgentEvent } from './types.js';
+import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
 
 function emptyMeta(overrides: Partial<AgentActivityMeta> = {}): AgentActivityMeta {
   return {
@@ -44,6 +46,22 @@ function toolResult(toolName: string): AgentEvent {
 
 function userPrompt(prompt: string): AgentEvent {
   return { type: 'user_prompt', sessionId: 's1', prompt };
+}
+
+function delivery(
+  overrides: Partial<UserInputDeliverySnapshot> = {},
+): UserInputDeliverySnapshot {
+  return {
+    deliveryId: 'delivery-1',
+    sessionId: 's1',
+    deliverySeq: 1,
+    source: 'respond',
+    text: 'Fix the bug',
+    status: 'queued',
+    createdAt: '2026-06-06T10:00:00.000Z',
+    updatedAt: '2026-06-06T10:00:00.000Z',
+    ...overrides,
+  };
 }
 
 function stop(lastMessage: string): AgentEvent {
@@ -443,6 +461,61 @@ describe('summarizeActivity', () => {
     expect(items).toHaveLength(1);
     const group = items[0] as ToolGroup;
     expect(group.totalCalls).toBe(2); // Only tool_use events counted
+  });
+});
+
+describe('buildActivityItems', () => {
+  test('adds pending dashboard input as a user delivery item', () => {
+    const items = buildActivityItems({
+      providerEvents: [stop('Waiting')],
+      userInputDeliveries: [delivery()],
+    });
+
+    expect(items.map((item) => item.type)).toEqual(['agent_message', 'user_input_delivery']);
+    expect(items[1]).toEqual({
+      type: 'user_input_delivery',
+      delivery: expect.objectContaining({
+        deliveryId: 'delivery-1',
+        status: 'queued',
+        text: 'Fix the bug',
+      }),
+    });
+  });
+
+  test('suppresses matching provider user_prompt after delivery is submitted', () => {
+    const promptEvent: AgentEvent = {
+      type: 'user_prompt',
+      sessionId: 's1',
+      prompt: 'Fix the bug',
+      hookLineId: '42',
+    };
+
+    const items = buildActivityItems({
+      providerEvents: [promptEvent, stop('Done')],
+      userInputDeliveries: [delivery({
+        status: 'submitted_by_agent',
+        submittedHookLineId: '42',
+      })],
+    });
+
+    expect(items.map((item) => item.type)).toEqual(['user_input_delivery', 'agent_message']);
+  });
+
+  test('keeps provider user_prompt when reconciliation is uncertain', () => {
+    const items = buildActivityItems({
+      providerEvents: [{
+        type: 'user_prompt',
+        sessionId: 's1',
+        prompt: 'Fix the bug',
+        hookLineId: 'other',
+      }],
+      userInputDeliveries: [delivery({
+        status: 'submitted_by_agent',
+        submittedHookLineId: '42',
+      })],
+    });
+
+    expect(items.map((item) => item.type)).toEqual(['user_message', 'user_input_delivery']);
   });
 });
 

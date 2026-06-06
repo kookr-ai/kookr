@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildLocalSpeechCapabilities, createSnapshotMessage, getProjectSummaries, getSnapshotAgentsForClient, getSnapshotAgentsRaw } from './get-snapshot.js';
 import type { AgentEvent } from '../../core/types.js';
 import { TaskStore } from '../../core/tasks.js';
+import { USER_INPUT_DELIVERY_TEXT_MAX_CHARS } from '../../shared/contracts/user-input-delivery.js';
 
 // Matches the self-diagnostic's SNAPSHOT_SIZE_WARNING threshold in
 // src/core/self-diagnostic.ts. The projected snapshot of realistic pathological
@@ -85,6 +86,54 @@ describe('snapshot use cases', () => {
       childEventCount: 1,
       malformedRecordCount: 1,
     });
+  });
+
+  it('projects user input deliveries for client transport', () => {
+    const monitor = {
+      getSnapshot: () => [{ agentId: 'a-1', events: [], anomaly: null }] as any,
+    };
+    const longPrompt = 'x'.repeat(USER_INPUT_DELIVERY_TEXT_MAX_CHARS + 200);
+
+    const agents = getSnapshotAgentsForClient({
+      monitor,
+      userInputDeliveryProvider: {
+        getSnapshot: () => [
+          {
+            deliveryId: 'delivery-1',
+            sessionId: 'a-1',
+            deliverySeq: 1,
+            source: 'respond',
+            text: 'Short prompt',
+            status: 'submitted_by_agent',
+            createdAt: '2026-06-06T10:00:00.000Z',
+            updatedAt: '2026-06-06T10:00:01.000Z',
+          },
+          {
+            deliveryId: 'delivery-2',
+            sessionId: 'a-1',
+            deliverySeq: 2,
+            source: 'respond',
+            text: longPrompt,
+            status: 'queued',
+            createdAt: '2026-06-06T10:00:02.000Z',
+            updatedAt: '2026-06-06T10:00:02.000Z',
+          },
+        ],
+      },
+    });
+
+    expect(agents[0].userInputDeliveries).toHaveLength(2);
+    expect(agents[0].userInputDeliveries?.[0]).toMatchObject({
+      deliveryId: 'delivery-1',
+      text: 'Short prompt',
+      status: 'submitted_by_agent',
+    });
+    expect(agents[0].userInputDeliveries?.[1]).toMatchObject({
+      deliveryId: 'delivery-2',
+      status: 'queued',
+    });
+    expect(agents[0].userInputDeliveries?.[1].text).toContain('<2200 chars total>');
+    expect(agents[0].userInputDeliveries?.[1].text.length).toBeLessThan(longPrompt.length);
   });
 
   it('runs coordinator detectors when task store and audit tail provider are wired', () => {

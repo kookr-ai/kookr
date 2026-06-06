@@ -770,7 +770,15 @@ describe('WebSocket MessageRouter', () => {
     const reflectWorktreesDir = join(tempDir, 'reflect-worktrees');
     await mkdir(hooksDir, { recursive: true });
 
-    const sourceCwd = process.cwd();
+    const sourceCwd = join(tempDir, 'source-repo');
+    await mkdir(sourceCwd, { recursive: true });
+    const gitEnv = cleanGitEnv();
+    await execFile('git', ['init', '-b', 'main'], { cwd: sourceCwd, env: gitEnv });
+    await execFile('git', ['config', 'user.email', 'test@example.com'], { cwd: sourceCwd, env: gitEnv });
+    await execFile('git', ['config', 'user.name', 'Kookr Test'], { cwd: sourceCwd, env: gitEnv });
+    await writeFile(join(sourceCwd, 'README.md'), 'fixture repo\n', 'utf-8');
+    await execFile('git', ['add', 'README.md'], { cwd: sourceCwd, env: gitEnv });
+    await execFile('git', ['commit', '-m', 'initial'], { cwd: sourceCwd, env: gitEnv });
     const task = taskStore.createTask('Fix bug', sourceCwd);
     const tmuxName = await adapter.launch(task.id, 'Fix bug', sourceCwd);
     monitor.registerAgent(tmuxName);

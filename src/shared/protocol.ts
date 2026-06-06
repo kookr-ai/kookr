@@ -34,10 +34,12 @@ export type {
   ToolCategory,
   ToolGroup,
   ToolGroupEntry,
+  UserInputDeliveryItem,
   UserMessage,
   UserPasteBurst,
 } from './contracts/activity-summary.js';
 export {
+  buildActivityItems,
   buildActivityDisclosure,
   categorizeTool,
   compactToolSummary,
@@ -45,6 +47,11 @@ export {
   summarizeActivity,
   toolLabel,
 } from './contracts/activity-summary.js';
+export type {
+  UserInputDeliverySnapshot,
+  UserInputDeliverySource,
+  UserInputDeliveryStatus,
+} from './contracts/user-input-delivery.js';
 export type { BuildInfo } from './contracts/build-info.js';
 export type { CircuitBreakerSnapshot } from './contracts/circuit-breaker.js';
 export type { CompletionDigest } from './contracts/completion-digest.js';

@@ -7,10 +7,11 @@ import type {
   ToolCategory,
   ToolGroup,
   ToolGroupEntry,
+  UserInputDeliverySnapshot,
 } from '../../shared/protocol.js';
-import { buildActivityDisclosure, categorizeTool, compactToolSummary, pasteBurstLabel, toolLabel } from '../../shared/protocol.js';
+import { buildActivityDisclosure, buildActivityItems, categorizeTool, compactToolSummary, pasteBurstLabel, toolLabel } from '../../shared/protocol.js';
 import { renderMarkdown } from '../markdown.js';
-import { buildActivityDisplayItems, summarizeActivityDisplayItems } from '../store/activity-display.js';
+import { activityDisplayItemsToEvents, buildActivityDisplayItems } from '../store/activity-display.js';
 
 /**
  * Click target data for an Edit/Write entry. Sourced from
@@ -43,6 +44,7 @@ interface Props {
    *  call (or a generic working state between calls), so activity is visible
    *  here and not only via the left-rail spinner. */
   isActive?: boolean;
+  userInputDeliveries?: UserInputDeliverySnapshot[];
 }
 
 /** Single-letter glyph per tool category, shared by the completed-group icon
@@ -169,6 +171,36 @@ function ActivityItemView({
               </details>
             )}
           </div>
+        </div>
+      );
+    }
+
+    case 'user_input_delivery': {
+      const delivery = item.delivery;
+      const isLong = delivery.text.length > LONG_MESSAGE_LIMIT;
+      const preview = isLong ? `${delivery.text.slice(0, LONG_MESSAGE_LIMIT).trimEnd()}...` : delivery.text;
+      const statusLabel = delivery.status === 'queued'
+        ? 'Queued'
+        : delivery.status === 'failed'
+          ? 'Failed'
+          : 'Submitted';
+      const statusClass = delivery.status === 'submitted_by_agent' ? 'submitted' : delivery.status;
+      return (
+        <div className={`act-msg act-msg-user act-msg-delivery act-msg-delivery-${statusClass}${isLong ? ' act-msg-collapsed' : ''}`}>
+          <div className="act-msg-header">
+            <span className="act-msg-label act-label-user">You</span>
+            <span className="act-delivery-status">{statusLabel}</span>
+          </div>
+          <div className="act-msg-text">{renderMarkdown(preview)}</div>
+          {delivery.status === 'failed' && delivery.error && (
+            <div className="act-delivery-error">{delivery.error}</div>
+          )}
+          {isLong && (
+            <details className="act-msg-full">
+              <summary>Show full prompt</summary>
+              <div className="act-msg-text act-msg-full-text">{renderMarkdown(delivery.text)}</div>
+            </details>
+          )}
         </div>
       );
     }
@@ -375,7 +407,18 @@ function LiveToolRow({ inFlight }: { inFlight: InFlightTool | null }) {
   );
 }
 
-export function ActivityPanel({ agentId = '', events, description, cwd, anomalyExplanation, onOpenDiff, activityMeta, taskId, isActive }: Props) {
+export function ActivityPanel({
+  agentId = '',
+  events,
+  description,
+  cwd,
+  anomalyExplanation,
+  onOpenDiff,
+  activityMeta,
+  taskId,
+  isActive,
+  userInputDeliveries,
+}: Props) {
   const inFlight = useMemo(
     () => (isActive ? findInFlightTool(events) : null),
     [events, isActive],
@@ -392,7 +435,14 @@ export function ActivityPanel({ agentId = '', events, description, cwd, anomalyE
     },
     [displayItems, events, inFlight],
   );
-  const items = useMemo(() => summarizeActivityDisplayItems(summarizedDisplayItems), [summarizedDisplayItems]);
+  const providerEvents = useMemo(
+    () => activityDisplayItemsToEvents(summarizedDisplayItems),
+    [summarizedDisplayItems],
+  );
+  const items = useMemo(
+    () => buildActivityItems({ providerEvents, userInputDeliveries }),
+    [providerEvents, userInputDeliveries],
+  );
   const disclosure = useMemo(
     () => buildActivityDisclosure(events.length, activityMeta),
     [events.length, activityMeta],
