@@ -493,7 +493,13 @@ describe('App operations modal shortcuts', () => {
       root.render(React.createElement(App));
     });
 
-    const bugReport = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Bug report"]');
+    // Bug report now lives in the command palette (top-bar declutter): open the
+    // palette, then run the "Bug report" action.
+    const paletteTrigger = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-trigger"]');
+    await act(async () => {
+      paletteTrigger.click();
+    });
+    const bugReport = await waitForElement<HTMLButtonElement>(container, '[data-action-id="bug-report"]');
     await act(async () => {
       bugReport.click();
     });
@@ -579,7 +585,13 @@ describe('App operations modal shortcuts', () => {
       root.render(React.createElement(App));
     });
 
-    const bugReport = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Bug report"]');
+    // Bug report now lives in the command palette (top-bar declutter): open the
+    // palette, then run the "Bug report" action.
+    const paletteTrigger = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-trigger"]');
+    await act(async () => {
+      paletteTrigger.click();
+    });
+    const bugReport = await waitForElement<HTMLButtonElement>(container, '[data-action-id="bug-report"]');
     await act(async () => {
       bugReport.click();
     });

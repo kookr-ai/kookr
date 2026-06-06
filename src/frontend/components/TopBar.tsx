@@ -18,23 +18,20 @@ interface Props {
   totalFindings: number;
   compact?: boolean;
   onLaunch: () => void;
-  onSchedules: () => void;
-  onSettings: () => void;
-  onShowShortcuts: () => void;
-  onOssView: () => void;
+  /** Open the command palette — the single entry point for the actions that
+   *  previously lived as their own top-bar icons (Schedules, Settings, Help,
+   *  OSS, Bug report, Terminal focus, Cost comparison, …). */
+  onCommandPalette: () => void;
   onOperations: () => void;
-  onBugReport: () => void;
   operationsOpen?: boolean;
   onCoordinatorFindings: () => void;
   coordinatorFindingsOpen?: boolean;
+  /** Terminal-focus stays a quick icon: in focus mode the chrome is hidden, so
+   *  this toggle is the visible exit affordance and the stable focus target. */
   terminalFocusMode?: boolean;
   terminalFocusAvailable?: boolean;
   terminalFocusTriggerRef?: React.RefObject<HTMLButtonElement | null>;
   onTerminalFocusToggle: () => void;
-  /** Open the Cost Comparison panel. Optional — the icon is hidden when undefined. */
-  onCostComparison?: () => void;
-  /** Optional slot rendered in the right-side action cluster, hidden in compact mode. */
-  sweepSlot?: React.ReactNode;
 }
 
 interface DeployStatus {
@@ -76,7 +73,7 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onSchedules, onSettings, onShowShortcuts, onOssView, onOperations, onBugReport, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusAvailable = true, terminalFocusTriggerRef, onTerminalFocusToggle, onCostComparison, sweepSlot }: Props) {
+export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onCommandPalette, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusAvailable = true, terminalFocusTriggerRef, onTerminalFocusToggle }: Props) {
   const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
@@ -479,6 +476,19 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
           <FollowPill />
           <DndPill />
           <button
+            type="button"
+            className={`command-trigger${compact ? ' command-trigger--compact' : ''}`}
+            onClick={onCommandPalette}
+            title="Search actions & tasks (⌘K)"
+            aria-label="Search actions and tasks"
+            aria-keyshortcuts="Meta+K Control+K"
+            data-testid="command-trigger"
+          >
+            <span className="command-trigger-mag" aria-hidden="true">🔍</span>
+            {!compact && <span className="command-trigger-label">Search actions &amp; tasks</span>}
+            <kbd className="command-trigger-kbd" aria-hidden="true">⌘K</kbd>
+          </button>
+          <button
             className={`btn-icon operations-trigger${operationsOpen ? ' active' : ''}`}
             onClick={onOperations}
             title="Diagnostics"
@@ -489,14 +499,6 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
               <path d="M3 12h4l3-8 4 16 3-8h4" />
             </svg>
             {operationsNeedsAttention && <span className="operations-alert-dot" />}
-          </button>
-          <button className="btn-icon" onClick={onBugReport} title="Bug report" aria-label="Bug report">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M8 2h8l4 4v16H4V2h4z" />
-              <path d="M16 2v5h5" />
-              <path d="M12 10v5" />
-              <path d="M12 18h.01" />
-            </svg>
           </button>
           {!compact && terminalFocusAvailable && (
             <button
@@ -522,42 +524,6 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
               {coordinatorFindingCount > 0 && <span className="coordinator-nav-badge">{coordinatorFindingCount}</span>}
             </button>
           )}
-          {!compact && (
-            <button className="btn-icon" onClick={onShowShortcuts} title="Help" aria-label="Help">
-              ?
-            </button>
-          )}
-          {!compact && (
-            <button className="btn-icon" onClick={onOssView} title="OSS contribution productivity" aria-label="OSS contribution productivity">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="6" cy="4" r="2" />
-                <circle cx="6" cy="20" r="2" />
-                <circle cx="18" cy="12" r="2" />
-                <path d="M6 6v12" />
-                <path d="M8 12h8" />
-              </svg>
-            </button>
-          )}
-          {!compact && sweepSlot}
-          {!compact && (
-            <button className="btn-icon" onClick={onSchedules} title="Schedules" aria-label="Schedules">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="9" />
-                <polyline points="12 7 12 12 15 14" />
-              </svg>
-            </button>
-          )}
-          {!compact && onCostComparison && (
-            <button className="btn-icon" onClick={onCostComparison} title="Cost comparison (Claude vs Codex)" aria-label="Cost comparison">
-              $
-            </button>
-          )}
-          <button className="btn-icon" onClick={onSettings} title="Settings" aria-label="Settings">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-          </button>
           <button className="btn-launch kookr-tour-target-launch" onClick={onLaunch}>+ Launch</button>
         </div>
       </div>
