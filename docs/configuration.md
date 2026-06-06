@@ -34,10 +34,12 @@ KOOKR_OPENROUTER_API_KEY=sk-or-...   # or OPENROUTER_API_KEY
 
 By default (`KOOKR_LLM_PROVIDER` unset, i.e. `auto`), Kookr chains every
 configured provider for fallback in the order `GROQ > GEMINI > ANTHROPIC >
-OPENROUTER`. To pin a single provider instead:
+OPENROUTER`. Requesty is not part of `auto`; select it explicitly when you
+want helper LLM calls routed through Requesty's gateway. To pin a single
+provider:
 
 ```bash
-KOOKR_LLM_PROVIDER=openrouter        # openrouter | groq | gemini | anthropic | auto
+KOOKR_LLM_PROVIDER=openrouter        # openrouter | requesty | groq | gemini | anthropic | auto
 KOOKR_LLM_MODEL=deepseek/deepseek-v4-flash
 KOOKR_LLM_BASE_URL=https://openrouter.ai/api/v1
 ```
@@ -48,6 +50,18 @@ KOOKR_LLM_BASE_URL=https://openrouter.ai/api/v1
 Kookr. `KOOKR_LLM_MODEL` and `KOOKR_LLM_BASE_URL` apply to the OpenRouter
 provider. See [Environment Variables](reference/environment-variables.md#llm-provider)
 for the full list.
+
+**Requesty** is an OpenAI-compatible paid gateway and is explicit-only:
+
+```bash
+KOOKR_LLM_PROVIDER=requesty
+KOOKR_REQUESTY_API_KEY=req_...       # or REQUESTY_API_KEY
+KOOKR_REQUESTY_MODEL=openai/gpt-4o-mini
+```
+
+Requesty model ids use provider prefixes such as `openai/gpt-4o-mini`.
+`KOOKR_REQUESTY_MODEL` applies only to Requesty; `KOOKR_LLM_MODEL` and
+`KOOKR_LLM_BASE_URL` remain OpenRouter-only.
 
 Without any provider key, Kookr still works. It falls back to truncated prompt
 names and omits AI suggestions.

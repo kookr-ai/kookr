@@ -89,23 +89,26 @@ rephrase). They are **independent of the local speech STT/TTS models** in the
 transcription or synthesis.
 
 Provider API keys (`GROQ_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`,
-`OPENROUTER_API_KEY`) use vendor-native names and are not `KOOKR_`-prefixed.
-With no provider key set, AI features stay disabled and Kookr falls back to
-truncated prompt names.
+`OPENROUTER_API_KEY`, `REQUESTY_API_KEY`) use vendor-native names and can be
+paired with Kookr-scoped keys where listed. With no provider key set, AI
+features stay disabled and Kookr falls back to truncated prompt names.
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
-| `KOOKR_LLM_PROVIDER` | `auto` | `openrouter`, `groq`, `gemini`, `anthropic`, `auto` | Selects the LLM provider. `auto` chains every configured provider for fallback in order `GROQ > GEMINI > ANTHROPIC > OPENROUTER`. An explicit value uses only that provider. An unrecognized value warns and falls back to `auto`. |
+| `KOOKR_LLM_PROVIDER` | `auto` | `openrouter`, `requesty`, `groq`, `gemini`, `anthropic`, `auto` | Selects the LLM provider. `auto` chains every configured provider for fallback in order `GROQ > GEMINI > ANTHROPIC > OPENROUTER`; Requesty is explicit-only and is not included in `auto`. An explicit value uses only that provider. An unrecognized value warns and falls back to `auto`. |
 | `GROQ_API_KEY` | unset | Groq API key | Enables the Groq provider (Llama 4 Scout, free tier). |
 | `GEMINI_API_KEY` | unset | Google AI API key | Enables the Gemini provider (Gemini 3 Flash, free tier). |
 | `ANTHROPIC_API_KEY` | unset | Anthropic API key | Enables the Anthropic provider (Claude Haiku). |
 | `KOOKR_OPENROUTER_API_KEY` | unset | OpenRouter API key | Enables the OpenRouter provider. Preferred over `OPENROUTER_API_KEY` so a separate OpenRouter credit limit can be scoped to Kookr. |
 | `OPENROUTER_API_KEY` | unset | OpenRouter API key | Fallback OpenRouter key for simple single-key setups. Used only when `KOOKR_OPENROUTER_API_KEY` is unset. |
+| `KOOKR_REQUESTY_API_KEY` | unset | Requesty API key | Enables the Requesty provider when `KOOKR_LLM_PROVIDER=requesty`. Preferred over `REQUESTY_API_KEY` so a separate Requesty credit limit can be scoped to Kookr. |
+| `REQUESTY_API_KEY` | unset | Requesty API key | Fallback Requesty key for simple single-key setups. Used only when `KOOKR_LLM_PROVIDER=requesty` and `KOOKR_REQUESTY_API_KEY` is unset. |
 | `KOOKR_LLM_MODEL` | `deepseek/deepseek-v4-flash` | OpenRouter model id | Overrides the OpenRouter model. Applies to the OpenRouter provider only; Groq/Gemini/Anthropic keep their built-in defaults. |
 | `KOOKR_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL | Overrides the OpenRouter chat-completions base URL (e.g. for a proxy). OpenRouter provider only. |
 | `KOOKR_LLM_HTTP_REFERER` | unset | URL | Optional `HTTP-Referer` app-attribution header sent on OpenRouter requests. |
 | `KOOKR_LLM_APP_TITLE` | `Kookr` | String | Optional `X-Title` app-attribution header sent on OpenRouter requests. |
 | `KOOKR_LLM_TIMEOUT_MS` | `20000` | Positive integer milliseconds | Explicit OpenRouter request timeout, used verbatim. OpenRouter provider only. When unset (or non-numeric/non-positive), a caller timeout below `20000` is floored up to it. Groq/Gemini/Anthropic use a fixed ~10s budget. |
+| `KOOKR_REQUESTY_MODEL` | `openai/gpt-4o-mini` | Requesty model or policy id | Overrides the Requesty model. Requesty model ids use provider prefixes, e.g. `openai/gpt-4o-mini`. Applies only when `KOOKR_LLM_PROVIDER=requesty`. |
 
 ## Remote Chat Trigger
 
