@@ -4,6 +4,46 @@ function eventKey(event: AgentEvent): string {
   return JSON.stringify(event);
 }
 
+function eventSeq(event: AgentEvent): number | undefined {
+  return typeof event.eventSeq === 'number' ? event.eventSeq : undefined;
+}
+
+function containsExistingEventSeqSubsequence(existing: AgentEvent[], incoming: AgentEvent[]): boolean {
+  if (existing.length === 0) return incoming.length > 0;
+  const existingSeqs = existing.map(eventSeq);
+  const incomingSeqs = incoming.map(eventSeq);
+  if (existingSeqs.some((seq) => seq === undefined) || incomingSeqs.some((seq) => seq === undefined)) {
+    return false;
+  }
+
+  for (let start = 0; start <= incomingSeqs.length - existingSeqs.length; start++) {
+    let matches = true;
+    for (let i = 0; i < existingSeqs.length; i++) {
+      if (incomingSeqs[start + i] !== existingSeqs[i]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return true;
+  }
+  return false;
+}
+
+function containsExistingJsonSubsequence(existing: AgentEvent[], incoming: AgentEvent[]): boolean {
+  if (existing.length === 0) return incoming.length > 0;
+  for (let start = 0; start <= incoming.length - existing.length; start++) {
+    let matches = true;
+    for (let i = 0; i < existing.length; i++) {
+      if (eventKey(incoming[start + i]) !== eventKey(existing[i])) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return true;
+  }
+  return false;
+}
+
 function findOverlap(existing: AgentEvent[], incoming: AgentEvent[]): number {
   const max = Math.min(existing.length, incoming.length);
   for (let length = max; length > 0; length--) {
@@ -19,35 +59,21 @@ function findOverlap(existing: AgentEvent[], incoming: AgentEvent[]): number {
   return 0;
 }
 
-function hasLaunchPrompt(events: AgentEvent[], prompt: string): boolean {
-  return events.some((event) => event.type === 'user_prompt' && event.prompt === prompt);
-}
-
-function withLaunchPrompt(agent: AgentState, events: AgentEvent[]): AgentEvent[] {
-  const prompt = agent.description?.trim();
-  if (!prompt || hasLaunchPrompt(events, prompt)) return events;
-
-  const launchPrompt: AgentEvent = {
-    type: 'user_prompt',
-    sessionId: agent.agentId,
-    prompt,
-    ...(agent.cwd ? { cwd: agent.cwd } : {}),
-  };
-
-  if (events[0]?.type === 'session_start') {
-    return [events[0], launchPrompt, ...events.slice(1)];
-  }
-  return [launchPrompt, ...events];
-}
-
 export function mergeActivityEvents(previous: AgentState | undefined, incoming: AgentState): AgentEvent[] {
-  if (!previous) return withLaunchPrompt(incoming, incoming.events);
+  if (!previous) return incoming.events;
 
-  const existingEvents = withLaunchPrompt(
-    { ...incoming, events: previous.events },
-    previous.events,
-  );
+  const existingEvents = previous.events;
   const incomingEvents = incoming.events;
+
+  if (containsExistingEventSeqSubsequence(existingEvents, incomingEvents)) {
+    return incomingEvents;
+  }
+
+  const hasCompleteSeqs = existingEvents.every((event) => eventSeq(event) !== undefined)
+    && incomingEvents.every((event) => eventSeq(event) !== undefined);
+  if (!hasCompleteSeqs && containsExistingJsonSubsequence(existingEvents, incomingEvents)) {
+    return incomingEvents;
+  }
 
   const overlap = findOverlap(existingEvents, incomingEvents);
   return [...existingEvents, ...incomingEvents.slice(overlap)];

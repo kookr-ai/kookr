@@ -8,8 +8,9 @@ import type {
   ToolGroup,
   ToolGroupEntry,
 } from '../../shared/protocol.js';
-import { buildActivityDisclosure, categorizeTool, summarizeActivity, compactToolSummary, pasteBurstLabel, toolLabel } from '../../shared/protocol.js';
+import { buildActivityDisclosure, categorizeTool, compactToolSummary, pasteBurstLabel, toolLabel } from '../../shared/protocol.js';
 import { renderMarkdown } from '../markdown.js';
+import { buildActivityDisplayItems, summarizeActivityDisplayItems } from '../store/activity-display.js';
 
 /**
  * Click target data for an Edit/Write entry. Sourced from
@@ -24,7 +25,10 @@ export interface DiffClickTarget {
 }
 
 interface Props {
+  agentId?: string;
   events: AgentEvent[];
+  description?: string;
+  cwd?: string;
   anomalyExplanation?: string;
   /** Called when the user clicks an Edit/Write file entry. */
   onOpenDiff?: (target: DiffClickTarget) => void;
@@ -371,20 +375,24 @@ function LiveToolRow({ inFlight }: { inFlight: InFlightTool | null }) {
   );
 }
 
-export function ActivityPanel({ events, anomalyExplanation, onOpenDiff, activityMeta, taskId, isActive }: Props) {
+export function ActivityPanel({ agentId = '', events, description, cwd, anomalyExplanation, onOpenDiff, activityMeta, taskId, isActive }: Props) {
   const inFlight = useMemo(
     () => (isActive ? findInFlightTool(events) : null),
     [events, isActive],
   );
-  // Drop the in-flight tool_use from the summarized history — it is rendered as
-  // the live row below, and summarizeActivity would otherwise fold it into the
-  // last completed tool group, showing the same call twice. Remove only that one
-  // event (not the tail) so a trailing result/error for an earlier parallel call
-  // is still summarized and keeps its error indicator.
-  const items = useMemo(
-    () => summarizeActivity(inFlight ? events.filter((_, i) => i !== inFlight.index) : events),
-    [events, inFlight],
+  const displayItems = useMemo(
+    () => buildActivityDisplayItems({ agentId, events, description, cwd }),
+    [agentId, events, description, cwd],
   );
+  const summarizedDisplayItems = useMemo(
+    () => {
+      if (!inFlight) return displayItems;
+      const inFlightEvent = events[inFlight.index];
+      return displayItems.filter((item) => item.kind !== 'agent_event' || item.event !== inFlightEvent);
+    },
+    [displayItems, events, inFlight],
+  );
+  const items = useMemo(() => summarizeActivityDisplayItems(summarizedDisplayItems), [summarizedDisplayItems]);
   const disclosure = useMemo(
     () => buildActivityDisclosure(events.length, activityMeta),
     [events.length, activityMeta],

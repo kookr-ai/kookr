@@ -910,7 +910,10 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                 ) : (
                   <Suspense fallback={null}>
                     <ActivityPanel
+                      agentId={agent.agentId}
                       events={agent.events}
+                      description={agent.description}
+                      cwd={agent.cwd}
                       anomalyExplanation={agent.anomaly?.explanation}
                       onOpenDiff={handleOpenDiff}
                       activityMeta={agent.activityMeta}

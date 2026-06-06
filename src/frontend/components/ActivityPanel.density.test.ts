@@ -7,10 +7,14 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import type { AgentEvent } from '../../shared/protocol.js';
 import { ActivityPanel } from './ActivityPanel.js';
 
-function renderActivity(container: HTMLElement, events: AgentEvent[]): Root {
+function renderActivity(
+  container: HTMLElement,
+  events: AgentEvent[],
+  props: Partial<React.ComponentProps<typeof ActivityPanel>> = {},
+): Root {
   const root = createRoot(container);
   act(() => {
-    root.render(React.createElement(ActivityPanel, { events }));
+    root.render(React.createElement(ActivityPanel, { events, ...props }));
   });
   return root;
 }
@@ -42,6 +46,37 @@ describe('ActivityPanel density', () => {
     expect(message.querySelector('.act-msg-full')).not.toBeNull();
     expect(message.querySelector('summary')?.textContent).toContain('Show full prompt');
     expect(message.textContent).toContain('Step 1: perform one bounded action.');
+  });
+
+  test('renders a display-only launch placeholder when raw events are windowed', () => {
+    root = renderActivity(container, [
+      { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'npm test' }, eventSeq: 51 },
+    ], {
+      agentId: 'kookr-test',
+      description: 'Launch prompt',
+      cwd: '/repo',
+      taskId: 'task-1',
+    });
+
+    const messages = [...container.querySelectorAll('.act-msg-user')].map((el) => el.textContent ?? '');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('Launch prompt');
+  });
+
+  test('does not render duplicate launch prompt when provider launch is visible', () => {
+    root = renderActivity(container, [
+      { type: 'session_start', sessionId: 's1', eventSeq: 1 },
+      { type: 'user_prompt', sessionId: 's1', prompt: 'Launch prompt', eventSeq: 2 },
+    ], {
+      agentId: 'kookr-test',
+      description: 'Launch prompt',
+      cwd: '/repo',
+      taskId: 'task-1',
+    });
+
+    const messages = [...container.querySelectorAll('.act-msg-user')].map((el) => el.textContent ?? '');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('Launch prompt');
   });
 
   test('stays pinned to the latest activity while auto-scroll is locked', () => {
