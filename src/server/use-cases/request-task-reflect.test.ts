@@ -146,6 +146,39 @@ describe('requestTaskReflect', () => {
       worktreePath: launchOpts.cwd,
     });
   });
+
+  it('falls back to origin/main when the local main branch is absent', async () => {
+    git(repoDir, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    git(repoDir, 'checkout', '--detach', 'HEAD');
+    writeFileSync(join(repoDir, 'DETACHED_HEAD_ONLY.md'), '# detached\n');
+    git(repoDir, 'add', 'DETACHED_HEAD_ONLY.md');
+    git(repoDir, 'commit', '-m', 'detached-only commit');
+    git(repoDir, 'branch', '-D', 'main');
+    const sourceTask = store.createTask({ prompt: 'finish feature', cwd: repoDir, agentType: 'codex-cli' });
+    const launchTask = vi.fn(async (opts: LaunchOpts) => {
+      createdWorktree = opts.cwd;
+      return {
+        task: store.createTask({ prompt: opts.prompt, cwd: opts.cwd, agentType: 'claude-code' }),
+        queued: false,
+      };
+    });
+
+    const result = await requestTaskReflect(
+      { sourceTaskId: sourceTask.id, bundlePath, direction: 'up' },
+      {
+        taskStore: store,
+        reflectWorktreesDir,
+        launchTask,
+        pluginDirOverride: pluginDir,
+      },
+    );
+
+    expect(result.spawned).toBe(true);
+    expect(launchTask).toHaveBeenCalledOnce();
+    const worktreePath = launchTask.mock.calls[0][0].cwd;
+    expect(existsSync(join(worktreePath, REFLECT_IDENTITY_FILE))).toBe(true);
+    expect(existsSync(join(worktreePath, 'DETACHED_HEAD_ONLY.md'))).toBe(false);
+  });
 });
 
 describe('sweepReflectWorktrees', () => {

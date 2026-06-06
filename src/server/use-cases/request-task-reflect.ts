@@ -65,9 +65,9 @@ export interface RequestTaskReflectResult {
  *
  * Each abort logs a clear reason; the caller can surface it to the user.
  *
- * On success: allocates an ephemeral worktree from `main`, builds a concise
- * spawn prompt that points at the bundle and tells the agent to load the skill,
- * launches via `launchTask`. Persists
+ * On success: allocates an ephemeral worktree from the source repo baseline,
+ * builds a concise spawn prompt that points at the bundle and tells the agent
+ * to load the skill, launches via `launchTask`. Persists
  * `reflectMeta` on the spawned task so cleanup logic can identify it.
  */
 export async function requestTaskReflect(
@@ -107,17 +107,22 @@ export async function requestTaskReflect(
     return { spawned: false, reason: `skill_verification_failed: ${skillCheck.reason}` };
   }
 
-  // Allocate ephemeral worktree from main of the source task's repo.
+  // Allocate ephemeral worktree from the best available baseline of the source
+  // task's repo. CI checkouts can be detached and lack a local `main` branch.
   const sourceRepoRoot = await resolveRepoRoot(sourceTask.cwd);
   if (!sourceRepoRoot) {
     return { spawned: false, reason: 'source_repo_root_unresolved' };
+  }
+  const baselineRef = await resolveReflectBaselineRef(sourceRepoRoot);
+  if (!baselineRef) {
+    return { spawned: false, reason: 'source_repo_baseline_unresolved' };
   }
   const worktreeId = `${input.sourceTaskId}-${nowSlug()}`;
   const worktreePath = join(deps.reflectWorktreesDir, worktreeId);
   await mkdir(deps.reflectWorktreesDir, { recursive: true });
 
   try {
-    await execFile('git', ['-C', sourceRepoRoot, 'worktree', 'add', '--detach', worktreePath, 'main']);
+    await execFile('git', ['-C', sourceRepoRoot, 'worktree', 'add', '--detach', worktreePath, baselineRef]);
   } catch (err) {
     return { spawned: false, reason: `worktree_create_failed: ${(err as Error).message}` };
   }
@@ -234,6 +239,19 @@ async function resolveRepoRoot(cwd: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+async function resolveReflectBaselineRef(repoRoot: string): Promise<string | null> {
+  const candidates = ['main', 'origin/main', 'master', 'origin/master', 'HEAD'];
+  for (const ref of candidates) {
+    try {
+      await execFile('git', ['-C', repoRoot, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+      return ref;
+    } catch {
+      // Try the next conventional baseline; HEAD is the final detached-checkout fallback.
+    }
+  }
+  return null;
 }
 
 function nowSlug(): string {
