@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildHookCommand, buildStopNudgeCommand, resolveHookWriterPath, resolveStopNudgePath } from './hook-writer-paths.js';
+import {
+  buildHookCommand,
+  buildStopNudgeCommand,
+  resolveAgentLauncherBinDir,
+  resolveHookWriterPath,
+  resolveStopNudgePath,
+} from './hook-writer-paths.js';
 
 describe('resolveHookWriterPath', () => {
   it('returns the writer path when the bin file exists relative to baseDir', () => {
@@ -27,6 +33,39 @@ describe('resolveHookWriterPath', () => {
       const baseDir = join(root, 'a', 'b');
       mkdirSync(baseDir, { recursive: true });
       expect(resolveHookWriterPath(baseDir)).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('resolveAgentLauncherBinDir', () => {
+  it('returns the bin dir when the `kookr` launcher exists relative to baseDir', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-launcher-paths-'));
+    try {
+      const binDir = join(root, 'bin');
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(join(binDir, 'kookr'), '#!/bin/sh\n');
+      // Simulate dist/core/ or src/core/ — two levels up lands on root.
+      const baseDir = join(root, 'a', 'b');
+      mkdirSync(baseDir, { recursive: true });
+      expect(resolveAgentLauncherBinDir(baseDir)).toBe(binDir);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns undefined when the launcher is missing (only bin/kookr.js present)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-launcher-paths-'));
+    try {
+      const binDir = join(root, 'bin');
+      mkdirSync(binDir, { recursive: true });
+      // The Node entry point exists but the extensionless launcher does not —
+      // exactly the issue #786 state. Prepend nothing rather than a broken dir.
+      writeFileSync(join(binDir, 'kookr.js'), '// stub');
+      const baseDir = join(root, 'a', 'b');
+      mkdirSync(baseDir, { recursive: true });
+      expect(resolveAgentLauncherBinDir(baseDir)).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

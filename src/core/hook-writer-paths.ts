@@ -30,6 +30,22 @@ export function resolveStopNudgePath(baseDir: string = moduleDir): string | unde
 }
 
 /**
+ * Resolve the `bin/` directory to prepend to a spawned agent's `PATH` so a bare
+ * `kookr` command resolves (issue #786). Agents are told to run `kookr signal
+ * completion-ready`, but the inherited PATH has no extensionless `kookr` — only
+ * the `bin/kookr*.js` Node entry points. The `bin/kookr` POSIX shim bridges that
+ * gap; this returns its directory only when the shim is actually present, so a
+ * checkout missing it (e.g. a stripped install) prepends nothing rather than a
+ * broken dir. Same `../../bin` anchoring as the sibling resolvers above, so it
+ * lands correctly from both `src/core/*` (vitest) and `dist/core/*` (compiled).
+ */
+export function resolveAgentLauncherBinDir(baseDir: string = moduleDir): string | undefined {
+  const binDir = resolve(baseDir, '..', '..', 'bin');
+  const launcher = resolve(binDir, 'kookr');
+  return existsSync(launcher) ? binDir : undefined;
+}
+
+/**
  * Build the Stop-hook nudge command: `node <nudge>`. The script reads the raw
  * Stop payload from stdin and resolves task identity/API from the agent env
  * (KOOKR_TASK_ID / KOOKR_API_BASE_URL). It is hard fail-open (always exits 0).
