@@ -56,6 +56,7 @@ import {
 } from './finding-evidence-review-service.js';
 import { ReviewLogStore } from './review-log-store.js';
 import { SupervisorFeedbackCaseStore } from './supervisor-feedback-case-store.js';
+import { UserInputDeliveryService } from './user-input-delivery-service.js';
 import { type OssSourceWatcherFs } from './oss-source-watcher.js';
 import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
 import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
@@ -271,6 +272,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     preflightLogger,
     getAgentEffort,
   });
+  const userInputDeliveries = new UserInputDeliveryService({ adapter, interactionLog });
 
   const ossServices = await createOssServices({ kookrDir, claudeDir });
   const {
@@ -501,6 +503,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       getMaxActiveTasks,
       relationTaskStore: taskStore,
       terminalInputSnapshots: terminalInputCoordinator,
+      userInputDeliveryProvider: userInputDeliveries,
     }));
     broadcastProjectSummaries();
   });
@@ -539,6 +542,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             getMaxActiveTasks,
             relationTaskStore: taskStore,
             terminalInputSnapshots: terminalInputCoordinator,
+            userInputDeliveryProvider: userInputDeliveries,
           }));
         }
       })
@@ -628,6 +632,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ralphLoopService,
     hookIngestion,
     terminalInputCoordinator,
+    userInputDeliveries,
     taskShareService: {
       publishTaskProjectionForTask: (taskId) => remoteRelayRuntime?.publishTaskProjectionForTask(taskId),
     },
@@ -712,6 +717,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
         relationTaskStore: taskStore,
         terminalInputSnapshots: terminalInputCoordinator,
+        userInputDeliveryProvider: userInputDeliveries,
       });
       return JSON.stringify(msg).length;
     },
@@ -991,6 +997,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     hooksDir,
     selectionController,
     terminalInputCoordinator,
+    userInputDeliveries,
   };
 
   const backgroundServices = startBackgroundServices({

@@ -2,6 +2,7 @@ import type { AgentActivityMeta, AgentEvent, Anomaly, AnomalyType, TokenUsage, T
 import type { CompletionDigest } from './completion-digest.js';
 import type { TaskDependencyEdge } from '../shared/contracts/task.js';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from './tasks.js';
+import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
 import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
@@ -64,6 +65,7 @@ export interface AgentState {
   /** Activity-panel disclosure counters; populated at snapshot time from
    *  {@link HookIngestion}. See rfc-activity-log-reliability §9. */
   activityMeta?: AgentActivityMeta;
+  userInputDeliveries?: UserInputDeliverySnapshot[];
   /** Multi-sample evidence captured for the active supervisor finding. */
   findingEvidenceAudit?: FindingEvidenceAuditRecord;
   /**

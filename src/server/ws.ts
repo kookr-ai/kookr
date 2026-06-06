@@ -35,6 +35,7 @@ import type { CoordinatorAuditTailProvider } from './coordinator/detectors.js';
 import type { CoordinatorSuppressionReader } from './coordinator/suppression-store.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
+import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 
 export interface MessageRouterDeps {
   taskStore: TaskStore;
@@ -106,6 +107,7 @@ export interface MessageRouterDeps {
   connectionId?: string;
   selectionController?: DashboardSelectionController;
   terminalInputCoordinator?: TerminalInputCoordinator;
+  userInputDeliveries?: UserInputDeliveryService;
 }
 
 export class MessageRouter {
@@ -156,6 +158,7 @@ export class MessageRouter {
         : undefined,
       queue: this.deps.queue,
       interactionLog: this.deps.interactionLog,
+      userInputDeliveries: this.deps.userInputDeliveries,
       suppressionTracker: this.deps.suppressionTracker,
       onRespond: this.deps.onRespond,
       caseLogStore: this.deps.supervisorFeedbackCaseStore,
@@ -256,6 +259,7 @@ export class MessageRouter {
       getMaxActiveTasks: this.deps.getMaxActiveTasks,
       relationTaskStore: this.deps.taskStore,
       terminalInputSnapshots: this.deps.terminalInputCoordinator,
+      userInputDeliveryProvider: this.deps.userInputDeliveries,
     }));
   }
 
@@ -461,6 +465,7 @@ export class MessageRouter {
       monitor: this.deps.monitor,
       activityMetaProvider: this.deps.activityMetaProvider,
       pendingSignalProvider: this.deps.taskStore,
+      userInputDeliveryProvider: this.deps.userInputDeliveries,
     });
     const state = snapshot.find((s) => s.agentId === agentId);
     if (state) {

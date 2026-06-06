@@ -97,6 +97,10 @@ function activityDisplayItemToSummaryEvent(item: ActivityDisplayItem): AgentEven
   };
 }
 
+export function activityDisplayItemsToEvents(displayItems: ActivityDisplayItem[]): AgentEvent[] {
+  return displayItems.map(activityDisplayItemToSummaryEvent);
+}
+
 export function summarizeActivityDisplayItems(displayItems: ActivityDisplayItem[]): ActivityItem[] {
-  return summarizeActivity(displayItems.map(activityDisplayItemToSummaryEvent));
+  return summarizeActivity(activityDisplayItemsToEvents(displayItems));
 }

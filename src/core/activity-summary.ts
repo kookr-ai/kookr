@@ -7,11 +7,13 @@ export type {
   ToolCategory,
   ToolGroup,
   ToolGroupEntry,
+  UserInputDeliveryItem,
   UserMessage,
   UserPasteBurst,
 } from '../shared/contracts/activity-summary.js';
 
 export {
+  buildActivityItems,
   buildActivityDisclosure,
   categorizeTool,
   classifyPasteContent,

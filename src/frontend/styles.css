@@ -5211,6 +5211,33 @@ textarea::-webkit-resizer { background: transparent; }
 .act-label-agent {
   color: var(--teal);
 }
+.act-msg-delivery-queued {
+  border-style: dashed;
+}
+.act-msg-delivery-submitted {
+  opacity: 0.9;
+}
+.act-msg-delivery-failed {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.32);
+}
+.act-delivery-status {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.act-msg-delivery-failed .act-delivery-status,
+.act-delivery-error {
+  color: var(--red);
+}
+.act-delivery-error {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
+}
 .act-msg-text {
   font-size: 13px;
   line-height: 1.6;

@@ -23,6 +23,7 @@ import { createSessionActivityProcessor } from './event-processors/session-activ
 import { createStopTokenScanProcessor } from './event-processors/stop-token-scan-processor.js';
 import { createTokenAccountingProcessor } from './event-processors/token-accounting-processor.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 
 export interface EventPipelineDeps {
   adapter: AgentAdapter;
@@ -72,6 +73,7 @@ export interface EventPipelineDeps {
    * updates). Set to `0` to disable coalescing and flush synchronously.
    */
   snapshotCoalesceWindowMs?: number;
+  userInputDeliveries?: UserInputDeliveryService;
 }
 
 const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS = 16;
@@ -126,6 +128,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
       activityMetaProvider: deps.hookIngestion,
       relationTaskStore: taskStore,
       terminalInputSnapshots: deps.terminalInputCoordinator,
+      userInputDeliveryProvider: deps.userInputDeliveries,
     }));
   };
 
@@ -198,10 +201,23 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     // confidently classified as non-parent. See rfc §3.
     if (meta.parentage === 'child' || meta.parentage === 'foreign') return;
 
+    const pipelineEvent: AgentEvent = event.type === 'user_prompt' && !event.hookLineId
+      ? { ...event, hookLineId: String(meta.sequence) }
+      : event;
     const inputState = deps.terminalInputCoordinator?.getSnapshot(tmuxName);
-    switch (event.type) {
+    switch (pipelineEvent.type) {
       case 'user_prompt':
+        deps.userInputDeliveries?.observeProviderUserPrompt(
+          tmuxName,
+          pipelineEvent.prompt,
+          pipelineEvent.hookLineId ?? String(meta.sequence),
+          meta.observedAt,
+        );
         void deps.terminalInputCoordinator?.markUserPromptSubmitted(tmuxName);
+        break;
+      case 'session_end':
+        deps.userInputDeliveries?.finalizeSession(tmuxName);
+        void deps.terminalInputCoordinator?.markSessionEnded(tmuxName);
         break;
       case 'tool_use':
         void deps.terminalInputCoordinator?.markToolStarted(tmuxName);
@@ -215,11 +231,8 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
       case 'stop':
         void deps.terminalInputCoordinator?.markTurnStopped(tmuxName);
         break;
-      case 'session_end':
-        void deps.terminalInputCoordinator?.markSessionEnded(tmuxName);
-        break;
       case 'notification':
-        if (event.notificationType === 'idle_prompt' && inputState) {
+        if (pipelineEvent.notificationType === 'idle_prompt' && inputState) {
           void deps.terminalInputCoordinator?.markPromptReady(tmuxName, {
             observedEpoch: inputState.inputStateEpoch,
             observedReadinessVersion: inputState.readinessVersion,
@@ -240,8 +253,8 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     const preState = monitor.getSnapshot().find(s => s.agentId === tmuxName);
     const wasNeedsInput = preState?.anomaly?.type === 'needs_input';
 
-    monitor.processEvents(tmuxName, [event], { eventId });
-    watchdog.recordEvents(tmuxName, [event]);
+    monitor.processEvents(tmuxName, [pipelineEvent], { eventId });
+    watchdog.recordEvents(tmuxName, [pipelineEvent]);
 
     // Post-event: if anomaly transitioned away from needs_input, clear stale suggestions
     const postState = monitor.getSnapshot().find(s => s.agentId === tmuxName);
@@ -263,14 +276,14 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
         agentId: tmuxName,
         anomalyType: post.type,
         severity: post.severity,
-        eventType: event.type,
+        eventType: pipelineEvent.type,
         sequence: meta.sequence,
       });
     }
 
     const isNeedsInput = postState?.anomaly?.type === 'needs_input';
     if (wasNeedsInput && !isNeedsInput) {
-      console.debug(`[event-pipeline] needs_input cleared for ${tmuxName} by ${event.type}`);
+      console.debug(`[event-pipeline] needs_input cleared for ${tmuxName} by ${pipelineEvent.type}`);
       responseAssistProcessor.abortPendingSuggestion(tmuxName);
     }
 
@@ -309,16 +322,16 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     if (ownerTask) publishTaskProjection(ownerTask.id);
 
     // On stop/stop_failure events, immediately scan transcript for updated spending
-    if (event.type === 'stop' || event.type === 'stop_failure') {
+    if (pipelineEvent.type === 'stop' || pipelineEvent.type === 'stop_failure') {
       const stopTask = ownerTask ?? undefined;
       stopTokenScanProcessor.process(stopTask);
-      ralphStopProcessor.process(stopTask, tmuxName, event);
+      ralphStopProcessor.process(stopTask, tmuxName, pipelineEvent);
     }
 
     const agentState = snapshot.find((s) => s.agentId === tmuxName);
-    responseAssistProcessor.process({ tmuxName, event, agentState });
+    responseAssistProcessor.process({ tmuxName, event: pipelineEvent, agentState });
     permissionQuickActionsProcessor.process({ tmuxName, agentState });
-    githubEventProcessor.process({ tmuxName, event, postState });
+    githubEventProcessor.process({ tmuxName, event: pipelineEvent, postState });
   };
 
   // Wire adapter events to the shared event handler

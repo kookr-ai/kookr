@@ -12,6 +12,7 @@ import { validatePermissionApprovalBinding } from '../../shared/contracts/permis
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
 import type { SupervisorFeedbackCaseStore } from '../supervisor-feedback-case-store.js';
 import { SUPERVISOR_FEEDBACK_CASE_SCHEMA_VERSION } from '../supervisor-feedback-case-store.js';
+import type { UserInputDeliveryService } from '../user-input-delivery-service.js';
 
 /**
  * Narrow dependency bag for anomaly-response messages.
@@ -29,6 +30,7 @@ export interface AnomalyHandlerDeps {
   watchdog?: Pick<Watchdog, 'recordInputReceived'>;
   queue: AttentionQueue;
   interactionLog?: DeferredInteractionLogWriter;
+  userInputDeliveries?: UserInputDeliveryService;
   suppressionTracker?: SnoozeSuppressionTracker;
   onRespond?: (agentId: string, outcome?: 'used' | 'cleared') => void;
   /** Persistent case log capturing user-reported FP/FN snapshots for offline analysis. */
@@ -78,7 +80,11 @@ export class AnomalyHandler {
       case 'respond': {
         // Capture anomaly from the queue (persisted detectedAt) before clearing
         const preAnomaly = this.deps.queue.getAnomaly(msg.agentId);
-        await this.deps.adapter.sendInput(msg.agentId, msg.input);
+        if (this.deps.userInputDeliveries) {
+          await this.deps.userInputDeliveries.submitMessage(msg.agentId, msg.input, 'respond');
+        } else {
+          await this.deps.adapter.sendInput(msg.agentId, msg.input);
+        }
         if (this.deps.monitor.markInputReceived(msg.agentId)) {
           this.deps.watchdog?.recordInputReceived(msg.agentId);
         }
@@ -97,12 +103,14 @@ export class AnomalyHandler {
           });
         }
         const ts = nowISO();
-        await this.deps.interactionLog?.append({
-          type: 'user_input',
-          agentId: msg.agentId,
-          content: msg.input,
-          timestamp: ts,
-        });
+        if (!this.deps.userInputDeliveries) {
+          await this.deps.interactionLog?.append({
+            type: 'user_input',
+            agentId: msg.agentId,
+            content: msg.input,
+            timestamp: ts,
+          });
+        }
         if (preAnomaly) {
           await this.deps.interactionLog?.append({
             type: 'finding_resolved',
@@ -118,17 +126,26 @@ export class AnomalyHandler {
 
       case 'respondAll': {
         // Batch-respond to multiple agents with the same input (grouped findings)
-        for (const agentId of msg.agentIds) {
-          await dispatch({ type: 'respond', agentId, input: msg.input });
+        const uniqueAgentIds = [...new Set(msg.agentIds)];
+        const results = await Promise.allSettled(
+          uniqueAgentIds.map((agentId) => dispatch({ type: 'respond', agentId, input: msg.input })),
+        );
+        const failures = results.filter((result) => result.status === 'rejected');
+        if (failures.length > 0) {
+          throw new Error(`Failed to respond to ${failures.length} of ${uniqueAgentIds.length} agents`);
         }
         return;
       }
 
       case 'directReply': {
-        await sendDirectAgentInput({
-          adapter: this.deps.adapter,
-          interactionLog: this.deps.interactionLog,
-        }, msg.agentId, msg.input);
+        if (this.deps.userInputDeliveries) {
+          await this.deps.userInputDeliveries.submitMessage(msg.agentId, msg.input, 'directReply');
+        } else {
+          await sendDirectAgentInput({
+            adapter: this.deps.adapter,
+            interactionLog: this.deps.interactionLog,
+          }, msg.agentId, msg.input);
+        }
         return;
       }
 
