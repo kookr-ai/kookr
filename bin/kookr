@@ -1,0 +1,15 @@
+#!/bin/sh
+# kookr — extensionless launcher so spawned agents can resolve `kookr` on PATH.
+#
+# Spawned task agents are told (e.g. by the Stop-hook nudge, RFC
+# rfc-agent-signal-surface §7) to run `kookr signal completion-ready`. The agent
+# inherits the server's PATH, which has no extensionless `kookr` on it — only the
+# Node entry points `bin/kookr*.js`, normally run via npx/node. Kookr therefore
+# prepends this `bin/` directory to the agent PATH in `buildAgentLaunchContext`
+# so a bare `kookr` resolves to this shim. See issue #786.
+#
+# This delegates to the Node dispatcher (`bin/kookr.js`). The agent reaches the
+# running server via the `KOOKR_API_BASE_URL` / `KOOKR_TASK_ID` env vars Kookr
+# injects at launch, so it does not matter which checkout's `kookr.js` runs.
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node "$dir/kookr.js" "$@"

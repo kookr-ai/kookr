@@ -16,6 +16,7 @@ import {
   type AgentPreflightSnapshot,
   type PreflightLogger,
 } from '../agent-preflight.js';
+import { runAgentLauncherPreflight } from '../agent-launcher-preflight.js';
 
 export interface AgentRuntimeDeps {
   terminalBackend: TerminalBackend;
@@ -79,6 +80,22 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     onFatal: deps.preflightOnFatal ?? ((): never => process.exit(1)),
     logger: deps.preflightLogger,
   });
+
+  // Verify a bare `kookr` resolves on the agent PATH (issue #786). Warn-and-
+  // continue, not fatal: completion signalling is advisory (the agent never
+  // fails its task over it), and a Claude-only deployment with a stripped bin/
+  // should still boot. But surface it loudly here so the break is diagnosed at
+  // startup rather than at an agent's final `kookr signal completion-ready`.
+  const logger = deps.preflightLogger ?? console;
+  const launcherPreflight = await runAgentLauncherPreflight();
+  if (launcherPreflight.status === 'ok') {
+    logger.log(`[startup] agent-launcher: \`kookr\` resolves on agent PATH via ${launcherPreflight.launcherDir}`);
+  } else {
+    logger.warn(
+      `[startup] agent-launcher: ${launcherPreflight.reason}. ` +
+        'Agents may hit exit 127 on `kookr signal completion-ready` until this is fixed.',
+    );
+  }
 
   return {
     claudeCodeAdapter,

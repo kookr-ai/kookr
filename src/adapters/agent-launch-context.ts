@@ -1,5 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
+import { resolveAgentLauncherBinDir } from '../core/hook-writer-paths.js';
 import type { TaskStore } from '../core/tasks.js';
 import { ENTER_BYTES } from './keystroke.js';
 import type { SessionId, TerminalBackend } from './terminal-backend.js';
@@ -125,6 +126,19 @@ interface BuildAgentLaunchContextOptions {
   taskId: string;
   cwd: string;
   serverPort?: number;
+  /**
+   * Directory to prepend to the agent `PATH` so a bare `kookr` resolves to the
+   * bundled launcher shim (issue #786). Defaults to {@link resolveAgentLauncherBinDir};
+   * pass `null` to skip PATH injection (used by tests that assert the rest of the
+   * env in isolation). When the launcher can't be resolved, no PATH entry is added.
+   */
+  agentLauncherBinDir?: string | null;
+  /**
+   * Base `PATH` the launcher dir is prepended to. Defaults to the server's own
+   * `process.env.PATH`; the spawned agent inherits this via the backend's
+   * `{ ...process.env, ...spec.env }` merge.
+   */
+  basePath?: string;
 }
 
 export async function buildAgentLaunchContext(
@@ -164,6 +178,19 @@ export async function buildAgentLaunchContext(
       `Read(${toAbsolutePermissionPath(gitCommonDir)}/**)`,
       `Write(${toAbsolutePermissionPath(gitCommonDir)}/**)`,
     );
+  }
+
+  // Make a bare `kookr` resolvable to the agent (issue #786). Spawned agents are
+  // told to run `kookr signal completion-ready`, but the PATH they inherit has no
+  // extensionless `kookr` — so the bare command failed with exit 127. Prepend the
+  // bundled launcher's `bin/` dir to PATH. (The Stop-hook nudge ran fine because
+  // it invokes `node <absolute path>`, not a PATH lookup — hence the inconsistency
+  // where the nudge fired but the command it suggested could not run.)
+  const launcherBinDir =
+    opts.agentLauncherBinDir === undefined ? resolveAgentLauncherBinDir() : opts.agentLauncherBinDir;
+  if (launcherBinDir) {
+    const basePath = opts.basePath ?? process.env.PATH ?? '';
+    env.PATH = basePath ? `${launcherBinDir}${delimiter}${basePath}` : launcherBinDir;
   }
 
   return { env, permissionAllowlist };

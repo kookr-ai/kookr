@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { TaskStore } from '../core/tasks.js';
+import { resolveAgentLauncherBinDir } from '../core/hook-writer-paths.js';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import {
   buildAgentLaunchContext,
@@ -52,6 +53,10 @@ describe('agent-launch-context', () => {
       taskId: child.id,
       cwd: repoDir,
       serverPort: 4801,
+      // Pin the launcher dir + base PATH so the asserted env is deterministic
+      // (production resolves these from the real bin/ and process.env.PATH).
+      agentLauncherBinDir: '/opt/kookr/bin',
+      basePath: '/usr/bin:/bin',
     });
 
     expect(context.env).toEqual({
@@ -60,6 +65,8 @@ describe('agent-launch-context', () => {
       KOOKR_PORT: '4801',
       KOOKR_API_BASE_URL: 'http://127.0.0.1:4801',
       KOOKR_GIT_COMMON_DIR: join(repoDir, '.git'),
+      // Launcher dir prepended so a bare `kookr` resolves for agents (issue #786).
+      PATH: '/opt/kookr/bin:/usr/bin:/bin',
     });
     expect(context.permissionAllowlist).toEqual([
       'Bash(git *)',
@@ -92,6 +99,67 @@ describe('agent-launch-context', () => {
 
     expect(context.env.KOOKR_GIT_COMMON_DIR).toBe(mainGitDir);
     expect(context.permissionAllowlist).toContain(`Write(//${mainGitDir.slice(1)}/**)`);
+  });
+
+  // issue #786: a bare `kookr` must resolve on the agent PATH so the agent's
+  // `kookr signal completion-ready` does not fail with exit 127.
+  test('prepends the launcher bin dir to the agent PATH', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/repo');
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+      agentLauncherBinDir: '/opt/kookr/bin',
+      basePath: '/usr/local/bin:/usr/bin:/bin',
+    });
+
+    expect(context.env.PATH).toBe('/opt/kookr/bin:/usr/local/bin:/usr/bin:/bin');
+  });
+
+  test('uses the launcher dir alone when the base PATH is empty', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/repo');
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+      agentLauncherBinDir: '/opt/kookr/bin',
+      basePath: '',
+    });
+
+    expect(context.env.PATH).toBe('/opt/kookr/bin');
+  });
+
+  test('omits PATH when the launcher cannot be resolved (null opt-out)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/repo');
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+      agentLauncherBinDir: null,
+      basePath: '/usr/bin',
+    });
+
+    expect(context.env.PATH).toBeUndefined();
+  });
+
+  test('defaults to the real bundled launcher and prepends its dir to PATH', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/repo');
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+      basePath: '/usr/bin',
+    });
+
+    // The committed bin/kookr shim exists in this checkout, so the default
+    // resolver finds it and prepends exactly its dir (not just any `…/bin`).
+    const launcherDir = resolveAgentLauncherBinDir();
+    expect(launcherDir).toBeDefined();
+    expect(context.env.PATH).toBe(`${launcherDir}:/usr/bin`);
   });
 
   function makeTempDir(): string {
