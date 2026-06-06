@@ -1,5 +1,6 @@
 import type { AgentEvent } from './agent-events.js';
 import type { AgentActivityMeta } from './hook-events.js';
+import type { UserInputDeliverySnapshot } from './user-input-delivery.js';
 
 // ── Activity item types ──────────────────────────────────────────────
 
@@ -7,6 +8,11 @@ export interface UserMessage {
   type: 'user_message';
   text: string;
   timestamp?: string;
+}
+
+export interface UserInputDeliveryItem {
+  type: 'user_input_delivery';
+  delivery: UserInputDeliverySnapshot;
 }
 
 export interface AgentMessage {
@@ -73,6 +79,7 @@ export interface UserPasteBurst {
 
 export type ActivityItem =
   | UserMessage
+  | UserInputDeliveryItem
   | AgentMessage
   | ToolGroup
   | SystemNotice
@@ -434,6 +441,50 @@ export function summarizeActivity(events: AgentEvent[]): ActivityItem[] {
   // Flush any remaining buffered prompts / tool events.
   flushUserPrompts();
   flushTools();
+
+  return items;
+}
+
+export function buildActivityItems(input: {
+  providerEvents: AgentEvent[];
+  userInputDeliveries?: UserInputDeliverySnapshot[];
+}): ActivityItem[] {
+  const deliveries = [...(input.userInputDeliveries ?? [])].sort((a, b) => a.deliverySeq - b.deliverySeq);
+  if (deliveries.length === 0) return summarizeActivity(input.providerEvents);
+
+  const deliveryByHookId = new Map<string, UserInputDeliverySnapshot>();
+  for (const delivery of deliveries) {
+    if (delivery.submittedHookLineId) deliveryByHookId.set(delivery.submittedHookLineId, delivery);
+  }
+
+  const items: ActivityItem[] = [];
+  const emittedDeliveryIds = new Set<string>();
+  let segment: AgentEvent[] = [];
+
+  const flushSegment = () => {
+    if (segment.length === 0) return;
+    items.push(...summarizeActivity(segment));
+    segment = [];
+  };
+
+  for (const event of input.providerEvents) {
+    const delivery = event.type === 'user_prompt' && event.hookLineId
+      ? deliveryByHookId.get(event.hookLineId)
+      : undefined;
+    if (delivery) {
+      flushSegment();
+      items.push({ type: 'user_input_delivery', delivery });
+      emittedDeliveryIds.add(delivery.deliveryId);
+      continue;
+    }
+    segment.push(event);
+  }
+  flushSegment();
+
+  for (const delivery of deliveries) {
+    if (emittedDeliveryIds.has(delivery.deliveryId)) continue;
+    items.push({ type: 'user_input_delivery', delivery });
+  }
 
   return items;
 }

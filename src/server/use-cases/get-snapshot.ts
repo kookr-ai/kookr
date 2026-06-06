@@ -21,6 +21,10 @@ import { buildRelationProjection, deriveEffectiveAttentionSeverity } from './bui
 import type { TaskRelation } from '../../shared/contracts/task-relations.js';
 import type { PromptStatus } from '../../shared/terminal-input-contract.js';
 import { buildSnapshotProjection } from './snapshot-projection.js';
+import {
+  projectUserInputDeliveryForClient,
+  type UserInputDeliverySnapshot,
+} from '../../shared/contracts/user-input-delivery.js';
 
 export interface SnapshotQueryDeps {
   monitor: Pick<Monitor, 'getSnapshot'> & Partial<Pick<Monitor, 'getTaskSnapshot'>>;
@@ -45,6 +49,9 @@ export interface SnapshotQueryDeps {
    * signals without per-call-site wiring.
    */
   pendingSignalProvider?: { getPendingSignal(taskId: string): PendingAgentSignal | undefined };
+  userInputDeliveryProvider?: {
+    getSnapshot(sessionId: string): UserInputDeliverySnapshot[];
+  };
 }
 
 export interface SnapshotMessageDeps extends SnapshotQueryDeps {
@@ -177,6 +184,9 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
     const pendingSignal = agent.taskId && typeof deps.pendingSignalProvider?.getPendingSignal === 'function'
       ? deps.pendingSignalProvider.getPendingSignal(agent.taskId)
       : undefined;
+    const userInputDeliveries = deps.userInputDeliveryProvider
+      ?.getSnapshot(agent.agentId)
+      .map(projectUserInputDeliveryForClient);
     return {
       ...agent,
       events: agent.events.map(projectEventForClient),
@@ -185,6 +195,7 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
         : {}),
       ...(activityMeta ? { activityMeta } : {}),
       ...(pendingSignal ? { pendingSignal } : {}),
+      ...(userInputDeliveries && userInputDeliveries.length > 0 ? { userInputDeliveries } : {}),
       ...(terminalSnapshot ? {
         terminalInputSnapshot: {
           sessionId: agent.agentId,

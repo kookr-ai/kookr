@@ -26,6 +26,13 @@ async function getLatestTmuxName(request: APIRequestContext): Promise<string> {
   throw new Error('Timed out waiting for an inProgress task with sessions');
 }
 
+async function getKeysReceived(request: APIRequestContext, tmuxName: string): Promise<string[]> {
+  const keysRes = await request.get(`/api/test/keys-received/${encodeURIComponent(tmuxName)}`);
+  expect(keysRes.status()).toBe(200);
+  const keysData = await keysRes.json() as { keysReceived: string[] };
+  return keysData.keysReceived;
+}
+
 /** Inject a raw hook event for a tmux session. */
 async function injectEvent(
   request: APIRequestContext,
@@ -555,10 +562,8 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.sent-overlay')).toBeVisible();
 
     // Verify the message was delivered to the agent's terminal session
-    const keysRes = await request.get(`/api/test/keys-received/${encodeURIComponent(tmuxName)}`);
-    expect(keysRes.status()).toBe(200);
-    const keysData = await keysRes.json();
-    expect(keysData.keysReceived).toContain('Please also add dark mode support');
+    await expect.poll(() => getKeysReceived(request, tmuxName), { timeout: 3000 })
+      .toContain('Please also add dark mode support');
   });
 
   test('direct reply via Enter key on healthy agent', async ({ page, request }) => {
@@ -579,10 +584,8 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.sent-overlay')).toBeVisible();
 
     // Verify message delivered
-    const keysRes = await request.get(`/api/test/keys-received/${encodeURIComponent(tmuxName)}`);
-    expect(keysRes.status()).toBe(200);
-    const keysData = await keysRes.json();
-    expect(keysData.keysReceived).toContain('Use Elasticsearch instead of SQL');
+    await expect.poll(() => getKeysReceived(request, tmuxName), { timeout: 3000 })
+      .toContain('Use Elasticsearch instead of SQL');
   });
 
   test('direct reply via REST API endpoint', async ({ page, request }) => {
@@ -602,10 +605,8 @@ test.describe('Kookr E2E — nominal paths', () => {
     expect(body.delivered).toBe(true);
 
     // Verify message delivered
-    const keysRes = await request.get(`/api/test/keys-received/${encodeURIComponent(tmuxName)}`);
-    expect(keysRes.status()).toBe(200);
-    const keysData = await keysRes.json();
-    expect(keysData.keysReceived).toContain('Hello from REST');
+    await expect.poll(() => getKeysReceived(request, tmuxName), { timeout: 3000 })
+      .toContain('Hello from REST');
   });
 
   // --- Removed tmux option endpoint ---
