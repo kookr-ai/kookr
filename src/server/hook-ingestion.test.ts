@@ -172,6 +172,127 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
     ]));
   });
 
+  it('reuses cached coordinator audit-tail rows when the underlying audit data is unchanged', () => {
+    const adapter: HookEventInjector = {
+      injectHookEvent(_tmux, _raw, sequence) {
+        return {
+          parseStatus: 'ok',
+          agentType: 'claude-code',
+          parentage: 'parent',
+          rawHookEventName: 'PostToolUse',
+          sequence: sequence ?? 0,
+        };
+      },
+    };
+    const ingestion = new HookIngestion({
+      adapter,
+      taskStore: {
+        findTaskBySession: () => ({ id: 'task-1' }) as never,
+      },
+      now: () => Date.parse('2026-05-21T12:00:00.000Z'),
+    });
+
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({ session_id: 'x', hook_event_name: 'PostToolUse' }));
+
+    const first = ingestion.getCoordinatorAuditTail();
+    const second = ingestion.getCoordinatorAuditTail();
+
+    expect(second).toEqual(first);
+    expect(second).not.toBe(first);
+    expect(second[0]).toBe(first[0]);
+  });
+
+  it('invalidates the cached coordinator audit-tail projection when a row is appended', () => {
+    let clock = Date.parse('2026-05-21T12:00:00.000Z');
+    const adapter: HookEventInjector = {
+      injectHookEvent(_tmux, _raw, sequence) {
+        return {
+          parseStatus: 'ok',
+          agentType: 'claude-code',
+          parentage: 'parent',
+          rawHookEventName: 'PostToolUse',
+          sequence: sequence ?? 0,
+        };
+      },
+    };
+    const ingestion = new HookIngestion({
+      adapter,
+      taskStore: {
+        findTaskBySession: (sessionId: string) => ({ id: `task-${sessionId}` }) as never,
+      },
+      now: () => clock,
+    });
+
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({ session_id: 'x', hook_event_name: 'PostToolUse', n: 1 }));
+    const beforeAppend = ingestion.getCoordinatorAuditTail();
+
+    clock += 1;
+    ingestion.ingestFromHttp('kookr-2', JSON.stringify({ session_id: 'y', hook_event_name: 'PostToolUse', n: 2 }));
+    const afterAppend = ingestion.getCoordinatorAuditTail();
+
+    expect(afterAppend).toHaveLength(2);
+    expect(afterAppend[0]).not.toBe(beforeAppend[0]);
+    expect(afterAppend).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        taskId: 'task-kookr-2',
+        observedAt: '2026-05-21T12:00:00.001Z',
+        rawHookEventName: 'PostToolUse',
+      }),
+    ]));
+  });
+
+  it('does not let callers mutate cached coordinator audit-tail state', () => {
+    const adapter: HookEventInjector = {
+      injectHookEvent(_tmux, _raw, sequence) {
+        return {
+          parseStatus: 'ok',
+          agentType: 'claude-code',
+          parentage: 'parent',
+          rawHookEventName: 'PostToolUse',
+          sequence: sequence ?? 0,
+        };
+      },
+    };
+    const ingestion = new HookIngestion({
+      adapter,
+      taskStore: {
+        findTaskBySession: () => ({ id: 'task-1' }) as never,
+      },
+      now: () => Date.parse('2026-05-21T12:00:00.000Z'),
+    });
+
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({ session_id: 'x', hook_event_name: 'PostToolUse' }));
+    const exposedRows = ingestion.getCoordinatorAuditTail();
+    exposedRows.push({
+      taskId: 'task-injected',
+      observedAt: '2026-05-21T12:01:00.000Z',
+      envelope: {
+        taskId: 'task-injected',
+        kookrSessionId: 'kookr-injected',
+        observedAt: '2026-05-21T12:01:00.000Z',
+      },
+    });
+    try {
+      exposedRows[0]!.rawHookEventName = 'Mutated';
+      exposedRows[0]!.envelope!.rawHookEventName = 'Mutated';
+    } catch {
+      // Frozen cached rows may throw under ESM strict mode; either way, the
+      // observable contract is that caller mutation cannot leak back in.
+    }
+
+    expect(ingestion.getCoordinatorAuditTail()).toEqual([{
+      taskId: 'task-1',
+      observedAt: '2026-05-21T12:00:00.000Z',
+      rawHookEventName: 'PostToolUse',
+      envelope: {
+        taskId: 'task-1',
+        kookrSessionId: 'kookr-1',
+        observedAt: '2026-05-21T12:00:00.000Z',
+        rawHookEventName: 'PostToolUse',
+      },
+    }]);
+  });
+
   it('HTTP-then-file delivery produces exactly one adapter call', () => {
     const adapter = makeStubAdapter();
     const ingestion = new HookIngestion({ adapter });
