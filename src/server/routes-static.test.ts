@@ -47,3 +47,80 @@ describe('createRoutes serveStatic gating', () => {
     expect(app).toBeDefined();
   });
 });
+
+describe('createRoutes JSON request body limit', () => {
+  afterEach(() => {
+    delete process.env.KOOKR_REQUEST_BODY_LIMIT_BYTES;
+  });
+
+  it('rejects oversized API JSON request bodies before route handlers', async () => {
+    const app = createRoutes({
+      ...makeDeps('/nonexistent-frontend', '/repo'),
+      requestBodyLimitBytes: 32,
+    });
+
+    const res = await app.request('http://localhost/api/does-not-exist', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ payload: 'x'.repeat(64) }),
+    });
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({
+      error: 'request-body-too-large',
+      message: 'JSON request body exceeds the 32 byte limit',
+      limitBytes: 32,
+    });
+  });
+
+  it('keeps API auth ahead of the body-reading guard on non-loopback binds', async () => {
+    const app = createRoutes({
+      ...makeDeps('/nonexistent-frontend', '/repo'),
+      apiAuth: { required: true, token: 'secret' },
+      requestBodyLimitBytes: 32,
+    });
+
+    const res = await app.request('http://lan.example/api/does-not-exist', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ payload: 'x'.repeat(64) }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'unauthorized' });
+  });
+
+  it('lets normal-sized API JSON request bodies continue to routing', async () => {
+    const app = createRoutes({
+      ...makeDeps('/nonexistent-frontend', '/repo'),
+      requestBodyLimitBytes: 128,
+    });
+
+    const res = await app.request('http://localhost/api/does-not-exist', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ok: true }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not Found' });
+  });
+
+  it('uses KOOKR_REQUEST_BODY_LIMIT_BYTES when route deps do not override it', async () => {
+    process.env.KOOKR_REQUEST_BODY_LIMIT_BYTES = '40';
+    const app = createRoutes(makeDeps('/nonexistent-frontend', '/repo'));
+
+    const res = await app.request('http://localhost/api/does-not-exist', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ payload: 'x'.repeat(64) }),
+    });
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({
+      error: 'request-body-too-large',
+      message: 'JSON request body exceeds the 40 byte limit',
+      limitBytes: 40,
+    });
+  });
+});

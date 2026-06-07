@@ -42,6 +42,8 @@ import type { CollaborationDiagnostics } from '../../shared/contracts/collaborat
 import type { CoordinatorSuppressionRegistry } from '../coordinator/suppression-store.js';
 import type { DrainController } from '../drain-state.js';
 import type { ApiAuthConfig } from '../auth.js';
+import { bodyLimit } from 'hono/body-limit';
+import type { MiddlewareHandler } from 'hono';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -261,4 +263,17 @@ export interface RouteDeps {
    * loopback flow completely token-free.
    */
   apiAuth?: ApiAuthConfig;
+  /** Maximum JSON request body size accepted by the dashboard server API routes. */
+  requestBodyLimitBytes?: number;
+}
+
+export function createJsonRequestBodyLimitMiddleware(limitBytes: number): MiddlewareHandler {
+  return bodyLimit({
+    maxSize: limitBytes,
+    onError: (c) => c.json({
+      error: 'request-body-too-large',
+      message: `JSON request body exceeds the ${limitBytes} byte limit`,
+      limitBytes,
+    }, 413),
+  });
 }

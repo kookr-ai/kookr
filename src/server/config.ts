@@ -4,6 +4,9 @@ export const MAX_ACTIVE_TASKS = 10;
 /** Default consecutive breaching samples required before an operational alert fires. */
 export const DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES = 3;
 
+/** Default maximum JSON request body size accepted by the dashboard server. */
+export const DEFAULT_REQUEST_BODY_LIMIT_BYTES = 1_000_000;
+
 /**
  * Threshold configuration for operational alerts on already-sampled host
  * signals. A threshold of `0` (the default) disables that rule, mirroring the
@@ -52,4 +55,11 @@ export function readOperationalAlertConfigFromEnv(
       DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES,
     ),
   };
+}
+
+/** Read the dashboard server JSON request body limit from the environment. */
+export function readRequestBodyLimitBytesFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  return readPositiveInt(env.KOOKR_REQUEST_BODY_LIMIT_BYTES, DEFAULT_REQUEST_BODY_LIMIT_BYTES);
 }
