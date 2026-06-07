@@ -82,6 +82,20 @@ This keeps the shell command short, avoids hook false positives, and leaves the 
 
 If both default ports respond and no explicit target is set, the command exits with an ambiguity error.
 
+## Exit Codes
+
+`kookr spawn`, `kookr ralph`, and their compatible aliases use stable exit codes for scripts:
+
+| Exit code | Name | Meaning | Commands |
+| --- | --- | --- | --- |
+| exit 0 | Success | The command completed successfully. | `kookr spawn`, `kookr ralph` |
+| exit 2 | User error | Invalid arguments, missing required input, or another local usage error. | `kookr spawn`, `kookr ralph` |
+| exit 3 | No server | No Kookr server was reachable, or default-port discovery found multiple possible instances. | `kookr spawn`, `kookr ralph` |
+| exit 4 | Server error | The server rejected the request or returned an unexpected failure. | `kookr spawn`, `kookr ralph` |
+| exit 5 | Duplicate blocked | Task creation was blocked by duplicate-prompt handling, such as `--dedupe=block` or non-interactive `--dedupe=warn`. | `kookr spawn` |
+
+The deprecated `kookr-spawn` and `kookr-ralph` aliases return the same codes as their `kookr <subcommand>` forms.
+
 ## `kookr status`
 
 Print a read-only snapshot of the running Kookr instance:
