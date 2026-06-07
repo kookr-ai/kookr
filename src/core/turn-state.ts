@@ -44,6 +44,25 @@ export function deriveTurnStateDetails(events: AgentEvent[]): DerivedTurnState {
   const last = events[effectiveEventIndex];
   switch (last.type) {
     case 'stop':
+      // A Stop fires whenever the agent's turn ends, INCLUDING when it ended
+      // its turn to wait on still-running background work it launched itself —
+      // a `run_in_background` shell or a session cron that will wake it when it
+      // produces output. The Stop hook reports those as `background_tasks` /
+      // `session_crons`; a non-zero count means the agent is not actually idle,
+      // it is parked waiting to be re-invoked. Treat that as `running` so the
+      // turn is not mistaken for a clean finish — both in the live badge and in
+      // the persisted `lastTurnState` that reconciliation reads to auto-complete
+      // dead-session tasks (`endedOnCleanTurn`, #693). This mirrors the
+      // outstanding-subagent suppression in `Monitor.deriveTurnStateForSnapshot`;
+      // the difference is that background-task/cron counts are intrinsic to the
+      // Stop event, so they belong in this pure derivation rather than needing
+      // cross-event tracking in the caller.
+      if (
+        (last.activeBackgroundTaskCount ?? 0) > 0
+        || (last.activeSessionCronCount ?? 0) > 0
+      ) {
+        return { turnState: 'running', effectiveEvent: last, effectiveEventIndex };
+      }
       // Normal end-of-turn: a final assistant message was emitted and the
       // agent is idle, waiting for an optional follow-up — NOT hung.
       return { turnState: 'completed_turn', effectiveEvent: last, effectiveEventIndex };
