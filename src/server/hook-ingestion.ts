@@ -144,6 +144,7 @@ export class HookIngestion implements HookEventInjector {
   private metaByKookrSession = new Map<string, AgentActivityMeta>();
   private coordinatorAuditTail: CoordinatorAuditTailRow[] = [];
   private latestCoordinatorPostToolUseRows = new Map<string, CoordinatorAuditTailRow>();
+  private coordinatorAuditTailProjectionCache?: readonly CoordinatorAuditTailRow[];
   private adapter: HookEventInjector;
   private httpPushTracker?: HttpPushTracker;
   private activityLedger?: ActivityLedger;
@@ -333,12 +334,18 @@ export class HookIngestion implements HookEventInjector {
   }
 
   getCoordinatorAuditTail(): CoordinatorAuditTailRow[] {
+    if (this.coordinatorAuditTailProjectionCache) {
+      return [...this.coordinatorAuditTailProjectionCache];
+    }
     const rowsByKey = new Map<string, CoordinatorAuditTailRow>();
     for (const row of this.coordinatorAuditTail) rowsByKey.set(coordinatorAuditTailKey(row), row);
     for (const row of this.latestCoordinatorPostToolUseRows.values()) {
       rowsByKey.set(coordinatorAuditTailKey(row), row);
     }
-    return [...rowsByKey.values()].map(cloneCoordinatorAuditTailRow);
+    this.coordinatorAuditTailProjectionCache = Object.freeze(
+      [...rowsByKey.values()].map(cloneAndFreezeCoordinatorAuditTailRow),
+    );
+    return [...this.coordinatorAuditTailProjectionCache];
   }
 
   private appendCoordinatorAuditTail(row: CoordinatorAuditTailRow): void {
@@ -357,6 +364,11 @@ export class HookIngestion implements HookEventInjector {
     if (this.coordinatorAuditTail.length > COORDINATOR_AUDIT_TAIL_LIMIT) {
       this.coordinatorAuditTail.splice(0, this.coordinatorAuditTail.length - COORDINATOR_AUDIT_TAIL_LIMIT);
     }
+    this.invalidateCoordinatorAuditTailProjectionCache();
+  }
+
+  private invalidateCoordinatorAuditTailProjectionCache(): void {
+    this.coordinatorAuditTailProjectionCache = undefined;
   }
 
   /**
@@ -439,6 +451,7 @@ export class HookIngestion implements HookEventInjector {
         this.latestCoordinatorPostToolUseRows.delete(key);
       }
     }
+    this.invalidateCoordinatorAuditTailProjectionCache();
     // Drop dedup entries for this session.
     for (const key of [...this.cache.keys()]) {
       if (key.startsWith(`${kookrSessionId}::`)) this.cache.delete(key);
@@ -531,6 +544,12 @@ function cloneCoordinatorAuditTailRow(row: CoordinatorAuditTailRow): Coordinator
   const copy: CoordinatorAuditTailRow = { ...row };
   if (row.envelope) copy.envelope = { ...row.envelope };
   return copy;
+}
+
+function cloneAndFreezeCoordinatorAuditTailRow(row: CoordinatorAuditTailRow): CoordinatorAuditTailRow {
+  const copy = cloneCoordinatorAuditTailRow(row);
+  if (copy.envelope) copy.envelope = Object.freeze(copy.envelope) as CoordinatorAuditTailRow['envelope'];
+  return Object.freeze(copy) as CoordinatorAuditTailRow;
 }
 
 function coordinatorAuditTailKey(row: CoordinatorAuditTailRow): string {
