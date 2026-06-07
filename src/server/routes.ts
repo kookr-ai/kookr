@@ -29,6 +29,7 @@ import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js'
 import { createApiAuthMiddleware } from './auth.js';
 import { readRequestBodyLimitBytesFromEnv } from './config.js';
 import { createJsonRequestBodyLimitMiddleware, type RouteDeps } from './routes/shared.js';
+import { createRequestDurationMiddleware, RequestDurationMetrics } from './request-duration-metrics.js';
 
 export type { RouteDeps } from './routes/shared.js';
 
@@ -50,6 +51,9 @@ export function createRoutes(deps: RouteDeps): Hono {
     ),
   );
 
+  const requestDurationMetrics = deps.requestDurationMetrics ?? new RequestDurationMetrics();
+  app.use('*', createRequestDurationMiddleware(requestDurationMetrics));
+
   // Hoist the coordinator-suppression-store fallback so task-routes (PATCH /edges
   // snapshot broadcast) and coordinator-routes (3 mutation handlers) share one
   // instance. Pre-split, a single closure-scoped store backed both call sites;
@@ -57,6 +61,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   // fallback, silently diverging the suppression view across the two surfaces.
   const sharedDeps: RouteDeps = {
     ...deps,
+    requestDurationMetrics,
     coordinatorSuppressions:
       deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? deps.serverCwd),
   };

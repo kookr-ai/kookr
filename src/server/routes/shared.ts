@@ -44,6 +44,7 @@ import type { DrainController } from '../drain-state.js';
 import type { ApiAuthConfig } from '../auth.js';
 import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
+import type { RequestDurationMetrics } from '../request-duration-metrics.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -261,10 +262,12 @@ export interface RouteDeps {
    * server bound to a non-loopback host), a global middleware enforces a bearer
    * token on state-changing requests. Absent or `required: false` leaves the
    * loopback flow completely token-free.
-   */
+  */
   apiAuth?: ApiAuthConfig;
   /** Maximum JSON request body size accepted by the dashboard server API routes. */
   requestBodyLimitBytes?: number;
+  /** In-memory per-route request duration aggregation exposed through diagnostics. */
+  requestDurationMetrics?: RequestDurationMetrics;
 }
 
 export function createJsonRequestBodyLimitMiddleware(limitBytes: number): MiddlewareHandler {
