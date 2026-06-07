@@ -36,11 +36,94 @@ export interface HttpAndWebSocketsDeps {
   onDashboardConnection: (ws: WebSocket) => void;
 }
 
+export interface HttpAndWebSocketsCloseOptions {
+  gracefulShutdownMs?: number;
+}
+
 export interface HttpAndWebSockets {
   httpServer: Server;
   wss: WebSocketServer;
   terminalWss: WebSocketServer;
   activeBridges: Map<WebSocket, FakeTerminalBridge | SessionBridge>;
+  close(options?: HttpAndWebSocketsCloseOptions): Promise<void>;
+}
+
+const DEFAULT_GRACEFUL_WEBSOCKET_SHUTDOWN_MS = 1_000;
+const SHUTDOWN_CLOSE_CODE = 1001;
+const SHUTDOWN_CLOSE_REASON = 'Server shutting down';
+
+function terminateOpenWebSockets(wss: WebSocketServer): void {
+  for (const ws of wss.clients) {
+    if (ws.readyState !== WebSocket.CLOSED) {
+      ws.terminate();
+    }
+  }
+}
+
+function closeWebSocketServer(
+  wss: WebSocketServer,
+  gracefulShutdownMs: number,
+): Promise<void> {
+  for (const ws of wss.clients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close(SHUTDOWN_CLOSE_CODE, SHUTDOWN_CLOSE_REASON);
+    } else if (ws.readyState !== WebSocket.CLOSED) {
+      ws.terminate();
+    }
+  }
+
+  return new Promise<void>((resolve) => {
+    let resolved = false;
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      if (forceTimer) clearTimeout(forceTimer);
+      resolve();
+    };
+    if (wss.clients.size === 0) {
+      wss.close(() => finish());
+      finish();
+      return;
+    }
+    forceTimer = setTimeout(() => {
+      terminateOpenWebSockets(wss);
+      finish();
+    }, gracefulShutdownMs);
+    forceTimer.unref?.();
+    wss.close(() => finish());
+  });
+}
+
+function closeHttpServer(httpServer: Server, gracefulShutdownMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let resolved = false;
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      if (forceTimer) clearTimeout(forceTimer);
+      resolve();
+    };
+    forceTimer = setTimeout(() => {
+      httpServer.closeAllConnections?.();
+      finish();
+    }, gracefulShutdownMs);
+    forceTimer.unref?.();
+    httpServer.close(() => finish());
+  });
+}
+
+async function closeHttpAndWebSockets(
+  runtime: Pick<HttpAndWebSockets, 'httpServer' | 'wss' | 'terminalWss'>,
+  options: HttpAndWebSocketsCloseOptions = {},
+): Promise<void> {
+  const gracefulShutdownMs = options.gracefulShutdownMs ?? DEFAULT_GRACEFUL_WEBSOCKET_SHUTDOWN_MS;
+  await Promise.all([
+    closeWebSocketServer(runtime.terminalWss, gracefulShutdownMs),
+    closeWebSocketServer(runtime.wss, gracefulShutdownMs),
+  ]);
+  await closeHttpServer(runtime.httpServer, gracefulShutdownMs);
 }
 
 export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promise<HttpAndWebSockets> {
@@ -151,5 +234,13 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     });
   });
 
-  return { httpServer, wss, terminalWss, activeBridges };
+  let closePromise: Promise<void> | undefined;
+  const runtime = { httpServer, wss, terminalWss, activeBridges };
+  return {
+    ...runtime,
+    close: (options) => {
+      closePromise ??= closeHttpAndWebSockets(runtime, options);
+      return closePromise;
+    },
+  };
 }
