@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
   DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES,
+  DEFAULT_REQUEST_BODY_LIMIT_BYTES,
   readOperationalAlertConfigFromEnv,
+  readRequestBodyLimitBytesFromEnv,
 } from './config.js';
 
 describe('readOperationalAlertConfigFromEnv', () => {
@@ -59,5 +61,23 @@ describe('readOperationalAlertConfigFromEnv', () => {
     expect(
       readOperationalAlertConfigFromEnv({ KOOKR_ALERT_SUSTAIN_SAMPLES: '4.0' }).sustainSamples,
     ).toBe(4);
+  });
+});
+
+describe('readRequestBodyLimitBytesFromEnv', () => {
+  test('defaults to the documented request body limit when env is empty', () => {
+    expect(readRequestBodyLimitBytesFromEnv({})).toBe(DEFAULT_REQUEST_BODY_LIMIT_BYTES);
+  });
+
+  test('accepts a positive integer byte limit', () => {
+    expect(readRequestBodyLimitBytesFromEnv({ KOOKR_REQUEST_BODY_LIMIT_BYTES: '2048' })).toBe(2048);
+  });
+
+  test('falls back to default for blank, zero, negative, fractional, or non-numeric values', () => {
+    for (const raw of ['  ', '0', '-1', '3.5', 'abc', 'Infinity']) {
+      expect(readRequestBodyLimitBytesFromEnv({ KOOKR_REQUEST_BODY_LIMIT_BYTES: raw })).toBe(
+        DEFAULT_REQUEST_BODY_LIMIT_BYTES,
+      );
+    }
   });
 });
