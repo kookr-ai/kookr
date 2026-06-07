@@ -1026,7 +1026,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
 
-  const { httpServer, wss, terminalWss, activeBridges } = await startHttpAndWebSockets({
+  const { httpServer, activeBridges, close: closeHttpRuntime } = await startHttpAndWebSockets({
     app,
     port,
     host,
@@ -1151,8 +1151,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Close servers
     collaborationUpdatePoller.stop();
     await collaborationListener.close();
-    terminalWss.close();
-    wss.close();
 
     // Final flush of the terminal backend's ring snapshots before the process
     // exits. The dtach masters survive (spawned with setsid); this only stops
@@ -1162,9 +1160,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // re-attach.
     terminalBackend.close?.();
 
-    return new Promise((resolve) => {
-      httpServer.close(() => resolve());
-    });
+    await closeHttpRuntime();
   }
 
   // Non-blocking startup refresh of the OSS attempts view.
