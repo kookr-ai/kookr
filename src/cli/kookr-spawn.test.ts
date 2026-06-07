@@ -972,6 +972,59 @@ describe('main', () => {
     expect(errBucket.errors.join('\n')).toMatch(/KOOKR_PORT/i);
   });
 
+  it('exits 3 when auto-detect finds no reachable Kookr instance', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_SPAWN_CONNECT_RETRIES: '1' },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+
+      expect(codes).toEqual([EXIT_NO_SERVER]);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(errBucket.errors.join('\n')).toContain('no Kookr server reachable');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('exits 3 when auto-detect finds both standard Kookr instances', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ serverStartedAt: '2026-06-07T00:00:00.000Z' }),
+    } as Response);
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_SPAWN_CONNECT_RETRIES: '1' },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+
+      expect(codes).toEqual([EXIT_NO_SERVER]);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(errBucket.errors.join('\n')).toContain('both Kookr instances are running');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('forwards KOOKR_TASK_ID as parentTaskId by default (auto-link path)', async () => {
     let bodySeen: any = null;
     const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
@@ -1193,15 +1246,6 @@ describe('main', () => {
     }
   });
 
-  it('exits 3 when auto-detect finds both instances (ambiguous)', async () => {
-    // Simulate ambiguity via a synthetic resolver path: point KOOKR_PORT at
-    // neither port; use sleep=0; stub fetch by spinning up two fake servers
-    // bound to 4800 and 4801 is not portable in test. Instead we test the
-    // ambiguous branch via the exposed resolveBaseUrl with a mocked sleep
-    // above, and rely on that coverage for main's downstream exit code.
-    // This smoke test covers main's dispatch on explicit resolutions only.
-    expect(EXIT_NO_SERVER).toBe(3);
-  });
 });
 
 // ---------- fake HTTP helpers ----------

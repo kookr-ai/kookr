@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  EXIT_NO_SERVER,
   EXIT_OK,
   EXIT_SERVER_ERROR,
   EXIT_USER_ERROR,
@@ -150,6 +151,54 @@ describe('kookr ralph main', () => {
     expect(err.errors.join('\n')).toContain('requires <taskId>');
   });
 
+  it('exits 2 on invalid KOOKR_PORT', async () => {
+    const out = makeConsoleCapture();
+    const err = makeConsoleCapture();
+    const { codes, exit } = makeExitCapture();
+
+    await main({ argv: ['status', 'task-1'], env: { KOOKR_PORT: 'abc' }, out: out.io, err: err.io, exit });
+
+    expect(codes).toEqual([EXIT_USER_ERROR]);
+    expect(err.errors.join('\n')).toMatch(/KOOKR_PORT/i);
+  });
+
+  it('exits 3 when auto-detect finds no reachable Kookr instance', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
+    try {
+      const out = makeConsoleCapture();
+      const err = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+
+      await main({ argv: ['status', 'task-1'], env: {}, out: out.io, err: err.io, exit });
+
+      expect(codes).toEqual([EXIT_NO_SERVER]);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(err.errors.join('\n')).toContain('no Kookr server reachable');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('exits 3 when auto-detect finds both standard Kookr instances', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ serverStartedAt: '2026-06-07T00:00:00.000Z' }),
+    } as Response);
+    try {
+      const out = makeConsoleCapture();
+      const err = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+
+      await main({ argv: ['status', 'task-1'], env: {}, out: out.io, err: err.io, exit });
+
+      expect(codes).toEqual([EXIT_NO_SERVER]);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(err.errors.join('\n')).toContain('multiple Kookr instances are running');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('prints status end-to-end against a fake server', async () => {
     const api = await startFakeApi((req) => {
       if (req.method === 'GET' && req.url === '/api/tasks') {
@@ -186,6 +235,22 @@ describe('kookr ralph main', () => {
 
     expect(codes).toEqual([EXIT_SERVER_ERROR]);
     expect(err.errors.join('\n')).toContain('Task not found: missing');
+  });
+
+  it('exits 4 when the server rejects a control request', async () => {
+    const api = await startFakeApi(() => ({
+      status: 409,
+      body: JSON.stringify({ error: 'conversation context is lost' }),
+    }));
+    server = api.server;
+    const out = makeConsoleCapture();
+    const err = makeConsoleCapture();
+    const { codes, exit } = makeExitCapture();
+
+    await main({ argv: ['resume', 'task-1'], env: { KOOKR_API_BASE_URL: api.baseUrl }, out: out.io, err: err.io, exit });
+
+    expect(codes).toEqual([EXIT_SERVER_ERROR]);
+    expect(err.errors.join('\n')).toContain('conversation context is lost');
   });
 });
 
