@@ -57,6 +57,49 @@ describe('deriveTurnState', () => {
       ];
       expect(deriveTurnState(events)).toBe('completed_turn');
     });
+
+    test('Stop with zero background tasks and crons is completed_turn', () => {
+      const events: AgentEvent[] = [
+        { type: 'stop', sessionId: 's1', lastMessage: 'Done.', activeBackgroundTaskCount: 0, activeSessionCronCount: 0 },
+      ];
+      expect(deriveTurnState(events)).toBe('completed_turn');
+    });
+
+    test('Stop with absent count fields is completed_turn (?? 0 default)', () => {
+      // The dominant production shape: hook-parser omits both count fields when
+      // the Stop payload has no background_tasks/session_crons. Pin it here so
+      // the `?? 0` default stays covered independently of the `stop()` helper.
+      const events: AgentEvent[] = [{ type: 'stop', sessionId: 's1', lastMessage: 'Done.' }];
+      expect(deriveTurnState(events)).toBe('completed_turn');
+    });
+  });
+
+  describe('running (Stop while background work is pending)', () => {
+    // Repro of task 7daa893b: the agent launched a `run_in_background` shell and
+    // an `until`-loop poller, then ended its turn to wait for them to wake it.
+    // The Stop hook reports the still-running shells; the turn is NOT complete.
+    test('Stop with a running background shell is running, not completed_turn', () => {
+      const events: AgentEvent[] = [
+        toolUse('s1', 'Bash'),
+        { type: 'stop', sessionId: 's1', lastMessage: 'Kicked off the run.', activeBackgroundTaskCount: 2 },
+      ];
+      expect(deriveTurnState(events)).toBe('running');
+    });
+
+    test('Stop with an active session cron is running, not completed_turn', () => {
+      const events: AgentEvent[] = [
+        { type: 'stop', sessionId: 's1', lastMessage: 'Scheduled.', activeSessionCronCount: 1 },
+      ];
+      expect(deriveTurnState(events)).toBe('running');
+    });
+
+    test('a trailing SubagentStop overlay does not unmask a background-pending Stop', () => {
+      const events: AgentEvent[] = [
+        { type: 'stop', sessionId: 's1', lastMessage: 'Working in background.', activeBackgroundTaskCount: 1 },
+        { type: 'subagent_stop', sessionId: 's1', agentId: 'sub-1', agentType: 'reviewer', lastMessage: 'ok' },
+      ];
+      expect(deriveTurnState(events)).toBe('running');
+    });
   });
 
   describe('running (active turn)', () => {
