@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import { AdapterRegistry, type AgentAdapter } from '../../adapters/agent-adapter.js';
@@ -32,10 +32,59 @@ function fakeAdapter(agentType: AgentAdapter['agentType']): AgentAdapter {
   };
 }
 
+async function createTestRealtimeServices(
+  tempDir: string,
+  overrides: {
+    taskStore?: TaskStore;
+    queue?: AttentionQueue;
+    monitor?: Monitor;
+    adapterRegistry?: AdapterRegistry;
+    ossAttemptStore?: OssAttemptStore;
+  } = {},
+) {
+  const taskStore = overrides.taskStore ?? new TaskStore();
+  const queue = overrides.queue ?? new AttentionQueue();
+  const monitor = overrides.monitor ?? new Monitor(taskStore, queue);
+  const adapterRegistry = overrides.adapterRegistry ?? new AdapterRegistry();
+  if (!overrides.adapterRegistry) adapterRegistry.register(fakeAdapter('claude-code'));
+  const ossAttemptStore = overrides.ossAttemptStore ?? new OssAttemptStore(tempDir);
+
+  return createRealtimeServices({
+    kookrDir: tempDir,
+    taskStore,
+    queue,
+    monitor,
+    adapterRegistry,
+    serverCwd: '/repo',
+    ledgerAnalytics: new LedgerAnalytics(ossAttemptStore),
+    projectConfigStore: new ProjectConfigStore(tempDir),
+    projectSidebarStore: new ProjectSidebarStore(tempDir),
+    skillDiscoveryState: new SkillDiscoveryStateHolder(new SkillTrackedRepoDiscovery(join(tempDir, 'claude'))),
+    prLessonsState: new PrLessonsStateHolder(new PrLessonsDiscovery(join(tempDir, 'claude'))),
+    getRegistryActiveProjects: () => [],
+    getRegistryActiveRepos: () => [],
+    ossAttemptStore,
+    getDefaultAgentType: () => 'claude-code',
+  });
+}
+
+function openSocket(send: (data: string) => void, close = vi.fn()): WebSocket {
+  return {
+    readyState: WebSocket.OPEN,
+    send,
+    close,
+  } as unknown as WebSocket;
+}
+
+function parseSent(messages: string[]): ServerMessage[] {
+  return messages.map((data) => JSON.parse(data) as ServerMessage);
+}
+
 describe('createRealtimeServices', () => {
   let tempDir: string | undefined;
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (tempDir) rmSync(tempDir, { recursive: true, force: true });
     tempDir = undefined;
   });
@@ -59,22 +108,12 @@ describe('createRealtimeServices', () => {
     adapterRegistry.register(fakeAdapter('codex-cli'));
     const ossAttemptStore = new OssAttemptStore(tempDir);
 
-    const realtime = await createRealtimeServices({
-      kookrDir: tempDir,
+    const realtime = await createTestRealtimeServices(tempDir, {
       taskStore,
       queue,
       monitor,
       adapterRegistry,
-      serverCwd: '/repo',
-      ledgerAnalytics: new LedgerAnalytics(ossAttemptStore),
-      projectConfigStore: new ProjectConfigStore(tempDir),
-      projectSidebarStore: new ProjectSidebarStore(tempDir),
-      skillDiscoveryState: new SkillDiscoveryStateHolder(new SkillTrackedRepoDiscovery(join(tempDir, 'claude'))),
-      prLessonsState: new PrLessonsStateHolder(new PrLessonsDiscovery(join(tempDir, 'claude'))),
-      getRegistryActiveProjects: () => [],
-      getRegistryActiveRepos: () => [],
       ossAttemptStore,
-      getDefaultAgentType: () => 'claude-code',
     });
 
     const sent: ServerMessage[] = [];
@@ -107,5 +146,69 @@ describe('createRealtimeServices', () => {
       }),
     ]);
     expect(realtime.getWsBroadcastCount()).toBe(1);
+  });
+
+  test('broadcastToAll drops a client whose primary snapshot send throws and continues to later clients', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+    const realtime = await createTestRealtimeServices(tempDir);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const beforeClientMessages: string[] = [];
+    const afterClientMessages: string[] = [];
+    const failingClose = vi.fn();
+
+    realtime.clients.add(openSocket((data) => beforeClientMessages.push(data)));
+    realtime.clients.add(openSocket(() => {
+      throw new Error('primary send failed');
+    }, failingClose));
+    realtime.clients.add(openSocket((data) => afterClientMessages.push(data)));
+
+    realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+
+    expect(parseSent(beforeClientMessages).map((msg) => msg.type)).toEqual([
+      'snapshot',
+      'coordinator.snapshot',
+    ]);
+    expect(parseSent(afterClientMessages).map((msg) => msg.type)).toEqual([
+      'snapshot',
+      'coordinator.snapshot',
+    ]);
+    expect(failingClose).toHaveBeenCalledOnce();
+    expect(realtime.clients.size).toBe(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to broadcast snapshot'),
+      expect.any(Error),
+    );
+  });
+
+  test('broadcastToAll guards coordinator snapshot sends without aborting later clients', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+    const realtime = await createTestRealtimeServices(tempDir);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const afterClientMessages: string[] = [];
+    const failingClientMessages: string[] = [];
+    const failingClose = vi.fn();
+
+    realtime.clients.add(openSocket((data) => {
+      const msg = JSON.parse(data) as ServerMessage;
+      if (msg.type === 'coordinator.snapshot') {
+        throw new Error('coordinator send failed');
+      }
+      failingClientMessages.push(data);
+    }, failingClose));
+    realtime.clients.add(openSocket((data) => afterClientMessages.push(data)));
+
+    realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+
+    expect(parseSent(failingClientMessages).map((msg) => msg.type)).toEqual(['snapshot']);
+    expect(parseSent(afterClientMessages).map((msg) => msg.type)).toEqual([
+      'snapshot',
+      'coordinator.snapshot',
+    ]);
+    expect(failingClose).toHaveBeenCalledOnce();
+    expect(realtime.clients.size).toBe(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to broadcast coordinator.snapshot'),
+      expect.any(Error),
+    );
   });
 });
