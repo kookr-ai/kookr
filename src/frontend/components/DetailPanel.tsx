@@ -648,7 +648,8 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   // agent is actually idle (completed_turn) so a signal raised mid-work never
   // invites premature completion.
   const pendingSignal = agent.pendingSignal;
-  const showSignalBanner = !!pendingSignal
+  const hasDerivedCompletionSignal = !!agent.latestCompletionSignal && isCompletedTurn;
+  const showSignalBanner = (!!pendingSignal || hasDerivedCompletionSignal)
     && agent.taskStatus !== 'pending'
     && !isTerminalTaskStatus(agent.taskStatus);
   const signalCompleteReady = showSignalBanner && isCompletedTurn;
@@ -785,14 +786,16 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
               : 'flagged ready (still working — review when idle)'}
             {pendingSignal?.note ? ` — ${pendingSignal.note}` : ''}
           </span>
-          <button
-            type="button"
-            className="action-btn action-btn--neutral"
-            data-testid="agent-signal-dismiss"
-            onClick={() => send({ type: 'dismissAgentSignal', taskId: agent.taskId! })}
-          >
-            Dismiss
-          </button>
+          {pendingSignal && !hasDerivedCompletionSignal && (
+            <button
+              type="button"
+              className="action-btn action-btn--neutral"
+              data-testid="agent-signal-dismiss"
+              onClick={() => send({ type: 'dismissAgentSignal', taskId: agent.taskId! })}
+            >
+              Dismiss
+            </button>
+          )}
         </div>
       )}
       {agent.taskId && (
