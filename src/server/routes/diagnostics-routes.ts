@@ -19,6 +19,7 @@ import {
 } from '../finding-evidence-review-service.js';
 import { ReviewLogStore } from '../review-log-store.js';
 import { buildDetectorProposalReportResponseV1 } from '../detector-proposal-report.js';
+import { REQUEST_LATENCIES_ROUTE } from '../request-duration-metrics.js';
 import type { BackendStats } from '../../adapters/terminal-backend.js';
 import type { RouteDeps } from './shared.js';
 
@@ -103,6 +104,22 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/queue', (c) => c.json(queue.getAll()));
 
   app.get('/api/anomaly-stats', (c) => c.json(getDetectionStats()));
+
+  app.get(REQUEST_LATENCIES_ROUTE, (c) => {
+    if (!deps.requestDurationMetrics) {
+      // Direct diagnostics-route tests may register this module without the
+      // createRoutes middleware that wires the live metrics instance.
+      return c.json({
+        schemaVersion: 'request-duration-metrics.v1',
+        maxRoutes: 0,
+        maxSamplesPerRoute: 0,
+        routeCount: 0,
+        droppedRouteCount: 0,
+        routes: [],
+      });
+    }
+    return c.json(deps.requestDurationMetrics.snapshot());
+  });
 
   app.get('/api/live-friction-calibration', async (c) => {
     try {

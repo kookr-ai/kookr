@@ -46,6 +46,28 @@ describe('createRoutes serveStatic gating', () => {
     expect(warned).toBe(false);
     expect(app).toBeDefined();
   });
+
+  it('shares request-duration metrics between createRoutes middleware and diagnostics route', async () => {
+    const absentDir = join(tempDir, 'never-created');
+    const app = createRoutes(makeDeps(absentDir, tempDir));
+
+    const anomalyStats = await app.request('/api/anomaly-stats');
+    expect(anomalyStats.status).toBe(200);
+
+    const diagnostics = await app.request('/api/diagnostics/request-latencies');
+    expect(diagnostics.status).toBe(200);
+    const body = await diagnostics.json();
+    expect(body).toEqual(expect.objectContaining({
+      schemaVersion: 'request-duration-metrics.v1',
+      routeCount: 1,
+      routes: [expect.objectContaining({
+        method: 'GET',
+        route: '/api/anomaly-stats',
+        count: 1,
+        sampleCount: 1,
+      })],
+    }));
+  });
 });
 
 describe('createRoutes JSON request body limit', () => {

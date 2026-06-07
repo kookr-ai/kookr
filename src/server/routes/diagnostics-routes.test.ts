@@ -10,6 +10,7 @@ import { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import { GitHubStateStore } from '../../core/github-state-store.js';
 import { recordSuppression, resetDetectionStats } from '../../core/detection-stats.js';
 import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
+import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import type { RouteDeps } from './shared.js';
 import type { LlmClient } from '../../core/llm-client.js';
 
@@ -46,6 +47,52 @@ describe('diagnostics routes', () => {
     delete process.env.KOOKR_FINDING_REVIEW_TOKEN;
     delete process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN;
     resetDetectionStats();
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/request-latencies
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/request-latencies', () => {
+    test('returns an empty v1 snapshot when request duration metrics are not wired', async () => {
+      const res = await mkApp({}).request('/api/diagnostics/request-latencies');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'request-duration-metrics.v1',
+        maxRoutes: 0,
+        maxSamplesPerRoute: 0,
+        routeCount: 0,
+        droppedRouteCount: 0,
+        routes: [],
+      });
+    });
+
+    test('exposes count and p50/p95/p99 per route template', async () => {
+      const metrics = new RequestDurationMetrics();
+      for (const durationMs of [5, 10, 15, 20]) {
+        metrics.record({ method: 'GET', route: '/api/tasks/:taskId/activity-diagnostics', durationMs });
+      }
+
+      const res = await mkApp({ requestDurationMetrics: metrics }).request('/api/diagnostics/request-latencies');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'request-duration-metrics.v1',
+        maxRoutes: 128,
+        maxSamplesPerRoute: 256,
+        routeCount: 1,
+        droppedRouteCount: 0,
+        routes: [{
+          method: 'GET',
+          route: '/api/tasks/:taskId/activity-diagnostics',
+          count: 4,
+          sampleCount: 4,
+          p50Ms: 10,
+          p95Ms: 20,
+          p99Ms: 20,
+        }],
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------
