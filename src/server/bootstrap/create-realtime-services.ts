@@ -130,9 +130,25 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
       : null;
     for (const ws of clients) {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
-        if (coordinatorData) ws.send(coordinatorData);
+        const sentPrimary = sendToClient(ws, data, msg.type);
+        if (sentPrimary && coordinatorData) sendToClient(ws, coordinatorData, 'coordinator.snapshot');
       }
+    }
+  }
+
+  function sendToClient(ws: WebSocket, data: string, payloadType: ServerMessage['type']): boolean {
+    try {
+      ws.send(data);
+      return true;
+    } catch (err) {
+      clients.delete(ws);
+      console.warn(`[websocket] Failed to broadcast ${payloadType}; dropping client`, err);
+      try {
+        ws.close();
+      } catch (closeErr) {
+        console.warn('[websocket] Failed to close client after broadcast failure', closeErr);
+      }
+      return false;
     }
   }
 
