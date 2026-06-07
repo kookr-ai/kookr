@@ -637,9 +637,9 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     armShortcuts();
   }
 
-  // A `needs_input` finding derived from a normal Stop is a completed turn,
+  // A `needs_input` finding derived from a normal Stop is a completion signal,
   // not an explicit question — keep the detail badge consistent with the
-  // finding card's "Turn Complete" presentation. See issue #358.
+  // finding card's "Signaled Complete" presentation. See issue #358.
   const isCompletedTurn = agent.anomaly?.type === 'needs_input'
     && agent.turnState === 'completed_turn';
 
@@ -659,7 +659,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       : 'input'
     : '';
   const badgeLabel = agent.anomaly
-    ? isCompletedTurn ? 'TURN COMPLETE' : agent.anomaly.type.replace('_', ' ').toUpperCase()
+    ? isCompletedTurn ? 'SIGNALED COMPLETE' : agent.anomaly.type.replace('_', ' ').toUpperCase()
     : 'RUNNING';
   const agentProvider = agent.agentType ? agentProviderPresentation(agent.agentType) : null;
   const shareHeaderStatus = deriveTaskShareHeaderStatus(agent.taskId, shareHeaderShares);
@@ -1052,7 +1052,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
               isDirectReply
                 ? `Message ${agent.taskName ?? agent.agentId}...`
                 : agent.turnState === 'completed_turn'
-                  ? `Turn complete — send a follow-up to ${agent.taskName ?? agent.agentId}...`
+                  ? `Signaled complete — review or send a follow-up to ${agent.taskName ?? agent.agentId}...`
                   : agent.anomaly?.type === 'needs_input'
                     ? `${agent.taskName ?? agent.agentId} is waiting — send a hint...`
                     : `Send a hint to ${agent.taskName ?? agent.agentId}...`

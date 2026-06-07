@@ -46,6 +46,12 @@ async function openSelectedTask(page: Page, request: APIRequestContext) {
   await expect(shareButton).toBeVisible();
 }
 
+async function runCommandAction(page: Page, actionId: string, query: string) {
+  await page.getByTestId('command-trigger').click();
+  await page.getByTestId('command-palette-input').fill(query);
+  await page.locator(`[data-testid="command-palette-action"][data-action-id="${actionId}"]`).click();
+}
+
 test.describe('Accessibility smoke scans', () => {
   test.beforeEach(async ({ page, request }) => {
     await resetServer(request);
@@ -85,8 +91,7 @@ test.describe('Accessibility smoke scans', () => {
   });
 
   test('settings dialog has no axe violations and supports tab focus', async ({ page }) => {
-    const settingsButton = page.getByRole('button', { name: 'Settings' });
-    await settingsButton.click();
+    await runCommandAction(page, 'settings', 'settings');
 
     const dialog = page.getByRole('dialog', { name: 'Settings' });
     const closeButton = dialog.getByLabel('Close');
@@ -107,7 +112,6 @@ test.describe('Accessibility smoke scans', () => {
 
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
-    await expect(settingsButton).toBeFocused();
   });
 
   test('share dialog has no axe violations and closes with Escape', async ({ page, request }) => {

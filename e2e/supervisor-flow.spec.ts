@@ -159,7 +159,7 @@ test.describe('Supervisor flow — auto-advance', () => {
 
     // Selection should auto-advance to the next finding (the completed-turn
     // Stop finding). The detail panel should now show the next agent.
-    await expect(page.locator('.detail-badge')).toContainText('TURN COMPLETE');
+    await expect(page.locator('.detail-badge')).toContainText('SIGNALED COMPLETE');
   });
 
   test('skipping a finding auto-advances to the next finding', async ({ page, request }) => {

@@ -77,6 +77,13 @@ async function getLatestTmuxName(request: APIRequestContext): Promise<string> {
   return last.sessions[last.sessions.length - 1].tmuxSession;
 }
 
+async function installClockAndReload(page: Page) {
+  await page.clock.install({ time: new Date() });
+  await page.goto('/');
+  await expect(page.locator('.logo')).toHaveText('KOOKR');
+  await expect(page.locator('.health-dot-connected')).toBeVisible({ timeout: 5000 });
+}
+
 test.describe('Toast notifications — auto-dismiss behavior', () => {
   test.beforeEach(async ({ page, request }) => {
     await resetServer(request);
@@ -108,9 +115,7 @@ test.describe('Toast notifications — auto-dismiss behavior', () => {
 
   test('info toast auto-dismisses after ~8 seconds', async ({ page, request }) => {
     // Install fake clock so we can fast-forward through timer waits
-    await page.clock.install({ time: new Date() });
-    await page.goto('/');
-    await expect(page.locator('.logo')).toHaveText('KOOKR');
+    await installClockAndReload(page);
 
     await broadcastInfoAlert(request, 'CI passed');
 
@@ -127,9 +132,7 @@ test.describe('Toast notifications — auto-dismiss behavior', () => {
   });
 
   test('error toast auto-dismisses after ~15 seconds', async ({ page, request }) => {
-    await page.clock.install({ time: new Date() });
-    await page.goto('/');
-    await expect(page.locator('.logo')).toHaveText('KOOKR');
+    await installClockAndReload(page);
 
     await broadcastErrorAlert(request, 'Error: deployment failed');
 
@@ -156,9 +159,7 @@ test.describe('Toast notifications — auto-dismiss behavior', () => {
   });
 
   test('warning-level PR alerts auto-dismiss (new review comment)', async ({ page, request }) => {
-    await page.clock.install({ time: new Date() });
-    await page.goto('/');
-    await expect(page.locator('.logo')).toHaveText('KOOKR');
+    await installClockAndReload(page);
 
     await broadcastWarningAlert(request, 'PR owner/repo#42: new review comment from @reviewer');
 
@@ -173,9 +174,7 @@ test.describe('Toast notifications — auto-dismiss behavior', () => {
   });
 
   test('info-level PR alerts auto-dismiss (PR merged)', async ({ page, request }) => {
-    await page.clock.install({ time: new Date() });
-    await page.goto('/');
-    await expect(page.locator('.logo')).toHaveText('KOOKR');
+    await installClockAndReload(page);
 
     await broadcastInfoAlert(request, 'PR owner/repo#42: merged');
 
@@ -189,9 +188,7 @@ test.describe('Toast notifications — auto-dismiss behavior', () => {
   });
 
   test('info-level PR alerts auto-dismiss (CI passed)', async ({ page, request }) => {
-    await page.clock.install({ time: new Date() });
-    await page.goto('/');
-    await expect(page.locator('.logo')).toHaveText('KOOKR');
+    await installClockAndReload(page);
 
     await broadcastInfoAlert(request, 'PR owner/repo#42: all CI checks passed');
 
@@ -203,9 +200,7 @@ test.describe('Toast notifications — auto-dismiss behavior', () => {
   });
 
   test('warning-level PR alerts auto-dismiss (CI failed)', async ({ page, request }) => {
-    await page.clock.install({ time: new Date() });
-    await page.goto('/');
-    await expect(page.locator('.logo')).toHaveText('KOOKR');
+    await installClockAndReload(page);
 
     await broadcastWarningAlert(request, 'PR owner/repo#42: CI check "build" failed');
 
@@ -217,9 +212,7 @@ test.describe('Toast notifications — auto-dismiss behavior', () => {
   });
 
   test('warning-level PR alerts auto-dismiss (changes requested)', async ({ page, request }) => {
-    await page.clock.install({ time: new Date() });
-    await page.goto('/');
-    await expect(page.locator('.logo')).toHaveText('KOOKR');
+    await installClockAndReload(page);
 
     await broadcastWarningAlert(request, 'PR owner/repo#42: @reviewer requested changes');
 
@@ -231,9 +224,7 @@ test.describe('Toast notifications — auto-dismiss behavior', () => {
   });
 
   test('multiple toasts dismiss independently', async ({ page, request }) => {
-    await page.clock.install({ time: new Date() });
-    await page.goto('/');
-    await expect(page.locator('.logo')).toHaveText('KOOKR');
+    await installClockAndReload(page);
 
     await broadcastInfoAlert(request, 'PR merged');
     // Advance 1ms so each alert gets a unique timestamp key

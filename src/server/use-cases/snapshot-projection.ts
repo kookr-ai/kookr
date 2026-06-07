@@ -1,5 +1,6 @@
 import type { AgentState } from '../../core/monitor.js';
 import type { AgentType } from '../../core/agent-types.js';
+import { deriveLatestCompletionSignal } from '../../core/completion-signal.js';
 import { displayPromptForTask } from '../../core/prompt-display.js';
 import { projectDisplayLabel } from '../../core/project-identity.js';
 import { isTerminalStatus, type Task, type TaskLaunchHealthSummary } from '../../core/tasks.js';
@@ -142,6 +143,15 @@ function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
   state.ralphLoop = task.ralphLoop;
   if (task.tokenUsage) {
     state.tokenUsage = task.tokenUsage;
+  }
+  const latestCompletionSignal = deriveLatestCompletionSignal({
+    taskId: meta.taskId,
+    agentId: state.agentId,
+    taskStatus: state.taskStatus,
+    events: state.events,
+  });
+  if (state.turnState === 'completed_turn' && latestCompletionSignal) {
+    state.latestCompletionSignal = latestCompletionSignal;
   }
 }
 

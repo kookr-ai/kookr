@@ -144,7 +144,7 @@ test.describe('Edge cases & resilience', () => {
 
     // Start with a completed turn (Stop event)
     await injectStopEvent(request, tmuxName);
-    await expect(page.locator('.finding-severity')).toContainText('Turn Complete');
+    await expect(page.locator('.finding-severity')).toContainText('Signaled Complete');
 
     // Transition to permission
     await injectPermissionEvent(request, tmuxName);

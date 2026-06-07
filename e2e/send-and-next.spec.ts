@@ -213,7 +213,7 @@ test.describe('Send & Next — input delivery', () => {
 
     // Select the finding
     await page.locator('.finding-card').click();
-    await expect(page.locator('.detail-badge')).toContainText('TURN COMPLETE');
+    await expect(page.locator('.detail-badge')).toContainText('SIGNALED COMPLETE');
 
     // Type and send
     const inputText = 'Continue with the refactoring';
@@ -239,7 +239,7 @@ test.describe('Send & Next — input delivery', () => {
 
     await expect(page.locator('.finding-card')).toHaveCount(1);
     await page.locator('.finding-card').click();
-    await expect(page.locator('.detail-badge')).toContainText('TURN COMPLETE');
+    await expect(page.locator('.detail-badge')).toContainText('SIGNALED COMPLETE');
 
     // Type text into the input
     const inputText = 'This should not be lost';
@@ -291,7 +291,7 @@ test.describe('Send & Next — input delivery', () => {
     await expect(page.locator('.toast-error')).toContainText('connection lost');
 
     // The selection should NOT have advanced (still on the same finding)
-    await expect(page.locator('.detail-badge')).toContainText('TURN COMPLETE');
+    await expect(page.locator('.detail-badge')).toContainText('SIGNALED COMPLETE');
 
     // The follow-up input was NOT delivered to the terminal. The launched
     // task's initial prompt may already be present in keysReceived.

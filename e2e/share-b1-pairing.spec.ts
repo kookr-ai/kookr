@@ -52,7 +52,9 @@ test.describe('Easy connection sharing Phase B1 relay pairing', () => {
     expect(anonymousPair.status()).toBe(400);
     await expect(anonymousPair.text()).resolves.not.toContain(credentials.nodeToken);
 
-    await page.locator('button[aria-label="Settings"]').click();
+    await page.getByTestId('command-trigger').click();
+    await page.getByTestId('command-palette-input').fill('settings');
+    await page.locator('[data-testid="command-palette-action"][data-action-id="settings"]').click();
     const settings = page.locator('.settings-dialog');
     await expect(settings).toBeVisible();
     await settings.getByRole('tab', { name: 'Sharing' }).click();

@@ -120,7 +120,7 @@ test.describe('Terminal viewport budgets', () => {
     await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
     await expect(page.getByRole('button', { name: /GitHub/ })).toBeVisible();
 
-    await expectTerminalBudget(page, { width: 400, height: 560, cols: 50, rows: 34 }, 'desktop terminal');
+    await expectTerminalBudget(page, { width: 400, height: 480, cols: 50, rows: 34 }, 'desktop terminal');
   });
 
   test('terminal focus mode restores a wide desktop terminal budget', async ({ page, request }) => {

@@ -179,7 +179,7 @@ test.describe('Kookr E2E — nominal paths', () => {
 
     await expect(page.locator('.finding-card')).toBeVisible();
     // A normal Stop is a completed turn awaiting follow-up, not a hung agent.
-    await expect(page.locator('.finding-severity')).toContainText('Turn Complete');
+    await expect(page.locator('.finding-severity')).toContainText('Signaled Complete');
     await expect(page.locator('.statusbar')).toContainText('1 finding');
   });
 
@@ -219,7 +219,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await page.locator('.finding-card').click();
 
     await expect(page.locator('.detail-header')).toBeVisible();
-    await expect(page.locator('.detail-badge')).toContainText('TURN COMPLETE');
+    await expect(page.locator('.detail-badge')).toContainText('SIGNALED COMPLETE');
     await expect(page.locator('.response-row input')).toBeVisible();
   });
 

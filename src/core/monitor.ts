@@ -9,6 +9,8 @@ import type { WatchdogVerdict } from './watchdog.js';
 import { anomalyFingerprint } from './anomaly-fingerprint.js';
 import { detectAnomalies, evaluateAnomalies } from './anomaly-detector.js';
 import { deriveTurnState } from './turn-state.js';
+import { deriveLatestCompletionSignal } from './completion-signal.js';
+import type { LatestCompletionSignal } from '../shared/contracts/completion-signal.js';
 import {
   recordDetectionCheck,
   recordDetectionFire,
@@ -33,6 +35,7 @@ export interface AgentState {
    * synthetic pending/terminal entries that have no live event window.
    */
   turnState?: TurnState;
+  latestCompletionSignal?: LatestCompletionSignal;
   snoozedUntil?: number; // ms since epoch — set when agent is snoozed in the attention queue
   suppressed?: boolean; // true when auto-suppressed due to repeated liveness snoozes
   taskId?: string;
@@ -136,6 +139,10 @@ export class Monitor {
    * Outer key: parent agentId (tmux session name). Inner key: subagentId from the hook.
    */
   private outstandingSubagents = new Map<string, Map<string, number>>();
+  /** Completion signal ids suppressed because the parent Stop was stale behind TTL-evicted subagents. */
+  private suppressedCompletionSignalIds = new Map<string, Set<string>>();
+  /** Event count at which an outstanding subagent set was TTL-evicted before snapshot turn-state projection. */
+  private ttlEvictedSubagentEventCounts = new Map<string, number>();
 
   constructor(
     private taskStore: TaskStore,
@@ -196,7 +203,7 @@ export class Monitor {
     const rawAnomaly = evaluation.anomaly;
     const anomaly = this.stabilizeEventAnomaly(
       agentId,
-      this.suppressIfSubagentsRunning(rawAnomaly, agentId),
+      this.suppressIfSubagentsRunning(rawAnomaly, agentId, { markSnapshotTtlEviction: false }),
       opts?.eventId,
     );
     this.recordDetectionTelemetry(agentId, evaluation.checkedTypes, anomaly);
@@ -608,7 +615,11 @@ export class Monitor {
    * stale entries persist until session_end or unregisterAgent. Acceptable —
    * memory is bounded by SubagentStart count, and session teardown always clears.
    */
-  private evictStaleSubagents(agentId: string, now: number): number {
+  private evictStaleSubagents(
+    agentId: string,
+    now: number,
+    options: { markSnapshotTtlEviction?: boolean } = {},
+  ): number {
     const map = this.outstandingSubagents.get(agentId);
     if (!map) return 0;
     let evicted = 0;
@@ -618,7 +629,12 @@ export class Monitor {
         evicted++;
       }
     }
-    if (evicted > 0) recordSubagentTtlEviction(evicted);
+    if (evicted > 0) {
+      recordSubagentTtlEviction(evicted);
+      if (options.markSnapshotTtlEviction ?? true) {
+        this.ttlEvictedSubagentEventCounts.set(agentId, this._eventCounts.get(agentId) ?? 0);
+      }
+    }
     return map.size;
   }
 
@@ -642,7 +658,11 @@ export class Monitor {
    * called from both write (processEvents, applyWatchdogVerdict) and read
    * (getEventAnomaly) paths. The write paths increment the counter.
    */
-  private suppressIfSubagentsRunning(anomaly: Anomaly | null, agentId: string): Anomaly | null {
+  private suppressIfSubagentsRunning(
+    anomaly: Anomaly | null,
+    agentId: string,
+    options: { markSnapshotTtlEviction?: boolean } = {},
+  ): Anomaly | null {
     if (!anomaly) return anomaly;
     if (
       anomaly.type !== 'needs_input'
@@ -651,7 +671,7 @@ export class Monitor {
     ) {
       return anomaly;
     }
-    const remaining = this.evictStaleSubagents(agentId, Date.now());
+    const remaining = this.evictStaleSubagents(agentId, Date.now(), options);
     return remaining > 0 ? null : anomaly;
   }
 
@@ -704,10 +724,62 @@ export class Monitor {
    */
   private deriveTurnStateForSnapshot(agentId: string, events: AgentEvent[]): TurnState {
     const turnState = deriveTurnState(events);
-    if (turnState === 'completed_turn' && this.evictStaleSubagents(agentId, Date.now()) > 0) {
+    const outstandingBeforeEviction = this.outstandingSubagents.get(agentId)?.size ?? 0;
+    const remainingAfterEviction = this.evictStaleSubagents(agentId, Date.now());
+    if (turnState === 'completed_turn' && remainingAfterEviction > 0) {
+      return 'running';
+    }
+    const latestCompletionSignal = turnState === 'completed_turn'
+      ? this.deriveLatestCompletionSignalForAgent(agentId, events)
+      : undefined;
+    const ttlEvictedAtEventCount = this.ttlEvictedSubagentEventCounts.get(agentId);
+    this.ttlEvictedSubagentEventCounts.delete(agentId);
+    const ttlEvictedBeforeProjection = ttlEvictedAtEventCount === (this._eventCounts.get(agentId) ?? 0);
+    if (
+      turnState === 'completed_turn'
+      && (outstandingBeforeEviction > 0 || ttlEvictedBeforeProjection)
+      && remainingAfterEviction === 0
+    ) {
+      if (latestCompletionSignal) this.rememberSuppressedCompletionSignal(agentId, latestCompletionSignal.id);
+      return 'running';
+    }
+    if (
+      turnState === 'completed_turn'
+      && latestCompletionSignal
+      && this.isSuppressedCompletionSignal(agentId, latestCompletionSignal.id)
+    ) {
       return 'running';
     }
     return turnState;
+  }
+
+  private deriveLatestCompletionSignalForAgent(agentId: string, events: AgentEvent[]): LatestCompletionSignal | undefined {
+    return deriveLatestCompletionSignal({
+      taskId: this.taskStore.findTaskBySession(agentId)?.id ?? agentId,
+      agentId,
+      taskStatus: 'inProgress',
+      events,
+    });
+  }
+
+  private shouldSuppressSnapshotNeedsInput(agentId: string, events: AgentEvent[], anomaly: Anomaly | null): boolean {
+    if (anomaly?.type !== 'needs_input') return false;
+    const latestCompletionSignal = this.deriveLatestCompletionSignalForAgent(agentId, events);
+    return latestCompletionSignal !== undefined
+      && this.isSuppressedCompletionSignal(agentId, latestCompletionSignal.id);
+  }
+
+  private rememberSuppressedCompletionSignal(agentId: string, signalId: string): void {
+    let ids = this.suppressedCompletionSignalIds.get(agentId);
+    if (!ids) {
+      ids = new Set();
+      this.suppressedCompletionSignalIds.set(agentId, ids);
+    }
+    ids.add(signalId);
+  }
+
+  private isSuppressedCompletionSignal(agentId: string, signalId: string): boolean {
+    return this.suppressedCompletionSignalIds.get(agentId)?.has(signalId) ?? false;
   }
 
   /**
@@ -720,12 +792,16 @@ export class Monitor {
   getSnapshot(): AgentState[] {
     const states: AgentState[] = [];
     for (const [agentId, events] of this.agentEvents) {
-      const anomaly = this.getCurrentAnomaly(agentId);
+      const turnState = this.deriveTurnStateForSnapshot(agentId, events);
+      const currentAnomaly = this.getCurrentAnomaly(agentId);
+      const anomaly = this.shouldSuppressSnapshotNeedsInput(agentId, events, currentAnomaly)
+        ? null
+        : currentAnomaly;
       const state: AgentState = {
         agentId,
         events,
         anomaly,
-        turnState: this.deriveTurnStateForSnapshot(agentId, events),
+        turnState,
         lastEventSeq: events.at(-1)?.eventSeq ?? 0,
       };
       const findingEvidenceAudit = this.findingEvidenceAuditor.getActiveRecord(agentId);

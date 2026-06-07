@@ -121,7 +121,7 @@ function severityClass(agent: AgentState): string {
   switch (agent.anomaly.type) {
     case 'permission_blocked': return 'permission';
     case 'repeated_error': return 'error';
-    // A normal completed turn is idle, not hung — tone it down vs an explicit
+    // A normal completed turn is a review-ready signal, not a hung turn — tone it down vs an explicit
     // mid-turn AskUserQuestion, which still reads as `input`. See issue #358.
     case 'needs_input': return agent.turnState === 'completed_turn' ? 'turn-complete' : 'input';
   }
@@ -132,9 +132,9 @@ function severityLabel(agent: AgentState): string {
   switch (agent.anomaly.type) {
     case 'permission_blocked': return 'Permission';
     case 'repeated_error': return 'Repeated Error';
-    // `completed_turn` => the agent finished a turn and is idle; `Needs Input`
+    // `completed_turn` => the agent signaled it is ready for review; `Needs Input`
     // is reserved for an explicit mid-turn question. See issue #358.
-    case 'needs_input': return agent.turnState === 'completed_turn' ? 'Turn Complete' : 'Needs Input';
+    case 'needs_input': return agent.turnState === 'completed_turn' ? 'Signaled Complete' : 'Needs Input';
   }
 }
 

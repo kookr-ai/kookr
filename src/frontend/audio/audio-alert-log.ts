@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 
-export type AudioAlertSource = 'finding' | 'task_completion' | 'manual_test' | 'finding_speak';
+export type AudioAlertSource = 'finding' | 'task_completion' | 'completion_signal' | 'manual_test' | 'finding_speak';
 
 /**
  * Mirror of `SpeakStatus` from useSpeakAgent. Inlined to keep this module
@@ -12,6 +12,7 @@ export type AudioAlertOutcome =
   | 'scheduled'
   | 'suppressed_muted'
   | 'suppressed_dnd'
+  | 'suppressed_debounced'
   | 'audio_context_unavailable'
   | 'audio_context_error'
   | 'audio_context_suspended';
@@ -20,6 +21,7 @@ export type AudioAlertPrimaryCause =
   | 'first_candidate'
   | 'highest_severity'
   | 'task_completion'
+  | 'completion_signal'
   | 'manual_test';
 
 export type SoundStateSource = 'localStorage' | 'default' | 'memory_fallback';
@@ -40,6 +42,7 @@ export interface AudioAlertContext {
   focused?: boolean;
   evaluationId?: string;
   candidateCount?: number;
+  completionSignalId?: string;
   primaryCause?: AudioAlertPrimaryCause;
   activeFindingsCount?: number;
 }
@@ -84,6 +87,7 @@ export interface RedactedAudioAlertDecision {
   anomalyType?: string;
   severity?: 'info' | 'warning' | 'critical';
   candidateCount?: number;
+  completionSignalId?: string;
   primaryCause?: AudioAlertPrimaryCause;
   soundEnabled: boolean;
   soundStateSource: SoundStateSource;
@@ -145,7 +149,7 @@ export function getClientAudioIdentity(): { clientSessionId: string; clientTabId
 }
 
 function isSuppressedOutcome(outcome: AudioAlertOutcome): boolean {
-  return outcome === 'suppressed_muted' || outcome === 'suppressed_dnd';
+  return outcome === 'suppressed_muted' || outcome === 'suppressed_dnd' || outcome === 'suppressed_debounced';
 }
 
 function coalesceKey(decision: LocalAudioAlertDecision): string {
@@ -158,6 +162,7 @@ function coalesceKey(decision: LocalAudioAlertDecision): string {
     decision.anomalyType ?? '',
     decision.severity ?? '',
     decision.dedupeKey ?? '',
+    decision.completionSignalId ?? '',
     decision.soundEnabled,
     decision.dndEnabled,
     decision.dndExpiresAt ?? '',
@@ -251,6 +256,7 @@ export function redactAudioAlertDecision(decision: LocalAudioAlertDecision): Red
     if (decision.outcome === 'audio_context_error') return decision.reason;
     if (decision.source === 'finding') return decision.anomalyType ?? 'finding';
     if (decision.source === 'finding_speak') return decision.anomalyType ?? 'finding_speak';
+    if (decision.source === 'completion_signal') return 'completion_signal';
     if (decision.source === 'task_completion') return 'task_completion';
     if (decision.source === 'manual_test') return 'manual_test';
     return decision.outcome;
@@ -265,6 +271,7 @@ export function redactAudioAlertDecision(decision: LocalAudioAlertDecision): Red
     anomalyType: decision.anomalyType,
     severity: decision.severity,
     candidateCount: decision.candidateCount,
+    completionSignalId: decision.completionSignalId,
     primaryCause: decision.primaryCause,
     soundEnabled: decision.soundEnabled,
     soundStateSource: decision.soundStateSource,

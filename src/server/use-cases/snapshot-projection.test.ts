@@ -39,6 +39,10 @@ function liveAgent(agentId: string, overrides: Partial<AgentState> = {}): AgentS
   };
 }
 
+function stopEvent(lastMessage = 'Done.', eventSeq = 2) {
+  return { type: 'stop' as const, sessionId: 's1', lastMessage, eventSeq };
+}
+
 function needsInput(agentId: string, explanation = 'Waiting') {
   return {
     agentId,
@@ -83,6 +87,48 @@ describe('snapshot projection', () => {
       lastEventSeq: 1,
     });
     expect(rawState).not.toHaveProperty('taskId');
+  });
+
+  it('projects latestCompletionSignal for an in-progress completed turn', () => {
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'Review completed work', '/workspace/app');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-complete-turn',
+      agentType: 'codex-cli',
+      cwd: '/workspace/app',
+      createdAt: new Date(),
+    });
+    const rawState = liveAgent('agent-complete-turn', {
+      turnState: 'completed_turn',
+      events: [
+        { type: 'user_prompt', sessionId: 's1', prompt: 'please implement', eventSeq: 1 },
+        stopEvent('Implemented the requested change.', 2),
+      ],
+    });
+
+    const [projected] = project(taskStore, [rawState]);
+
+    expect(projected.latestCompletionSignal?.id).toHaveLength(16);
+    expect(rawState.latestCompletionSignal).toBeUndefined();
+  });
+
+  it('does not project latestCompletionSignal for terminal tasks', () => {
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'Already completed task', '/workspace/app');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-terminal',
+      agentType: 'codex-cli',
+      cwd: '/workspace/app',
+      createdAt: new Date(),
+    });
+    taskStore.completeTask(task.id);
+
+    const snapshot = project(taskStore, [liveAgent('agent-terminal', {
+      turnState: 'completed_turn',
+      events: [stopEvent('Done.', 1)],
+    })]);
+
+    expect(snapshot.find((state) => state.taskId === task.id)?.latestCompletionSignal).toBeUndefined();
   });
 
   it('uses task name or truncated display prompt for live task labels', () => {

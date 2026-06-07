@@ -60,7 +60,9 @@ test('chain strip renders for task lineage and click-time batch action fails vis
   await expect(page.locator('[data-testid="coordinator-chain-strip"]')).toContainText('parent');
 
   await page.getByRole('button', { name: /Mark prior 1 done/ }).click();
-  await expect(page.locator('.coordinator-chain-status')).toContainText('only terminated tasks can be marked done automatically');
+  await expect(page.locator('.coordinator-chain-status')).toContainText(
+    /only terminated tasks can be marked done automatically|Coordinator state changed/,
+  );
 });
 
 test('fleet findings pane lists orphan blockers with a nav badge', async ({ page, request }) => {

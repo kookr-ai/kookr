@@ -183,8 +183,8 @@ describe('agentProviderPresentation', () => {
 });
 
 describe('turnStateLabel (issue #358)', () => {
-  test('completed_turn reads as an idle, finished turn awaiting follow-up', () => {
-    expect(turnStateLabel('completed_turn')).toBe('Turn complete — waiting for follow-up');
+  test('completed_turn reads as an idle, review-ready turn', () => {
+    expect(turnStateLabel('completed_turn')).toBe('Signaled complete — waiting for review');
   });
 
   test('running keeps active work distinct from an idle turn', () => {

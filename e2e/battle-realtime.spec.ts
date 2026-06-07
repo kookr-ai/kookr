@@ -52,7 +52,7 @@ test.describe('WebSocket real-time updates', () => {
     await injectStopEvent(request, tmuxName);
 
     await expect(page.locator('.finding-card')).toBeVisible({ timeout: 3000 });
-    await expect(page.locator('.finding-severity')).toContainText('Turn Complete');
+    await expect(page.locator('.finding-severity')).toContainText('Signaled Complete');
   });
 
   test('real-time update when anomaly clears after input', async ({ page, request }) => {
@@ -122,7 +122,7 @@ test.describe('Anomaly detection', () => {
 
     await expect(page.locator('.finding-card')).toBeVisible();
     await page.locator('.finding-card').click();
-    await expect(page.locator('.detail-badge')).toContainText('TURN COMPLETE');
+    await expect(page.locator('.detail-badge')).toContainText('SIGNALED COMPLETE');
     await expect(page.locator('.finding-explanation')).toContainText('What should I do next?');
   });
 
@@ -172,7 +172,7 @@ test.describe('Anomaly detection', () => {
     // First: a completed-turn finding from a Stop event
     await injectStopEvent(request, tmuxName);
     await expect(page.locator('.finding-card')).toHaveCount(1);
-    await expect(page.locator('.finding-card .finding-severity')).toContainText('Turn Complete');
+    await expect(page.locator('.finding-card .finding-severity')).toContainText('Signaled Complete');
 
     // Then: permission_blocked (higher severity replaces)
     await injectPermissionEvent(request, tmuxName);

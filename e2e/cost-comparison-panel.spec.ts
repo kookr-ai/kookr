@@ -3,25 +3,31 @@
  * Run with: npx playwright test cost-comparison-panel
  *
  * Verifies:
- *   - The "$" icon is visible in TopBar
- *   - Clicking it opens the panel with the expected sections
+ *   - The command palette exposes the Cost Comparison action
+ *   - Running it opens the panel with the expected sections
  *   - Escape closes the panel
  *   - Agent chips toggle aria-pressed
  *   - The search box debounces (300 ms) before firing the request
  */
 import { test, expect } from './fixtures.js';
 
+async function openCostComparison(page: import('@playwright/test').Page) {
+  await page.getByTestId('command-trigger').click();
+  await page.getByTestId('command-palette-input').fill('cost');
+  await page.locator('[data-testid="command-palette-action"][data-action-id="cost"]').click();
+}
+
 test.describe('CostComparisonPanel', () => {
-  test('shows the $ icon in TopBar', async ({ page }) => {
+  test('shows the command palette action', async ({ page }) => {
     await page.goto('/');
-    const icon = page.getByRole('button', { name: /cost comparison/i });
-    await expect(icon).toBeVisible();
-    await expect(icon).toHaveText('$');
+    await page.getByTestId('command-trigger').click();
+    await page.getByTestId('command-palette-input').fill('cost');
+    await expect(page.locator('[data-testid="command-palette-action"][data-action-id="cost"]')).toBeVisible();
   });
 
   test('opens, renders sections, and closes via Escape', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: /cost comparison/i }).click();
+    await openCostComparison(page);
 
     // Dialog has the right ARIA shape (a11y review #2 fix).
     const dialog = page.getByRole('dialog', { name: /cost comparison/i });
@@ -40,7 +46,7 @@ test.describe('CostComparisonPanel', () => {
 
   test('agent chips use aria-pressed (toggle-button semantics, not tab)', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: /cost comparison/i }).click();
+    await openCostComparison(page);
 
     // Initially "All" is pressed.
     const allChip    = page.getByRole('button', { name: 'All', exact: true });
@@ -56,7 +62,7 @@ test.describe('CostComparisonPanel', () => {
 
   test('search input debounces — 300 ms of quiet before the next request fires', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: /cost comparison/i }).click();
+    await openCostComparison(page);
 
     // Capture every cost-comparison fetch.
     const requests: string[] = [];
@@ -94,7 +100,7 @@ test.describe('CostComparisonPanel', () => {
     // is typically empty — we verify the contract holds by not crashing and by
     // the absence of a stale aria-expanded button.
     await page.goto('/');
-    await page.getByRole('button', { name: /cost comparison/i }).click();
+    await openCostComparison(page);
     const expander = page.locator('.cost-notes-expander');
     // Either zero (no notes overflow) or, if present, must carry aria-expanded.
     const count = await expander.count();

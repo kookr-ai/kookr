@@ -584,6 +584,7 @@ describe('Monitor', () => {
     });
 
     test('Stop while a background subagent is still running => turnState running, not completed_turn', () => {
+      linkInteractiveTask('codex-cli', 'agent-1');
       monitor.processEvents('agent-1', [
         makeSubagentStart('s1', 'bg-1'),
         makeStop('s1', 'parent turn ended while subagent runs'),
@@ -597,6 +598,54 @@ describe('Monitor', () => {
       monitor.processEvents('agent-1', [makeSubagentStop('s1', 'bg-1')]);
       const after = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
       expect(after!.turnState).toBe('completed_turn');
+    });
+
+    test('TTL-evicted subagent suppresses stale parent Stop until a fresh Stop arrives', () => {
+      const dateSpy = vi.spyOn(Date, 'now');
+      try {
+        linkInteractiveTask('codex-cli', 'agent-1');
+        dateSpy.mockReturnValue(1_000_000);
+        monitor.processEvents('agent-1', [
+          makeSubagentStart('s1', 'bg-1'),
+          makeStop('s1', 'same final answer'),
+        ]);
+
+        const whileRunning = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+        expect(whileRunning!.turnState).toBe('running');
+
+        dateSpy.mockReturnValue(1_000_000 + 31 * 60 * 1000);
+        const staleAfterTtl = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+        expect(staleAfterTtl!.turnState).toBe('running');
+        expect(staleAfterTtl!.anomaly).toBeNull();
+
+        monitor.processEvents('agent-1', [makeStop('s1', 'same final answer')]);
+        const freshStop = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+        expect(freshStop!.turnState).toBe('completed_turn');
+      } finally {
+        dateSpy.mockRestore();
+      }
+    });
+
+    test('fresh Stop that triggers TTL eviction is not mistaken for the stale parent Stop', () => {
+      const dateSpy = vi.spyOn(Date, 'now');
+      try {
+        linkInteractiveTask('codex-cli', 'agent-1');
+        dateSpy.mockReturnValue(1_000_000);
+        monitor.processEvents('agent-1', [
+          makeSubagentStart('s1', 'bg-1'),
+          makeStop('s1', 'same final answer'),
+        ]);
+
+        const whileRunning = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+        expect(whileRunning!.turnState).toBe('running');
+
+        dateSpy.mockReturnValue(1_000_000 + 31 * 60 * 1000);
+        monitor.processEvents('agent-1', [makeStop('s1', 'same final answer')]);
+        const freshStop = monitor.getSnapshot().find((s) => s.agentId === 'agent-1');
+        expect(freshStop!.turnState).toBe('completed_turn');
+      } finally {
+        dateSpy.mockRestore();
+      }
     });
 
     test('final Stop with no active background work clears stale subagent suppression', () => {

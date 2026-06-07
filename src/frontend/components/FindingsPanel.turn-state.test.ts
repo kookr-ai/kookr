@@ -84,18 +84,18 @@ describe('FindingsPanel turn-state badge (issue #358)', () => {
     document.body.innerHTML = '';
   });
 
-  test('a completed turn shows "Turn complete – waiting for follow-up", not a running/hung presentation', () => {
+  test('a completed turn shows "Signaled complete – waiting for review", not a running/hung presentation', () => {
     root = renderPanel(container, [
       makeAgent({ agentId: 'f-codex', agentType: 'codex-cli', anomaly: STOP_ANOMALY, turnState: 'completed_turn' }),
     ]);
 
     const turnState = container.querySelector('[data-testid="finding-turn-state"]');
-    expect(turnState?.textContent).toBe('Turn complete — waiting for follow-up');
+    expect(turnState?.textContent).toBe('Signaled complete — waiting for review');
     expect(turnState?.classList.contains('turn-state--complete')).toBe(true);
 
-    // The headline severity says "Turn Complete", not the ambiguous "Needs Input".
+    // The headline severity says "Signaled Complete", not the ambiguous "Needs Input".
     const severity = container.querySelector('.finding-severity');
-    expect(severity?.textContent).toBe('Turn Complete');
+    expect(severity?.textContent).toBe('Signaled Complete');
     expect(severity?.classList.contains('turn-complete')).toBe(true);
   });
 

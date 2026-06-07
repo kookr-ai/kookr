@@ -40,6 +40,10 @@ interface AudioScheduleResult {
   getFinalState: () => AudioContextState;
 }
 
+interface ChimeOptions {
+  audible?: boolean;
+}
+
 function nextDecisionId(): string {
   decisionSeq += 1;
   return `audio-alert-${Date.now().toString(36)}-${decisionSeq}`;
@@ -162,6 +166,7 @@ function scheduleChime(): AudioScheduleResult {
  */
 export function maybePlayChime(
   context: AudioAlertContext = { source: 'manual_test', reason: 'legacy_chime_call' },
+  options: ChimeOptions = {},
 ): LocalAudioAlertDecision {
   const soundState = getSoundPreferenceState();
   if (!soundState.enabled) {
@@ -171,6 +176,10 @@ export function maybePlayChime(
   const dndState = getDndState();
   if (dndState.enabled) {
     return emitDecision(makeDecision(context, 'suppressed_dnd', 'do not disturb enabled'));
+  }
+
+  if (options.audible === false) {
+    return emitDecision(makeDecision(context, 'suppressed_debounced', 'audible cue debounced'));
   }
 
   if (typeof AudioContext === 'undefined') {
