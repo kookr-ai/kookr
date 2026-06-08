@@ -42,6 +42,7 @@ import type { CollaborationDiagnostics } from '../../shared/contracts/collaborat
 import type { CoordinatorSuppressionRegistry } from '../coordinator/suppression-store.js';
 import type { DrainController } from '../drain-state.js';
 import type { ApiAuthConfig } from '../auth.js';
+import type { SessionAuthConfig } from '../auth-session.js';
 import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
 import type { RequestDurationMetrics } from '../request-duration-metrics.js';
@@ -264,6 +265,13 @@ export interface RouteDeps {
    * loopback flow completely token-free.
   */
   apiAuth?: ApiAuthConfig;
+  /**
+   * Browser cookie-exchange + CSRF posture (issue #804). Present on a
+   * non-loopback bind to enable `POST /api/auth/session` (fragment token →
+   * HttpOnly cookie) and the owner-mutation CSRF guard. Absent ⇒ the session
+   * route reports `session-feature-disabled` and no CSRF guard is installed.
+   */
+  sessionAuth?: SessionAuthConfig;
   /** Maximum JSON request body size accepted by the dashboard server API routes. */
   requestBodyLimitBytes?: number;
   /** In-memory per-route request duration aggregation exposed through diagnostics. */
