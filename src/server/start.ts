@@ -85,7 +85,7 @@ function resolveApiAuthOrExit(host: string): ApiAuthConfig {
       console.log(
         `[auth] Non-loopback bind (KOOKR_HOST=${host}); no KOOKR_API_TOKEN set — auto-generated one for this run.\n` +
           `[auth] API token: ${resolution.token}\n` +
-          '[auth] Send it as `Authorization: Bearer <token>` (or `?token=<token>` on the WebSocket).\n' +
+          '[auth] Send it as `Authorization: Bearer <token>` (CLI). Browsers authenticate via the session cookie.\n' +
           '[auth] Set KOOKR_API_TOKEN to pin a stable token across restarts.',
       );
       return resolution.config;

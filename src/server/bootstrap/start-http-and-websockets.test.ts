@@ -176,17 +176,20 @@ describe('startHttpAndWebSockets', () => {
       expect(dashboardConnections).toHaveLength(0);
     });
 
-    test('accepts an upgrade with the token via ?token= (browser-style)', async () => {
+    // #802 (R7/F4): the legacy `?token=` WS query branch is removed so no token
+    // rides in a WS URL. A query token is now ignored — the upgrade is rejected.
+    test('rejects an upgrade carrying the token in ?token= (query branch removed)', async () => {
       const { port, dashboardConnections } = await startGated();
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=secret`);
-      await new Promise<void>((resolve, reject) => {
-        ws.on('close', () => resolve());
-        ws.on('error', reject);
+      const err = await new Promise<Error | null>((resolve) => {
+        ws.on('open', () => resolve(null));
+        ws.on('error', (e) => resolve(e));
       });
-      expect(dashboardConnections).toHaveLength(1);
+      expect(err).toBeInstanceOf(Error);
+      expect(dashboardConnections).toHaveLength(0);
     });
 
-    test('accepts an upgrade with the token via the Authorization header', async () => {
+    test('accepts an upgrade with the token via the Authorization header (CLI)', async () => {
       const { port, dashboardConnections } = await startGated();
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
         headers: { authorization: 'Bearer secret' },
@@ -198,9 +201,23 @@ describe('startHttpAndWebSockets', () => {
       expect(dashboardConnections).toHaveLength(1);
     });
 
+    test('accepts an upgrade with the token via the session cookie (browser)', async () => {
+      const { port, dashboardConnections } = await startGated();
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+        headers: { cookie: 'kookr_session=secret' },
+      });
+      await new Promise<void>((resolve, reject) => {
+        ws.on('close', () => resolve());
+        ws.on('error', reject);
+      });
+      expect(dashboardConnections).toHaveLength(1);
+    });
+
     test('rejects an upgrade with a wrong token', async () => {
       const { port, dashboardConnections } = await startGated();
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=nope`);
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+        headers: { authorization: 'Bearer nope' },
+      });
       const err = await new Promise<Error | null>((resolve) => {
         ws.on('open', () => resolve(null));
         ws.on('error', (e) => resolve(e));

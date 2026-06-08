@@ -27,9 +27,10 @@ export interface HttpAndWebSocketsDeps {
   useFakeTerminalBridge?: boolean;
   /**
    * Resolved API-token auth posture (issue #708). When `required` is true (a
-   * non-loopback bind), every WebSocket upgrade must present a valid bearer
-   * token (header or `?token=` query param) or the socket is rejected with a
-   * 401 handshake. Absent/`required: false` accepts all upgrades (loopback).
+   * non-loopback bind), every WebSocket upgrade must present a valid credential
+   * — a bearer token (CLI) or the session cookie (browser); #802 removed the
+   * `?token=` query branch — or the socket is rejected with a 401 handshake.
+   * Absent/`required: false` accepts all upgrades (loopback).
    */
   apiAuth?: ApiAuthConfig;
   onLocalTerminalActivity?: (sessionId: string) => void;
@@ -135,9 +136,9 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
 
   httpServer.on('upgrade', (req: IncomingMessage, socket, head) => {
     const url = req.url ?? '';
-    // Dispatch on the pathname only — the auth token may ride on a `?token=`
-    // query string (browsers cannot set WS handshake headers), so an exact
-    // `url === '/ws'` check would misroute an authenticated `/ws?token=...`.
+    // Dispatch on the pathname only — strip any query string before matching so
+    // a trailing `?…` can never misroute `/ws`. (#802 removed credential-bearing
+    // query params from the WS upgrade; auth now rides on header or cookie.)
     const path = url.split('?', 1)[0];
 
     // Issue #708: on a non-loopback bind, reject unauthenticated upgrades before
