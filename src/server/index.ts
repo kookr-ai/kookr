@@ -1047,6 +1047,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     apiAuth: config.apiAuth,
     onLocalTerminalActivity: (sessionId) => remoteRelayRuntime?.recordLocalTerminalActivity(sessionId),
     onDashboardConnection: (ws) => handleWsConnection(ws, connectionRegistry, wsConnectionDeps),
+    // Register terminal sockets with the connection registry so the revocation
+    // sweep owns the terminal pool too (#805/#807). `resolveTerminalActor` is
+    // deliberately left unset: viewer-cookie resolution onto terminal streams is
+    // deferred to the resolveViewer security gate (#808/#809/#810), so every live
+    // terminal socket resolves to the owner for now.
+    terminalRegistrar: connectionRegistry,
   });
   const collaborationListener = await startConfiguredPrivateNetworkCollaborationListener({
     env: process.env,

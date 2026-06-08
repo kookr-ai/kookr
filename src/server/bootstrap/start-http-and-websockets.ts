@@ -13,7 +13,8 @@ import { HOOK_EVENTS, LOAD_BEARING_HOOKS } from '../../core/hook-spec.js';
 import { handleTerminalInput, handleTerminalKeystroke, type TerminalInputDeps } from '../agent-lifecycle.js';
 import { FakeTerminalBridge } from '../fake-terminal-bridge.js';
 import { SessionBridge } from '../session-bridge.js';
-import { isAuthorizedUpgrade, type ApiAuthConfig } from '../auth.js';
+import { isAuthorizedUpgrade, type ApiAuthConfig, type Actor } from '../auth.js';
+import type { SocketRegistrar } from '../viewer-connection-registry.js';
 
 export interface HttpAndWebSocketsDeps {
   app: Hono;
@@ -35,6 +36,27 @@ export interface HttpAndWebSocketsDeps {
   apiAuth?: ApiAuthConfig;
   onLocalTerminalActivity?: (sessionId: string) => void;
   onDashboardConnection: (ws: WebSocket) => void;
+  /**
+   * Registry that owns the terminal socket pool (#805). When present, every
+   * terminal socket is registered here on open (`actor` + `sessionName`) and
+   * unregistered on close, so the revocation sweep can drop or re-check viewer
+   * sockets by `grantId` (#807, R5/F1). Optional — when absent (most tests) the
+   * bridge still works, it just isn't swept.
+   */
+  terminalRegistrar?: SocketRegistrar;
+  /**
+   * Resolve the actor for a terminal upgrade (#807 seam). Read-only viewer
+   * bridges are constructed when this returns `{ kind: 'viewer' }`.
+   *
+   * SECURITY: the live viewer-cookie resolution stays deferred to the
+   * `resolveViewer` security gate (#808/#809) — admitting a viewer cookie onto a
+   * terminal stream ahead of the scope check (#810) and scoped fan-out (#809)
+   * would be a fail-open. Until that lands this is left unset, so every terminal
+   * socket resolves to the owner and the read-only path is exercised only by
+   * synthetic viewer actors in tests. The seam exists so #810 can plug the
+   * cookie→actor resolution in one place.
+   */
+  resolveTerminalActor?: (req: IncomingMessage) => Actor;
 }
 
 export interface HttpAndWebSocketsCloseOptions {
@@ -174,13 +196,25 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
       return;
     }
 
+    // Resolve the actor for this terminal upgrade. Defaults to owner — viewer
+    // cookie resolution is deferred to the resolveViewer security gate (see the
+    // SECURITY note on `resolveTerminalActor`). Viewer sockets are output-only.
+    const actor: Actor = deps.resolveTerminalActor?.(req) ?? { kind: 'owner' };
+    const readOnly = actor.kind === 'viewer';
+
+    // Register the terminal socket with the connection registry (#805/#807) so
+    // the revocation sweep can drop or re-check it by grantId. Owner sockets are
+    // registered too (the registry owns the whole terminal pool); they are never
+    // swept.
+    deps.terminalRegistrar?.register(ws, actor, 'terminal', { sessionName });
+
     void (async () => {
       const bridgeKind: 'fake' | 'session' = deps.useFakeTerminalBridge ? 'fake' : 'session';
-      console.log(`Terminal bridge opened for ${sessionName} (kind=${bridgeKind})`);
+      console.log(`Terminal bridge opened for ${sessionName} (kind=${bridgeKind}, readOnly=${readOnly})`);
 
       if (bridgeKind === 'fake') {
         const content = FakeTerminalBridge.getContent(sessionName);
-        const bridge = new FakeTerminalBridge(sessionName, ws, content, terminalInputWriter);
+        const bridge = new FakeTerminalBridge(sessionName, ws, content, terminalInputWriter, { readOnly });
         activeBridges.set(ws, bridge);
         bridge.start();
         return;
@@ -199,6 +233,7 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
           deps.onLocalTerminalActivity?.(id);
           handleTerminalKeystroke(deps.terminalDeps, id);
         },
+        { readOnly },
       );
       activeBridges.set(ws, sb);
       sb.start().catch((err) => {
@@ -209,6 +244,7 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     ws.on('close', () => {
       console.log(`Terminal bridge closed for ${sessionName}`);
       activeBridges.delete(ws);
+      deps.terminalRegistrar?.unregister(ws);
     });
   });
 

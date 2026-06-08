@@ -42,6 +42,9 @@ class FakeWs {
   emit(event: string, ...args: unknown[]): void {
     for (const cb of this.listeners.get(event) ?? []) cb(...args);
   }
+  listenerCount(event: string): number {
+    return this.listeners.get(event)?.length ?? 0;
+  }
 }
 
 async function makeReadySession(id: string): Promise<FakeTerminalBackend> {
@@ -607,6 +610,123 @@ describe('SessionBridge', () => {
         warn.mockRestore();
         err.mockRestore();
       }
+    });
+  });
+
+  // Read-only (viewer) bridges — kookr #807. A viewer terminal socket must be
+  // output-only: the inbound write path is never wired, so no keystroke,
+  // resize, or paste reaches the PTY, while PTY output still streams.
+  describe('readOnly bridges (#807)', () => {
+    it('never registers the inbound ws message handler', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1', ws as unknown as never, backend, undefined, undefined, undefined, { readOnly: true },
+      );
+      await bridge.start();
+
+      // The write path is the `message` listener; a read-only bridge wires none.
+      expect(ws.listenerCount('message')).toBe(0);
+    });
+
+    it('still wires the ws error and close handlers when read-only', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1', ws as unknown as never, backend, undefined, undefined, undefined, { readOnly: true },
+      );
+      await bridge.start();
+
+      // Exactly one of each — the failure-handling path is intact, not the
+      // inbound write path.
+      expect(ws.listenerCount('error')).toBe(1);
+      expect(ws.listenerCount('close')).toBe(1);
+    });
+
+    it('drops viewer keystroke input — no byte reaches the PTY', async () => {
+      const backend = await makeReadySession('s1');
+      const writeInput = vi.fn().mockResolvedValue({ sessionId: 's1', readinessVersion: 1 });
+      const writer: TerminalInputWriterPort = {
+        writeInput,
+        writeInputSequence: vi.fn().mockResolvedValue({ sessionId: 's1', readinessVersion: 1 }),
+      };
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1', ws as unknown as never, backend, writer, undefined, undefined, { readOnly: true },
+      );
+      await bridge.start();
+
+      // Even if a frame is somehow emitted, no handler exists to forward it.
+      ws.emit('message', Buffer.from([0x61, 0x0d]), true);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(writeInput).not.toHaveBeenCalled();
+      expect(backend.getWrittenBytes('s1').length).toBe(0);
+    });
+
+    it('drops viewer resize control frames', async () => {
+      const backend = await makeReadySession('s1');
+      const resizeSpy = vi.spyOn(backend, 'resize');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1', ws as unknown as never, backend, undefined, undefined, undefined, { readOnly: true },
+      );
+      await bridge.start();
+
+      ws.emit('message', Buffer.from('{"type":"resize","cols":120,"rows":30}'), false);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(resizeSpy).not.toHaveBeenCalled();
+    });
+
+    it('drops viewer paste control frames', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1', ws as unknown as never, backend, undefined, undefined, undefined, { readOnly: true },
+      );
+      await bridge.start();
+
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'paste', text: 'a\nb' })), false);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(backend.getWrittenBytes('s1').length).toBe(0);
+    });
+
+    it('still streams PTY output to a read-only viewer', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1', ws as unknown as never, backend, undefined, undefined, undefined, { readOnly: true },
+      );
+      await bridge.start();
+
+      backend.emit('s1', new Uint8Array([0x48, 0x69])); // "Hi"
+
+      const merged = ws.sent
+        .filter((s): s is Buffer => Buffer.isBuffer(s))
+        .map((b) => b.toString('utf-8'))
+        .join('');
+      expect(merged).toContain('Hi');
+    });
+
+    it('owner bridges (readOnly omitted / false) still accept input', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1', ws as unknown as never, backend, undefined, undefined, undefined, { readOnly: false },
+      );
+      await bridge.start();
+
+      // The write path IS wired for an owner.
+      expect(ws.listenerCount('message')).toBe(1);
+
+      ws.emit('message', Buffer.from([0x61, 0x0d]), true);
+      await new Promise((r) => setTimeout(r, 10));
+
+      const written = backend.getWrittenBytes('s1');
+      expect(written.length).toBe(1);
+      expect(Array.from(written[0])).toEqual([0x61, 0x0d]);
     });
   });
 });
