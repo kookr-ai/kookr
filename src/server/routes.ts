@@ -27,6 +27,8 @@ import { DEFAULT_TTS_VOICE } from './tts-manager.js';
 import { TaskSpeechSummaryCache } from './task-speech-summary-cache.js';
 import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
 import { createApiAuthMiddleware } from './auth.js';
+import { registerAuthSessionRoutes, createCsrfMiddleware } from './auth-session.js';
+import { isShareGuardedRoute } from './routes/share-routes.js';
 import { readRequestBodyLimitBytesFromEnv } from './config.js';
 import { createJsonRequestBodyLimitMiddleware, type RouteDeps } from './routes/shared.js';
 import { createRequestDurationMiddleware, RequestDurationMetrics } from './request-duration-metrics.js';
@@ -42,6 +44,22 @@ export function createRoutes(deps: RouteDeps): Hono {
   // this is a no-op pass-through, keeping the default localhost flow token-free.
   if (deps.apiAuth?.required) {
     app.use('*', createApiAuthMiddleware(deps.apiAuth));
+    // #804: double-submit CSRF guard for owner cookie mutations. Installed right
+    // after the actor gate so it only ever sees already-authenticated requests;
+    // a no-op when no CSRF secret is configured (e.g. tests construct routes
+    // without the session feature).
+    if (deps.sessionAuth) {
+      app.use(
+        '*',
+        createCsrfMiddleware({
+          apiAuth: deps.apiAuth,
+          csrfSecret: deps.sessionAuth.csrfSecret,
+          // The relay/contact-share routes enforce their own CSRF on the same
+          // `x-kookr-csrf` header (different nonce); skip them to avoid a collision.
+          isExempt: isShareGuardedRoute,
+        }),
+      );
+    }
   }
 
   app.use(
@@ -65,6 +83,11 @@ export function createRoutes(deps: RouteDeps): Hono {
     coordinatorSuppressions:
       deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? deps.serverCwd),
   };
+
+  // #804: browser cookie-exchange endpoint (POST /api/auth/session). Allow-listed
+  // past the actor gate (isUnauthenticatedRoute) but enforces its own same-origin
+  // + transport-posture checks. A no-op 503 when the session feature is unconfigured.
+  registerAuthSessionRoutes(app, { apiAuth: sharedDeps.apiAuth, sessionAuth: sharedDeps.sessionAuth });
 
   registerDiagnosticsRoutes(app, sharedDeps);
   registerAdminRoutes(app, sharedDeps);

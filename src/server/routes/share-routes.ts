@@ -28,6 +28,30 @@ import {
 /** Request header carrying the local UI CSRF nonce. */
 export const SHARE_CSRF_HEADER = 'x-kookr-csrf';
 
+/**
+ * Path prefixes whose mutating routes enforce their OWN same-origin + CSRF guard
+ * via {@link evaluateShareMutationGuard} (the relay / contact-share / pairing /
+ * recovery family). This scheme historically owns the `x-kookr-csrf` header with
+ * a per-process relay nonce. The #804 browser-session CSRF middleware
+ * (`createCsrfMiddleware`) reuses the SAME header name but a per-session HMAC
+ * nonce, so it must skip these routes — otherwise it would reject a valid
+ * relay-nonce request (different value, same header). Exempting them loses no
+ * protection: their own guard is strictly stronger (it also requires an
+ * `Origin` host-match). Keep this list in sync with the routes that call
+ * {@link evaluateShareMutationGuard}.
+ */
+const SHARE_GUARDED_ROUTE_PREFIXES: readonly string[] = [
+  '/api/share/',
+  '/api/contact-share/',
+  '/api/relay-connection/',
+  '/api/collaboration/',
+  '/api/session-sharing/',
+];
+
+export function isShareGuardedRoute(path: string): boolean {
+  return SHARE_GUARDED_ROUTE_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
 export interface ShareMutationGuardInput {
   /** Fully-qualified request URL (`c.req.url`). */
   requestUrl: string;
