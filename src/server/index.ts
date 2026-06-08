@@ -358,7 +358,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     coordinatorSuppressions,
   });
   const {
-    clients,
+    registry: connectionRegistry,
     achievementWatcher,
     broadcastToAll,
     broadcastProjectSummaries,
@@ -1030,7 +1030,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       detectionStatsStore,
       worktreeRegistry,
       worktreeRegistryRepoPath: serverCwd,
-      getDashboardClientCount: () => clients.size,
+      getDashboardClientCount: () => connectionRegistry.dashboardCount(),
     },
   });
 
@@ -1046,7 +1046,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     useFakeTerminalBridge,
     apiAuth: config.apiAuth,
     onLocalTerminalActivity: (sessionId) => remoteRelayRuntime?.recordLocalTerminalActivity(sessionId),
-    onDashboardConnection: (ws) => handleWsConnection(ws, clients, wsConnectionDeps),
+    onDashboardConnection: (ws) => handleWsConnection(ws, connectionRegistry, wsConnectionDeps),
   });
   const collaborationListener = await startConfiguredPrivateNetworkCollaborationListener({
     env: process.env,
@@ -1145,11 +1145,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
     activeBridges.clear();
 
-    // Close WebSocket connections
-    for (const ws of clients) {
-      ws.close(1001, 'Server shutting down');
-    }
-    clients.clear();
+    // Close WebSocket connections. Order: stop the revocation sweep before
+    // closing sockets so a tick can't race the close, then closeAll(); the HTTP
+    // server is closed last via closeHttpRuntime() at the end of shutdown.
+    connectionRegistry.stopSweep();
+    connectionRegistry.closeAll();
 
     // Telegram integration shutdown (releases lockfile so prod:restart picks up cleanly).
     if (telegramHandle) {

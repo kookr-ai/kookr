@@ -1,7 +1,5 @@
 import { join } from 'node:path';
 
-import { WebSocket } from 'ws';
-
 import type { AdapterRegistry } from '../../adapters/agent-adapter.js';
 import { AVAILABLE_AGENT_TYPES, type AgentSelection } from '../../core/agent-types.js';
 import { ACHIEVEMENT_BY_ID } from '../../core/achievement-catalog.js';
@@ -23,6 +21,13 @@ import type { ScheduleStore } from '../../core/schedule.js';
 import { toOssAttemptsSnapshot } from '../oss-attempts-snapshot.js';
 import type { OssAttemptStore } from '../../core/oss-attempt-store.js';
 import { buildCoordinatorDetectorTasks, createSnapshotMessage, getProjectSummaries, getSnapshotAgentsForClient } from '../use-cases/get-snapshot.js';
+import {
+  ViewerConnectionRegistry,
+  type GrantLiveness,
+  type SweepEviction,
+} from '../viewer-connection-registry.js';
+import { ViewerAwareBroadcaster } from '../viewer-broadcaster.js';
+import type { Scope } from '../viewer-data-policy.js';
 
 export interface RealtimeServicesDeps {
   kookrDir: string;
@@ -43,10 +48,25 @@ export interface RealtimeServicesDeps {
   getDefaultAgentType: () => AgentSelection;
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   coordinatorSuppressions?: CoordinatorSuppressionReader;
+  /**
+   * Resolve a viewer grant's liveness for the revocation sweep. Injected when
+   * viewers are wired (#806/#808); omitted in Phase 1, where no viewer can
+   * connect and the registry default treats every grant as active.
+   */
+  resolveGrantLiveness?: (grantId: string) => GrantLiveness;
+  /** Audit hook fired once per sweep-evicted viewer socket (#808 / R10). */
+  onViewerEvicted?: (eviction: SweepEviction) => void;
+  /**
+   * Build the scope-filtered snapshot for a viewer (#809). Phase 1 has no
+   * viewers, so the default stub fails closed if ever invoked rather than
+   * leaking the unfiltered `all` snapshot.
+   */
+  buildScopedSnapshot?: (scope: Scope) => SnapshotMessage;
 }
 
 export interface RealtimeServices {
-  clients: Set<WebSocket>;
+  /** Sole owner of the dashboard + terminal socket pools (replaces the bare `clients` set). */
+  registry: ViewerConnectionRegistry;
   achievementWatcher: AchievementWatcher;
   broadcastToAll: (msg: ServerMessage) => void;
   broadcastProjectSummaries: () => void;
@@ -67,7 +87,22 @@ export interface ProjectSummaryGitHubDeps {
 export async function createRealtimeServices(deps: RealtimeServicesDeps): Promise<RealtimeServices> {
   const achievementsFile = join(deps.kookrDir, 'achievements.json');
   const achievementState = await loadAchievements(achievementsFile);
-  const clients = new Set<WebSocket>();
+  const registry = new ViewerConnectionRegistry({
+    resolveGrantLiveness: deps.resolveGrantLiveness,
+    onEvict: deps.onViewerEvicted,
+  });
+  const broadcaster = new ViewerAwareBroadcaster({
+    registry,
+    buildScopedSnapshot:
+      deps.buildScopedSnapshot ??
+      ((scope) => {
+        // Phase 1 fail-closed: no viewer can connect yet, so this is
+        // unreachable; if it ever fires, error rather than serve `all`.
+        throw new Error(
+          `[viewer-broadcaster] scoped snapshot for ${scope.kind} scope is not wired until #809`,
+        );
+      }),
+  });
   let achievementWatcher: AchievementWatcher;
   let wsBroadcastCount = 0;
   let scheduleStore: ScheduleStore | null = null;
@@ -124,32 +159,9 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
         defaultAgentType: deps.getDefaultAgentType(),
       };
     }
-    const data = JSON.stringify(msg);
-    const coordinatorData = msg.type === 'snapshot' && msg.coordinator
-      ? JSON.stringify({ type: 'coordinator.snapshot', coordinator: msg.coordinator } satisfies ServerMessage)
-      : null;
-    for (const ws of clients) {
-      if (ws.readyState === WebSocket.OPEN) {
-        const sentPrimary = sendToClient(ws, data, msg.type);
-        if (sentPrimary && coordinatorData) sendToClient(ws, coordinatorData, 'coordinator.snapshot');
-      }
-    }
-  }
-
-  function sendToClient(ws: WebSocket, data: string, payloadType: ServerMessage['type']): boolean {
-    try {
-      ws.send(data);
-      return true;
-    } catch (err) {
-      clients.delete(ws);
-      console.warn(`[websocket] Failed to broadcast ${payloadType}; dropping client`, err);
-      try {
-        ws.close();
-      } catch (closeErr) {
-        console.warn('[websocket] Failed to close client after broadcast failure', closeErr);
-      }
-      return false;
-    }
+    // The registry owns the socket pool; the broadcaster is pure transport over
+    // its dashboard-socket snapshot (drops + closes on send failure).
+    broadcaster.broadcast(msg);
   }
 
   function snapshotAgentsForCoordinator(msg: SnapshotMessage): SnapshotMessage['agents'] {
@@ -203,7 +215,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
   }
 
   return {
-    clients,
+    registry,
     achievementWatcher,
     broadcastToAll,
     broadcastProjectSummaries,
