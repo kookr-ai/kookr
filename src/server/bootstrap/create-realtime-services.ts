@@ -57,9 +57,10 @@ export interface RealtimeServicesDeps {
   /** Audit hook fired once per sweep-evicted viewer socket (#808 / R10). */
   onViewerEvicted?: (eviction: SweepEviction) => void;
   /**
-   * Build the scope-filtered snapshot for a viewer (#809). Phase 1 has no
-   * viewers, so the default stub fails closed if ever invoked rather than
-   * leaking the unfiltered `all` snapshot.
+   * Build the scope-filtered snapshot for a viewer (#809). Production wires the
+   * real factory (`index.ts`); when omitted (lightweight test wirings, or any
+   * caller that has no viewers) the default stub fails closed if ever invoked
+   * rather than leaking the unfiltered `all` snapshot.
    */
   buildScopedSnapshot?: (scope: Scope) => SnapshotMessage;
 }
@@ -96,10 +97,11 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
     buildScopedSnapshot:
       deps.buildScopedSnapshot ??
       ((scope) => {
-        // Phase 1 fail-closed: no viewer can connect yet, so this is
-        // unreachable; if it ever fires, error rather than serve `all`.
+        // Fail-closed default for callers that did not wire the real factory
+        // (#809 wires it in production via index.ts): error rather than serve the
+        // unfiltered `all` snapshot to a scoped viewer.
         throw new Error(
-          `[viewer-broadcaster] scoped snapshot for ${scope.kind} scope is not wired until #809`,
+          `[viewer-broadcaster] scoped snapshot for ${scope.kind} scope requested but no buildScopedSnapshot was wired`,
         );
       }),
   });

@@ -18,9 +18,10 @@ vi.mock('./ws.js', () => ({
 
 // Mock the snapshot/use-case helpers so connection setup and the post-message
 // rebroadcast don't require a fully-wired monitor/ledger/etc.
+const getProjectSummaries = vi.fn(() => [] as unknown[]);
 vi.mock('./use-cases/get-snapshot.js', () => ({
   createSnapshotMessage: () => ({ type: 'snapshot' }),
-  getProjectSummaries: () => [],
+  getProjectSummaries: (...args: unknown[]) => getProjectSummaries(...(args as [])),
 }));
 
 import {
@@ -32,6 +33,11 @@ import {
 
 const OWNER: Actor = { kind: 'owner' };
 const VIEWER: Actor = { kind: 'viewer', grantId: 'g1', scope: { kind: 'all' } };
+const VIEWER_PROJECTS: Actor = {
+  kind: 'viewer',
+  grantId: 'gp',
+  scope: { kind: 'projects', projectIds: ['github.com/acme/alpha'] },
+};
 
 // A representative sample of every category of inbound message: mutations,
 // feedback, launches, the inline achievement:* handlers, and read paths. None
@@ -211,5 +217,62 @@ describe('handleWsConnection read-only gate (integration)', () => {
     await dispatch(ws, { type: 'deleteTask', taskId: 't1' });
 
     expect(handleMessageSafe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('handleWsConnection initial burst (#809 actor-aware)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('owner burst goes through router.handleConnect (unchanged)', () => {
+    const ws = makeFakeWs();
+    handleWsConnection(ws as unknown as WebSocket, registrar, makeDeps(), OWNER);
+    expect(handleConnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('viewer burst serves the scoped snapshot from buildScopedSnapshot with the exact projects scope, not handleConnect', () => {
+    const ws = makeFakeWs();
+    const scoped = { type: 'snapshot', agents: [], serverCwd: '/repo' };
+    const buildScopedSnapshot = vi.fn(() => scoped);
+    const deps = { ...makeDeps(), buildScopedSnapshot } as unknown as WsConnectionDeps;
+
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, VIEWER_PROJECTS);
+
+    // Single owner of scope filtering — the viewer never goes through the
+    // owner's whole-world handleConnect path, and the viewer's exact projects
+    // scope is threaded into the factory (not collapsed to `all`).
+    expect(handleConnect).not.toHaveBeenCalled();
+    expect(buildScopedSnapshot).toHaveBeenCalledWith({
+      kind: 'projects',
+      projectIds: ['github.com/acme/alpha'],
+    });
+    const sent = ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(sent).toContainEqual(scoped);
+  });
+
+  it('viewer burst threads the viewer scope into getProjectSummaries', () => {
+    const ws = makeFakeWs();
+    const buildScopedSnapshot = vi.fn(() => ({ type: 'snapshot', agents: [], serverCwd: '/repo' }));
+    const deps = { ...makeDeps(), buildScopedSnapshot } as unknown as WsConnectionDeps;
+
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, VIEWER_PROJECTS);
+
+    // The summaries the viewer receives must be built with its scope, never the
+    // unscoped owner list.
+    expect(getProjectSummaries).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: { kind: 'projects', projectIds: ['github.com/acme/alpha'] } }),
+    );
+  });
+
+  it('viewer without a buildScopedSnapshot factory fails closed: no snapshot and no summaries served', () => {
+    const ws = makeFakeWs();
+    handleWsConnection(ws as unknown as WebSocket, registrar, makeDeps(), VIEWER);
+    expect(handleConnect).not.toHaveBeenCalled();
+    // Early-return before any data is built — no scoped snapshot, and the
+    // summaries path is not even reached (would otherwise be unscoped/owner data).
+    expect(getProjectSummaries).not.toHaveBeenCalled();
+    const sent = ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(sent.some((m) => m.type === 'snapshot' || m.type === 'projectSummaries')).toBe(false);
   });
 });

@@ -216,10 +216,12 @@ describe('startHttpAndWebSockets', () => {
       expect(dashboardConnections).toHaveLength(1);
     });
 
-    // #808 Phase-1 guard: a `projects`-scoped viewer cannot be served until the
-    // scoped snapshot fan-out (#809), so its upgrade is rejected (503). An
-    // `all`-scoped viewer is admitted. Drive both through a real upgrade with a
-    // `resolveViewer` seam standing in for the (still-deferred) live wiring.
+    // #809 removed the Phase-1 `projects`-scope WS-upgrade guard: the upgrade now
+    // holds zero scope logic and both `all`- and `projects`-scoped viewers are
+    // admitted at the handshake; scope enforcement moved to `buildScopedSnapshot`
+    // (dashboard) and the #810 terminal scope check. Drive both through a real
+    // upgrade with a `resolveViewer` seam standing in for the (still-deferred)
+    // live wiring.
     async function startGatedWithViewer(): Promise<{ port: number; dashboardConnections: WebSocket[] }> {
       const app = new Hono();
       const dashboardConnections: WebSocket[] = [];
@@ -256,17 +258,16 @@ describe('startHttpAndWebSockets', () => {
       return { port: (address as { port: number }).port, dashboardConnections };
     }
 
-    test('rejects a projects-scoped viewer upgrade (Phase-1 guard, #808)', async () => {
+    test('admits a projects-scoped viewer upgrade (#809 removed the Phase-1 guard)', async () => {
       const { port, dashboardConnections } = await startGatedWithViewer();
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
         headers: { cookie: 'kookr_session=viewer-projects' },
       });
-      const err = await new Promise<Error | null>((resolve) => {
-        ws.on('open', () => resolve(null));
-        ws.on('error', (e) => resolve(e));
+      await new Promise<void>((resolve, reject) => {
+        ws.on('close', () => resolve());
+        ws.on('error', reject);
       });
-      expect(err).toBeInstanceOf(Error);
-      expect(dashboardConnections).toHaveLength(0);
+      expect(dashboardConnections).toHaveLength(1);
     });
 
     test('admits an all-scoped viewer upgrade', async () => {

@@ -5,7 +5,8 @@ import { randomBytes } from 'node:crypto';
 import { loadTasks, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
 import { reconcile } from './reconciliation.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
-import type { ServerMessage } from '../shared/contracts/messages.js';
+import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
+import type { Scope } from './viewer-data-policy.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
 import { HookFileWatcher } from './hook-watcher.js';
 import { HookIngestion } from './hook-ingestion.js';
@@ -361,6 +362,24 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
 
+  // Single owner of WS scope filtering (#809, RFC §"Outbound scope filtering").
+  // The broadcaster (#805) and the viewer initial-connection burst both call
+  // this to build the snapshot a `projects` viewer receives; for an `all` scope
+  // the broadcaster reuses the already-enriched owner snapshot, so this factory
+  // is only ever invoked for a `projects` scope. Only scope-relevant deps are
+  // threaded in — whole-world aggregates, speech endpoints, and owner-config
+  // capabilities are neither passed here NOR (independently) emitted by
+  // `createSnapshotMessage` for a `projects` scope, which is the real authority.
+  const buildScopedSnapshot = (scope: Scope): SnapshotMessage =>
+    createSnapshotMessage({
+      monitor,
+      serverCwd,
+      scope,
+      relationTaskStore: taskStore,
+      terminalInputSnapshots: terminalInputCoordinator,
+      userInputDeliveryProvider: userInputDeliveries,
+    });
+
   const realtime = await createRealtimeServices({
     kookrDir,
     taskStore,
@@ -369,6 +388,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     adapterRegistry,
     serverCwd,
     sttUrl,
+    buildScopedSnapshot,
     ledgerAnalytics,
     projectConfigStore,
     projectSidebarStore,
@@ -1053,6 +1073,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     selectionController,
     terminalInputCoordinator,
     userInputDeliveries,
+    buildScopedSnapshot,
   };
 
   const backgroundServices = startBackgroundServices({

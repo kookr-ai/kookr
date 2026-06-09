@@ -14,7 +14,6 @@ import { handleTerminalInput, handleTerminalKeystroke, type TerminalInputDeps } 
 import { FakeTerminalBridge } from '../fake-terminal-bridge.js';
 import { SessionBridge } from '../session-bridge.js';
 import { resolveUpgradeIdentity, type ApiAuthConfig, type Actor } from '../auth.js';
-import { isPhase1UnsupportedViewerScope } from '../viewer-data-policy.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 
 export interface HttpAndWebSocketsDeps {
@@ -174,25 +173,16 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
         socket.destroy();
         return;
       }
-      // Phase-1 guard (#808): a `projects`-scoped viewer cannot be served yet —
-      // the scope-filtered snapshot fan-out is Phase 2 (#809). Reject the upgrade
-      // (503) rather than fail-closed-throw on the broadcaster or, worse,
-      // over-deliver the unfiltered `all` snapshot. This is inert until the
-      // `resolveViewer` security gate admits viewer cookies (kept deferred here,
-      // see the SECURITY note on `resolveTerminalActor`), but the predicate lives
-      // at the upgrade so it cannot be bypassed once that lands.
-      if (upgradeActor.kind === 'viewer' && isPhase1UnsupportedViewerScope(upgradeActor.scope)) {
-        console.warn(
-          JSON.stringify({
-            event: 'ws_upgrade_rejected',
-            reason: 'projects_scope_unsupported_phase1',
-            grantId: upgradeActor.grantId,
-          }),
-        );
-        socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
+      // #809 removed the Phase-1 `projects`-scope WS-upgrade guard: the
+      // scope-filtered snapshot fan-out (`buildScopedSnapshot`) now ships, so the
+      // dashboard channel is serviceable for a `projects` viewer and the upgrade
+      // handler holds **zero** scope logic (RFC boundary goal). Per-channel scope
+      // enforcement lives where the data is produced: `buildScopedSnapshot` for
+      // the dashboard snapshot and `isActorAllowedTerminalSession` for the
+      // terminal stream (#810). NOTE: live viewer admission still depends on the
+      // `resolveViewer`/`resolveTerminalActor` seam, which stays **deferred until
+      // the #810 terminal scope check lands** — admitting a viewer cookie onto a
+      // terminal socket before that check is a fail-open.
     }
 
     if (path === '/ws') {

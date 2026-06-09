@@ -32,6 +32,8 @@ import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
 import { createSnapshotMessage, getProjectSummaries } from './use-cases/get-snapshot.js';
 import type { Actor } from './auth.js';
+import type { Scope } from './viewer-data-policy.js';
+import type { SnapshotMessage } from '../shared/contracts/messages.js';
 import type { SocketRegistrar } from './viewer-connection-registry.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
@@ -137,6 +139,16 @@ export interface WsConnectionDeps {
   /** Where hook JSONLs live. */
   hooksDir?: string;
   userInputDeliveries?: UserInputDeliveryService;
+  /**
+   * Single owner of WS scope filtering (#809). When a **viewer** connects, the
+   * initial-connection burst is served entirely from this factory
+   * (`buildScopedSnapshot(actor.scope)`) instead of `router.handleConnect()` —
+   * the same choke point the tick-path broadcaster uses — so a viewer never
+   * receives the unfiltered `all` snapshot. Owners are unaffected. Optional so
+   * lightweight test wirings can omit it; a viewer connecting without it
+   * fails closed (no snapshot served).
+   */
+  buildScopedSnapshot?: (scope: Scope) => SnapshotMessage;
 }
 
 /**
@@ -208,13 +220,21 @@ export function handleWsConnection(
     userInputDeliveries: deps.userInputDeliveries,
   });
 
-  // Send initial snapshot.
-  // Phase 1 (#805) admits owners only, so this initial burst builds the
-  // whole-world snapshot directly. #809 owns WS scope filtering: when scoped
-  // snapshots land, this burst (and the achievement:reset rebroadcast below)
-  // must route through the injected `buildScopedSnapshot(actor.scope)` factory
-  // so a viewer never receives the unfiltered `all` snapshot — the same single
-  // owner of scope filtering used by the tick path.
+  // Initial-connection burst (RFC §"Initial-connection burst (consolidated)").
+  // A **viewer** is served entirely from the injected `buildScopedSnapshot`
+  // factory — the single owner of WS scope filtering, also used by the tick-path
+  // broadcaster — plus its scope-filtered project summaries. Every other initial
+  // send below (resource status, whole-world GitHub refs, quota, circuit
+  // breakers, diagnostics) is owner-only whole-world data per the scrub-list and
+  // is skipped for viewers. Owners keep the exact pre-#809 burst.
+  if (actor.kind === 'viewer') {
+    sendViewerInitialBurst(ws, actor.scope, deps, {
+      monitor, ledgerAnalytics, projectConfigStore,
+    });
+    wireWsMessageHandlers(ws, registrar, router, actor, deps, connectionId);
+    return;
+  }
+
   router.handleConnect();
 
   const latestResourceStatus = deps.getLatestResourceStatus?.();
@@ -276,6 +296,59 @@ export function handleWsConnection(
       ws.send(JSON.stringify({ type: 'diagnosticReport', report: status.report }));
     }
   }
+
+  wireWsMessageHandlers(ws, registrar, router, actor, deps, connectionId);
+}
+
+/**
+ * The viewer initial-connection burst: a scope-filtered snapshot plus
+ * scope-filtered project summaries, and nothing else. All whole-world owner-only
+ * frames (GitHub refs, quota, circuit breakers, diagnostics, resource status)
+ * are omitted by the scrub-list. Fails closed — no snapshot — if the
+ * `buildScopedSnapshot` factory was not wired.
+ */
+function sendViewerInitialBurst(
+  ws: WebSocket,
+  scope: Scope,
+  deps: WsConnectionDeps,
+  ctx: { monitor: Monitor; ledgerAnalytics: LedgerAnalytics; projectConfigStore: ProjectConfigStore },
+): void {
+  if (!deps.buildScopedSnapshot) {
+    console.warn('[ws] viewer connected without a buildScopedSnapshot factory; serving no snapshot (fail-closed)');
+    return;
+  }
+  if (ws.readyState === 1) {
+    ws.send(JSON.stringify(deps.buildScopedSnapshot(scope)));
+  }
+  const projects = getProjectSummaries({
+    monitor: ctx.monitor,
+    ledgerAnalytics: ctx.ledgerAnalytics,
+    projectConfigStore: ctx.projectConfigStore,
+    getSidebarProjects: () => deps.projectSidebarStore?.getSeedProjects() ?? [],
+    getSkillTrackedProjects: () => deps.skillDiscoveryState?.getProjects() ?? [],
+    getRegistryActiveProjects: deps.getRegistryActiveProjects,
+    prLessonsHolder: deps.prLessonsState,
+    scope,
+  });
+  if (projects.length > 0 && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'projectSummaries', projects }));
+  }
+}
+
+/** Wire the per-connection `message`/`close` handlers. Shared by the owner and
+ *  viewer connection paths so the inbound read-only gate (#806) applies to both. */
+function wireWsMessageHandlers(
+  ws: WebSocket,
+  registrar: SocketRegistrar,
+  router: MessageRouter,
+  actor: Actor,
+  deps: WsConnectionDeps,
+  connectionId: string,
+): void {
+  const {
+    taskStore, queue, monitor, serverCwd, sttUrl, ttsUrl,
+    broadcastToAll, broadcastProjectSummaries, achievementWatcher,
+  } = deps;
 
   ws.on('message', async (data) => {
     try {
