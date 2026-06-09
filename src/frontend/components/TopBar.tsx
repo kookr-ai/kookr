@@ -32,6 +32,8 @@ interface Props {
   terminalFocusAvailable?: boolean;
   terminalFocusTriggerRef?: React.RefObject<HTMLButtonElement | null>;
   onTerminalFocusToggle: () => void;
+  /** Read-only viewer: hide mutation entry points (e.g. Launch) (#811). */
+  readOnly?: boolean;
 }
 
 interface DeployStatus {
@@ -73,7 +75,7 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onCommandPalette, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusAvailable = true, terminalFocusTriggerRef, onTerminalFocusToggle }: Props) {
+export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onCommandPalette, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusAvailable = true, terminalFocusTriggerRef, onTerminalFocusToggle, readOnly = false }: Props) {
   const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
@@ -524,7 +526,9 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
               {coordinatorFindingCount > 0 && <span className="coordinator-nav-badge">{coordinatorFindingCount}</span>}
             </button>
           )}
-          <button className="btn-launch kookr-tour-target-launch" onClick={onLaunch}>+ Launch</button>
+          {!readOnly && (
+            <button className="btn-launch kookr-tour-target-launch" onClick={onLaunch}>+ Launch</button>
+          )}
         </div>
       </div>
     </div>

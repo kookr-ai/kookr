@@ -24,12 +24,22 @@
 // A defensive viewer check is still kept here so a future routing change cannot
 // silently expose the control surface to a viewer (defense in depth).
 //
-// Grant-minting guard: the create route accepts only `scope: all`. A `projects`
-// grant is still refused (400) because project-scoped *sharing* is not yet
-// end-to-end serviceable — #809 made the dashboard snapshot scope-correct, but
-// the terminal scope check (#810) and the Share dialog scope picker (#811) are
-// still pending. The WS-upgrade guard that previously mirrored this was removed
-// in #809; scope is now enforced per-channel where the data is produced.
+// Grant-minting: the create route accepts both `all` and `projects` scopes
+// (#811). Project-scoped *minting* was gated through Phase 1–2 because the
+// dashboard + terminal scope checks did not yet exist; now that #809 made the
+// dashboard snapshot scope-correct (`buildScopedSnapshot`) and #810 added the
+// terminal scope check (`isActorAllowedTerminalSession`), both data channels
+// enforce scope where the data is produced, so a `projects` grant is safe to
+// mint. A `projects` scope with an empty `projectIds` is still refused (400): it
+// would see nothing and is almost certainly an owner UI error — fail-closed
+// rather than mint a useless grant. The WS-upgrade guard that previously mirrored
+// the `all`-only restriction was already removed in #809.
+//
+// SECURITY: minting a `projects` grant is inert until viewer credentials are
+// admitted onto `/ws` + terminal via the `resolveViewer`/`resolveTerminalActor`
+// seams (still DEFERRED). Until then no viewer can use any grant; this route only
+// records the owner's intent. The live wiring, when it lands, is safe *only*
+// because both scope gates (#809, #810) are now in place.
 
 import type { Context, Hono } from 'hono';
 
@@ -73,7 +83,7 @@ function isViewerActor(c: Context): boolean {
   return c.get('actor')?.kind === 'viewer';
 }
 
-/** Parse + validate the requested scope. Phase 1 admits only `all`. */
+/** Parse + validate the requested scope into a canonical `all` / `projects` scope. */
 function parseRequestedScope(raw: unknown): { ok: true; scope: Scope } | { ok: false } {
   if (raw === undefined || raw === null) return { ok: true, scope: { kind: 'all' } };
   if (typeof raw !== 'object') return { ok: false };
@@ -110,20 +120,14 @@ export function registerViewerShareRoutes(app: Hono, deps: RouteDeps): void {
     if (!scopeResult.ok) {
       return c.json({ error: 'invalid-scope' }, 400);
     }
-    // Grant-minting guard: only a whole-dashboard (`all`) grant is minted while
-    // project-scoped *sharing* is still being built out (the scope picker is
-    // #811 and the terminal scope check is #810). #809 made the dashboard
-    // snapshot scope-correct (`buildScopedSnapshot`), but minting stays the
-    // place to refuse *anything* not yet end-to-end serviceable — a strict
-    // *allow-list* (`!== 'all'`) so any future scope kind is denied by default
-    // rather than risk over-delivery.
-    if (scopeResult.scope.kind !== 'all') {
+    // A `projects` scope must name at least one project; an empty list would mint
+    // a grant that sees nothing (fail-closed in `isProjectInScope`) and is almost
+    // certainly an owner UI error. Refuse it rather than persist a useless grant.
+    if (scopeResult.scope.kind === 'projects' && scopeResult.scope.projectIds.length === 0) {
       return c.json(
         {
-          error: 'unsupported-scope',
-          message:
-            'Phase 1 supports only whole-dashboard viewer links (scope=all). '
-            + 'Project-scoped sharing ships in a later phase.',
+          error: 'empty-scope',
+          message: 'A project-scoped viewer link must include at least one project.',
         },
         400,
       );

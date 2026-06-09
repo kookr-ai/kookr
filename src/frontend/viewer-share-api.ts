@@ -51,12 +51,26 @@ async function readError(res: Response): Promise<string> {
   }
 }
 
-/** Create a whole-dashboard (scope=all) viewer link. */
-export async function createViewerLink(label: string): Promise<CreatedViewerLink> {
+/** Options for creating a viewer link (#811: scope picker + optional expiry). */
+export interface CreateViewerLinkInput {
+  label: string;
+  /** Defaults to whole-dashboard (`all`) when omitted. */
+  scope?: ViewerScope;
+  /** Optional ISO-8601 expiry; the link stops working after this instant. */
+  expiresAt?: string;
+}
+
+/** Create a viewer link with the given scope (default `all`) and optional expiry. */
+export async function createViewerLink(input: CreateViewerLinkInput): Promise<CreatedViewerLink> {
+  const scope: ViewerScope = input.scope ?? { kind: 'all' };
   const res = await fetch('/api/share/viewers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label, scope: { kind: 'all' } }),
+    body: JSON.stringify({
+      label: input.label,
+      scope,
+      ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+    }),
   });
   if (!res.ok) throw new Error(await readError(res));
   return (await res.json()) as CreatedViewerLink;

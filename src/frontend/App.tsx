@@ -22,6 +22,8 @@ import { Toasts } from './components/Toasts.js';
 import { PluginInstallBanner } from './components/PluginInstallBanner.js';
 import { BugReportDialog } from './components/BugReportDialog.js';
 import { ShareViewerDialog } from './components/ShareViewerDialog.js';
+import { ReadOnlyBanner } from './components/ReadOnlyBanner.js';
+import { installReadOnlyNoticeListener, useViewerGuardedSend, useViewerSession } from './viewer-session.js';
 import { AchievementToasts } from './components/AchievementToast.js';
 import { SentOverlay } from './components/SentOverlay.js';
 import { SnoozeDialog } from './components/SnoozeDialog.js';
@@ -245,8 +247,24 @@ function FindingsResizer({
   );
 }
 
+/** Command-palette actions hidden from read-only viewers (owner-only / mutating). */
+const READ_ONLY_HIDDEN_COMMANDS: ReadonlySet<string> = new Set([
+  'sweep',
+  'share-viewer',
+  'settings',
+  'schedules',
+]);
+
 export function App() {
-  const { send } = useWebSocket();
+  const { send: rawSend } = useWebSocket();
+  const { isViewer } = useViewerSession();
+  // #811: for a read-only viewer, neutralize every WS-driven mutation control in
+  // one place — the server gate (#806) already drops viewer inbound frames, so
+  // sending is pointless; we no-op and surface the read-only notice instead.
+  const send = useViewerGuardedSend(rawSend, isViewer);
+  useEffect(() => {
+    installReadOnlyNoticeListener();
+  }, []);
   useNotifications();
   // Audible alerts. Findings are unfocused (anomaly chimes regardless of
   // which task is focused — that's when the user most needs to switch).
@@ -950,7 +968,12 @@ export function App() {
     { id: 'share-viewer', label: 'Share read-only view', section: 'session', keywords: ['viewer', 'share', 'read-only', 'guest', 'link'], run: () => setShowShareViewer(true) },
     { id: 'settings', label: 'Settings', section: 'session', keywords: ['preferences', 'config', 'options'], run: () => { setSettingsFocus(undefined); setShowSettings(true); } },
     { id: 'shortcuts', label: 'Help & shortcuts', section: 'session', shortcut: formatShortcutBinding(shortcutBindings.toggle_shortcuts_help), keywords: ['help', 'keys', 'keyboard'], run: () => setShowShortcuts(true) },
-  ];
+  ].filter((action) =>
+    // #811: a read-only viewer cannot run owner-only / mutating commands (the
+    // server would 403 / drop them); drop them from the palette so they are not
+    // active controls. View-only commands (diagnostics, findings, help, …) stay.
+    !isViewer || !READ_ONLY_HIDDEN_COMMANDS.has(action.id),
+  );
   const commandTasks: CommandTaskItem[] = [];
   const seenCommandTaskIds = new Set<string>();
   for (const a of agents) {
@@ -966,7 +989,8 @@ export function App() {
   }
 
   return (
-    <div className={`app${isMobileViewport ? ' app-mobile' : ''}`}>
+    <div className={`app${isMobileViewport ? ' app-mobile' : ''}${isViewer ? ' app-read-only' : ''}`}>
+      <ReadOnlyBanner />
       <TopBar
         findings={findings.length}
         currentIndex={selectedAgent && selectedAgent.anomaly
@@ -975,6 +999,7 @@ export function App() {
         totalFindings={findings.length}
         compact={isMobileViewport}
         onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'button' }); setShowLaunch(true); }}
+        readOnly={isViewer}
         onCommandPalette={() => setShowCommandPalette(true)}
         onOperations={() => setShowOperations((value) => !value)}
         operationsOpen={showOperations}
@@ -1063,17 +1088,19 @@ export function App() {
             >
               Next task
             </button>
-            <button
-              type="button"
-              className="mobile-action-btn mobile-action-btn-primary"
-              data-testid="mobile-action-launch"
-              onClick={() => {
-                track({ type: 'launch_dialog_opened', method: 'mobile_action' });
-                setShowLaunch(true);
-              }}
-            >
-              Launch
-            </button>
+            {!isViewer && (
+              <button
+                type="button"
+                className="mobile-action-btn mobile-action-btn-primary"
+                data-testid="mobile-action-launch"
+                onClick={() => {
+                  track({ type: 'launch_dialog_opened', method: 'mobile_action' });
+                  setShowLaunch(true);
+                }}
+              >
+                Launch
+              </button>
+            )}
           </div>
         </>
       ) : (

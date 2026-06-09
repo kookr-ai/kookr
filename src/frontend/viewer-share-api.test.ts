@@ -33,12 +33,38 @@ describe('viewer-share-api', () => {
       );
     });
 
-    const created = await createViewerLink('Alice');
+    const created = await createViewerLink({ label: 'Alice' });
     expect(created.token).toBe('tok');
     expect(created.handoffUrl).toContain('#token=tok');
     expect(captured!.url).toBe('/api/share/viewers');
     expect(captured!.init?.method).toBe('POST');
     expect(JSON.parse(String(captured!.init?.body))).toEqual({ label: 'Alice', scope: { kind: 'all' } });
+  });
+
+  test('createViewerLink POSTs a projects scope + expiry when provided (#811)', async () => {
+    let captured: { url: string; init?: RequestInit } | null = null;
+    mockFetch((url, init) => {
+      captured = { url, init };
+      return jsonResponse(
+        {
+          grant: { id: 'g2', label: 'Bob', scope: { kind: 'projects', projectIds: ['p1'] }, createdAt: 'now', expiresAt: '2030-01-01T00:00:00.000Z' },
+          token: 'tok2',
+          handoffUrl: 'https://h/#token=tok2',
+        },
+        201,
+      );
+    });
+
+    await createViewerLink({
+      label: 'Bob',
+      scope: { kind: 'projects', projectIds: ['p1'] },
+      expiresAt: '2030-01-01T00:00:00.000Z',
+    });
+    expect(JSON.parse(String(captured!.init?.body))).toEqual({
+      label: 'Bob',
+      scope: { kind: 'projects', projectIds: ['p1'] },
+      expiresAt: '2030-01-01T00:00:00.000Z',
+    });
   });
 
   test('listViewerLinks GETs the roster + grants', async () => {
@@ -59,8 +85,8 @@ describe('viewer-share-api', () => {
   });
 
   test('surfaces the server error message on a non-2xx response (create)', async () => {
-    mockFetch(() => jsonResponse({ error: 'unsupported-scope', message: 'Phase 1 only' }, 400));
-    await expect(createViewerLink('x')).rejects.toThrow('Phase 1 only');
+    mockFetch(() => jsonResponse({ error: 'empty-scope', message: 'needs a project' }, 400));
+    await expect(createViewerLink({ label: 'x' })).rejects.toThrow('needs a project');
   });
 
   test('listViewerLinks throws the server error on a non-2xx response', async () => {
