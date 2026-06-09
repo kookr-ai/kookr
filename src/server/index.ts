@@ -77,6 +77,7 @@ import { startPrivateNetworkSharedTaskUpdatePoller } from './collaboration-updat
 import { readPrivateNetworkCollaborationConfig } from './collaboration-config.js';
 import { projectTaskForRemoteShare } from './share-projection.js';
 import { CollaborationAuditLog } from './collaboration-audit-log.js';
+import { ViewerGrantStore } from '../core/viewer-grants.js';
 import { ContactIdentityStore } from './contact-identity-store.js';
 import { CollaborationShareStore } from './collaboration-share-store.js';
 import type { CollaborationAuthFailureDiagnostic } from '../shared/contracts/collaboration-profile.js';
@@ -338,6 +339,28 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       });
     },
   };
+  // #808: read-only shared-view viewer grants. The store is loaded before the
+  // realtime services so the revocation sweep can resolve grant liveness by id.
+  // `resolveViewer` is deliberately NOT wired into `config.apiAuth` here — that
+  // would admit viewer cookies onto `/ws` ahead of the scoped fan-out (#809) and
+  // terminal scope check (#810), a fail-open — so today only the owner connects
+  // and the sweep evicts nothing.
+  const viewerGrantStore = new ViewerGrantStore(kookrDir);
+  await viewerGrantStore.load();
+  // The collaboration audit log is constructed here (ahead of the realtime
+  // services) so the sweep's `onViewerEvicted` audit hook is wired *before* the
+  // connection registry's sweep timer can run — no window where an eviction
+  // drops its audit row. (It is also reused below for the private-network
+  // collaboration stack and the share routes.)
+  let privateNetworkNodeId: NodeId | null = null;
+  const privateNetworkAuditLog = new CollaborationAuditLog({
+    kookrDir,
+    ownerNodeId: () => {
+      privateNetworkNodeId ??= getOrCreatePrivateNetworkNodeId(kookrDir);
+      return privateNetworkNodeId;
+    },
+  });
+
   const realtime = await createRealtimeServices({
     kookrDir,
     taskStore,
@@ -356,6 +379,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ossAttemptStore,
     getDefaultAgentType,
     coordinatorSuppressions,
+    resolveGrantLiveness: (grantId) => viewerGrantStore.liveness(grantId),
+    // #808 / R10: a sweep evicting a live viewer socket is an audit event
+    // (fire-and-forget so a slow audit write never stalls the sweep tick).
+    onViewerEvicted: (eviction) => {
+      void privateNetworkAuditLog
+        .append({
+          actor: { kind: 'viewer', grantId: eviction.grantId },
+          event: 'viewer-grant.sweep-evicted',
+          grantId: eviction.grantId,
+          reason: eviction.reason,
+        })
+        .catch((err) => {
+          console.warn('[viewer-share] failed to write sweep-evicted audit event', err);
+        });
+    },
   });
   const {
     registry: connectionRegistry,
@@ -779,16 +817,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const findingEvidenceReviewConfig = readFindingEvidenceReviewConfigFromEnv(process.env, findingEvidenceReviewHmacKey, buildInfo.commitHash);
   const findingEvidenceReviewSamplerConfig = readFindingEvidenceReviewSamplerConfigFromEnv(process.env);
   const contactShare = new ContactShareReadModel();
-  let privateNetworkNodeId: NodeId | null = null;
+  // `privateNetworkNodeId` + `privateNetworkAuditLog` are constructed earlier
+  // (alongside the viewer-grant store) so the sweep audit hook is wired before
+  // the sweep timer starts; see that block above.
   let collaborationListenerForDiagnostics: CollaborationListenerHandle | null = null;
   let privateNetworkLastAuthFailure: CollaborationAuthFailureDiagnostic | undefined;
-  const privateNetworkAuditLog = new CollaborationAuditLog({
-    kookrDir,
-    ownerNodeId: () => {
-      privateNetworkNodeId ??= getOrCreatePrivateNetworkNodeId(kookrDir);
-      return privateNetworkNodeId;
-    },
-  });
   const findingEvidenceReviewSampler = new FindingEvidenceReviewSampler({
     candidateReader: {
       listReviewCandidates: (limit) => monitor.getFindingEvidenceReviewCandidates(limit),
@@ -857,6 +890,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     drainController,
     apiAuth: config.apiAuth,
     sessionAuth: config.sessionAuth,
+    // #808: owner share control surface + health block. The viewer feature is a
+    // non-loopback concern (a viewer must reach the host over the network), so it
+    // is exposed only when the API-token gate is active; on a loopback bind the
+    // share routes report `share-feature-disabled` and `/api/health` omits the
+    // `viewerBroadcaster` block, keeping the default localhost flow untouched (R9).
+    ...(config.apiAuth?.required
+      ? {
+          viewerShare: {
+            grantStore: viewerGrantStore,
+            registry: connectionRegistry,
+            auditLog: privateNetworkAuditLog,
+          },
+        }
+      : {}),
     startupRecoverySummary,
     ralphCycler,
     tokenTracker,

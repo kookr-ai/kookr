@@ -42,6 +42,9 @@ import type { CollaborationDiagnostics } from '../../shared/contracts/collaborat
 import type { CoordinatorSuppressionRegistry } from '../coordinator/suppression-store.js';
 import type { DrainController } from '../drain-state.js';
 import type { ApiAuthConfig } from '../auth.js';
+import type { ViewerGrantStore } from '../../core/viewer-grants.js';
+import type { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
+import type { CollaborationAuditLog } from '../collaboration-audit-log.js';
 import type { SessionAuthConfig } from '../auth-session.js';
 import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
@@ -133,6 +136,20 @@ export interface TaskRelationsRouteDeps {
   queue?: AttentionQueue;
   suppressionTracker?: SnoozeSuppressionTracker;
   tasksFile?: string;
+}
+
+/**
+ * Owner share control-surface dependencies (#808). Bundles the viewer-grant
+ * store, the connection registry (for the live viewer roster + the health
+ * sweep block), and the collaboration audit log. Present only when the
+ * shared-view feature is wired (a non-loopback bind); absent ⇒ the share routes
+ * report `share-feature-disabled` and `/api/health` omits the
+ * `viewerBroadcaster` block.
+ */
+export interface ViewerShareDeps {
+  grantStore: ViewerGrantStore;
+  registry: ViewerConnectionRegistry;
+  auditLog: CollaborationAuditLog;
 }
 
 export interface RouteDeps {
@@ -276,6 +293,12 @@ export interface RouteDeps {
   requestBodyLimitBytes?: number;
   /** In-memory per-route request duration aggregation exposed through diagnostics. */
   requestDurationMetrics?: RequestDurationMetrics;
+  /**
+   * Owner share control surface (#808): viewer-grant store + connection registry
+   * + audit log backing `POST/GET /api/share/viewers`, the revoke route, and the
+   * `/api/health` `viewerBroadcaster` block. Absent ⇒ the feature is disabled.
+   */
+  viewerShare?: ViewerShareDeps;
 }
 
 export function createJsonRequestBodyLimitMiddleware(limitBytes: number): MiddlewareHandler {

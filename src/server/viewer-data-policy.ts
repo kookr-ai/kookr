@@ -41,6 +41,20 @@ export function isProjectInScope(scope: Scope, projectId: string): boolean {
 }
 
 /**
+ * Phase-1 guard (#808): a `projects`-scoped grant is **not yet serviceable**
+ * because the scope-filtered snapshot fan-out lands in Phase 2 (#809). Admitting
+ * a `projects` viewer onto `/ws` now would either fail-closed (the broadcaster
+ * stub throws) or, worse, silently over-deliver the full `all` snapshot. Until
+ * #809 ships, the share-create route refuses to mint a `projects` grant and the
+ * WS upgrade rejects one (503) if it ever resolves — so there is exactly one
+ * predicate both loci consult and they cannot drift. Returns `true` when the
+ * scope must be rejected in Phase 1.
+ */
+export function isPhase1UnsupportedViewerScope(scope: Scope): boolean {
+  return scope.kind === 'projects';
+}
+
+/**
  * The viewer HTTP allow-list, matched on **pathname only** (R7, round-3 Issue
  * 4: no allow-listed route may carry a side-effecting query param). A viewer's
  * *only* permitted HTTP endpoint is the cookie-exchange session route; **all**

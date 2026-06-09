@@ -47,12 +47,24 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         errorCount: stats.errorCount,
       };
     }
+    // #808 / R10: surface the revocation sweep liveness + viewer count + grant
+    // store writability so a dead sweep or a read-only store is visible to the
+    // operator. Owner-only: viewers are denied every `/api/*` route but the
+    // session exchange, so this block never reaches a viewer.
+    let viewerBroadcasterBlock: object | undefined;
+    if (deps.viewerShare) {
+      viewerBroadcasterBlock = {
+        ...deps.viewerShare.registry.broadcasterHealth(),
+        grantStoreWritable: deps.viewerShare.grantStore.isWritable(),
+      };
+    }
     return c.json({
       status: 'ok',
       agents: taskStore.listTasks().length,
       build: buildInfo,
       serverStartedAt,
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
+      ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
     });
   });

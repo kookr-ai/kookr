@@ -21,6 +21,7 @@ import { StatusBar } from './components/StatusBar.js';
 import { Toasts } from './components/Toasts.js';
 import { PluginInstallBanner } from './components/PluginInstallBanner.js';
 import { BugReportDialog } from './components/BugReportDialog.js';
+import { ShareViewerDialog } from './components/ShareViewerDialog.js';
 import { AchievementToasts } from './components/AchievementToast.js';
 import { SentOverlay } from './components/SentOverlay.js';
 import { SnoozeDialog } from './components/SnoozeDialog.js';
@@ -288,6 +289,7 @@ export function App() {
   const [showOperations, setShowOperations] = useState(false);
   const [showCoordinatorFindings, setShowCoordinatorFindings] = useState(false);
   const [showBugReport, setShowBugReport] = useState(false);
+  const [showShareViewer, setShowShareViewer] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showSweepConfirm, setShowSweepConfirm] = useState(false);
   const [debugTimelineEnabled] = useState(() => isDebugTimelineEnabled());
@@ -513,7 +515,7 @@ export function App() {
         setShowCommandPalette((value) => !value);
         return;
       }
-      if ((showOperations || showBugReport) && e.key !== 'Escape') {
+      if ((showOperations || showBugReport || showShareViewer) && e.key !== 'Escape') {
         return;
       }
       if (matchesShortcutAction(e, shortcutBindings, 'next_bottleneck')) {
@@ -732,7 +734,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, showBugReport, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive]);
+  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, showBugReport, showShareViewer, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;
@@ -945,6 +947,7 @@ export function App() {
       : []),
     { id: 'cost', label: 'Cost comparison', section: 'tools', keywords: ['claude', 'codex', 'price', 'spend'], run: () => setShowCostComparison(true) },
     { id: 'bug-report', label: 'Bug report', section: 'session', keywords: ['feedback', 'issue', 'report'], run: () => setShowBugReport(true) },
+    { id: 'share-viewer', label: 'Share read-only view', section: 'session', keywords: ['viewer', 'share', 'read-only', 'guest', 'link'], run: () => setShowShareViewer(true) },
     { id: 'settings', label: 'Settings', section: 'session', keywords: ['preferences', 'config', 'options'], run: () => { setSettingsFocus(undefined); setShowSettings(true); } },
     { id: 'shortcuts', label: 'Help & shortcuts', section: 'session', shortcut: formatShortcutBinding(shortcutBindings.toggle_shortcuts_help), keywords: ['help', 'keys', 'keyboard'], run: () => setShowShortcuts(true) },
   ];
@@ -1255,6 +1258,9 @@ export function App() {
             setBugReportNote('');
           }}
         />
+      )}
+      {showShareViewer && (
+        <ShareViewerDialog onClose={() => setShowShareViewer(false)} />
       )}
       {ossShowView && (
         <Suspense fallback={null}>

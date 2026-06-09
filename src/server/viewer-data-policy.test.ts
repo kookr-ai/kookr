@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import {
   canonicalizeScope,
+  isPhase1UnsupportedViewerScope,
   isProjectInScope,
   isViewerAllowedRoute,
   type Scope,
@@ -55,5 +56,17 @@ describe('isViewerAllowedRoute', () => {
     ]) {
       expect(isViewerAllowedRoute(path)).toBe(false);
     }
+  });
+});
+
+describe('isPhase1UnsupportedViewerScope', () => {
+  test('an `all` scope is serviceable in Phase 1', () => {
+    expect(isPhase1UnsupportedViewerScope({ kind: 'all' })).toBe(false);
+  });
+
+  test('a `projects` scope is rejected in Phase 1 (scoped fan-out is #809)', () => {
+    expect(isPhase1UnsupportedViewerScope({ kind: 'projects', projectIds: ['p1'] })).toBe(true);
+    // Even an empty projects list is not an `all` grant and stays rejected.
+    expect(isPhase1UnsupportedViewerScope({ kind: 'projects', projectIds: [] })).toBe(true);
   });
 });

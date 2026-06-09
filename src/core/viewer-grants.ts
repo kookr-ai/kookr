@@ -28,6 +28,16 @@ import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
 import { canonicalizeScope, type Scope } from '../server/viewer-data-policy.js';
 import type { ViewerTokenResolution } from '../server/auth.js';
 
+/**
+ * Liveness of a grant by id, the return of {@link ViewerGrantStore.liveness}.
+ * Structurally identical to the connection registry's `GrantLiveness` (the
+ * registry injects `liveness` as its `resolveGrantLiveness` sweep callback), but
+ * declared here so this `core/` module does not import a type *down* from
+ * `server/` — the dependency only flows the other way (the server registry
+ * consumes this store), keeping the layer direction intact.
+ */
+export type ViewerGrantLiveness = 'active' | 'revoked' | 'expired' | 'not-found';
+
 /** Persisted viewer grant. The raw token is never stored — only its hash. */
 export interface ViewerGrant {
   /** Stable opaque grant id (audit + registry key). Not a secret. */
@@ -135,9 +145,44 @@ export class ViewerGrantStore {
   private grants: ViewerGrant[] = [];
   /** Async write mutex — serializes persist() across concurrent callers. */
   private writeLock: Promise<void> = Promise.resolve();
+  /**
+   * Whether the last durable write succeeded. Surfaced via {@link isWritable}
+   * for the owner `/api/health` `viewerBroadcaster.grantStoreWritable` signal
+   * (#808 / R10) so a store whose disk has gone read-only is visible to the
+   * operator. Starts `true`: a fresh store with no writes yet is presumed
+   * writable until proven otherwise.
+   */
+  private lastWriteOk = true;
 
   constructor(kookrDir: string) {
     this.filePath = join(kookrDir, SHARE_GRANTS_FILE);
+  }
+
+  /**
+   * Whether the last persist succeeded (health observability, R10). A `false`
+   * here means a create/revoke failed to reach disk — grants may be lost on
+   * restart — so the owner health block can flag it.
+   */
+  isWritable(): boolean {
+    return this.lastWriteOk;
+  }
+
+  /**
+   * Current liveness of a grant by id, for the connection-registry revocation
+   * sweep (#805/#808). Mirrors {@link resolve}'s revoked-before-expiry ordering
+   * and fail-closed expiry parsing, but keys on the opaque grant id (which the
+   * registry holds per socket) rather than the secret token. Unknown id ⇒
+   * `not-found` (the sweep evicts it — a deleted grant must not keep a socket).
+   */
+  liveness(grantId: string): ViewerGrantLiveness {
+    const grant = this.grants.find((g) => g.id === grantId);
+    if (!grant) return 'not-found';
+    if (grant.revokedAt) return 'revoked';
+    if (grant.expiresAt) {
+      const expiresMs = Date.parse(grant.expiresAt);
+      if (Number.isNaN(expiresMs) || expiresMs <= Date.now()) return 'expired';
+    }
+    return 'active';
   }
 
   /** Load grants from disk into memory. Missing/corrupt file ⇒ empty store. */
@@ -257,7 +302,16 @@ export class ViewerGrantStore {
     const run = this.writeLock.then(async () => {
       const next = mutate(this.grants);
       const snapshot: ShareGrantsFile = { schemaVersion: SCHEMA_VERSION, grants: next };
-      await atomicWriteFile(this.filePath, JSON.stringify(snapshot, null, 2));
+      try {
+        await atomicWriteFile(this.filePath, JSON.stringify(snapshot, null, 2));
+      } catch (err) {
+        // Record the failure for the health signal, then rethrow so the caller
+        // still sees the rejection (no fail-open: memory stays at the prior
+        // state because we have not swapped `this.grants`).
+        this.lastWriteOk = false;
+        throw err;
+      }
+      this.lastWriteOk = true;
       this.grants = next;
     });
     // Keep the lock chain alive even if this write rejects, so a single failure

@@ -250,4 +250,60 @@ describe('ViewerGrantStore', () => {
       rmSync(dirB, { recursive: true, force: true });
     }
   });
+
+  describe('liveness (by grant id, for the sweep — #808)', () => {
+    test('reports active / revoked / not-found, mirroring resolve()', async () => {
+      await store.load();
+      const { grant } = await store.create({ label: 'phone', scope: { kind: 'all' } });
+      expect(store.liveness(grant.id)).toBe('active');
+
+      await store.revoke(grant.id);
+      expect(store.liveness(grant.id)).toBe('revoked');
+
+      expect(store.liveness('no-such-id')).toBe('not-found');
+    });
+
+    test('reports expired for a past expiry and active for a future one', async () => {
+      await store.load();
+      const past = new Date(Date.now() - 60_000).toISOString();
+      const future = new Date(Date.now() + 60_000).toISOString();
+      const { grant: expiredGrant } = await store.create({ label: 'old', scope: { kind: 'all' }, expiresAt: past });
+      const { grant: liveGrant } = await store.create({ label: 'new', scope: { kind: 'all' }, expiresAt: future });
+      expect(store.liveness(expiredGrant.id)).toBe('expired');
+      expect(store.liveness(liveGrant.id)).toBe('active');
+    });
+
+    test('revoked-before-expiry: a revoked AND expired grant reports revoked', async () => {
+      await store.load();
+      const past = new Date(Date.now() - 60_000).toISOString();
+      const { grant } = await store.create({ label: 'both', scope: { kind: 'all' }, expiresAt: past });
+      await store.revoke(grant.id);
+      expect(store.liveness(grant.id)).toBe('revoked');
+    });
+  });
+
+  describe('isWritable (health signal — #808)', () => {
+    test('a fresh, loaded store is writable', async () => {
+      await store.load();
+      expect(store.isWritable()).toBe(true);
+    });
+
+    test('stays writable after a successful create', async () => {
+      await store.load();
+      await store.create({ label: 'ok', scope: { kind: 'all' } });
+      expect(store.isWritable()).toBe(true);
+    });
+
+    test('flips to not-writable when a persist fails', async () => {
+      // Point the store at a path whose parent is a file, so the atomic write
+      // (temp-in-same-dir + rename) cannot succeed.
+      const filePath = join(tempDir, 'occupied');
+      writeFileSync(filePath, 'x');
+      const broken = new ViewerGrantStore(filePath); // kookrDir is actually a file
+      // create() works without load() (grants default to []); the persist fails
+      // because the temp-write target dir is really a file.
+      await expect(broken.create({ label: 'fail', scope: { kind: 'all' } })).rejects.toThrow();
+      expect(broken.isWritable()).toBe(false);
+    });
+  });
 });
