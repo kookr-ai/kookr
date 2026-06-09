@@ -451,3 +451,41 @@ describe('createCsrfMiddleware', () => {
     expect(res.status).toBe(200);
   });
 });
+
+// --- GET /api/auth/session (whoami probe, #811) ---
+
+describe('GET /api/auth/session (whoami)', () => {
+  function whoamiApp(actor?: { kind: 'owner' } | { kind: 'viewer'; grantId: string; scope: unknown }): Hono {
+    const app = new Hono();
+    if (actor) {
+      app.use('*', async (c, next) => {
+        c.set('actor', actor as never);
+        await next();
+      });
+    }
+    registerAuthSessionRoutes(app, {});
+    return app;
+  }
+
+  test('no actor on the context (loopback / auth off) ⇒ owner', async () => {
+    const res = await whoamiApp().request('http://localhost/api/auth/session');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ actor: 'owner' });
+  });
+
+  test('owner actor ⇒ { actor: "owner" } with no scope', async () => {
+    const res = await whoamiApp({ kind: 'owner' }).request('http://lan.example/api/auth/session');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ actor: 'owner' });
+  });
+
+  test('viewer actor ⇒ { actor: "viewer", scope } so the SPA can render the read-only banner', async () => {
+    const scope = { kind: 'projects', projectIds: ['p1', 'p2'] };
+    const res = await whoamiApp({ kind: 'viewer', grantId: 'g1', scope }).request(
+      'http://lan.example/api/auth/session',
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ actor: 'viewer', scope });
+    // The grantId is NOT leaked back to the viewer (only kind + scope).
+  });
+});

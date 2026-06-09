@@ -318,6 +318,25 @@ export function registerAuthSessionRoutes(
 
     return c.json({ ok: true, actor: actor.kind, csrfToken });
   });
+
+  // --- Identity probe (whoami) for the SPA (#811, RFC §"Phase 3 UX") ---
+  //
+  // `GET /api/auth/session` returns the *current* actor resolved from the request
+  // credential (the session cookie), so the SPA can render the read-only banner
+  // and suppress mutation controls on every load — not only on the one boot where
+  // a `#token` fragment was present. It is read-only, leaks only the caller's own
+  // identity + scope, and is reachable by a viewer because the route path is on
+  // the viewer HTTP allow-list (`isViewerAllowedRoute`); the actor gate already
+  // 403s any *other* viewer route. On a loopback bind the actor gate is a no-op
+  // (auth off) so `c.get('actor')` is unset — default to `owner`, which is correct
+  // for the local owner and renders no banner.
+  app.get('/api/auth/session', (c) => {
+    const actor = c.get('actor') ?? ({ kind: 'owner' } as Actor);
+    if (actor.kind === 'viewer') {
+      return c.json({ actor: 'viewer', scope: actor.scope });
+    }
+    return c.json({ actor: 'owner' });
+  });
 }
 
 /**

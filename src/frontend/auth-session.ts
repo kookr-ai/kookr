@@ -23,6 +23,8 @@
 // + the HttpOnly cookie are the real defenses).
 
 const CSRF_HEADER = 'x-kookr-csrf';
+/** Window event fired when a mutating /api request is rejected 403 (#811). */
+export const READ_ONLY_BLOCKED_EVENT = 'kookr:read-only-blocked';
 const CSRF_STORAGE_KEY = 'kookr.session.csrf';
 const SESSION_FINGERPRINT_KEY = 'kookr.session.fingerprint';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -88,16 +90,28 @@ function readUrl(input: RequestInfo | URL): string {
  * Wrap `fetch` so a mutating same-origin `/api` request automatically carries the
  * `X-Kookr-CSRF` nonce — covering every existing call site without edits. Returns
  * the wrapped function; idempotent installation is the caller's job.
+ *
+ * `onForbidden` (optional, #811) is invoked when a mutating same-origin `/api`
+ * request comes back `403`. The SPA uses this as the single catch-all for the
+ * viewer read-only UX: the server gate is the real boundary, and any mutation a
+ * viewer reaches surfaces a viewer-facing notice (the handler itself decides
+ * whether the current actor is a viewer — an owner's CSRF 403 is a real error and
+ * is not a read-only notice). It never sees the body and never throws into the
+ * caller, so call-site error handling is unchanged.
  */
 export function createCsrfFetch(
   originalFetch: typeof fetch,
   getToken: () => string | null,
   origin: string,
+  onForbidden?: () => void,
 ): typeof fetch {
-  return (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const token = getToken();
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const method = readMethod(input, init);
-    if (token && !SAFE_METHODS.has(method) && isSameOriginApiUrl(readUrl(input), origin)) {
+    const isMutatingApi = !SAFE_METHODS.has(method) && isSameOriginApiUrl(readUrl(input), origin);
+    const token = getToken();
+
+    let res: Response;
+    if (token && isMutatingApi) {
       const headers = new Headers(
         init?.headers ??
           (typeof input !== 'string' && !(input instanceof URL) && 'headers' in input
@@ -105,9 +119,19 @@ export function createCsrfFetch(
             : undefined),
       );
       if (!headers.has(CSRF_HEADER)) headers.set(CSRF_HEADER, token);
-      return originalFetch(input, { ...init, headers });
+      res = await originalFetch(input, { ...init, headers });
+    } else {
+      res = await originalFetch(input, init);
     }
-    return originalFetch(input, init);
+
+    if (onForbidden && isMutatingApi && res.status === 403) {
+      try {
+        onForbidden();
+      } catch {
+        // a misbehaving notice handler must never break the fetch
+      }
+    }
+    return res;
   };
 }
 
@@ -177,7 +201,15 @@ export async function bootstrapAuthSession(): Promise<void> {
   // own follow-ups) is covered. The wrapper is a no-op until a nonce exists.
   // Guard against double-wrapping if bootstrap is ever invoked more than once.
   if (!fetchPatched && typeof window !== 'undefined' && typeof window.fetch === 'function') {
-    window.fetch = createCsrfFetch(window.fetch.bind(window), getCsrfToken, window.location.origin);
+    window.fetch = createCsrfFetch(
+      window.fetch.bind(window),
+      getCsrfToken,
+      window.location.origin,
+      // #811: a 403 on a mutating /api request fires the read-only-blocked event;
+      // `viewer-session.ts` listens and shows the viewer-facing notice (gated on
+      // the actor actually being a viewer, so owner CSRF 403s are untouched).
+      () => window.dispatchEvent(new CustomEvent(READ_ONLY_BLOCKED_EVENT)),
+    );
     fetchPatched = true;
   }
 

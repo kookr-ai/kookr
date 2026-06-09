@@ -88,14 +88,28 @@ describe('viewer-share-routes', () => {
     expect(body.grant.scope).toEqual({ kind: 'all' });
   });
 
-  it('Phase-1 rejects a projects-scoped create with 400 and writes no grant', async () => {
+  it('creates a projects-scoped grant (canonicalized) and audits it (#811)', async () => {
     const res = await post(app, '/api/share/viewers', {
       label: 'scoped',
-      scope: { kind: 'projects', projectIds: ['p1'] },
+      // Deliberately unsorted + duplicated to prove canonicalization on mint.
+      scope: { kind: 'projects', projectIds: ['p2', 'p1', 'p2'] },
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { grant: { id: string; scope: unknown } };
+    expect(body.grant.scope).toEqual({ kind: 'projects', projectIds: ['p1', 'p2'] });
+    expect(grantStore.list()).toHaveLength(1);
+    const events = readAuditEvents(kookrDir);
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe('viewer-grant.created');
+  });
+
+  it('rejects a projects-scoped create with an empty projectIds (400 empty-scope), writes no grant', async () => {
+    const res = await post(app, '/api/share/viewers', {
+      label: 'empty',
+      scope: { kind: 'projects', projectIds: [] },
     });
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toBe('unsupported-scope');
+    expect(((await res.json()) as { error: string }).error).toBe('empty-scope');
     expect(grantStore.list()).toHaveLength(0);
     expect(readAuditEvents(kookrDir)).toHaveLength(0);
   });
@@ -104,6 +118,15 @@ describe('viewer-share-routes', () => {
     const res = await post(app, '/api/share/viewers', { scope: { kind: 'bogus' } });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe('invalid-scope');
+  });
+
+  it('stores a valid ISO-8601 expiry and echoes it back on create (#811)', async () => {
+    const expiresAt = '2030-01-01T00:00:00.000Z';
+    const res = await post(app, '/api/share/viewers', { label: 'exp', expiresAt });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { grant: { id: string; expiresAt?: string } };
+    expect(body.grant.expiresAt).toBe(expiresAt);
+    expect(grantStore.list()[0].expiresAt).toBe(expiresAt);
   });
 
   it('rejects a malformed expiry with 400', async () => {

@@ -71,6 +71,38 @@ describe('createCsrfFetch', () => {
     const init = (orig as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
     expect(new Headers(init.headers).get('x-kookr-csrf')).toBe('explicit');
   });
+
+  // #811: 403 on a mutating /api request fires onForbidden (the read-only net).
+  test('onForbidden fires on a 403 mutating same-origin /api response', async () => {
+    const orig = vi.fn(async () => new Response('forbidden', { status: 403 })) as unknown as typeof fetch;
+    const onForbidden = vi.fn();
+    const wrapped = createCsrfFetch(orig, () => 'nonce', origin, onForbidden);
+    const res = await wrapped('/api/tasks', { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(onForbidden).toHaveBeenCalledTimes(1);
+  });
+
+  test('onForbidden does NOT fire on 2xx, on GET 403, or on cross-origin 403', async () => {
+    const onForbidden = vi.fn();
+
+    const ok = vi.fn(async () => new Response('ok', { status: 200 })) as unknown as typeof fetch;
+    await createCsrfFetch(ok, () => 'n', origin, onForbidden)('/api/tasks', { method: 'POST' });
+
+    const forbid = vi.fn(async () => new Response('no', { status: 403 })) as unknown as typeof fetch;
+    await createCsrfFetch(forbid, () => 'n', origin, onForbidden)('/api/tasks', { method: 'GET' });
+    await createCsrfFetch(forbid, () => 'n', origin, onForbidden)('https://evil.example/api/tasks', { method: 'POST' });
+
+    expect(onForbidden).not.toHaveBeenCalled();
+  });
+
+  test('a throwing onForbidden never breaks the returned response', async () => {
+    const orig = vi.fn(async () => new Response('no', { status: 403 })) as unknown as typeof fetch;
+    const wrapped = createCsrfFetch(orig, () => 'n', origin, () => {
+      throw new Error('boom');
+    });
+    const res = await wrapped('/api/tasks', { method: 'DELETE' });
+    expect(res.status).toBe(403);
+  });
 });
 
 describe('bootstrapAuthSession', () => {
