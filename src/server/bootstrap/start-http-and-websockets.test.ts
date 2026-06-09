@@ -2,11 +2,14 @@ import { randomBytes } from 'node:crypto';
 import { createConnection, type Socket } from 'node:net';
 import { performance } from 'node:perf_hooks';
 
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 import { WebSocket } from 'ws';
 
 import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
+import type { Actor } from '../auth.js';
+import type { SocketRegistrar } from '../viewer-connection-registry.js';
+import type { TerminalInputWriterPort } from '../../core/ports/terminal-input-writer-port.js';
 import { startHttpAndWebSockets, type HttpAndWebSockets } from './start-http-and-websockets.js';
 
 describe('startHttpAndWebSockets', () => {
@@ -224,6 +227,129 @@ describe('startHttpAndWebSockets', () => {
       });
       expect(err).toBeInstanceOf(Error);
       expect(dashboardConnections).toHaveLength(0);
+    });
+  });
+
+  // Terminal socket registry + read-only viewer wiring — kookr #807. Terminal
+  // sockets register with the connection registry (#805) so the revocation sweep
+  // owns the terminal pool, and a viewer actor produces a read-only bridge whose
+  // input never reaches the backend.
+  describe('terminal socket registry + read-only viewer wiring (#807)', () => {
+    const SESSION = 'kookr-test-session';
+    const TERMINAL_PATH = `/ws/terminal/${SESSION}`;
+
+    function makeRegistrar(): { registrar: SocketRegistrar; register: ReturnType<typeof vi.fn>; unregister: ReturnType<typeof vi.fn> } {
+      const register = vi.fn();
+      const unregister = vi.fn();
+      return { registrar: { register, unregister }, register, unregister };
+    }
+
+    function makeWriter(): { writer: TerminalInputWriterPort; writeInput: ReturnType<typeof vi.fn> } {
+      const writeInput = vi.fn().mockResolvedValue({ sessionId: SESSION, readinessVersion: 1 });
+      const writer = {
+        writeInput,
+        writeInputSequence: vi.fn().mockResolvedValue({ sessionId: SESSION, readinessVersion: 1 }),
+      } as TerminalInputWriterPort;
+      return { writer, writeInput };
+    }
+
+    async function openTerminal(port: number): Promise<WebSocket> {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}${TERMINAL_PATH}`);
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', reject);
+      });
+      return ws;
+    }
+
+    test('registers an owner terminal socket and forwards its input', async () => {
+      const { registrar, register, unregister } = makeRegistrar();
+      const { writer, writeInput } = makeWriter();
+      runtime = await startHttpAndWebSockets({
+        app: new Hono(),
+        port: 0,
+        host: '127.0.0.1',
+        tasksFile: '/tmp/tasks.json',
+        hooksDir: '/tmp/hooks',
+        terminalBackend: new FakeTerminalBackend(),
+        terminalInputWriter: writer,
+        terminalDeps: {
+          monitor: {} as never,
+          abortPendingSuggestion: () => {},
+          broadcastToAll: () => {},
+          serverCwd: '/repo',
+        },
+        useFakeTerminalBridge: true,
+        terminalRegistrar: registrar,
+        onDashboardConnection: () => {},
+      });
+      const port = portFor(runtime);
+
+      const ws = await openTerminal(port);
+      // Let the registration + bridge.start() microtasks settle.
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(register).toHaveBeenCalledTimes(1);
+      const [, actor, kind, meta] = register.mock.calls[0];
+      expect(actor).toEqual({ kind: 'owner' });
+      expect(kind).toBe('terminal');
+      expect(meta).toEqual({ sessionName: SESSION });
+
+      // Owner input flows through to the backend writer.
+      ws.send('hi');
+      await new Promise((r) => setTimeout(r, 20));
+      expect(writeInput).toHaveBeenCalled();
+
+      ws.close();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unregister).toHaveBeenCalledTimes(1);
+    });
+
+    test('a viewer actor yields a read-only bridge: input never reaches the backend', async () => {
+      const { registrar, register, unregister } = makeRegistrar();
+      const { writer, writeInput } = makeWriter();
+      const viewer: Actor = { kind: 'viewer', grantId: 'g1', scope: { kind: 'all' } };
+      runtime = await startHttpAndWebSockets({
+        app: new Hono(),
+        port: 0,
+        host: '127.0.0.1',
+        tasksFile: '/tmp/tasks.json',
+        hooksDir: '/tmp/hooks',
+        terminalBackend: new FakeTerminalBackend(),
+        terminalInputWriter: writer,
+        terminalDeps: {
+          monitor: {} as never,
+          abortPendingSuggestion: () => {},
+          broadcastToAll: () => {},
+          serverCwd: '/repo',
+        },
+        useFakeTerminalBridge: true,
+        terminalRegistrar: registrar,
+        // Synthetic viewer resolution — stands in for the deferred resolveViewer
+        // security gate so the read-only path is exercised end-to-end.
+        resolveTerminalActor: () => viewer,
+        onDashboardConnection: () => {},
+      });
+      const port = portFor(runtime);
+
+      const ws = await openTerminal(port);
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(register).toHaveBeenCalledTimes(1);
+      expect(register.mock.calls[0][1]).toEqual(viewer);
+
+      // Viewer input/resize/paste are dropped — the inbound handler was never wired.
+      ws.send('hi');
+      ws.send('{"type":"resize","cols":80,"rows":24}');
+      ws.send(JSON.stringify({ type: 'paste', text: 'a\nb' }));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(writeInput).not.toHaveBeenCalled();
+
+      // The viewer socket must unregister on close — this is the seam the
+      // revocation sweep (#805) relies on to drop terminal sockets by grantId.
+      ws.close();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unregister).toHaveBeenCalledTimes(1);
     });
   });
 });

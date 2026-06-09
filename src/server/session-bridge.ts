@@ -43,6 +43,20 @@ import {
 export const BRACKETED_PASTE_START = '\x1b[200~';
 export const BRACKETED_PASTE_END = '\x1b[201~';
 
+/** Construction options for {@link SessionBridge}. */
+export interface SessionBridgeOptions {
+  /**
+   * When true, the bridge is **output-only**: the inbound `ws.on('message')`
+   * handler is never registered, so no keystroke, resize, or paste frame can
+   * reach the PTY (kookr #807, read-only shared view). Read-only is enforced
+   * here — by not wiring the write path at all — rather than by omitting the
+   * `onInput`/`onAnyKeystroke` activity callbacks, which are notifications and
+   * not the write path. The output replay + `onData` stream still wire, so a
+   * read-only viewer keeps receiving PTY output. Default: false (owner).
+   */
+  readOnly?: boolean;
+}
+
 export class SessionBridge {
   private unsubscribeData: (() => void) | null = null;
   private closed = false;
@@ -52,6 +66,7 @@ export class SessionBridge {
   private readonly inputWriter: TerminalInputWriterPort;
   private readonly onInput?: (sessionId: SessionId) => void;
   private readonly onAnyKeystroke?: (sessionId: SessionId) => void;
+  private readonly readOnly: boolean;
 
   constructor(
     sessionId: SessionId,
@@ -60,10 +75,12 @@ export class SessionBridge {
     inputWriterOrOnInput?: TerminalInputWriterPort | ((sessionId: SessionId) => void),
     onInputOrAnyKeystroke?: (sessionId: SessionId) => void,
     onAnyKeystroke?: (sessionId: SessionId) => void,
+    options?: SessionBridgeOptions,
   ) {
     this.sessionId = sessionId;
     this.ws = ws;
     this.backend = backend;
+    this.readOnly = options?.readOnly ?? false;
     if (inputWriterOrOnInput && typeof inputWriterOrOnInput === 'object' && 'writeInput' in inputWriterOrOnInput) {
       this.inputWriter = inputWriterOrOnInput;
       this.onInput = onInputOrAnyKeystroke;
@@ -128,6 +145,29 @@ export class SessionBridge {
       return;
     }
 
+    // Read-only (viewer) bridges never wire the inbound handler, so no write,
+    // resize, or paste frame can reach the PTY (#807). The write path is
+    // load-bearing for output suppression: skipping the listener — not merely
+    // dropping the activity callbacks — is what makes the socket output-only.
+    if (!this.readOnly) {
+      this.wireInboundHandler();
+    }
+
+    this.ws.on('close', () => {
+      try {
+        this.dispose();
+      } catch (err) {
+        console.error(`[session-bridge] dispose failed for ${this.sessionId}:`, err);
+      }
+    });
+  }
+
+  /**
+   * Register the inbound `ws.on('message')` write path: keystrokes, resize, and
+   * paste control frames all flow to the PTY here. Only owner (writable) bridges
+   * call this; read-only viewer bridges skip it entirely (#807).
+   */
+  private wireInboundHandler(): void {
     this.ws.on('message', (data, isBinary) => {
       if (this.closed) return;
 
@@ -173,14 +213,6 @@ export class SessionBridge {
       const bytes = new TextEncoder().encode(text);
       this.safeForwardWrite(bytes);
       this.notifyInput(bytes);
-    });
-
-    this.ws.on('close', () => {
-      try {
-        this.dispose();
-      } catch (err) {
-        console.error(`[session-bridge] dispose failed for ${this.sessionId}:`, err);
-      }
     });
   }
 

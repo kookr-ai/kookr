@@ -33,6 +33,18 @@ export interface FakeTerminalContent {
   loop?: boolean;
 }
 
+/** Construction options for {@link FakeTerminalBridge}. */
+export interface FakeTerminalBridgeOptions {
+  /**
+   * When true the bridge is **output-only**: the inbound `ws.on('message')`
+   * handler is never registered, so no keystroke, resize, or paste frame reaches
+   * the fake backend (kookr #807, read-only shared view). Mirrors
+   * {@link SessionBridgeOptions.readOnly} so E2E/demo viewer sockets exercise the
+   * same write-suppression path as the real bridge. Default: false.
+   */
+  readOnly?: boolean;
+}
+
 export class FakeTerminalBridge {
   private lines: string[];
   private lineIndex = 0;
@@ -40,12 +52,14 @@ export class FakeTerminalBridge {
   private mode: 'instant' | 'streaming';
   private lineDelayMs: number;
   private loop: boolean;
+  private readOnly: boolean;
 
   constructor(
     private tmuxName: string,
     private ws: WebSocket,
     opts?: FakeTerminalContent,
     private inputWriter?: TerminalInputWriterPort,
+    options?: FakeTerminalBridgeOptions,
   ) {
     const resolved = opts ?? FakeTerminalBridge.getContent(tmuxName);
     const text = resolved?.text ?? FakeTerminalBridge.defaultContent(tmuxName);
@@ -53,6 +67,7 @@ export class FakeTerminalBridge {
     this.mode = resolved?.mode ?? 'streaming';
     this.lineDelayMs = resolved?.lineDelayMs ?? 150;
     this.loop = resolved?.loop ?? false;
+    this.readOnly = options?.readOnly ?? false;
   }
 
   /** Start displaying content. */
@@ -88,29 +103,35 @@ export class FakeTerminalBridge {
     // Handle incoming messages. The fake bridge is display-oriented, but E2E
     // tests still need browser terminal input to reach FakeTerminalBackend so
     // they can assert on the same byte path as SessionBridge.
-    this.ws.on('message', (data) => {
-      const msg = data.toString();
-      if (msg.startsWith('{"type":"resize"')) {
-        // Acknowledge resize but don't act on it
-        return;
-      }
-      if (msg.startsWith('{"type":"paste"')) {
-        try {
-          const parsed = JSON.parse(msg) as { type?: unknown; text?: unknown };
-          if (parsed.type === 'paste' && typeof parsed.text === 'string') {
-            const sanitized = parsed.text
-              .replaceAll(BRACKETED_PASTE_START, '')
-              .replaceAll(BRACKETED_PASTE_END, '');
-            this.forwardInput(BRACKETED_PASTE_START + sanitized + BRACKETED_PASTE_END);
-          }
-        } catch {
-          // Treat malformed paste control frames as raw input.
-          this.forwardInput(msg);
+    //
+    // Read-only (viewer) bridges skip wiring this handler entirely, so no
+    // keystroke/resize/paste reaches the fake backend (#807). Output streaming
+    // above is unaffected.
+    if (!this.readOnly) {
+      this.ws.on('message', (data) => {
+        const msg = data.toString();
+        if (msg.startsWith('{"type":"resize"')) {
+          // Acknowledge resize but don't act on it
+          return;
         }
-        return;
-      }
-      this.forwardInput(data instanceof Buffer ? new Uint8Array(data) : msg);
-    });
+        if (msg.startsWith('{"type":"paste"')) {
+          try {
+            const parsed = JSON.parse(msg) as { type?: unknown; text?: unknown };
+            if (parsed.type === 'paste' && typeof parsed.text === 'string') {
+              const sanitized = parsed.text
+                .replaceAll(BRACKETED_PASTE_START, '')
+                .replaceAll(BRACKETED_PASTE_END, '');
+              this.forwardInput(BRACKETED_PASTE_START + sanitized + BRACKETED_PASTE_END);
+            }
+          } catch {
+            // Treat malformed paste control frames as raw input.
+            this.forwardInput(msg);
+          }
+          return;
+        }
+        this.forwardInput(data instanceof Buffer ? new Uint8Array(data) : msg);
+      });
+    }
 
     this.ws.on('close', () => {
       this.dispose();
