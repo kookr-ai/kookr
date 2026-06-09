@@ -12,7 +12,7 @@ uncomment only the values you need.
 | `KOOKR_HOST` | `127.0.0.1` | Hostname or IP address | Bind address for the HTTP/WebSocket server. Binding to a non-loopback host (a LAN IP or `0.0.0.0`) activates the API-token gate below. |
 | `KOOKR_API_TOKEN` | unset | Secret string | Bearer token required on **every** API request (including GETs) and WebSocket upgrades **when `KOOKR_HOST` is non-loopback**. Loopback binds (`127.0.0.1`/`::1`/`localhost`) ignore it and stay token-free. Non-browser clients (the `kookr spawn` / `kookr status` CLIs) send it as `Authorization: Bearer <token>` and read it from the process environment (so it must be **exported** in the shell — they do not load `.env`). The browser dashboard authenticates differently: it exchanges a one-time token (carried in the share/handoff URL **fragment**, `#token=<token>`) for an `HttpOnly` session cookie via `POST /api/auth/session`, and the cookie then rides automatically on HTTP fetches and the WebSocket handshake (no token in any WS URL — the legacy `?token=` query parameter was removed). This closed issue #708. If a non-loopback bind has no token and `KOOKR_ALLOW_NON_LOOPBACK=true`, one is auto-generated and printed at startup. |
 | `KOOKR_ALLOW_NON_LOOPBACK` | unset | `true` to enable | Explicit opt-out of the non-loopback fail-closed guard. When `KOOKR_HOST` is non-loopback and `KOOKR_API_TOKEN` is unset: `true` auto-generates an API token (printed at startup) and enforces it; unset/other refuses to start. Has no effect on a loopback bind. |
-| `KOOKR_TRUSTED_TUNNEL` | unset | `true` to assert | Operator assertion that a non-loopback bind sits behind a mesh-encrypted tunnel (Tailscale / WireGuard). The browser session cookie is `Secure` only over HTTPS; a `Secure` cookie is never sent over plain HTTP, so on a non-loopback **plain-HTTP** bind the cookie exchange (`POST /api/auth/session`) is **refused** unless `KOOKR_TRUSTED_TUNNEL=true`, in which case a non-`Secure` cookie is issued over the asserted tunnel. Prefer fronting the dashboard with HTTPS (e.g. **Tailscale Serve**), which keeps `Secure` on and needs no flag. **Trusted, not validated** — do not set it on a routable public bind; doing so would ship a non-`Secure` cookie on an unencrypted path. Has no effect on a loopback bind. |
+| `KOOKR_TRUSTED_TUNNEL` | unset | `true` to assert | Operator assertion that a non-loopback bind sits behind a mesh-encrypted tunnel (Tailscale / WireGuard). The browser session cookie is `Secure` only over HTTPS; a `Secure` cookie is never sent over plain HTTP, so on a non-loopback **plain-HTTP** bind the cookie exchange (`POST /api/auth/session`) is **refused** unless `KOOKR_TRUSTED_TUNNEL=true`, in which case a non-`Secure` cookie is issued over the asserted tunnel. Prefer fronting the dashboard with HTTPS (e.g. **Tailscale Serve**), which keeps `Secure` on and needs no flag. **Trusted, not validated** — do not set it on a routable public bind; doing so would ship a non-`Secure` cookie on an unencrypted path. Has no effect on a loopback bind. See [Read-Only Shared View Setup](shared-view-setup.md). |
 | `KOOKR_REQUEST_BODY_LIMIT_BYTES` | `1000000` | Positive integer bytes | Maximum JSON request body size accepted by the dashboard server API routes. Oversized requests return HTTP 413 before route handlers parse the body. |
 | `KOOKR_DEV_HOST` | unset (Vite dev server binds dual-stack) | Hostname or IP address | Bind address for the Vite frontend dev server (`pnpm dev`, `pnpm dev:frontend`). Default leaves Vite reachable on both `127.0.0.1:5173` and `[::1]:5173`. Set to `0.0.0.0` for LAN access, or to a specific IP to restrict the bind. |
 | `KOOKR_HEALTH_URL` | `http://127.0.0.1:${KOOKR_PORT}/api/health` | HTTP URL | Health endpoint used by `scripts/prod-restart.sh` while waiting for startup. |
@@ -20,6 +20,28 @@ uncomment only the values you need.
 | `KOOKR_STARTUP_CHECK_INTERVAL_SECONDS` | `2` | Positive integer seconds | Poll interval for production restart health checks. |
 | `KOOKR_PROD_DIR` | Auto-resolved `../kookr-prod` | Absolute or relative path | Overrides the production worktree used by `scripts/prod-update.sh` and deployment routes. |
 | `KOOKR_ENV_ROOT_DIR` | Auto-resolved Kookr main checkout when `prod-update.sh` runs from `kookr-prod`; otherwise current checkout | Absolute or relative path | Overrides the checkout whose `.env` is symlinked into the production worktree by `scripts/prod-update.sh`. |
+
+### Read-Only Shared View
+
+The [Read-Only Shared View](shared-view-setup.md) (hand a collaborator a scoped,
+read-only dashboard link over a private network) has **no dedicated environment
+variables** — it reuses the bind/auth/transport knobs above:
+
+- **Bind + activation:** `KOOKR_HOST` non-loopback turns on the API-token gate,
+  which also activates the owner share routes (`/api/share/viewers`); on a
+  loopback bind the feature is inert. `KOOKR_API_TOKEN` / `KOOKR_ALLOW_NON_LOOPBACK`
+  satisfy the gate (CLI clients use the token; browsers use the session cookie).
+- **Cookie transport posture:** `KOOKR_TRUSTED_TUNNEL` controls whether the
+  browser session cookie may be issued over plain HTTP (see its row above and the
+  setup guide).
+- **Cookie + CSRF are automatic, not configurable.** The `HttpOnly; SameSite=Strict;
+  Path=/` session cookie and the per-session double-submit CSRF nonce
+  (`X-Kookr-CSRF`) are managed by the server (`POST /api/auth/session`); the CSRF
+  HMAC secret is generated fresh per process. There is nothing to set.
+
+> Live viewer admission is currently a **preview** — links can be minted, listed,
+> and revoked, but the wiring that admits a viewer cookie onto the live data
+> streams is deferred. See the setup guide for the current status.
 
 ## Agent Launch
 
