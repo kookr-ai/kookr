@@ -7,12 +7,12 @@
 // store). This keeps `buildScopedSnapshot` the single owner of WS scope
 // filtering across the tick path and the initial burst (round-3 wiring note).
 //
-// Phase 1: the only scope in existence is `all` (viewers cannot yet connect, so
-// every dashboard socket is an owner). The already-enriched `all` snapshot the
-// caller built is serialized once and fanned out — no behavior change for the
-// ~15-20 existing `broadcastToAll` call sites. The per-scope branch is wired and
-// type-safe but unreachable until #809 fills in `buildScopedSnapshot` and #806
-// admits viewers.
+// The already-enriched `all` snapshot the caller built is serialized once and
+// fanned out to owners and any `all`-scoped viewer — no behavior change for the
+// ~15-20 existing `broadcastToAll` call sites. Each distinct `projects` scope
+// among connected viewers gets `buildScopedSnapshot(scope)` (now wired by #809),
+// memoized per canonical scope key. Live viewer admission still depends on the
+// `resolveViewer` seam, deferred until the #810 terminal scope check lands.
 
 import { WebSocket } from 'ws';
 
@@ -30,10 +30,10 @@ export interface ViewerAwareBroadcasterDeps {
   registry: BroadcasterRegistry;
   /**
    * Build the snapshot a viewer holding `scope` should receive. Wired at
-   * bootstrap. Phase 1 has no viewers, so this is only ever invoked for a
-   * non-`all` scope, which cannot occur yet — #809 supplies the real
-   * project-scope filtering. A Phase-1 stub may safely throw (fail-closed: a
-   * viewer gets an error, never the unfiltered `all` snapshot).
+   * bootstrap (#809). Only ever invoked for a non-`all` scope — the `all` group
+   * reuses the caller's already-enriched snapshot — so this is the single owner
+   * of `projects`-scope filtering. An unwired stub fails closed (a viewer gets an
+   * error, never the unfiltered `all` snapshot).
    */
   buildScopedSnapshot: (scope: Scope) => SnapshotMessage;
 }

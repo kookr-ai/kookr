@@ -213,3 +213,39 @@ describe('handleWsConnection read-only gate (integration)', () => {
     expect(handleMessageSafe).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('handleWsConnection initial burst (#809 actor-aware)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('owner burst goes through router.handleConnect (unchanged)', () => {
+    const ws = makeFakeWs();
+    handleWsConnection(ws as unknown as WebSocket, registrar, makeDeps(), OWNER);
+    expect(handleConnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('viewer burst serves the scoped snapshot from buildScopedSnapshot, not handleConnect', () => {
+    const ws = makeFakeWs();
+    const scoped = { type: 'snapshot', agents: [], serverCwd: '/repo' };
+    const buildScopedSnapshot = vi.fn(() => scoped);
+    const deps = { ...makeDeps(), buildScopedSnapshot } as unknown as WsConnectionDeps;
+
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, VIEWER);
+
+    // Single owner of scope filtering — the viewer never goes through the
+    // owner's whole-world handleConnect path.
+    expect(handleConnect).not.toHaveBeenCalled();
+    expect(buildScopedSnapshot).toHaveBeenCalledWith(VIEWER.kind === 'viewer' ? VIEWER.scope : undefined);
+    const sent = ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(sent).toContainEqual(scoped);
+  });
+
+  it('viewer without a buildScopedSnapshot factory fails closed (no snapshot served)', () => {
+    const ws = makeFakeWs();
+    handleWsConnection(ws as unknown as WebSocket, registrar, makeDeps(), VIEWER);
+    expect(handleConnect).not.toHaveBeenCalled();
+    const sent = ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(sent.some((m) => m.type === 'snapshot')).toBe(false);
+  });
+});

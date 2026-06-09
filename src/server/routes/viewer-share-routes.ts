@@ -24,9 +24,12 @@
 // A defensive viewer check is still kept here so a future routing change cannot
 // silently expose the control surface to a viewer (defense in depth).
 //
-// Phase-1 guard: the create route accepts only `scope: all`. A `projects` grant
-// is refused (400) because the scope-filtered fan-out is Phase 2 (#809); the WS
-// upgrade applies the matching `isPhase1UnsupportedViewerScope` guard.
+// Grant-minting guard: the create route accepts only `scope: all`. A `projects`
+// grant is still refused (400) because project-scoped *sharing* is not yet
+// end-to-end serviceable — #809 made the dashboard snapshot scope-correct, but
+// the terminal scope check (#810) and the Share dialog scope picker (#811) are
+// still pending. The WS-upgrade guard that previously mirrored this was removed
+// in #809; scope is now enforced per-channel where the data is produced.
 
 import type { Context, Hono } from 'hono';
 
@@ -107,12 +110,13 @@ export function registerViewerShareRoutes(app: Hono, deps: RouteDeps): void {
     if (!scopeResult.ok) {
       return c.json({ error: 'invalid-scope' }, 400);
     }
-    // Phase-1 guard: only a whole-dashboard (`all`) grant is serviceable until
-    // the scoped snapshot fan-out lands (#809). This is intentionally a strict
-    // *allow-list* (`!== 'all'`), not the upgrade path's deny-list predicate
-    // `isPhase1UnsupportedViewerScope` (which rejects `projects` specifically):
-    // minting is the place to refuse *anything* not yet serviceable, including
-    // any future scope kind, rather than over-deliver the unfiltered snapshot.
+    // Grant-minting guard: only a whole-dashboard (`all`) grant is minted while
+    // project-scoped *sharing* is still being built out (the scope picker is
+    // #811 and the terminal scope check is #810). #809 made the dashboard
+    // snapshot scope-correct (`buildScopedSnapshot`), but minting stays the
+    // place to refuse *anything* not yet end-to-end serviceable — a strict
+    // *allow-list* (`!== 'all'`) so any future scope kind is denied by default
+    // rather than risk over-delivery.
     if (scopeResult.scope.kind !== 'all') {
       return c.json(
         {
