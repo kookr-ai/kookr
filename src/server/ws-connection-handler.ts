@@ -37,6 +37,36 @@ import type { DashboardSelectionController } from './dashboard-selection-control
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 
+/**
+ * Application-level inbound WS message types a viewer (read-only actor) is
+ * permitted to send. Positive allow-list — **default-deny by construction**:
+ * any `ClientMessage` type NOT in this set, including unknown/future types, is
+ * rejected for a viewer with no state change. A newly added mutation variant is
+ * therefore denied to viewers without touching the gate.
+ *
+ * Currently **empty**: the only candidates named by the RFC (heartbeat / ping)
+ * are WebSocket *protocol-level* frames handled by the `ws` library's own
+ * `ping`/`pong` events, not `ClientMessage` variants delivered to
+ * `ws.on('message')`. No application `ClientMessage` is side-effect-free enough
+ * for a read-only viewer to send, so viewers send nothing through this handler.
+ * Add a type here only if a genuinely read-only viewer message variant is
+ * introduced.
+ */
+export const ALLOWED_VIEWER_INBOUND: ReadonlySet<ClientMessage['type']> = new Set<ClientMessage['type']>();
+
+/**
+ * WS read-only inbound gate (#806). Owners have full access; viewers are
+ * restricted to the {@link ALLOWED_VIEWER_INBOUND} positive allow-list. Pure so
+ * the gate logic is unit-testable independent of the socket wiring.
+ *
+ * @returns `true` if `msgType` may proceed for `actor`, `false` if it must be
+ *   rejected (with no state change) by the caller.
+ */
+export function isAllowedViewerInbound(actor: Actor, msgType: ClientMessage['type']): boolean {
+  if (actor.kind === 'owner') return true;
+  return ALLOWED_VIEWER_INBOUND.has(msgType);
+}
+
 export interface WsConnectionDeps {
   taskStore: TaskStore;
   queue: AttentionQueue;
@@ -284,6 +314,26 @@ export function handleWsConnection(
         return;
       }
       const msg: ClientMessage = result.data;
+
+      // Gate 3 — WS read-only inbound gate (#806). Sits at the very top of the
+      // handler (after schema parse, before the inline achievement:* handlers
+      // AND before router.handleMessageSafe) so NO mutation path is reachable
+      // by a viewer. Owners pass through untouched; viewers are restricted to
+      // the positive ALLOWED_VIEWER_INBOUND allow-list. Anything else — every
+      // achievement:* / router-routed mutation, and unknown/future types — is
+      // rejected with a structured error and no state change.
+      if (!isAllowedViewerInbound(actor, msg.type)) {
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({
+            type: 'alert',
+            agentId: '',
+            severity: 'warning',
+            summary: 'Read-only session: action not permitted',
+            details: `Inbound message type "${msg.type}" is blocked for read-only viewers.`,
+          }));
+        }
+        return;
+      }
 
       // Achievement panel messages — handled before router
       if (msg.type === 'achievement:reset') {
