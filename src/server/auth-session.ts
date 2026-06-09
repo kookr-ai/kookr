@@ -39,6 +39,7 @@ import {
   type Actor,
   type ApiAuthConfig,
 } from './auth.js';
+import type { CollaborationAuditAppendInput } from './collaboration-audit-log.js';
 
 /** Header carrying the per-session CSRF nonce on owner mutations (double-submit). */
 export const CSRF_HEADER = 'x-kookr-csrf';
@@ -229,7 +230,19 @@ export interface SessionAuthConfig {
  */
 export function registerAuthSessionRoutes(
   app: Hono,
-  deps: { apiAuth?: ApiAuthConfig; sessionAuth?: SessionAuthConfig },
+  deps: {
+    apiAuth?: ApiAuthConfig;
+    sessionAuth?: SessionAuthConfig;
+    /**
+     * Collaboration audit sink (#808 / R10). When present, a viewer cookie
+     * exchange writes a `viewer-grant.session-established` event. Inert until the
+     * `resolveViewer` security gate admits viewer tokens here (deferred — see the
+     * SECURITY note at the top of this file), so today only owner exchanges occur
+     * and no audit row is written. Owner exchanges are intentionally not audited
+     * (the collaboration log tracks shared-view *viewers*, not the local owner).
+     */
+    auditLog?: { append: (input: CollaborationAuditAppendInput) => Promise<boolean> };
+  },
 ): void {
   app.post('/api/auth/session', async (c) => {
     const sessionAuth = deps.sessionAuth;
@@ -287,6 +300,22 @@ export function registerAuthSessionRoutes(
     // gated plain-HTTP without a tunnel assertion).
     c.header('Set-Cookie', serializeSessionCookie({ value: token, secure: https }), { append: true });
     const csrfToken = computeCsrfToken(sessionAuth.csrfSecret, token);
+
+    // R10: audit a viewer establishing a session (owner exchanges are not
+    // audited). Fire-and-forget — a slow/failed audit write must not block or
+    // fail the cookie exchange the SPA depends on.
+    if (actor.kind === 'viewer' && deps.auditLog) {
+      void deps.auditLog
+        .append({
+          actor: { kind: 'viewer', grantId: actor.grantId },
+          event: 'viewer-grant.session-established',
+          grantId: actor.grantId,
+        })
+        .catch((err) => {
+          console.warn('[auth-session] failed to write session-established audit event', err);
+        });
+    }
+
     return c.json({ ok: true, actor: actor.kind, csrfToken });
   });
 }

@@ -21,6 +21,7 @@ import { registerContactShareRoutes } from './routes/contact-share-routes.js';
 import { registerRelayConnectionRoutes } from './routes/relay-connection-routes.js';
 import { registerSessionSharingRecoveryRoutes } from './routes/session-sharing-recovery-routes.js';
 import { registerCollaborationPairingRoutes } from './routes/collaboration-pairing-routes.js';
+import { registerViewerShareRoutes, isViewerShareRoute } from './routes/viewer-share-routes.js';
 import { registerSpeechRoutes } from './routes/speech-routes.js';
 import { AgentSpeakCache } from './agent-speak-cache.js';
 import { DEFAULT_TTS_VOICE } from './tts-manager.js';
@@ -56,7 +57,10 @@ export function createRoutes(deps: RouteDeps): Hono {
           csrfSecret: deps.sessionAuth.csrfSecret,
           // The relay/contact-share routes enforce their own CSRF on the same
           // `x-kookr-csrf` header (different nonce); skip them to avoid a collision.
-          isExempt: isShareGuardedRoute,
+          // The owner viewer-share routes (#808) are under `/api/share/` too but
+          // do NOT self-enforce — un-exempt them so the standard double-submit
+          // guard protects them (the SPA attaches `x-kookr-csrf` transparently).
+          isExempt: (path) => isShareGuardedRoute(path) && !isViewerShareRoute(path),
         }),
       );
     }
@@ -87,7 +91,12 @@ export function createRoutes(deps: RouteDeps): Hono {
   // #804: browser cookie-exchange endpoint (POST /api/auth/session). Allow-listed
   // past the actor gate (isUnauthenticatedRoute) but enforces its own same-origin
   // + transport-posture checks. A no-op 503 when the session feature is unconfigured.
-  registerAuthSessionRoutes(app, { apiAuth: sharedDeps.apiAuth, sessionAuth: sharedDeps.sessionAuth });
+  registerAuthSessionRoutes(app, {
+    apiAuth: sharedDeps.apiAuth,
+    sessionAuth: sharedDeps.sessionAuth,
+    // #808: a viewer cookie exchange is a `session-established` audit event (R10).
+    auditLog: sharedDeps.viewerShare?.auditLog,
+  });
 
   registerDiagnosticsRoutes(app, sharedDeps);
   registerAdminRoutes(app, sharedDeps);
@@ -107,6 +116,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerRelayConnectionRoutes(app, sharedDeps);
   registerSessionSharingRecoveryRoutes(app, sharedDeps);
   registerCollaborationPairingRoutes(app, sharedDeps);
+  registerViewerShareRoutes(app, sharedDeps);
 
   const speakEnabled = deps.speakFindingEnabled !== false;
   const speakCache = deps.ttsUrl

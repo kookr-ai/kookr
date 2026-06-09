@@ -243,4 +243,67 @@ describe('ViewerConnectionRegistry', () => {
     expect(term.close).toHaveBeenCalledWith(1001, 'Server shutting down');
     expect(registry.size()).toBe(0);
   });
+
+  test('viewerRoster reports only open viewer sockets with connection metadata (#808)', () => {
+    const registry = new ViewerConnectionRegistry({ autoStartSweep: false, now: () => 1_700_000_000_000 });
+    const owner = fakeSocket();
+    const dashViewer = fakeSocket();
+    const termViewer = fakeSocket();
+    const closingViewer = fakeSocket(WebSocket.CLOSING);
+    registry.register(owner, OWNER, 'dashboard'); // owner excluded
+    registry.register(dashViewer, viewer('g1'), 'dashboard', { remoteAddr: '10.0.0.5' });
+    registry.register(termViewer, viewer('g1'), 'terminal', { sessionName: 'kookr-7', remoteAddr: '10.0.0.5' });
+    registry.register(closingViewer, viewer('g2'), 'dashboard'); // not open → excluded
+
+    const roster = registry.viewerRoster();
+    expect(roster).toHaveLength(2);
+    expect(roster).toContainEqual({
+      grantId: 'g1',
+      kind: 'dashboard',
+      connectedAt: '2023-11-14T22:13:20.000Z',
+      remoteAddr: '10.0.0.5',
+      scopeEffective: { kind: 'all' },
+    });
+    expect(roster).toContainEqual({
+      grantId: 'g1',
+      kind: 'terminal',
+      sessionName: 'kookr-7',
+      connectedAt: '2023-11-14T22:13:20.000Z',
+      remoteAddr: '10.0.0.5',
+      scopeEffective: { kind: 'all' },
+    });
+  });
+
+  test('connectedViewerCount counts distinct connected viewer grants (#808)', () => {
+    const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+    registry.register(fakeSocket(), OWNER, 'dashboard');
+    registry.register(fakeSocket(), viewer('g1'), 'dashboard');
+    registry.register(fakeSocket(), viewer('g1'), 'terminal', { sessionName: 's' });
+    registry.register(fakeSocket(), viewer('g2'), 'dashboard');
+    registry.register(fakeSocket(WebSocket.CLOSING), viewer('g3'), 'dashboard'); // not open
+    expect(registry.connectedViewerCount()).toBe(2);
+  });
+
+  test('broadcasterHealth exposes sweep cadence, liveness and viewer count (#808 / R10)', () => {
+    let clock = 1_700_000_000_000;
+    const registry = new ViewerConnectionRegistry({
+      autoStartSweep: false,
+      sweepIntervalMs: 10_000,
+      now: () => clock,
+    });
+    expect(registry.broadcasterHealth()).toEqual({
+      sweepIntervalMs: 10_000,
+      lastSweepAt: null,
+      sweepTickCount: 0,
+      connectedViewerCount: 0,
+    });
+    registry.register(fakeSocket(), viewer('g1'), 'dashboard');
+    clock = 1_700_000_005_000;
+    registry.sweep();
+    const health = registry.broadcasterHealth();
+    expect(health.sweepIntervalMs).toBe(10_000);
+    expect(health.sweepTickCount).toBe(1);
+    expect(health.lastSweepAt).toBe('2023-11-14T22:13:25.000Z');
+    expect(health.connectedViewerCount).toBe(1);
+  });
 });

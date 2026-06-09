@@ -216,6 +216,71 @@ describe('startHttpAndWebSockets', () => {
       expect(dashboardConnections).toHaveLength(1);
     });
 
+    // #808 Phase-1 guard: a `projects`-scoped viewer cannot be served until the
+    // scoped snapshot fan-out (#809), so its upgrade is rejected (503). An
+    // `all`-scoped viewer is admitted. Drive both through a real upgrade with a
+    // `resolveViewer` seam standing in for the (still-deferred) live wiring.
+    async function startGatedWithViewer(): Promise<{ port: number; dashboardConnections: WebSocket[] }> {
+      const app = new Hono();
+      const dashboardConnections: WebSocket[] = [];
+      runtime = await startHttpAndWebSockets({
+        app,
+        port: 0,
+        host: '0.0.0.0',
+        tasksFile: '/tmp/tasks.json',
+        hooksDir: '/tmp/hooks',
+        terminalBackend: new FakeTerminalBackend(),
+        terminalDeps: {
+          monitor: {} as never,
+          abortPendingSuggestion: () => {},
+          broadcastToAll: () => {},
+          serverCwd: '/repo',
+        },
+        apiAuth: {
+          required: true,
+          token: 'secret',
+          resolveViewer: (token) => {
+            if (token === 'viewer-all') return { kind: 'valid', grantId: 'ga', scope: { kind: 'all' } };
+            if (token === 'viewer-projects') {
+              return { kind: 'valid', grantId: 'gp', scope: { kind: 'projects', projectIds: ['p1'] } };
+            }
+            return { kind: 'not-found' };
+          },
+        },
+        onDashboardConnection: (ws) => {
+          dashboardConnections.push(ws);
+          ws.close();
+        },
+      });
+      const address = runtime.httpServer.address();
+      return { port: (address as { port: number }).port, dashboardConnections };
+    }
+
+    test('rejects a projects-scoped viewer upgrade (Phase-1 guard, #808)', async () => {
+      const { port, dashboardConnections } = await startGatedWithViewer();
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+        headers: { cookie: 'kookr_session=viewer-projects' },
+      });
+      const err = await new Promise<Error | null>((resolve) => {
+        ws.on('open', () => resolve(null));
+        ws.on('error', (e) => resolve(e));
+      });
+      expect(err).toBeInstanceOf(Error);
+      expect(dashboardConnections).toHaveLength(0);
+    });
+
+    test('admits an all-scoped viewer upgrade', async () => {
+      const { port, dashboardConnections } = await startGatedWithViewer();
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+        headers: { cookie: 'kookr_session=viewer-all' },
+      });
+      await new Promise<void>((resolve, reject) => {
+        ws.on('close', () => resolve());
+        ws.on('error', reject);
+      });
+      expect(dashboardConnections).toHaveLength(1);
+    });
+
     test('rejects an upgrade with a wrong token', async () => {
       const { port, dashboardConnections } = await startGated();
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {

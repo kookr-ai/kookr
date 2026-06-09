@@ -13,7 +13,8 @@ import { HOOK_EVENTS, LOAD_BEARING_HOOKS } from '../../core/hook-spec.js';
 import { handleTerminalInput, handleTerminalKeystroke, type TerminalInputDeps } from '../agent-lifecycle.js';
 import { FakeTerminalBridge } from '../fake-terminal-bridge.js';
 import { SessionBridge } from '../session-bridge.js';
-import { isAuthorizedUpgrade, type ApiAuthConfig, type Actor } from '../auth.js';
+import { resolveUpgradeIdentity, type ApiAuthConfig, type Actor } from '../auth.js';
+import { isPhase1UnsupportedViewerScope } from '../viewer-data-policy.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 
 export interface HttpAndWebSocketsDeps {
@@ -166,10 +167,32 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     // Issue #708: on a non-loopback bind, reject unauthenticated upgrades before
     // any handshake. The dashboard WS carries the full live snapshot stream and
     // terminal I/O, so it must be gated alongside state-changing HTTP routes.
-    if (deps.apiAuth && !isAuthorizedUpgrade(deps.apiAuth, req)) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-      socket.destroy();
-      return;
+    if (deps.apiAuth) {
+      const upgradeActor = resolveUpgradeIdentity(deps.apiAuth, req);
+      if (!upgradeActor) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      // Phase-1 guard (#808): a `projects`-scoped viewer cannot be served yet —
+      // the scope-filtered snapshot fan-out is Phase 2 (#809). Reject the upgrade
+      // (503) rather than fail-closed-throw on the broadcaster or, worse,
+      // over-deliver the unfiltered `all` snapshot. This is inert until the
+      // `resolveViewer` security gate admits viewer cookies (kept deferred here,
+      // see the SECURITY note on `resolveTerminalActor`), but the predicate lives
+      // at the upgrade so it cannot be bypassed once that lands.
+      if (upgradeActor.kind === 'viewer' && isPhase1UnsupportedViewerScope(upgradeActor.scope)) {
+        console.warn(
+          JSON.stringify({
+            event: 'ws_upgrade_rejected',
+            reason: 'projects_scope_unsupported_phase1',
+            grantId: upgradeActor.grantId,
+          }),
+        );
+        socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
     }
 
     if (path === '/ws') {

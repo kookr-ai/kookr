@@ -6,7 +6,9 @@ export type CollaborationAuditActor =
   | CollaborationPrincipal
   | { kind: 'local-owner' }
   | { kind: 'peer-bootstrap' }
-  | { kind: 'unknown-peer'; contactIdPresent: boolean; deviceIdPresent: boolean };
+  | { kind: 'unknown-peer'; contactIdPresent: boolean; deviceIdPresent: boolean }
+  /** A read-only shared-view viewer, identified only by its grant id (#808). */
+  | { kind: 'viewer'; grantId: string };
 
 export type CollaborationAuditTransportKind =
   | 'privateNetwork'
@@ -27,7 +29,15 @@ export type CollaborationAuditEventKind =
   | 'share.refused'
   | 'share.revoked'
   | 'peer.disconnected'
-  | 'policy.denied';
+  | 'policy.denied'
+  // Read-only shared-view grant lifecycle (#808, RFC R10). `created`/`revoked`
+  // are owner control-surface actions; `session-established` marks a viewer
+  // cookie exchange; `sweep-evicted` marks the revocation sweep dropping a live
+  // viewer socket.
+  | 'viewer-grant.created'
+  | 'viewer-grant.revoked'
+  | 'viewer-grant.session-established'
+  | 'viewer-grant.sweep-evicted';
 
 export interface CollaborationAuditEvent {
   schemaVersion: typeof COLLABORATION_AUDIT_SCHEMA_VERSION;

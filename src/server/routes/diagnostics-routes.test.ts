@@ -11,6 +11,9 @@ import { GitHubStateStore } from '../../core/github-state-store.js';
 import { recordSuppression, resetDetectionStats } from '../../core/detection-stats.js';
 import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
+import { ViewerGrantStore } from '../../core/viewer-grants.js';
+import { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
+import { CollaborationAuditLog } from '../collaboration-audit-log.js';
 import type { RouteDeps } from './shared.js';
 import type { LlmClient } from '../../core/llm-client.js';
 
@@ -91,6 +94,41 @@ describe('diagnostics routes', () => {
           p95Ms: 20,
           p99Ms: 20,
         }],
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — viewerBroadcaster block (#808 / R10)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health viewerBroadcaster block', () => {
+    test('omits the block when the share feature is not wired', async () => {
+      const res = await mkApp({ taskStore: new TaskStore(), buildInfo: {} as never }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('viewerBroadcaster');
+    });
+
+    test('reports sweep liveness + grant-store writability when wired', async () => {
+      const grantStore = new ViewerGrantStore(tempDir);
+      await grantStore.load();
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false, sweepIntervalMs: 10_000 });
+      const auditLog = new CollaborationAuditLog({ kookrDir: tempDir });
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        buildInfo: {} as never,
+        viewerShare: { grantStore, registry, auditLog },
+      }).request('/api/health');
+      registry.stopSweep();
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { viewerBroadcaster?: Record<string, unknown> };
+      expect(body.viewerBroadcaster).toEqual({
+        sweepIntervalMs: 10_000,
+        lastSweepAt: null,
+        sweepTickCount: 0,
+        connectedViewerCount: 0,
+        grantStoreWritable: true,
       });
     });
   });

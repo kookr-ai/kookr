@@ -16,6 +16,7 @@
 import { WebSocket } from 'ws';
 
 import type { Actor } from './auth.js';
+import type { Scope } from './viewer-data-policy.js';
 
 /** Which connection pool a socket belongs to. */
 export type SocketKind = 'dashboard' | 'terminal';
@@ -24,6 +25,8 @@ export type SocketKind = 'dashboard' | 'terminal';
 export interface SocketMeta {
   /** The attached terminal session (terminal sockets only). */
   sessionName?: string;
+  /** Remote address of the upgrade, surfaced (owner-only) in the viewer roster (#808). */
+  remoteAddr?: string;
 }
 
 /** An entry in the registry. */
@@ -33,6 +36,40 @@ export interface RegisteredSocket {
   kind: SocketKind;
   /** Present for terminal sockets so the sweep can re-check session scope (#810). */
   sessionName?: string;
+  /** Remote address captured at registration, for the owner roster (#808). */
+  remoteAddr?: string;
+  /** Wall-clock ms when this socket registered, for the owner roster (#808). */
+  connectedAtMs: number;
+}
+
+/**
+ * One live viewer connection as surfaced to the owner's Share UI by
+ * `GET /api/share/viewers` (#808). Carries no token — only the grant id, when
+ * it connected, where from, and the scope it is effectively being served.
+ */
+export interface ViewerConnectionInfo {
+  grantId: string;
+  kind: SocketKind;
+  sessionName?: string;
+  /** ISO-8601 connection timestamp. */
+  connectedAt: string;
+  remoteAddr?: string;
+  /** The scope the grant is being served at (canonical). */
+  scopeEffective: Scope;
+}
+
+/**
+ * Observability snapshot for the `/api/health` `viewerBroadcaster` block (#808 /
+ * R10): the sweep cadence + liveness and how many distinct viewers are
+ * connected, so a dead sweep or a stuck viewer set is visible to the operator.
+ */
+export interface ViewerBroadcasterHealth {
+  sweepIntervalMs: number;
+  /** ISO-8601 of the last completed sweep tick, or null if none ran yet. */
+  lastSweepAt: string | null;
+  sweepTickCount: number;
+  /** Distinct viewer grants with at least one open socket. */
+  connectedViewerCount: number;
 }
 
 /**
@@ -118,7 +155,14 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
   }
 
   register(ws: WebSocket, actor: Actor, kind: SocketKind, meta?: SocketMeta): void {
-    this.sockets.set(ws, { ws, actor, kind, sessionName: meta?.sessionName });
+    this.sockets.set(ws, {
+      ws,
+      actor,
+      kind,
+      sessionName: meta?.sessionName,
+      remoteAddr: meta?.remoteAddr,
+      connectedAtMs: this.now(),
+    });
   }
 
   unregister(ws: WebSocket): void {
@@ -175,6 +219,50 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
   /** Total registered sockets across both pools. */
   size(): number {
     return this.sockets.size;
+  }
+
+  /**
+   * Per-connection roster of every currently-open **viewer** socket, for the
+   * owner's `GET /api/share/viewers` (#808). Owner sockets are omitted (the
+   * roster is about who is *viewing*). Only open sockets are reported, so a
+   * just-closed-but-not-yet-unregistered socket does not appear as live.
+   */
+  viewerRoster(): ViewerConnectionInfo[] {
+    const out: ViewerConnectionInfo[] = [];
+    for (const entry of this.sockets.values()) {
+      if (entry.actor.kind !== 'viewer') continue;
+      if (entry.ws.readyState !== WebSocket.OPEN) continue;
+      out.push({
+        grantId: entry.actor.grantId,
+        kind: entry.kind,
+        ...(entry.sessionName ? { sessionName: entry.sessionName } : {}),
+        connectedAt: new Date(entry.connectedAtMs).toISOString(),
+        ...(entry.remoteAddr ? { remoteAddr: entry.remoteAddr } : {}),
+        scopeEffective: entry.actor.scope,
+      });
+    }
+    return out;
+  }
+
+  /** Number of distinct viewer grants with at least one open socket (R10). */
+  connectedViewerCount(): number {
+    const grants = new Set<string>();
+    for (const entry of this.sockets.values()) {
+      if (entry.actor.kind === 'viewer' && entry.ws.readyState === WebSocket.OPEN) {
+        grants.add(entry.actor.grantId);
+      }
+    }
+    return grants.size;
+  }
+
+  /** Observability snapshot for the `/api/health` `viewerBroadcaster` block (R10). */
+  broadcasterHealth(): ViewerBroadcasterHealth {
+    return {
+      sweepIntervalMs: this.sweepIntervalMs,
+      lastSweepAt: this.lastSweepAtMs === null ? null : new Date(this.lastSweepAtMs).toISOString(),
+      sweepTickCount: this.tickCount,
+      connectedViewerCount: this.connectedViewerCount(),
+    };
   }
 
   /** Number of sweep ticks completed (observability, R10). */

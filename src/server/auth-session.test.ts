@@ -137,9 +137,14 @@ describe('serializeSessionCookie', () => {
 function makeApp(opts: {
   apiAuth?: ApiAuthConfig;
   sessionAuth?: SessionAuthConfig;
+  auditLog?: { append: (input: unknown) => Promise<boolean> };
 }): Hono {
   const app = new Hono();
-  registerAuthSessionRoutes(app, { apiAuth: opts.apiAuth, sessionAuth: opts.sessionAuth });
+  registerAuthSessionRoutes(app, {
+    apiAuth: opts.apiAuth,
+    sessionAuth: opts.sessionAuth,
+    auditLog: opts.auditLog as never,
+  });
   return app;
 }
 
@@ -274,6 +279,50 @@ describe('POST /api/auth/session', () => {
     expect(res.headers.get('set-cookie') ?? '').toContain(`${SESSION_COOKIE_NAME}=viewer-token`);
     expect(verifyCsrfToken(sessionAuth.csrfSecret, 'viewer-token', body.csrfToken)).toBe(true);
     expect(verifyCsrfToken(sessionAuth.csrfSecret, OWNER_TOKEN, body.csrfToken)).toBe(false);
+  });
+
+  test('viewer cookie exchange writes a viewer-grant.session-established audit event (#808)', async () => {
+    const resolveViewer = (token: string): ViewerTokenResolution =>
+      token === 'viewer-token'
+        ? { kind: 'valid', grantId: 'g42', scope: { kind: 'all' } }
+        : { kind: 'not-found' };
+    const append = vi.fn(async () => true);
+    const app = makeApp({
+      apiAuth: { required: true, token: OWNER_TOKEN, resolveViewer },
+      sessionAuth: ownerSessionAuth({ mode: 'trusted-tunnel' }),
+      auditLog: { append },
+    });
+    const res = await app.request('http://lan.example/api/auth/session', {
+      method: 'POST',
+      headers: { 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' },
+      body: JSON.stringify({ token: 'viewer-token' }),
+    });
+    expect(res.status).toBe(200);
+    // The append is fire-and-forget; drain the task queue so this asserts the
+    // call happened rather than racing a deferred implementation.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append).toHaveBeenCalledWith({
+      actor: { kind: 'viewer', grantId: 'g42' },
+      event: 'viewer-grant.session-established',
+      grantId: 'g42',
+    });
+  });
+
+  test('an owner cookie exchange writes no audit event (only viewers are audited)', async () => {
+    const append = vi.fn(async () => true);
+    const app = makeApp({
+      apiAuth: { required: true, token: OWNER_TOKEN },
+      sessionAuth: ownerSessionAuth({ mode: 'trusted-tunnel' }),
+      auditLog: { append },
+    });
+    const res = await app.request('http://lan.example/api/auth/session', {
+      method: 'POST',
+      headers: { 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' },
+      body: JSON.stringify({ token: OWNER_TOKEN }),
+    });
+    expect(res.status).toBe(200);
+    expect(append).not.toHaveBeenCalled();
   });
 
   test('unconfigured session feature ⇒ 503 session-feature-disabled', async () => {
