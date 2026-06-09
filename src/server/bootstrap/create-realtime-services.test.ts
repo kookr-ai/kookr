@@ -76,6 +76,14 @@ function openSocket(send: (data: string) => void, close = vi.fn()): WebSocket {
   } as unknown as WebSocket;
 }
 
+/** Register a fake dashboard socket the way `handleWsConnection` would (owner, Phase 1). */
+function addDashboardSocket(
+  realtime: Awaited<ReturnType<typeof createTestRealtimeServices>>,
+  ws: WebSocket,
+): void {
+  realtime.registry.register(ws, { kind: 'owner' }, 'dashboard');
+}
+
 function parseSent(messages: string[]): ServerMessage[] {
   return messages.map((data) => JSON.parse(data) as ServerMessage);
 }
@@ -117,7 +125,7 @@ describe('createRealtimeServices', () => {
     });
 
     const sent: ServerMessage[] = [];
-    realtime.clients.add({
+    addDashboardSocket(realtime, {
       readyState: WebSocket.OPEN,
       send: (data: string) => sent.push(JSON.parse(data) as ServerMessage),
     } as unknown as WebSocket);
@@ -156,11 +164,11 @@ describe('createRealtimeServices', () => {
     const afterClientMessages: string[] = [];
     const failingClose = vi.fn();
 
-    realtime.clients.add(openSocket((data) => beforeClientMessages.push(data)));
-    realtime.clients.add(openSocket(() => {
+    addDashboardSocket(realtime, openSocket((data) => beforeClientMessages.push(data)));
+    addDashboardSocket(realtime, openSocket(() => {
       throw new Error('primary send failed');
     }, failingClose));
-    realtime.clients.add(openSocket((data) => afterClientMessages.push(data)));
+    addDashboardSocket(realtime, openSocket((data) => afterClientMessages.push(data)));
 
     realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
 
@@ -173,7 +181,7 @@ describe('createRealtimeServices', () => {
       'coordinator.snapshot',
     ]);
     expect(failingClose).toHaveBeenCalledOnce();
-    expect(realtime.clients.size).toBe(2);
+    expect(realtime.registry.dashboardCount()).toBe(2);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Failed to broadcast snapshot'),
       expect.any(Error),
@@ -188,14 +196,14 @@ describe('createRealtimeServices', () => {
     const failingClientMessages: string[] = [];
     const failingClose = vi.fn();
 
-    realtime.clients.add(openSocket((data) => {
+    addDashboardSocket(realtime, openSocket((data) => {
       const msg = JSON.parse(data) as ServerMessage;
       if (msg.type === 'coordinator.snapshot') {
         throw new Error('coordinator send failed');
       }
       failingClientMessages.push(data);
     }, failingClose));
-    realtime.clients.add(openSocket((data) => afterClientMessages.push(data)));
+    addDashboardSocket(realtime, openSocket((data) => afterClientMessages.push(data)));
 
     realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
 
@@ -205,7 +213,7 @@ describe('createRealtimeServices', () => {
       'coordinator.snapshot',
     ]);
     expect(failingClose).toHaveBeenCalledOnce();
-    expect(realtime.clients.size).toBe(1);
+    expect(realtime.registry.dashboardCount()).toBe(1);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Failed to broadcast coordinator.snapshot'),
       expect.any(Error),

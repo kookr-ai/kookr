@@ -31,6 +31,8 @@ import type { WorkspaceAttemptRepository } from '../core/workspace-attempt-repos
 import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
 import { createSnapshotMessage, getProjectSummaries } from './use-cases/get-snapshot.js';
+import type { Actor } from './auth.js';
+import type { SocketRegistrar } from './viewer-connection-registry.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
@@ -113,8 +115,9 @@ export interface WsConnectionDeps {
  */
 export function handleWsConnection(
   ws: WebSocket,
-  clients: Set<WebSocket>,
+  registrar: SocketRegistrar,
   deps: WsConnectionDeps,
+  actor: Actor = { kind: 'owner' },
 ): void {
   const {
     taskStore, queue, monitor, adapter,
@@ -126,7 +129,10 @@ export function handleWsConnection(
     achievementWatcher,
   } = deps;
 
-  clients.add(ws);
+  // The registry owns the dashboard pool now — register/unregister instead of
+  // mutating a shared set. Phase 1 admits owners only; #806 will pass the
+  // resolved viewer actor here once viewer cookies are gated onto `/ws`.
+  registrar.register(ws, actor, 'dashboard');
   const connectionId = Math.random().toString(36).slice(2);
   deps.selectionController?.registerConnection(connectionId);
 
@@ -172,7 +178,13 @@ export function handleWsConnection(
     userInputDeliveries: deps.userInputDeliveries,
   });
 
-  // Send initial snapshot
+  // Send initial snapshot.
+  // Phase 1 (#805) admits owners only, so this initial burst builds the
+  // whole-world snapshot directly. #809 owns WS scope filtering: when scoped
+  // snapshots land, this burst (and the achievement:reset rebroadcast below)
+  // must route through the injected `buildScopedSnapshot(actor.scope)` factory
+  // so a viewer never receives the unfiltered `all` snapshot — the same single
+  // owner of scope filtering used by the tick path.
   router.handleConnect();
 
   const latestResourceStatus = deps.getLatestResourceStatus?.();
@@ -385,7 +397,7 @@ export function handleWsConnection(
   });
 
   ws.on('close', () => {
-    clients.delete(ws);
+    registrar.unregister(ws);
     deps.selectionController?.unregisterConnection(connectionId);
   });
 }
