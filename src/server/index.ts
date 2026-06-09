@@ -87,6 +87,7 @@ import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js'
 import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { ApiAuthConfig } from './auth.js';
+import type { SessionAuthConfig } from './auth-session.js';
 
 // --- Exported types ---
 
@@ -160,6 +161,12 @@ export interface KookrConfig {
    * `src/server/start.ts` via `resolveApiAuth`.
    */
   apiAuth?: ApiAuthConfig;
+  /**
+   * Browser cookie-exchange + CSRF posture (issue #804). Resolved in
+   * `src/server/start.ts` on a non-loopback bind; threaded into the routes layer
+   * to enable `POST /api/auth/session` and the owner-mutation CSRF guard.
+   */
+  sessionAuth?: SessionAuthConfig;
 }
 
 function getOrCreatePrivateNetworkNodeId(kookrDir: string): NodeId {
@@ -849,6 +856,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     coordinatorSuppressions,
     drainController,
     apiAuth: config.apiAuth,
+    sessionAuth: config.sessionAuth,
     startupRecoverySummary,
     ralphCycler,
     tokenTracker,

@@ -272,6 +272,34 @@ export interface ActorResolutionContext {
 }
 
 /**
+ * Classify an already-extracted *credential string* (from a header, cookie, or
+ * request body) as owner / viewer / rejected, WITHOUT the loopback short-circuit
+ * or structured logging of {@link resolveActor}. This is the single owner of the
+ * owner-token-then-viewer-grant matching, shared by `resolveActor` (HTTP/WS
+ * gate) and the `POST /api/auth/session` cookie-exchange route (#804) so the two
+ * cannot drift. The caller decides what to log and how loopback maps to owner.
+ */
+export type CredentialClassification =
+  | { actor: Actor }
+  | { actor: null; reason: 'bad_token' }
+  | { actor: null; reason: 'revoked' | 'expired'; grantId: string };
+
+export function classifyCredential(config: ApiAuthConfig, presented: string): CredentialClassification {
+  if (config.token && tokensMatch(config.token, presented)) return { actor: { kind: 'owner' } };
+  const viewer = config.resolveViewer?.(presented) ?? { kind: 'not-found' as const };
+  switch (viewer.kind) {
+    case 'valid':
+      return { actor: { kind: 'viewer', grantId: viewer.grantId, scope: viewer.scope } };
+    case 'revoked':
+      return { actor: null, reason: 'revoked', grantId: viewer.grantId };
+    case 'expired':
+      return { actor: null, reason: 'expired', grantId: viewer.grantId };
+    case 'not-found':
+      return { actor: null, reason: 'bad_token' };
+  }
+}
+
+/**
  * Resolve the {@link Actor} for an inbound request/upgrade, or `null` when the
  * credential is missing/invalid on a non-loopback bind (fail-closed). This is
  * the single classification point shared by the HTTP middleware and the WS
@@ -302,22 +330,14 @@ export function resolveActor(config: ApiAuthConfig, ctx: ActorResolutionContext)
     return null;
   }
 
-  if (tokensMatch(config.token, presented)) return { kind: 'owner' };
-
-  const viewer = config.resolveViewer?.(presented) ?? { kind: 'not-found' as const };
-  switch (viewer.kind) {
-    case 'valid':
-      return { kind: 'viewer', grantId: viewer.grantId, scope: viewer.scope };
-    case 'revoked':
-      logAuthRejected('revoked', ctx.remoteAddr, viewer.grantId);
-      return null;
-    case 'expired':
-      logAuthRejected('expired', ctx.remoteAddr, viewer.grantId);
-      return null;
-    case 'not-found':
-      logAuthRejected('bad_token', ctx.remoteAddr);
-      return null;
+  const classified = classifyCredential(config, presented);
+  if (classified.actor) return classified.actor;
+  if (classified.reason === 'bad_token') {
+    logAuthRejected('bad_token', ctx.remoteAddr);
+  } else {
+    logAuthRejected(classified.reason, ctx.remoteAddr, classified.grantId);
   }
+  return null;
 }
 
 /**

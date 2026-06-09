@@ -13,6 +13,12 @@ import { homedir } from 'node:os';
 import { LocalDtachBackend } from '../adapters/local-dtach-backend.js';
 import { createKookrServer } from './index.js';
 import { resolveApiAuth, type ApiAuthConfig } from './auth.js';
+import {
+  resolveSessionTransport,
+  describeSessionTransport,
+  generateCsrfSecret,
+  type SessionAuthConfig,
+} from './auth-session.js';
 import { resolveListenPort } from './resolve-listen-port.js';
 import { parseSTTDevice, startSTT, type STTManager } from './stt-manager.js';
 import { DEFAULT_TTS_VOICE, parseTTSDeviceFromEnv, startTTS, type TTSManager } from './tts-manager.js';
@@ -104,6 +110,16 @@ async function main(): Promise<void> {
   // Resolve API-token auth before binding. Exits (fail-closed) when a
   // non-loopback bind lacks both a token and the explicit opt-out.
   const apiAuth = resolveApiAuthOrExit(HOST);
+  // #804: browser cookie-exchange + CSRF posture. Resolve the transport posture
+  // from the bind host + env and log it (the `https-required` line is the
+  // fail-closed notice that plain-HTTP browser sessions are refused). The session
+  // feature is only meaningful on a non-loopback bind where a credential exists.
+  const sessionTransport = resolveSessionTransport({ host: HOST, env: process.env });
+  console.log(describeSessionTransport(sessionTransport, HOST));
+  const sessionAuth: SessionAuthConfig | undefined =
+    sessionTransport.mode === 'loopback'
+      ? undefined
+      : { csrfSecret: generateCsrfSecret(), transport: sessionTransport };
   const KOOKR_DIR = PORT === 4800 ? join(homedir(), '.kookr') : join(homedir(), `.kookr-${PORT}`);
   // Per-instance namespace so kookr-prod (4800) and kookr-dev (4801) keep
   // their dtach sockets + manifest separate under /tmp/kookr-dtach/<uid>/.
@@ -201,6 +217,7 @@ async function main(): Promise<void> {
     bypassAllPermissions: BYPASS_ALL_PERMISSIONS,
     lifecycleSignal: lifecycleAc.signal,
     apiAuth,
+    sessionAuth,
   });
 
   async function shutdown(signal: string): Promise<void> {

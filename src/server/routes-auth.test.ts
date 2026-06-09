@@ -1,7 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createRoutes } from './routes.js';
 import type { RouteDeps } from './routes/shared.js';
 import type { ApiAuthConfig } from './auth.js';
+import { SESSION_COOKIE_NAME } from './auth.js';
+import {
+  CSRF_HEADER,
+  computeCsrfToken,
+  generateCsrfSecret,
+  type SessionAuthConfig,
+} from './auth-session.js';
 
 // Issue #708 + #802 (R7): verify the actor-aware API middleware is wired into
 // `createRoutes` and gated on `apiAuth.required`. We exercise a non-existent
@@ -10,8 +17,14 @@ import type { ApiAuthConfig } from './auth.js';
 // an authorized (or loopback) request falls through to the 404 notFound handler
 // — proving the gate let it past. Note (#802): the safe-method GET bypass is
 // removed — an unauthenticated GET on a data route is now 401, not a pass.
-function makeDeps(apiAuth?: ApiAuthConfig): RouteDeps {
-  return { frontendDir: '/nonexistent-frontend', serverCwd: '/repo', serverPort: 4800, apiAuth } as unknown as RouteDeps;
+function makeDeps(apiAuth?: ApiAuthConfig, sessionAuth?: SessionAuthConfig): RouteDeps {
+  return {
+    frontendDir: '/nonexistent-frontend',
+    serverCwd: '/repo',
+    serverPort: 4800,
+    apiAuth,
+    sessionAuth,
+  } as unknown as RouteDeps;
 }
 
 describe('createRoutes API-token middleware install (issue #708)', () => {
@@ -63,6 +76,61 @@ describe('createRoutes API-token middleware install (issue #708)', () => {
   it('does NOT install the gate when apiAuth.required is false', async () => {
     const app = createRoutes(makeDeps({ required: false }));
     const res = await app.request('http://localhost/api/does-not-exist', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+});
+
+// Issue #804: verify the cookie-exchange route + CSRF guard are wired into
+// `createRoutes` and reachable past the actor gate.
+describe('createRoutes session-auth wiring (issue #804)', () => {
+  const OWNER = 'secret';
+  function sessionAuth(): SessionAuthConfig {
+    return { csrfSecret: generateCsrfSecret(), transport: { mode: 'trusted-tunnel' } };
+  }
+
+  it('POST /api/auth/session is reachable past the actor gate and sets the cookie', async () => {
+    const app = createRoutes(makeDeps({ required: true, token: OWNER }, sessionAuth()));
+    const res = await app.request('http://lan.example/api/auth/session', {
+      method: 'POST',
+      headers: { 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' },
+      body: JSON.stringify({ token: OWNER }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('set-cookie') ?? '').toContain(`${SESSION_COOKIE_NAME}=${OWNER}`);
+  });
+
+  it('session route 503s when the session feature is unconfigured (no sessionAuth)', async () => {
+    const app = createRoutes(makeDeps({ required: true, token: OWNER }));
+    const res = await app.request('http://lan.example/api/auth/session', {
+      method: 'POST',
+      headers: { 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' },
+      body: JSON.stringify({ token: OWNER }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it('installs the CSRF guard: cookie-authed mutation without a nonce ⇒ 403', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sa = sessionAuth();
+    const app = createRoutes(makeDeps({ required: true, token: OWNER }, sa));
+    const res = await app.request('http://lan.example/api/does-not-exist', {
+      method: 'POST',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${OWNER}` },
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('csrf-failed');
+  });
+
+  it('CSRF guard passes a cookie-authed mutation carrying a valid nonce (404, past the guard)', async () => {
+    const sa = sessionAuth();
+    const app = createRoutes(makeDeps({ required: true, token: OWNER }, sa));
+    const res = await app.request('http://lan.example/api/does-not-exist', {
+      method: 'POST',
+      headers: {
+        cookie: `${SESSION_COOKIE_NAME}=${OWNER}`,
+        [CSRF_HEADER]: computeCsrfToken(sa.csrfSecret, OWNER),
+      },
+    });
     expect(res.status).toBe(404);
   });
 });
