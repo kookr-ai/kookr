@@ -15,6 +15,7 @@ import { FakeTerminalBridge } from '../fake-terminal-bridge.js';
 import { SessionBridge } from '../session-bridge.js';
 import { resolveUpgradeIdentity, type ApiAuthConfig, type Actor } from '../auth.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
+import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
 
 export interface HttpAndWebSocketsDeps {
   app: Hono;
@@ -57,6 +58,15 @@ export interface HttpAndWebSocketsDeps {
    * cookie→actor resolution in one place.
    */
   resolveTerminalActor?: (req: IncomingMessage) => Actor;
+  /**
+   * Terminal scope gate (#810). Owns the WHOLE check — session→task lookup AND
+   * scope comparison — so this handler holds zero scope logic. Called at the
+   * terminal upgrade with the resolved actor + session name; a `false` verdict
+   * is a 403 handshake (logged `{ grantId, sessionName, reason: 'out-of-scope' }`)
+   * before any socket is created. Owners always pass. Optional — when absent
+   * (most tests) every upgrade is admitted, matching pre-#810 behaviour.
+   */
+  isActorAllowedTerminalSession?: IsActorAllowedTerminalSession;
 }
 
 export interface HttpAndWebSocketsCloseOptions {
@@ -156,6 +166,14 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   const terminalWss = new WebSocketServer({ noServer: true });
   const terminalInputWriter = deps.terminalInputWriter ?? asTerminalInputWriterPort(deps.terminalBackend);
 
+  // Terminal context resolved ONCE at the HTTP upgrade (actor + canonical session
+  // name) and consumed by the `connection` handler. Resolving once and reusing —
+  // rather than re-resolving from `req` in both handlers — guarantees the scope
+  // gate, the registry registration, and the read-only bridge all act on the SAME
+  // actor + session-name pair (#810 review: no re-resolution drift, no
+  // query-string skew between the gate's `path` and the handler's `req.url`).
+  const terminalUpgrades = new WeakMap<IncomingMessage, { actor: Actor; sessionName: string }>();
+
   httpServer.on('upgrade', (req: IncomingMessage, socket, head) => {
     const url = req.url ?? '';
     // Dispatch on the pathname only — strip any query string before matching so
@@ -190,6 +208,45 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
         wss.emit('connection', ws, req);
       });
     } else if (path.startsWith('/ws/terminal/')) {
+      // #810 terminal scope gate. Resolve the actor + canonical (query-stripped)
+      // session name ONCE here and let the injected predicate own the whole
+      // decision (session→task lookup + scope comparison). An out-of-scope viewer
+      // is rejected with a 403 BEFORE the handshake, so no read-only bridge is
+      // ever created for a session the grant cannot reach. Owners (the default
+      // when `resolveTerminalActor` is unset) always pass. Both the actor
+      // resolution and the predicate run under one try/catch that fails CLOSED:
+      // an uncaught throw in an `upgrade` listener would crash the process, and a
+      // garbage cookie parsed by a future `resolveTerminalActor` must yield a 403,
+      // not a DoS.
+      const sessionName = decodeURIComponent(path.replace('/ws/terminal/', ''));
+      let terminalActor: Actor = { kind: 'owner' };
+      let denied = false;
+      try {
+        terminalActor = deps.resolveTerminalActor?.(req) ?? { kind: 'owner' };
+        denied = deps.isActorAllowedTerminalSession
+          ? !deps.isActorAllowedTerminalSession(terminalActor, sessionName)
+          : false;
+      } catch (err) {
+        denied = true;
+        console.warn('[terminal-scope] upgrade gate threw; denying', err);
+      }
+      if (denied) {
+        console.warn(
+          JSON.stringify({
+            msg: 'terminal_upgrade_denied',
+            grantId: terminalActor.kind === 'viewer' ? terminalActor.grantId : undefined,
+            sessionName,
+            reason: 'out-of-scope',
+          }),
+        );
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      // Hand the vetted actor + canonical session name to the connection handler
+      // so the registry registration and the read-only bridge use exactly what the
+      // gate just cleared.
+      terminalUpgrades.set(req, { actor: terminalActor, sessionName });
       terminalWss.handleUpgrade(req, socket, head, (ws) => {
         terminalWss.emit('connection', ws, req);
       });
@@ -201,18 +258,24 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   const activeBridges = new Map<WebSocket, FakeTerminalBridge | SessionBridge>();
 
   terminalWss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-    const url = req.url ?? '';
-    const sessionName = decodeURIComponent(url.replace('/ws/terminal/', ''));
+    // Reuse the actor + canonical session name vetted by the upgrade scope gate
+    // (#810). The fallback (gate not run — e.g. a directly-emitted connection in a
+    // test) re-derives from the query-stripped path so the two paths stay
+    // byte-identical; the actor still defaults to owner there.
+    const ctx = terminalUpgrades.get(req);
+    terminalUpgrades.delete(req);
+    const sessionName =
+      ctx?.sessionName ??
+      decodeURIComponent((req.url ?? '').split('?', 1)[0].replace('/ws/terminal/', ''));
 
     if (!sessionName) {
       ws.close(1008, 'Missing session name');
       return;
     }
 
-    // Resolve the actor for this terminal upgrade. Defaults to owner — viewer
-    // cookie resolution is deferred to the resolveViewer security gate (see the
-    // SECURITY note on `resolveTerminalActor`). Viewer sockets are output-only.
-    const actor: Actor = deps.resolveTerminalActor?.(req) ?? { kind: 'owner' };
+    // The actor was resolved once at the upgrade (see SECURITY note on
+    // `resolveTerminalActor`); viewer sockets are output-only. Defaults to owner.
+    const actor: Actor = ctx?.actor ?? deps.resolveTerminalActor?.(req) ?? { kind: 'owner' };
     const readOnly = actor.kind === 'viewer';
 
     // Register the terminal socket with the connection registry (#805/#807) so

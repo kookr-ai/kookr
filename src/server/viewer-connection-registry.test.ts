@@ -138,6 +138,81 @@ describe('ViewerConnectionRegistry', () => {
     ]);
   });
 
+  // #810: reassignment TOCTOU (RFC F8). A still-live grant may hold a terminal
+  // socket whose task was reassigned out of scope after it opened; the sweep
+  // re-checks terminal scope each tick and drops the now-out-of-scope socket.
+  test('sweep evicts a terminal viewer socket whose task left scope (out-of-scope), keeping in-scope + dashboard sockets', () => {
+    const evictions: SweepEviction[] = [];
+    // Session→project mapping flips: kookr-moved leaves the grant's scope.
+    const projectOf: Record<string, string> = { 'kookr-stay': 'p1', 'kookr-moved': 'p9' };
+    const projectsViewer: Actor = { kind: 'viewer', grantId: 'gp', scope: { kind: 'projects', projectIds: ['p1'] } };
+    const registry = new ViewerConnectionRegistry({
+      autoStartSweep: false,
+      // All grants stay live — only scope changed, not revocation.
+      resolveGrantLiveness: () => 'active',
+      isActorAllowedTerminalSession: (actor, sessionName) => {
+        if (actor.kind === 'owner' || actor.scope.kind === 'all') return true;
+        const projectId = projectOf[sessionName];
+        return projectId !== undefined && actor.scope.projectIds.includes(projectId);
+      },
+      onEvict: (e) => evictions.push(e),
+    });
+    const stayTerm = fakeSocket();
+    const movedTerm = fakeSocket();
+    const dashSock = fakeSocket(); // dashboard sockets are never scope-checked by the sweep
+    registry.register(stayTerm, projectsViewer, 'terminal', { sessionName: 'kookr-stay' });
+    registry.register(movedTerm, projectsViewer, 'terminal', { sessionName: 'kookr-moved' });
+    registry.register(dashSock, projectsViewer, 'dashboard');
+
+    registry.sweep();
+
+    expect(registry.size()).toBe(2);
+    // The MOVED terminal specifically is gone (not merely "some socket was
+    // dropped" — a wrong-victim eviction would still leave count 2).
+    expect(registry.findByGrant('gp').map((e) => e.sessionName)).not.toContain('kookr-moved');
+    expect(registry.findByGrant('gp').map((e) => e.sessionName)).toContain('kookr-stay');
+    expect(movedTerm.close).toHaveBeenCalledWith(1008, 'Out of scope');
+    expect(stayTerm.close).not.toHaveBeenCalled();
+    expect(dashSock.close).not.toHaveBeenCalled();
+    expect(evictions).toEqual([
+      { grantId: 'gp', kind: 'terminal', sessionName: 'kookr-moved', reason: 'out-of-scope' },
+    ]);
+  });
+
+  // #810: a scope re-check that throws must fail CLOSED — the terminal is evicted,
+  // not silently retained (which would leave the TOCTOU window open forever).
+  test('sweep evicts (fail-closed) a terminal socket whose scope re-check throws', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const projectsViewer: Actor = { kind: 'viewer', grantId: 'gp', scope: { kind: 'projects', projectIds: ['p1'] } };
+    const term = fakeSocket();
+    const registry = new ViewerConnectionRegistry({
+      autoStartSweep: false,
+      resolveGrantLiveness: () => 'active',
+      isActorAllowedTerminalSession: () => {
+        throw new Error('task lookup blew up');
+      },
+    });
+    registry.register(term, projectsViewer, 'terminal', { sessionName: 'kookr-x' });
+    expect(() => registry.sweep()).not.toThrow();
+    expect(registry.size()).toBe(0);
+    expect(term.close).toHaveBeenCalledWith(1008, 'Out of scope');
+  });
+
+  test('sweep does not scope-check owner terminal sockets', () => {
+    const isActorAllowedTerminalSession = vi.fn().mockReturnValue(true);
+    const registry = new ViewerConnectionRegistry({
+      autoStartSweep: false,
+      resolveGrantLiveness: () => 'active',
+      isActorAllowedTerminalSession,
+    });
+    const ownerTerm = fakeSocket();
+    registry.register(ownerTerm, OWNER, 'terminal', { sessionName: 'kookr-owner' });
+    registry.sweep();
+    // Owner sockets short-circuit before the scope predicate (they aren't viewers).
+    expect(isActorAllowedTerminalSession).not.toHaveBeenCalled();
+    expect(ownerTerm.close).not.toHaveBeenCalled();
+  });
+
   test('a throwing onEvict hook does not abort the sweep; the socket is still dropped and closed', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const a = fakeSocket();

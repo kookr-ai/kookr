@@ -28,6 +28,7 @@ import {
 } from '../viewer-connection-registry.js';
 import { ViewerAwareBroadcaster } from '../viewer-broadcaster.js';
 import type { Scope } from '../viewer-data-policy.js';
+import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
 
 export interface RealtimeServicesDeps {
   kookrDir: string;
@@ -56,6 +57,13 @@ export interface RealtimeServicesDeps {
   resolveGrantLiveness?: (grantId: string) => GrantLiveness;
   /** Audit hook fired once per sweep-evicted viewer socket (#808 / R10). */
   onViewerEvicted?: (eviction: SweepEviction) => void;
+  /**
+   * Terminal scope predicate (#810) handed to the registry sweep so it can drop
+   * terminal viewer sockets whose task was reassigned out of scope (RFC F8).
+   * Production wires the real checker (`index.ts`); omitted in lightweight test
+   * wirings, where the sweep performs no scope re-check.
+   */
+  isActorAllowedTerminalSession?: IsActorAllowedTerminalSession;
   /**
    * Build the scope-filtered snapshot for a viewer (#809). Production wires the
    * real factory (`index.ts`); when omitted (lightweight test wirings, or any
@@ -90,6 +98,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
   const achievementState = await loadAchievements(achievementsFile);
   const registry = new ViewerConnectionRegistry({
     resolveGrantLiveness: deps.resolveGrantLiveness,
+    isActorAllowedTerminalSession: deps.isActorAllowedTerminalSession,
     onEvict: deps.onViewerEvicted,
   });
   const broadcaster = new ViewerAwareBroadcaster({
